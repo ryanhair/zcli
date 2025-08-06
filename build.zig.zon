@@ -1,0 +1,13 @@
+.{
+    .name = .zcli,
+    .version = "0.1.0",
+    .fingerprint = 0x927117ca001313d0,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+        "README.md",
+    },
+}
