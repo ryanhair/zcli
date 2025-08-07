@@ -108,12 +108,49 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
     return registry_module;
 }
 
+test "isValidCommandName security checks" {
+    // Valid names
+    try std.testing.expect(isValidCommandName("hello"));
+    try std.testing.expect(isValidCommandName("hello-world"));
+    try std.testing.expect(isValidCommandName("hello_world"));
+    try std.testing.expect(isValidCommandName("hello123"));
+    try std.testing.expect(isValidCommandName("UPPERCASE"));
+
+    // Invalid names - path traversal
+    try std.testing.expect(!isValidCommandName("../etc"));
+    try std.testing.expect(!isValidCommandName(".."));
+    try std.testing.expect(!isValidCommandName("hello/../world"));
+
+    // Invalid names - path separators
+    try std.testing.expect(!isValidCommandName("hello/world"));
+    try std.testing.expect(!isValidCommandName("hello\\world"));
+
+    // Invalid names - hidden files
+    try std.testing.expect(!isValidCommandName(".hidden"));
+    try std.testing.expect(!isValidCommandName("."));
+
+    // Invalid names - special characters
+    try std.testing.expect(!isValidCommandName("hello world"));
+    try std.testing.expect(!isValidCommandName("hello@world"));
+    try std.testing.expect(!isValidCommandName("hello$world"));
+    try std.testing.expect(!isValidCommandName("hello;rm -rf"));
+
+    // Invalid names - empty
+    try std.testing.expect(!isValidCommandName(""));
+}
+
 // Build-time command discovery - scans filesystem directly
 fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) !DiscoveredCommands {
     var commands = DiscoveredCommands{
         .allocator = allocator,
         .root = std.StringHashMap(CommandInfo).init(allocator),
     };
+
+    // Validate commands directory path
+    if (std.mem.indexOf(u8, commands_dir, "..") != null) {
+        std.debug.print("Invalid commands directory: path traversal detected\n", .{});
+        return error.InvalidPath;
+    }
 
     // Open the commands directory
     var dir = std.fs.cwd().openDir(commands_dir, .{ .iterate = true }) catch |err| switch (err) {
@@ -125,7 +162,8 @@ fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) !Dis
     };
     defer dir.close();
 
-    try scanDirectory(allocator, dir, &commands.root, commands_dir);
+    const max_depth = 6; // Reasonable maximum nesting depth
+    try scanDirectory(allocator, dir, &commands.root, commands_dir, 0, max_depth);
     return commands;
 }
 
@@ -134,14 +172,35 @@ fn scanDirectory(
     dir: std.fs.Dir,
     commands: *std.StringHashMap(CommandInfo),
     base_path: []const u8,
+    depth: u32,
+    max_depth: u32,
 ) !void {
+    // Prevent excessive nesting
+    if (depth >= max_depth) {
+        std.debug.print("Warning: Maximum command nesting depth ({}) reached\n", .{max_depth});
+        return;
+    }
+
     var iterator = dir.iterate();
     while (try iterator.next()) |entry| {
+        // Validate entry name
+        if (!isValidCommandName(entry.name)) {
+            std.debug.print("Warning: Skipping invalid entry name: {s}\n", .{entry.name});
+            continue;
+        }
+
         switch (entry.kind) {
             .file => {
                 if (std.mem.endsWith(u8, entry.name, ".zig")) {
                     // Remove .zig extension for command name
                     const name_without_ext = entry.name[0 .. entry.name.len - 4];
+
+                    // Validate command name
+                    if (!isValidCommandName(name_without_ext)) {
+                        std.debug.print("Warning: Skipping invalid command name: {s}\n", .{name_without_ext});
+                        continue;
+                    }
+
                     const command_name = try allocator.dupe(u8, name_without_ext);
                     const command_path = try std.fs.path.join(allocator, &.{ base_path, entry.name });
 
@@ -157,6 +216,11 @@ fn scanDirectory(
                 }
             },
             .directory => {
+                // Skip hidden directories
+                if (entry.name[0] == '.') {
+                    continue;
+                }
+
                 // This is a command group - check if it has an index.zig
                 var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
                 defer subdir.close();
@@ -173,7 +237,7 @@ fn scanDirectory(
                 };
 
                 // Scan the subdirectory for subcommands
-                try scanDirectory(allocator, subdir, &group_info.children, group_base_path);
+                try scanDirectory(allocator, subdir, &group_info.children, group_base_path, depth + 1, max_depth);
 
                 // Only add the group if it has children or an index.zig
                 if (group_info.children.count() > 0 or hasIndexFile(subdir)) {
@@ -187,6 +251,31 @@ fn scanDirectory(
 
 fn hasIndexFile(dir: std.fs.Dir) bool {
     dir.access("index.zig", .{}) catch return false;
+    return true;
+}
+
+/// Validate command/directory names for security
+fn isValidCommandName(name: []const u8) bool {
+    // Reject empty names
+    if (name.len == 0) return false;
+
+    // Reject names with path traversal attempts
+    if (std.mem.indexOf(u8, name, "..") != null) return false;
+    if (std.mem.indexOf(u8, name, "/") != null) return false;
+    if (std.mem.indexOf(u8, name, "\\") != null) return false;
+
+    // Reject names starting with dot (hidden files)
+    if (name[0] == '.') return false;
+
+    // Allow only alphanumeric, dash, and underscore
+    for (name) |c| {
+        const is_valid = switch (c) {
+            'a'...'z', 'A'...'Z', '0'...'9', '-', '_' => true,
+            else => false,
+        };
+        if (!is_valid) return false;
+    }
+
     return true;
 }
 
