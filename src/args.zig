@@ -8,6 +8,24 @@ pub const ParseError = error{
 };
 
 /// Parse positional arguments based on the provided Args struct type
+///
+/// The args parameter should come from command-line arguments (e.g., from std.process.argsAlloc).
+/// For varargs fields ([][]const u8), the returned slice references the original args without copying.
+/// This means the lifetime of varargs fields is tied to the lifetime of the input args parameter.
+///
+/// Example:
+/// ```zig
+/// const Args = struct {
+///     command: []const u8,
+///     files: [][]const u8,  // varargs - captures all remaining arguments
+/// };
+/// 
+/// const args = try std.process.argsAlloc(allocator);
+/// defer std.process.argsFree(allocator, args);
+/// 
+/// const parsed = try parseArgs(Args, args[1..]);
+/// // parsed.files references args - don't free args while using parsed
+/// ```
 pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!ArgsType {
     const type_info = @typeInfo(ArgsType);
 
@@ -26,7 +44,15 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!A
         if (comptime isVarArgs(field_type)) {
             // This is a varargs field ([][]const u8) - capture remaining arguments
             const remaining_args = args[arg_index..];
-            // Cast to remove const qualifier
+            
+            // SAFETY: @constCast is required here to convert []const []const u8 to [][]const u8
+            // This is safe because:
+            // 1. We're not modifying the slice or its contents
+            // 2. The strings themselves remain immutable ([]const u8)
+            // 3. We're only removing the const qualifier from the outer slice
+            // 4. The lifetime of the args is managed by the caller
+            // Alternative would be to allocate and copy, but that adds unnecessary overhead
+            // and memory management complexity for the user.
             @field(result, field.name) = @constCast(remaining_args);
             break;
         } else if (@typeInfo(field_type) == .optional) {
@@ -538,4 +564,23 @@ test "parseArgs unicode strings" {
 
     try std.testing.expectEqualStrings("Hello, 世界", result.text);
     try std.testing.expectEqualStrings("🚀🌟", result.emoji);
+}
+
+test "parseArgs varargs lifetime and safety" {
+    // Test that varargs correctly reference the original args without copying
+    const TestArgs = struct {
+        command: []const u8,
+        files: [][]const u8,
+    };
+
+    const args = [_][]const u8{ "test", "file1.txt", "file2.txt" };
+    const result = try parseArgs(TestArgs, &args);
+    
+    // Verify that the varargs slice points to the same memory as the original args
+    try std.testing.expectEqual(@as(usize, 2), result.files.len);
+    try std.testing.expectEqual(@intFromPtr(args[1].ptr), @intFromPtr(result.files[0].ptr));
+    try std.testing.expectEqual(@intFromPtr(args[2].ptr), @intFromPtr(result.files[1].ptr));
+    
+    // This demonstrates that we're not copying the strings, just referencing them
+    // The @constCast is safe because we maintain the immutability of the strings
 }

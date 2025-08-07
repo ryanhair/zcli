@@ -78,15 +78,81 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
 }) *std.Build.Module {
     _ = target; // Currently unused but may be needed later
     _ = optimize; // Currently unused but may be needed later
+    
     // Discover all commands at build time
     const discovered_commands = discoverCommands(b.allocator, options.commands_dir) catch |err| {
-        std.debug.panic("Failed to discover commands in '{s}': {any}\n", .{ options.commands_dir, err });
+        // Provide detailed error messages for common issues
+        switch (err) {
+            error.InvalidPath => {
+                std.log.err("\n" ++
+                    "=== Command Discovery Error ===\n" ++
+                    "Invalid commands directory path: '{s}'\n" ++
+                    "Path contains '..' which is not allowed for security reasons.\n" ++
+                    "\n" ++
+                    "Please use a relative path without '..' or an absolute path.\n" ++
+                    "===========================\n", .{options.commands_dir});
+            },
+            error.FileNotFound => {
+                std.log.err("\n" ++
+                    "=== Command Discovery Error ===\n" ++
+                    "Commands directory not found: '{s}'\n" ++
+                    "\n" ++
+                    "Please ensure the directory exists and the path is correct.\n" ++
+                    "Expected location: {s}/{s}\n" ++
+                    "===========================\n", .{ options.commands_dir, b.build_root.path orelse ".", options.commands_dir });
+            },
+            error.AccessDenied => {
+                std.log.err("\n" ++
+                    "=== Command Discovery Error ===\n" ++
+                    "Access denied to commands directory: '{s}'\n" ++
+                    "\n" ++
+                    "Please check file permissions for the directory.\n" ++
+                    "===========================\n", .{options.commands_dir});
+            },
+            error.OutOfMemory => {
+                std.log.err("\n" ++
+                    "=== Build Error ===\n" ++
+                    "Out of memory during command discovery.\n" ++
+                    "\n" ++
+                    "Try reducing the number of commands or increasing available memory.\n" ++
+                    "==================\n", .{});
+            },
+            else => {
+                std.log.err("\n" ++
+                    "=== Command Discovery Error ===\n" ++
+                    "Failed to discover commands in '{s}'\n" ++
+                    "Error: {any}\n" ++
+                    "===========================\n", .{ options.commands_dir, err });
+            },
+        }
+        // Use a generic panic message since we've already logged details
+        @panic("Command discovery failed. See error message above for details.");
     };
     defer discovered_commands.deinit();
 
     // Generate registry source code
     const registry_source = generateRegistrySource(b.allocator, discovered_commands, options) catch |err| {
-        std.debug.panic("Failed to generate registry source: {any}\n", .{err});
+        switch (err) {
+            error.OutOfMemory => {
+                std.log.err("\n" ++
+                    "=== Build Error ===\n" ++
+                    "Out of memory while generating command registry.\n" ++
+                    "\n" ++
+                    "The command structure may be too large. Try:\n" ++
+                    "- Reducing the number of commands\n" ++
+                    "- Simplifying command metadata\n" ++
+                    "- Increasing available memory\n" ++
+                    "==================\n", .{});
+            },
+            else => {
+                std.log.err("\n" ++
+                    "=== Registry Generation Error ===\n" ++
+                    "Failed to generate command registry source code.\n" ++
+                    "Error: {any}\n" ++
+                    "==============================\n", .{err});
+            },
+        }
+        @panic("Registry generation failed. See error message above for details.");
     };
     defer b.allocator.free(registry_source);
 
@@ -148,17 +214,12 @@ fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) !Dis
 
     // Validate commands directory path
     if (std.mem.indexOf(u8, commands_dir, "..") != null) {
-        std.debug.print("Invalid commands directory: path traversal detected\n", .{});
         return error.InvalidPath;
     }
 
     // Open the commands directory
-    var dir = std.fs.cwd().openDir(commands_dir, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => {
-            std.debug.print("Commands directory not found: {s}\n", .{commands_dir});
-            return err;
-        },
-        else => return err,
+    var dir = std.fs.cwd().openDir(commands_dir, .{ .iterate = true }) catch |err| {
+        return err;
     };
     defer dir.close();
 
@@ -177,7 +238,7 @@ fn scanDirectory(
 ) !void {
     // Prevent excessive nesting
     if (depth >= max_depth) {
-        std.debug.print("Warning: Maximum command nesting depth ({}) reached\n", .{max_depth});
+        std.log.warn("Maximum command nesting depth ({}) reached at path: {s}", .{ max_depth, base_path });
         return;
     }
 
@@ -185,7 +246,7 @@ fn scanDirectory(
     while (try iterator.next()) |entry| {
         // Validate entry name
         if (!isValidCommandName(entry.name)) {
-            std.debug.print("Warning: Skipping invalid entry name: {s}\n", .{entry.name});
+            std.log.warn("Skipping invalid command/directory name: {s} (contains invalid characters)", .{entry.name});
             continue;
         }
 
@@ -197,7 +258,7 @@ fn scanDirectory(
 
                     // Validate command name
                     if (!isValidCommandName(name_without_ext)) {
-                        std.debug.print("Warning: Skipping invalid command name: {s}\n", .{name_without_ext});
+                        std.log.warn("Skipping invalid command name: {s} (contains invalid characters)", .{name_without_ext});
                         continue;
                     }
 
