@@ -432,8 +432,7 @@ test "parseArgs empty struct" {
     // Test with no arguments
     {
         const args = [_][]const u8{};
-        const result = try parseArgs(EmptyArgs, &args);
-        _ = result;
+        _ = try parseArgs(EmptyArgs, &args);
     }
 
     // Test with extra arguments

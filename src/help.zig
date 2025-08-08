@@ -219,14 +219,7 @@ fn generateArgsHelp(comptime args_type: type, writer: anytype) !void {
     const type_info = @typeInfo(args_type);
     if (type_info != .@"struct") return;
 
-    var has_args = false;
-    inline for (type_info.@"struct".fields) |field| {
-        _ = field;
-        has_args = true;
-        break;
-    }
-
-    if (!has_args) return;
+    if (type_info.@"struct".fields.len == 0) return;
 
     try writer.print("ARGS:\n", .{});
 
@@ -252,14 +245,7 @@ fn generateOptionsHelp(comptime options_type: type, writer: anytype) !void {
     const type_info = @typeInfo(options_type);
     if (type_info != .@"struct") return;
 
-    var has_options = false;
-    inline for (type_info.@"struct".fields) |field| {
-        _ = field;
-        has_options = true;
-        break;
-    }
-
-    if (!has_options) return;
+    if (type_info.@"struct".fields.len == 0) return;
 
     try writer.print("OPTIONS:\n", .{});
 

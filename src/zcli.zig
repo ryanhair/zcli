@@ -364,12 +364,11 @@ pub fn App(comptime Registry: type) type {
             }
         }
 
-        fn parseGlobalOptions(self: *Self, args: []const []const u8) !struct {
+        fn parseGlobalOptions(_: *Self, args: []const []const u8) !struct {
             help: bool,
             version: bool,
             remaining_args: []const []const u8,
         } {
-            _ = self;
             // Simple parsing for --help and --version only
             var help = false;
             var version = false;
@@ -764,7 +763,7 @@ test "Context creation" {
     var env = std.process.EnvMap.init(allocator);
     defer env.deinit();
 
-    const ctx = Context{
+    _ = Context{
         .allocator = allocator,
         .io = IO{
             .stdout = std.io.getStdOut().writer(),
@@ -775,6 +774,4 @@ test "Context creation" {
             .env = env,
         },
     };
-
-    _ = ctx;
 }
