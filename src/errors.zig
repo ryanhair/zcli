@@ -221,7 +221,8 @@ fn findSimilarCommands(input: []const u8, candidates: []const []const u8, alloca
 }
 
 /// Calculate Levenshtein edit distance between two strings
-fn editDistance(a: []const u8, b: []const u8) usize {
+/// Made public for testing purposes
+pub fn editDistance(a: []const u8, b: []const u8) usize {
     if (a.len == 0) return b.len;
     if (b.len == 0) return a.len;
 

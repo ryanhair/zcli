@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
         "src/errors.zig",
         "src/build_utils.zig",
         "src/build_integration_test.zig", // Integration tests for build system
+        "src/error_edge_cases_test.zig", // Comprehensive error scenario and edge case tests
     };
 
     for (test_files) |test_file| {
