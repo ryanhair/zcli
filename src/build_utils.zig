@@ -1,5 +1,10 @@
 const std = @import("std");
 
+// ============================================================================
+// BUILD UTILITIES - For use in build.zig only
+// These functions are not part of the public API for end users
+// ============================================================================
+
 // Command discovery structures
 const CommandInfo = struct {
     name: []const u8,

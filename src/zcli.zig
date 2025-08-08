@@ -4,42 +4,86 @@ const options_parser = @import("options.zig");
 const help_generator = @import("help.zig");
 const error_handler = @import("errors.zig");
 
-// Re-export parsing functions for user convenience
-pub const parseArgs = args_parser.parseArgs;
+// ============================================================================
+// PUBLIC API - Core functionality for end users
+// ============================================================================
 
-/// Parse command-line options. Array fields require manual memory cleanup.
-/// See parseOptions documentation for memory management details.
+// Argument and option parsing
+pub const parseArgs = args_parser.parseArgs;
 pub const parseOptions = options_parser.parseOptions;
 pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
 pub const cleanupOptions = options_parser.cleanupOptions;
+
+// Error types
 pub const ParseError = args_parser.ParseError;
 pub const OptionParseError = options_parser.OptionParseError;
 pub const CLIError = error_handler.CLIError;
 
-// Re-export help generation functions for user convenience
+// Main help generation (for app-level help)
 pub const generateAppHelp = help_generator.generateAppHelp;
 pub const generateCommandHelp = help_generator.generateCommandHelp;
-pub const generateSubcommandsList = help_generator.generateSubcommandsList;
-pub const getAvailableCommands = help_generator.getAvailableCommands;
-pub const getAvailableSubcommands = help_generator.getAvailableSubcommands;
 
-// Re-export error handling functions for user convenience
-pub const handleCommandNotFound = error_handler.handleCommandNotFound;
-pub const handleSubcommandNotFound = error_handler.handleSubcommandNotFound;
-pub const handleMissingArgument = error_handler.handleMissingArgument;
-pub const handleTooManyArguments = error_handler.handleTooManyArguments;
-pub const handleUnknownOption = error_handler.handleUnknownOption;
-pub const handleInvalidOptionValue = error_handler.handleInvalidOptionValue;
-pub const handleMissingOptionValue = error_handler.handleMissingOptionValue;
-pub const getExitCode = error_handler.getExitCode;
+// ============================================================================
+// ADVANCED API - Lower-level functions for advanced use cases
+// ============================================================================
+
+// Advanced help generation (for custom help implementations)
+pub const generateSubcommandsList = help_generator.generateSubcommandsList;
+
+// Advanced error handling (for custom error handling)
+pub const CLIErrors = struct {
+    pub const handleCommandNotFound = error_handler.handleCommandNotFound;
+    pub const handleSubcommandNotFound = error_handler.handleSubcommandNotFound;
+    pub const handleMissingArgument = error_handler.handleMissingArgument;
+    pub const handleTooManyArguments = error_handler.handleTooManyArguments;
+    pub const handleUnknownOption = error_handler.handleUnknownOption;
+    pub const handleInvalidOptionValue = error_handler.handleInvalidOptionValue;
+    pub const handleMissingOptionValue = error_handler.handleMissingOptionValue;
+    pub const getExitCode = error_handler.getExitCode;
+};
+
+// ============================================================================
+// INTERNAL API - Used by the App struct, not intended for direct user access
+// ============================================================================
+
+// Internal help utilities (used by App struct)
+const getAvailableCommands = help_generator.getAvailableCommands;
+const getAvailableSubcommands = help_generator.getAvailableSubcommands;
+
+// I/O abstraction for command input/output operations
+pub const IO = struct {
+    stdout: std.fs.File.Writer,
+    stderr: std.fs.File.Writer,
+    stdin: std.fs.File.Reader,
+};
+
+// Environment abstraction for accessing environment variables and system context
+pub const Environment = struct {
+    env: std.process.EnvMap,
+};
 
 // Core types that commands will use
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    stdout: std.fs.File.Writer,
-    stderr: std.fs.File.Writer,
-    stdin: std.fs.File.Reader,
-    env: std.process.EnvMap,
+    io: IO,
+    environment: Environment,
+    
+    // Convenience methods for backward compatibility
+    pub fn stdout(self: *const Context) std.fs.File.Writer {
+        return self.io.stdout;
+    }
+    
+    pub fn stderr(self: *const Context) std.fs.File.Writer {
+        return self.io.stderr;
+    }
+    
+    pub fn stdin(self: *const Context) std.fs.File.Reader {
+        return self.io.stdin;
+    }
+    
+    pub fn env(self: *const Context) *const std.process.EnvMap {
+        return &self.environment.env;
+    }
 };
 
 // Command metadata structure
@@ -131,7 +175,7 @@ pub fn App(comptime Registry: type) type {
 
         fn showHelp(self: *Self) !void {
             const stdout = std.io.getStdOut().writer();
-            try help_generator.generateAppHelp(
+            try generateAppHelp(
                 self.registry,
                 stdout,
                 self.name,
@@ -274,10 +318,14 @@ pub fn App(comptime Registry: type) type {
 
             var context = Context{
                 .allocator = self.allocator,
-                .stdout = std.io.getStdOut().writer(),
-                .stderr = std.io.getStdErr().writer(),
-                .stdin = std.io.getStdIn().reader(),
-                .env = env,
+                .io = IO{
+                    .stdout = std.io.getStdOut().writer(),
+                    .stderr = std.io.getStdErr().writer(),
+                    .stdin = std.io.getStdIn().reader(),
+                },
+                .environment = Environment{
+                    .env = env,
+                },
             };
 
             // Check if this is a command entry struct with .execute field
@@ -292,7 +340,7 @@ pub fn App(comptime Registry: type) type {
             const stderr = std.io.getStdErr().writer();
 
             // Get list of available commands for better error messages
-            const available_commands = help_generator.getAvailableCommands(self.registry, self.allocator) catch {
+            const available_commands = getAvailableCommands(self.registry, self.allocator) catch {
                 // Fallback to simple error if we can't get commands
                 try stderr.print("Error: Unknown command '{s}'\n\n", .{command});
                 try stderr.print("Run '{s} --help' to see available commands.\n", .{self.name});
@@ -300,7 +348,7 @@ pub fn App(comptime Registry: type) type {
             };
             defer self.allocator.free(available_commands);
 
-            try error_handler.handleCommandNotFound(stderr, command, available_commands, self.name, self.allocator);
+            try CLIErrors.handleCommandNotFound(stderr, command, available_commands, self.name, self.allocator);
         }
 
         fn showSubcommandNotFound(self: *Self, group: []const u8, subcommand: []const u8) !void {
@@ -332,7 +380,7 @@ pub fn App(comptime Registry: type) type {
                         }
                         if (is_group) {
                             // Get available subcommands for better error messages
-                            const available_subcommands = help_generator.getAvailableSubcommands(cmd, self.allocator) catch {
+                            const available_subcommands = getAvailableSubcommands(cmd, self.allocator) catch {
                                 // Fallback to simple error if we can't get subcommands
                                 try stderr.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, group_name });
                                 try stderr.print("Run '{s} {s} --help' to see available subcommands.\n", .{ self.name, group_name });
@@ -340,7 +388,7 @@ pub fn App(comptime Registry: type) type {
                             };
                             defer self.allocator.free(available_subcommands);
 
-                            try error_handler.handleSubcommandNotFound(stderr, group_name, subcommand, available_subcommands, self.name, self.allocator);
+                            try CLIErrors.handleSubcommandNotFound(stderr, group_name, subcommand, available_subcommands, self.name, self.allocator);
                             return;
                         }
                     }
@@ -375,7 +423,7 @@ pub fn App(comptime Registry: type) type {
             try stdout.print("    {s} {s} <SUBCOMMAND>\n\n", .{ self.name, group_name });
 
             try stdout.print("SUBCOMMANDS:\n", .{});
-            try help_generator.generateSubcommandsList(group, stdout);
+            try generateSubcommandsList(group, stdout);
             try stdout.print("\n", .{});
 
             try stdout.print("Run '{s} {s} <subcommand> --help' for more information on a subcommand.\n", .{ self.name, group_name });
@@ -498,10 +546,14 @@ test "Context creation" {
 
     const ctx = Context{
         .allocator = allocator,
-        .stdout = std.io.getStdOut().writer(),
-        .stderr = std.io.getStdErr().writer(),
-        .stdin = std.io.getStdIn().reader(),
-        .env = env,
+        .io = IO{
+            .stdout = std.io.getStdOut().writer(),
+            .stderr = std.io.getStdErr().writer(),
+            .stdin = std.io.getStdIn().reader(),
+        },
+        .environment = Environment{
+            .env = env,
+        },
     };
 
     _ = ctx;
