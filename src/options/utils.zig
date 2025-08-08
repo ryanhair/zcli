@@ -110,19 +110,19 @@ test "isNegativeNumber function" {
 
 test "dashesToUnderscores function" {
     var buf: [64]u8 = undefined;
-    
+
     // Basic conversion
     const result1 = try dashesToUnderscores(&buf, "no-color");
     try std.testing.expectEqualStrings("no_color", result1);
-    
+
     // Multiple dashes
     const result2 = try dashesToUnderscores(&buf, "log-level-max");
     try std.testing.expectEqualStrings("log_level_max", result2);
-    
+
     // No dashes
     const result3 = try dashesToUnderscores(&buf, "verbose");
     try std.testing.expectEqualStrings("verbose", result3);
-    
+
     // Too long
     const long_name = "this-is-a-very-long-option-name-that-exceeds-the-maximum-allowed-length";
     try std.testing.expectError(types.OptionParseError.UnknownOption, dashesToUnderscores(&buf, long_name));
@@ -133,7 +133,7 @@ test "parseOptionValue integer types" {
     try std.testing.expectEqual(@as(i32, 42), try parseOptionValue(i32, "42"));
     try std.testing.expectEqual(@as(u16, 8080), try parseOptionValue(u16, "8080"));
     try std.testing.expectEqual(@as(i64, -123), try parseOptionValue(i64, "-123"));
-    
+
     // Invalid integers
     try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(i32, "not_a_number"));
     try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(u8, "256"));
@@ -144,7 +144,7 @@ test "parseOptionValue float types" {
     // Valid floats
     try std.testing.expectApproxEqAbs(@as(f32, 3.14), try parseOptionValue(f32, "3.14"), 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, -2.5), try parseOptionValue(f64, "-2.5"), 0.001);
-    
+
     // Invalid floats
     try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(f32, "not_a_float"));
 }
@@ -156,17 +156,17 @@ test "parseOptionValue string types" {
 
 test "parseOptionValue enum types" {
     const LogLevel = enum { debug, info, warn, err };
-    
+
     try std.testing.expectEqual(LogLevel.debug, try parseOptionValue(LogLevel, "debug"));
     try std.testing.expectEqual(LogLevel.err, try parseOptionValue(LogLevel, "err"));
-    
+
     try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(LogLevel, "invalid"));
 }
 
 test "parseOptionValue optional types" {
     const value1 = try parseOptionValue(?i32, "42");
     try std.testing.expectEqual(@as(i32, 42), value1.?);
-    
+
     const value2 = try parseOptionValue(?[]const u8, "test");
     try std.testing.expectEqualStrings("test", value2.?);
 }
@@ -182,7 +182,7 @@ test "isArrayType function" {
     try std.testing.expect(isArrayType([][]const u8));
     try std.testing.expect(isArrayType([]i32));
     try std.testing.expect(isArrayType([]f64));
-    
+
     try std.testing.expect(!isArrayType([]const u8)); // String, not array
     try std.testing.expect(!isArrayType(u32));
     try std.testing.expect(!isArrayType(bool));

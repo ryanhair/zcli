@@ -14,9 +14,31 @@ pub const parseOptions = options_parser.parseOptions;
 pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
 pub const cleanupOptions = options_parser.cleanupOptions;
 
-// Error types
+/// Error types for argument parsing failures.
+///
+/// These errors can occur when parsing positional arguments with `parseArgs`:
+/// - `MissingRequiredArgument`: Required argument not provided
+/// - `InvalidValue`: Argument cannot be parsed to expected type
+/// - `TooManyArguments`: More arguments than expected (unless using varargs)
 pub const ParseError = args_parser.ParseError;
+
+/// Error types for command-line option parsing failures.
+///
+/// These errors can occur when parsing options with `parseOptions`:
+/// - `UnknownOption`: Option not defined in Options struct
+/// - `MissingOptionValue`: Option requires value but none provided
+/// - `InvalidOptionValue`: Option value cannot be parsed to expected type
+/// - `DuplicateOption`: Same option specified multiple times
+/// - `OutOfMemory`: Memory allocation failed
 pub const OptionParseError = options_parser.OptionParseError;
+
+/// General CLI error types for application-level failures.
+///
+/// These errors represent higher-level CLI application failures:
+/// - `CommandNotFound`: Specified command doesn't exist
+/// - `SubcommandNotFound`: Specified subcommand doesn't exist
+/// - `HelpRequested`: User requested help (not really an error)
+/// - `VersionRequested`: User requested version info (not really an error)
 pub const CLIError = error_handler.CLIError;
 
 // Main help generation (for app-level help)
@@ -50,50 +72,203 @@ pub const CLIErrors = struct {
 const getAvailableCommands = help_generator.getAvailableCommands;
 const getAvailableSubcommands = help_generator.getAvailableSubcommands;
 
-// I/O abstraction for command input/output operations
+/// I/O abstraction for command input/output operations.
+///
+/// This struct groups together all I/O-related functionality that commands need,
+/// providing a clean interface for reading input and writing output.
+///
+/// ## Fields
+/// - `stdout`: Standard output writer for normal program output
+/// - `stderr`: Standard error writer for error messages and diagnostics
+/// - `stdin`: Standard input reader for interactive input
+///
+/// ## Usage
+/// Commands receive this as part of the Context struct and can access I/O operations:
+/// ```zig
+/// pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+///     try context.io.stdout.print("Hello, world!\n", .{});
+///     try context.io.stderr.print("Warning: something happened\n", .{});
+/// }
+/// ```
 pub const IO = struct {
     stdout: std.fs.File.Writer,
     stderr: std.fs.File.Writer,
     stdin: std.fs.File.Reader,
 };
 
-// Environment abstraction for accessing environment variables and system context
+/// Environment abstraction for accessing environment variables and system context.
+///
+/// This struct provides access to environment variables and system context
+/// that commands might need during execution.
+///
+/// ## Fields
+/// - `env`: Environment variable map for accessing system environment
+///
+/// ## Usage
+/// Commands can access environment variables through the Context:
+/// ```zig
+/// pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+///     const home = context.environment.env.get("HOME");
+///     if (home) |path| {
+///         try context.io.stdout.print("Home: {s}\n", .{path});
+///     }
+/// }
+/// ```
 pub const Environment = struct {
     env: std.process.EnvMap,
 };
 
-// Core types that commands will use
+/// Execution context provided to all command functions.
+///
+/// The Context struct contains everything a command needs to execute: memory allocation,
+/// I/O operations, and environment access. This struct is automatically created and
+/// passed to command functions by the zcli framework.
+///
+/// ## Fields
+/// - `allocator`: Memory allocator for command-specific allocations
+/// - `io`: I/O operations (stdout, stderr, stdin) grouped together
+/// - `environment`: Environment variables and system context
+///
+/// ## Convenience Methods
+/// For backward compatibility and cleaner syntax, Context provides direct access methods:
+/// - `context.stdout()` - Returns stdout writer
+/// - `context.stderr()` - Returns stderr writer
+/// - `context.stdin()` - Returns stdin reader
+/// - `context.env()` - Returns environment variable map
+///
+/// ## Examples
+/// ```zig
+/// pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+///     // Direct access to I/O
+///     try context.stdout().print("Output: {s}\n", .{args.message});
+///
+///     // Or through the grouped interface
+///     try context.io.stderr.print("Warning!\n", .{});
+///
+///     // Environment access
+///     const home = context.env().get("HOME");
+///
+///     // Memory allocation
+///     const buffer = try context.allocator.alloc(u8, 1024);
+///     defer context.allocator.free(buffer);
+/// }
+/// ```
+///
+/// ## Memory Management
+/// The allocator is provided for command-specific allocations. Commands should
+/// properly free any memory they allocate, typically using `defer` statements.
 pub const Context = struct {
     allocator: std.mem.Allocator,
     io: IO,
     environment: Environment,
-    
+
     // Convenience methods for backward compatibility
     pub fn stdout(self: *const Context) std.fs.File.Writer {
         return self.io.stdout;
     }
-    
+
     pub fn stderr(self: *const Context) std.fs.File.Writer {
         return self.io.stderr;
     }
-    
+
     pub fn stdin(self: *const Context) std.fs.File.Reader {
         return self.io.stdin;
     }
-    
+
     pub fn env(self: *const Context) *const std.process.EnvMap {
         return &self.environment.env;
     }
 };
 
-// Command metadata structure
+/// Metadata structure for providing help text and usage information for commands.
+///
+/// Commands can optionally export a `meta` constant of this type to provide
+/// rich help information that will be displayed when users request help.
+///
+/// ## Fields
+/// - `description`: Brief description of what the command does (required)
+/// - `usage`: Optional custom usage string (overrides auto-generated usage)
+/// - `examples`: Optional array of example command invocations
+///
+/// ## Examples
+/// ```zig
+/// // In your command file (e.g., src/commands/hello.zig):
+/// pub const meta = zcli.CommandMeta{
+///     .description = "Say hello to someone",
+///     .usage = "hello <name> [--loud]",
+///     .examples = &.{
+///         "hello World",
+///         "hello Alice --loud",
+///         "hello Bob --greeting 'Hi there'",
+///     },
+/// };
+/// ```
+///
+/// ## Usage Pattern
+/// The zcli framework automatically looks for a `meta` constant in command modules
+/// and uses it to generate help text when users pass `--help` or `-h`.
+///
+/// ## Auto-Generated vs Custom Usage
+/// If `usage` is null, zcli will auto-generate usage text based on Args and Options structs.
+/// Provide a custom usage string when you need more specific formatting or descriptions.
 pub const CommandMeta = struct {
     description: []const u8,
     usage: ?[]const u8 = null,
     examples: ?[]const []const u8 = null,
 };
 
-// Main application structure
+/// Create a CLI application struct with automatic command routing and help generation.
+///
+/// This function returns a struct type that handles all CLI application logic including
+/// argument parsing, command routing, help generation, and error handling. The Registry
+/// parameter is typically generated at build time by scanning your commands directory.
+///
+/// ## Parameters
+/// - `Registry`: Command registry type generated by build system from commands directory
+///
+/// ## Returns
+/// Returns a struct type with methods for initializing and running the CLI application.
+///
+/// ## Examples
+/// ```zig
+/// // In your main.zig:
+/// const registry = @import("command_registry");
+/// const MyApp = zcli.App(@TypeOf(registry));
+///
+/// pub fn main() !void {
+///     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+///     defer _ = gpa.deinit();
+///
+///     const app = MyApp.init(gpa.allocator(), registry, .{
+///         .name = "myapp",
+///         .version = "1.0.0",
+///         .description = "My CLI application",
+///     });
+///
+///     const args = try std.process.argsAlloc(gpa.allocator());
+///     defer std.process.argsFree(gpa.allocator(), args);
+///
+///     try app.run(args[1..]);
+/// }
+/// ```
+///
+/// ## Generated Methods
+/// The returned struct provides:
+/// - `init(allocator, registry, options)` - Create app instance
+/// - `run(args)` - Execute the CLI with given arguments
+/// - Internal routing and help generation methods
+///
+/// ## Build Integration
+/// Typically used with build-time command registry generation:
+/// ```zig
+/// // In build.zig:
+/// const registry = zcli.generateCommandRegistry(b, target, optimize, zcli_module, .{
+///     .commands_dir = "src/commands",
+///     .app_name = "myapp",
+///     .app_version = "1.0.0",
+///     .app_description = "My CLI application",
+/// });
+/// ```
 pub fn App(comptime Registry: type) type {
     return struct {
         allocator: std.mem.Allocator,

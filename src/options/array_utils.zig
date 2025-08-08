@@ -219,17 +219,17 @@ pub fn arrayListUnionToOwnedSlice(comptime ElementType: type, list_union: *Array
 
 test "createArrayListUnion" {
     const allocator = std.testing.allocator;
-    
+
     // Test string arrays
     var string_list = createArrayListUnion([]const u8, allocator);
     defer string_list.deinit();
     try std.testing.expect(string_list == .strings);
-    
+
     // Test integer arrays
     var i32_list = createArrayListUnion(i32, allocator);
     defer i32_list.deinit();
     try std.testing.expect(i32_list == .i32s);
-    
+
     // Test float arrays
     var f64_list = createArrayListUnion(f64, allocator);
     defer f64_list.deinit();
@@ -238,62 +238,61 @@ test "createArrayListUnion" {
 
 test "appendToArrayListUnion and arrayListUnionToOwnedSlice" {
     const allocator = std.testing.allocator;
-    
+
     // Test string arrays
     {
         var list = createArrayListUnion([]const u8, allocator);
         defer list.deinit();
-        
+
         try appendToArrayListUnion([]const u8, &list, "first", "test");
         try appendToArrayListUnion([]const u8, &list, "second", "test");
-        
+
         const result = try arrayListUnionToOwnedSlice([][]const u8, &list);
         defer allocator.free(result);
-        
+
         try std.testing.expectEqual(@as(usize, 2), result.len);
         try std.testing.expectEqualStrings("first", result[0]);
         try std.testing.expectEqualStrings("second", result[1]);
     }
-    
+
     // Test integer arrays
     {
         var list = createArrayListUnion(i32, allocator);
         defer list.deinit();
-        
+
         try appendToArrayListUnion(i32, &list, "42", "numbers");
         try appendToArrayListUnion(i32, &list, "-10", "numbers");
-        
+
         const result = try arrayListUnionToOwnedSlice([]i32, &list);
         defer allocator.free(result);
-        
+
         try std.testing.expectEqual(@as(usize, 2), result.len);
         try std.testing.expectEqual(@as(i32, 42), result[0]);
         try std.testing.expectEqual(@as(i32, -10), result[1]);
     }
-    
+
     // Test invalid integer should error
     {
         var list = createArrayListUnion(i32, allocator);
         defer list.deinit();
-        
-        try std.testing.expectError(types.OptionParseError.InvalidOptionValue, 
-            appendToArrayListUnion(i32, &list, "not_a_number", "test"));
+
+        try std.testing.expectError(types.OptionParseError.InvalidOptionValue, appendToArrayListUnion(i32, &list, "not_a_number", "test"));
     }
 }
 
 test "appendToArrayListUnionShort" {
     const allocator = std.testing.allocator;
-    
+
     // Test with short option
     var list = createArrayListUnion([]const u8, allocator);
     defer list.deinit();
-    
+
     try appendToArrayListUnionShort([]const u8, &list, "value1", 'f');
     try appendToArrayListUnionShort([]const u8, &list, "value2", 'f');
-    
+
     const result = try arrayListUnionToOwnedSlice([][]const u8, &list);
     defer allocator.free(result);
-    
+
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("value1", result[0]);
     try std.testing.expectEqualStrings("value2", result[1]);

@@ -33,6 +33,46 @@ const array_utils = @import("array_utils.zig");
 /// ### Automatic Cleanup (when using zcli framework):
 /// When commands are executed through the zcli framework, array cleanup is automatic.
 /// The generated command registry includes cleanup code that frees all array fields.
+/// Parse command-line options into a struct using default field names.
+///
+/// This function parses command-line flags and options (e.g., --verbose, --output file.txt)
+/// into a struct. Option names are derived from struct field names by converting
+/// underscores to dashes (e.g., `output_file` becomes `--output-file`).
+///
+/// ## Parameters
+/// - `OptionsType`: Struct type defining expected options with default values
+/// - `allocator`: Memory allocator for array options (must call cleanupOptions after use)
+/// - `args`: Command-line arguments to parse
+///
+/// ## Returns
+/// `OptionsResult(OptionsType)` containing parsed options and parsing metadata.
+///
+/// ## Supported Option Types
+/// - Boolean flags: `bool` (--flag sets to true)
+/// - String options: `[]const u8` (--name value)
+/// - Numeric options: `i32`, `u32`, `f64`, etc. (--count 42)
+/// - Array options: `[][]const u8`, `[]i32` (--files a.txt b.txt)
+/// - Optional options: `?T` for any supported type T
+///
+/// ## Examples
+/// ```zig
+/// const Options = struct {
+///     verbose: bool = false,        // --verbose
+///     output_file: ?[]const u8 = null,  // --output-file path
+///     count: u32 = 10,             // --count 42
+///     files: [][]const u8 = &.{}, // --files a.txt b.txt
+/// };
+///
+/// const result = try zcli.parseOptions(Options, allocator, args);
+/// defer zcli.cleanupOptions(Options, result.options, allocator);
+/// ```
+///
+/// ## Memory Management
+/// **IMPORTANT**: Array options allocate memory. Always call `cleanupOptions` when done:
+/// ```zig
+/// const result = try parseOptions(Options, allocator, args);
+/// defer cleanupOptions(Options, result.options, allocator);
+/// ```
 pub fn parseOptions(
     comptime OptionsType: type,
     allocator: std.mem.Allocator,
@@ -41,6 +81,42 @@ pub fn parseOptions(
     return parseOptionsWithMeta(OptionsType, null, allocator, args);
 }
 
+/// Parse command-line options with custom metadata for option names and descriptions.
+///
+/// This function is like `parseOptions` but allows customizing option names and behavior
+/// through metadata. This is typically used internally by the zcli framework when
+/// commands define custom option metadata.
+///
+/// ## Parameters
+/// - `OptionsType`: Struct type defining expected options
+/// - `meta`: Optional metadata struct with custom option configurations
+/// - `allocator`: Memory allocator for array options
+/// - `args`: Command-line arguments to parse
+///
+/// ## Metadata Format
+/// The meta parameter can contain option-specific configurations:
+/// ```zig
+/// const meta = .{
+///     .options = .{
+///         .output_file = .{ .name = "out", .short = 'o' },
+///         .verbose = .{ .short = 'v' },
+///     },
+/// };
+/// ```
+///
+/// ## Examples
+/// ```zig
+/// const Options = struct { output_file: ?[]const u8 = null };
+/// const meta = .{ .options = .{ .output_file = .{ .name = "out" } } };
+///
+/// const result = try parseOptionsWithMeta(Options, meta, allocator, args);
+/// // Now accepts --out instead of --output-file
+/// defer cleanupOptions(Options, result.options, allocator);
+/// ```
+///
+/// ## Usage
+/// Most users should use `parseOptions` instead. This function is primarily for
+/// internal framework use and advanced customization scenarios.
 pub fn parseOptionsWithMeta(
     comptime OptionsType: type,
     comptime meta: anytype,
@@ -387,6 +463,38 @@ fn parseShortOptions(
 /// const parsed = try parseOptions(Options, allocator, args);
 /// defer cleanupOptions(Options, parsed.options, allocator);
 /// ```
+/// Clean up memory allocated for array options by parseOptions/parseOptionsWithMeta.
+///
+/// This function frees memory allocated for array fields in option structs. It should
+/// be called after parsing options when the parsed struct is no longer needed.
+/// Individual strings within arrays are not freed as they reference command-line arguments.
+///
+/// ## Parameters
+/// - `OptionsType`: The same struct type used for parsing
+/// - `options`: The parsed options struct returned from parseOptions
+/// - `allocator`: The same allocator used for parsing
+///
+/// ## Memory Safety
+/// - Only frees array slices (e.g., `[]i32`, `[][]const u8`), not individual elements
+/// - String fields (`[]const u8`) are never freed as they reference args
+/// - Individual string elements in string arrays are not freed
+/// - Safe to call on structs without array fields
+///
+/// ## Examples
+/// ```zig
+/// const result = try zcli.parseOptions(Options, allocator, args);
+/// defer zcli.cleanupOptions(Options, result.options, allocator);
+///
+/// // Use result.options safely here
+/// for (result.options.files) |file| {
+///     std.debug.print("File: {s}\n", .{file});
+/// }
+/// // Cleanup happens automatically via defer
+/// ```
+///
+/// ## Framework Usage
+/// When using commands through the zcli framework, cleanup is automatic.
+/// Manual cleanup is only needed when calling parsing functions directly.
 pub fn cleanupOptions(comptime OptionsType: type, options: OptionsType, allocator: std.mem.Allocator) void {
     const type_info = @typeInfo(OptionsType);
     if (type_info != .@"struct") return;
@@ -772,7 +880,7 @@ test "parseOptions bundled short options" {
     {
         const args = [_][]const u8{"-vqf"};
         const parsed = try parseOptions(TestOptions, allocator, &args);
-        
+
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
         try std.testing.expect(parsed.options.force);
@@ -783,7 +891,7 @@ test "parseOptions bundled short options" {
     {
         const args = [_][]const u8{ "-vq", "-f", "-a" };
         const parsed = try parseOptions(TestOptions, allocator, &args);
-        
+
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
         try std.testing.expect(parsed.options.force);

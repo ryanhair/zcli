@@ -19,13 +19,48 @@ pub const ParseError = error{
 ///     command: []const u8,
 ///     files: [][]const u8,  // varargs - captures all remaining arguments
 /// };
-/// 
+///
 /// const args = try std.process.argsAlloc(allocator);
 /// defer std.process.argsFree(allocator, args);
-/// 
+///
 /// const parsed = try parseArgs(Args, args[1..]);
 /// // parsed.files references args - don't free args while using parsed
 /// ```
+/// Parse positional arguments from command-line arguments into a struct.
+///
+/// This function takes a struct type and a slice of command-line arguments,
+/// and returns an instance of that struct with fields populated from the arguments.
+///
+/// ## Parameters
+/// - `ArgsType`: A struct type defining the expected arguments
+/// - `args`: Slice of command-line argument strings
+///
+/// ## Returns
+/// Returns a parsed struct instance or ParseError on failure.
+///
+/// ## Supported Field Types
+/// - Basic types: `[]const u8`, `i32`, `u32`, `f64`, `bool`
+/// - Optional types: `?[]const u8`, `?i32`, etc.
+/// - Enums: Custom enum types for validated choices
+/// - Varargs: `[][]const u8` for capturing remaining arguments (must be last field)
+///
+/// ## Examples
+/// ```zig
+/// const Args = struct {
+///     name: []const u8,
+///     age: ?u32 = null,
+///     verbose: bool = false,
+/// };
+///
+/// const args = [_][]const u8{ "Alice", "25", "true" };
+/// const parsed = try zcli.parseArgs(Args, &args);
+/// // parsed.name = "Alice", parsed.age = 25, parsed.verbose = true
+/// ```
+///
+/// ## Errors
+/// - `ParseError.MissingRequiredArgument`: Required argument not provided
+/// - `ParseError.InvalidValue`: Argument value cannot be parsed to field type
+/// - `ParseError.TooManyArguments`: More arguments than struct fields (unless varargs)
 pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!ArgsType {
     const type_info = @typeInfo(ArgsType);
 
@@ -44,7 +79,7 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!A
         if (comptime isVarArgs(field_type)) {
             // This is a varargs field ([][]const u8) - capture remaining arguments
             const remaining_args = args[arg_index..];
-            
+
             // SAFETY: @constCast is required here to convert []const []const u8 to [][]const u8
             // This is safe because:
             // 1. We're not modifying the slice or its contents
@@ -575,12 +610,12 @@ test "parseArgs varargs lifetime and safety" {
 
     const args = [_][]const u8{ "test", "file1.txt", "file2.txt" };
     const result = try parseArgs(TestArgs, &args);
-    
+
     // Verify that the varargs slice points to the same memory as the original args
     try std.testing.expectEqual(@as(usize, 2), result.files.len);
     try std.testing.expectEqual(@intFromPtr(args[1].ptr), @intFromPtr(result.files[0].ptr));
     try std.testing.expectEqual(@intFromPtr(args[2].ptr), @intFromPtr(result.files[1].ptr));
-    
+
     // This demonstrates that we're not copying the strings, just referencing them
     // The @constCast is safe because we maintain the immutability of the strings
 }

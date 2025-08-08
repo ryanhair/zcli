@@ -55,6 +55,49 @@ pub fn generateCommandHelp(
     }
 }
 
+/// Generate main application help text showing available commands and global options.
+///
+/// This function outputs comprehensive help for the entire CLI application,
+/// including the app description, global usage, and a list of all available commands.
+///
+/// ## Parameters
+/// - `registry`: Command registry generated at build time
+/// - `writer`: Output writer (typically stdout)
+/// - `app_name`: Name of the CLI application
+/// - `app_version`: Version string of the application
+/// - `app_description`: Brief description of what the app does
+///
+/// ## Output Format
+/// ```
+/// myapp v1.0.0
+/// A demonstration CLI built with zcli
+///
+/// USAGE:
+///     myapp [GLOBAL OPTIONS] <COMMAND> [ARGS]
+///
+/// COMMANDS:
+///     hello    Say hello to someone
+///     users    User management commands
+///
+/// GLOBAL OPTIONS:
+///     -h, --help       Show help information
+///     -V, --version    Show version information
+/// ```
+///
+/// ## Examples
+/// ```zig
+/// try zcli.generateAppHelp(
+///     registry,
+///     std.io.getStdOut().writer(),
+///     "myapp",
+///     "1.0.0",
+///     "My CLI application"
+/// );
+/// ```
+///
+/// ## Usage
+/// This is typically called automatically by the zcli framework when users
+/// pass `--help` or when no command is specified (depending on configuration).
 pub fn generateAppHelp(
     comptime registry: anytype,
     writer: anytype,

@@ -47,7 +47,7 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
 }) *std.Build.Module {
     _ = target; // Currently unused but may be needed later
     _ = optimize; // Currently unused but may be needed later
-    
+
     // Discover all commands at build time
     const discovered_commands = discoverCommands(b.allocator, options.commands_dir) catch |err| {
         // Provide detailed error messages for common issues
