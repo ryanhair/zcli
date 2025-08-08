@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");
+const logging = @import("../logging.zig");
 
 // Union type to handle different ArrayList types for array accumulation
 pub const ArrayListUnion = union(enum) {
@@ -47,70 +48,70 @@ pub fn appendToArrayListUnion(comptime ElementType: type, list_union: *ArrayList
         []const u8 => list_union.strings.append(value),
         i32 => blk: {
             const parsed_value = utils.parseOptionValue(i32, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.i32s.append(parsed_value);
         },
         u32 => blk: {
             const parsed_value = utils.parseOptionValue(u32, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.u32s.append(parsed_value);
         },
         i16 => blk: {
             const parsed_value = utils.parseOptionValue(i16, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.i16s.append(parsed_value);
         },
         u16 => blk: {
             const parsed_value = utils.parseOptionValue(u16, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.u16s.append(parsed_value);
         },
         i8 => blk: {
             const parsed_value = utils.parseOptionValue(i8, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.i8s.append(parsed_value);
         },
         u8 => blk: {
             const parsed_value = utils.parseOptionValue(u8, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.u8s.append(parsed_value);
         },
         i64 => blk: {
             const parsed_value = utils.parseOptionValue(i64, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.i64s.append(parsed_value);
         },
         u64 => blk: {
             const parsed_value = utils.parseOptionValue(u64, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.u64s.append(parsed_value);
         },
         f32 => blk: {
             const parsed_value = utils.parseOptionValue(f32, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.f32s.append(parsed_value);
         },
         f64 => blk: {
             const parsed_value = utils.parseOptionValue(f64, value) catch |err| {
-                std.log.err("Invalid value for option --{s}: {s}", .{ option_name, value });
+                logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
             break :blk list_union.f64s.append(parsed_value);
@@ -125,70 +126,70 @@ pub fn appendToArrayListUnionShort(comptime ElementType: type, list_union: *Arra
         []const u8 => list_union.strings.append(value),
         i32 => blk: {
             const parsed_value = utils.parseOptionValue(i32, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.i32s.append(parsed_value);
         },
         u32 => blk: {
             const parsed_value = utils.parseOptionValue(u32, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.u32s.append(parsed_value);
         },
         i16 => blk: {
             const parsed_value = utils.parseOptionValue(i16, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.i16s.append(parsed_value);
         },
         u16 => blk: {
             const parsed_value = utils.parseOptionValue(u16, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.u16s.append(parsed_value);
         },
         i8 => blk: {
             const parsed_value = utils.parseOptionValue(i8, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.i8s.append(parsed_value);
         },
         u8 => blk: {
             const parsed_value = utils.parseOptionValue(u8, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.u8s.append(parsed_value);
         },
         i64 => blk: {
             const parsed_value = utils.parseOptionValue(i64, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.i64s.append(parsed_value);
         },
         u64 => blk: {
             const parsed_value = utils.parseOptionValue(u64, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.u64s.append(parsed_value);
         },
         f32 => blk: {
             const parsed_value = utils.parseOptionValue(f32, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.f32s.append(parsed_value);
         },
         f64 => blk: {
             const parsed_value = utils.parseOptionValue(f64, value) catch |err| {
-                std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
             break :blk list_union.f64s.append(parsed_value);

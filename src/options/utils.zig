@@ -1,10 +1,11 @@
 const std = @import("std");
 const types = @import("types.zig");
+const logging = @import("../logging.zig");
 
 /// Convert dashes to underscores in option names
 pub fn dashesToUnderscores(buf: []u8, input: []const u8) types.OptionParseError![]const u8 {
     if (input.len > buf.len) {
-        std.log.err("Option name too long (max 64 characters): --{s}", .{input});
+        logging.optionNameTooLong(input, @intCast(buf.len));
         return types.OptionParseError.UnknownOption;
     }
 

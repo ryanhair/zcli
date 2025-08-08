@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging = @import("logging.zig");
 
 // ============================================================================
 // BUILD UTILITIES - For use in build.zig only
@@ -60,45 +61,48 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
         // Provide detailed error messages for common issues
         switch (err) {
             error.InvalidPath => {
-                std.log.err("\n" ++
-                    "=== Command Discovery Error ===\n" ++
-                    "Invalid commands directory path: '{s}'\n" ++
-                    "Path contains '..' which is not allowed for security reasons.\n" ++
-                    "\n" ++
-                    "Please use a relative path without '..' or an absolute path.\n" ++
-                    "===========================\n", .{options.commands_dir});
+                logging.buildError(
+                    "Command Discovery Error", 
+                    options.commands_dir, 
+                    "Invalid commands directory path.\nPath contains '..' which is not allowed for security reasons", 
+                    "Please use a relative path without '..' or an absolute path"
+                );
             },
             error.FileNotFound => {
-                std.log.err("\n" ++
-                    "=== Command Discovery Error ===\n" ++
-                    "Commands directory not found: '{s}'\n" ++
-                    "\n" ++
-                    "Please ensure the directory exists and the path is correct.\n" ++
-                    "Expected location: {s}/{s}\n" ++
-                    "===========================\n", .{ options.commands_dir, b.build_root.path orelse ".", options.commands_dir });
+                logging.buildError(
+                    "Command Discovery Error",
+                    options.commands_dir,
+                    "Commands directory not found",
+                    "Please ensure the directory exists and the path is correct"
+                );
             },
             error.AccessDenied => {
-                std.log.err("\n" ++
-                    "=== Command Discovery Error ===\n" ++
-                    "Access denied to commands directory: '{s}'\n" ++
-                    "\n" ++
-                    "Please check file permissions for the directory.\n" ++
-                    "===========================\n", .{options.commands_dir});
+                logging.buildError(
+                    "Command Discovery Error",
+                    options.commands_dir,
+                    "Access denied to commands directory",
+                    "Please check file permissions for the directory"
+                );
             },
             error.OutOfMemory => {
-                std.log.err("\n" ++
-                    "=== Build Error ===\n" ++
-                    "Out of memory during command discovery.\n" ++
-                    "\n" ++
-                    "Try reducing the number of commands or increasing available memory.\n" ++
-                    "==================\n", .{});
+                logging.buildError(
+                    "Build Error",
+                    "memory allocation",
+                    "Out of memory during command discovery",
+                    "Try reducing the number of commands or increasing available memory"
+                );
             },
             else => {
-                std.log.err("\n" ++
-                    "=== Command Discovery Error ===\n" ++
-                    "Failed to discover commands in '{s}'\n" ++
-                    "Error: {any}\n" ++
-                    "===========================\n", .{ options.commands_dir, err });
+                const err_msg = std.fmt.allocPrint(b.allocator, "Failed to discover commands. Error: {any}", .{err}) catch "Failed to discover commands (unknown error)";
+                logging.buildError(
+                    "Command Discovery Error",
+                    options.commands_dir,
+                    err_msg,
+                    "Check the command directory structure and file permissions"
+                );
+                if (!std.mem.eql(u8, err_msg, "Failed to discover commands (unknown error)")) {
+                    b.allocator.free(err_msg);
+                }
             },
         }
         // Use a generic panic message since we've already logged details
@@ -110,22 +114,10 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
     const registry_source = generateRegistrySource(b.allocator, discovered_commands, options) catch |err| {
         switch (err) {
             error.OutOfMemory => {
-                std.log.err("\n" ++
-                    "=== Build Error ===\n" ++
-                    "Out of memory while generating command registry.\n" ++
-                    "\n" ++
-                    "The command structure may be too large. Try:\n" ++
-                    "- Reducing the number of commands\n" ++
-                    "- Simplifying command metadata\n" ++
-                    "- Increasing available memory\n" ++
-                    "==================\n", .{});
+                logging.registryGenerationOutOfMemory();
             },
             else => {
-                std.log.err("\n" ++
-                    "=== Registry Generation Error ===\n" ++
-                    "Failed to generate command registry source code.\n" ++
-                    "Error: {any}\n" ++
-                    "==============================\n", .{err});
+                logging.registryGenerationFailed(err);
             },
         }
         @panic("Registry generation failed. See error message above for details.");
@@ -184,7 +176,7 @@ fn scanDirectory(
 ) !void {
     // Prevent excessive nesting
     if (depth >= max_depth) {
-        std.log.warn("Maximum command nesting depth ({}) reached at path: {s}", .{ max_depth, base_path });
+        logging.maxNestingDepthReached(max_depth, base_path);
         return;
     }
 
@@ -198,7 +190,7 @@ fn scanDirectory(
 
                     // Validate command name (without .zig extension)
                     if (!isValidCommandName(name_without_ext)) {
-                        std.log.warn("Skipping invalid command name: {s} (contains invalid characters)", .{name_without_ext});
+                        logging.invalidCommandName(name_without_ext, "contains invalid characters");
                         continue;
                     }
 
@@ -224,7 +216,7 @@ fn scanDirectory(
 
                 // Validate directory name for command groups
                 if (!isValidCommandName(entry.name)) {
-                    std.log.warn("Skipping invalid command group name: {s} (contains invalid characters)", .{entry.name});
+                    logging.invalidCommandName(entry.name, "contains invalid characters");
                     continue;
                 }
 

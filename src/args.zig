@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging = @import("logging.zig");
 
 pub const ParseError = error{
     MissingRequiredArgument,
@@ -102,7 +103,7 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!A
         } else {
             // Required field
             if (arg_index >= args.len) {
-                std.log.err("Missing required argument '{s}' (argument {})", .{ field.name, field_index + 1 });
+                logging.missingRequiredArgument(field.name, field_index + 1);
                 return ParseError.MissingRequiredArgument;
             }
 
@@ -113,7 +114,7 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!A
 
     // Check if there are too many arguments (only if no varargs field)
     if (!hasVarArgs(ArgsType) and arg_index < args.len) {
-        std.log.err("Too many arguments provided. Expected {}, got {}", .{ getRequiredArgCount(ArgsType), args.len });
+        logging.tooManyArguments(getRequiredArgCount(ArgsType), args.len);
         return ParseError.TooManyArguments;
     }
 
@@ -135,13 +136,13 @@ fn parseValue(comptime T: type, value: []const u8) ParseError!T {
         },
         .int => {
             return std.fmt.parseInt(T, value, 10) catch {
-                std.log.err("Invalid integer value: '{s}'", .{value});
+                logging.invalidArgumentValue(value, "integer");
                 return ParseError.InvalidArgumentType;
             };
         },
         .float => {
             return std.fmt.parseFloat(T, value) catch {
-                std.log.err("Invalid float value: '{s}'", .{value});
+                logging.invalidArgumentValue(value, "float");
                 return ParseError.InvalidArgumentType;
             };
         },
@@ -151,13 +152,13 @@ fn parseValue(comptime T: type, value: []const u8) ParseError!T {
             } else if (std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "0")) {
                 return false;
             } else {
-                std.log.err("Invalid boolean value: '{s}'. Expected 'true', 'false', '1', or '0'", .{value});
+                logging.invalidBooleanArgument(value);
                 return ParseError.InvalidArgumentType;
             }
         },
         .@"enum" => {
             return std.meta.stringToEnum(T, value) orelse {
-                std.log.err("Invalid enum value: '{s}'", .{value});
+                logging.invalidEnumArgument(value);
                 return ParseError.InvalidArgumentType;
             };
         },

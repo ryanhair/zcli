@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging = @import("logging.zig");
 const args_parser = @import("args.zig");
 
 pub fn generateCommandHelp(
@@ -181,7 +182,7 @@ fn generateGlobalOptionsHelp(comptime GlobalOptionsType: type, writer: anytype) 
 fn underscoresToDashes(buf: []u8, input: []const u8) []const u8 {
     if (input.len > buf.len) {
         // Fallback: just return the original name if it's too long
-        std.log.warn("Field name too long for conversion buffer (max 64 characters): {s}", .{input});
+        logging.fieldNameTooLong(input, 64);
         return input;
     }
 

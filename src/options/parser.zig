@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");
 const array_utils = @import("array_utils.zig");
+const logging = @import("../logging.zig");
 
 /// Parse command-line options based on the provided Options struct type
 ///
@@ -275,7 +276,7 @@ fn parseLongOptions(
             // Handle boolean flags
             if (comptime utils.isBooleanType(field.type)) {
                 if (option_value != null) {
-                    std.log.err("Boolean option --{s} does not take a value", .{option_name});
+                    logging.booleanOptionWithValue(option_name);
                     return types.OptionParseError.InvalidOptionValue;
                 }
                 @field(result, field.name) = true;
@@ -289,7 +290,7 @@ fn parseLongOptions(
                 } else if (arg_index + 1 < args.len and (!std.mem.startsWith(u8, args[arg_index + 1], "-") or utils.isNegativeNumber(args[arg_index + 1]))) {
                     break :blk args[arg_index + 1];
                 } else {
-                    std.log.err("Option --{s} requires a value", .{option_name});
+                    logging.missingOptionValue(option_name);
                     return types.OptionParseError.MissingOptionValue;
                 }
             };
@@ -315,7 +316,7 @@ fn parseLongOptions(
     }
 
     if (!found) {
-        std.log.err("Unknown option: --{s}", .{option_name});
+        logging.unknownOption(option_name);
         return types.OptionParseError.UnknownOption;
     }
 
@@ -354,7 +355,7 @@ fn parseShortOptions(
     const options_part = arg[1..]; // Skip "-"
 
     if (options_part.len == 0) {
-        std.log.err("Invalid option: -", .{});
+        logging.unknownOption("");
         return types.OptionParseError.UnknownOption;
     }
 
@@ -420,7 +421,7 @@ fn parseShortOptions(
                     } else {
                         // Value in next argument
                         if (arg_index + 1 >= args.len) {
-                            std.log.err("Option -{c} requires a value", .{char});
+                            logging.missingOptionValue(&[_]u8{char});
                             return types.OptionParseError.MissingOptionValue;
                         }
                         value = args[arg_index + 1];
@@ -435,7 +436,7 @@ fn parseShortOptions(
                         }
                     } else {
                         const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
-                            std.log.err("Invalid value for option -{c}: {s}", .{ char, value });
+                            // This error will be logged by the parsing utility, no need to duplicate
                             return err;
                         };
                         @field(result, field.name) = parsed_value;
@@ -446,7 +447,7 @@ fn parseShortOptions(
         }
 
         if (!char_found) {
-            std.log.err("Unknown option: -{c}", .{char});
+            logging.unknownOption(&[_]u8{char});
             return types.OptionParseError.UnknownOption;
         }
 

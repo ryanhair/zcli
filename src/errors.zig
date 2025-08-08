@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging = @import("logging.zig");
 
 pub const CLIError = error{
     CommandNotFound,
@@ -22,7 +23,17 @@ pub fn handleCommandNotFound(
     try writer.print("Error: Unknown command '{s}'\n\n", .{command});
 
     // Try to suggest similar commands
-    const suggestions = findSimilarCommands(command, available_commands, allocator) catch &[_][]const u8{};
+    const suggestions = findSimilarCommands(command, available_commands, allocator) catch |err| {
+        logging.suggestionGenerationFailed(err);
+        // Continue without suggestions
+        try writer.print("Available commands:\n", .{});
+        for (available_commands) |cmd| {
+            try writer.print("    {s}\n", .{cmd});
+        }
+        try writer.print("\n", .{});
+        try writer.print("Run '{s} --help' to see all available commands.\n", .{app_name});
+        return;
+    };
     defer if (suggestions.len > 0) allocator.free(suggestions);
 
     if (suggestions.len > 0) {
@@ -57,7 +68,17 @@ pub fn handleSubcommandNotFound(
     try writer.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, parent_command });
 
     // Try to suggest similar subcommands
-    const suggestions = findSimilarCommands(subcommand, available_subcommands, allocator) catch &[_][]const u8{};
+    const suggestions = findSimilarCommands(subcommand, available_subcommands, allocator) catch |err| {
+        logging.suggestionGenerationFailed(err);
+        // Continue without suggestions
+        try writer.print("Available subcommands for '{s}':\n", .{parent_command});
+        for (available_subcommands) |cmd| {
+            try writer.print("    {s}\n", .{cmd});
+        }
+        try writer.print("\n", .{});
+        try writer.print("Run '{s} {s} --help' for more information.\n", .{ app_name, parent_command });
+        return;
+    };
     defer if (suggestions.len > 0) allocator.free(suggestions);
 
     if (suggestions.len > 0) {
@@ -132,7 +153,7 @@ pub fn handleUnknownOption(
 
     // Try to suggest similar options
     const suggestions = findSimilarCommands(option, available_options, allocator) catch |err| {
-        std.log.warn("Failed to generate option suggestions: {}\n", .{err});
+        logging.suggestionGenerationFailed(err);
         // Continue without suggestions on allocation failure
         try writer.print("Run '", .{});
         for (command_path) |part| {
