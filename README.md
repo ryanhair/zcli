@@ -263,6 +263,8 @@ pub const Args = struct {
 ## Documentation
 
 - [DESIGN.md](DESIGN.md) - Complete framework design specification
+- [API.md](API.md) - Public API reference with stability guarantees  
+- [MEMORY.md](MEMORY.md) - **Comprehensive memory management guide**
 - [Examples](examples/) - Working example projects
 
 ## License

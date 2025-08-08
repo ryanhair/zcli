@@ -8,10 +8,39 @@ const error_handler = @import("errors.zig");
 // PUBLIC API - Core functionality for end users
 // ============================================================================
 
-// Argument and option parsing
+/// Parse positional arguments from command-line arguments into a struct.
+///
+/// **Memory Management**: No cleanup required - references input args directly.
+/// Keep `args` parameter alive while using the returned struct.
+///
+/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const parseArgs = args_parser.parseArgs;
+
+/// Parse command-line options into a struct using default field names.
+///
+/// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
+/// ```zig
+/// const result = try parseOptions(Options, allocator, args);
+/// defer cleanupOptions(Options, result.options, allocator);  // REQUIRED!
+/// ```
+///
+/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const parseOptions = options_parser.parseOptions;
+
+/// Parse command-line options with custom metadata for option names.
+///
+/// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
+/// Always call `cleanupOptions` when done. See `parseOptions` for details.
+///
+/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
+
+/// Clean up memory allocated for array options by parseOptions/parseOptionsWithMeta.
+///
+/// **When to use**: Required for all direct API usage with array options.
+/// **Framework mode**: Cleanup is automatic - don't call this manually.
+///
+/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const cleanupOptions = options_parser.cleanupOptions;
 
 /// Error types for argument parsing failures.
@@ -157,6 +186,22 @@ pub const Environment = struct {
 /// ## Memory Management
 /// The allocator is provided for command-specific allocations. Commands should
 /// properly free any memory they allocate, typically using `defer` statements.
+///
+/// **Framework Guarantee**: Option cleanup (for arrays) is handled automatically.
+/// **Your Responsibility**: Free any memory you allocate with `context.allocator`.
+///
+/// ```zig
+/// pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+///     // Framework handles options cleanup automatically
+///     for (options.files) |file| { /* use freely */ }
+///
+///     // You must handle your own allocations
+///     const buffer = try context.allocator.alloc(u8, 1024);
+///     defer context.allocator.free(buffer);  // Required!
+/// }
+/// ```
+///
+/// 📖 See [MEMORY.md](../../../MEMORY.md) for comprehensive memory management guide.
 pub const Context = struct {
     allocator: std.mem.Allocator,
     io: IO,

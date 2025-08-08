@@ -62,6 +62,28 @@ These are implementation details and may change without notice:
 - **Build Scripts**: Use `@import("build_utils")` for build-time command discovery
 - **Framework Development**: Import specific submodules like `@import("options/utils.zig")` only if needed
 
+## Memory Management
+
+⚠️ **CRITICAL**: Array options (`[][]const u8`, `[]i32`, etc.) allocate memory that must be cleaned up.
+
+### Framework Mode (Automatic)
+When using commands through the zcli framework, cleanup is **automatic**:
+```zig
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    // Use options.files freely - cleanup is automatic
+    for (options.files) |file| { /* ... */ }
+}
+```
+
+### Direct API Mode (Manual)  
+When calling parsing functions directly, **you must cleanup**:
+```zig
+const result = try zcli.parseOptions(Options, allocator, args);
+defer zcli.cleanupOptions(Options, result.options, allocator);  // REQUIRED!
+```
+
+📖 **See [MEMORY.md](MEMORY.md) for comprehensive memory management guide.**
+
 ## API Stability Promise
 
 - **Public API**: Follows semantic versioning, breaking changes only on major versions
