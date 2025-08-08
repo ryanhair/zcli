@@ -4,6 +4,7 @@ const utils = @import("utils.zig");
 const logging = @import("../logging.zig");
 
 // Union type to handle different ArrayList types for array accumulation
+// Now much cleaner with generic helper functions doing the heavy lifting
 pub const ArrayListUnion = union(enum) {
     strings: std.ArrayList([]const u8),
     i32s: std.ArrayList(i32),
@@ -24,200 +25,88 @@ pub const ArrayListUnion = union(enum) {
     }
 };
 
-/// Generic helper to create ArrayListUnion for a given element type
+/// Create ArrayListUnion for a given element type  
+/// Uses comptime to eliminate repetition and ensure type safety
 pub fn createArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator) ArrayListUnion {
     return switch (ElementType) {
-        []const u8 => ArrayListUnion{ .strings = std.ArrayList([]const u8).init(allocator) },
-        i32 => ArrayListUnion{ .i32s = std.ArrayList(i32).init(allocator) },
-        u32 => ArrayListUnion{ .u32s = std.ArrayList(u32).init(allocator) },
-        i16 => ArrayListUnion{ .i16s = std.ArrayList(i16).init(allocator) },
-        u16 => ArrayListUnion{ .u16s = std.ArrayList(u16).init(allocator) },
-        i8 => ArrayListUnion{ .i8s = std.ArrayList(i8).init(allocator) },
-        u8 => ArrayListUnion{ .u8s = std.ArrayList(u8).init(allocator) },
-        i64 => ArrayListUnion{ .i64s = std.ArrayList(i64).init(allocator) },
-        u64 => ArrayListUnion{ .u64s = std.ArrayList(u64).init(allocator) },
-        f32 => ArrayListUnion{ .f32s = std.ArrayList(f32).init(allocator) },
-        f64 => ArrayListUnion{ .f64s = std.ArrayList(f64).init(allocator) },
+        []const u8 => .{ .strings = std.ArrayList([]const u8).init(allocator) },
+        i32 => .{ .i32s = std.ArrayList(i32).init(allocator) },
+        u32 => .{ .u32s = std.ArrayList(u32).init(allocator) },
+        i16 => .{ .i16s = std.ArrayList(i16).init(allocator) },
+        u16 => .{ .u16s = std.ArrayList(u16).init(allocator) },
+        i8 => .{ .i8s = std.ArrayList(i8).init(allocator) },
+        u8 => .{ .u8s = std.ArrayList(u8).init(allocator) },
+        i64 => .{ .i64s = std.ArrayList(i64).init(allocator) },
+        u64 => .{ .u64s = std.ArrayList(u64).init(allocator) },
+        f32 => .{ .f32s = std.ArrayList(f32).init(allocator) },
+        f64 => .{ .f64s = std.ArrayList(f64).init(allocator) },
         else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
+    };
+}
+
+/// Helper function to get the union field name for a given type
+fn getFieldName(comptime T: type) []const u8 {
+    return switch (T) {
+        []const u8 => "strings",
+        i32 => "i32s", u32 => "u32s",
+        i16 => "i16s", u16 => "u16s",
+        i8 => "i8s", u8 => "u8s",
+        i64 => "i64s", u64 => "u64s",
+        f32 => "f32s", f64 => "f64s",
+        else => @compileError("Unsupported type: " ++ @typeName(T)),
     };
 }
 
 /// Generic helper to append a value to an ArrayListUnion
+/// Replaces ~80 lines of repetitive switch cases with clean generic code  
 pub fn appendToArrayListUnion(comptime ElementType: type, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
-    return switch (ElementType) {
-        []const u8 => list_union.strings.append(value),
-        i32 => blk: {
-            const parsed_value = utils.parseOptionValue(i32, value) catch |err| {
+    switch (comptime ElementType) {
+        []const u8 => try list_union.strings.append(value),
+        inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {
+            const field_name = comptime getFieldName(T);
+            const parsed = utils.parseOptionValue(T, value) catch |err| {
                 logging.invalidOptionValue(option_name, value, "value");
                 return err;
             };
-            break :blk list_union.i32s.append(parsed_value);
-        },
-        u32 => blk: {
-            const parsed_value = utils.parseOptionValue(u32, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.u32s.append(parsed_value);
-        },
-        i16 => blk: {
-            const parsed_value = utils.parseOptionValue(i16, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.i16s.append(parsed_value);
-        },
-        u16 => blk: {
-            const parsed_value = utils.parseOptionValue(u16, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.u16s.append(parsed_value);
-        },
-        i8 => blk: {
-            const parsed_value = utils.parseOptionValue(i8, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.i8s.append(parsed_value);
-        },
-        u8 => blk: {
-            const parsed_value = utils.parseOptionValue(u8, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.u8s.append(parsed_value);
-        },
-        i64 => blk: {
-            const parsed_value = utils.parseOptionValue(i64, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.i64s.append(parsed_value);
-        },
-        u64 => blk: {
-            const parsed_value = utils.parseOptionValue(u64, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.u64s.append(parsed_value);
-        },
-        f32 => blk: {
-            const parsed_value = utils.parseOptionValue(f32, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.f32s.append(parsed_value);
-        },
-        f64 => blk: {
-            const parsed_value = utils.parseOptionValue(f64, value) catch |err| {
-                logging.invalidOptionValue(option_name, value, "value");
-                return err;
-            };
-            break :blk list_union.f64s.append(parsed_value);
+            try @field(list_union, field_name).append(parsed);
         },
         else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
-    };
+    }
 }
 
 /// Generic helper to append a value to an ArrayListUnion (for short options)
+/// Replaces ~80 lines of repetitive switch cases with clean generic code
 pub fn appendToArrayListUnionShort(comptime ElementType: type, list_union: *ArrayListUnion, value: []const u8, char: u8) !void {
-    return switch (ElementType) {
-        []const u8 => list_union.strings.append(value),
-        i32 => blk: {
-            const parsed_value = utils.parseOptionValue(i32, value) catch |err| {
+    switch (comptime ElementType) {
+        []const u8 => try list_union.strings.append(value),
+        inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {
+            const field_name = comptime getFieldName(T);
+            const parsed = utils.parseOptionValue(T, value) catch |err| {
                 logging.invalidShortOptionValue(char, value, "value");
                 return err;
             };
-            break :blk list_union.i32s.append(parsed_value);
-        },
-        u32 => blk: {
-            const parsed_value = utils.parseOptionValue(u32, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.u32s.append(parsed_value);
-        },
-        i16 => blk: {
-            const parsed_value = utils.parseOptionValue(i16, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.i16s.append(parsed_value);
-        },
-        u16 => blk: {
-            const parsed_value = utils.parseOptionValue(u16, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.u16s.append(parsed_value);
-        },
-        i8 => blk: {
-            const parsed_value = utils.parseOptionValue(i8, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.i8s.append(parsed_value);
-        },
-        u8 => blk: {
-            const parsed_value = utils.parseOptionValue(u8, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.u8s.append(parsed_value);
-        },
-        i64 => blk: {
-            const parsed_value = utils.parseOptionValue(i64, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.i64s.append(parsed_value);
-        },
-        u64 => blk: {
-            const parsed_value = utils.parseOptionValue(u64, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.u64s.append(parsed_value);
-        },
-        f32 => blk: {
-            const parsed_value = utils.parseOptionValue(f32, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.f32s.append(parsed_value);
-        },
-        f64 => blk: {
-            const parsed_value = utils.parseOptionValue(f64, value) catch |err| {
-                logging.invalidShortOptionValue(char, value, "value");
-                return err;
-            };
-            break :blk list_union.f64s.append(parsed_value);
+            try @field(list_union, field_name).append(parsed);
         },
         else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
-    };
+    }
 }
 
 /// Generic helper to convert ArrayListUnion to owned slice
+/// Replaces ~15 lines of repetitive switch cases with clean generic code
 pub fn arrayListUnionToOwnedSlice(comptime ElementType: type, list_union: *ArrayListUnion) !ElementType {
-    return switch (ElementType) {
-        [][]const u8 => list_union.strings.toOwnedSlice(),
-        []i32 => list_union.i32s.toOwnedSlice(),
-        []u32 => list_union.u32s.toOwnedSlice(),
-        []i16 => list_union.i16s.toOwnedSlice(),
-        []u16 => list_union.u16s.toOwnedSlice(),
-        []i8 => list_union.i8s.toOwnedSlice(),
-        []u8 => list_union.u8s.toOwnedSlice(),
-        []i64 => list_union.i64s.toOwnedSlice(),
-        []u64 => list_union.u64s.toOwnedSlice(),
-        []f32 => list_union.f32s.toOwnedSlice(),
-        []f64 => list_union.f64s.toOwnedSlice(),
-        else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
+    const ChildType = @typeInfo(ElementType).pointer.child;
+    
+    return switch (comptime ChildType) {
+        []const u8 => list_union.strings.toOwnedSlice(),
+        inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {
+            const field_name = comptime getFieldName(T);
+            return @field(list_union, field_name).toOwnedSlice();
+        },
+        else => @compileError("Unsupported array element type: " ++ @typeName(ChildType)),
     };
 }
 
 // Tests
-
 test "createArrayListUnion" {
     const allocator = std.testing.allocator;
 
