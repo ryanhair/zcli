@@ -265,6 +265,7 @@ pub const Args = struct {
 - [DESIGN.md](DESIGN.md) - Complete framework design specification
 - [API.md](API.md) - Public API reference with stability guarantees  
 - [MEMORY.md](MEMORY.md) - **Comprehensive memory management guide**
+- [BUILD.md](BUILD.md) - **Build-time code generation and command discovery**
 - [Examples](examples/) - Working example projects
 
 ## License

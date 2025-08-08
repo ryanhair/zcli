@@ -22,7 +22,8 @@ pub fn build(b: *std.Build) void {
         "src/options.zig",
         "src/help.zig",
         "src/errors.zig",
-        "src/build_utils.zig", // Add build utils tests
+        "src/build_utils.zig",
+        "src/build_integration_test.zig", // Integration tests for build system
     };
 
     for (test_files) |test_file| {

@@ -6,14 +6,15 @@ const std = @import("std");
 // ============================================================================
 
 // Command discovery structures
-const CommandInfo = struct {
+// Export for testing
+pub const CommandInfo = struct {
     name: []const u8,
     path: []const u8,
     is_group: bool,
     children: std.StringHashMap(CommandInfo),
     allocator: std.mem.Allocator,
 
-    fn deinit(self: *CommandInfo) void {
+    pub fn deinit(self: *CommandInfo) void {
         var it = self.children.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.deinit();
@@ -24,17 +25,23 @@ const CommandInfo = struct {
     }
 };
 
-const DiscoveredCommands = struct {
+// Export for testing  
+pub const DiscoveredCommands = struct {
     allocator: std.mem.Allocator,
     root: std.StringHashMap(CommandInfo),
 
-    fn deinit(self: *const DiscoveredCommands) void {
-        var it = self.root.iterator();
+    pub fn deinit(self: *const DiscoveredCommands) void {
+        // We need to cast away const to properly clean up memory
+        const mutable_self = @constCast(self);
+        
+        // Clean up all command info structures recursively
+        var it = mutable_self.root.iterator();
         while (it.next()) |entry| {
-            // Can't call deinit on const, but the build allocator will clean up
-            _ = entry;
+            entry.value_ptr.deinit();
         }
-        // Don't deinit the hashmap since we can't modify const
+        
+        // Clean up the root hashmap
+        mutable_self.root.deinit();
     }
 };
 
@@ -144,7 +151,8 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
 }
 
 // Build-time command discovery - scans filesystem directly
-fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) !DiscoveredCommands {
+// Export for testing
+pub fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) !DiscoveredCommands {
     var commands = DiscoveredCommands{
         .allocator = allocator,
         .root = std.StringHashMap(CommandInfo).init(allocator),
@@ -182,19 +190,13 @@ fn scanDirectory(
 
     var iterator = dir.iterate();
     while (try iterator.next()) |entry| {
-        // Validate entry name
-        if (!isValidCommandName(entry.name)) {
-            std.log.warn("Skipping invalid command/directory name: {s} (contains invalid characters)", .{entry.name});
-            continue;
-        }
-
         switch (entry.kind) {
             .file => {
                 if (std.mem.endsWith(u8, entry.name, ".zig")) {
                     // Remove .zig extension for command name
                     const name_without_ext = entry.name[0 .. entry.name.len - 4];
 
-                    // Validate command name
+                    // Validate command name (without .zig extension)
                     if (!isValidCommandName(name_without_ext)) {
                         std.log.warn("Skipping invalid command name: {s} (contains invalid characters)", .{name_without_ext});
                         continue;
@@ -220,27 +222,49 @@ fn scanDirectory(
                     continue;
                 }
 
+                // Validate directory name for command groups
+                if (!isValidCommandName(entry.name)) {
+                    std.log.warn("Skipping invalid command group name: {s} (contains invalid characters)", .{entry.name});
+                    continue;
+                }
+
                 // This is a command group - check if it has an index.zig
                 var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
                 defer subdir.close();
 
-                const group_name = try allocator.dupe(u8, entry.name);
-                const group_base_path = try std.fs.path.join(allocator, &.{ base_path, entry.name });
-
-                var group_info = CommandInfo{
-                    .name = group_name,
-                    .path = group_base_path,
+                // Create temporary group info with unowned strings to scan first
+                const temp_group_base_path = try std.fs.path.join(allocator, &.{ base_path, entry.name });
+                defer allocator.free(temp_group_base_path);
+                
+                var temp_group_info = CommandInfo{
+                    .name = entry.name, // Use unowned string temporarily
+                    .path = temp_group_base_path,
                     .is_group = true,
                     .children = std.StringHashMap(CommandInfo).init(allocator),
                     .allocator = allocator,
                 };
 
                 // Scan the subdirectory for subcommands
-                try scanDirectory(allocator, subdir, &group_info.children, group_base_path, depth + 1, max_depth);
+                try scanDirectory(allocator, subdir, &temp_group_info.children, temp_group_base_path, depth + 1, max_depth);
 
                 // Only add the group if it has children or an index.zig
-                if (group_info.children.count() > 0 or hasIndexFile(subdir)) {
+                if (temp_group_info.children.count() > 0 or hasIndexFile(subdir)) {
+                    // Now allocate owned strings since we're keeping this group
+                    const group_name = try allocator.dupe(u8, entry.name);
+                    const group_base_path = try allocator.dupe(u8, temp_group_base_path);
+                    
+                    const group_info = CommandInfo{
+                        .name = group_name,
+                        .path = group_base_path,
+                        .is_group = true,
+                        .children = temp_group_info.children, // Transfer ownership
+                        .allocator = allocator,
+                    };
+                    
                     try commands.put(group_name, group_info);
+                } else {
+                    // Clean up the temporary group since we're not keeping it
+                    temp_group_info.children.deinit();
                 }
             },
             else => continue,
@@ -279,7 +303,8 @@ pub fn isValidCommandName(name: []const u8) bool {
 }
 
 // Generate registry source code at build time
-fn generateRegistrySource(allocator: std.mem.Allocator, commands: DiscoveredCommands, options: anytype) ![]u8 {
+// Export for testing
+pub fn generateRegistrySource(allocator: std.mem.Allocator, commands: DiscoveredCommands, options: anytype) ![]u8 {
     var source = std.ArrayList(u8).init(allocator);
     defer source.deinit();
 

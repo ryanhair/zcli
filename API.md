@@ -44,6 +44,8 @@ This document defines the clear public/private API boundaries for the zcli frame
 - `build_utils.generateCommandRegistry(...)` - Generate command registry at build time
 - `build_utils.isValidCommandName(name)` - Validate command names for security
 
+📖 **See [BUILD.md](BUILD.md) for comprehensive build-time code generation guide.**
+
 ## Internal API (Unstable - Not for End Users)
 
 These are implementation details and may change without notice:
