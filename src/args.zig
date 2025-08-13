@@ -1,12 +1,36 @@
 const std = @import("std");
 const logging = @import("logging.zig");
+const StructuredError = @import("structured_errors.zig").StructuredError;
+const ErrorBuilder = @import("structured_errors.zig").ErrorBuilder;
 
-pub const ParseError = error{
-    MissingRequiredArgument,
-    InvalidArgumentType,
-    TooManyArguments,
-    OutOfMemory,
-};
+/// Parse result that can be either success or a structured error
+pub fn ParseResult(comptime T: type) type {
+    return union(enum) {
+        ok: T,
+        err: StructuredError,
+        
+        pub fn unwrap(self: @This()) T {
+            return switch (self) {
+                .ok => |value| value,
+                .err => @panic("Tried to unwrap error result"),
+            };
+        }
+        
+        pub fn isError(self: @This()) bool {
+            return switch (self) {
+                .ok => false,
+                .err => true,
+            };
+        }
+        
+        pub fn getError(self: @This()) ?StructuredError {
+            return switch (self) {
+                .ok => null,
+                .err => |err| err,
+            };
+        }
+    };
+}
 
 /// Parse positional arguments based on the provided Args struct type
 ///
@@ -58,13 +82,22 @@ pub const ParseError = error{
 /// // parsed.name = "Alice", parsed.age = 25, parsed.verbose = true
 /// ```
 ///
-/// ## Errors
-/// - `ParseError.MissingRequiredArgument`: Required argument not provided
-/// - `ParseError.InvalidValue`: Argument value cannot be parsed to field type
-/// - `ParseError.TooManyArguments`: More arguments than struct fields (unless varargs)
-pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!ArgsType {
-    const type_info = @typeInfo(ArgsType);
+/// ## Returns
+/// Returns a ParseResult union that contains either:
+/// - `.ok`: Successfully parsed arguments of type ArgsType
+/// - `.err`: Structured error with rich context information including:
+///   - `argument_missing_required`: Missing required argument with field name, position, expected type
+///   - `argument_invalid_value`: Invalid argument value with provided value, field name, position, expected type  
+///   - `argument_too_many`: Too many arguments provided with expected count
+///   - `system_out_of_memory`: Out of memory
+pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseResult(ArgsType) {
+    return parseArgsInternal(ArgsType, args);
+}
 
+/// Parse positional arguments with structured error support (internal version)
+/// This captures more context about errors for better user experience
+fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ParseResult(ArgsType) {
+    const type_info = @typeInfo(ArgsType);
     if (type_info != .@"struct") {
         @compileError("Args must be a struct type");
     }
@@ -80,21 +113,16 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!A
         if (comptime isVarArgs(field_type)) {
             // This is a varargs field ([][]const u8) - capture remaining arguments
             const remaining_args = args[arg_index..];
-
-            // SAFETY: @constCast is required here to convert []const []const u8 to [][]const u8
-            // This is safe because:
-            // 1. We're not modifying the slice or its contents
-            // 2. The strings themselves remain immutable ([]const u8)
-            // 3. We're only removing the const qualifier from the outer slice
-            // 4. The lifetime of the args is managed by the caller
-            // Alternative would be to allocate and copy, but that adds unnecessary overhead
-            // and memory management complexity for the user.
             @field(result, field.name) = @constCast(remaining_args);
             break;
         } else if (@typeInfo(field_type) == .optional) {
             // Optional field
             if (arg_index < args.len) {
-                @field(result, field.name) = try parseValue(field_type, args[arg_index]);
+                const parsed_value = parseValueWithContext(field_type, args[arg_index], field.name, field_index);
+                if (parsed_value.isError()) {
+                    return ParseResult(ArgsType){ .err = parsed_value.getError().? };
+                }
+                @field(result, field.name) = parsed_value.unwrap();
                 arg_index += 1;
             } else {
                 // Use null for optional
@@ -104,10 +132,18 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!A
             // Required field
             if (arg_index >= args.len) {
                 logging.missingRequiredArgument(field.name, field_index + 1);
-                return ParseError.MissingRequiredArgument;
+                return ParseResult(ArgsType){ .err = ErrorBuilder.missingRequiredArgument(
+                    field.name, 
+                    field_index, 
+                    @typeName(field_type)
+                ) };
             }
 
-            @field(result, field.name) = try parseValue(field_type, args[arg_index]);
+            const parsed_value = parseValueWithContext(field_type, args[arg_index], field.name, field_index);
+            if (parsed_value.isError()) {
+                return ParseResult(ArgsType){ .err = parsed_value.getError().? };
+            }
+            @field(result, field.name) = parsed_value.unwrap();
             arg_index += 1;
         }
     }
@@ -115,14 +151,40 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseError!A
     // Check if there are too many arguments (only if no varargs field)
     if (!hasVarArgs(ArgsType) and arg_index < args.len) {
         logging.tooManyArguments(getRequiredArgCount(ArgsType), args.len);
-        return ParseError.TooManyArguments;
+        return ParseResult(ArgsType){ .err = StructuredError{
+            .argument_too_many = .{
+                .field_name = "",
+                .position = getRequiredArgCount(ArgsType),
+                .provided_value = null,
+                .expected_type = "argument count",
+            }
+        } };
     }
 
-    return result;
+    return ParseResult(ArgsType){ .ok = result };
 }
 
+/// Parse a single value with structured error context
+fn parseValueWithContext(comptime T: type, value: []const u8, field_name: []const u8, field_index: usize) ParseResult(T) {
+    const parsed = parseValue(T, value) catch {
+        return ParseResult(T){ .err = ErrorBuilder.invalidArgumentValue(
+            field_name,
+            field_index,
+            value,
+            @typeName(T)
+        ) };
+    };
+    return ParseResult(T){ .ok = parsed };
+}
+
+/// Simple error type for basic parsing without context
+const SimpleParseError = error{
+    InvalidArgumentType,
+    OutOfMemory,
+};
+
 /// Parse a single value based on its type
-fn parseValue(comptime T: type, value: []const u8) ParseError!T {
+fn parseValue(comptime T: type, value: []const u8) SimpleParseError!T {
     const type_info = @typeInfo(T);
 
     switch (type_info) {
@@ -136,14 +198,14 @@ fn parseValue(comptime T: type, value: []const u8) ParseError!T {
         },
         .int => {
             return std.fmt.parseInt(T, value, 10) catch {
-                logging.invalidArgumentValue(value, "integer");
-                return ParseError.InvalidArgumentType;
+                logging.invalidArgumentValue(value, @typeName(T));
+                return SimpleParseError.InvalidArgumentType;
             };
         },
         .float => {
             return std.fmt.parseFloat(T, value) catch {
-                logging.invalidArgumentValue(value, "float");
-                return ParseError.InvalidArgumentType;
+                logging.invalidArgumentValue(value, @typeName(T));
+                return SimpleParseError.InvalidArgumentType;
             };
         },
         .bool => {
@@ -153,13 +215,13 @@ fn parseValue(comptime T: type, value: []const u8) ParseError!T {
                 return false;
             } else {
                 logging.invalidBooleanArgument(value);
-                return ParseError.InvalidArgumentType;
+                return SimpleParseError.InvalidArgumentType;
             }
         },
         .@"enum" => {
             return std.meta.stringToEnum(T, value) orelse {
                 logging.invalidEnumArgument(value);
-                return ParseError.InvalidArgumentType;
+                return SimpleParseError.InvalidArgumentType;
             };
         },
         .optional => |opt_info| {
@@ -213,7 +275,18 @@ fn getRequiredArgCount(comptime T: type) usize {
     return count;
 }
 
+
 // Tests
+test "isVarArgs function" {
+    // Test that normal types are NOT varargs
+    try std.testing.expect(!isVarArgs([]const u8));
+    try std.testing.expect(!isVarArgs(u32));
+    try std.testing.expect(!isVarArgs(?bool));
+    
+    // Test that varargs type IS varargs
+    try std.testing.expect(isVarArgs([][]const u8));
+}
+
 test "parseArgs basic types" {
     const TestArgs = struct {
         name: []const u8,
@@ -224,19 +297,23 @@ test "parseArgs basic types" {
     // Test with all arguments
     {
         const args = [_][]const u8{ "John", "25", "true" };
-        const result = try parseArgs(TestArgs, &args);
-        try std.testing.expectEqualStrings("John", result.name);
-        try std.testing.expectEqual(@as(u32, 25), result.age);
-        try std.testing.expect(result.verbose.?);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
+        try std.testing.expectEqualStrings("John", parsed.name);
+        try std.testing.expectEqual(@as(u32, 25), parsed.age);
+        try std.testing.expect(parsed.verbose.?);
     }
 
     // Test with default value
     {
         const args = [_][]const u8{ "Jane", "30" };
-        const result = try parseArgs(TestArgs, &args);
-        try std.testing.expectEqualStrings("Jane", result.name);
-        try std.testing.expectEqual(@as(u32, 30), result.age);
-        try std.testing.expect(result.verbose == null);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
+        try std.testing.expectEqualStrings("Jane", parsed.name);
+        try std.testing.expectEqual(@as(u32, 30), parsed.age);
+        try std.testing.expect(parsed.verbose == null);
     }
 }
 
@@ -247,13 +324,15 @@ test "parseArgs varargs" {
     };
 
     const args = [_][]const u8{ "build", "file1.zig", "file2.zig", "file3.zig" };
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectEqualStrings("build", result.command);
-    try std.testing.expectEqual(@as(usize, 3), result.files.len);
-    try std.testing.expectEqualStrings("file1.zig", result.files[0]);
-    try std.testing.expectEqualStrings("file2.zig", result.files[1]);
-    try std.testing.expectEqualStrings("file3.zig", result.files[2]);
+    try std.testing.expectEqualStrings("build", parsed.command);
+    try std.testing.expectEqual(@as(usize, 3), parsed.files.len);
+    try std.testing.expectEqualStrings("file1.zig", parsed.files[0]);
+    try std.testing.expectEqualStrings("file2.zig", parsed.files[1]);
+    try std.testing.expectEqualStrings("file3.zig", parsed.files[2]);
 }
 
 test "parseArgs enum" {
@@ -263,9 +342,11 @@ test "parseArgs enum" {
     };
 
     const args = [_][]const u8{"info"};
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectEqual(LogLevel.info, result.level);
+    try std.testing.expectEqual(LogLevel.info, parsed.level);
 }
 
 test "parseArgs error cases" {
@@ -277,19 +358,28 @@ test "parseArgs error cases" {
     // Test missing required argument
     {
         const args = [_][]const u8{};
-        try std.testing.expectError(ParseError.MissingRequiredArgument, parseArgs(TestArgs, &args));
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(result.isError());
+        const err = result.getError().?;
+        try std.testing.expect(err == .argument_missing_required);
     }
 
     // Test invalid number
     {
         const args = [_][]const u8{ "test", "not_a_number" };
-        try std.testing.expectError(ParseError.InvalidArgumentType, parseArgs(TestArgs, &args));
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(result.isError());
+        const err = result.getError().?;
+        try std.testing.expect(err == .argument_invalid_value);
     }
 
     // Test too many arguments (when no varargs)
     {
         const args = [_][]const u8{ "test", "123", "extra" };
-        try std.testing.expectError(ParseError.TooManyArguments, parseArgs(TestArgs, &args));
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(result.isError());
+        const err = result.getError().?;
+        try std.testing.expect(err == .argument_too_many);
     }
 }
 
@@ -302,11 +392,13 @@ test "parseArgs integer types" {
 
     const args = [_][]const u8{ "8080", "-30", "9223372036854775807" };
 
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectEqual(@as(u16, 8080), result.port);
-    try std.testing.expectEqual(@as(i32, -30), result.timeout);
-    try std.testing.expectEqual(@as(i64, 9223372036854775807), result.size);
+    try std.testing.expectEqual(@as(u16, 8080), parsed.port);
+    try std.testing.expectEqual(@as(i32, -30), parsed.timeout);
+    try std.testing.expectEqual(@as(i64, 9223372036854775807), parsed.size);
 }
 
 test "parseArgs float types" {
@@ -317,10 +409,12 @@ test "parseArgs float types" {
 
     const args = [_][]const u8{ "3.14", "2.718281828" };
 
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectApproxEqAbs(@as(f32, 3.14), result.ratio, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.718281828), result.precision, 0.000000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.14), parsed.ratio, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.718281828), parsed.precision, 0.000000001);
 }
 
 test "parseArgs optional types" {
@@ -333,21 +427,25 @@ test "parseArgs optional types" {
     // Test with all optionals provided
     {
         const args = [_][]const u8{ "server", "8080", "localhost" };
-        const result = try parseArgs(TestArgs, &args);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
 
-        try std.testing.expectEqualStrings("server", result.name);
-        try std.testing.expectEqual(@as(u16, 8080), result.port.?);
-        try std.testing.expectEqualStrings("localhost", result.host.?);
+        try std.testing.expectEqualStrings("server", parsed.name);
+        try std.testing.expectEqual(@as(u16, 8080), parsed.port.?);
+        try std.testing.expectEqualStrings("localhost", parsed.host.?);
     }
 
     // Test with no optionals provided
     {
         const args = [_][]const u8{"client"};
-        const result = try parseArgs(TestArgs, &args);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
 
-        try std.testing.expectEqualStrings("client", result.name);
-        try std.testing.expectEqual(@as(?u16, null), result.port);
-        try std.testing.expectEqual(@as(?[]const u8, null), result.host);
+        try std.testing.expectEqualStrings("client", parsed.name);
+        try std.testing.expectEqual(@as(?u16, null), parsed.port);
+        try std.testing.expectEqual(@as(?[]const u8, null), parsed.host);
     }
 }
 
@@ -361,21 +459,25 @@ test "parseArgs varargs with mixed types" {
     // Test with varargs at the end
     {
         const args = [_][]const u8{ "process", "true", "item1", "item2", "item3" };
-        const result = try parseArgs(TestArgs, &args);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
 
-        try std.testing.expectEqualStrings("process", result.action);
-        try std.testing.expect(result.verbose);
-        try std.testing.expectEqual(@as(usize, 3), result.items.len);
+        try std.testing.expectEqualStrings("process", parsed.action);
+        try std.testing.expect(parsed.verbose);
+        try std.testing.expectEqual(@as(usize, 3), parsed.items.len);
     }
 
     // Test with no varargs
     {
         const args = [_][]const u8{ "clean", "false" };
-        const result = try parseArgs(TestArgs, &args);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
 
-        try std.testing.expectEqualStrings("clean", result.action);
-        try std.testing.expect(!result.verbose);
-        try std.testing.expectEqual(@as(usize, 0), result.items.len);
+        try std.testing.expectEqualStrings("clean", parsed.action);
+        try std.testing.expect(!parsed.verbose);
+        try std.testing.expectEqual(@as(usize, 0), parsed.items.len);
     }
 }
 
@@ -390,19 +492,24 @@ test "parseArgs boolean edge cases" {
         .{ "false", false },
         .{ "1", true },
         .{ "0", false },
-        .{ "TRUE", ParseError.InvalidArgumentType },
-        .{ "yes", ParseError.InvalidArgumentType },
-        .{ "on", ParseError.InvalidArgumentType },
+        .{ "TRUE", error.argument_invalid_value },
+        .{ "yes", error.argument_invalid_value },
+        .{ "on", error.argument_invalid_value },
     };
 
     inline for (test_cases) |test_case| {
         const args = [_][]const u8{test_case[0]};
 
-        if (@TypeOf(test_case[1]) == ParseError) {
-            try std.testing.expectError(test_case[1], parseArgs(TestArgs, &args));
+        if (@TypeOf(test_case[1]) == @TypeOf(error.argument_invalid_value)) {
+            const result = parseArgs(TestArgs, &args);
+            try std.testing.expect(result.isError());
+            const err = result.getError().?;
+            try std.testing.expect(err == .argument_invalid_value);
         } else {
-            const result = try parseArgs(TestArgs, &args);
-            try std.testing.expectEqual(test_case[1], result.flag);
+            const result = parseArgs(TestArgs, &args);
+            try std.testing.expect(!result.isError());
+            const parsed = result.unwrap();
+            try std.testing.expectEqual(test_case[1], parsed.flag);
         }
     }
 }
@@ -416,14 +523,19 @@ test "parseArgs enum edge cases" {
     // Test valid enum value
     {
         const args = [_][]const u8{"green"};
-        const result = try parseArgs(TestArgs, &args);
-        try std.testing.expectEqual(Color.green, result.color);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
+        try std.testing.expectEqual(Color.green, parsed.color);
     }
 
     // Test invalid enum value
     {
         const args = [_][]const u8{"yellow"};
-        try std.testing.expectError(ParseError.InvalidArgumentType, parseArgs(TestArgs, &args));
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(result.isError());
+        const err = result.getError().?;
+        try std.testing.expect(err == .argument_invalid_value);
     }
 }
 
@@ -433,13 +545,18 @@ test "parseArgs empty struct" {
     // Test with no arguments
     {
         const args = [_][]const u8{};
-        _ = try parseArgs(EmptyArgs, &args);
+        const result = parseArgs(EmptyArgs, &args);
+        try std.testing.expect(!result.isError());
+        _ = result.unwrap();
     }
 
     // Test with extra arguments
     {
         const args = [_][]const u8{"extra"};
-        try std.testing.expectError(ParseError.TooManyArguments, parseArgs(EmptyArgs, &args));
+        const result = parseArgs(EmptyArgs, &args);
+        try std.testing.expect(result.isError());
+        const err = result.getError().?;
+        try std.testing.expect(err == .argument_too_many);
     }
 }
 
@@ -459,17 +576,19 @@ test "parseArgs all supported integer types" {
 
     const args = [_][]const u8{ "-128", "32767", "-2147483648", "9223372036854775807", "255", "65535", "4294967295", "18446744073709551615", "-1000", "1000" };
 
-    const result = try parseArgs(IntArgs, &args);
-    try std.testing.expectEqual(@as(i8, -128), result.i8_val);
-    try std.testing.expectEqual(@as(i16, 32767), result.i16_val);
-    try std.testing.expectEqual(@as(i32, -2147483648), result.i32_val);
-    try std.testing.expectEqual(@as(i64, 9223372036854775807), result.i64_val);
-    try std.testing.expectEqual(@as(u8, 255), result.u8_val);
-    try std.testing.expectEqual(@as(u16, 65535), result.u16_val);
-    try std.testing.expectEqual(@as(u32, 4294967295), result.u32_val);
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), result.u64_val);
-    try std.testing.expectEqual(@as(isize, -1000), result.isize_val);
-    try std.testing.expectEqual(@as(usize, 1000), result.usize_val);
+    const result = parseArgs(IntArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    try std.testing.expectEqual(@as(i8, -128), parsed.i8_val);
+    try std.testing.expectEqual(@as(i16, 32767), parsed.i16_val);
+    try std.testing.expectEqual(@as(i32, -2147483648), parsed.i32_val);
+    try std.testing.expectEqual(@as(i64, 9223372036854775807), parsed.i64_val);
+    try std.testing.expectEqual(@as(u8, 255), parsed.u8_val);
+    try std.testing.expectEqual(@as(u16, 65535), parsed.u16_val);
+    try std.testing.expectEqual(@as(u32, 4294967295), parsed.u32_val);
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), parsed.u64_val);
+    try std.testing.expectEqual(@as(isize, -1000), parsed.isize_val);
+    try std.testing.expectEqual(@as(usize, 1000), parsed.usize_val);
 }
 
 test "parseArgs integer overflow" {
@@ -479,7 +598,10 @@ test "parseArgs integer overflow" {
 
     // Test overflow
     const args = [_][]const u8{"256"};
-    try std.testing.expectError(ParseError.InvalidArgumentType, parseArgs(TestArgs, &args));
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(result.isError());
+    const err = result.getError().?;
+    try std.testing.expect(err == .argument_invalid_value);
 }
 
 test "parseArgs negative value for unsigned" {
@@ -488,7 +610,10 @@ test "parseArgs negative value for unsigned" {
     };
 
     const args = [_][]const u8{"-1"};
-    try std.testing.expectError(ParseError.InvalidArgumentType, parseArgs(TestArgs, &args));
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(result.isError());
+    const err = result.getError().?;
+    try std.testing.expect(err == .argument_invalid_value);
 }
 
 test "parseArgs all supported float types" {
@@ -502,12 +627,14 @@ test "parseArgs all supported float types" {
 
     const args = [_][]const u8{ "1.5", "3.14159", "2.71828", "123.456", "789.012" };
 
-    const result = try parseArgs(FloatArgs, &args);
-    try std.testing.expectApproxEqAbs(@as(f16, 1.5), result.f16_val, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.14159), result.f32_val, 0.00001);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.71828), result.f64_val, 0.00001);
-    try std.testing.expectApproxEqAbs(@as(f80, 123.456), result.f80_val, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f128, 789.012), result.f128_val, 0.001);
+    const result = parseArgs(FloatArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    try std.testing.expectApproxEqAbs(@as(f16, 1.5), parsed.f16_val, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.14159), parsed.f32_val, 0.00001);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.71828), parsed.f64_val, 0.00001);
+    try std.testing.expectApproxEqAbs(@as(f80, 123.456), parsed.f80_val, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f128, 789.012), parsed.f128_val, 0.001);
 }
 
 test "parseArgs varargs empty" {
@@ -516,8 +643,10 @@ test "parseArgs varargs empty" {
     };
 
     const args = [_][]const u8{};
-    const result = try parseArgs(TestArgs, &args);
-    try std.testing.expectEqual(@as(usize, 0), result.files.len);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    try std.testing.expectEqual(@as(usize, 0), parsed.files.len);
 }
 
 test "parseArgs varargs with preceding required args" {
@@ -528,14 +657,16 @@ test "parseArgs varargs with preceding required args" {
     };
 
     const args = [_][]const u8{ "build", "true", "file1.txt", "file2.txt", "file3.txt" };
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectEqualStrings("build", result.command);
-    try std.testing.expectEqual(true, result.verbose);
-    try std.testing.expectEqual(@as(usize, 3), result.files.len);
-    try std.testing.expectEqualStrings("file1.txt", result.files[0]);
-    try std.testing.expectEqualStrings("file2.txt", result.files[1]);
-    try std.testing.expectEqualStrings("file3.txt", result.files[2]);
+    try std.testing.expectEqualStrings("build", parsed.command);
+    try std.testing.expectEqual(true, parsed.verbose);
+    try std.testing.expectEqual(@as(usize, 3), parsed.files.len);
+    try std.testing.expectEqualStrings("file1.txt", parsed.files[0]);
+    try std.testing.expectEqualStrings("file2.txt", parsed.files[1]);
+    try std.testing.expectEqualStrings("file3.txt", parsed.files[2]);
 }
 
 test "parseArgs optional at end" {
@@ -548,28 +679,34 @@ test "parseArgs optional at end" {
     // Test with all values
     {
         const args = [_][]const u8{ "req", "opt", "42" };
-        const result = try parseArgs(TestArgs, &args);
-        try std.testing.expectEqualStrings("req", result.required);
-        try std.testing.expectEqualStrings("opt", result.optional1.?);
-        try std.testing.expectEqual(@as(i32, 42), result.optional2.?);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
+        try std.testing.expectEqualStrings("req", parsed.required);
+        try std.testing.expectEqualStrings("opt", parsed.optional1.?);
+        try std.testing.expectEqual(@as(i32, 42), parsed.optional2.?);
     }
 
     // Test with partial values
     {
         const args = [_][]const u8{ "req", "opt" };
-        const result = try parseArgs(TestArgs, &args);
-        try std.testing.expectEqualStrings("req", result.required);
-        try std.testing.expectEqualStrings("opt", result.optional1.?);
-        try std.testing.expectEqual(@as(?i32, null), result.optional2);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
+        try std.testing.expectEqualStrings("req", parsed.required);
+        try std.testing.expectEqualStrings("opt", parsed.optional1.?);
+        try std.testing.expectEqual(@as(?i32, null), parsed.optional2);
     }
 
     // Test with minimal values
     {
         const args = [_][]const u8{"req"};
-        const result = try parseArgs(TestArgs, &args);
-        try std.testing.expectEqualStrings("req", result.required);
-        try std.testing.expectEqual(@as(?[]const u8, null), result.optional1);
-        try std.testing.expectEqual(@as(?i32, null), result.optional2);
+        const result = parseArgs(TestArgs, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
+        try std.testing.expectEqualStrings("req", parsed.required);
+        try std.testing.expectEqual(@as(?[]const u8, null), parsed.optional1);
+        try std.testing.expectEqual(@as(?i32, null), parsed.optional2);
     }
 }
 
@@ -581,11 +718,13 @@ test "parseArgs special float values" {
     };
 
     const args = [_][]const u8{ "inf", "-inf", "nan" };
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expect(std.math.isPositiveInf(result.val1));
-    try std.testing.expect(std.math.isNegativeInf(result.val2));
-    try std.testing.expect(std.math.isNan(result.val3));
+    try std.testing.expect(std.math.isPositiveInf(parsed.val1));
+    try std.testing.expect(std.math.isNegativeInf(parsed.val2));
+    try std.testing.expect(std.math.isNan(parsed.val3));
 }
 
 test "parseArgs unicode strings" {
@@ -595,10 +734,37 @@ test "parseArgs unicode strings" {
     };
 
     const args = [_][]const u8{ "Hello, 世界", "🚀🌟" };
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectEqualStrings("Hello, 世界", result.text);
-    try std.testing.expectEqualStrings("🚀🌟", result.emoji);
+    try std.testing.expectEqualStrings("Hello, 世界", parsed.text);
+    try std.testing.expectEqualStrings("🚀🌟", parsed.emoji);
+}
+
+test "parseArgs structured error context" {
+    const TestArgs = struct {
+        name: []const u8,
+        age: u32,
+    };
+
+    // Test that structured error context is captured
+    const args = [_][]const u8{}; // Missing both arguments
+    
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(result.isError());
+    
+    // Get the structured error directly
+    const structured_error = result.getError().?;
+    
+    switch (structured_error) {
+        .argument_missing_required => |ctx| {
+            try std.testing.expectEqualStrings("name", ctx.field_name);
+            try std.testing.expectEqual(@as(usize, 0), ctx.position);
+            try std.testing.expectEqualStrings("[]const u8", ctx.expected_type);
+        },
+        else => try std.testing.expect(false),
+    }
 }
 
 test "parseArgs varargs lifetime and safety" {
@@ -609,12 +775,14 @@ test "parseArgs varargs lifetime and safety" {
     };
 
     const args = [_][]const u8{ "test", "file1.txt", "file2.txt" };
-    const result = try parseArgs(TestArgs, &args);
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
     // Verify that the varargs slice points to the same memory as the original args
-    try std.testing.expectEqual(@as(usize, 2), result.files.len);
-    try std.testing.expectEqual(@intFromPtr(args[1].ptr), @intFromPtr(result.files[0].ptr));
-    try std.testing.expectEqual(@intFromPtr(args[2].ptr), @intFromPtr(result.files[1].ptr));
+    try std.testing.expectEqual(@as(usize, 2), parsed.files.len);
+    try std.testing.expectEqual(@intFromPtr(args[1].ptr), @intFromPtr(parsed.files[0].ptr));
+    try std.testing.expectEqual(@intFromPtr(args[2].ptr), @intFromPtr(parsed.files[1].ptr));
 
     // This demonstrates that we're not copying the strings, just referencing them
     // The @constCast is safe because we maintain the immutability of the strings
