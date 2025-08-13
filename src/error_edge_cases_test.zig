@@ -75,11 +75,13 @@ test "parseArgs with multiple primitive types" {
     };
     
     const args = [_][]const u8{ "42", "test", "true" };
-    const result = try args_parser.parseArgs(Args, &args);
+    const result = args_parser.parseArgs(Args, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
     
-    try std.testing.expectEqual(@as(u32, 42), result.count);
-    try std.testing.expectEqualStrings("test", result.name);
-    try std.testing.expectEqual(true, result.flag);
+    try std.testing.expectEqual(@as(u32, 42), parsed.count);
+    try std.testing.expectEqualStrings("test", parsed.name);
+    try std.testing.expectEqual(true, parsed.flag);
 }
 
 // ============================================================================
@@ -102,8 +104,10 @@ test "parseArgs with Unicode characters" {
     
     for (unicode_tests) |unicode_str| {
         const args = [_][]const u8{unicode_str};
-        const result = try args_parser.parseArgs(Args, &args);
-        try std.testing.expectEqualStrings(unicode_str, result.message);
+        const result = args_parser.parseArgs(Args, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
+        try std.testing.expectEqualStrings(unicode_str, parsed.message);
     }
 }
 
@@ -218,7 +222,9 @@ test "parseArgs floating point edge cases" {
     
     for (test_cases) |case| {
         const args = [_][]const u8{case[0]};
-        const result = try args_parser.parseArgs(Args, &args);
+        const result = args_parser.parseArgs(Args, &args);
+        try std.testing.expect(!result.isError());
+        const parsed = result.unwrap();
         
         if (std.math.isNan(case[1])) {
             try std.testing.expect(std.math.isNan(result.val));
