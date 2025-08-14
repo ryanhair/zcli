@@ -146,13 +146,9 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ParseRes
 
     // Check if there are too many arguments (only if no varargs field)
     if (!hasVarArgs(ArgsType) and arg_index < args.len) {
-        logging.tooManyArguments(getRequiredArgCount(ArgsType), args.len);
-        return ParseResult(ArgsType){ .err = StructuredError{ .argument_too_many = .{
-            .field_name = "",
-            .position = getRequiredArgCount(ArgsType),
-            .provided_value = null,
-            .expected_type = "argument count",
-        } } };
+        const expected_count = getRequiredArgCount(ArgsType);
+        logging.tooManyArguments(expected_count, args.len);
+        return ParseResult(ArgsType){ .err = StructuredError{ .argument_too_many = @import("structured_errors.zig").ArgumentErrorContext.tooMany(expected_count, args.len) } };
     }
 
     return ParseResult(ArgsType){ .ok = result };

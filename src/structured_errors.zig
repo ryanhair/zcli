@@ -8,6 +8,7 @@ pub const ArgumentErrorContext = struct {
     position: usize, // 0-based position in args
     provided_value: ?[]const u8 = null,
     expected_type: []const u8,
+    actual_count: ?usize = null, // For too many arguments errors
 
     /// Create context for missing required argument
     pub fn missingRequired(field_name: []const u8, position: usize, expected_type: []const u8) @This() {
@@ -31,12 +32,12 @@ pub const ArgumentErrorContext = struct {
 
     /// Create context for too many arguments
     pub fn tooMany(expected_count: usize, actual_count: usize) @This() {
-        _ = actual_count; // TODO: Store this in a better way
         return .{
             .field_name = "", // Not applicable for this error
             .position = expected_count,
             .provided_value = null,
             .expected_type = "argument count",
+            .actual_count = actual_count,
         };
     }
 };
@@ -208,7 +209,13 @@ pub const StructuredError = union(enum) {
         return switch (self) {
             .argument_missing_required => |ctx| std.fmt.allocPrint(allocator, "Missing required argument '{s}' at position {d}. Expected type: {s}", .{ ctx.field_name, ctx.position + 1, ctx.expected_type }),
             .argument_invalid_value => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected type: {s}", .{ ctx.provided_value.?, ctx.field_name, ctx.position + 1, ctx.expected_type }),
-            .argument_too_many => |ctx| std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments", .{ctx.position}),
+            .argument_too_many => |ctx| {
+                if (ctx.actual_count) |actual| {
+                    return std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments, got {d}", .{ ctx.position, actual });
+                } else {
+                    return std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments", .{ctx.position});
+                }
+            },
 
             .option_unknown => |ctx| std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name }),
             .option_missing_value => |ctx| std.fmt.allocPrint(allocator, "Option '{s}{s}' requires a value of type: {s}", .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.expected_type.? }),
