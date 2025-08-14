@@ -1,11 +1,31 @@
 const std = @import("std");
 
 /// Structured error types with rich context information for better debugging and user experience.
-/// These replace the simple error enums with detailed error structures that carry context.
 ///
-/// **Design Note**: This represents the future direction for error handling in zcli.
-/// Currently used by `parseArgs()` via `ParseResult`, with plans to migrate all parsing
-/// functions to use structured errors for consistent, rich error reporting.
+/// This is the foundation of zcli's error handling system. All parsing functions return
+/// `ParseResult<T>` which contains either successfully parsed data or a `StructuredError`
+/// with detailed context about what went wrong.
+///
+/// ## Key Features:
+/// - **Rich Context**: Every error includes field names, positions, values, and expected types
+/// - **Smart Suggestions**: Typo detection and correction suggestions for commands and options
+/// - **Consistent API**: All parsing functions use the same error structure
+/// - **Human-Readable**: Automatic generation of user-friendly error messages
+///
+/// ## Usage:
+/// ```zig
+/// const result = parseOptions(Options, allocator, args);
+/// switch (result) {
+///     .ok => |parsed| { /* use parsed data */ },
+///     .err => |err| {
+///         const desc = try err.description(allocator);
+///         defer allocator.free(desc);
+///         try stderr.print("Error: {s}\n", .{desc});
+///     },
+/// }
+/// ```
+///
+/// See ERROR_HANDLING.md for comprehensive documentation.
 /// Context information for argument parsing errors
 pub const ArgumentErrorContext = struct {
     field_name: []const u8,

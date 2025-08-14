@@ -213,7 +213,7 @@ pub fn handleMissingOptionValue(
 }
 
 /// Find commands similar to the input using edit distance
-fn findSimilarCommands(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator) ![][]const u8 {
+pub fn findSimilarCommands(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator) ![][]const u8 {
     var suggestions = std.ArrayList([]const u8).init(allocator);
     defer suggestions.deinit();
 

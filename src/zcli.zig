@@ -120,6 +120,10 @@ pub const CLIErrors = struct {
 const getAvailableCommands = help_generator.getAvailableCommands;
 const getAvailableSubcommands = help_generator.getAvailableSubcommands;
 
+// Import structured error types
+const StructuredError = @import("structured_errors.zig").StructuredError;
+const CommandErrorContext = @import("structured_errors.zig").CommandErrorContext;
+
 /// I/O abstraction for command input/output operations.
 ///
 /// This struct groups together all I/O-related functionality that commands need,
@@ -577,27 +581,68 @@ pub fn App(comptime Registry: type) type {
         fn showCommandNotFound(self: *Self, command: []const u8) !void {
             const stderr = std.io.getStdErr().writer();
 
-            // Get list of available commands for better error messages
+            // Create structured error with suggestions
+            const structured_error = StructuredError{ .command_not_found = CommandErrorContext.unknown(command, &[_][]const u8{}) };
+
+            // Try to get available commands for suggestions
             const available_commands = getAvailableCommands(self.registry, self.allocator) catch {
-                // Fallback to simple error if we can't get commands
-                try stderr.print("Error: Unknown command '{s}'\n\n", .{command});
+                // Fallback to simple error display if we can't get commands
+                const description = try structured_error.description(self.allocator);
+                defer self.allocator.free(description);
+                try stderr.print("Error: {s}\n\n", .{description});
                 try stderr.print("Run '{s} --help' to see available commands.\n", .{self.name});
                 return;
             };
             defer self.allocator.free(available_commands);
 
-            try CLIErrors.handleCommandNotFound(stderr, command, available_commands, self.name, self.allocator);
+            // Update the error with suggestions
+            const suggestions = error_handler.findSimilarCommands(command, available_commands, self.allocator) catch null;
+            if (suggestions) |sug| {
+                defer self.allocator.free(sug);
+                // Create a new error with suggestions
+                var error_with_suggestions = structured_error;
+                error_with_suggestions.command_not_found.suggested_commands = sug;
+
+                // Display the structured error
+                const description = try error_with_suggestions.description(self.allocator);
+                defer self.allocator.free(description);
+                try stderr.print("Error: {s}\n\n", .{description});
+
+                // Show suggestions if available
+                if (error_with_suggestions.suggestions()) |cmd_suggestions| {
+                    try stderr.print("Did you mean:\n", .{});
+                    for (cmd_suggestions[0..@min(3, cmd_suggestions.len)]) |suggestion| {
+                        try stderr.print("    {s}\n", .{suggestion});
+                    }
+                    try stderr.print("\n", .{});
+                }
+            } else {
+                // Display without suggestions
+                const description = try structured_error.description(self.allocator);
+                defer self.allocator.free(description);
+                try stderr.print("Error: {s}\n\n", .{description});
+            }
+
+            // Show available commands
+            try stderr.print("Available commands:\n", .{});
+            for (available_commands) |cmd| {
+                try stderr.print("    {s}\n", .{cmd});
+            }
+            try stderr.print("\n", .{});
+            try stderr.print("Run '{s} --help' to see all available commands.\n", .{self.name});
         }
 
         fn showSubcommandNotFound(self: *Self, group: []const u8, subcommand: []const u8) !void {
             const stderr = std.io.getStdErr().writer();
 
-            // Find the group to get available subcommands
-            // This requires generating the lookup dynamically
-            try self.showSubcommandNotFoundComptime(self.registry.commands, group, subcommand, stderr);
+            // Create structured error
+            const structured_error = StructuredError{ .subcommand_not_found = CommandErrorContext.unknownSubcommand(subcommand, &[_][]const u8{group}) };
+
+            // Display the structured error and available subcommands
+            try self.showSubcommandNotFoundComptime(self.registry.commands, group, subcommand, stderr, structured_error);
         }
 
-        fn showSubcommandNotFoundComptime(self: *Self, commands: anytype, group_name: []const u8, subcommand: []const u8, stderr: anytype) !void {
+        fn showSubcommandNotFoundComptime(self: *Self, commands: anytype, group_name: []const u8, subcommand: []const u8, stderr: anytype, structured_error: StructuredError) !void {
             const CommandsType = @TypeOf(commands);
 
             // Find the group to get its subcommands
@@ -619,14 +664,49 @@ pub fn App(comptime Registry: type) type {
                         if (is_group) {
                             // Get available subcommands for better error messages
                             const available_subcommands = getAvailableSubcommands(cmd, self.allocator) catch {
-                                // Fallback to simple error if we can't get subcommands
-                                try stderr.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, group_name });
+                                // Fallback to simple error display
+                                const description = try structured_error.description(self.allocator);
+                                defer self.allocator.free(description);
+                                try stderr.print("Error: {s}\n\n", .{description});
                                 try stderr.print("Run '{s} {s} --help' to see available subcommands.\n", .{ self.name, group_name });
                                 return;
                             };
                             defer self.allocator.free(available_subcommands);
 
-                            try CLIErrors.handleSubcommandNotFound(stderr, group_name, subcommand, available_subcommands, self.name, self.allocator);
+                            // Try to get suggestions
+                            const suggestions = error_handler.findSimilarCommands(subcommand, available_subcommands, self.allocator) catch null;
+                            if (suggestions) |sug| {
+                                defer self.allocator.free(sug);
+                                // Create error with suggestions
+                                var error_with_suggestions = structured_error;
+                                error_with_suggestions.subcommand_not_found.suggested_commands = sug;
+
+                                const description = try error_with_suggestions.description(self.allocator);
+                                defer self.allocator.free(description);
+                                try stderr.print("Error: {s}\n\n", .{description});
+
+                                // Show suggestions
+                                if (error_with_suggestions.suggestions()) |cmd_suggestions| {
+                                    try stderr.print("Did you mean:\n", .{});
+                                    for (cmd_suggestions[0..@min(3, cmd_suggestions.len)]) |suggestion| {
+                                        try stderr.print("    {s}\n", .{suggestion});
+                                    }
+                                    try stderr.print("\n", .{});
+                                }
+                            } else {
+                                // Display without suggestions
+                                const description = try structured_error.description(self.allocator);
+                                defer self.allocator.free(description);
+                                try stderr.print("Error: {s}\n\n", .{description});
+                            }
+
+                            // Show available subcommands
+                            try stderr.print("Available subcommands for '{s}':\n", .{group_name});
+                            for (available_subcommands) |subcmd| {
+                                try stderr.print("    {s}\n", .{subcmd});
+                            }
+                            try stderr.print("\n", .{});
+                            try stderr.print("Run '{s} {s} --help' for more information.\n", .{ self.name, group_name });
                             return;
                         }
                     }
@@ -634,7 +714,9 @@ pub fn App(comptime Registry: type) type {
             }
 
             // Fallback if group not found or not a group
-            try stderr.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, group_name });
+            const description = try structured_error.description(self.allocator);
+            defer self.allocator.free(description);
+            try stderr.print("Error: {s}\n\n", .{description});
             try stderr.print("Run '{s} {s} --help' to see available subcommands.\n", .{ self.name, group_name });
         }
 

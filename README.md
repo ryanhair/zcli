@@ -196,6 +196,13 @@ $ ./myapp users list
 - Automatic parsing and validation based on types
 - Support for arrays, enums, optionals, and more
 
+### 🎯 **Rich Error Handling**
+
+- Structured errors with detailed context (field names, positions, values)
+- Smart suggestions for typos in commands and options
+- Human-readable error messages with actionable feedback
+- Consistent error handling across all parsing functions
+
 ### 📝 **Auto-Generated Help**
 
 - Help text generated from `meta`, `Args`, and `Options`
