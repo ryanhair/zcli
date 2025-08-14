@@ -899,3 +899,136 @@ test "parseOptions bundled short options" {
         try std.testing.expect(parsed.options.all);
     }
 }
+
+/// Result of parsing options while extracting positional arguments
+pub fn ParseOptionsAndArgsResult(comptime OptionsType: type) type {
+    return struct {
+        options: OptionsType,
+        remaining_args: []const []const u8,
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: @This()) void {
+            self.allocator.free(self.remaining_args);
+        }
+    };
+}
+
+/// Helper function to check if an option expects a value
+fn optionExpectsValue(comptime OptionsType: type, comptime meta: anytype, option_name: []const u8) bool {
+    const struct_info = @typeInfo(OptionsType).@"struct";
+
+    inline for (struct_info.fields) |field| {
+        // Get the actual option name (might be customized via metadata)
+        const actual_name = if (@hasField(@TypeOf(meta), "options")) blk: {
+            const options_meta = @field(meta, "options");
+            if (@hasField(@TypeOf(options_meta), field.name)) {
+                const field_meta = @field(options_meta, field.name);
+                if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "name")) {
+                    break :blk field_meta.name;
+                }
+            }
+            break :blk field.name;
+        } else field.name;
+
+        if (std.mem.eql(u8, actual_name, option_name)) {
+            // Boolean options don't expect values
+            return field.type != bool;
+        }
+    }
+    return false;
+}
+
+/// Helper function to check if a short option expects a value
+fn shortOptionExpectsValue(comptime OptionsType: type, comptime meta: anytype, option_char: u8) bool {
+    const struct_info = @typeInfo(OptionsType).@"struct";
+
+    inline for (struct_info.fields) |field| {
+        // Check if this field has a short option that matches
+        if (@hasField(@TypeOf(meta), "options")) {
+            const options_meta = @field(meta, "options");
+            if (@hasField(@TypeOf(options_meta), field.name)) {
+                const field_meta = @field(options_meta, field.name);
+                if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
+                    if (field_meta.short == option_char) {
+                        return field.type != bool;
+                    }
+                }
+            }
+        }
+
+        // Default: first character of field name
+        if (field.name.len > 0 and field.name[0] == option_char) {
+            return field.type != bool;
+        }
+    }
+    return false;
+}
+
+/// Parse options from anywhere in the arguments array, returning the options and remaining positional arguments
+pub fn parseOptionsAndArgs(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+) types.OptionParseError!ParseOptionsAndArgsResult(OptionsType) {
+    // Lists to collect options and remaining args
+    var option_args = std.ArrayList([]const u8).init(allocator);
+    defer option_args.deinit();
+    var remaining_args = std.ArrayList([]const u8).init(allocator);
+    errdefer remaining_args.deinit();
+
+    var i: usize = 0;
+    while (i < args.len) {
+        const arg = args[i];
+
+        // Check if this is an option
+        if (std.mem.startsWith(u8, arg, "-") and !utils.isNegativeNumber(arg)) {
+            try option_args.append(arg);
+
+            // Check if this option expects a value
+            var expects_value = false;
+
+            if (std.mem.startsWith(u8, arg, "--")) {
+                // Long option - check if it expects a value
+                const option_name = if (std.mem.indexOf(u8, arg, "=")) |eq_pos|
+                    arg[2..eq_pos]
+                else
+                    arg[2..];
+
+                expects_value = optionExpectsValue(OptionsType, meta, option_name);
+
+                // If option has =value syntax, it's already included
+                if (std.mem.indexOf(u8, arg, "=") != null) {
+                    expects_value = false; // Already has value embedded
+                }
+            } else if (arg.len >= 2) {
+                // Short option - check if it expects a value
+                const option_char = arg[1];
+                expects_value = shortOptionExpectsValue(OptionsType, meta, option_char);
+            }
+
+            // If option expects a value and next arg exists and isn't an option, consume it
+            if (expects_value and i + 1 < args.len) {
+                const next_arg = args[i + 1];
+                if (!std.mem.startsWith(u8, next_arg, "-") or utils.isNegativeNumber(next_arg)) {
+                    try option_args.append(next_arg);
+                    i += 1;
+                }
+            }
+        } else {
+            // This is a positional argument
+            try remaining_args.append(arg);
+        }
+
+        i += 1;
+    }
+
+    // Parse the collected options
+    const options_result = try parseOptionsWithMeta(OptionsType, meta, allocator, option_args.items);
+
+    return ParseOptionsAndArgsResult(OptionsType){
+        .options = options_result.options,
+        .remaining_args = try remaining_args.toOwnedSlice(),
+        .allocator = allocator,
+    };
+}

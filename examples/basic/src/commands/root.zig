@@ -21,7 +21,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     _ = args;
     _ = options;
 
-    try context.stdout.print("Welcome to the example CLI!\n\n", .{});
-    try context.stdout.print("This is a demonstration of the zcli framework.\n", .{});
-    try context.stdout.print("Run 'example-cli --help' to see available commands.\n", .{});
+    try context.stdout().print("Welcome to the example CLI!\n\n", .{});
+    try context.stdout().print("This is a demonstration of the zcli framework.\n", .{});
+    try context.stdout().print("Run 'example-cli --help' to see available commands.\n", .{});
 }

@@ -8,6 +8,12 @@ pub const meta = .{
         "hello World",
         "hello Alice --loud",
     },
+    .args = .{
+        .name = "Name of the person to greet",
+    },
+    .options = .{
+        .loud = .{ .desc = "Use uppercase greeting" },
+    },
 };
 
 pub const Args = struct {
@@ -20,5 +26,5 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     const greeting = if (options.loud) "HELLO" else "Hello";
-    try context.stdout.print("{s}, {s}!\n", .{ greeting, args.name });
+    try context.stdout().print("{s}, {s}!\n", .{ greeting, args.name });
 }

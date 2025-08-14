@@ -15,33 +15,33 @@ const error_handler = @import("errors.zig");
 
 test "parseOptions with extremely long option names" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         normal_option: []const u8 = "default",
     };
-    
+
     // Create an extremely long option name (should be rejected)
     var long_name_buf: [1000]u8 = undefined;
     @memset(&long_name_buf, 'x');
     const long_name = try std.fmt.bufPrint(&long_name_buf, "--{s}", .{long_name_buf[0..500]});
-    
+
     const args = [_][]const u8{ long_name, "value" };
-    
+
     const result = options_parser.parseOptions(Options, allocator, &args);
     try std.testing.expectError(options_parser.OptionParseError.UnknownOption, result);
 }
 
 test "parseOptions with many array elements" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         files: [][]const u8 = &.{},
     };
-    
+
     // Create many file arguments (reduced number to avoid segfaults)
     var many_args = std.ArrayList([]const u8).init(allocator);
     defer many_args.deinit();
-    
+
     var filenames = std.ArrayList([]const u8).init(allocator);
     defer {
         for (filenames.items) |filename| {
@@ -49,9 +49,9 @@ test "parseOptions with many array elements" {
         }
         filenames.deinit();
     }
-    
+
     const file_count = 100; // Reduced from 1000 to avoid memory issues
-    
+
     // Add alternating --files and filename arguments
     var i: u32 = 0;
     while (i < file_count) : (i += 1) {
@@ -60,10 +60,10 @@ test "parseOptions with many array elements" {
         try filenames.append(filename); // Store for cleanup
         try many_args.append(filename);
     }
-    
+
     const result = try options_parser.parseOptions(Options, allocator, many_args.items);
     defer options_parser.cleanupOptions(Options, result.options, allocator);
-    
+
     try std.testing.expectEqual(file_count, result.options.files.len);
 }
 
@@ -73,35 +73,35 @@ test "parseArgs with multiple primitive types" {
         name: []const u8,
         flag: bool,
     };
-    
+
     const args = [_][]const u8{ "42", "test", "true" };
     const result = args_parser.parseArgs(Args, &args);
     try std.testing.expect(!result.isError());
     const parsed = result.unwrap();
-    
+
     try std.testing.expectEqual(@as(u32, 42), parsed.count);
     try std.testing.expectEqualStrings("test", parsed.name);
     try std.testing.expectEqual(true, parsed.flag);
 }
 
 // ============================================================================
-// Unicode and Special Character Edge Cases  
+// Unicode and Special Character Edge Cases
 // ============================================================================
 
 test "parseArgs with Unicode characters" {
     const Args = struct {
         message: []const u8,
     };
-    
+
     // Test various Unicode strings
     const unicode_tests = [_][]const u8{
         "Hello, 世界!", // Chinese
-        "مرحبا بالعالم", // Arabic  
+        "مرحبا بالعالم", // Arabic
         "🚀 Rocket", // Emoji
         "Ñoño niño", // Spanish with tildes
         "Здравствуй мир", // Russian
     };
-    
+
     for (unicode_tests) |unicode_str| {
         const args = [_][]const u8{unicode_str};
         const result = args_parser.parseArgs(Args, &args);
@@ -113,21 +113,21 @@ test "parseArgs with Unicode characters" {
 
 test "parseOptions with Unicode option values" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         message: []const u8 = "default",
         files: [][]const u8 = &.{},
     };
-    
+
     const args = [_][]const u8{
         "--message", "🎉 Success!",
         "--files", "файл.txt", // Cyrillic filename
-        "--files", "測試.txt", // Chinese filename  
+        "--files", "測試.txt", // Chinese filename
     };
-    
+
     const result = try options_parser.parseOptions(Options, allocator, &args);
     defer options_parser.cleanupOptions(Options, result.options, allocator);
-    
+
     try std.testing.expectEqualStrings("🎉 Success!", result.options.message);
     try std.testing.expectEqual(@as(usize, 2), result.options.files.len);
     try std.testing.expectEqualStrings("файл.txt", result.options.files[0]);
@@ -145,17 +145,17 @@ test "parseArgs with maximum integer values" {
         max_i32: i32,
         max_u32: u32,
     };
-    
+
     // Test maximum values for different integer types
     const args = [_][]const u8{
         "9223372036854775807", // i64 max
-        "18446744073709551615", // u64 max  
+        "18446744073709551615", // u64 max
         "2147483647", // i32 max
         "4294967295", // u32 max
     };
-    
+
     const result = try args_parser.parseArgs(Args, &args);
-    
+
     try std.testing.expectEqual(@as(i64, 9223372036854775807), result.max_i64);
     try std.testing.expectEqual(@as(u64, 18446744073709551615), result.max_u64);
     try std.testing.expectEqual(@as(i32, 2147483647), result.max_i32);
@@ -169,16 +169,16 @@ test "parseArgs with minimum integer values" {
         min_i16: i16,
         min_i8: i8,
     };
-    
+
     const args = [_][]const u8{
         "-9223372036854775808", // i64 min
         "-2147483648", // i32 min
-        "-32768", // i16 min  
+        "-32768", // i16 min
         "-128", // i8 min
     };
-    
+
     const result = try args_parser.parseArgs(Args, &args);
-    
+
     try std.testing.expectEqual(@as(i64, -9223372036854775808), result.min_i64);
     try std.testing.expectEqual(@as(i32, -2147483648), result.min_i32);
     try std.testing.expectEqual(@as(i16, -32768), result.min_i16);
@@ -189,16 +189,16 @@ test "parseArgs integer overflow edge cases" {
     const Args = struct {
         val: u8,
     };
-    
+
     // Test values that would overflow u8
     const overflow_cases = [_][]const u8{
-        "256",      // Just over max
-        "1000",     // Way over max
-        "99999",    // Very large
-        "-1",       // Negative for unsigned
-        "-128",     // Negative
+        "256", // Just over max
+        "1000", // Way over max
+        "99999", // Very large
+        "-1", // Negative for unsigned
+        "-128", // Negative
     };
-    
+
     for (overflow_cases) |case| {
         const args = [_][]const u8{case};
         try std.testing.expectError(args_parser.ParseError.InvalidArgumentType, args_parser.parseArgs(Args, &args));
@@ -209,7 +209,7 @@ test "parseArgs floating point edge cases" {
     const Args = struct {
         val: f64,
     };
-    
+
     const test_cases = [_]struct { []const u8, f64 }{
         .{ "0.0", 0.0 },
         .{ "-0.0", -0.0 },
@@ -219,13 +219,13 @@ test "parseArgs floating point edge cases" {
         .{ "-inf", -std.math.inf(f64) },
         .{ "nan", std.math.nan(f64) },
     };
-    
+
     for (test_cases) |case| {
         const args = [_][]const u8{case[0]};
         const result = args_parser.parseArgs(Args, &args);
         try std.testing.expect(!result.isError());
         const parsed = result.unwrap();
-        
+
         if (std.math.isNan(case[1])) {
             try std.testing.expect(std.math.isNan(result.val));
         } else if (std.math.isInf(case[1])) {
@@ -241,17 +241,17 @@ test "parseArgs with malformed float values" {
     const Args = struct {
         val: f32,
     };
-    
+
     const invalid_floats = [_][]const u8{
         "not_a_number",
-        "1.2.3",       // Multiple decimal points
-        "1e",          // Incomplete scientific notation
-        "1e++5",       // Invalid exponent
-        "",            // Empty string
-        " ",           // Whitespace
-        "1.0extra",    // Extra characters
+        "1.2.3", // Multiple decimal points
+        "1e", // Incomplete scientific notation
+        "1e++5", // Invalid exponent
+        "", // Empty string
+        " ", // Whitespace
+        "1.0extra", // Extra characters
     };
-    
+
     for (invalid_floats) |invalid| {
         const args = [_][]const u8{invalid};
         try std.testing.expectError(args_parser.ParseError.InvalidArgumentType, args_parser.parseArgs(Args, &args));
@@ -264,19 +264,19 @@ test "parseArgs with malformed float values" {
 
 test "error handler with very long command names" {
     const allocator = std.testing.allocator;
-    
+
     // Create a very long command name that should still generate suggestions
     var long_cmd_buf: [200]u8 = undefined;
     @memset(&long_cmd_buf, 'x');
     const long_cmd = long_cmd_buf[0..100];
-    
+
     const available_commands = [_][]const u8{ "list", "search", "create", "delete" };
-    
+
     var buffer: [2048]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    
+
     try error_handler.handleCommandNotFound(stream.writer(), long_cmd, &available_commands, "myapp", allocator);
-    
+
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown command") != null);
     try std.testing.expect(output.len < buffer.len); // Should not overflow
@@ -284,14 +284,14 @@ test "error handler with very long command names" {
 
 test "error handler with empty command lists" {
     const allocator = std.testing.allocator;
-    
+
     const no_commands = [_][]const u8{};
-    
+
     var buffer: [1024]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    
+
     try error_handler.handleCommandNotFound(stream.writer(), "missing", &no_commands, "myapp", allocator);
-    
+
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown command 'missing'") != null);
     // The actual error handler might not include "No commands available" text
@@ -323,36 +323,36 @@ test "edit distance with very different strings" {
 
 test "parseOptions with duplicate option handling" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         count: u32 = 1,
         files: [][]const u8 = &.{},
     };
-    
+
     // Test that non-array options take the last value when duplicated
     const args = [_][]const u8{
-        "--count", "5", 
+        "--count", "5",
         "--count", "10", // This should override the previous value
         "--files", "a.txt",
         "--files", "b.txt", // Array options should accumulate
     };
-    
+
     const result = try options_parser.parseOptions(Options, allocator, &args);
     defer options_parser.cleanupOptions(Options, result.options, allocator);
-    
+
     try std.testing.expectEqual(@as(u32, 10), result.options.count); // Last value wins
     try std.testing.expectEqual(@as(usize, 2), result.options.files.len); // Array accumulates
 }
 
 test "parseOptions with mixed short and long options" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         verbose: bool = false,
         count: u32 = 0,
         output: []const u8 = "stdout",
     };
-    
+
     const meta = .{
         .options = .{
             .verbose = .{ .short = 'v' },
@@ -360,12 +360,12 @@ test "parseOptions with mixed short and long options" {
             .output = .{ .short = 'o' },
         },
     };
-    
+
     const args = [_][]const u8{ "-v", "--count", "42", "-o", "file.txt" };
-    
+
     const result = try options_parser.parseOptionsWithMeta(Options, meta, allocator, &args);
     defer options_parser.cleanupOptions(Options, result.options, allocator);
-    
+
     try std.testing.expectEqual(true, result.options.verbose);
     try std.testing.expectEqual(@as(u32, 42), result.options.count);
     try std.testing.expectEqualStrings("file.txt", result.options.output);
@@ -373,21 +373,21 @@ test "parseOptions with mixed short and long options" {
 
 test "parseOptions with option-like values" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         message: []const u8 = "",
         number: i32 = 0,
     };
-    
-    // Test negative numbers (which are correctly handled) and values after double-dash  
+
+    // Test negative numbers (which are correctly handled) and values after double-dash
     const args = [_][]const u8{
-        "--number", "-42",               // Negative number should work
-        "--message", "normal-value",     // Normal value
+        "--number", "-42", // Negative number should work
+        "--message", "normal-value", // Normal value
     };
-    
+
     const result = try options_parser.parseOptions(Options, allocator, &args);
     defer options_parser.cleanupOptions(Options, result.options, allocator);
-    
+
     try std.testing.expectEqualStrings("normal-value", result.options.message);
     try std.testing.expectEqual(@as(i32, -42), result.options.number);
 }
@@ -399,13 +399,13 @@ test "parseOptions with option-like values" {
 test "generateAppHelp with empty registry" {
     var buffer: [1024]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
-    
+
     const empty_registry = struct {
         commands: struct {} = .{},
     }{};
-    
+
     try help_generator.generateAppHelp(empty_registry, stream.writer(), "empty-app", "1.0.0", "An app with no commands");
-    
+
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "empty-app v1.0.0") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "An app with no commands") != null);
@@ -418,10 +418,10 @@ test "generateAppHelp with empty registry" {
 
 test "Context creation and method access" {
     const allocator = std.testing.allocator;
-    
+
     var env = std.process.EnvMap.init(allocator);
     defer env.deinit();
-    
+
     const context = zcli.Context{
         .allocator = allocator,
         .io = zcli.IO{
@@ -433,13 +433,13 @@ test "Context creation and method access" {
             .env = env,
         },
     };
-    
+
     // Test convenience methods
     const stdout = context.stdout();
-    const stderr = context.stderr();  
+    const stderr = context.stderr();
     const stdin = context.stdin();
     const env_ref = context.env();
-    
+
     // Verify types are correct
     try std.testing.expect(@TypeOf(stdout) == std.fs.File.Writer);
     try std.testing.expect(@TypeOf(stderr) == std.fs.File.Writer);
@@ -453,47 +453,48 @@ test "Context creation and method access" {
 
 test "options cleanup with nested arrays" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         files: [][]const u8 = &.{},
         numbers: []i32 = &.{},
         tags: [][]const u8 = &.{},
     };
-    
+
     const args = [_][]const u8{
-        "--files", "a.txt", "--files", "b.txt",
-        "--numbers", "1", "--numbers", "2", "--numbers", "3",
-        "--tags", "urgent", "--tags", "bug-fix",
+        "--files",   "a.txt",   "--files",   "b.txt",
+        "--numbers", "1",       "--numbers", "2",
+        "--numbers", "3",       "--tags",    "urgent",
+        "--tags",    "bug-fix",
     };
-    
+
     const result = try options_parser.parseOptions(Options, allocator, &args);
-    
+
     // Verify arrays were allocated properly
     try std.testing.expectEqual(@as(usize, 2), result.options.files.len);
     try std.testing.expectEqual(@as(usize, 3), result.options.numbers.len);
     try std.testing.expectEqual(@as(usize, 2), result.options.tags.len);
-    
+
     // Cleanup should work without issues
     options_parser.cleanupOptions(Options, result.options, allocator);
 }
 
 test "parseOptions memory cleanup on error" {
     const allocator = std.testing.allocator;
-    
+
     const Options = struct {
         files: [][]const u8 = &.{},
         count: u32 = 0,
     };
-    
+
     // This should fail due to invalid count value, but files array gets allocated first
     const args = [_][]const u8{
         "--files", "test.txt",
         "--count", "not_a_number", // This will cause an error
     };
-    
+
     const result = options_parser.parseOptions(Options, allocator, &args);
     try std.testing.expectError(options_parser.OptionParseError.InvalidOptionValue, result);
-    
+
     // Memory should be cleaned up automatically on error
     // No explicit cleanup needed since parsing failed
 }

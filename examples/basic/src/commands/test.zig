@@ -16,5 +16,5 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     _ = args;
     _ = options;
 
-    try context.stdout.print("This is a dynamically discovered test command!\n", .{});
+    try context.stdout().print("This is a dynamically discovered test command!\n", .{});
 }

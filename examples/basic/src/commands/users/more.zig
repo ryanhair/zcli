@@ -10,5 +10,5 @@ pub const Args = struct {};
 pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
-    try context.stdout.print("Hi there!\n", .{});
+    try context.stdout().print("Hi there!\n", .{});
 }

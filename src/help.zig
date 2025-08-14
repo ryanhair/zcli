@@ -2,6 +2,33 @@ const std = @import("std");
 const logging = @import("logging.zig");
 const args_parser = @import("args.zig");
 
+/// Helper function to get field description from command metadata
+fn getFieldDescription(comptime meta: anytype, comptime field_name: []const u8, comptime category: []const u8) ?[]const u8 {
+    if (!@hasField(@TypeOf(meta), category)) return null;
+
+    const category_meta = @field(meta, category);
+    if (!@hasField(@TypeOf(category_meta), field_name)) return null;
+
+    const field_meta = @field(category_meta, field_name);
+    const field_type = @TypeOf(field_meta);
+
+    // For backward compatibility, support both string descriptions and struct metadata
+    // Check if it's a string type (slice of const u8)
+    const type_info = @typeInfo(field_type);
+    if (type_info == .pointer and type_info.pointer.size == .slice and type_info.pointer.child == u8) {
+        return field_meta;
+    }
+
+    // Check if it's a struct with a desc field
+    if (type_info == .@"struct") {
+        if (@hasField(field_type, "desc")) {
+            return field_meta.desc;
+        }
+    }
+
+    return null;
+}
+
 pub fn generateCommandHelp(
     comptime command_module: type,
     writer: anytype,
@@ -38,12 +65,12 @@ pub fn generateCommandHelp(
 
     // Arguments section
     if (@hasDecl(command_module, "Args")) {
-        try generateArgsHelp(command_module.Args, writer);
+        try generateArgsHelp(command_module.Args, meta, writer);
     }
 
     // Options section
     if (@hasDecl(command_module, "Options")) {
-        try generateOptionsHelp(command_module.Options, writer);
+        try generateOptionsHelp(command_module.Options, meta, writer);
     }
 
     // Examples section
@@ -216,7 +243,7 @@ fn generateArgsUsage(comptime args_type: type, writer: anytype) !void {
     }
 }
 
-fn generateArgsHelp(comptime args_type: type, writer: anytype) !void {
+fn generateArgsHelp(comptime args_type: type, comptime meta: anytype, writer: anytype) !void {
     const type_info = @typeInfo(args_type);
     if (type_info != .@"struct") return;
 
@@ -235,14 +262,19 @@ fn generateArgsHelp(comptime args_type: type, writer: anytype) !void {
             try writer.print("<{s}>        ", .{field.name});
         }
 
-        // TODO: Add field documentation from comments or metadata
-        try writer.print("(type: {s})\n", .{@typeName(field.type)});
+        // Use metadata description if available, otherwise show type
+        const description = getFieldDescription(meta, field.name, "args");
+        if (description) |desc| {
+            try writer.print("{s}\n", .{desc});
+        } else {
+            try writer.print("(type: {s})\n", .{@typeName(field.type)});
+        }
     }
 
     try writer.print("\n", .{});
 }
 
-fn generateOptionsHelp(comptime options_type: type, writer: anytype) !void {
+fn generateOptionsHelp(comptime options_type: type, comptime meta: anytype, writer: anytype) !void {
     const type_info = @typeInfo(options_type);
     if (type_info != .@"struct") return;
 
@@ -267,11 +299,24 @@ fn generateOptionsHelp(comptime options_type: type, writer: anytype) !void {
             }
         }
 
-        // Add default value info
-        if (field.type == bool) {
-            try writer.print("    (default: false)", .{});
-        } else if (@typeInfo(field.type) == .optional) {
-            try writer.print("    (optional)", .{});
+        // Use metadata description if available, otherwise show default/type info
+        const description = getFieldDescription(meta, field.name, "options");
+        if (description) |desc| {
+            try writer.print("    {s}", .{desc});
+
+            // Still show default/optional info after description
+            if (field.type == bool) {
+                try writer.print(" (default: false)", .{});
+            } else if (@typeInfo(field.type) == .optional) {
+                try writer.print(" (optional)", .{});
+            }
+        } else {
+            // Fallback to original behavior
+            if (field.type == bool) {
+                try writer.print("    (default: false)", .{});
+            } else if (@typeInfo(field.type) == .optional) {
+                try writer.print("    (optional)", .{});
+            }
         }
 
         try writer.print("\n", .{});
@@ -694,7 +739,8 @@ test "generateOptionsHelp all option types" {
     var buffer: [2048]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
 
-    try generateOptionsHelp(TestOptions, stream.writer());
+    const empty_meta = .{}; // No metadata for this test
+    try generateOptionsHelp(TestOptions, empty_meta, stream.writer());
 
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "OPTIONS:") != null);

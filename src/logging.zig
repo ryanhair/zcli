@@ -2,12 +2,11 @@ const std = @import("std");
 
 /// Centralized logging utilities for zcli framework
 /// Provides consistent error message formatting across all modules
-
 /// Log levels for zcli operations
 pub const Level = enum {
     /// For build-time errors that prevent compilation
     build_error,
-    /// For runtime parsing errors (user input issues)  
+    /// For runtime parsing errors (user input issues)
     parse_error,
     /// For build-time warnings (skipped files, etc.)
     build_warning,
@@ -19,7 +18,7 @@ pub const Level = enum {
 pub fn logError(comptime level: Level, comptime fmt: []const u8, args: anytype) void {
     switch (level) {
         .build_error => std.log.err(fmt, args),
-        .parse_error => std.log.err(fmt, args), 
+        .parse_error => std.log.err(fmt, args),
         .build_warning => std.log.warn(fmt, args),
         .validation_warning => std.log.warn(fmt, args),
     }
@@ -30,7 +29,7 @@ pub fn logArgumentError(comptime fmt: []const u8, args: anytype) void {
     logError(.parse_error, fmt, args);
 }
 
-/// Log option parsing errors with consistent formatting  
+/// Log option parsing errors with consistent formatting
 pub fn logOptionError(comptime fmt: []const u8, args: anytype) void {
     logError(.parse_error, fmt, args);
 }
@@ -163,13 +162,13 @@ pub fn registryGenerationFailed(err: anyerror) void {
 test "logging utility functions" {
     // Test that functions compile and can be called
     // Note: These will actually log during tests but that's expected
-    
+
     missingRequiredArgument("name", 1);
     tooManyArguments(2, 3);
     invalidArgumentValue("not_a_number", "integer");
     invalidBooleanArgument("maybe");
     invalidEnumArgument("purple");
-    
+
     unknownOption("unknown");
     unknownOption("u"); // short option
     missingOptionValue("output");
@@ -177,10 +176,10 @@ test "logging utility functions" {
     invalidShortOptionValue('c', "xyz", "integer");
     booleanOptionWithValue("verbose");
     optionNameTooLong("very-long-option-name", 16);
-    
+
     invalidCommandName("bad name", "contains spaces");
     maxNestingDepthReached(6, "/deep/path/here");
     fieldNameTooLong("very_long_field_name_that_exceeds_limits", 32);
-    
+
     buildError("Test Error", "/path/to/file", "Test description", "Test suggestion");
 }

@@ -37,8 +37,7 @@
     // internet connectivity.
     .dependencies = .{
         .zcli = .{
-            .url = "../..",
-            .hash = "zcli-0.1.0-0BMTAD98qQWUzFkRJulK6K_xuCY9s5QMK923LgiNuiWG",
+            .path = "../..",
         },
     },
     .paths = .{

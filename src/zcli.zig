@@ -34,6 +34,7 @@ pub const parseOptions = options_parser.parseOptions;
 ///
 /// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
+pub const parseOptionsAndArgs = options_parser.parseOptionsAndArgs;
 
 /// Clean up memory allocated for array options by parseOptions/parseOptionsWithMeta.
 ///
@@ -651,10 +652,34 @@ pub fn App(comptime Registry: type) type {
         fn showCommandHelp(self: *Self, command_entry: anytype) !void {
             const stdout = std.io.getStdOut().writer();
 
-            // For now, provide a simple fallback help message
-            // TODO: Implement proper help extraction from command modules
-            _ = command_entry;
-            try stdout.print("Command-specific help for '{s}' (detailed help not yet implemented)\n", .{self.name});
+            // Check if command_entry is a struct
+            const type_info = @typeInfo(@TypeOf(command_entry));
+            if (type_info == .@"struct") {
+                // Check if it has a module field (regular command)
+                comptime var has_module = false;
+                inline for (type_info.@"struct".fields) |field| {
+                    if (comptime std.mem.eql(u8, field.name, "module")) {
+                        has_module = true;
+                        break;
+                    }
+                }
+
+                if (has_module) {
+                    // The module field contains the imported module type
+                    const module = command_entry.module;
+
+                    // Generate help from the command module
+                    // We need to pass the full command path for proper usage display
+                    // For now, we'll use just the app name - in a more complete implementation
+                    // we'd track the full command path
+                    const command_path = [_][]const u8{};
+                    try help_generator.generateCommandHelp(module, stdout, &command_path, self.name);
+                    return;
+                }
+            }
+
+            // Fallback for commands without module field or non-struct types
+            try stdout.print("Command help for '{s}'\n", .{self.name});
             try stdout.print("Use '{s} --help' to see all available commands.\n", .{self.name});
         }
     };

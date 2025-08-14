@@ -8,21 +8,21 @@ pub fn ParseResult(comptime T: type) type {
     return union(enum) {
         ok: T,
         err: StructuredError,
-        
+
         pub fn unwrap(self: @This()) T {
             return switch (self) {
                 .ok => |value| value,
                 .err => @panic("Tried to unwrap error result"),
             };
         }
-        
+
         pub fn isError(self: @This()) bool {
             return switch (self) {
                 .ok => false,
                 .err => true,
             };
         }
-        
+
         pub fn getError(self: @This()) ?StructuredError {
             return switch (self) {
                 .ok => null,
@@ -87,7 +87,7 @@ pub fn ParseResult(comptime T: type) type {
 /// - `.ok`: Successfully parsed arguments of type ArgsType
 /// - `.err`: Structured error with rich context information including:
 ///   - `argument_missing_required`: Missing required argument with field name, position, expected type
-///   - `argument_invalid_value`: Invalid argument value with provided value, field name, position, expected type  
+///   - `argument_invalid_value`: Invalid argument value with provided value, field name, position, expected type
 ///   - `argument_too_many`: Too many arguments provided with expected count
 ///   - `system_out_of_memory`: Out of memory
 pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ParseResult(ArgsType) {
@@ -132,11 +132,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ParseRes
             // Required field
             if (arg_index >= args.len) {
                 logging.missingRequiredArgument(field.name, field_index + 1);
-                return ParseResult(ArgsType){ .err = ErrorBuilder.missingRequiredArgument(
-                    field.name, 
-                    field_index, 
-                    @typeName(field_type)
-                ) };
+                return ParseResult(ArgsType){ .err = ErrorBuilder.missingRequiredArgument(field.name, field_index, @typeName(field_type)) };
             }
 
             const parsed_value = parseValueWithContext(field_type, args[arg_index], field.name, field_index);
@@ -151,14 +147,12 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ParseRes
     // Check if there are too many arguments (only if no varargs field)
     if (!hasVarArgs(ArgsType) and arg_index < args.len) {
         logging.tooManyArguments(getRequiredArgCount(ArgsType), args.len);
-        return ParseResult(ArgsType){ .err = StructuredError{
-            .argument_too_many = .{
-                .field_name = "",
-                .position = getRequiredArgCount(ArgsType),
-                .provided_value = null,
-                .expected_type = "argument count",
-            }
-        } };
+        return ParseResult(ArgsType){ .err = StructuredError{ .argument_too_many = .{
+            .field_name = "",
+            .position = getRequiredArgCount(ArgsType),
+            .provided_value = null,
+            .expected_type = "argument count",
+        } } };
     }
 
     return ParseResult(ArgsType){ .ok = result };
@@ -167,12 +161,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ParseRes
 /// Parse a single value with structured error context
 fn parseValueWithContext(comptime T: type, value: []const u8, field_name: []const u8, field_index: usize) ParseResult(T) {
     const parsed = parseValue(T, value) catch {
-        return ParseResult(T){ .err = ErrorBuilder.invalidArgumentValue(
-            field_name,
-            field_index,
-            value,
-            @typeName(T)
-        ) };
+        return ParseResult(T){ .err = ErrorBuilder.invalidArgumentValue(field_name, field_index, value, @typeName(T)) };
     };
     return ParseResult(T){ .ok = parsed };
 }
@@ -275,14 +264,13 @@ fn getRequiredArgCount(comptime T: type) usize {
     return count;
 }
 
-
 // Tests
 test "isVarArgs function" {
     // Test that normal types are NOT varargs
     try std.testing.expect(!isVarArgs([]const u8));
     try std.testing.expect(!isVarArgs(u32));
     try std.testing.expect(!isVarArgs(?bool));
-    
+
     // Test that varargs type IS varargs
     try std.testing.expect(isVarArgs([][]const u8));
 }
@@ -750,13 +738,13 @@ test "parseArgs structured error context" {
 
     // Test that structured error context is captured
     const args = [_][]const u8{}; // Missing both arguments
-    
+
     const result = parseArgs(TestArgs, &args);
     try std.testing.expect(result.isError());
-    
+
     // Get the structured error directly
     const structured_error = result.getError().?;
-    
+
     switch (structured_error) {
         .argument_missing_required => |ctx| {
             try std.testing.expectEqualStrings("name", ctx.field_name);

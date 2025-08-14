@@ -26,7 +26,7 @@ pub const CommandInfo = struct {
     }
 };
 
-// Export for testing  
+// Export for testing
 pub const DiscoveredCommands = struct {
     allocator: std.mem.Allocator,
     root: std.StringHashMap(CommandInfo),
@@ -34,13 +34,13 @@ pub const DiscoveredCommands = struct {
     pub fn deinit(self: *const DiscoveredCommands) void {
         // We need to cast away const to properly clean up memory
         const mutable_self = @constCast(self);
-        
+
         // Clean up all command info structures recursively
         var it = mutable_self.root.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.deinit();
         }
-        
+
         // Clean up the root hashmap
         mutable_self.root.deinit();
     }
@@ -61,48 +61,20 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
         // Provide detailed error messages for common issues
         switch (err) {
             error.InvalidPath => {
-                logging.buildError(
-                    "Command Discovery Error", 
-                    options.commands_dir, 
-                    "Invalid commands directory path.\nPath contains '..' which is not allowed for security reasons", 
-                    "Please use a relative path without '..' or an absolute path"
-                );
+                logging.buildError("Command Discovery Error", options.commands_dir, "Invalid commands directory path.\nPath contains '..' which is not allowed for security reasons", "Please use a relative path without '..' or an absolute path");
             },
             error.FileNotFound => {
-                logging.buildError(
-                    "Command Discovery Error",
-                    options.commands_dir,
-                    "Commands directory not found",
-                    "Please ensure the directory exists and the path is correct"
-                );
+                logging.buildError("Command Discovery Error", options.commands_dir, "Commands directory not found", "Please ensure the directory exists and the path is correct");
             },
             error.AccessDenied => {
-                logging.buildError(
-                    "Command Discovery Error",
-                    options.commands_dir,
-                    "Access denied to commands directory",
-                    "Please check file permissions for the directory"
-                );
+                logging.buildError("Command Discovery Error", options.commands_dir, "Access denied to commands directory", "Please check file permissions for the directory");
             },
             error.OutOfMemory => {
-                logging.buildError(
-                    "Build Error",
-                    "memory allocation",
-                    "Out of memory during command discovery",
-                    "Try reducing the number of commands or increasing available memory"
-                );
+                logging.buildError("Build Error", "memory allocation", "Out of memory during command discovery", "Try reducing the number of commands or increasing available memory");
             },
             else => {
-                const err_msg = std.fmt.allocPrint(b.allocator, "Failed to discover commands. Error: {any}", .{err}) catch "Failed to discover commands (unknown error)";
-                logging.buildError(
-                    "Command Discovery Error",
-                    options.commands_dir,
-                    err_msg,
-                    "Check the command directory structure and file permissions"
-                );
-                if (!std.mem.eql(u8, err_msg, "Failed to discover commands (unknown error)")) {
-                    b.allocator.free(err_msg);
-                }
+                logging.buildError("Command Discovery Error", options.commands_dir, "Failed to discover commands", "Check the command directory structure and file permissions");
+                std.debug.print("Error details: {any}\n", .{err});
             },
         }
         // Use a generic panic message since we've already logged details
@@ -115,9 +87,6 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
         switch (err) {
             error.OutOfMemory => {
                 logging.registryGenerationOutOfMemory();
-            },
-            else => {
-                logging.registryGenerationFailed(err);
             },
         }
         @panic("Registry generation failed. See error message above for details.");
@@ -227,7 +196,7 @@ fn scanDirectory(
                 // Create temporary group info with unowned strings to scan first
                 const temp_group_base_path = try std.fs.path.join(allocator, &.{ base_path, entry.name });
                 defer allocator.free(temp_group_base_path);
-                
+
                 var temp_group_info = CommandInfo{
                     .name = entry.name, // Use unowned string temporarily
                     .path = temp_group_base_path,
@@ -244,7 +213,7 @@ fn scanDirectory(
                     // Now allocate owned strings since we're keeping this group
                     const group_name = try allocator.dupe(u8, entry.name);
                     const group_base_path = try allocator.dupe(u8, temp_group_base_path);
-                    
+
                     const group_info = CommandInfo{
                         .name = group_name,
                         .path = group_base_path,
@@ -252,7 +221,7 @@ fn scanDirectory(
                         .children = temp_group_info.children, // Transfer ownership
                         .allocator = allocator,
                     };
-                    
+
                     try commands.put(group_name, group_info);
                 } else {
                     // Clean up the temporary group since we're not keeping it
@@ -404,26 +373,34 @@ fn generateSingleExecutionFunction(writer: anytype, func_name: []const u8, modul
         \\fn {s}(args: []const []const u8, allocator: std.mem.Allocator, context: *zcli.Context) !void {{
         \\    const command = @import("{s}");
         \\    
-        \\    // Parse options first if they exist
+        \\    // Parse args and options together (supports mixed order)
         \\    var remaining_args: []const []const u8 = args;
         \\    
+        \\    var remaining_args_slice: ?[]const []const u8 = null;
         \\    const parsed_options = if (@hasDecl(command, "Options")) blk: {{
         \\        const command_meta = if (@hasDecl(command, "meta")) command.meta else null;
-        \\        const options_result = try zcli.parseOptionsWithMeta(command.Options, command_meta, allocator, args);
-        \\        remaining_args = args[options_result.result.next_arg_index..];
-        \\        break :blk options_result.options;
+        \\        const result = try zcli.parseOptionsAndArgs(command.Options, command_meta, allocator, args);
+        \\        remaining_args_slice = result.remaining_args;
+        \\        remaining_args = result.remaining_args;
+        \\        break :blk result.options;
         \\    }} else .{{}};
         \\    
-        \\    // Setup cleanup for array fields in options
+        \\    // Setup cleanup for array fields in options and remaining args
         \\    defer if (@hasDecl(command, "Options")) {{
         \\        cleanupArrayOptions(command.Options, parsed_options, allocator);
         \\    }};
+        \\    defer if (remaining_args_slice) |slice| {{
+        \\        allocator.free(slice);
+        \\    }};
         \\    
         \\    // Parse remaining arguments
-        \\    const parsed_args = if (@hasDecl(command, "Args")) 
-        \\        try zcli.parseArgs(command.Args, remaining_args)
-        \\    else 
-        \\        .{{}};
+        \\    const parsed_args = if (@hasDecl(command, "Args")) blk: {{
+        \\        const result = zcli.parseArgs(command.Args, remaining_args);
+        \\        switch (result) {{
+        \\            .ok => |parsed| break :blk parsed,
+        \\            .err => |e| return e.toSimpleError(),
+        \\        }}
+        \\    }} else .{{}};
         \\    
         \\    // Execute the command
         \\    if (@hasDecl(command, "execute")) {{

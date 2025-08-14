@@ -9,6 +9,10 @@ pub const meta = .{
         "users list --format json",
         "users list --limit 5",
     },
+    .options = .{
+        .format = .{ .desc = "Output format for the user list" },
+        .limit = .{ .desc = "Maximum number of users to display" },
+    },
 };
 
 pub const Args = struct {};
@@ -32,19 +36,19 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 
     switch (options.format) {
         .json => {
-            try context.stdout.print("[\n", .{});
+            try context.stdout().print("[\n", .{});
             for (users[0..actual_limit], 0..) |user, i| {
-                try context.stdout.print("  {{\"name\": \"{s}\", \"email\": \"{s}\"}}", .{ user.name, user.email });
-                if (i < actual_limit - 1) try context.stdout.print(",", .{});
-                try context.stdout.print("\n", .{});
+                try context.stdout().print("  {{\"name\": \"{s}\", \"email\": \"{s}\"}}", .{ user.name, user.email });
+                if (i < actual_limit - 1) try context.stdout().print(",", .{});
+                try context.stdout().print("\n", .{});
             }
-            try context.stdout.print("]\n", .{});
+            try context.stdout().print("]\n", .{});
         },
         .table => {
-            try context.stdout.print("Name     | Email\n", .{});
-            try context.stdout.print("---------|------------------\n", .{});
+            try context.stdout().print("Name     | Email\n", .{});
+            try context.stdout().print("---------|------------------\n", .{});
             for (users[0..actual_limit]) |user| {
-                try context.stdout.print("{s:<8} | {s}\n", .{ user.name, user.email });
+                try context.stdout().print("{s:<8} | {s}\n", .{ user.name, user.email });
             }
         },
     }

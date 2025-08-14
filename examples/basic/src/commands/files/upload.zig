@@ -16,6 +16,6 @@ pub const Options = struct {
 
 pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
     for (options.files) |file| {
-        try context.stdout.print("Uploading file: {s}\n", .{file});
+        try context.stdout().print("Uploading file: {s}\n", .{file});
     }
 }

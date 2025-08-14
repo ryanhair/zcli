@@ -28,16 +28,16 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         .{ .name = "alice", .email = "alice2@example.com" },
     };
 
-    try context.stdout.print("Searching for: {s}\n", .{args.query});
+    try context.stdout().print("Searching for: {s}\n", .{args.query});
     if (args.files.len > 0) {
-        try context.stdout.print("In files: ", .{});
+        try context.stdout().print("In files: ", .{});
         for (args.files, 0..) |file, i| {
-            if (i > 0) try context.stdout.print(", ", .{});
-            try context.stdout.print("{s}", .{file});
+            if (i > 0) try context.stdout().print(", ", .{});
+            try context.stdout().print("{s}", .{file});
         }
-        try context.stdout.print("\n", .{});
+        try context.stdout().print("\n", .{});
     }
-    try context.stdout.print("Case sensitive: {}\n\n", .{options.case_sensitive});
+    try context.stdout().print("Case sensitive: {}\n\n", .{options.case_sensitive});
 
     var found = false;
     for (users) |user| {
@@ -47,12 +47,12 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             std.ascii.indexOfIgnoreCase(user.name, args.query) != null;
 
         if (matches) {
-            try context.stdout.print("Found: {s} ({s})\n", .{ user.name, user.email });
+            try context.stdout().print("Found: {s} ({s})\n", .{ user.name, user.email });
             found = true;
         }
     }
 
     if (!found) {
-        try context.stdout.print("No users found matching '{s}'\n", .{args.query});
+        try context.stdout().print("No users found matching '{s}'\n", .{args.query});
     }
 }

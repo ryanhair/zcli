@@ -25,7 +25,7 @@ pub const ArrayListUnion = union(enum) {
     }
 };
 
-/// Create ArrayListUnion for a given element type  
+/// Create ArrayListUnion for a given element type
 /// Uses comptime to eliminate repetition and ensure type safety
 pub fn createArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator) ArrayListUnion {
     return switch (ElementType) {
@@ -48,17 +48,22 @@ pub fn createArrayListUnion(comptime ElementType: type, allocator: std.mem.Alloc
 fn getFieldName(comptime T: type) []const u8 {
     return switch (T) {
         []const u8 => "strings",
-        i32 => "i32s", u32 => "u32s",
-        i16 => "i16s", u16 => "u16s",
-        i8 => "i8s", u8 => "u8s",
-        i64 => "i64s", u64 => "u64s",
-        f32 => "f32s", f64 => "f64s",
+        i32 => "i32s",
+        u32 => "u32s",
+        i16 => "i16s",
+        u16 => "u16s",
+        i8 => "i8s",
+        u8 => "u8s",
+        i64 => "i64s",
+        u64 => "u64s",
+        f32 => "f32s",
+        f64 => "f64s",
         else => @compileError("Unsupported type: " ++ @typeName(T)),
     };
 }
 
 /// Generic helper to append a value to an ArrayListUnion
-/// Replaces ~80 lines of repetitive switch cases with clean generic code  
+/// Replaces ~80 lines of repetitive switch cases with clean generic code
 pub fn appendToArrayListUnion(comptime ElementType: type, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
     switch (comptime ElementType) {
         []const u8 => try list_union.strings.append(value),
@@ -95,7 +100,7 @@ pub fn appendToArrayListUnionShort(comptime ElementType: type, list_union: *Arra
 /// Replaces ~15 lines of repetitive switch cases with clean generic code
 pub fn arrayListUnionToOwnedSlice(comptime ElementType: type, list_union: *ArrayListUnion) !ElementType {
     const ChildType = @typeInfo(ElementType).pointer.child;
-    
+
     return switch (comptime ChildType) {
         []const u8 => list_union.strings.toOwnedSlice(),
         inline i32, u32, i16, u16, i8, u8, i64, u64, f32, f64 => |T| {

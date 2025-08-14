@@ -16,6 +16,7 @@ pub const OptionsResult = types.OptionsResult;
 // Main parsing functions
 pub const parseOptions = parser.parseOptions;
 pub const parseOptionsWithMeta = parser.parseOptionsWithMeta;
+pub const parseOptionsAndArgs = parser.parseOptionsAndArgs;
 pub const cleanupOptions = parser.cleanupOptions;
 
 // Utility functions that users might need (currently none - all utilities are internal)
