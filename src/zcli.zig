@@ -18,10 +18,20 @@ pub const parseArgs = args_parser.parseArgs;
 
 /// Parse command-line options into a struct using default field names.
 ///
+/// Returns a `ParseResult` with either successful parsing or structured error details.
+///
 /// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
 /// ```zig
-/// const result = try parseOptions(Options, allocator, args);
-/// defer cleanupOptions(Options, result.options, allocator);  // REQUIRED!
+/// const result = parseOptions(Options, allocator, args);
+/// switch (result) {
+///     .ok => |parsed| {
+///         defer cleanupOptions(Options, parsed.options, allocator);  // REQUIRED!
+///         // Use parsed.options...
+///     },
+///     .err => |structured_err| {
+///         // Handle structured_err with rich context
+///     },
+/// }
 /// ```
 ///
 /// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
@@ -29,11 +39,35 @@ pub const parseOptions = options_parser.parseOptions;
 
 /// Parse command-line options with custom metadata for option names.
 ///
+/// Returns a `ParseResult` with either successful parsing or structured error details.
+///
 /// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
 /// Always call `cleanupOptions` when done. See `parseOptions` for details.
 ///
 /// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
+
+/// Parse options from anywhere in arguments, returning options and remaining positional arguments.
+///
+/// Returns a `ParseResult` with either successful parsing or structured error details.
+/// This function separates options from positional arguments regardless of their order.
+///
+/// **Memory Management**: ⚠️ CRITICAL - Both array options AND remaining_args allocate memory!
+/// ```zig
+/// const result = parseOptionsAndArgs(Options, meta, allocator, args);
+/// switch (result) {
+///     .ok => |parsed| {
+///         defer cleanupOptions(Options, parsed.options, allocator);  // REQUIRED!
+///         defer parsed.deinit();  // REQUIRED for remaining_args!
+///         // Use parsed.options and parsed.remaining_args...
+///     },
+///     .err => |structured_err| {
+///         // Handle structured_err with rich context
+///     },
+/// }
+/// ```
+///
+/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const parseOptionsAndArgs = options_parser.parseOptionsAndArgs;
 
 /// Clean up memory allocated for array options by parseOptions/parseOptionsWithMeta.

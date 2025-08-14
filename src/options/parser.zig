@@ -1207,6 +1207,11 @@ pub fn ParseOptionsAndArgsResult(comptime OptionsType: type) type {
     };
 }
 
+/// ParseResult wrapper for parseOptionsAndArgs
+pub fn OptionsAndArgsParseResult(comptime OptionsType: type) type {
+    return args_parser.ParseResult(ParseOptionsAndArgsResult(OptionsType));
+}
+
 /// Helper function to check if an option expects a value
 fn optionExpectsValue(comptime OptionsType: type, comptime meta: anytype, option_name: []const u8) bool {
     const struct_info = @typeInfo(OptionsType).@"struct";
@@ -1264,12 +1269,12 @@ pub fn parseOptionsAndArgs(
     comptime meta: anytype,
     allocator: std.mem.Allocator,
     args: []const []const u8,
-) !ParseOptionsAndArgsResult(OptionsType) {
+) OptionsAndArgsParseResult(OptionsType) {
     // Lists to collect options and remaining args
     var option_args = std.ArrayList([]const u8).init(allocator);
     defer option_args.deinit();
     var remaining_args = std.ArrayList([]const u8).init(allocator);
-    errdefer remaining_args.deinit();
+    defer remaining_args.deinit();
 
     var i: usize = 0;
     while (i < args.len) {
@@ -1277,7 +1282,9 @@ pub fn parseOptionsAndArgs(
 
         // Check if this is an option
         if (std.mem.startsWith(u8, arg, "-") and !utils.isNegativeNumber(arg)) {
-            try option_args.append(arg);
+            option_args.append(arg) catch {
+                return OptionsAndArgsParseResult(OptionsType){ .err = StructuredError{ .system_out_of_memory = {} } };
+            };
 
             // Check if this option expects a value
             var expects_value = false;
@@ -1305,24 +1312,37 @@ pub fn parseOptionsAndArgs(
             if (expects_value and i + 1 < args.len) {
                 const next_arg = args[i + 1];
                 if (!std.mem.startsWith(u8, next_arg, "-") or utils.isNegativeNumber(next_arg)) {
-                    try option_args.append(next_arg);
+                    option_args.append(next_arg) catch {
+                        return OptionsAndArgsParseResult(OptionsType){ .err = StructuredError{ .system_out_of_memory = {} } };
+                    };
                     i += 1;
                 }
             }
         } else {
             // This is a positional argument
-            try remaining_args.append(arg);
+            remaining_args.append(arg) catch {
+                return OptionsAndArgsParseResult(OptionsType){ .err = StructuredError{ .system_out_of_memory = {} } };
+            };
         }
 
         i += 1;
     }
 
     // Parse the collected options
-    const options_result = try parseOptionsWithMeta(OptionsType, meta, allocator, option_args.items);
-
-    return ParseOptionsAndArgsResult(OptionsType){
-        .options = options_result.options,
-        .remaining_args = try remaining_args.toOwnedSlice(),
-        .allocator = allocator,
-    };
+    const options_result = parseOptionsWithMeta(OptionsType, meta, allocator, option_args.items);
+    switch (options_result) {
+        .ok => |parsed| {
+            const remaining_slice = remaining_args.toOwnedSlice() catch {
+                return OptionsAndArgsParseResult(OptionsType){ .err = StructuredError{ .system_out_of_memory = {} } };
+            };
+            return OptionsAndArgsParseResult(OptionsType){ .ok = ParseOptionsAndArgsResult(OptionsType){
+                .options = parsed.options,
+                .remaining_args = remaining_slice,
+                .allocator = allocator,
+            } };
+        },
+        .err => |structured_err| {
+            return OptionsAndArgsParseResult(OptionsType){ .err = structured_err };
+        },
+    }
 }

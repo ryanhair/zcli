@@ -379,10 +379,20 @@ fn generateSingleExecutionFunction(writer: anytype, func_name: []const u8, modul
         \\    var remaining_args_slice: ?[]const []const u8 = null;
         \\    const parsed_options = if (@hasDecl(command, "Options")) blk: {{
         \\        const command_meta = if (@hasDecl(command, "meta")) command.meta else null;
-        \\        const result = try zcli.parseOptionsAndArgs(command.Options, command_meta, allocator, args);
-        \\        remaining_args_slice = result.remaining_args;
-        \\        remaining_args = result.remaining_args;
-        \\        break :blk result.options;
+        \\        const parse_result = zcli.parseOptionsAndArgs(command.Options, command_meta, allocator, args);
+        \\        switch (parse_result) {{
+        \\            .ok => |result| {{
+        \\                remaining_args_slice = result.remaining_args;
+        \\                remaining_args = result.remaining_args;
+        \\                break :blk result.options;
+        \\            }},
+        \\            .err => |structured_err| {{
+        \\                const error_description = structured_err.description(allocator) catch "Parse error";
+        \\                defer allocator.free(error_description);
+        \\                try context.stderr().print("Error: {{s}}\\n", .{{error_description}});
+        \\                return;
+        \\            }},
+        \\        }}
         \\    }} else .{{}};
         \\    
         \\    // Setup cleanup for array fields in options and remaining args
