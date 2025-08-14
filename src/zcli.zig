@@ -46,30 +46,14 @@ pub const cleanupOptions = options_parser.cleanupOptions;
 
 /// Error types for argument parsing failures.
 ///
-/// These errors can occur when parsing positional arguments with `parseArgs`:
-/// - `MissingRequiredArgument`: Required argument not provided
-/// - `InvalidValue`: Argument cannot be parsed to expected type
-/// - `TooManyArguments`: More arguments than expected (unless using varargs)
-pub const ParseError = args_parser.ParseError;
-
-/// Error types for command-line option parsing failures.
+/// **Note**: This is the legacy error type for backwards compatibility.
+/// New code should use `parseArgs()` which returns `ParseResult` with rich structured errors
+/// that provide detailed context including field names, positions, and expected types.
 ///
-/// These errors can occur when parsing options with `parseOptions`:
-/// - `UnknownOption`: Option not defined in Options struct
-/// - `MissingOptionValue`: Option requires value but none provided
-/// - `InvalidOptionValue`: Option value cannot be parsed to expected type
-/// - `DuplicateOption`: Same option specified multiple times
+/// These errors can occur when parsing positional arguments:
+/// - `InvalidArgumentType`: Argument cannot be parsed to expected type
 /// - `OutOfMemory`: Memory allocation failed
-pub const OptionParseError = options_parser.OptionParseError;
-
-/// General CLI error types for application-level failures.
-///
-/// These errors represent higher-level CLI application failures:
-/// - `CommandNotFound`: Specified command doesn't exist
-/// - `SubcommandNotFound`: Specified subcommand doesn't exist
-/// - `HelpRequested`: User requested help (not really an error)
-/// - `VersionRequested`: User requested version info (not really an error)
-pub const CLIError = error_handler.CLIError;
+pub const ParseError = args_parser.ParseError;
 
 // Main help generation (for app-level help)
 pub const generateAppHelp = help_generator.generateAppHelp;

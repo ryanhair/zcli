@@ -3,10 +3,10 @@ const types = @import("types.zig");
 const logging = @import("../logging.zig");
 
 /// Convert dashes to underscores in option names
-pub fn dashesToUnderscores(buf: []u8, input: []const u8) types.OptionParseError![]const u8 {
+pub fn dashesToUnderscores(buf: []u8, input: []const u8) ![]const u8 {
     if (input.len > buf.len) {
         logging.optionNameTooLong(input, @intCast(buf.len));
-        return types.OptionParseError.UnknownOption;
+        return error.UnknownOption;
     }
 
     for (input, 0..) |char, i| {
@@ -58,7 +58,7 @@ pub fn isArrayType(comptime T: type) bool {
 }
 
 /// Parse a value for an option
-pub fn parseOptionValue(comptime T: type, value: []const u8) types.OptionParseError!T {
+pub fn parseOptionValue(comptime T: type, value: []const u8) !T {
     const type_info = @typeInfo(T);
 
     switch (type_info) {
@@ -71,17 +71,17 @@ pub fn parseOptionValue(comptime T: type, value: []const u8) types.OptionParseEr
         },
         .int => {
             return std.fmt.parseInt(T, value, 0) catch {
-                return types.OptionParseError.InvalidOptionValue;
+                return error.InvalidOptionValue;
             };
         },
         .float => {
             return std.fmt.parseFloat(T, value) catch {
-                return types.OptionParseError.InvalidOptionValue;
+                return error.InvalidOptionValue;
             };
         },
         .@"enum" => {
             return std.meta.stringToEnum(T, value) orelse {
-                return types.OptionParseError.InvalidOptionValue;
+                return error.InvalidOptionValue;
             };
         },
         .optional => |opt_info| {
@@ -126,7 +126,7 @@ test "dashesToUnderscores function" {
 
     // Too long
     const long_name = "this-is-a-very-long-option-name-that-exceeds-the-maximum-allowed-length";
-    try std.testing.expectError(types.OptionParseError.UnknownOption, dashesToUnderscores(&buf, long_name));
+    try std.testing.expectError(error.UnknownOption, dashesToUnderscores(&buf, long_name));
 }
 
 test "parseOptionValue integer types" {
@@ -136,9 +136,9 @@ test "parseOptionValue integer types" {
     try std.testing.expectEqual(@as(i64, -123), try parseOptionValue(i64, "-123"));
 
     // Invalid integers
-    try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(i32, "not_a_number"));
-    try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(u8, "256"));
-    try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(u32, "-1"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "not_a_number"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(u8, "256"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(u32, "-1"));
 }
 
 test "parseOptionValue float types" {
@@ -147,7 +147,7 @@ test "parseOptionValue float types" {
     try std.testing.expectApproxEqAbs(@as(f64, -2.5), try parseOptionValue(f64, "-2.5"), 0.001);
 
     // Invalid floats
-    try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(f32, "not_a_float"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(f32, "not_a_float"));
 }
 
 test "parseOptionValue string types" {
@@ -161,7 +161,7 @@ test "parseOptionValue enum types" {
     try std.testing.expectEqual(LogLevel.debug, try parseOptionValue(LogLevel, "debug"));
     try std.testing.expectEqual(LogLevel.err, try parseOptionValue(LogLevel, "err"));
 
-    try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptionValue(LogLevel, "invalid"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(LogLevel, "invalid"));
 }
 
 test "parseOptionValue optional types" {

@@ -171,7 +171,7 @@ test "appendToArrayListUnion and arrayListUnionToOwnedSlice" {
         var list = createArrayListUnion(i32, allocator);
         defer list.deinit();
 
-        try std.testing.expectError(types.OptionParseError.InvalidOptionValue, appendToArrayListUnion(i32, &list, "not_a_number", "test"));
+        try std.testing.expectError(error.InvalidOptionValue, appendToArrayListUnion(i32, &list, "not_a_number", "test"));
     }
 }
 

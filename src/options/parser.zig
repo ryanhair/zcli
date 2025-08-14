@@ -3,6 +3,14 @@ const types = @import("types.zig");
 const utils = @import("utils.zig");
 const array_utils = @import("array_utils.zig");
 const logging = @import("../logging.zig");
+const args_parser = @import("../args.zig");
+const StructuredError = @import("../structured_errors.zig").StructuredError;
+const ErrorBuilder = @import("../structured_errors.zig").ErrorBuilder;
+
+/// Result type for option parsing operations
+pub fn OptionsParseResult(comptime OptionsType: type) type {
+    return args_parser.ParseResult(types.OptionsResult(OptionsType));
+}
 
 /// Parse command-line options based on the provided Options struct type
 ///
@@ -78,7 +86,7 @@ pub fn parseOptions(
     comptime OptionsType: type,
     allocator: std.mem.Allocator,
     args: []const []const u8,
-) types.OptionParseError!types.OptionsResult(OptionsType) {
+) OptionsParseResult(OptionsType) {
     return parseOptionsWithMeta(OptionsType, null, allocator, args);
 }
 
@@ -123,7 +131,7 @@ pub fn parseOptionsWithMeta(
     comptime meta: anytype,
     allocator: std.mem.Allocator,
     args: []const []const u8,
-) types.OptionParseError!types.OptionsResult(OptionsType) {
+) OptionsParseResult(OptionsType) {
     const type_info = @typeInfo(OptionsType);
 
     if (type_info != .@"struct") {
@@ -163,52 +171,130 @@ pub fn parseOptionsWithMeta(
         }
     }
 
-    var arg_index: usize = 0;
-    var option_counts = std.StringHashMap(u32).init(allocator);
-    defer option_counts.deinit();
+    // Parse options, converting any errors to structured errors
+    const parsing_result = blk: {
+        var arg_index: usize = 0;
+        var option_counts = std.StringHashMap(u32).init(allocator);
+        defer option_counts.deinit();
 
-    while (arg_index < args.len) {
-        const arg = args[arg_index];
+        while (arg_index < args.len) {
+            const arg = args[arg_index];
 
-        // Stop parsing options at "--"
-        if (std.mem.eql(u8, arg, "--")) {
-            arg_index += 1;
-            break;
-        }
+            // Stop parsing options at "--"
+            if (std.mem.eql(u8, arg, "--")) {
+                arg_index += 1;
+                break;
+            }
 
-        // Not an option, stop parsing
-        if (!std.mem.startsWith(u8, arg, "-")) {
-            break;
-        }
+            // Not an option, stop parsing
+            if (!std.mem.startsWith(u8, arg, "-")) {
+                break;
+            }
 
-        // Check if this is a negative number - if so, stop parsing options
-        if (utils.isNegativeNumber(arg)) {
-            break;
-        }
+            // Check if this is a negative number - if so, stop parsing options
+            if (utils.isNegativeNumber(arg)) {
+                break;
+            }
 
-        if (std.mem.startsWith(u8, arg, "--")) {
-            // Long option
-            const consumed = try parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator);
-            arg_index += consumed;
-        } else {
-            // Short option(s)
-            const consumed = try parseShortOptionsWithMeta(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator);
-            arg_index += consumed;
-        }
-    }
+            if (std.mem.startsWith(u8, arg, "--")) {
+                // Long option
+                const consumed = parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator) catch |err| {
+                    // Convert error to structured error with context
+                    const option_name = if (std.mem.indexOf(u8, arg[2..], "=")) |eq_pos|
+                        arg[2 .. 2 + eq_pos]
+                    else
+                        arg[2..];
+                    const option_value = if (std.mem.indexOf(u8, arg[2..], "=")) |eq_pos|
+                        arg[2 + eq_pos + 1 ..]
+                    else if (arg_index + 1 < args.len) args[arg_index + 1] else null;
 
-    // Finalize array fields by converting ArrayLists to slices
-    inline for (struct_info.fields, 0..) |field, i| {
-        if (comptime utils.isArrayType(field.type)) {
-            if (array_lists[i]) |*list_union| {
-                @field(result, field.name) = try array_utils.arrayListUnionToOwnedSlice(field.type, list_union);
+                    break :blk args_parser.ParseResult(types.OptionsResult(OptionsType)){ .err = convertLongOptionError(err, option_name, option_value) };
+                };
+                arg_index += consumed;
+            } else {
+                // Short option(s)
+                const consumed = parseShortOptionsWithMeta(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator) catch |err| {
+                    // Convert error to structured error with context
+                    const option_char = if (arg.len > 1) arg[1] else 0;
+                    const option_name = if (arg.len > 1) arg[1..2] else "";
+                    const option_value = if (arg.len > 2) arg[2..] else if (arg_index + 1 < args.len) args[arg_index + 1] else null;
+
+                    break :blk args_parser.ParseResult(types.OptionsResult(OptionsType)){ .err = convertShortOptionError(err, option_char, option_name, option_value) };
+                };
+                arg_index += consumed;
             }
         }
-    }
 
-    return .{
-        .options = result,
-        .result = .{ .next_arg_index = arg_index },
+        // Finalize array fields by converting ArrayLists to slices
+        inline for (struct_info.fields, 0..) |field, i| {
+            if (comptime utils.isArrayType(field.type)) {
+                if (array_lists[i]) |*list_union| {
+                    @field(result, field.name) = array_utils.arrayListUnionToOwnedSlice(field.type, list_union) catch {
+                        break :blk args_parser.ParseResult(types.OptionsResult(OptionsType)){ .err = StructuredError{ .system_out_of_memory = {} } };
+                    };
+                }
+            }
+        }
+
+        break :blk args_parser.ParseResult(types.OptionsResult(OptionsType)){ .ok = .{
+            .options = result,
+            .result = .{ .next_arg_index = arg_index },
+        } };
+    };
+
+    return parsing_result;
+}
+
+/// Convert long option parsing errors to structured errors
+fn convertLongOptionError(err: anyerror, option_name: []const u8, option_value: ?[]const u8) StructuredError {
+    return switch (err) {
+        error.UnknownOption => ErrorBuilder.unknownOption(option_name, false),
+        error.MissingOptionValue => StructuredError{ .option_missing_value = .{
+            .option_name = option_name,
+            .is_short = false,
+            .provided_value = null,
+            .expected_type = "value",
+        } },
+        error.InvalidOptionValue => StructuredError{ .option_invalid_value = .{
+            .option_name = option_name,
+            .is_short = false,
+            .provided_value = option_value,
+            .expected_type = "valid value",
+        } },
+        error.OutOfMemory => StructuredError{ .system_out_of_memory = {} },
+        else => StructuredError{ .option_invalid_value = .{
+            .option_name = option_name,
+            .is_short = false,
+            .provided_value = option_value,
+            .expected_type = "valid value",
+        } },
+    };
+}
+
+/// Convert short option parsing errors to structured errors
+fn convertShortOptionError(err: anyerror, option_char: u8, option_name: []const u8, option_value: ?[]const u8) StructuredError {
+    _ = option_char; // Unused parameter
+    return switch (err) {
+        error.UnknownOption => ErrorBuilder.unknownOption(option_name, true),
+        error.MissingOptionValue => StructuredError{ .option_missing_value = .{
+            .option_name = option_name,
+            .is_short = true,
+            .provided_value = null,
+            .expected_type = "value",
+        } },
+        error.InvalidOptionValue => StructuredError{ .option_invalid_value = .{
+            .option_name = option_name,
+            .is_short = true,
+            .provided_value = option_value,
+            .expected_type = "valid value",
+        } },
+        error.OutOfMemory => StructuredError{ .system_out_of_memory = {} },
+        else => StructuredError{ .option_invalid_value = .{
+            .option_name = option_name,
+            .is_short = true,
+            .provided_value = option_value,
+            .expected_type = "valid value",
+        } },
     };
 }
 
@@ -222,7 +308,7 @@ fn parseLongOptions(
     arg_index: usize,
     array_lists: anytype,
     allocator: std.mem.Allocator,
-) types.OptionParseError!usize {
+) !usize {
     _ = allocator; // Currently unused
     const arg = args[arg_index];
     const option_part = arg[2..]; // Skip "--"
@@ -277,7 +363,7 @@ fn parseLongOptions(
             if (comptime utils.isBooleanType(field.type)) {
                 if (option_value != null) {
                     logging.booleanOptionWithValue(option_name);
-                    return types.OptionParseError.InvalidOptionValue;
+                    return error.InvalidOptionValue;
                 }
                 @field(result, field.name) = true;
                 return 1;
@@ -291,7 +377,7 @@ fn parseLongOptions(
                     break :blk args[arg_index + 1];
                 } else {
                     logging.missingOptionValue(option_name);
-                    return types.OptionParseError.MissingOptionValue;
+                    return error.MissingOptionValue;
                 }
             };
 
@@ -317,7 +403,7 @@ fn parseLongOptions(
 
     if (!found) {
         logging.unknownOption(option_name);
-        return types.OptionParseError.UnknownOption;
+        return error.UnknownOption;
     }
 
     return 1;
@@ -333,14 +419,14 @@ fn parseShortOptionsWithMeta(
     arg_index: usize,
     array_lists: anytype,
     allocator: std.mem.Allocator,
-) types.OptionParseError!usize {
+) !usize {
     _ = allocator; // Currently unused
     const arg = args[arg_index];
     const options_part = arg[1..]; // Skip "-"
 
     if (options_part.len == 0) {
         logging.unknownOption("");
-        return types.OptionParseError.UnknownOption;
+        return error.UnknownOption;
     }
 
     // Try to parse as bundled boolean flags first
@@ -460,7 +546,7 @@ fn parseShortOptionsWithMeta(
                         // Value in next argument
                         if (arg_index + 1 >= args.len) {
                             logging.missingOptionValue(&[_]u8{char});
-                            return types.OptionParseError.MissingOptionValue;
+                            return error.MissingOptionValue;
                         }
                         value = args[arg_index + 1];
                         consumed = 2;
@@ -487,7 +573,7 @@ fn parseShortOptionsWithMeta(
 
         if (!char_found) {
             logging.unknownOption(&[_]u8{char});
-            return types.OptionParseError.UnknownOption;
+            return error.UnknownOption;
         }
 
         return 1;
@@ -503,14 +589,14 @@ fn parseShortOptions(
     arg_index: usize,
     array_lists: anytype,
     allocator: std.mem.Allocator,
-) types.OptionParseError!usize {
+) !usize {
     _ = allocator; // Currently unused
     const arg = args[arg_index];
     const options_part = arg[1..]; // Skip "-"
 
     if (options_part.len == 0) {
         logging.unknownOption("");
-        return types.OptionParseError.UnknownOption;
+        return error.UnknownOption;
     }
 
     // Try to parse as bundled boolean flags first
@@ -576,7 +662,7 @@ fn parseShortOptions(
                         // Value in next argument
                         if (arg_index + 1 >= args.len) {
                             logging.missingOptionValue(&[_]u8{char});
-                            return types.OptionParseError.MissingOptionValue;
+                            return error.MissingOptionValue;
                         }
                         value = args[arg_index + 1];
                         consumed = 2;
@@ -602,7 +688,7 @@ fn parseShortOptions(
 
         if (!char_found) {
             logging.unknownOption(&[_]u8{char});
-            return types.OptionParseError.UnknownOption;
+            return error.UnknownOption;
         }
 
         return 0; // Should never reach here
@@ -690,7 +776,9 @@ test "parseOptions basic" {
 
     {
         const args = [_][]const u8{ "--verbose", "--name", "test", "--count", "42" };
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const result = parseOptions(TestOptions, allocator, &args);
+        try std.testing.expect(result == .ok);
+        const parsed = result.ok;
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expectEqualStrings("test", parsed.options.name);
         try std.testing.expectEqual(@as(u32, 42), parsed.options.count);
@@ -708,7 +796,9 @@ test "parseOptions short flags" {
 
     {
         const args = [_][]const u8{"-vq"};
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const result = parseOptions(TestOptions, allocator, &args);
+        try std.testing.expect(result == .ok);
+        const parsed = result.ok;
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
     }
@@ -724,7 +814,9 @@ test "parseOptions long option with equals" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--name=myapp", "--port=3000", "--verbose" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const result = parseOptions(TestOptions, allocator, &args);
+    try std.testing.expect(result == .ok);
+    const parsed = result.ok;
 
     try std.testing.expectEqualStrings("myapp", parsed.options.name);
     try std.testing.expectEqual(@as(u16, 3000), parsed.options.port);
@@ -841,19 +933,44 @@ test "parseOptions error cases" {
     // Unknown option
     {
         const args = [_][]const u8{"--unknown"};
-        try std.testing.expectError(types.OptionParseError.UnknownOption, parseOptions(TestOptions, allocator, &args));
+        const result = parseOptions(TestOptions, allocator, &args);
+        try std.testing.expect(result == .err);
+        switch (result.err) {
+            .option_unknown => |ctx| {
+                try std.testing.expectEqualStrings("unknown", ctx.option_name);
+                try std.testing.expectEqual(false, ctx.is_short);
+            },
+            else => try std.testing.expect(false),
+        }
     }
 
     // Missing option value
     {
         const args = [_][]const u8{"--name"};
-        try std.testing.expectError(types.OptionParseError.MissingOptionValue, parseOptions(TestOptions, allocator, &args));
+        const result = parseOptions(TestOptions, allocator, &args);
+        try std.testing.expect(result == .err);
+        switch (result.err) {
+            .option_missing_value => |ctx| {
+                try std.testing.expectEqualStrings("name", ctx.option_name);
+                try std.testing.expectEqual(false, ctx.is_short);
+            },
+            else => try std.testing.expect(false),
+        }
     }
 
     // Invalid option value
     {
         const args = [_][]const u8{ "--count", "not_a_number" };
-        try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptions(TestOptions, allocator, &args));
+        const result = parseOptions(TestOptions, allocator, &args);
+        try std.testing.expect(result == .err);
+        switch (result.err) {
+            .option_invalid_value => |ctx| {
+                try std.testing.expectEqualStrings("count", ctx.option_name);
+                try std.testing.expectEqual(false, ctx.is_short);
+                try std.testing.expectEqualStrings("not_a_number", ctx.provided_value.?);
+            },
+            else => try std.testing.expect(false),
+        }
     }
 
     // Boolean option with value
@@ -862,7 +979,16 @@ test "parseOptions error cases" {
             verbose: bool = false,
         };
         const args = [_][]const u8{"--verbose=true"};
-        try std.testing.expectError(types.OptionParseError.InvalidOptionValue, parseOptions(BoolOptions, allocator, &args));
+        const result = parseOptions(BoolOptions, allocator, &args);
+        try std.testing.expect(result == .err);
+        switch (result.err) {
+            .option_boolean_with_value => |ctx| {
+                try std.testing.expectEqualStrings("verbose", ctx.option_name);
+                try std.testing.expectEqual(false, ctx.is_short);
+                try std.testing.expectEqualStrings("true", ctx.provided_value.?);
+            },
+            else => try std.testing.expect(false),
+        }
     }
 }
 
@@ -936,7 +1062,14 @@ test "parseOptionsWithMeta custom name mapping" {
 
     // Should fail with the field name when custom name is specified
     const fail_args = [_][]const u8{ "--files", "should_fail.txt" };
-    try std.testing.expectError(types.OptionParseError.UnknownOption, parseOptionsWithMeta(TestOptions, meta, allocator, &fail_args));
+    const fail_result = parseOptionsWithMeta(TestOptions, meta, allocator, &fail_args);
+    try std.testing.expect(fail_result == .err);
+    switch (fail_result.err) {
+        .option_unknown => |ctx| {
+            try std.testing.expectEqualStrings("files", ctx.option_name);
+        },
+        else => try std.testing.expect(false),
+    }
 }
 
 test "parseOptionsWithMeta custom names are exclusive" {
@@ -966,7 +1099,14 @@ test "parseOptionsWithMeta custom names are exclusive" {
     // Should fail with field name when custom name is provided
     {
         const args = [_][]const u8{ "--output-files", "test.txt" };
-        try std.testing.expectError(types.OptionParseError.UnknownOption, parseOptionsWithMeta(TestOptions, meta, allocator, &args));
+        const result = parseOptionsWithMeta(TestOptions, meta, allocator, &args);
+        try std.testing.expect(result == .err);
+        switch (result.err) {
+            .option_unknown => |ctx| {
+                try std.testing.expectEqualStrings("output-files", ctx.option_name);
+            },
+            else => try std.testing.expect(false),
+        }
     }
 }
 
@@ -1124,7 +1264,7 @@ pub fn parseOptionsAndArgs(
     comptime meta: anytype,
     allocator: std.mem.Allocator,
     args: []const []const u8,
-) types.OptionParseError!ParseOptionsAndArgsResult(OptionsType) {
+) !ParseOptionsAndArgsResult(OptionsType) {
     // Lists to collect options and remaining args
     var option_args = std.ArrayList([]const u8).init(allocator);
     defer option_args.deinit();

@@ -1,18 +1,6 @@
 const std = @import("std");
 const logging = @import("logging.zig");
 
-pub const CLIError = error{
-    CommandNotFound,
-    SubcommandNotFound,
-    MissingArgument,
-    TooManyArguments,
-    UnknownOption,
-    InvalidOptionValue,
-    MissingOptionValue,
-    HelpRequested,
-    VersionRequested,
-};
-
 pub fn handleCommandNotFound(
     writer: anytype,
     command: []const u8,
@@ -281,15 +269,6 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
     return matrix[a_len][b_len];
 }
 
-/// Get exit code for different error types
-pub fn getExitCode(err: CLIError) u8 {
-    return switch (err) {
-        CLIError.HelpRequested, CLIError.VersionRequested => 0,
-        CLIError.CommandNotFound, CLIError.SubcommandNotFound => 3,
-        CLIError.MissingArgument, CLIError.TooManyArguments, CLIError.UnknownOption, CLIError.InvalidOptionValue, CLIError.MissingOptionValue => 2,
-    };
-}
-
 // Tests
 test "editDistance basic" {
     try std.testing.expectEqual(@as(usize, 0), editDistance("hello", "hello"));
@@ -456,18 +435,6 @@ test "findSimilarCommands edge cases" {
         defer if (suggestions.len > 0) std.testing.allocator.free(suggestions);
         try std.testing.expectEqual(@as(usize, 0), suggestions.len);
     }
-}
-
-test "getExitCode" {
-    try std.testing.expectEqual(@as(u8, 0), getExitCode(CLIError.HelpRequested));
-    try std.testing.expectEqual(@as(u8, 0), getExitCode(CLIError.VersionRequested));
-    try std.testing.expectEqual(@as(u8, 3), getExitCode(CLIError.CommandNotFound));
-    try std.testing.expectEqual(@as(u8, 3), getExitCode(CLIError.SubcommandNotFound));
-    try std.testing.expectEqual(@as(u8, 2), getExitCode(CLIError.MissingArgument));
-    try std.testing.expectEqual(@as(u8, 2), getExitCode(CLIError.TooManyArguments));
-    try std.testing.expectEqual(@as(u8, 2), getExitCode(CLIError.UnknownOption));
-    try std.testing.expectEqual(@as(u8, 2), getExitCode(CLIError.InvalidOptionValue));
-    try std.testing.expectEqual(@as(u8, 2), getExitCode(CLIError.MissingOptionValue));
 }
 
 test "error handler formatting" {

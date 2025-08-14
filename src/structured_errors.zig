@@ -2,6 +2,10 @@ const std = @import("std");
 
 /// Structured error types with rich context information for better debugging and user experience.
 /// These replace the simple error enums with detailed error structures that carry context.
+///
+/// **Design Note**: This represents the future direction for error handling in zcli.
+/// Currently used by `parseArgs()` via `ParseResult`, with plans to migrate all parsing
+/// functions to use structured errors for consistent, rich error reporting.
 /// Context information for argument parsing errors
 pub const ArgumentErrorContext = struct {
     field_name: []const u8,

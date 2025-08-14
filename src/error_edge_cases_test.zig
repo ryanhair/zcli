@@ -28,7 +28,11 @@ test "parseOptions with extremely long option names" {
     const args = [_][]const u8{ long_name, "value" };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expectError(options_parser.OptionParseError.UnknownOption, result);
+    try std.testing.expect(result == .err);
+    switch (result.err) {
+        .option_unknown => {},
+        else => try std.testing.expect(false),
+    }
 }
 
 test "parseOptions with many array elements" {
@@ -61,10 +65,11 @@ test "parseOptions with many array elements" {
         try many_args.append(filename);
     }
 
-    const result = try options_parser.parseOptions(Options, allocator, many_args.items);
-    defer options_parser.cleanupOptions(Options, result.options, allocator);
+    const result = options_parser.parseOptions(Options, allocator, many_args.items);
+    try std.testing.expect(result == .ok);
+    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
 
-    try std.testing.expectEqual(file_count, result.options.files.len);
+    try std.testing.expectEqual(file_count, result.ok.options.files.len);
 }
 
 test "parseArgs with multiple primitive types" {
@@ -125,13 +130,14 @@ test "parseOptions with Unicode option values" {
         "--files", "測試.txt", // Chinese filename
     };
 
-    const result = try options_parser.parseOptions(Options, allocator, &args);
-    defer options_parser.cleanupOptions(Options, result.options, allocator);
+    const result = options_parser.parseOptions(Options, allocator, &args);
+    try std.testing.expect(result == .ok);
+    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
 
-    try std.testing.expectEqualStrings("🎉 Success!", result.options.message);
-    try std.testing.expectEqual(@as(usize, 2), result.options.files.len);
-    try std.testing.expectEqualStrings("файл.txt", result.options.files[0]);
-    try std.testing.expectEqualStrings("測試.txt", result.options.files[1]);
+    try std.testing.expectEqualStrings("🎉 Success!", result.ok.options.message);
+    try std.testing.expectEqual(@as(usize, 2), result.ok.options.files.len);
+    try std.testing.expectEqualStrings("файл.txt", result.ok.options.files[0]);
+    try std.testing.expectEqualStrings("測試.txt", result.ok.options.files[1]);
 }
 
 // ============================================================================
@@ -337,11 +343,12 @@ test "parseOptions with duplicate option handling" {
         "--files", "b.txt", // Array options should accumulate
     };
 
-    const result = try options_parser.parseOptions(Options, allocator, &args);
-    defer options_parser.cleanupOptions(Options, result.options, allocator);
+    const result = options_parser.parseOptions(Options, allocator, &args);
+    try std.testing.expect(result == .ok);
+    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
 
-    try std.testing.expectEqual(@as(u32, 10), result.options.count); // Last value wins
-    try std.testing.expectEqual(@as(usize, 2), result.options.files.len); // Array accumulates
+    try std.testing.expectEqual(@as(u32, 10), result.ok.options.count); // Last value wins
+    try std.testing.expectEqual(@as(usize, 2), result.ok.options.files.len); // Array accumulates
 }
 
 test "parseOptions with mixed short and long options" {
@@ -363,12 +370,13 @@ test "parseOptions with mixed short and long options" {
 
     const args = [_][]const u8{ "-v", "--count", "42", "-o", "file.txt" };
 
-    const result = try options_parser.parseOptionsWithMeta(Options, meta, allocator, &args);
-    defer options_parser.cleanupOptions(Options, result.options, allocator);
+    const result = options_parser.parseOptionsWithMeta(Options, meta, allocator, &args);
+    try std.testing.expect(result == .ok);
+    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
 
-    try std.testing.expectEqual(true, result.options.verbose);
-    try std.testing.expectEqual(@as(u32, 42), result.options.count);
-    try std.testing.expectEqualStrings("file.txt", result.options.output);
+    try std.testing.expectEqual(true, result.ok.options.verbose);
+    try std.testing.expectEqual(@as(u32, 42), result.ok.options.count);
+    try std.testing.expectEqualStrings("file.txt", result.ok.options.output);
 }
 
 test "parseOptions with option-like values" {
@@ -385,11 +393,12 @@ test "parseOptions with option-like values" {
         "--message", "normal-value", // Normal value
     };
 
-    const result = try options_parser.parseOptions(Options, allocator, &args);
-    defer options_parser.cleanupOptions(Options, result.options, allocator);
+    const result = options_parser.parseOptions(Options, allocator, &args);
+    try std.testing.expect(result == .ok);
+    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
 
-    try std.testing.expectEqualStrings("normal-value", result.options.message);
-    try std.testing.expectEqual(@as(i32, -42), result.options.number);
+    try std.testing.expectEqualStrings("normal-value", result.ok.options.message);
+    try std.testing.expectEqual(@as(i32, -42), result.ok.options.number);
 }
 
 // ============================================================================
@@ -467,15 +476,16 @@ test "options cleanup with nested arrays" {
         "--tags",    "bug-fix",
     };
 
-    const result = try options_parser.parseOptions(Options, allocator, &args);
+    const result = options_parser.parseOptions(Options, allocator, &args);
+    try std.testing.expect(result == .ok);
 
     // Verify arrays were allocated properly
-    try std.testing.expectEqual(@as(usize, 2), result.options.files.len);
-    try std.testing.expectEqual(@as(usize, 3), result.options.numbers.len);
-    try std.testing.expectEqual(@as(usize, 2), result.options.tags.len);
+    try std.testing.expectEqual(@as(usize, 2), result.ok.options.files.len);
+    try std.testing.expectEqual(@as(usize, 3), result.ok.options.numbers.len);
+    try std.testing.expectEqual(@as(usize, 2), result.ok.options.tags.len);
 
     // Cleanup should work without issues
-    options_parser.cleanupOptions(Options, result.options, allocator);
+    options_parser.cleanupOptions(Options, result.ok.options, allocator);
 }
 
 test "parseOptions memory cleanup on error" {
@@ -493,7 +503,11 @@ test "parseOptions memory cleanup on error" {
     };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expectError(options_parser.OptionParseError.InvalidOptionValue, result);
+    try std.testing.expect(result == .err);
+    switch (result.err) {
+        .option_invalid_value => {},
+        else => try std.testing.expect(false),
+    }
 
     // Memory should be cleaned up automatically on error
     // No explicit cleanup needed since parsing failed

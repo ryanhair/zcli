@@ -1,13 +1,5 @@
 const std = @import("std");
 
-pub const OptionParseError = error{
-    UnknownOption,
-    MissingOptionValue,
-    InvalidOptionValue,
-    DuplicateOption,
-    OutOfMemory,
-};
-
 pub const ParseResult = struct {
     /// The position where option parsing stopped (first non-option argument)
     next_arg_index: usize,

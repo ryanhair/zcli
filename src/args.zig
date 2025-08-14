@@ -113,6 +113,12 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ParseRes
         if (comptime isVarArgs(field_type)) {
             // This is a varargs field ([][]const u8) - capture remaining arguments
             const remaining_args = args[arg_index..];
+            // SAFETY: @constCast is safe here because:
+            // 1. We never modify the string pointers themselves ([]const u8 stays immutable)
+            // 2. We never modify the string content (u8 data remains const)
+            // 3. The slice just references the original args without copying
+            // 4. The mutable pointer is needed for API consistency with option arrays
+            // The type conversion is: []const []const u8 -> [][]const u8
             @field(result, field.name) = @constCast(remaining_args);
             break;
         } else if (@typeInfo(field_type) == .optional) {
@@ -167,6 +173,10 @@ const SimpleParseError = error{
     InvalidArgumentType,
     OutOfMemory,
 };
+
+/// Public error type for backwards compatibility
+/// Note: New code should use ParseResult which provides structured errors with rich context
+pub const ParseError = SimpleParseError;
 
 /// Parse a single value based on its type
 fn parseValue(comptime T: type, value: []const u8) SimpleParseError!T {
