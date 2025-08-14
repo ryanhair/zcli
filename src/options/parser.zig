@@ -334,10 +334,164 @@ fn parseShortOptionsWithMeta(
     array_lists: anytype,
     allocator: std.mem.Allocator,
 ) types.OptionParseError!usize {
-    // For now, just delegate to the original function
-    // TODO: Implement metadata support for short options if needed
-    _ = meta;
-    return parseShortOptions(OptionsType, result, option_counts, args, arg_index, array_lists, allocator);
+    _ = allocator; // Currently unused
+    const arg = args[arg_index];
+    const options_part = arg[1..]; // Skip "-"
+
+    if (options_part.len == 0) {
+        logging.unknownOption("");
+        return types.OptionParseError.UnknownOption;
+    }
+
+    // Try to parse as bundled boolean flags first
+    var all_boolean = true;
+    for (options_part) |char| {
+        var char_field_found = false;
+        var char_is_boolean = false;
+        inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+            // Get the expected short option character for this field (comptime)
+            const expected_char = comptime blk: {
+                if (@hasField(@TypeOf(meta), "options")) {
+                    const options_meta = meta.options;
+                    if (@hasField(@TypeOf(options_meta), field.name)) {
+                        const field_meta = @field(options_meta, field.name);
+                        if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
+                            // Custom short option is specified
+                            break :blk field_meta.short;
+                        }
+                    }
+                }
+                // Fall back to first character of field name
+                break :blk if (field.name.len > 0) field.name[0] else 0;
+            };
+
+            const matches = expected_char == char;
+
+            if (matches) {
+                char_field_found = true;
+                char_is_boolean = comptime utils.isBooleanType(field.type);
+                break;
+            }
+        }
+        if (!char_field_found or !char_is_boolean) {
+            all_boolean = false;
+            break;
+        }
+    }
+
+    if (all_boolean and options_part.len > 1) {
+        // Parse as bundled boolean flags
+        for (options_part) |char| {
+            inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
+                _ = i; // Unused for boolean flags
+                // Get the expected short option character for this field (comptime)
+                const expected_char = comptime blk: {
+                    if (@hasField(@TypeOf(meta), "options")) {
+                        const options_meta = meta.options;
+                        if (@hasField(@TypeOf(options_meta), field.name)) {
+                            const field_meta = @field(options_meta, field.name);
+                            if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
+                                // Custom short option is specified
+                                break :blk field_meta.short;
+                            }
+                        }
+                    }
+                    // Fall back to first character of field name
+                    break :blk if (field.name.len > 0) field.name[0] else 0;
+                };
+
+                const matches = expected_char == char;
+
+                if (matches) {
+                    if (comptime utils.isBooleanType(field.type)) {
+                        // Track usage count
+                        const count = option_counts.get(field.name) orelse 0;
+                        try option_counts.put(field.name, count + 1);
+                        @field(result, field.name) = true;
+                    }
+                    break;
+                }
+            }
+        }
+        return 1;
+    } else {
+        // Parse as single option, possibly with value
+        const char = options_part[0];
+
+        var char_found = false;
+        inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
+            // Get the expected short option character for this field (comptime)
+            const expected_char = comptime blk: {
+                if (@hasField(@TypeOf(meta), "options")) {
+                    const options_meta = meta.options;
+                    if (@hasField(@TypeOf(options_meta), field.name)) {
+                        const field_meta = @field(options_meta, field.name);
+                        if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
+                            // Custom short option is specified
+                            break :blk field_meta.short;
+                        }
+                    }
+                }
+                // Fall back to first character of field name
+                break :blk if (field.name.len > 0) field.name[0] else 0;
+            };
+
+            const matches = expected_char == char;
+
+            if (matches) {
+                char_found = true;
+
+                // Track usage count for duplicate detection
+                const count = option_counts.get(field.name) orelse 0;
+                try option_counts.put(field.name, count + 1);
+
+                if (comptime utils.isBooleanType(field.type)) {
+                    @field(result, field.name) = true;
+                    return 1;
+                } else {
+                    // Value-taking option
+                    var value: []const u8 = undefined;
+                    var consumed: usize = 1;
+
+                    if (options_part.len > 1) {
+                        // Value attached: -ovalue
+                        value = options_part[1..];
+                    } else {
+                        // Value in next argument
+                        if (arg_index + 1 >= args.len) {
+                            logging.missingOptionValue(&[_]u8{char});
+                            return types.OptionParseError.MissingOptionValue;
+                        }
+                        value = args[arg_index + 1];
+                        consumed = 2;
+                    }
+
+                    if (comptime utils.isArrayType(field.type)) {
+                        // For array types, accumulate values
+                        if (array_lists.*[i]) |*list_union| {
+                            const element_type = @typeInfo(field.type).pointer.child;
+                            try array_utils.appendToArrayListUnionShort(element_type, list_union, value, char);
+                        }
+                    } else {
+                        const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
+                            // This error will be logged by the parsing utility, no need to duplicate
+                            return err;
+                        };
+                        @field(result, field.name) = parsed_value;
+                    }
+
+                    return consumed;
+                }
+            }
+        }
+
+        if (!char_found) {
+            logging.unknownOption(&[_]u8{char});
+            return types.OptionParseError.UnknownOption;
+        }
+
+        return 1;
+    }
 }
 
 /// Parse short option(s) (-o or -ovalue or -abc)
