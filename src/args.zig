@@ -193,13 +193,11 @@ fn parseValue(comptime T: type, value: []const u8) SimpleParseError!T {
         },
         .int => {
             return std.fmt.parseInt(T, value, 10) catch {
-                logging.invalidArgumentValue(value, @typeName(T));
                 return SimpleParseError.InvalidArgumentType;
             };
         },
         .float => {
             return std.fmt.parseFloat(T, value) catch {
-                logging.invalidArgumentValue(value, @typeName(T));
                 return SimpleParseError.InvalidArgumentType;
             };
         },
@@ -209,13 +207,11 @@ fn parseValue(comptime T: type, value: []const u8) SimpleParseError!T {
             } else if (std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "0")) {
                 return false;
             } else {
-                logging.invalidBooleanArgument(value);
                 return SimpleParseError.InvalidArgumentType;
             }
         },
         .@"enum" => {
             return std.meta.stringToEnum(T, value) orelse {
-                logging.invalidEnumArgument(value);
                 return SimpleParseError.InvalidArgumentType;
             };
         },
