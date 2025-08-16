@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
         "src/errors.zig",
         "src/build_utils.zig",
         "src/build_integration_test.zig", // Integration tests for build system
-        // "src/error_edge_cases_test.zig", // TODO: Update to new ParseResult API
+        "src/error_edge_cases_test.zig", // Edge cases and error handling tests
         "src/benchmark.zig", // Performance benchmarks
     };
 

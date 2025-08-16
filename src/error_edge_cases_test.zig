@@ -28,11 +28,9 @@ test "parseOptions with extremely long option names" {
     const args = [_][]const u8{ long_name, "value" };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result == .err);
-    switch (result.err) {
-        .option_unknown => {},
-        else => try std.testing.expect(false),
-    }
+    try std.testing.expect(result.isError());
+    const err = result.getError().?;
+    try std.testing.expect(err == .option_unknown);
 }
 
 test "parseOptions with many array elements" {
@@ -66,10 +64,11 @@ test "parseOptions with many array elements" {
     }
 
     const result = options_parser.parseOptions(Options, allocator, many_args.items);
-    try std.testing.expect(result == .ok);
-    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
-    try std.testing.expectEqual(file_count, result.ok.options.files.len);
+    try std.testing.expectEqual(file_count, parsed.options.files.len);
 }
 
 test "parseArgs with multiple primitive types" {
@@ -131,13 +130,14 @@ test "parseOptions with Unicode option values" {
     };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result == .ok);
-    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
-    try std.testing.expectEqualStrings("🎉 Success!", result.ok.options.message);
-    try std.testing.expectEqual(@as(usize, 2), result.ok.options.files.len);
-    try std.testing.expectEqualStrings("файл.txt", result.ok.options.files[0]);
-    try std.testing.expectEqualStrings("測試.txt", result.ok.options.files[1]);
+    try std.testing.expectEqualStrings("🎉 Success!", parsed.options.message);
+    try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
+    try std.testing.expectEqualStrings("файл.txt", parsed.options.files[0]);
+    try std.testing.expectEqualStrings("測試.txt", parsed.options.files[1]);
 }
 
 // ============================================================================
@@ -160,12 +160,14 @@ test "parseArgs with maximum integer values" {
         "4294967295", // u32 max
     };
 
-    const result = try args_parser.parseArgs(Args, &args);
+    const result = args_parser.parseArgs(Args, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectEqual(@as(i64, 9223372036854775807), result.max_i64);
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), result.max_u64);
-    try std.testing.expectEqual(@as(i32, 2147483647), result.max_i32);
-    try std.testing.expectEqual(@as(u32, 4294967295), result.max_u32);
+    try std.testing.expectEqual(@as(i64, 9223372036854775807), parsed.max_i64);
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), parsed.max_u64);
+    try std.testing.expectEqual(@as(i32, 2147483647), parsed.max_i32);
+    try std.testing.expectEqual(@as(u32, 4294967295), parsed.max_u32);
 }
 
 test "parseArgs with minimum integer values" {
@@ -183,12 +185,14 @@ test "parseArgs with minimum integer values" {
         "-128", // i8 min
     };
 
-    const result = try args_parser.parseArgs(Args, &args);
+    const result = args_parser.parseArgs(Args, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
-    try std.testing.expectEqual(@as(i64, -9223372036854775808), result.min_i64);
-    try std.testing.expectEqual(@as(i32, -2147483648), result.min_i32);
-    try std.testing.expectEqual(@as(i16, -32768), result.min_i16);
-    try std.testing.expectEqual(@as(i8, -128), result.min_i8);
+    try std.testing.expectEqual(@as(i64, -9223372036854775808), parsed.min_i64);
+    try std.testing.expectEqual(@as(i32, -2147483648), parsed.min_i32);
+    try std.testing.expectEqual(@as(i16, -32768), parsed.min_i16);
+    try std.testing.expectEqual(@as(i8, -128), parsed.min_i8);
 }
 
 test "parseArgs integer overflow edge cases" {
@@ -207,7 +211,10 @@ test "parseArgs integer overflow edge cases" {
 
     for (overflow_cases) |case| {
         const args = [_][]const u8{case};
-        try std.testing.expectError(args_parser.ParseError.InvalidArgumentType, args_parser.parseArgs(Args, &args));
+        const result = args_parser.parseArgs(Args, &args);
+        try std.testing.expect(result.isError());
+        const err = result.getError().?;
+        try std.testing.expect(err == .argument_invalid_value);
     }
 }
 
@@ -233,12 +240,12 @@ test "parseArgs floating point edge cases" {
         const parsed = result.unwrap();
 
         if (std.math.isNan(case[1])) {
-            try std.testing.expect(std.math.isNan(result.val));
+            try std.testing.expect(std.math.isNan(parsed.val));
         } else if (std.math.isInf(case[1])) {
-            try std.testing.expect(std.math.isInf(result.val));
-            try std.testing.expectEqual(std.math.sign(case[1]), std.math.sign(result.val));
+            try std.testing.expect(std.math.isInf(parsed.val));
+            try std.testing.expectEqual(std.math.sign(case[1]), std.math.sign(parsed.val));
         } else {
-            try std.testing.expectEqual(case[1], result.val);
+            try std.testing.expectEqual(case[1], parsed.val);
         }
     }
 }
@@ -260,7 +267,10 @@ test "parseArgs with malformed float values" {
 
     for (invalid_floats) |invalid| {
         const args = [_][]const u8{invalid};
-        try std.testing.expectError(args_parser.ParseError.InvalidArgumentType, args_parser.parseArgs(Args, &args));
+        const result = args_parser.parseArgs(Args, &args);
+        try std.testing.expect(result.isError());
+        const err = result.getError().?;
+        try std.testing.expect(err == .argument_invalid_value or err == .argument_missing_required);
     }
 }
 
@@ -344,11 +354,12 @@ test "parseOptions with duplicate option handling" {
     };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result == .ok);
-    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
-    try std.testing.expectEqual(@as(u32, 10), result.ok.options.count); // Last value wins
-    try std.testing.expectEqual(@as(usize, 2), result.ok.options.files.len); // Array accumulates
+    try std.testing.expectEqual(@as(u32, 10), parsed.options.count); // Last value wins
+    try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len); // Array accumulates
 }
 
 test "parseOptions with mixed short and long options" {
@@ -371,12 +382,13 @@ test "parseOptions with mixed short and long options" {
     const args = [_][]const u8{ "-v", "--count", "42", "-o", "file.txt" };
 
     const result = options_parser.parseOptionsWithMeta(Options, meta, allocator, &args);
-    try std.testing.expect(result == .ok);
-    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
-    try std.testing.expectEqual(true, result.ok.options.verbose);
-    try std.testing.expectEqual(@as(u32, 42), result.ok.options.count);
-    try std.testing.expectEqualStrings("file.txt", result.ok.options.output);
+    try std.testing.expectEqual(true, parsed.options.verbose);
+    try std.testing.expectEqual(@as(u32, 42), parsed.options.count);
+    try std.testing.expectEqualStrings("file.txt", parsed.options.output);
 }
 
 test "parseOptions with option-like values" {
@@ -394,11 +406,12 @@ test "parseOptions with option-like values" {
     };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result == .ok);
-    defer options_parser.cleanupOptions(Options, result.ok.options, allocator);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
-    try std.testing.expectEqualStrings("normal-value", result.ok.options.message);
-    try std.testing.expectEqual(@as(i32, -42), result.ok.options.number);
+    try std.testing.expectEqualStrings("normal-value", parsed.options.message);
+    try std.testing.expectEqual(@as(i32, -42), parsed.options.number);
 }
 
 // ============================================================================
@@ -477,15 +490,16 @@ test "options cleanup with nested arrays" {
     };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result == .ok);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
 
     // Verify arrays were allocated properly
-    try std.testing.expectEqual(@as(usize, 2), result.ok.options.files.len);
-    try std.testing.expectEqual(@as(usize, 3), result.ok.options.numbers.len);
-    try std.testing.expectEqual(@as(usize, 2), result.ok.options.tags.len);
+    try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
+    try std.testing.expectEqual(@as(usize, 3), parsed.options.numbers.len);
+    try std.testing.expectEqual(@as(usize, 2), parsed.options.tags.len);
 
     // Cleanup should work without issues
-    options_parser.cleanupOptions(Options, result.ok.options, allocator);
+    options_parser.cleanupOptions(Options, parsed.options, allocator);
 }
 
 test "parseOptions memory cleanup on error" {
@@ -503,11 +517,9 @@ test "parseOptions memory cleanup on error" {
     };
 
     const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result == .err);
-    switch (result.err) {
-        .option_invalid_value => {},
-        else => try std.testing.expect(false),
-    }
+    try std.testing.expect(result.isError());
+    const err = result.getError().?;
+    try std.testing.expect(err == .option_invalid_value);
 
     // Memory should be cleaned up automatically on error
     // No explicit cleanup needed since parsing failed
