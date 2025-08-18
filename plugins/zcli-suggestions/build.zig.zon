@@ -1,0 +1,16 @@
+.{
+    .name = .zcli_suggestions,
+    .version = "1.0.0",
+    .fingerprint = 0xfbd51cdc6636741,
+    .description = "Intelligent command suggestion plugin for zcli applications",
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        // No dependencies - this is a standalone plugin
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+        "README.md",
+    },
+}

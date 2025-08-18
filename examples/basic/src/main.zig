@@ -7,7 +7,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var app = zcli.App(@TypeOf(registry.registry)).init(
+    var app = zcli.App(@TypeOf(registry.registry), registry).init(
         allocator,
         registry.registry,
         .{

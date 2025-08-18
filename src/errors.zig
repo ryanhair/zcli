@@ -8,33 +8,10 @@ pub fn handleCommandNotFound(
     app_name: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
+    _ = allocator; // Unused since suggestions moved to plugin
     try writer.print("Error: Unknown command '{s}'\n\n", .{command});
 
-    // Try to suggest similar commands
-    const suggestions = findSimilarCommands(command, available_commands, allocator) catch |err| {
-        logging.suggestionGenerationFailed(err);
-        // Continue without suggestions
-        try writer.print("Available commands:\n", .{});
-        for (available_commands) |cmd| {
-            try writer.print("    {s}\n", .{cmd});
-        }
-        try writer.print("\n", .{});
-        try writer.print("Run '{s} --help' to see all available commands.\n", .{app_name});
-        return;
-    };
-    defer if (suggestions.len > 0) allocator.free(suggestions);
-
-    if (suggestions.len > 0) {
-        if (suggestions.len == 1) {
-            try writer.print("Did you mean '{s}'?\n\n", .{suggestions[0]});
-        } else {
-            try writer.print("Did you mean one of these?\n", .{});
-            for (suggestions[0..@min(3, suggestions.len)]) |suggestion| {
-                try writer.print("    {s}\n", .{suggestion});
-            }
-            try writer.print("\n", .{});
-        }
-    }
+    // Suggestions are now handled by the zcli-suggestions plugin
 
     try writer.print("Available commands:\n", .{});
     for (available_commands) |cmd| {
@@ -53,33 +30,10 @@ pub fn handleSubcommandNotFound(
     app_name: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
+    _ = allocator; // Unused since suggestions moved to plugin
     try writer.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, parent_command });
 
-    // Try to suggest similar subcommands
-    const suggestions = findSimilarCommands(subcommand, available_subcommands, allocator) catch |err| {
-        logging.suggestionGenerationFailed(err);
-        // Continue without suggestions
-        try writer.print("Available subcommands for '{s}':\n", .{parent_command});
-        for (available_subcommands) |cmd| {
-            try writer.print("    {s}\n", .{cmd});
-        }
-        try writer.print("\n", .{});
-        try writer.print("Run '{s} {s} --help' for more information.\n", .{ app_name, parent_command });
-        return;
-    };
-    defer if (suggestions.len > 0) allocator.free(suggestions);
-
-    if (suggestions.len > 0) {
-        if (suggestions.len == 1) {
-            try writer.print("Did you mean '{s}'?\n\n", .{suggestions[0]});
-        } else {
-            try writer.print("Did you mean one of these?\n", .{});
-            for (suggestions[0..@min(3, suggestions.len)]) |suggestion| {
-                try writer.print("    {s}\n", .{suggestion});
-            }
-            try writer.print("\n", .{});
-        }
-    }
+    // Suggestions are now handled by the zcli-suggestions plugin
 
     try writer.print("Available subcommands for '{s}':\n", .{parent_command});
     for (available_subcommands) |cmd| {
@@ -137,32 +91,10 @@ pub fn handleUnknownOption(
     app_name: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
+    _ = allocator; // Unused since suggestions moved to plugin
     try writer.print("Error: Unknown option '{s}'\n\n", .{option});
 
-    // Try to suggest similar options
-    const suggestions = findSimilarCommands(option, available_options, allocator) catch |err| {
-        logging.suggestionGenerationFailed(err);
-        // Continue without suggestions on allocation failure
-        try writer.print("Run '", .{});
-        for (command_path) |part| {
-            try writer.print("{s} ", .{part});
-        }
-        try writer.print("--help' for available options.\n", .{});
-        return;
-    };
-    defer allocator.free(suggestions);
-
-    if (suggestions.len > 0) {
-        if (suggestions.len == 1) {
-            try writer.print("Did you mean '--{s}'?\n\n", .{suggestions[0]});
-        } else {
-            try writer.print("Did you mean one of these?\n", .{});
-            for (suggestions[0..@min(3, suggestions.len)]) |suggestion| {
-                try writer.print("    --{s}\n", .{suggestion});
-            }
-            try writer.print("\n", .{});
-        }
-    }
+    // Suggestions are now handled by the zcli-suggestions plugin
 
     if (available_options.len > 0) {
         try writer.print("Available options:\n", .{});
@@ -297,7 +229,7 @@ test "handleCommandNotFound" {
 
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown command 'serach'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Did you mean") != null);
+    // Suggestion tests moved to zcli-suggestions plugin
 }
 
 test "handleSubcommandNotFound" {
@@ -310,7 +242,7 @@ test "handleSubcommandNotFound" {
 
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown subcommand 'lst' for 'users'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Did you mean 'list'?") != null);
+    // Suggestion tests moved to zcli-suggestions plugin
     try std.testing.expect(std.mem.indexOf(u8, output, "myapp users --help") != null);
 }
 
@@ -350,7 +282,7 @@ test "handleUnknownOption" {
 
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown option '--outpt'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Did you mean '--output'?") != null);
+    // Suggestion tests moved to zcli-suggestions plugin
 }
 
 test "handleInvalidOptionValue" {

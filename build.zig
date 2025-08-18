@@ -20,11 +20,15 @@ pub fn build(b: *std.Build) void {
         "src/zcli.zig",
         "src/args.zig",
         "src/options.zig",
-        "src/help.zig",
         "src/errors.zig",
         "src/build_utils.zig",
+        "src/execution.zig", // Base pipeline types
         "src/build_integration_test.zig", // Integration tests for build system
         "src/error_edge_cases_test.zig", // Edge cases and error handling tests
+        "src/plugin_test.zig", // Plugin system tests
+        "src/plugin_integration_test.zig", // Plugin integration tests
+        "src/test_transformer_plugin.zig", // Test transformer plugin
+        "src/pipeline_integration_test.zig", // Pipeline integration tests
         "src/benchmark.zig", // Performance benchmarks
     };
 
@@ -65,5 +69,10 @@ pub fn build(b: *std.Build) void {
     regression_step.dependOn(&run_regression.step);
 }
 
-// Re-export the generateCommandRegistry function for backwards compatibility
+// Re-export build utilities for both backwards compatibility and new plugin features
 pub const generateCommandRegistry = build_utils.generateCommandRegistry;
+pub const BuildConfig = build_utils.BuildConfig;
+pub const buildWithPlugins = build_utils.buildWithPlugins;
+pub const PluginConfig = build_utils.PluginConfig;
+pub const ExternalPluginBuildConfig = build_utils.ExternalPluginBuildConfig;
+pub const buildWithExternalPlugins = build_utils.buildWithExternalPlugins;
