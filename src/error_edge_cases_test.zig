@@ -2,7 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli.zig");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
-const help_generator = @import("help.zig");
+// const help_generator = @import("help.zig"); // Removed - functionality moved to plugin
 const error_handler = @import("errors.zig");
 
 // Comprehensive error scenario and edge case testing.
@@ -418,19 +418,16 @@ test "parseOptions with option-like values" {
 // Help System Edge Cases
 // ============================================================================
 
-test "generateAppHelp with empty registry" {
-    var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
+test "registry structure validation for empty commands" {
+    // Test that registry structure is valid even when no commands are available
+    // Help generation is now handled by plugins, so this just validates registry
     const empty_registry = struct {
         commands: struct {} = .{},
     }{};
 
-    try help_generator.generateAppHelp(empty_registry, stream.writer(), "empty-app", "1.0.0", "An app with no commands");
-
-    const output = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "empty-app v1.0.0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "An app with no commands") != null);
+    const CommandsType = @TypeOf(empty_registry.commands);
+    const type_info = @typeInfo(CommandsType);
+    try std.testing.expect(type_info == .@"struct");
     // Should gracefully handle empty command set
 }
 

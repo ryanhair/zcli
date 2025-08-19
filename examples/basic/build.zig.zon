@@ -39,6 +39,12 @@
         .zcli = .{
             .path = "../..",
         },
+        .@"zcli-help" = .{
+            .path = "../../plugins/zcli-help",
+        },
+        .@"zcli-not-found" = .{
+            .path = "../../plugins/zcli-not-found",
+        },
     },
     .paths = .{
         "build.zig",

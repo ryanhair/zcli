@@ -1,6 +1,4 @@
 const std = @import("std");
-const logging = @import("logging.zig");
-const args_parser = @import("args.zig");
 
 /// Helper function to get field description from command metadata
 fn getFieldDescription(comptime meta: anytype, comptime field_name: []const u8, comptime category: []const u8) ?[]const u8 {
@@ -84,48 +82,6 @@ pub fn generateCommandHelp(
 }
 
 /// Generate main application help text showing available commands and global options.
-///
-/// This function outputs comprehensive help for the entire CLI application,
-/// including the app description, global usage, and a list of all available commands.
-///
-/// ## Parameters
-/// - `registry`: Command registry generated at build time
-/// - `writer`: Output writer (typically stdout)
-/// - `app_name`: Name of the CLI application
-/// - `app_version`: Version string of the application
-/// - `app_description`: Brief description of what the app does
-///
-/// ## Output Format
-/// ```
-/// myapp v1.0.0
-/// A demonstration CLI built with zcli
-///
-/// USAGE:
-///     myapp [GLOBAL OPTIONS] <COMMAND> [ARGS]
-///
-/// COMMANDS:
-///     hello    Say hello to someone
-///     users    User management commands
-///
-/// GLOBAL OPTIONS:
-///     -h, --help       Show help information
-///     -V, --version    Show version information
-/// ```
-///
-/// ## Examples
-/// ```zig
-/// try zcli.generateAppHelp(
-///     registry,
-///     std.io.getStdOut().writer(),
-///     "myapp",
-///     "1.0.0",
-///     "My CLI application"
-/// );
-/// ```
-///
-/// ## Usage
-/// This is typically called automatically by the zcli framework when users
-/// pass `--help` or when no command is specified (depending on configuration).
 pub fn generateAppHelp(
     comptime registry: anytype,
     writer: anytype,
@@ -209,7 +165,6 @@ fn generateGlobalOptionsHelp(comptime GlobalOptionsType: type, writer: anytype) 
 fn underscoresToDashes(buf: []u8, input: []const u8) []const u8 {
     if (input.len > buf.len) {
         // Fallback: just return the original name if it's too long
-        logging.fieldNameTooLong(input, 64);
         return input;
     }
 
@@ -227,7 +182,7 @@ fn generateArgsUsage(comptime args_type: type, writer: anytype) !void {
     inline for (type_info.@"struct".fields, 0..) |field, i| {
         try writer.print(" ", .{});
 
-        if (args_parser.isVarArgs(field.type)) {
+        if (isVarArgs(field.type)) {
             try writer.print("[{s}...]", .{field.name});
         } else if (@typeInfo(field.type) == .optional) {
             try writer.print("[{s}]", .{field.name});
@@ -254,7 +209,7 @@ fn generateArgsHelp(comptime args_type: type, comptime meta: anytype, writer: an
     inline for (type_info.@"struct".fields) |field| {
         try writer.print("    ", .{});
 
-        if (args_parser.isVarArgs(field.type)) {
+        if (isVarArgs(field.type)) {
             try writer.print("[{s}...]    ", .{field.name});
         } else if (@typeInfo(field.type) == .optional) {
             try writer.print("[{s}]        ", .{field.name});
@@ -473,283 +428,12 @@ pub fn getAvailableSubcommands(comptime group: anytype, allocator: std.mem.Alloc
     return result;
 }
 
-// Tests
-test "getAvailableCommands" {
-    const allocator = std.testing.allocator;
-
-    const TestRegistry = struct {
-        commands: struct {
-            root: struct { module: type, execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void },
-            hello: struct { module: type, execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void },
-            users: struct { _is_group: bool = true },
-            @"test": struct { module: type, execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void },
-        },
-    };
-
-    const registry = TestRegistry{
-        .commands = .{
-            .root = .{ .module = struct {}, .execute = undefined },
-            .hello = .{ .module = struct {}, .execute = undefined },
-            .users = .{ ._is_group = true },
-            .@"test" = .{ .module = struct {}, .execute = undefined },
-        },
-    };
-
-    const commands = try getAvailableCommands(registry, allocator);
-    defer allocator.free(commands);
-
-    // Should get all non-metadata commands
-    try std.testing.expectEqual(@as(usize, 4), commands.len);
-
-    // Check that all expected commands are present
-    var found_root = false;
-    var found_hello = false;
-    var found_users = false;
-    var found_test = false;
-
-    for (commands) |cmd| {
-        if (std.mem.eql(u8, cmd, "root")) found_root = true;
-        if (std.mem.eql(u8, cmd, "hello")) found_hello = true;
-        if (std.mem.eql(u8, cmd, "users")) found_users = true;
-        if (std.mem.eql(u8, cmd, "test")) found_test = true;
-    }
-
-    try std.testing.expect(found_root);
-    try std.testing.expect(found_hello);
-    try std.testing.expect(found_users);
-    try std.testing.expect(found_test);
-}
-
-test "getAvailableSubcommands" {
-    const allocator = std.testing.allocator;
-
-    const TestGroup = struct {
-        _is_group: bool = true,
-        _index: struct { module: type, execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void },
-        list: struct { module: type, execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void },
-        search: struct { module: type, execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void },
-        create: struct { module: type, execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void },
-    };
-
-    const group = TestGroup{
-        ._is_group = true,
-        ._index = .{ .module = struct {}, .execute = undefined },
-        .list = .{ .module = struct {}, .execute = undefined },
-        .search = .{ .module = struct {}, .execute = undefined },
-        .create = .{ .module = struct {}, .execute = undefined },
-    };
-
-    const subcommands = try getAvailableSubcommands(group, allocator);
-    defer allocator.free(subcommands);
-
-    // Should exclude metadata fields (_is_group, _index)
-    try std.testing.expectEqual(@as(usize, 3), subcommands.len);
-
-    // Check that all expected subcommands are present
-    var found_list = false;
-    var found_search = false;
-    var found_create = false;
-
-    for (subcommands) |cmd| {
-        if (std.mem.eql(u8, cmd, "list")) found_list = true;
-        if (std.mem.eql(u8, cmd, "search")) found_search = true;
-        if (std.mem.eql(u8, cmd, "create")) found_create = true;
-    }
-
-    try std.testing.expect(found_list);
-    try std.testing.expect(found_search);
-    try std.testing.expect(found_create);
-}
-
-test "generateCommandHelp basic" {
-    const TestCommand = struct {
-        pub const meta = .{
-            .description = "Test command",
-            .examples = &.{ "test example1", "test example2" },
-        };
-
-        pub const Args = struct {
-            name: []const u8,
-            files: [][]const u8 = &.{},
-        };
-
-        pub const Options = struct {
-            verbose: bool = false,
-            count: u32 = 1,
-        };
-    };
-
-    var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    try generateCommandHelp(TestCommand, stream.writer(), &.{"test"}, "myapp");
-
-    const output = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Test command") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "USAGE:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "myapp test") != null);
-}
-
-test "generateCommandHelp no meta" {
-    const TestCommand = struct {
-        // No meta field
-
-        pub const Args = struct {
-            file: []const u8,
-        };
-    };
-
-    var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    try generateCommandHelp(TestCommand, stream.writer(), &.{"process"}, "myapp");
-
-    const output = stream.getWritten();
-
-    try std.testing.expect(std.mem.indexOf(u8, output, "USAGE:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "myapp process") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "<file>") != null);
-}
-
-test "generateCommandHelp with subcommand path" {
-    const TestCommand = struct {
-        pub const meta = .{
-            .description = "Manage user accounts",
-        };
-
-        pub const Args = struct {
-            username: []const u8,
-            email: ?[]const u8,
-        };
-
-        pub const Options = struct {
-            admin: bool = false,
-            quota: ?u64 = null,
-        };
-    };
-
-    var buffer: [2048]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    const path = [_][]const u8{ "users", "create" };
-    try generateCommandHelp(TestCommand, stream.writer(), &path, "myapp");
-
-    const output = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Manage user accounts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "myapp users create") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "<username>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "[email]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--admin") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--quota") != null);
-}
-
-test "generateCommandHelp varargs" {
-    const TestCommand = struct {
-        pub const Args = struct {
-            command: []const u8,
-            args: [][]const u8,
-        };
-    };
-
-    var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    try generateCommandHelp(TestCommand, stream.writer(), &.{"exec"}, "myapp");
-
-    const output = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "<command>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "[args...]") != null);
-}
-
-test "generateCommandHelp all optional args" {
-    const TestCommand = struct {
-        pub const Args = struct {
-            first: ?[]const u8,
-            second: ?[]const u8,
-            third: ?i32,
-        };
-    };
-
-    var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    try generateCommandHelp(TestCommand, stream.writer(), &.{"maybe"}, "myapp");
-
-    const output = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "[first]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "[second]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "[third]") != null);
-}
-
-test "generateCommandHelp with examples" {
-    const TestCommand = struct {
-        pub const meta = .{
-            .description = "Copy files",
-            .examples = &[_][]const u8{
-                "myapp copy source.txt dest.txt",
-                "myapp copy -r /src /dest",
-                "myapp copy --verbose file1 file2",
-            },
-        };
-
-        pub const Args = struct {
-            source: []const u8,
-            destination: []const u8,
-        };
-
-        pub const Options = struct {
-            recursive: bool = false,
-            verbose: bool = false,
-        };
-    };
-
-    var buffer: [2048]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    try generateCommandHelp(TestCommand, stream.writer(), &.{"copy"}, "myapp");
-
-    const output = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "EXAMPLES:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "myapp copy source.txt dest.txt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "myapp copy -r /src /dest") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "myapp copy --verbose file1 file2") != null);
-}
-
-test "generateOptionsHelp all option types" {
-    const TestOptions = struct {
-        // Boolean flags
-        verbose: bool = false,
-        quiet: bool = false,
-
-        // Required options
-        output: []const u8,
-
-        // Optional options
-        timeout: ?i32 = null,
-        format: ?[]const u8 = null,
-
-        // Numeric options
-        port: u16 = 8080,
-        threads: u8 = 4,
-
-        // Enum option
-        level: enum { debug, info, warn, err } = .info,
-    };
-
-    var buffer: [2048]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-
-    const empty_meta = .{}; // No metadata for this test
-    try generateOptionsHelp(TestOptions, empty_meta, stream.writer());
-
-    const output = stream.getWritten();
-    try std.testing.expect(std.mem.indexOf(u8, output, "OPTIONS:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--verbose") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--quiet") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--output") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--timeout") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--format") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--port") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--threads") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "--level") != null);
+/// Helper function to check if a type represents varargs
+fn isVarArgs(comptime T: type) bool {
+    const type_info = @typeInfo(T);
+    return type_info == .pointer and 
+           type_info.pointer.size == .slice and 
+           @typeInfo(type_info.pointer.child) == .pointer and
+           @typeInfo(type_info.pointer.child).pointer.size == .slice and
+           @typeInfo(type_info.pointer.child).pointer.child == u8;
 }

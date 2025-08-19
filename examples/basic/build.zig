@@ -21,10 +21,21 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("zcli", zcli_module);
 
-    // Generate command registry using the automatic discovery system
+    // Generate command registry using the plugin-aware build system
     const zcli_build = @import("zcli");
-    const cmd_registry = zcli_build.generateCommandRegistry(b, target, optimize, zcli_module, .{
+
+    const cmd_registry = zcli_build.buildWithExternalPlugins(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
+        .plugins = &[_]zcli_build.PluginConfig{
+            .{
+                .name = "zcli-help",
+                .path = "../../plugins/zcli-help", // Path relative to this build.zig
+            },
+            .{
+                .name = "zcli-not-found",
+                .path = "../../plugins/zcli-not-found", // Path relative to this build.zig
+            },
+        },
         .app_name = "example-cli",
         .app_version = "1.0.0",
         .app_description = "A demonstration CLI built with zcli",

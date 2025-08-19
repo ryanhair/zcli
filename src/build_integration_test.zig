@@ -65,7 +65,7 @@ test "build integration: basic command discovery" {
     );
 
     // Test command discovery
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Verify commands were discovered
@@ -110,7 +110,7 @@ test "build integration: nested command groups" {
         \\}
     );
 
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Verify top-level groups
@@ -120,17 +120,17 @@ test "build integration: nested command groups" {
     // Verify users group structure
     const users_group = discovered.root.get("users").?;
     try std.testing.expect(users_group.is_group);
-    try std.testing.expect(users_group.children.contains("index"));
-    try std.testing.expect(users_group.children.contains("list"));
-    try std.testing.expect(users_group.children.contains("create"));
-    try std.testing.expect(users_group.children.contains("permissions"));
-    try std.testing.expectEqual(@as(u32, 4), users_group.children.count());
+    try std.testing.expect(users_group.subcommands.?.contains("index"));
+    try std.testing.expect(users_group.subcommands.?.contains("list"));
+    try std.testing.expect(users_group.subcommands.?.contains("create"));
+    try std.testing.expect(users_group.subcommands.?.contains("permissions"));
+    try std.testing.expectEqual(@as(u32, 4), users_group.subcommands.?.count());
 
     // Verify nested permissions group
-    const permissions_group = users_group.children.get("permissions").?;
+    const permissions_group = users_group.subcommands.?.get("permissions").?;
     try std.testing.expect(permissions_group.is_group);
-    try std.testing.expect(permissions_group.children.contains("list"));
-    try std.testing.expectEqual(@as(u32, 1), permissions_group.children.count());
+    try std.testing.expect(permissions_group.subcommands.?.contains("list"));
+    try std.testing.expectEqual(@as(u32, 1), permissions_group.subcommands.?.count());
 }
 
 test "build integration: command name validation" {
@@ -149,7 +149,7 @@ test "build integration: command name validation" {
     try test_dir.createFile("../traverse.zig", "pub fn execute() !void {}"); // path traversal
     try test_dir.createFile(".hidden.zig", "pub fn execute() !void {}"); // hidden file
 
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Only valid names should be discovered
@@ -182,7 +182,7 @@ test "build integration: empty directories and edge cases" {
     // Group with no index but with subcommands
     try test_dir.createFile("no_index/subcmd.zig", "pub fn execute() !void {}");
 
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Empty directories should not be included
@@ -195,12 +195,12 @@ test "build integration: empty directories and edge cases" {
 
     const index_only = discovered.root.get("index_only").?;
     try std.testing.expect(index_only.is_group);
-    try std.testing.expect(index_only.children.contains("index"));
+    try std.testing.expect(index_only.subcommands.?.contains("index"));
 
     const no_index = discovered.root.get("no_index").?;
     try std.testing.expect(no_index.is_group);
-    try std.testing.expect(no_index.children.contains("subcmd"));
-    try std.testing.expect(!no_index.children.contains("index"));
+    try std.testing.expect(no_index.subcommands.?.contains("subcmd"));
+    try std.testing.expect(!no_index.subcommands.?.contains("index"));
 }
 
 test "build integration: maximum nesting depth" {
@@ -220,7 +220,7 @@ test "build integration: maximum nesting depth" {
     const beyond_depth_path = "deep/l1/l2/l3/l4/l5/l6/l7/ignored.zig";
     try test_dir.createFile(beyond_depth_path, "pub fn execute() !void {}");
 
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Should discover the structure within allowed depth
@@ -233,17 +233,17 @@ test "build integration: maximum nesting depth" {
     // Navigate to verify we can reach the command at level5
     var current = discovered.root.get("level1").?;
     try std.testing.expect(current.is_group);
-    try std.testing.expect(current.children.contains("level2"));
+    try std.testing.expect(current.subcommands.?.contains("level2"));
 
-    current = current.children.get("level2").?;
+    current = current.subcommands.?.get("level2").?;
     try std.testing.expect(current.is_group);
-    try std.testing.expect(current.children.contains("level3"));
+    try std.testing.expect(current.subcommands.?.contains("level3"));
 
     // Should be able to reach level5 where our command is
-    current = current.children.get("level3").?;
-    current = current.children.get("level4").?;
-    current = current.children.get("level5").?;
-    try std.testing.expect(current.children.contains("cmd"));
+    current = current.subcommands.?.get("level3").?;
+    current = current.subcommands.?.get("level4").?;
+    current = current.subcommands.?.get("level5").?;
+    try std.testing.expect(current.subcommands.?.contains("cmd"));
 }
 
 test "build integration: registry source generation" {
@@ -274,7 +274,7 @@ test "build integration: registry source generation" {
         \\}
     );
 
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Generate registry source
@@ -292,24 +292,17 @@ test "build integration: registry source generation" {
     try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const app_version = \"1.0.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry_source, "Test CLI application") != null);
 
-    // Verify command function generation
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "fn executehello(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "fn executeuserslist(") != null);
+    // Verify new comptime registry format
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".build();") != null);
 
-    // Verify registry structure generation
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".hello = .{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".users = .{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "._is_group = true") != null);
+    // Verify registry exports
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const Context = @TypeOf(registry).Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub fn init(allocator: std.mem.Allocator)") != null);
 
-    // Verify cleanup function is included
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "fn cleanupArrayOptions(") != null);
+    // Note: The new comptime registry approach doesn't need cleanup functions
 
-    // Check for cleanup in execution function - it should be present
-    const has_cleanup_call = std.mem.indexOf(u8, registry_source, "cleanupArrayOptions(") != null;
-    if (!has_cleanup_call) {
-        std.debug.print("Registry source:\n{s}\n", .{registry_source});
-    }
-    try std.testing.expect(has_cleanup_call);
+    // The new comptime registry approach handles memory management differently
 }
 
 test "build integration: special command names" {
@@ -320,7 +313,7 @@ test "build integration: special command names" {
     // Test command with name that's a Zig keyword
     try test_dir.createFile("test.zig", "pub fn execute() !void {}");
 
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     try std.testing.expect(discovered.root.contains("test"));
@@ -335,9 +328,9 @@ test "build integration: special command names" {
     const registry_source = try build_utils.generateRegistrySource(allocator, discovered, options);
     defer allocator.free(registry_source);
 
-    // Verify that 'test' is properly quoted in the registry
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".@\"test\" = .{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "executetest(") != null);
+    // Verify that 'test' command is properly registered in new format
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "cmd_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".register(\"test\", cmd_test)") != null);
 }
 
 test "build integration: isValidCommandName function" {
@@ -400,7 +393,7 @@ test "build integration: performance with many commands" {
 
     // Measure discovery performance
     const start_time = std.time.nanoTimestamp();
-    const discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
     const discovery_time = std.time.nanoTimestamp() - start_time;
 
@@ -430,7 +423,7 @@ test "build integration: performance with many commands" {
     // Verify generated source contains all commands
     i = 0;
     while (i < num_commands) : (i += 1) {
-        const search_pattern = try std.fmt.allocPrint(allocator, ".cmd{} = .{{", .{i});
+        const search_pattern = try std.fmt.allocPrint(allocator, ".register(\"cmd{}\", cmd_cmd{})", .{i, i});
         defer allocator.free(search_pattern);
         try std.testing.expect(std.mem.indexOf(u8, registry_source, search_pattern) != null);
     }

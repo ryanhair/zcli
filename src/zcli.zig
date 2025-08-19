@@ -1,8 +1,23 @@
 const std = @import("std");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
-const help_generator = @import("help.zig");
 const error_handler = @import("errors.zig");
+const execution = @import("execution.zig");
+pub const plugin_types = @import("plugin_types.zig");
+pub const registry = @import("registry.zig");
+
+// Re-export plugin types for user convenience
+pub const Metadata = plugin_types.Metadata;
+pub const PluginContext = plugin_types.PluginContext;
+pub const PluginResult = plugin_types.PluginResult;
+pub const OptionEvent = plugin_types.OptionEvent;
+pub const ErrorEvent = plugin_types.ErrorEvent;
+pub const PreCommandEvent = plugin_types.PreCommandEvent;
+pub const PostCommandEvent = plugin_types.PostCommandEvent;
+
+// Re-export registry types for user convenience
+pub const Registry = registry.Registry;
+pub const Config = registry.Config;
 
 // ============================================================================
 // PUBLIC API - Core functionality for end users
@@ -89,16 +104,13 @@ pub const cleanupOptions = options_parser.cleanupOptions;
 /// - `OutOfMemory`: Memory allocation failed
 pub const ParseError = args_parser.ParseError;
 
-// Main help generation (for app-level help)
-pub const generateAppHelp = help_generator.generateAppHelp;
-pub const generateCommandHelp = help_generator.generateCommandHelp;
+// Main help generation (removed - now handled by plugins)
 
 // ============================================================================
 // ADVANCED API - Lower-level functions for advanced use cases
 // ============================================================================
 
-// Advanced help generation (for custom help implementations)
-pub const generateSubcommandsList = help_generator.generateSubcommandsList;
+// Advanced help generation (removed - now handled by plugins)
 
 // Advanced error handling (for custom error handling)
 pub const CLIErrors = struct {
@@ -113,12 +125,70 @@ pub const CLIErrors = struct {
 };
 
 // ============================================================================
+// PLUGIN PIPELINE API - Base types for plugin transformers
+// ============================================================================
+
+/// Base command executor that plugins can transform.
+/// Plugins wrap this to add functionality like logging, auth, metrics, etc.
+pub const BaseCommandExecutor = execution.BaseCommandExecutor;
+
+/// Base error handler that plugins can transform.
+/// Plugins wrap this to add custom error handling, suggestions, telemetry, etc.
+pub const BaseErrorHandler = execution.BaseErrorHandler;
+
+/// Base help generator that plugins can transform.
+/// Plugins wrap this to customize help output, add examples, etc.
+pub const BaseHelpGenerator = execution.BaseHelpGenerator;
+
+// ============================================================================
 // INTERNAL API - Used by the App struct, not intended for direct user access
 // ============================================================================
 
-// Internal help utilities (used by App struct)
-const getAvailableCommands = help_generator.getAvailableCommands;
-const getAvailableSubcommands = help_generator.getAvailableSubcommands;
+// Internal help utilities (minimal fallback implementations when plugins aren't available)
+fn getAvailableCommands(comptime reg: anytype, allocator: std.mem.Allocator) ![][]const u8 {
+    const commands = reg.commands;
+    const CommandsType = @TypeOf(commands);
+
+    // Count available commands (excluding metadata fields)
+    comptime var count: usize = 0;
+    inline for (@typeInfo(CommandsType).@"struct".fields) |field| {
+        comptime if (std.mem.startsWith(u8, field.name, "_")) continue;
+        count += 1;
+    }
+
+    // Allocate and fill array
+    var result = try allocator.alloc([]const u8, count);
+    var i: usize = 0;
+    inline for (@typeInfo(CommandsType).@"struct".fields) |field| {
+        comptime if (std.mem.startsWith(u8, field.name, "_")) continue;
+        result[i] = field.name;
+        i += 1;
+    }
+
+    return result;
+}
+
+fn getAvailableSubcommands(comptime group: anytype, allocator: std.mem.Allocator) ![][]const u8 {
+    const GroupType = @TypeOf(group);
+
+    // Count available subcommands (excluding metadata fields)
+    comptime var count: usize = 0;
+    inline for (@typeInfo(GroupType).@"struct".fields) |field| {
+        comptime if (std.mem.startsWith(u8, field.name, "_")) continue;
+        count += 1;
+    }
+
+    // Allocate and fill array
+    var result = try allocator.alloc([]const u8, count);
+    var i: usize = 0;
+    inline for (@typeInfo(GroupType).@"struct".fields) |field| {
+        comptime if (std.mem.startsWith(u8, field.name, "_")) continue;
+        result[i] = field.name;
+        i += 1;
+    }
+
+    return result;
+}
 
 // Import structured error types
 const StructuredError = @import("structured_errors.zig").StructuredError;
@@ -146,6 +216,14 @@ pub const IO = struct {
     stdout: std.fs.File.Writer,
     stderr: std.fs.File.Writer,
     stdin: std.fs.File.Reader,
+
+    pub fn init() IO {
+        return IO{
+            .stdout = std.io.getStdOut().writer(),
+            .stderr = std.io.getStdErr().writer(),
+            .stdin = std.io.getStdIn().reader(),
+        };
+    }
 };
 
 /// Environment abstraction for accessing environment variables and system context.
@@ -168,6 +246,15 @@ pub const IO = struct {
 /// ```
 pub const Environment = struct {
     env: std.process.EnvMap,
+
+    pub fn init() Environment {
+        // Note: This returns a placeholder environment
+        // The env field will be properly initialized by the caller
+        const placeholder_env = std.process.EnvMap.init(std.heap.page_allocator);
+        return Environment{
+            .env = placeholder_env,
+        };
+    }
 };
 
 /// Execution context provided to all command functions.
@@ -337,24 +424,56 @@ pub const CommandMeta = struct {
 ///     .app_description = "My CLI application",
 /// });
 /// ```
-pub fn App(comptime Registry: type) type {
+pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
+    const ContextType = if (@TypeOf(RegistryModule) != @TypeOf(null))
+        RegistryModule.Context
+    else
+        Context;
+
     return struct {
         allocator: std.mem.Allocator,
-        registry: Registry,
+        registry: RegistryType,
         name: []const u8,
         version: []const u8,
         description: []const u8,
 
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, registry: Registry, options: struct {
+        /// Dispatch an event to all registered plugins
+        fn dispatchEvent(comptime event_name: []const u8, context: anytype, event_data: anytype) !?PluginResult {
+            if (@TypeOf(RegistryModule) != @TypeOf(null) and @hasDecl(RegistryModule, "plugins")) {
+                const plugin_info = @typeInfo(@TypeOf(RegistryModule.plugins));
+                if (plugin_info == .@"struct") {
+                    inline for (plugin_info.@"struct".fields) |field| {
+                        const plugin = @field(RegistryModule.plugins, field.name);
+                        if (@hasDecl(@TypeOf(plugin), event_name)) {
+                            const handler = @field(plugin, event_name);
+                            if (try handler(context, event_data)) |result| {
+                                if (result.handled) return result;
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// Get metadata for a command by parsing its path and extracting from module
+        fn getCommandMetadata(self: *Self, command_path: []const u8) Metadata {
+            // For now, return empty metadata - we'll implement proper extraction
+            _ = self;
+            _ = command_path;
+            return Metadata{};
+        }
+
+        pub fn init(allocator: std.mem.Allocator, reg: RegistryType, options: struct {
             name: []const u8,
             version: []const u8,
             description: []const u8,
         }) Self {
             return .{
                 .allocator = allocator,
-                .registry = registry,
+                .registry = reg,
                 .name = options.name,
                 .version = options.version,
                 .description = options.description,
@@ -365,13 +484,7 @@ pub fn App(comptime Registry: type) type {
             // Parse global options first
             const parsed = try self.parseGlobalOptions(args);
 
-            // Handle --help
-            if (parsed.help) {
-                try self.showHelp();
-                return;
-            }
-
-            // Handle --version
+            // Handle --version (this stays in core as it's app metadata)
             if (parsed.version) {
                 try self.showVersion();
                 return;
@@ -381,6 +494,11 @@ pub fn App(comptime Registry: type) type {
             if (parsed.remaining_args.len == 0) {
                 // No command specified, run root command if it exists
                 try self.runRootCommand();
+            } else if (std.mem.eql(u8, parsed.remaining_args[0], "--help") or
+                std.mem.eql(u8, parsed.remaining_args[0], "-h"))
+            {
+                // Global help request - route to root command with help flag
+                try self.runRootCommandWithArgs(parsed.remaining_args);
             } else {
                 // Route to subcommand
                 try self.routeCommand(parsed.remaining_args);
@@ -388,19 +506,16 @@ pub fn App(comptime Registry: type) type {
         }
 
         fn parseGlobalOptions(_: *Self, args: []const []const u8) !struct {
-            help: bool,
             version: bool,
             remaining_args: []const []const u8,
         } {
-            // Simple parsing for --help and --version only
-            var help = false;
+            // Simple parsing for --version only
+            // Help flags are handled by the help plugin
             var version = false;
             var first_non_option: usize = 0;
 
             for (args, 0..) |arg, i| {
-                if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-                    help = true;
-                } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+                if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
                     version = true;
                 } else if (!std.mem.startsWith(u8, arg, "-")) {
                     first_non_option = i;
@@ -409,21 +524,9 @@ pub fn App(comptime Registry: type) type {
             }
 
             return .{
-                .help = help,
                 .version = version,
                 .remaining_args = args[first_non_option..],
             };
-        }
-
-        fn showHelp(self: *Self) !void {
-            const stdout = std.io.getStdOut().writer();
-            try generateAppHelp(
-                self.registry,
-                stdout,
-                self.name,
-                self.version,
-                self.description,
-            );
         }
 
         fn showVersion(self: *Self) !void {
@@ -432,12 +535,41 @@ pub fn App(comptime Registry: type) type {
         }
 
         fn runRootCommand(self: *Self) !void {
+            try self.runRootCommandWithArgs(&.{});
+        }
+
+        fn runRootCommandWithArgs(self: *Self, args: []const []const u8) !void {
             // Check if root command exists in registry
             if (@hasField(@TypeOf(self.registry.commands), "root")) {
                 const root_cmd = @field(self.registry.commands, "root");
-                try self.executeCommand(root_cmd, &.{});
+                try self.executeCommand(root_cmd, args);
             } else {
-                try self.showHelp();
+                // No root command available - route help through command pipeline anyway
+                // This allows help plugins to provide help even without a root command
+                if (@TypeOf(RegistryModule) != @TypeOf(null) and @hasDecl(RegistryModule, "CommandPipeline")) {
+                    // Create a minimal context for help generation
+                    var env = std.process.EnvMap.init(self.allocator);
+                    defer env.deinit();
+
+                    var context = try RegistryModule.initContext(self.allocator);
+                    defer if (@hasDecl(@TypeOf(context), "deinit")) context.deinit();
+
+                    // Set app info
+                    if (@hasField(@TypeOf(context), "app_name")) context.app_name = self.name;
+                    if (@hasField(@TypeOf(context), "app_version")) context.app_version = self.version;
+                    if (@hasField(@TypeOf(context), "app_description")) context.app_description = self.description;
+
+                    // Try to use command pipeline for help
+                    RegistryModule.CommandPipeline.execute(context, args) catch {
+                        // If that fails, show minimal help
+                        const stderr = std.io.getStdErr().writer();
+                        try stderr.print("No root command available. Use '--help' for assistance.\n", .{});
+                    };
+                } else {
+                    // No command pipeline available
+                    const stderr = std.io.getStdErr().writer();
+                    try stderr.print("No root command available. Use '--help' for assistance.\n", .{});
+                }
             }
         }
 
@@ -451,10 +583,10 @@ pub fn App(comptime Registry: type) type {
             const remaining_args = args[1..];
 
             // Use comptime to generate routing logic
-            try self.routeCommandComptime(self.registry.commands, command_name, remaining_args);
+            try self.routeCommandComptime(self.registry.commands, command_name, remaining_args, command_name);
         }
 
-        fn routeCommandComptime(self: *Self, commands: anytype, command_name: []const u8, args: []const []const u8) !void {
+        fn routeCommandComptime(self: *Self, commands: anytype, command_name: []const u8, args: []const []const u8, command_path: []const u8) !void {
             const CommandsType = @TypeOf(commands);
 
             // Generate comptime switch for all available commands
@@ -474,12 +606,12 @@ pub fn App(comptime Registry: type) type {
                             }
                         }
                         if (is_group) {
-                            try self.routeSubcommandComptime(cmd, args, command_name);
+                            try self.routeSubcommandComptime(cmd, args, command_name, command_path);
                         } else {
-                            try self.executeCommand(cmd, args);
+                            try self.executeCommandWithPath(cmd, args, command_path);
                         }
                     } else {
-                        try self.executeCommand(cmd, args);
+                        try self.executeCommandWithPath(cmd, args, command_path);
                     }
                     return;
                 }
@@ -489,22 +621,34 @@ pub fn App(comptime Registry: type) type {
             try self.showCommandNotFound(command_name);
         }
 
-        fn routeSubcommandComptime(self: *Self, group: anytype, args: []const []const u8, group_name: []const u8) !void {
+        fn routeSubcommandComptime(self: *Self, group: anytype, args: []const []const u8, group_name: []const u8, current_path: []const u8) !void {
             if (args.len == 0) {
                 // No subcommand given, try to run the index command
                 if (@hasField(@TypeOf(group), "_index")) {
                     const index_cmd = @field(group, "_index");
-                    try self.executeCommand(index_cmd, &.{});
+                    try self.executeCommandWithPath(index_cmd, &.{}, current_path);
                 } else {
-                    try self.showSubcommandHelp(group_name, group);
+                    // No index command, show basic error
+                    const stderr = std.io.getStdErr().writer();
+                    try stderr.print("No subcommand specified for '{s}'. Run '{s} {s} --help' for assistance.\n", .{ group_name, self.name, group_name });
                 }
                 return;
             }
 
-            // Check for help flag before routing to subcommands
-            if (std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
-                try self.showSubcommandHelp(group_name, group);
-                return;
+
+            // Check if the first argument is an option (starts with -)
+            // If so, route to index command with all arguments
+            if (std.mem.startsWith(u8, args[0], "-")) {
+                if (@hasField(@TypeOf(group), "_index")) {
+                    const index_cmd = @field(group, "_index");
+                    try self.executeCommandWithPath(index_cmd, args, current_path);
+                    return;
+                } else {
+                    // No index command to handle options, show error
+                    const stderr = std.io.getStdErr().writer();
+                    try stderr.print("Options not supported for '{s}' (no index command). Run '{s} {s} <subcommand> --help' for subcommand help.\n", .{ group_name, self.name, group_name });
+                    return;
+                }
             }
 
             const subcommand_name = args[0];
@@ -530,12 +674,21 @@ pub fn App(comptime Registry: type) type {
                             }
                         }
                         if (is_nested_group) {
-                            try self.routeSubcommandComptime(subcmd, remaining_args, subcommand_name);
+                            // Build nested command path
+                            const nested_path = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ current_path, subcommand_name });
+                            defer self.allocator.free(nested_path);
+                            try self.routeSubcommandComptime(subcmd, remaining_args, subcommand_name, nested_path);
                         } else {
-                            try self.executeCommand(subcmd, remaining_args);
+                            // Build command path for leaf command
+                            const command_path = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ current_path, subcommand_name });
+                            defer self.allocator.free(command_path);
+                            try self.executeCommandWithPath(subcmd, remaining_args, command_path);
                         }
                     } else {
-                        try self.executeCommand(subcmd, remaining_args);
+                        // Build command path for leaf command
+                        const command_path = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ current_path, subcommand_name });
+                        defer self.allocator.free(command_path);
+                        try self.executeCommandWithPath(subcmd, remaining_args, command_path);
                     }
                     return;
                 }
@@ -546,90 +699,189 @@ pub fn App(comptime Registry: type) type {
         }
 
         fn executeCommand(self: *Self, command_entry: anytype, args: []const []const u8) !void {
-            // Check if this is a help request first
-            for (args) |arg| {
-                if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-                    try self.showCommandHelp(command_entry);
-                    return;
-                }
-            }
+            // Help flags are now handled by the help plugin via command transformation
 
             // Create context for command execution
             var env = std.process.EnvMap.init(self.allocator);
             defer env.deinit();
 
-            var context = Context{
-                .allocator = self.allocator,
-                .io = IO{
-                    .stdout = std.io.getStdOut().writer(),
-                    .stderr = std.io.getStdErr().writer(),
-                    .stdin = std.io.getStdIn().reader(),
-                },
-                .environment = Environment{
-                    .env = env,
-                },
-            };
+            // Use the appropriate context type based on registry module
+            var context = if (@TypeOf(RegistryModule) != @TypeOf(null))
+                try RegistryModule.initContext(self.allocator)
+            else
+                ContextType{
+                    .allocator = self.allocator,
+                    .io = IO{
+                        .stdout = std.io.getStdOut().writer(),
+                        .stderr = std.io.getStdErr().writer(),
+                        .stdin = std.io.getStdIn().reader(),
+                    },
+                    .environment = Environment{
+                        .env = env,
+                    },
+                };
+
+            // Cleanup context if it has deinit
+            defer if (@hasDecl(@TypeOf(context), "deinit")) context.deinit();
 
             // Check if this is a command entry struct with .execute field
             const TypeInfo = @typeInfo(@TypeOf(command_entry));
             if (TypeInfo == .@"struct" and @hasField(@TypeOf(command_entry), "execute")) {
-                // This is a proper command entry with .execute field - use the generated wrapper
-                try command_entry.execute(args, self.allocator, &context);
+                // Use the command pipeline if available, otherwise fall back to direct execution
+                if (@TypeOf(RegistryModule) != @TypeOf(null) and @hasDecl(RegistryModule, "CommandPipeline")) {
+                    // Create a command wrapper that delegates to the registry execution function
+                    const CommandWrapper = struct {
+                        entry: @TypeOf(command_entry),
+                        args: []const []const u8,
+                        allocator: std.mem.Allocator,
+                        context_ptr: *@TypeOf(context),
+
+                        pub fn execute(ctx: anytype, wrapper: @This()) !void {
+                            _ = ctx; // Context is already in wrapper.context_ptr
+                            try wrapper.entry.execute(wrapper.args, wrapper.allocator, wrapper.context_ptr);
+                        }
+                    };
+
+                    const wrapper = CommandWrapper{
+                        .entry = command_entry,
+                        .args = args,
+                        .allocator = self.allocator,
+                        .context_ptr = &context,
+                    };
+
+                    try RegistryModule.CommandPipeline.execute(context, wrapper);
+                } else {
+                    // Fallback to direct execution for backwards compatibility
+                    try command_entry.execute(args, self.allocator, &context);
+                }
+            }
+        }
+
+        fn executeCommandWithPath(self: *Self, command_entry: anytype, args: []const []const u8, command_path: []const u8) !void {
+            // Help flags are now handled by the help plugin via command transformation
+
+            // Create context for command execution
+            var env = std.process.EnvMap.init(self.allocator);
+            defer env.deinit();
+
+            // Use the appropriate context type based on registry module
+            var context = if (@TypeOf(RegistryModule) != @TypeOf(null))
+                try RegistryModule.initContext(self.allocator)
+            else
+                ContextType{
+                    .allocator = self.allocator,
+                    .io = IO{
+                        .stdout = std.io.getStdOut().writer(),
+                        .stderr = std.io.getStdErr().writer(),
+                        .stdin = std.io.getStdIn().reader(),
+                    },
+                    .environment = Environment{
+                        .env = env,
+                    },
+                };
+
+            // Set command path in context
+            if (@hasField(@TypeOf(context), "command_path")) {
+                context.command_path = command_path;
+            }
+
+            // Cleanup context if it has deinit
+            defer if (@hasDecl(@TypeOf(context), "deinit")) context.deinit();
+
+            // Check if this is a command entry struct with .execute field
+            const TypeInfo = @typeInfo(@TypeOf(command_entry));
+            if (TypeInfo == .@"struct" and @hasField(@TypeOf(command_entry), "execute")) {
+                // Use the command pipeline if available, otherwise fall back to direct execution
+                if (@TypeOf(RegistryModule) != @TypeOf(null) and @hasDecl(RegistryModule, "CommandPipeline")) {
+                    // Create a command wrapper that delegates to the registry execution function
+                    const CommandWrapper = struct {
+                        entry: @TypeOf(command_entry),
+                        args: []const []const u8,
+                        allocator: std.mem.Allocator,
+                        context_ptr: *@TypeOf(context),
+
+                        pub fn execute(ctx: anytype, wrapper: @This()) !void {
+                            _ = ctx; // Context is already in wrapper.context_ptr
+                            try wrapper.entry.execute(wrapper.args, wrapper.allocator, wrapper.context_ptr);
+                        }
+                    };
+
+                    const wrapper = CommandWrapper{
+                        .entry = command_entry,
+                        .args = args,
+                        .allocator = self.allocator,
+                        .context_ptr = &context,
+                    };
+
+                    try RegistryModule.CommandPipeline.execute(context, wrapper);
+                } else {
+                    // Fallback to direct execution for backwards compatibility
+                    try command_entry.execute(args, self.allocator, &context);
+                }
             }
         }
 
         fn showCommandNotFound(self: *Self, command: []const u8) !void {
-            const stderr = std.io.getStdErr().writer();
+            // Use the error pipeline if available, otherwise fall back to direct error handling
+            if (@TypeOf(RegistryModule) != @TypeOf(null) and @hasDecl(RegistryModule, "error_pipeline")) {
+                // Create context for error handling
+                var env = std.process.EnvMap.init(self.allocator);
+                defer env.deinit();
 
-            // Create structured error with suggestions
-            const structured_error = StructuredError{ .command_not_found = CommandErrorContext.unknown(command, &[_][]const u8{}) };
+                // Use the appropriate context type based on registry module
+                var context = if (@TypeOf(RegistryModule) != @TypeOf(null))
+                    try RegistryModule.initContext(self.allocator)
+                else
+                    ContextType{
+                        .allocator = self.allocator,
+                        .io = IO{
+                            .stdout = std.io.getStdOut().writer(),
+                            .stderr = std.io.getStdErr().writer(),
+                            .stdin = std.io.getStdIn().reader(),
+                        },
+                        .environment = Environment{
+                            .env = env,
+                        },
+                    };
 
-            // Try to get available commands for suggestions
-            const available_commands = getAvailableCommands(self.registry, self.allocator) catch {
-                // Fallback to simple error display if we can't get commands
-                const description = try structured_error.description(self.allocator);
-                defer self.allocator.free(description);
-                try stderr.print("Error: {s}\n\n", .{description});
-                try stderr.print("Run '{s} --help' to see available commands.\n", .{self.name});
-                return;
-            };
-            defer self.allocator.free(available_commands);
+                // Cleanup context if it has deinit
+                defer if (@hasDecl(@TypeOf(context), "deinit")) context.deinit();
 
-            // Update the error with suggestions
-            const suggestions = error_handler.findSimilarCommands(command, available_commands, self.allocator) catch null;
-            if (suggestions) |sug| {
-                defer self.allocator.free(sug);
-                // Create a new error with suggestions
-                var error_with_suggestions = structured_error;
-                error_with_suggestions.command_not_found.suggested_commands = sug;
+                // Add error-specific information to context
+                if (@hasField(@TypeOf(context), "attempted_command")) {
+                    context.attempted_command = command;
+                }
 
-                // Display the structured error
-                const description = try error_with_suggestions.description(self.allocator);
-                defer self.allocator.free(description);
-                try stderr.print("Error: {s}\n\n", .{description});
+                if (@hasField(@TypeOf(context), "available_commands")) {
+                    context.available_commands = getAvailableCommands(self.registry, self.allocator) catch &[_][]const u8{};
+                }
 
-                // Show suggestions if available
-                if (error_with_suggestions.suggestions()) |cmd_suggestions| {
-                    try stderr.print("Did you mean:\n", .{});
-                    for (cmd_suggestions[0..@min(3, cmd_suggestions.len)]) |suggestion| {
-                        try stderr.print("    {s}\n", .{suggestion});
-                    }
-                    try stderr.print("\n", .{});
+                if (@hasField(@TypeOf(context), "app_name")) {
+                    context.app_name = self.name;
+                }
+
+                // Use the error pipeline
+                try RegistryModule.ErrorPipeline.handle(error.CommandNotFound, context);
+
+                // Clean up available_commands after error pipeline completes
+                if (@hasField(@TypeOf(context), "available_commands") and context.available_commands.len > 0) {
+                    self.allocator.free(context.available_commands);
                 }
             } else {
-                // Display without suggestions
-                const description = try structured_error.description(self.allocator);
-                defer self.allocator.free(description);
-                try stderr.print("Error: {s}\n\n", .{description});
-            }
+                // Fallback to direct error handling for backwards compatibility
+                const stderr = std.io.getStdErr().writer();
 
-            // Show available commands
-            try stderr.print("Available commands:\n", .{});
-            for (available_commands) |cmd| {
-                try stderr.print("    {s}\n", .{cmd});
+                // Try to get available commands for suggestions
+                const available_commands = getAvailableCommands(self.registry, self.allocator) catch {
+                    try stderr.print("Error: Unknown command '{s}'\n\n", .{command});
+                    try stderr.print("Run '{s} --help' to see available commands.\n", .{self.name});
+                    return;
+                };
+                defer self.allocator.free(available_commands);
+
+                // Use the error handler module for suggestions
+                try error_handler.handleCommandNotFound(stderr, command, available_commands, self.name, self.allocator);
             }
-            try stderr.print("\n", .{});
-            try stderr.print("Run '{s} --help' to see all available commands.\n", .{self.name});
         }
 
         fn showSubcommandNotFound(self: *Self, group: []const u8, subcommand: []const u8) !void {
@@ -720,68 +972,6 @@ pub fn App(comptime Registry: type) type {
             try stderr.print("Run '{s} {s} --help' to see available subcommands.\n", .{ self.name, group_name });
         }
 
-        fn showSubcommandHelp(self: *Self, group_name: []const u8, group: anytype) !void {
-            const stdout = std.io.getStdOut().writer();
-
-            // Check if group has an index command with meta information
-            if (@hasField(@TypeOf(group), "_index")) {
-                const index_cmd = @field(group, "_index");
-                if (@hasField(@TypeOf(index_cmd), "module")) {
-                    const module = index_cmd.module;
-                    if (@hasDecl(module, "meta")) {
-                        const meta = module.meta;
-                        if (@hasField(@TypeOf(meta), "description")) {
-                            try stdout.print("{s}\n\n", .{meta.description});
-                        }
-                    }
-                }
-            } else {
-                try stdout.print("Command group: {s}\n\n", .{group_name});
-            }
-
-            try stdout.print("USAGE:\n", .{});
-            try stdout.print("    {s} {s} <SUBCOMMAND>\n\n", .{ self.name, group_name });
-
-            try stdout.print("SUBCOMMANDS:\n", .{});
-            try generateSubcommandsList(group, stdout);
-            try stdout.print("\n", .{});
-
-            try stdout.print("Run '{s} {s} <subcommand> --help' for more information on a subcommand.\n", .{ self.name, group_name });
-        }
-
-        fn showCommandHelp(self: *Self, command_entry: anytype) !void {
-            const stdout = std.io.getStdOut().writer();
-
-            // Check if command_entry is a struct
-            const type_info = @typeInfo(@TypeOf(command_entry));
-            if (type_info == .@"struct") {
-                // Check if it has a module field (regular command)
-                comptime var has_module = false;
-                inline for (type_info.@"struct".fields) |field| {
-                    if (comptime std.mem.eql(u8, field.name, "module")) {
-                        has_module = true;
-                        break;
-                    }
-                }
-
-                if (has_module) {
-                    // The module field contains the imported module type
-                    const module = command_entry.module;
-
-                    // Generate help from the command module
-                    // We need to pass the full command path for proper usage display
-                    // For now, we'll use just the app name - in a more complete implementation
-                    // we'd track the full command path
-                    const command_path = [_][]const u8{};
-                    try help_generator.generateCommandHelp(module, stdout, &command_path, self.name);
-                    return;
-                }
-            }
-
-            // Fallback for commands without module field or non-struct types
-            try stdout.print("Command help for '{s}'\n", .{self.name});
-            try stdout.print("Use '{s} --help' to see all available commands.\n", .{self.name});
-        }
     };
 }
 
@@ -793,7 +983,7 @@ test "App initialization" {
         commands: struct {} = .{},
     };
 
-    const app = App(TestRegistry).init(allocator, TestRegistry{ .commands = .{} }, .{
+    const app = App(TestRegistry, null).init(allocator, TestRegistry{ .commands = .{} }, .{
         .name = "testapp",
         .version = "0.1.0",
         .description = "Test application",
@@ -810,25 +1000,28 @@ test "parseGlobalOptions help flag" {
     };
 
     const allocator = std.testing.allocator;
-    var app = App(TestRegistry).init(allocator, TestRegistry{ .commands = .{} }, .{
+    var app = App(TestRegistry, null).init(allocator, TestRegistry{ .commands = .{} }, .{
         .name = "testapp",
         .version = "1.0.0",
         .description = "Test",
     });
 
-    // Test --help
+    // Help flags are now handled by the help plugin, not in parseGlobalOptions
+    // Test that help flags are passed through as remaining args
     {
         const args = [_][]const u8{"--help"};
         const result = try app.parseGlobalOptions(&args);
-        try std.testing.expectEqual(true, result.help);
         try std.testing.expectEqual(false, result.version);
+        try std.testing.expectEqual(@as(usize, 1), result.remaining_args.len);
+        try std.testing.expectEqualStrings("--help", result.remaining_args[0]);
     }
 
     // Test -h
     {
         const args = [_][]const u8{"-h"};
         const result = try app.parseGlobalOptions(&args);
-        try std.testing.expectEqual(true, result.help);
+        try std.testing.expectEqual(@as(usize, 1), result.remaining_args.len);
+        try std.testing.expectEqualStrings("-h", result.remaining_args[0]);
     }
 }
 
@@ -838,7 +1031,7 @@ test "parseGlobalOptions version flag" {
     };
 
     const allocator = std.testing.allocator;
-    var app = App(TestRegistry).init(allocator, TestRegistry{ .commands = .{} }, .{
+    var app = App(TestRegistry, null).init(allocator, TestRegistry{ .commands = .{} }, .{
         .name = "testapp",
         .version = "1.0.0",
         .description = "Test",
@@ -848,7 +1041,6 @@ test "parseGlobalOptions version flag" {
     {
         const args = [_][]const u8{"--version"};
         const result = try app.parseGlobalOptions(&args);
-        try std.testing.expectEqual(false, result.help);
         try std.testing.expectEqual(true, result.version);
     }
 
@@ -866,7 +1058,7 @@ test "parseGlobalOptions with commands" {
     };
 
     const allocator = std.testing.allocator;
-    var app = App(TestRegistry).init(allocator, TestRegistry{ .commands = .{} }, .{
+    var app = App(TestRegistry, null).init(allocator, TestRegistry{ .commands = .{} }, .{
         .name = "testapp",
         .version = "1.0.0",
         .description = "Test",
@@ -875,7 +1067,6 @@ test "parseGlobalOptions with commands" {
     const args = [_][]const u8{ "build", "--verbose", "src/" };
     const result = try app.parseGlobalOptions(&args);
 
-    try std.testing.expectEqual(false, result.help);
     try std.testing.expectEqual(false, result.version);
     try std.testing.expectEqual(@as(usize, 3), result.remaining_args.len);
     try std.testing.expectEqualStrings("build", result.remaining_args[0]);

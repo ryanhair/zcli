@@ -402,7 +402,6 @@ fn parseLongOptions(
     }
 
     if (!found) {
-        logging.unknownOption(option_name);
         return error.UnknownOption;
     }
 
@@ -425,7 +424,6 @@ fn parseShortOptionsWithMeta(
     const options_part = arg[1..]; // Skip "-"
 
     if (options_part.len == 0) {
-        logging.unknownOption("");
         return error.UnknownOption;
     }
 
@@ -572,7 +570,6 @@ fn parseShortOptionsWithMeta(
         }
 
         if (!char_found) {
-            logging.unknownOption(&[_]u8{char});
             return error.UnknownOption;
         }
 
@@ -595,7 +592,6 @@ fn parseShortOptions(
     const options_part = arg[1..]; // Skip "-"
 
     if (options_part.len == 0) {
-        logging.unknownOption("");
         return error.UnknownOption;
     }
 
@@ -687,7 +683,6 @@ fn parseShortOptions(
         }
 
         if (!char_found) {
-            logging.unknownOption(&[_]u8{char});
             return error.UnknownOption;
         }
 
