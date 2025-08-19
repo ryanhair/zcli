@@ -59,7 +59,7 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
 }
 
 /// Add plugin modules to registry during generation
-pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, plugins: []const PluginInfo) void {
+pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
     for (plugins) |plugin_info| {
         if (plugin_info.is_local) {
             const plugin_module = b.addModule(plugin_info.import_name, .{
@@ -68,11 +68,13 @@ pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Mod
                 else
                     b.fmt("src/{s}.zig", .{plugin_info.import_name})),
             });
+            plugin_module.addImport("zcli", zcli_module);
             registry_module.addImport(plugin_info.import_name, plugin_module);
         } else {
             if (plugin_info.dependency) |dep| {
                 const plugin_module = dep.module("plugin");
-                registry_module.addImport(plugin_info.name, plugin_module);
+                plugin_module.addImport("zcli", zcli_module);
+                registry_module.addImport(plugin_info.import_name, plugin_module);
             }
         }
     }

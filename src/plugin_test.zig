@@ -126,16 +126,14 @@ test "plugin registry generation with imports" {
     try std.testing.expect(std.mem.indexOf(u8, source, "const logger = @import(\"plugins/logger\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "const zcli_auth = @import(\"zcli-auth\");") != null);
 
-    // Verify Context generation
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = struct {") != null);
+    // Verify new comptime registry Context generation
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = @TypeOf(registry).Context;") != null);
 
-    // Verify pipeline generation
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const CommandPipeline = blk:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const ErrorPipeline = blk:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const HelpPipeline = blk:") != null);
-
-    // Verify Commands struct generation
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Commands = struct {") != null);
+    // Verify registry generation (replaces pipeline generation)
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
+    // Note: In the new comptime approach, plugins are registered and called through the registry
+    // rather than generating complex pipeline code
 }
 
 test "plugin name sanitization for imports" {
@@ -206,15 +204,14 @@ test "Context extension generation" {
     );
     defer allocator.free(source);
 
-    // Verify Context has extension fields
-    try std.testing.expect(std.mem.indexOf(u8, source, "auth: if (@hasDecl(auth, \"ContextExtension\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "logger: if (@hasDecl(logger, \"ContextExtension\"))") != null);
+    // Verify plugins are registered with the registry
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(auth)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(logger)") != null);
 
-    // Verify init function
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn init(allocator: std.mem.Allocator) !@This()") != null);
+    // Verify new init function signature 
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn init(allocator: std.mem.Allocator) @TypeOf(registry)") != null);
     
-    // Verify deinit function
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn deinit(self: *@This()) void") != null);
+    // Note: The new registry approach doesn't need a deinit function
 }
 
 test "pipeline composition ordering" {
@@ -250,15 +247,10 @@ test "pipeline composition ordering" {
     );
     defer allocator.free(source);
 
-    // Find the CommandPipeline section
-    const pipeline_start = std.mem.indexOf(u8, source, "pub const CommandPipeline = blk:").?;
-    const pipeline_end = std.mem.indexOf(u8, source[pipeline_start..], "};").? + pipeline_start;
-    const pipeline_section = source[pipeline_start..pipeline_end];
-
-    // Verify plugins are checked in order
-    const plugin1_pos = std.mem.indexOf(u8, pipeline_section, "if (@hasDecl(plugin1").?;
-    const plugin2_pos = std.mem.indexOf(u8, pipeline_section, "if (@hasDecl(plugin2").?;
-    const plugin3_pos = std.mem.indexOf(u8, pipeline_section, "if (@hasDecl(plugin3").?;
+    // In the new approach, verify plugins are registered in the correct order
+    const plugin1_pos = std.mem.indexOf(u8, source, ".registerPlugin(plugin1)").?;
+    const plugin2_pos = std.mem.indexOf(u8, source, ".registerPlugin(plugin2)").?;
+    const plugin3_pos = std.mem.indexOf(u8, source, ".registerPlugin(plugin3)").?;
 
     // They should appear in the order they were added
     try std.testing.expect(plugin1_pos < plugin2_pos);
@@ -305,19 +297,18 @@ test "Commands struct with plugin commands" {
     );
     defer allocator.free(source);
 
-    // Verify Commands struct includes native commands
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const hello = @import(\"cmd_hello\");") != null);
+    // Verify commands are registered with the registry (new approach)
+    try std.testing.expect(std.mem.indexOf(u8, source, "const cmd_hello = @import(\"cmd_hello\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".register(\"hello\", cmd_hello)") != null);
 
-    // Verify PluginCommands struct is generated for plugin commands (no more usingnamespace)
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const PluginCommands = struct {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const auth_commands = if (@hasDecl(auth, \"commands\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const zcli_help_commands = if (@hasDecl(zcli_help, \"commands\"))") != null);
+    // Verify plugins are also registered (combined approach)
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(auth)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(zcli_help)") != null);
     
-    // Verify getCommand function is generated
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn getCommand(comptime name: []const u8) ?type") != null);
+    // Verify registry is built
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
     
-    // Verify getAllCommandNames function is generated
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn getAllCommandNames() []const []const u8") != null);
+    // Note: The new registry approach handles command discovery differently
 }
 
 test "empty plugin list handling" {
@@ -347,11 +338,9 @@ test "empty plugin list handling" {
     defer allocator.free(source);
 
     // Should still generate valid code with no plugins
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = struct {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const CommandPipeline = blk:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = @TypeOf(registry).Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const registry = zcli.Registry.init") != null);
     
-    // Base types should be used when no plugins
-    try std.testing.expect(std.mem.indexOf(u8, source, "var pipeline_type = zcli.BaseCommandExecutor;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "var pipeline_type = zcli.BaseErrorHandler;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "var pipeline_type = RegistryHelpGenerator;") != null);
+    // Registry should build successfully even with no plugins
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
 }

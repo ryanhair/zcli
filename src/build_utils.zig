@@ -41,6 +41,7 @@ pub const discoverCommands = main.discoverCommands;
 pub const isValidCommandName = main.isValidCommandName;
 
 // Re-export code generation functions
+pub const generateComptimeRegistrySource = main.generatePluginRegistrySource;
 pub const generatePluginRegistrySource = main.generatePluginRegistrySource;
 pub const generateRegistrySource = main.generateRegistrySource;
 

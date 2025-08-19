@@ -50,9 +50,9 @@ test "pipeline integration with example registry" {
     try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const app_version") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry_source, "test-app") != null);
     
-    // Verify command structure is present
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "commands") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "hello") != null);
+    // Verify command registration is present in new format
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".register(\"hello\"") != null);
 }
 
 test "pipeline integration preserves backwards compatibility" {

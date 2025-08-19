@@ -25,7 +25,7 @@ pub const addPluginModules = plugin_system.addPluginModules;
 pub const discoverCommands = command_discovery.discoverCommands;
 pub const isValidCommandName = command_discovery.isValidCommandName;
 
-pub const generatePluginRegistrySource = code_generation.generatePluginRegistrySource;
+pub const generatePluginRegistrySource = code_generation.generateComptimeRegistrySource;
 pub const generateRegistrySource = code_generation.generateRegistrySource;
 
 pub const createDiscoveredModules = module_creation.createDiscoveredModules;
@@ -96,7 +96,7 @@ pub fn generatePluginRegistry(
     defer discovered_commands.deinit();
 
     // Generate plugin-enhanced registry source code
-    const registry_source = code_generation.generatePluginRegistrySource(b.allocator, discovered_commands, config, plugins) catch |err| {
+    const registry_source = code_generation.generateComptimeRegistrySource(b.allocator, discovered_commands, config, plugins) catch |err| {
         switch (err) {
             error.OutOfMemory => {
                 logging.registryGenerationOutOfMemory();
@@ -122,7 +122,7 @@ pub fn generatePluginRegistry(
     module_creation.createDiscoveredModules(b, registry_module, zcli_module, discovered_commands, config.commands_dir);
 
     // Add plugin imports to registry module
-    module_creation.addPluginModulesToRegistry(b, registry_module, plugins);
+    module_creation.addPluginModulesToRegistry(b, registry_module, zcli_module, plugins);
 
     return registry_module;
 }

@@ -292,24 +292,17 @@ test "build integration: registry source generation" {
     try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const app_version = \"1.0.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry_source, "Test CLI application") != null);
 
-    // Verify command function generation
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "fn executehello(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "fn executeuserslist(") != null);
+    // Verify new comptime registry format
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".build();") != null);
 
-    // Verify registry structure generation
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".hello = .{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".users = .{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "._is_group = true") != null);
+    // Verify registry exports
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const Context = @TypeOf(registry).Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub fn init(allocator: std.mem.Allocator)") != null);
 
-    // Verify cleanup function is included
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "fn cleanupArrayOptions(") != null);
+    // Note: The new comptime registry approach doesn't need cleanup functions
 
-    // Check for cleanup in execution function - it should be present
-    const has_cleanup_call = std.mem.indexOf(u8, registry_source, "cleanupArrayOptions(") != null;
-    if (!has_cleanup_call) {
-        std.debug.print("Registry source:\n{s}\n", .{registry_source});
-    }
-    try std.testing.expect(has_cleanup_call);
+    // The new comptime registry approach handles memory management differently
 }
 
 test "build integration: special command names" {
@@ -335,9 +328,9 @@ test "build integration: special command names" {
     const registry_source = try build_utils.generateRegistrySource(allocator, discovered, options);
     defer allocator.free(registry_source);
 
-    // Verify that 'test' is properly quoted in the registry
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".@\"test\" = .{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "executetest(") != null);
+    // Verify that 'test' command is properly registered in new format
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "cmd_test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".register(\"test\", cmd_test)") != null);
 }
 
 test "build integration: isValidCommandName function" {
@@ -430,7 +423,7 @@ test "build integration: performance with many commands" {
     // Verify generated source contains all commands
     i = 0;
     while (i < num_commands) : (i += 1) {
-        const search_pattern = try std.fmt.allocPrint(allocator, ".cmd{} = .{{", .{i});
+        const search_pattern = try std.fmt.allocPrint(allocator, ".register(\"cmd{}\", cmd_cmd{})", .{i, i});
         defer allocator.free(search_pattern);
         try std.testing.expect(std.mem.indexOf(u8, registry_source, search_pattern) != null);
     }

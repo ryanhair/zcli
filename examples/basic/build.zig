@@ -32,8 +32,8 @@ pub fn build(b: *std.Build) void {
                 .path = "../../plugins/zcli-help", // Path relative to this build.zig
             },
             .{
-                .name = "zcli-suggestions",
-                .path = "../../plugins/zcli-suggestions", // Path relative to this build.zig
+                .name = "zcli-not-found",
+                .path = "../../plugins/zcli-not-found", // Path relative to this build.zig
             },
         },
         .app_name = "example-cli",

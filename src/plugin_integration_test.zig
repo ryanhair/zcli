@@ -375,15 +375,13 @@ test "generated code structure validation" {
     );
     defer allocator.free(source);
     
-    // Validate key structures are present
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = struct {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const CommandPipeline = blk:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const ErrorPipeline = blk:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const HelpPipeline = blk:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Commands = struct {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const PluginCommands = struct {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn getCommand(comptime name: []const u8)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn getAllCommandNames()") != null);
+    // Validate key structures are present in new registry format
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = @TypeOf(registry).Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
+    
+    // Verify plugins are registered
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(") != null);
     
     // Validate plugin is referenced
     try std.testing.expect(std.mem.indexOf(u8, source, "test_plugin") != null);

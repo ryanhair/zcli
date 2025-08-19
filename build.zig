@@ -29,6 +29,7 @@ pub fn build(b: *std.Build) void {
         "src/plugin_integration_test.zig", // Plugin integration tests
         "src/test_transformer_plugin.zig", // Test transformer plugin
         "src/pipeline_integration_test.zig", // Pipeline integration tests
+        "src/system_validation_test.zig", // System validation tests
         "src/benchmark.zig", // Performance benchmarks
     };
 

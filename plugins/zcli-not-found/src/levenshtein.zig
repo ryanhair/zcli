@@ -2,42 +2,65 @@ const std = @import("std");
 
 /// Calculate Levenshtein edit distance between two strings
 /// This is the core algorithm for finding similar command names
+/// Uses a more memory-efficient approach for larger strings
 pub fn editDistance(a: []const u8, b: []const u8) usize {
     if (a.len == 0) return b.len;
     if (b.len == 0) return a.len;
 
-    // Create a matrix to store distances
-    var matrix: [64][64]usize = undefined;
+    // For very long strings, use a practical limit to avoid excessive computation
+    const max_practical_len = 256;
+    const a_len = @min(a.len, max_practical_len);
+    const b_len = @min(b.len, max_practical_len);
 
-    // Handle case where strings are too long
-    const max_len = 62; // Changed from 63 to avoid overflow with +1
-    const a_len = @min(a.len, max_len);
-    const b_len = @min(b.len, max_len);
+    // Use a more memory-efficient approach with two arrays instead of a full matrix
+    // This reduces memory usage from O(n*m) to O(min(n,m))
 
-    // Initialize first row and column
-    for (0..a_len + 1) |i| {
-        matrix[i][0] = i;
+    // Use two arrays instead of full matrix - more memory efficient
+    // We'll work with the shorter string as columns to minimize memory usage
+    const shorter_len = @min(a_len, b_len);
+    const longer_len = @max(a_len, b_len);
+    
+    const shorter_str = if (a_len <= b_len) a[0..a_len] else b[0..b_len];
+    const longer_str = if (a_len <= b_len) b[0..b_len] else a[0..a_len];
+
+    // Use stack arrays for reasonable sizes, otherwise return simple difference
+    if (shorter_len > 512) {
+        // For very long strings, fall back to simple length difference
+        // This avoids stack overflow while still providing some useful metric
+        return if (longer_len > shorter_len) longer_len - shorter_len else 0;
     }
-    for (0..b_len + 1) |j| {
-        matrix[0][j] = j;
+
+    var prev_row: [513]usize = undefined; // +1 for initialization
+    var curr_row: [513]usize = undefined;
+
+    // Initialize first row
+    for (0..shorter_len + 1) |j| {
+        prev_row[j] = j;
     }
 
-    // Fill the matrix
-    for (1..a_len + 1) |i| {
-        for (1..b_len + 1) |j| {
-            const cost: usize = if (a[i - 1] == b[j - 1]) 0 else 1;
+    // Fill the matrix row by row
+    for (1..longer_len + 1) |i| {
+        curr_row[0] = i;
+        
+        for (1..shorter_len + 1) |j| {
+            const cost: usize = if (longer_str[i - 1] == shorter_str[j - 1]) 0 else 1;
 
-            matrix[i][j] = @min(
+            curr_row[j] = @min(
                 @min(
-                    matrix[i - 1][j] + 1, // deletion
-                    matrix[i][j - 1] + 1, // insertion
-                ),
-                matrix[i - 1][j - 1] + cost, // substitution
+                    prev_row[j] + 1,      // deletion
+                    curr_row[j - 1] + 1   // insertion
+                ), 
+                prev_row[j - 1] + cost    // substitution
             );
         }
+        
+        // Swap rows
+        const temp = prev_row;
+        prev_row = curr_row;
+        curr_row = temp;
     }
 
-    return matrix[a_len][b_len];
+    return prev_row[shorter_len];
 }
 
 /// Find commands similar to the input using edit distance

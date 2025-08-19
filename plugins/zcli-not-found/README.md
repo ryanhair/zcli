@@ -1,6 +1,6 @@
-# zcli-suggestions Plugin
+# zcli-not-found Plugin
 
-An intelligent command suggestion plugin for zcli applications that provides helpful command suggestions when users make typos or enter unknown commands.
+A command-not-found handler plugin for zcli that provides intelligent "did you mean" suggestions when users type incorrect commands.
 
 ## Features
 

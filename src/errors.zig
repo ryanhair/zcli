@@ -44,6 +44,12 @@ pub fn handleSubcommandNotFound(
     try writer.print("Run '{s} {s} --help' for more information.\n", .{ app_name, parent_command });
 }
 
+
+
+
+
+
+/// Handle missing required argument error
 pub fn handleMissingArgument(
     writer: anytype,
     command_path: []const []const u8,
@@ -67,6 +73,7 @@ pub fn handleMissingArgument(
     try writer.print(" --help' for more information.\n", .{});
 }
 
+/// Handle too many arguments error
 pub fn handleTooManyArguments(
     writer: anytype,
     command_path: []const []const u8,
@@ -83,6 +90,7 @@ pub fn handleTooManyArguments(
     try writer.print(" --help' for more information.\n", .{});
 }
 
+/// Handle unknown option error
 pub fn handleUnknownOption(
     writer: anytype,
     option: []const u8,
@@ -111,6 +119,7 @@ pub fn handleUnknownOption(
     try writer.print(" --help' to see available options.\n", .{});
 }
 
+/// Handle invalid option value error
 pub fn handleInvalidOptionValue(
     writer: anytype,
     option: []const u8,
@@ -129,6 +138,7 @@ pub fn handleInvalidOptionValue(
     try writer.print(" --help' for more information.\n", .{});
 }
 
+/// Handle missing option value error
 pub fn handleMissingOptionValue(
     writer: anytype,
     option: []const u8,

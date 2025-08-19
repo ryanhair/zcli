@@ -118,6 +118,11 @@ pub fn combinePlugins(b: *std.Build, local_plugins: []const PluginInfo, external
 
 /// Add plugin modules to the executable
 pub fn addPluginModules(b: *std.Build, exe: *std.Build.Step.Compile, plugins: []const PluginInfo) void {
+    // Get zcli module from the executable's imports to pass to plugins
+    const zcli_module = exe.root_module.import_table.get("zcli") orelse {
+        std.debug.panic("zcli module not found in executable imports. Add zcli import before calling addPluginModules.", .{});
+    };
+
     for (plugins) |plugin_info| {
         if (plugin_info.is_local) {
             // For local plugins, create module from the file system
@@ -129,11 +134,13 @@ pub fn addPluginModules(b: *std.Build, exe: *std.Build.Step.Compile, plugins: []
                     // Single-file plugin: "plugins/auth" -> "src/plugins/auth.zig"
                     b.fmt("src/{s}.zig", .{plugin_info.import_name})),
             });
+            plugin_module.addImport("zcli", zcli_module);
             exe.root_module.addImport(plugin_info.import_name, plugin_module);
         } else {
-            // For external plugins, get from dependency
+            // For external plugins, get from dependency and add zcli import
             if (plugin_info.dependency) |dep| {
                 const plugin_module = dep.module("plugin");
+                plugin_module.addImport("zcli", zcli_module);
                 exe.root_module.addImport(plugin_info.name, plugin_module);
             }
         }

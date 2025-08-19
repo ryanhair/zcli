@@ -42,8 +42,8 @@
         .@"zcli-help" = .{
             .path = "../../plugins/zcli-help",
         },
-        .@"zcli-suggestions" = .{
-            .path = "../../plugins/zcli-suggestions",
+        .@"zcli-not-found" = .{
+            .path = "../../plugins/zcli-not-found",
         },
     },
     .paths = .{
