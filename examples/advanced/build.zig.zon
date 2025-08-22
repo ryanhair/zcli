@@ -1,12 +1,11 @@
 .{
-    .name = .basic,
-    .version = "0.1.0",
-    .fingerprint = 0x9079755382f78382,
+    .name = .advanced,
+    .fingerprint = 0xbc8e6871aca163d0,
     .minimum_zig_version = "0.14.1",
+    .version = "0.1.0",
     .dependencies = .{
         .zcli = .{ .path = "../.." },
         .@"zcli-help" = .{ .path = "../../plugins/zcli-help" },
-        .@"zcli-not-found" = .{ .path = "../../plugins/zcli-not-found" },
     },
     .paths = .{
         "build.zig",

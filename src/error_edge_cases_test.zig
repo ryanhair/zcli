@@ -438,32 +438,21 @@ test "registry structure validation for empty commands" {
 test "Context creation and method access" {
     const allocator = std.testing.allocator;
 
-    var env = std.process.EnvMap.init(allocator);
-    defer env.deinit();
-
-    const context = zcli.Context{
-        .allocator = allocator,
-        .io = zcli.IO{
-            .stdout = std.io.getStdOut().writer(),
-            .stderr = std.io.getStdErr().writer(),
-            .stdin = std.io.getStdIn().reader(),
-        },
-        .environment = zcli.Environment{
-            .env = env,
-        },
-    };
+    var context = zcli.Context.init(allocator);
+    defer context.deinit();
 
     // Test convenience methods
     const stdout = context.stdout();
     const stderr = context.stderr();
     const stdin = context.stdin();
-    const env_ref = context.env();
+    // Test environment access through the new API
+    _ = context.environment.get("HOME");
 
     // Verify types are correct
     try std.testing.expect(@TypeOf(stdout) == std.fs.File.Writer);
     try std.testing.expect(@TypeOf(stderr) == std.fs.File.Writer);
     try std.testing.expect(@TypeOf(stdin) == std.fs.File.Reader);
-    try std.testing.expect(@TypeOf(env_ref) == *const std.process.EnvMap);
+    // env_ref no longer exists in the new API
 }
 
 // ============================================================================

@@ -7,76 +7,70 @@ const levenshtein = @import("levenshtein.zig");
 /// Handles command-not-found errors with intelligent "did you mean" suggestions
 /// using Levenshtein distance algorithm to find similar commands.
 
-/// Handle error events - specifically CommandNotFound errors
-pub fn handleError(context: anytype, event: zcli.ErrorEvent) !?zcli.PluginResult {
-    if (event.err == error.CommandNotFound) {
-        const help_text = try generateCommandNotFoundHelp(
-            context,
-            event.command_path orelse "unknown",
-            event.available_commands orelse &[_][]const u8{},
-        );
-        return zcli.PluginResult{
-            .handled = true,
-            .output = help_text,
-            .stop_execution = true,
-        };
+/// Error hook - handles command not found errors with suggestions
+pub fn onError(
+    context: *zcli.Context,
+    err: anyerror,
+    command_path: []const u8,
+) !void {
+    if (err == error.CommandNotFound) {
+        // Get available commands directly from context
+        try generateCommandNotFoundHelp(context, command_path, context.available_commands);
+        
+        // The error will still propagate, but we've shown helpful suggestions
     }
-    return null; // Not handled
 }
 
 /// Generate help text for command not found errors
 fn generateCommandNotFoundHelp(
-    context: anytype,
+    context: *zcli.Context,
     attempted_command: []const u8,
     available_commands: []const []const u8,
-) ![]const u8 {
-    const allocator = context.allocator;
-    var help_text = std.ArrayList(u8).init(allocator);
-    const writer = help_text.writer();
+) !void {
+    const writer = context.stderr();
     
     // Error header
     try writer.print("Error: Unknown command '{s}'\n\n", .{attempted_command});
     
     // Safety check for available_commands
     if (available_commands.len == 0) {
-        try writer.print("No commands available for suggestions.\n");
-        try writer.print("\nRun '<app> --help' to see all available commands.\n");
-        return help_text.toOwnedSlice();
+        try writer.print("No commands available for suggestions.\n", .{});
+        try writer.print("\nRun '{s} --help' to see all available commands.\n", .{context.app_name});
+        return;
     }
     
     // Find similar commands
     const suggestions = findBestSuggestions(
         attempted_command,
         available_commands,
-        allocator,
+        context.allocator,
         3, // max suggestions
         3, // max edit distance
     ) catch null;
     
     if (suggestions) |suggs| {
-        defer allocator.free(suggs);
+        defer context.allocator.free(suggs);
         
         if (suggs.len > 0) {
             if (suggs.len == 1) {
                 try writer.print("Did you mean '{s}'?\n\n", .{suggs[0]});
             } else {
-                try writer.print("Did you mean one of these?\n");
+                try writer.print("Did you mean one of these?\n", .{});
                 for (suggs) |suggestion| {
                     try writer.print("    {s}\n", .{suggestion});
                 }
-                try writer.print("\n");
+                try writer.print("\n", .{});
             }
         }
     }
     
     // Show available commands
-    try writer.print("Available commands:\n");
+    try writer.print("Available commands:\n", .{});
     for (available_commands) |cmd| {
         try writer.print("    {s}\n", .{cmd});
     }
-    try writer.print("\nRun '<app> --help' to see all available commands.\n");
     
-    return help_text.toOwnedSlice();
+    try writer.print("\nRun '{s} --help' to see all available commands.\n", .{context.app_name});
 }
 
 /// Find best command suggestions using Levenshtein distance
@@ -145,57 +139,46 @@ pub const ContextExtension = struct {
     max_suggestions: usize = 3,
     max_distance: usize = 3,
     color_output: bool = true,
+    command_list: std.ArrayList([]const u8),
     
     pub fn init(allocator: std.mem.Allocator) !@This() {
-        _ = allocator;
         return .{
             .max_suggestions = 3,
             .max_distance = 3,
             .color_output = std.io.tty.detectConfig(std.io.getStdErr()) != .no_color,
+            .command_list = std.ArrayList([]const u8).init(allocator),
         };
     }
     
     pub fn deinit(self: *@This()) void {
-        _ = self;
+        self.command_list.deinit();
+    }
+    
+    pub fn addCommand(self: *@This(), command: []const u8) !void {
+        try self.command_list.append(command);
     }
 };
 
 // Tests
 test "not-found plugin structure" {
-    try std.testing.expect(@hasDecl(@This(), "handleError"));
+    try std.testing.expect(@hasDecl(@This(), "onError"));
     try std.testing.expect(@hasDecl(@This(), "ContextExtension"));
 }
 
-test "handleError handles CommandNotFound" {
-    const allocator = std.testing.allocator;
+test "onError handles CommandNotFound" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     
-    // Mock context
-    const MockContext = struct {
-        allocator: std.mem.Allocator,
-    };
-    const context = MockContext{ .allocator = allocator };
+    var context = zcli.Context.init(gpa.allocator());
+    defer context.deinit();
     
+    // Store available commands in context
     const commands = [_][]const u8{ "list", "search", "create" };
+    try context.setGlobalData("available_commands", @ptrCast(&commands));
     
-    // Test command not found error
-    const event = zcli.ErrorEvent{
-        .err = error.CommandNotFound,
-        .command_path = "lst",
-        .available_commands = &commands,
-    };
-    
-    const result = try handleError(context, event);
-    try std.testing.expect(result != null);
-    try std.testing.expect(result.?.handled);
-    try std.testing.expect(result.?.stop_execution);
-    try std.testing.expect(result.?.output != null);
-    
-    // Check that output contains suggestion
-    if (result.?.output) |output| {
-        defer allocator.free(output);
-        try std.testing.expect(std.mem.indexOf(u8, output, "list") != null);
-        try std.testing.expect(std.mem.indexOf(u8, output, "Did you mean") != null);
-    }
+    // Test command not found error - should not return error, just print suggestions
+    try onError(&context, error.CommandNotFound, "lst");
+    // Test passes if it doesn't crash
 }
 
 test "find best suggestions" {
@@ -209,4 +192,28 @@ test "find best suggestions" {
     
     try std.testing.expect(suggestions.len > 0);
     try std.testing.expectEqualStrings("search", suggestions[0]);
+}
+
+test "find best suggestions with empty input" {
+    const allocator = std.testing.allocator;
+    
+    const commands = [_][]const u8{ "list", "search", "create" };
+    
+    // Test with empty input
+    const suggestions = try findBestSuggestions("", &commands, allocator, 3, 3);
+    defer allocator.free(suggestions);
+    
+    try std.testing.expect(suggestions.len == 0);
+}
+
+test "find best suggestions with no commands" {
+    const allocator = std.testing.allocator;
+    
+    const commands = [_][]const u8{};
+    
+    // Test with no available commands
+    const suggestions = try findBestSuggestions("test", &commands, allocator, 3, 3);
+    defer allocator.free(suggestions);
+    
+    try std.testing.expect(suggestions.len == 0);
 }

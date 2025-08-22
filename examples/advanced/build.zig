@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
 
     // Create the executable
     const exe = b.addExecutable(.{
-        .name = "gitt",
+        .name = "dockr",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -26,16 +26,15 @@ pub fn build(b: *std.Build) void {
 
     const cmd_registry = zcli_build.buildWithExternalPlugins(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
-        .plugins = &[_]zcli_build.PluginConfig{ .{
-            .name = "zcli-help",
-            .path = "../../plugins/zcli-help",
-        }, .{
-            .name = "zcli-not-found",
-            .path = "../../plugins/zcli-not-found/",
-        } },
-        .app_name = "gitt",
-        .app_version = "1.0.0",
-        .app_description = "A simple Git-like CLI demonstration built with zcli",
+        .plugins = &[_]zcli_build.PluginConfig{
+            .{
+                .name = "zcli-help",
+                .path = "../../plugins/zcli-help",
+            },
+        },
+        .app_name = "dockr",
+        .app_version = "0.1.0",
+        .app_description = "A Docker-like container management CLI built with zcli",
     });
 
     exe.root_module.addImport("command_registry", cmd_registry);

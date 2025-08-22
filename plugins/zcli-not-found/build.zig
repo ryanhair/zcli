@@ -10,6 +10,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    
+    // Add zcli as a dependency when building standalone
+    const zcli_module = b.createModule(.{
+        .root_source_file = b.path("../../src/zcli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    plugin_module.addImport("zcli", zcli_module);
 
     // Tests for the plugin
     const plugin_tests = b.addTest(.{
@@ -17,6 +25,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    plugin_tests.root_module.addImport("zcli", zcli_module);
 
     // Tests for the levenshtein module
     const levenshtein_tests = b.addTest(.{
@@ -31,7 +40,4 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run plugin tests");
     test_step.dependOn(&run_plugin_tests.step);
     test_step.dependOn(&run_levenshtein_tests.step);
-
-    // Export the plugin module (it will be available as a dependency)
-    _ = plugin_module;
 }

@@ -5,18 +5,18 @@ const build_utils = @import("build_utils.zig");
 /// These tests verify plugin discovery, registry generation, and pipeline composition
 
 // Test helper for creating plugin structures
-const TestPlugin = struct {
+const PluginTestHelper = struct {
     allocator: std.mem.Allocator,
     plugins: std.ArrayList(build_utils.PluginInfo),
 
-    fn init(allocator: std.mem.Allocator) TestPlugin {
+    fn init(allocator: std.mem.Allocator) PluginTestHelper {
         return .{
             .allocator = allocator,
             .plugins = std.ArrayList(build_utils.PluginInfo).init(allocator),
         };
     }
 
-    fn deinit(self: *TestPlugin) void {
+    fn deinit(self: *PluginTestHelper) void {
         for (self.plugins.items) |plugin_info| {
             self.allocator.free(plugin_info.name);
             self.allocator.free(plugin_info.import_name);
@@ -24,7 +24,7 @@ const TestPlugin = struct {
         self.plugins.deinit();
     }
 
-    fn addLocal(self: *TestPlugin, name: []const u8, import_name: []const u8) !void {
+    fn addLocal(self: *PluginTestHelper, name: []const u8, import_name: []const u8) !void {
         try self.plugins.append(.{
             .name = try self.allocator.dupe(u8, name),
             .import_name = try self.allocator.dupe(u8, import_name),
@@ -33,7 +33,7 @@ const TestPlugin = struct {
         });
     }
 
-    fn addExternal(self: *TestPlugin, name: []const u8) !void {
+    fn addExternal(self: *PluginTestHelper, name: []const u8) !void {
         try self.plugins.append(.{
             .name = try self.allocator.dupe(u8, name),
             .import_name = try self.allocator.dupe(u8, name),
@@ -91,7 +91,7 @@ test "BuildConfig with plugins" {
 
 test "plugin registry generation with imports" {
     const allocator = std.testing.allocator;
-    var test_plugins = TestPlugin.init(allocator);
+    var test_plugins = PluginTestHelper.init(allocator);
     defer test_plugins.deinit();
 
     try test_plugins.addLocal("logger", "plugins/logger");
@@ -138,7 +138,7 @@ test "plugin registry generation with imports" {
 
 test "plugin name sanitization for imports" {
     const allocator = std.testing.allocator;
-    var test_plugins = TestPlugin.init(allocator);
+    var test_plugins = PluginTestHelper.init(allocator);
     defer test_plugins.deinit();
 
     // Add plugin with dash in name (should be converted to underscore)
@@ -175,7 +175,7 @@ test "plugin name sanitization for imports" {
 
 test "Context extension generation" {
     const allocator = std.testing.allocator;
-    var test_plugins = TestPlugin.init(allocator);
+    var test_plugins = PluginTestHelper.init(allocator);
     defer test_plugins.deinit();
 
     try test_plugins.addLocal("auth", "plugins/auth");
@@ -216,7 +216,7 @@ test "Context extension generation" {
 
 test "pipeline composition ordering" {
     const allocator = std.testing.allocator;
-    var test_plugins = TestPlugin.init(allocator);
+    var test_plugins = PluginTestHelper.init(allocator);
     defer test_plugins.deinit();
 
     // Order matters - last plugin wraps first
@@ -259,7 +259,7 @@ test "pipeline composition ordering" {
 
 test "Commands struct with plugin commands" {
     const allocator = std.testing.allocator;
-    var test_plugins = TestPlugin.init(allocator);
+    var test_plugins = PluginTestHelper.init(allocator);
     defer test_plugins.deinit();
 
     try test_plugins.addLocal("auth", "plugins/auth");

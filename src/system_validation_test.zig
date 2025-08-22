@@ -267,7 +267,7 @@ test "system validation: registry type creation" {
 test "system validation: plugin interface compilation" {
     // Test that plugin interfaces compile correctly
     
-    const TestPlugin = struct {
+    const ValidationTestPlugin = struct {
         pub fn handleOption(context: *zcli.Context, event: zcli.OptionEvent, comptime command_module: type) !?zcli.PluginResult {
             _ = context;
             _ = command_module;
@@ -311,7 +311,7 @@ test "system validation: plugin interface compilation" {
         .app_description = "Plugin validation test",
     })
         .register("test", SimpleCommand)
-        .registerPlugin(TestPlugin)
+        .registerPlugin(ValidationTestPlugin)
         .build();
 
     _ = TestRegistry;

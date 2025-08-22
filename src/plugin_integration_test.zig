@@ -6,7 +6,7 @@ const execution = @import("execution.zig");
 /// These tests verify that plugins work correctly in realistic scenarios
 
 // Mock plugin for testing all features
-const MockPlugin = struct {
+const IntegrationMockPlugin = struct {
     // Command transformer
     pub fn transformCommand(comptime next: anytype) type {
         return struct {
@@ -85,7 +85,7 @@ const TestData = struct {
 
 test "plugin pipeline composition order" {
     // Test that multiple plugins compose in the correct order
-    const Plugin1 = struct {
+    const IntegrationPlugin1 = struct {
         pub fn transformCommand(comptime next: anytype) type {
             return struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
@@ -97,7 +97,7 @@ test "plugin pipeline composition order" {
         }
     };
     
-    const Plugin2 = struct {
+    const IntegrationPlugin2 = struct {
         pub fn transformCommand(comptime next: anytype) type {
             return struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
@@ -109,9 +109,9 @@ test "plugin pipeline composition order" {
         }
     };
     
-    // Compose pipeline: Plugin1 wraps Plugin2 wraps Base
-    const Pipeline2 = Plugin2.transformCommand(execution.BaseCommandExecutor);
-    const Pipeline1 = Plugin1.transformCommand(Pipeline2);
+    // Compose pipeline: IntegrationPlugin1 wraps IntegrationPlugin2 wraps Base
+    const Pipeline2 = IntegrationPlugin2.transformCommand(execution.BaseCommandExecutor);
+    const Pipeline1 = IntegrationPlugin1.transformCommand(Pipeline2);
     
     var order = std.ArrayList(u8).init(std.testing.allocator);
     defer order.deinit();
@@ -150,7 +150,7 @@ test "context extension lifecycle" {
     const allocator = std.testing.allocator;
     
     // Test initialization
-    var ext = try MockPlugin.ContextExtension.init(allocator);
+    var ext = try IntegrationMockPlugin.ContextExtension.init(allocator);
     try std.testing.expect(ext.initialized == true);
     try std.testing.expectEqual(@as(i32, 42), ext.value);
     
@@ -161,20 +161,20 @@ test "context extension lifecycle" {
 
 test "plugin command discovery simulation" {
     // Simulate how commands would be discovered
-    const PluginCommands = struct {
-        pub const mock_plugin = MockPlugin.commands;
+    const IntegrationPluginCommands = struct {
+        pub const mock_plugin = IntegrationMockPlugin.commands;
     };
     
     // Check that we can access plugin commands
-    try std.testing.expect(@hasDecl(PluginCommands.mock_plugin, "mock_cmd"));
-    try std.testing.expect(@hasDecl(PluginCommands.mock_plugin.mock_cmd, "execute"));
-    try std.testing.expect(@hasDecl(PluginCommands.mock_plugin.mock_cmd, "meta"));
+    try std.testing.expect(@hasDecl(IntegrationPluginCommands.mock_plugin, "mock_cmd"));
+    try std.testing.expect(@hasDecl(IntegrationPluginCommands.mock_plugin.mock_cmd, "execute"));
+    try std.testing.expect(@hasDecl(IntegrationPluginCommands.mock_plugin.mock_cmd, "meta"));
 }
 
 test "error pipeline with multiple transformers" {
     const allocator = std.testing.allocator;
     
-    const Plugin1 = struct {
+    const IntegrationPlugin1 = struct {
         pub fn transformError(comptime next: anytype) type {
             return struct {
                 pub fn handle(err: anyerror, ctx: anytype) !void {
@@ -186,7 +186,7 @@ test "error pipeline with multiple transformers" {
         }
     };
     
-    const Plugin2 = struct {
+    const IntegrationPlugin2 = struct {
         pub fn transformError(comptime next: anytype) type {
             return struct {
                 pub fn handle(err: anyerror, ctx: anytype) !void {
@@ -209,8 +209,8 @@ test "error pipeline with multiple transformers" {
     };
     
     // Compose pipeline
-    const Pipeline2 = Plugin2.transformError(TestBaseHandler);
-    const Pipeline1 = Plugin1.transformError(Pipeline2);
+    const Pipeline2 = IntegrationPlugin2.transformError(TestBaseHandler);
+    const Pipeline1 = IntegrationPlugin1.transformError(Pipeline2);
     
     var messages = std.ArrayList([]const u8).init(allocator);
     defer messages.deinit();
@@ -235,7 +235,7 @@ test "error pipeline with multiple transformers" {
 test "help pipeline transformation" {
     const allocator = std.testing.allocator;
     
-    const Plugin1 = struct {
+    const IntegrationPlugin1 = struct {
         pub fn transformHelp(comptime next: anytype) type {
             return struct {
                 pub fn generate(ctx: anytype, command_name: ?[]const u8) ![]const u8 {
@@ -247,7 +247,7 @@ test "help pipeline transformation" {
         }
     };
     
-    const Plugin2 = struct {
+    const IntegrationPlugin2 = struct {
         pub fn transformHelp(comptime next: anytype) type {
             return struct {
                 pub fn generate(ctx: anytype, command_name: ?[]const u8) ![]const u8 {
@@ -267,8 +267,8 @@ test "help pipeline transformation" {
     };
     
     // Compose pipeline
-    const Pipeline2 = Plugin2.transformHelp(BaseGenerator);
-    const Pipeline1 = Plugin1.transformHelp(Pipeline2);
+    const Pipeline2 = IntegrationPlugin2.transformHelp(BaseGenerator);
+    const Pipeline1 = IntegrationPlugin1.transformHelp(Pipeline2);
     
     const ctx = struct {
         allocator: std.mem.Allocator,
@@ -287,7 +287,7 @@ test "help pipeline transformation" {
 
 test "plugin with no transformers" {
     // Plugin that only provides commands, no transformers
-    const CommandOnlyPlugin = struct {
+    const IntegrationCommandOnlyPlugin = struct {
         pub const commands = struct {
             pub const simple = struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
@@ -299,15 +299,15 @@ test "plugin with no transformers" {
     };
     
     // Verify we can check for transformers
-    try std.testing.expect(!@hasDecl(CommandOnlyPlugin, "transformCommand"));
-    try std.testing.expect(!@hasDecl(CommandOnlyPlugin, "transformError"));
-    try std.testing.expect(!@hasDecl(CommandOnlyPlugin, "transformHelp"));
-    try std.testing.expect(@hasDecl(CommandOnlyPlugin, "commands"));
+    try std.testing.expect(!@hasDecl(IntegrationCommandOnlyPlugin, "transformCommand"));
+    try std.testing.expect(!@hasDecl(IntegrationCommandOnlyPlugin, "transformError"));
+    try std.testing.expect(!@hasDecl(IntegrationCommandOnlyPlugin, "transformHelp"));
+    try std.testing.expect(@hasDecl(IntegrationCommandOnlyPlugin, "commands"));
 }
 
 test "plugin with partial features" {
     // Plugin with only some features
-    const PartialPlugin = struct {
+    const IntegrationPartialPlugin = struct {
         pub fn transformCommand(comptime next: anytype) type {
             return struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
@@ -327,11 +327,11 @@ test "plugin with partial features" {
         // No error transformer, no help transformer, no commands
     };
     
-    try std.testing.expect(@hasDecl(PartialPlugin, "transformCommand"));
-    try std.testing.expect(!@hasDecl(PartialPlugin, "transformError"));
-    try std.testing.expect(!@hasDecl(PartialPlugin, "transformHelp"));
-    try std.testing.expect(@hasDecl(PartialPlugin, "ContextExtension"));
-    try std.testing.expect(!@hasDecl(PartialPlugin, "commands"));
+    try std.testing.expect(@hasDecl(IntegrationPartialPlugin, "transformCommand"));
+    try std.testing.expect(!@hasDecl(IntegrationPartialPlugin, "transformError"));
+    try std.testing.expect(!@hasDecl(IntegrationPartialPlugin, "transformHelp"));
+    try std.testing.expect(@hasDecl(IntegrationPartialPlugin, "ContextExtension"));
+    try std.testing.expect(!@hasDecl(IntegrationPartialPlugin, "commands"));
 }
 
 test "generated code structure validation" {
@@ -391,7 +391,7 @@ test "memory management in pipelines" {
     const allocator = std.testing.allocator;
     
     // Plugin that allocates memory
-    const MemoryPlugin = struct {
+    const IntegrationMemoryPlugin = struct {
         pub fn transformCommand(comptime next: anytype) type {
             return struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
@@ -413,7 +413,7 @@ test "memory management in pipelines" {
         }
     };
     
-    const Pipeline = MemoryPlugin.transformCommand(BaseExecutor);
+    const Pipeline = IntegrationMemoryPlugin.transformCommand(BaseExecutor);
     
     const ctx = struct {
         allocator: std.mem.Allocator,
@@ -432,7 +432,7 @@ test "memory management in pipelines" {
 }
 
 test "plugin error propagation" {
-    const FailingPlugin = struct {
+    const IntegrationFailingPlugin = struct {
         pub fn transformCommand(comptime next: anytype) type {
             return struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
@@ -452,7 +452,7 @@ test "plugin error propagation" {
         }
     };
     
-    const Pipeline = FailingPlugin.transformCommand(BaseExecutor);
+    const Pipeline = IntegrationFailingPlugin.transformCommand(BaseExecutor);
     
     const ctx = struct {
         io: struct {

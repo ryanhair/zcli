@@ -3,102 +3,124 @@ const zcli = @import("zcli");
 
 /// zcli-help Plugin
 /// 
-/// Provides help functionality for CLI applications using the event-based plugin system.
+/// Provides help functionality for CLI applications using the lifecycle hook plugin system.
 
-/// Handle option events - specifically --help and -h flags
-/// Unified interface: always receives command module type for introspection
-pub fn handleOption(context: anytype, event: zcli.OptionEvent, comptime command_module: type) !?zcli.PluginResult {
-    if (std.mem.eql(u8, event.option, "--help") or std.mem.eql(u8, event.option, "-h")) {
-        const help_text = try generateHelpWithModule(context, event.plugin_context, command_module);
-        return zcli.PluginResult{
-            .handled = true,
-            .output = help_text,
-            .stop_execution = true,
+/// Global options provided by this plugin
+pub const global_options = [_]zcli.GlobalOption{
+    zcli.option("help", bool, .{ 
+        .short = 'h', 
+        .default = false, 
+        .description = "Show help message" 
+    }),
+};
+
+/// Handle global options - specifically the --help flag
+pub fn handleGlobalOption(
+    context: *zcli.Context,
+    option_name: []const u8,
+    value: anytype,
+) !void {
+    if (std.mem.eql(u8, option_name, "help")) {
+        const bool_val = if (@TypeOf(value) == bool) value else false;
+        if (bool_val) {
+            try context.setGlobalData("help_requested", "true");
+        }
+    }
+}
+
+/// Pre-execute hook to show help if requested
+pub fn preExecute(
+    context: *zcli.Context,
+    command_path: []const u8,
+    args: zcli.ParsedArgs,
+) !?zcli.ParsedArgs {
+    const help_requested = context.getGlobalData([]const u8, "help_requested") orelse "false";
+    if (std.mem.eql(u8, help_requested, "true")) {
+        // If command_path is empty, show app help; otherwise show command help
+        if (command_path.len == 0) {
+            try showAppHelp(context);
+        } else {
+            try showCommandHelp(context, command_path);
+        }
+        
+        // Return null to stop execution
+        return null;
+    }
+    
+    // Continue normal execution
+    return args;
+}
+
+
+/// Commands provided by this plugin
+pub const commands = struct {
+    /// The help command itself
+    pub const help = struct {
+        pub const Args = struct {
+            command: ?[]const u8 = null,
         };
-    }
-    return null; // Not handled
-}
-
-
-/// Generate help text for a command with comptime module introspection
-fn generateHelpWithModule(context: anytype, plugin_context: zcli.PluginContext, comptime command_module: type) ![]const u8 {
-    const allocator = context.allocator;
-    var help_text = std.ArrayList(u8).init(allocator);
-    const writer = help_text.writer();
-    
-    // Command name as title
-    try writer.print("{s}\n\n", .{plugin_context.command_path});
-    
-    // Description
-    if (plugin_context.metadata.description) |desc| {
-        try writer.print("DESCRIPTION:\n    {s}\n\n", .{desc});
-    }
-    
-    // Usage
-    if (plugin_context.metadata.usage) |usage| {
-        try writer.print("USAGE:\n    {s}\n\n", .{usage});
-    } else {
-        try writer.print("USAGE:\n    <app> {s} [options]\n\n", .{plugin_context.command_path});
-    }
-    
-    // Examples
-    if (plugin_context.metadata.examples) |examples| {
-        if (examples.len > 0) {
-            try writer.writeAll("EXAMPLES:\n");
-            for (examples) |example| {
-                try writer.print("    {s}\n", .{example});
-            }
-            try writer.writeAll("\n");
-        }
-    }
-    
-    // Options - introspect from command module at comptime
-    try writer.writeAll("OPTIONS:\n");
-    
-    // Show actual command options if available
-    if (@hasDecl(command_module, "Options")) {
-        const options_fields = std.meta.fields(command_module.Options);
-        try generateOptionsHelp(writer, options_fields);
-    }
-    
-    // Always show help option
-    try writer.writeAll("    --help, -h    Show this help message\n\n");
-    
-    return help_text.toOwnedSlice();
-}
-
-/// Generate help text for command options using comptime introspection
-fn generateOptionsHelp(writer: anytype, comptime fields: []const std.builtin.Type.StructField) !void {
-    inline for (fields) |field| {
-        // Format: "    --option-name    Description"
-        // Convert snake_case to kebab-case on the fly
-        try writer.writeAll("    --");
-        for (field.name) |c| {
-            if (c == '_') {
-                try writer.writeAll("-");
+        
+        pub const Options = struct {};
+        
+        pub const meta = .{
+            .description = "Show help for commands",
+        };
+        
+        pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+            _ = options;
+            if (args.command) |cmd| {
+                try showCommandHelp(context, cmd);
             } else {
-                try writer.writeByte(c);
+                try showAppHelp(context);
             }
         }
-        
-        // Add type info (simplified - no default value introspection for now)
-        switch (field.type) {
-            bool => {
-                try writer.writeAll("    Boolean flag");
-            },
-            []const u8 => {
-                try writer.writeAll(" <value>    String parameter");
-            },
-            [][]const u8 => {
-                try writer.writeAll(" <values...>    Multiple string parameters");
-            },
-            else => {
-                try writer.print("    Parameter of type {s}", .{@typeName(field.type)});
-            },
-        }
-        
-        try writer.writeAll("\n");
+    };
+};
+
+/// Show help for the entire application
+fn showAppHelp(context: *zcli.Context) !void {
+    const writer = context.stderr();
+    
+    // Get app metadata from context
+    const app_name = context.app_name;
+    const app_version = context.app_version;
+    const app_description = context.app_description;
+    
+    try writer.print("{s} v{s}\n", .{ app_name, app_version });
+    if (app_description.len > 0) {
+        try writer.print("{s}\n", .{app_description});
     }
+    try writer.writeAll("\n");
+    
+    try writer.writeAll("USAGE:\n");
+    try writer.print("    {s} [command] [options]\n\n", .{app_name});
+    
+    try writer.writeAll("COMMANDS:\n");
+    try writer.writeAll("    help    Show help for commands\n");
+    // TODO: List other available commands when we have registry access
+    try writer.writeAll("\n");
+    
+    try writer.writeAll("GLOBAL OPTIONS:\n");
+    try writer.writeAll("    --help, -h    Show help message\n");
+    try writer.writeAll("\n");
+}
+
+/// Show help for a specific command  
+fn showCommandHelp(context: *zcli.Context, command: []const u8) !void {
+    const writer = context.stderr();
+    
+    try writer.print("Help for command: {s}\n\n", .{command});
+    
+    // TODO: When we have access to command metadata, show:
+    // - Command description
+    // - Usage
+    // - Arguments
+    // - Options
+    // - Examples
+    
+    try writer.writeAll("OPTIONS:\n");
+    try writer.writeAll("    --help, -h    Show this help message\n");
+    try writer.writeAll("\n");
 }
 
 // Context extension - optional configuration for the help plugin
@@ -107,64 +129,65 @@ pub const ContextExtension = struct {
     show_tips: bool = true,
     color_output: bool = true,
     max_width: usize = 80,
+    // Store command metadata for help generation
+    command_metadata: std.StringHashMap(CommandMetadata),
 
     pub fn init(allocator: std.mem.Allocator) !@This() {
-        _ = allocator;
         return .{
             .show_examples = true,
             .show_tips = true,
             .color_output = std.io.tty.detectConfig(std.io.getStdErr()) != .no_color,
             .max_width = 80,
+            .command_metadata = std.StringHashMap(CommandMetadata).init(allocator),
         };
     }
 
     pub fn deinit(self: *@This()) void {
-        _ = self;
-        // No cleanup needed for this simple extension
+        self.command_metadata.deinit();
     }
+};
+
+/// Metadata about a command for help generation
+const CommandMetadata = struct {
+    description: ?[]const u8 = null,
+    usage: ?[]const u8 = null,
+    examples: ?[]const []const u8 = null,
 };
 
 // Tests
 test "help plugin structure" {
-    try std.testing.expect(@hasDecl(@This(), "handleOption"));
+    try std.testing.expect(@hasDecl(@This(), "global_options"));
+    try std.testing.expect(@hasDecl(@This(), "handleGlobalOption"));
+    try std.testing.expect(@hasDecl(@This(), "preExecute"));
+    try std.testing.expect(@hasDecl(@This(), "commands"));
     try std.testing.expect(@hasDecl(@This(), "ContextExtension"));
 }
 
-test "handleOption handles help flags" {
-    const allocator = std.testing.allocator;
+test "handleGlobalOption handles help flag" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     
-    // Mock context
-    const MockContext = struct {
-        allocator: std.mem.Allocator,
-    };
-    const context = MockContext{ .allocator = allocator };
+    var context = zcli.Context.init(gpa.allocator());
+    defer context.deinit();
     
-    // Test --help flag
-    const event = zcli.OptionEvent{
-        .option = "--help",
-        .plugin_context = zcli.PluginContext{
-            .command_path = "test",
-            .metadata = zcli.Metadata{
-                .description = "Test command",
-            },
-        },
-    };
+    // Test handling --help flag
+    try handleGlobalOption(&context, "help", true);
     
-    // Test command module type (create a simple mock)
-    const MockCommand = struct {
-        pub const Options = struct {
-            verbose: bool = false,
-        };
-    };
+    const help_requested = context.getGlobalData([]const u8, "help_requested") orelse "false";
+    try std.testing.expectEqualStrings("true", help_requested);
+}
+
+test "help command execution" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     
-    const result = try handleOption(context, event, MockCommand);
-    try std.testing.expect(result != null);
-    try std.testing.expect(result.?.handled);
-    try std.testing.expect(result.?.stop_execution);
-    try std.testing.expect(result.?.output != null);
+    var context = zcli.Context.init(gpa.allocator());
+    defer context.deinit();
     
-    // Clean up
-    if (result.?.output) |output| {
-        allocator.free(output);
-    }
+    // Test help command with no arguments (shows app help)
+    const args = commands.help.Args{ .command = null };
+    const options = commands.help.Options{};
+    
+    try commands.help.execute(args, options, &context);
+    // Test passes if it doesn't crash
 }

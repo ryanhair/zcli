@@ -186,14 +186,16 @@ pub fn parseOptionsWithMeta(
                 break;
             }
 
-            // Not an option, stop parsing
+            // Not an option, skip to next argument (GNU-style parsing)
             if (!std.mem.startsWith(u8, arg, "-")) {
-                break;
+                arg_index += 1;
+                continue;
             }
 
-            // Check if this is a negative number - if so, stop parsing options
+            // Check if this is a negative number - if so, skip it (GNU-style parsing)
             if (utils.isNegativeNumber(arg)) {
-                break;
+                arg_index += 1;
+                continue;
             }
 
             if (std.mem.startsWith(u8, arg, "--")) {
@@ -1173,21 +1175,21 @@ test "parseOptions negative numbers" {
     try std.testing.expect(parsed.options.verbose);
 }
 
-test "parseOptions stops at negative number" {
+test "parseOptions continues through negative numbers (GNU-style)" {
     const TestOptions = struct {
         verbose: bool = false,
     };
 
     const allocator = std.testing.allocator;
 
-    // Should stop parsing at negative number
+    // Should continue parsing through negative numbers in GNU-style
     const args = [_][]const u8{ "--verbose", "-123", "other", "args" };
     const result = parseOptions(TestOptions, allocator, &args);
     try std.testing.expect(!result.isError());
     const parsed = result.unwrap();
 
     try std.testing.expect(parsed.options.verbose);
-    try std.testing.expectEqual(@as(usize, 1), parsed.result.next_arg_index);
+    try std.testing.expectEqual(@as(usize, 4), parsed.result.next_arg_index);
 }
 
 test "parseOptions bundled short options" {
