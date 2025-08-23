@@ -18,12 +18,12 @@ pub const CommandInfo = struct {
     path: []const u8,
     is_group: bool,
     subcommands: ?std.StringHashMap(CommandInfo),
-    
+
     pub fn deinit(self: *CommandInfo, allocator: std.mem.Allocator) void {
         // Free allocated strings
         allocator.free(self.name);
         allocator.free(self.path);
-        
+
         // Free subcommands if they exist
         if (self.subcommands) |*subcmds| {
             var iterator = subcmds.iterator();
@@ -42,14 +42,14 @@ pub const CommandInfo = struct {
 pub const DiscoveredCommands = struct {
     allocator: std.mem.Allocator,
     root: std.StringHashMap(CommandInfo),
-    
+
     pub fn init(allocator: std.mem.Allocator) DiscoveredCommands {
         return DiscoveredCommands{
             .allocator = allocator,
             .root = std.StringHashMap(CommandInfo).init(allocator),
         };
     }
-    
+
     pub fn deinit(self: *DiscoveredCommands) void {
         var iterator = self.root.iterator();
         while (iterator.next()) |entry| {

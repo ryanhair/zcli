@@ -5,7 +5,7 @@ const zcli = @import("zcli.zig");
 // Test basic argument transformation
 test "basic argument transformation" {
     const allocator = testing.allocator;
-    
+
     const TransformUppercasePlugin = struct {
         pub fn transformArgs(
             context: *zcli.Context,
@@ -18,7 +18,7 @@ test "basic argument transformation" {
             return .{ .args = new_args };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -26,11 +26,11 @@ test "basic argument transformation" {
     })
         .registerPlugin(TransformUppercasePlugin)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
+
     const args = [_][]const u8{ "hello", "world" };
     const result = try app.transformArgs(&context, &args);
     defer {
@@ -39,7 +39,7 @@ test "basic argument transformation" {
         }
         context.allocator.free(result.args);
     }
-    
+
     try testing.expectEqualStrings(result.args[0], "HELLO");
     try testing.expectEqualStrings(result.args[1], "WORLD");
 }
@@ -47,7 +47,7 @@ test "basic argument transformation" {
 // Test transformation with consumption
 test "transformation with argument consumption" {
     const allocator = testing.allocator;
-    
+
     const TransformFilterPlugin = struct {
         pub fn transformArgs(
             context: *zcli.Context,
@@ -57,7 +57,7 @@ test "transformation with argument consumption" {
             var consumed = std.ArrayList(usize).init(context.allocator);
             defer filtered.deinit();
             defer consumed.deinit();
-            
+
             for (args, 0..) |arg, i| {
                 if (std.mem.startsWith(u8, arg, "--internal-")) {
                     try consumed.append(i);
@@ -65,14 +65,14 @@ test "transformation with argument consumption" {
                     try filtered.append(arg);
                 }
             }
-            
+
             return .{
                 .args = try filtered.toOwnedSlice(),
                 .consumed_indices = try consumed.toOwnedSlice(),
             };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -80,29 +80,23 @@ test "transformation with argument consumption" {
     })
         .registerPlugin(TransformFilterPlugin)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
-    const args = [_][]const u8{ 
-        "command", 
-        "--internal-debug", 
-        "arg1", 
-        "--internal-trace", 
-        "arg2" 
-    };
+
+    const args = [_][]const u8{ "command", "--internal-debug", "arg1", "--internal-trace", "arg2" };
     const result = try app.transformArgs(&context, &args);
     defer {
         context.allocator.free(result.args);
         context.allocator.free(result.consumed_indices);
     }
-    
+
     try testing.expect(result.args.len == 3);
     try testing.expectEqualStrings(result.args[0], "command");
     try testing.expectEqualStrings(result.args[1], "arg1");
     try testing.expectEqualStrings(result.args[2], "arg2");
-    
+
     try testing.expect(result.consumed_indices.len == 2);
     try testing.expect(result.consumed_indices[0] == 1); // --internal-debug
     try testing.expect(result.consumed_indices[1] == 3); // --internal-trace
@@ -111,7 +105,7 @@ test "transformation with argument consumption" {
 // Test transformation chain with multiple plugins
 test "transformation chain with multiple plugins" {
     const allocator = testing.allocator;
-    
+
     const TransformPlugin1 = struct {
         pub const priority = 100;
         pub fn transformArgs(
@@ -131,7 +125,7 @@ test "transformation chain with multiple plugins" {
             return .{ .args = args };
         }
     };
-    
+
     const TransformPlugin2 = struct {
         pub const priority = 50;
         pub fn transformArgs(
@@ -152,7 +146,7 @@ test "transformation chain with multiple plugins" {
             return .{ .args = new_args };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -161,11 +155,11 @@ test "transformation chain with multiple plugins" {
         .registerPlugin(TransformPlugin1)
         .registerPlugin(TransformPlugin2)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
+
     const args = [_][]const u8{ "alias", "arg" };
     const result = try app.transformArgs(&context, &args);
     defer {
@@ -174,7 +168,7 @@ test "transformation chain with multiple plugins" {
         }
         context.allocator.free(result.args);
     }
-    
+
     // Plugin1 runs first (higher priority), changes "alias" to "actual-command"
     // Plugin2 runs second, adds "prefix-" to all args
     try testing.expectEqualStrings(result.args[0], "prefix-actual-command");
@@ -184,7 +178,7 @@ test "transformation chain with multiple plugins" {
 // Test stopping transformation pipeline
 test "stopping transformation pipeline" {
     const allocator = testing.allocator;
-    
+
     const TransformStopPlugin = struct {
         pub fn transformArgs(
             context: *zcli.Context,
@@ -200,10 +194,10 @@ test "stopping transformation pipeline" {
             return .{ .args = args };
         }
     };
-    
+
     const TransformNeverCalledPlugin = struct {
         pub var was_called = false;
-        
+
         pub fn transformArgs(
             context: *zcli.Context,
             args: []const []const u8,
@@ -213,7 +207,7 @@ test "stopping transformation pipeline" {
             return .{ .args = args };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -222,16 +216,16 @@ test "stopping transformation pipeline" {
         .registerPlugin(TransformStopPlugin)
         .registerPlugin(TransformNeverCalledPlugin)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
+
     TransformNeverCalledPlugin.was_called = false;
-    
+
     const args = [_][]const u8{ "stop", "other", "args" };
     const result = try app.transformArgs(&context, &args);
-    
+
     try testing.expect(result.args.len == 0);
     try testing.expect(!result.continue_processing);
     try testing.expect(!TransformNeverCalledPlugin.was_called);
@@ -240,7 +234,7 @@ test "stopping transformation pipeline" {
 // Test environment variable expansion
 test "environment variable expansion transformation" {
     const allocator = testing.allocator;
-    
+
     const TransformEnvPlugin = struct {
         pub fn transformArgs(
             context: *zcli.Context,
@@ -248,7 +242,7 @@ test "environment variable expansion transformation" {
         ) !zcli.TransformResult {
             var new_args = std.ArrayList([]const u8).init(context.allocator);
             defer new_args.deinit();
-            
+
             for (args) |arg| {
                 if (std.mem.startsWith(u8, arg, "$")) {
                     const env_var = arg[1..];
@@ -261,11 +255,11 @@ test "environment variable expansion transformation" {
                     try new_args.append(arg);
                 }
             }
-            
+
             return .{ .args = try new_args.toOwnedSlice() };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -273,19 +267,19 @@ test "environment variable expansion transformation" {
     })
         .registerPlugin(TransformEnvPlugin)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
+
     // Set environment variables
     try context.environment.put("USER", "testuser");
     try context.environment.put("HOME", "/home/testuser");
-    
+
     const args = [_][]const u8{ "command", "$USER", "$HOME", "$NONEXISTENT" };
     const result = try app.transformArgs(&context, &args);
     defer context.allocator.free(result.args);
-    
+
     try testing.expectEqualStrings(result.args[0], "command");
     try testing.expectEqualStrings(result.args[1], "testuser");
     try testing.expectEqualStrings(result.args[2], "/home/testuser");
@@ -295,7 +289,7 @@ test "environment variable expansion transformation" {
 // Test path expansion transformation
 test "path expansion transformation" {
     const allocator = testing.allocator;
-    
+
     const TransformPathPlugin = struct {
         pub fn transformArgs(
             context: *zcli.Context,
@@ -303,25 +297,21 @@ test "path expansion transformation" {
         ) !zcli.TransformResult {
             var new_args = std.ArrayList([]const u8).init(context.allocator);
             defer new_args.deinit();
-            
+
             for (args) |arg| {
                 if (std.mem.startsWith(u8, arg, "~/")) {
                     const home = context.environment.get("HOME") orelse "/home/user";
-                    const expanded = try std.fmt.allocPrint(
-                        context.allocator,
-                        "{s}{s}",
-                        .{ home, arg[1..] }
-                    );
+                    const expanded = try std.fmt.allocPrint(context.allocator, "{s}{s}", .{ home, arg[1..] });
                     try new_args.append(expanded);
                 } else {
                     try new_args.append(arg);
                 }
             }
-            
+
             return .{ .args = try new_args.toOwnedSlice() };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -329,13 +319,13 @@ test "path expansion transformation" {
     })
         .registerPlugin(TransformPathPlugin)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
+
     try context.environment.put("HOME", "/home/testuser");
-    
+
     const args = [_][]const u8{ "~/Documents/file.txt", "~/Downloads", "/absolute/path" };
     const result = try app.transformArgs(&context, &args);
     defer {
@@ -347,7 +337,7 @@ test "path expansion transformation" {
         }
         context.allocator.free(result.args);
     }
-    
+
     try testing.expectEqualStrings(result.args[0], "/home/testuser/Documents/file.txt");
     try testing.expectEqualStrings(result.args[1], "/home/testuser/Downloads");
     try testing.expectEqualStrings(result.args[2], "/absolute/path");
@@ -356,7 +346,7 @@ test "path expansion transformation" {
 // Test argument injection transformation
 test "argument injection transformation" {
     const allocator = testing.allocator;
-    
+
     const TransformInjectionPlugin = struct {
         pub fn transformArgs(
             context: *zcli.Context,
@@ -371,7 +361,7 @@ test "argument injection transformation" {
                         break;
                     }
                 }
-                
+
                 if (!has_message) {
                     var new_args = try context.allocator.alloc([]const u8, args.len + 2);
                     @memcpy(new_args[0..args.len], args);
@@ -383,7 +373,7 @@ test "argument injection transformation" {
             return .{ .args = args };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -391,26 +381,26 @@ test "argument injection transformation" {
     })
         .registerPlugin(TransformInjectionPlugin)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
+
     // Test injection when -m is missing
     const args1 = [_][]const u8{ "commit", "file.txt" };
     const result1 = try app.transformArgs(&context, &args1);
     defer context.allocator.free(result1.args);
-    
+
     try testing.expect(result1.args.len == 4);
     try testing.expectEqualStrings(result1.args[0], "commit");
     try testing.expectEqualStrings(result1.args[1], "file.txt");
     try testing.expectEqualStrings(result1.args[2], "-m");
     try testing.expectEqualStrings(result1.args[3], "Auto-generated commit message");
-    
+
     // Test no injection when -m is present
     const args2 = [_][]const u8{ "commit", "-m", "User message", "file.txt" };
     const result2 = try app.transformArgs(&context, &args2);
-    
+
     try testing.expect(result2.args.len == 4);
     try testing.expectEqualStrings(result2.args[2], "User message");
 }
@@ -418,7 +408,7 @@ test "argument injection transformation" {
 // Test transformation error handling
 test "transformation error handling" {
     const allocator = testing.allocator;
-    
+
     const TransformErrorPlugin = struct {
         pub fn transformArgs(
             context: *zcli.Context,
@@ -431,7 +421,7 @@ test "transformation error handling" {
             return .{ .args = args };
         }
     };
-    
+
     const TestRegistry = zcli.Registry.init(.{
         .app_name = "test-app",
         .app_version = "1.0.0",
@@ -439,13 +429,13 @@ test "transformation error handling" {
     })
         .registerPlugin(TransformErrorPlugin)
         .build();
-    
+
     var app = TestRegistry.init();
     var context = zcli.Context.init(allocator);
     defer context.deinit();
-    
+
     const args = [_][]const u8{ "error", "command" };
     const result = app.transformArgs(&context, &args);
-    
+
     try testing.expectError(error.TransformationFailed, result);
 }

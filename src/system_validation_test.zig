@@ -13,10 +13,10 @@ test "system validation: args parsing with correct API" {
 
     const args = [_][]const u8{ "test", "42", "true" };
     const result = zcli.parseArgs(TestArgs, &args);
-    
+
     try std.testing.expect(!result.isError());
     const parsed = result.unwrap();
-    
+
     try std.testing.expectEqualStrings("test", parsed.name);
     try std.testing.expectEqual(@as(u32, 42), parsed.count);
     try std.testing.expectEqual(true, parsed.enabled);
@@ -52,10 +52,10 @@ test "system validation: options parsing with correct API" {
 
     const args = [_][]const u8{ "--verbose", "--count", "42", "--name", "test" };
     const result = zcli.parseOptions(TestOptions, std.testing.allocator, &args);
-    
+
     try std.testing.expect(!result.isError());
     defer zcli.cleanupOptions(TestOptions, result.unwrap().options, std.testing.allocator);
-    
+
     const parsed = result.unwrap();
     try std.testing.expectEqual(true, parsed.options.verbose);
     try std.testing.expectEqual(@as(u32, 42), parsed.options.count);
@@ -139,11 +139,11 @@ test "system validation: varargs" {
 
     const args = [_][]const u8{ "process", "file1.txt", "file2.txt", "file3.txt" };
     const result = zcli.parseArgs(TestArgs, &args);
-    
+
     try std.testing.expect(!result.isError());
     const parsed = result.unwrap();
     // Note: cleanupArgs may not be needed for simple types
-    
+
     try std.testing.expectEqualStrings("process", parsed.command);
     try std.testing.expectEqual(@as(usize, 3), parsed.files.len);
     try std.testing.expectEqualStrings("file1.txt", parsed.files[0]);
@@ -158,10 +158,10 @@ test "system validation: array options" {
 
     const args = [_][]const u8{ "--tags", "tag1", "--tags", "tag2", "--tags", "tag3" };
     const result = zcli.parseOptions(TestOptions, std.testing.allocator, &args);
-    
+
     try std.testing.expect(!result.isError());
     defer zcli.cleanupOptions(TestOptions, result.unwrap().options, std.testing.allocator);
-    
+
     const parsed = result.unwrap();
     try std.testing.expectEqual(@as(usize, 3), parsed.options.tags.len);
     try std.testing.expectEqualStrings("tag1", parsed.options.tags[0]);
@@ -171,11 +171,11 @@ test "system validation: array options" {
 
 test "system validation: complex realistic command" {
     // Simulate: git commit -m "message" --author "Name" file1.txt file2.txt
-    
+
     const CommitArgs = struct {
         files: []const []const u8,
     };
-    
+
     const CommitOptions = struct {
         message: ?[]const u8 = null,
         author: ?[]const u8 = null,
@@ -200,7 +200,7 @@ test "system validation: complex realistic command" {
     try std.testing.expectEqual(@as(usize, 2), parsed_args.files.len);
     try std.testing.expectEqualStrings("README.md", parsed_args.files[0]);
     try std.testing.expectEqualStrings("src/main.zig", parsed_args.files[1]);
-    
+
     try std.testing.expectEqualStrings("Initial commit", parsed_opts.options.message.?);
     try std.testing.expectEqualStrings("John Doe", parsed_opts.options.author.?);
     try std.testing.expectEqual(true, parsed_opts.options.all);
@@ -208,7 +208,7 @@ test "system validation: complex realistic command" {
 
 test "system validation: registry type creation" {
     // Test that we can create registry types with various command signatures
-    
+
     const SimpleCommand = struct {
         pub const meta = .{ .description = "Simple command" };
         pub fn execute(args: struct {}, options: struct {}, context: *zcli.Context) !void {
@@ -266,12 +266,12 @@ test "system validation: registry type creation" {
 
 test "system validation: plugin interface compilation" {
     // Test that plugin interfaces compile correctly
-    
+
     const ValidationTestPlugin = struct {
         pub fn handleOption(context: *zcli.Context, event: zcli.OptionEvent, comptime command_module: type) !?zcli.PluginResult {
             _ = context;
             _ = command_module;
-            
+
             if (std.mem.eql(u8, event.option, "--help")) {
                 return zcli.PluginResult{
                     .handled = true,
@@ -285,7 +285,7 @@ test "system validation: plugin interface compilation" {
         pub fn handleError(context: *zcli.Context, err: anyerror, comptime command_module: type) !?zcli.PluginResult {
             _ = context;
             _ = command_module;
-            
+
             switch (err) {
                 error.CommandNotFound => return zcli.PluginResult{
                     .handled = true,
@@ -319,7 +319,7 @@ test "system validation: plugin interface compilation" {
 
 test "system validation: memory management" {
     // Test that memory management works correctly across the system
-    
+
     const TestArgs = struct {
         files: []const []const u8,
     };
@@ -339,7 +339,7 @@ test "system validation: memory management" {
         const parsed_args = args_result.unwrap();
         // Note: cleanupArgs may not be needed for simple types
 
-        // Parse options  
+        // Parse options
         const opts = [_][]const u8{ "--tags", "tag1", "--tags", "tag2", "--names", "name1", "--names", "name2" };
         const opts_result = zcli.parseOptions(TestOptions, std.testing.allocator, &opts);
         try std.testing.expect(!opts_result.isError());
@@ -353,22 +353,22 @@ test "system validation: memory management" {
 
 test "system validation: error message quality" {
     // Test that error messages are informative
-    
+
     const TestArgs = struct {
         count: u32,
     };
 
     const args = [_][]const u8{"not_a_number"};
     const result = zcli.parseArgs(TestArgs, &args);
-    
+
     try std.testing.expect(result.isError());
-    
+
     // The error should contain useful information
     const error_info = switch (result) {
         .err => |err| err,
         .ok => unreachable,
     };
-    
+
     // Basic validation that we have error information
     // Note: The exact structure depends on the specific error type
     _ = error_info; // Just verify we got an error
@@ -376,20 +376,20 @@ test "system validation: error message quality" {
 
 test "system validation: type introspection" {
     // Test that the system can introspect command types correctly
-    
+
     const TestCommand = struct {
         pub const meta = .{ .description = "Test command for introspection" };
-        
+
         pub const Args = struct {
             name: []const u8,
             count: u32,
         };
-        
+
         pub const Options = struct {
             verbose: bool = false,
             format: enum { json, yaml } = .json,
         };
-        
+
         pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
             _ = options;
@@ -403,11 +403,11 @@ test "system validation: type introspection" {
         try std.testing.expect(@hasDecl(TestCommand, "Args"));
         try std.testing.expect(@hasDecl(TestCommand, "Options"));
         try std.testing.expect(@hasDecl(TestCommand, "execute"));
-        
+
         // Test field introspection
         const args_fields = std.meta.fields(TestCommand.Args);
         try std.testing.expectEqual(@as(usize, 2), args_fields.len);
-        
+
         const options_fields = std.meta.fields(TestCommand.Options);
         try std.testing.expectEqual(@as(usize, 2), options_fields.len);
     }

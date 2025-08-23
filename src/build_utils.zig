@@ -5,7 +5,7 @@
 // This module has been refactored into a modular structure for better maintainability:
 //
 // - build_utils/types.zig            - Shared types and structures
-// - build_utils/plugin_system.zig    - Plugin discovery and management  
+// - build_utils/plugin_system.zig    - Plugin discovery and management
 // - build_utils/command_discovery.zig - Command scanning and validation
 // - build_utils/code_generation.zig  - Registry source code generation
 // - build_utils/module_creation.zig  - Build-time module creation

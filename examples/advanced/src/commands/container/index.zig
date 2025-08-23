@@ -29,7 +29,7 @@ pub const Options = struct {};
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     _ = args;
     _ = options;
-    
+
     try context.stdout().print("Container management commands:\n\n", .{});
     try context.stdout().print("  ls        List containers\n", .{});
     try context.stdout().print("  run       Run a command in a new container\n", .{});

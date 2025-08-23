@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    
+
     // Add zcli as a dependency when building standalone
     // When used as part of the main build, zcli will be provided
     const zcli_module = b.createModule(.{

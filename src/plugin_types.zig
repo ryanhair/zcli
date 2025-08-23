@@ -12,13 +12,13 @@ pub const GlobalOption = struct {
     default: DefaultValue,
     description: []const u8,
     category: ?[]const u8 = null,
-    
+
     pub fn validate(self: @This(), value: anytype) !void {
         // Default validation - can be overridden
         _ = self;
         _ = value;
     }
-    
+
     pub fn getDefaultAsString(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
         return self.default.toString(allocator);
     }
@@ -32,7 +32,7 @@ pub const DefaultValue = union(enum) {
     unsigned: u64,
     float: f64,
     none,
-    
+
     pub fn toString(self: DefaultValue, allocator: std.mem.Allocator) ![]const u8 {
         return switch (self) {
             .string => |s| s,
@@ -56,14 +56,14 @@ pub fn option(comptime name: []const u8, comptime T: type, comptime config: anyt
         // No default provided, create appropriate "zero" value
         break :blk switch (@typeInfo(T)) {
             .bool => DefaultValue{ .boolean = false },
-            .int => |int_info| if (int_info.signedness == .signed) 
+            .int => |int_info| if (int_info.signedness == .signed)
                 DefaultValue{ .integer = 0 }
-            else 
+            else
                 DefaultValue{ .unsigned = 0 },
             .float => DefaultValue{ .float = 0.0 },
-            .pointer => |ptr_info| if (ptr_info.size == .slice and ptr_info.child == u8) 
+            .pointer => |ptr_info| if (ptr_info.size == .slice and ptr_info.child == u8)
                 DefaultValue{ .string = "" }
-            else 
+            else
                 DefaultValue{ .none = {} },
             .optional => DefaultValue{ .none = {} },
             else => DefaultValue{ .none = {} },
@@ -82,7 +82,7 @@ pub fn option(comptime name: []const u8, comptime T: type, comptime config: anyt
                 const type_info = @typeInfo(@TypeOf(default_val));
                 if (type_info == .pointer) {
                     const ptr_info = type_info.pointer;
-                    // Handle both string slices and string literals 
+                    // Handle both string slices and string literals
                     if (ptr_info.child == u8 or @typeInfo(ptr_info.child) == .array) {
                         const array_info = @typeInfo(ptr_info.child);
                         if (array_info == .array and array_info.array.child == u8) {
@@ -101,7 +101,7 @@ pub fn option(comptime name: []const u8, comptime T: type, comptime config: anyt
             },
         };
     };
-    
+
     return GlobalOption{
         .name = name,
         .short = short,
@@ -114,11 +114,11 @@ pub fn option(comptime name: []const u8, comptime T: type, comptime config: anyt
 
 /// Hook timing for plugin lifecycle events
 pub const HookTiming = enum {
-    pre_parse,      // Before argument parsing
-    post_parse,     // After parsing, before command execution
-    pre_execute,    // Right before command execution
-    post_execute,   // After command execution
-    on_error,       // When an error occurs
+    pre_parse, // Before argument parsing
+    post_parse, // After parsing, before command execution
+    pre_execute, // Right before command execution
+    post_execute, // After command execution
+    on_error, // When an error occurs
 };
 
 /// Result of argument transformation
@@ -128,17 +128,16 @@ pub const TransformResult = struct {
     continue_processing: bool = true,
 };
 
-
 /// Parsed arguments structure
 pub const ParsedArgs = struct {
     positional: []const []const u8 = &.{},
-    
+
     pub fn init(_: std.mem.Allocator) @This() {
         return .{
             .positional = &.{},
         };
     }
-    
+
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         if (self.positional.len > 0) {
             allocator.free(self.positional);
@@ -214,7 +213,7 @@ pub fn getPriority(comptime T: type) i32 {
 pub fn PluginEntry(comptime T: type) type {
     return struct {
         const PluginType = T;
-        
+
         pub const has_global_options = hasGlobalOptions(T);
         pub const has_transform_args = hasTransformArgs(T);
         pub const has_handle_global_option = hasHandleGlobalOption(T);
@@ -225,7 +224,7 @@ pub fn PluginEntry(comptime T: type) type {
         pub const has_on_error = hasOnError(T);
         pub const has_commands = hasCommands(T);
         pub const priority = getPriority(T);
-        
+
         pub const global_options = if (has_global_options) T.global_options else [_]GlobalOption{};
         pub const commands = if (has_commands) T.commands else struct {};
     };
@@ -239,28 +238,28 @@ pub fn PluginEntry(comptime T: type) type {
 pub const ContextExtensions = struct {
     global_data: std.StringHashMap([]const u8),
     verbosity: bool = false,
-    
+
     pub fn init(allocator: std.mem.Allocator) @This() {
         return .{
             .global_data = std.StringHashMap([]const u8).init(allocator),
         };
     }
-    
+
     pub fn deinit(self: *@This()) void {
         self.global_data.deinit();
     }
-    
+
     pub fn setVerbosity(self: *@This(), verbose: bool) void {
         self.verbosity = verbose;
     }
-    
+
     pub fn setGlobalData(self: *@This(), key: []const u8, value: []const u8) !void {
         try self.global_data.put(key, value);
     }
-    
+
     pub fn getGlobalData(self: *@This(), comptime T: type, key: []const u8) ?T {
         const value = self.global_data.get(key) orelse return null;
-        
+
         // Simple type conversion - extend as needed
         if (T == []const u8) {
             return @as(T, value);
@@ -269,10 +268,10 @@ pub const ContextExtensions = struct {
         } else if (T == u32) {
             return std.fmt.parseInt(u32, value, 10) catch null;
         }
-        
+
         return null;
     }
-    
+
     pub fn setLogLevel(self: *@This(), level: []const u8) !void {
         try self.setGlobalData("log-level", level);
     }
@@ -304,7 +303,7 @@ pub const OptionInfo = struct {
 /// Metadata about command options/flags
 pub const OptionMetadata = struct {
     options: []const OptionInfo = &.{},
-    
+
     pub fn getDescription(self: @This(), option_name: []const u8) ?[]const u8 {
         for (self.options) |opt| {
             if (std.mem.eql(u8, opt.name, option_name)) {
@@ -326,7 +325,7 @@ pub const ArgumentInfo = struct {
 /// Metadata about command arguments
 pub const ArgumentMetadata = struct {
     arguments: []const ArgumentInfo = &.{},
-    
+
     pub fn getDescription(self: @This(), arg_name: []const u8) ?[]const u8 {
         for (self.arguments) |arg| {
             if (std.mem.eql(u8, arg.name, arg_name)) {
@@ -360,7 +359,7 @@ pub const OptionEvent = struct {
 pub const ErrorEvent = struct {
     err: anyerror,
     command_path: ?[]const u8,
-    available_commands: ?[]const []const u8 = null,
+    available_commands: ?[]const []const []const u8 = null,
 };
 
 /// Event data for handlePreCommand (legacy)
@@ -381,24 +380,24 @@ pub const PostCommandEvent = struct {
 /// Convert command module meta to standardized Metadata (runtime version)
 pub fn convertToStandardMetadata(module_meta: anytype) Metadata {
     var metadata = Metadata{};
-    
+
     const meta_type_info = @typeInfo(@TypeOf(module_meta));
     if (meta_type_info == .@"struct") {
         // Extract description
         if (@hasField(@TypeOf(module_meta), "description")) {
             metadata.description = module_meta.description;
         }
-        
+
         // Extract usage
         if (@hasField(@TypeOf(module_meta), "usage")) {
             metadata.usage = module_meta.usage;
         }
-        
+
         // Extract examples
         if (@hasField(@TypeOf(module_meta), "examples")) {
             metadata.examples = module_meta.examples;
         }
-        
+
         // Extract options metadata
         if (@hasField(@TypeOf(module_meta), "options")) {
             const options_meta = module_meta.options;
@@ -413,7 +412,7 @@ pub fn convertToStandardMetadata(module_meta: anytype) Metadata {
                 }
             }
         }
-        
+
         // Extract arguments metadata
         if (@hasField(@TypeOf(module_meta), "arguments")) {
             const args_meta = module_meta.arguments;
@@ -429,7 +428,7 @@ pub fn convertToStandardMetadata(module_meta: anytype) Metadata {
             }
         }
     }
-    
+
     return metadata;
 }
 
@@ -447,7 +446,7 @@ pub fn extractMetadataFromModule(comptime ModuleType: type) Metadata {
                 }
             }
         }
-        
+
         return Metadata{}; // Empty metadata if none found
     }
 }

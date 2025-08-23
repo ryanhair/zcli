@@ -431,9 +431,9 @@ pub fn getAvailableSubcommands(comptime group: anytype, allocator: std.mem.Alloc
 /// Helper function to check if a type represents varargs
 fn isVarArgs(comptime T: type) bool {
     const type_info = @typeInfo(T);
-    return type_info == .pointer and 
-           type_info.pointer.size == .slice and 
-           @typeInfo(type_info.pointer.child) == .pointer and
-           @typeInfo(type_info.pointer.child).pointer.size == .slice and
-           @typeInfo(type_info.pointer.child).pointer.child == u8;
+    return type_info == .pointer and
+        type_info.pointer.size == .slice and
+        @typeInfo(type_info.pointer.child) == .pointer and
+        @typeInfo(type_info.pointer.child).pointer.size == .slice and
+        @typeInfo(type_info.pointer.child).pointer.child == u8;
 }

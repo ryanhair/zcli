@@ -44,11 +44,6 @@ pub fn handleSubcommandNotFound(
     try writer.print("Run '{s} {s} --help' for more information.\n", .{ app_name, parent_command });
 }
 
-
-
-
-
-
 /// Handle missing required argument error
 pub fn handleMissingArgument(
     writer: anytype,

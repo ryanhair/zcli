@@ -119,7 +119,7 @@ pub const OptionErrorContext = struct {
 pub const CommandErrorContext = struct {
     command_name: []const u8,
     command_path: []const []const u8, // Path to this command (e.g., ["users", "create"])
-    available_commands: ?[][]const u8 = null,
+    available_commands: ?[]const []const []const u8 = null,
     suggested_commands: ?[][]const u8 = null,
 
     /// Create context for unknown command

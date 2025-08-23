@@ -28,9 +28,9 @@ pub const Options = struct {
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     const dir = args.directory orelse ".";
     const repo_type = if (options.bare) "bare repository" else "repository";
-    
+
     try context.stdout().print("Initialized empty Git {s} in {s}\n", .{ repo_type, dir });
-    
+
     if (options.bare) {
         try context.stdout().print("Note: This is a bare repository with no working directory\n", .{});
     }

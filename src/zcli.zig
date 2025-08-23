@@ -35,14 +35,14 @@ pub const Context = struct {
     io: IO,
     environment: Environment,
     plugin_extensions: ContextExtensions,
-    
+
     // Core zcli command execution context
     app_name: []const u8 = "app",
     app_version: []const u8 = "unknown",
     app_description: []const u8 = "",
-    available_commands: []const []const u8 = &.{},
-    current_command: ?[]const u8 = null,
-    
+    available_commands: []const []const []const u8 = &.{},
+    command_path: ?[]const []const u8 = null,
+
     pub fn init(allocator: std.mem.Allocator) @This() {
         return .{
             .allocator = allocator,
@@ -51,54 +51,57 @@ pub const Context = struct {
             .plugin_extensions = ContextExtensions.init(allocator),
         };
     }
-    
+
     pub fn deinit(self: *@This()) void {
+        if (self.command_path) |cmd_path| {
+            self.allocator.free(cmd_path);
+        }
         self.plugin_extensions.deinit();
         self.environment.deinit();
     }
-    
+
     // Convenience methods for I/O
     pub fn stdout(self: *@This()) std.fs.File.Writer {
         // Return stderr instead of stdout to avoid deadlock in parallel tests
         // This is a workaround for a Zig build system issue with stdout synchronization
         return self.io.stderr;
     }
-    
+
     pub fn stderr(self: *@This()) std.fs.File.Writer {
         return self.io.stderr;
     }
-    
+
     pub fn stdin(self: *@This()) std.fs.File.Reader {
         return self.io.stdin;
     }
-    
+
     // Convenience methods for plugin support
     pub fn setVerbosity(self: *@This(), verbose: bool) void {
         self.plugin_extensions.setVerbosity(verbose);
     }
-    
+
     pub fn setGlobalData(self: *@This(), key: []const u8, value: []const u8) !void {
         try self.plugin_extensions.setGlobalData(key, value);
     }
-    
+
     pub fn getGlobalData(self: *@This(), comptime T: type, key: []const u8) ?T {
         return self.plugin_extensions.getGlobalData(T, key);
     }
-    
+
     pub fn setLogLevel(self: *@This(), level: []const u8) !void {
         try self.plugin_extensions.setLogLevel(level);
     }
-    
+
     // Convenience method for accessing global options registered by plugins
     pub fn getGlobalOption(self: *@This(), comptime T: type, key: []const u8) ?T {
         return self.plugin_extensions.getGlobalData(T, key);
     }
-    
+
     pub fn exit(self: *@This(), code: u8) void {
         _ = self;
         std.process.exit(code);
     }
-    
+
     pub fn setData(self: *@This(), key: []const u8, value: anytype) !void {
         const value_str = switch (@TypeOf(value)) {
             bool => if (value) "true" else "false",
@@ -111,7 +114,7 @@ pub const Context = struct {
         };
         try self.setGlobalData(key, value_str);
     }
-    
+
     pub fn getData(self: *@This(), comptime T: type, key: []const u8) T {
         return self.getGlobalData(T, key) orelse switch (T) {
             bool => false,
@@ -127,7 +130,7 @@ pub const IO = struct {
     stdout: std.fs.File.Writer,
     stderr: std.fs.File.Writer,
     stdin: std.fs.File.Reader,
-    
+
     pub fn init() @This() {
         return .{
             .stdout = std.io.getStdOut().writer(),
@@ -140,7 +143,7 @@ pub const IO = struct {
 /// Environment abstraction for testing
 pub const Environment = struct {
     map: std.StringHashMap([]const u8),
-    
+
     pub fn init() @This() {
         // For now, create an empty environment
         // In the future, we could populate this from std.process.getEnvMap()
@@ -148,15 +151,15 @@ pub const Environment = struct {
             .map = std.StringHashMap([]const u8).init(std.heap.page_allocator),
         };
     }
-    
+
     pub fn deinit(self: *@This()) void {
         self.map.deinit();
     }
-    
+
     pub fn get(self: *@This(), key: []const u8) ?[]const u8 {
         return self.map.get(key);
     }
-    
+
     pub fn put(self: *@This(), key: []const u8, value: []const u8) !void {
         try self.map.put(key, value);
     }
@@ -292,24 +295,26 @@ pub const BaseHelpGenerator = execution.BaseHelpGenerator;
 // ============================================================================
 
 // Internal help utilities (minimal fallback implementations when plugins aren't available)
-fn getAvailableCommands(comptime reg: anytype, allocator: std.mem.Allocator) ![][]const u8 {
+fn getAvailableCommands(comptime reg: anytype, allocator: std.mem.Allocator) ![][]const []const u8 {
     const commands = reg.commands;
-    const CommandsType = @TypeOf(commands);
+    const commands_count = commands.len;
 
-    // Count available commands (excluding metadata fields)
-    comptime var count: usize = 0;
-    inline for (@typeInfo(CommandsType).@"struct".fields) |field| {
-        comptime if (std.mem.startsWith(u8, field.name, "_")) continue;
-        count += 1;
-    }
+    // Allocate array for hierarchical command paths
+    var result = try allocator.alloc([]const []const u8, commands_count);
 
-    // Allocate and fill array
-    var result = try allocator.alloc([]const u8, count);
-    var i: usize = 0;
-    inline for (@typeInfo(CommandsType).@"struct".fields) |field| {
-        comptime if (std.mem.startsWith(u8, field.name, "_")) continue;
-        result[i] = field.name;
-        i += 1;
+    // Convert each command path to an array of command parts
+    for (commands, 0..) |cmd, i| {
+        // Split command path by spaces to get hierarchical parts
+        var parts_list = std.ArrayList([]const u8).init(allocator);
+        defer parts_list.deinit();
+
+        var parts_iter = std.mem.splitScalar(u8, cmd.path, ' ');
+        while (parts_iter.next()) |part| {
+            try parts_list.append(part);
+        }
+
+        // Convert to owned slice
+        result[i] = try parts_list.toOwnedSlice();
     }
 
     return result;
@@ -359,7 +364,6 @@ const CommandErrorContext = @import("structured_errors.zig").CommandErrorContext
 ///     try context.io.stderr.print("Warning: something happened\n", .{});
 /// }
 /// ```
-
 /// Environment abstraction for accessing environment variables and system context.
 ///
 /// This struct provides access to environment variables and system context
@@ -378,7 +382,6 @@ const CommandErrorContext = @import("structured_errors.zig").CommandErrorContext
 ///     }
 /// }
 /// ```
-
 /// Execution context provided to all command functions.
 ///
 /// The Context struct contains everything a command needs to execute: memory allocation,
@@ -434,7 +437,6 @@ const CommandErrorContext = @import("structured_errors.zig").CommandErrorContext
 /// ```
 ///
 /// 📖 See [MEMORY.md](../../../MEMORY.md) for comprehensive memory management guide.
-
 /// Metadata structure for providing help text and usage information for commands.
 ///
 /// Commands can optionally export a `meta` constant of this type to provide
@@ -735,7 +737,6 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
                 return;
             }
 
-
             // Check if the first argument is an option (starts with -)
             // If so, route to index command with all arguments
             if (std.mem.startsWith(u8, args[0], "-")) {
@@ -953,7 +954,7 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
                 }
 
                 if (@hasField(@TypeOf(context), "available_commands")) {
-                    context.available_commands = getAvailableCommands(self.registry, self.allocator) catch &[_][]const u8{};
+                    context.available_commands = getAvailableCommands(self.registry, self.allocator) catch &[_][]const []const u8{};
                 }
 
                 if (@hasField(@TypeOf(context), "app_name")) {
@@ -965,6 +966,9 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
 
                 // Clean up available_commands after error pipeline completes
                 if (@hasField(@TypeOf(context), "available_commands") and context.available_commands.len > 0) {
+                    for (context.available_commands) |cmd_parts| {
+                        self.allocator.free(cmd_parts);
+                    }
                     self.allocator.free(context.available_commands);
                 }
             } else {
@@ -972,12 +976,32 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
                 const stderr = std.io.getStdErr().writer();
 
                 // Try to get available commands for suggestions
-                const available_commands = getAvailableCommands(self.registry, self.allocator) catch {
+                const hierarchical_commands = getAvailableCommands(self.registry, self.allocator) catch {
                     try stderr.print("Error: Unknown command '{s}'\n\n", .{command});
                     try stderr.print("Run '{s} --help' to see available commands.\n", .{self.name});
                     return;
                 };
+                defer {
+                    for (hierarchical_commands) |cmd_parts| {
+                        self.allocator.free(cmd_parts);
+                    }
+                    self.allocator.free(hierarchical_commands);
+                }
+
+                // Convert hierarchical commands to flat strings for error handler
+                var available_commands = try self.allocator.alloc([]const u8, hierarchical_commands.len);
                 defer self.allocator.free(available_commands);
+
+                for (hierarchical_commands, 0..) |cmd_parts, i| {
+                    // Join command parts with spaces
+                    const joined_cmd = try std.mem.join(self.allocator, " ", cmd_parts);
+                    available_commands[i] = joined_cmd;
+                }
+                defer {
+                    for (available_commands) |cmd| {
+                        self.allocator.free(cmd);
+                    }
+                }
 
                 // Use the error handler module for suggestions
                 try error_handler.handleCommandNotFound(stderr, command, available_commands, self.name, self.allocator);
@@ -1071,7 +1095,6 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
             try stderr.print("Error: {s}\n\n", .{description});
             try stderr.print("Run '{s} {s} --help' to see available subcommands.\n", .{ self.name, group_name });
         }
-
     };
 }
 
@@ -1178,7 +1201,7 @@ test "Context creation" {
     // Just verify the Context struct can be created
     var context = Context.init(allocator);
     defer context.deinit();
-    
+
     // Test that convenience methods work
     _ = context.stdout();
     _ = context.stderr();

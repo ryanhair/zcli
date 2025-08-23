@@ -15,11 +15,11 @@ test "basic help generation" {
         pub const meta = .{
             .description = "Test command for extraction verification",
         };
-        
+
         pub const Args = struct {
             name: []const u8,
         };
-        
+
         pub const Options = struct {
             verbose: bool = false,
         };
@@ -41,11 +41,11 @@ test "basic help generation" {
 test "app help generation" {
     const TestRegistry = struct {
         commands: struct {
-            hello: struct { 
+            hello: struct {
                 module: type,
                 execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void,
             },
-            @"test": struct { 
+            @"test": struct {
                 module: type,
                 execute: fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void,
             },
@@ -62,13 +62,7 @@ test "app help generation" {
     var buffer: [2048]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
 
-    try help.generateAppHelp(
-        registry,
-        stream.writer(),
-        "myapp",
-        "1.0.0",
-        "Test application for extraction verification"
-    );
+    try help.generateAppHelp(registry, stream.writer(), "myapp", "1.0.0", "Test application for extraction verification");
 
     const output = stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "myapp v1.0.0") != null);

@@ -101,8 +101,7 @@ pub fn combinePlugins(b: *std.Build, local_plugins: []const PluginInfo, external
 
     const total_len = local_plugins.len + external_plugins.len;
     const combined = b.allocator.alloc(PluginInfo, total_len) catch {
-        logging.buildError("Plugin System", "memory allocation", "Failed to allocate memory for combined plugin array", 
-            "Reduce number of plugins or increase available memory");
+        logging.buildError("Plugin System", "memory allocation", "Failed to allocate memory for combined plugin array", "Reduce number of plugins or increase available memory");
         std.debug.print("Attempted to allocate {} plugin entries.\n", .{total_len});
         return &.{}; // Return empty slice on failure
     };
@@ -150,20 +149,20 @@ pub fn addPluginModules(b: *std.Build, exe: *std.Build.Step.Compile, plugins: []
 /// Validate plugin name according to same rules as command names
 fn isValidPluginName(name: []const u8) bool {
     if (name.len == 0) return false;
-    
+
     // Check for forbidden patterns
     if (std.mem.indexOf(u8, name, "..") != null) return false;
     if (std.mem.indexOf(u8, name, "/") != null) return false;
     if (std.mem.indexOf(u8, name, "\\") != null) return false;
-    
+
     // Check first character
     const first = name[0];
     if (!std.ascii.isAlphabetic(first) and first != '_') return false;
-    
+
     // Check remaining characters
     for (name[1..]) |char| {
         if (!std.ascii.isAlphanumeric(char) and char != '_' and char != '-') return false;
     }
-    
+
     return true;
 }

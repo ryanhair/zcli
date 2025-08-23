@@ -136,7 +136,7 @@ pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, 
 }) *std.Build.Module {
     _ = target; // Currently unused but may be needed later
     _ = optimize; // Currently unused but may be needed later
-    
+
     // Discover all commands at build time
     var discovered_commands = command_discovery.discoverCommands(b.allocator, options.commands_dir) catch |err| {
         switch (err) {
@@ -206,12 +206,11 @@ pub fn buildWithExternalPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcl
         const plugin_dep = b.dependency(plugin_config.name, .{});
 
         const import_name = std.fmt.allocPrint(b.allocator, "plugins/{s}/plugin", .{plugin_config.name}) catch {
-            logging.buildError("Plugin System", "memory allocation", "Failed to allocate memory for plugin import name", 
-                "Out of memory while processing external plugin. Reduce number of plugins or increase available memory");
+            logging.buildError("Plugin System", "memory allocation", "Failed to allocate memory for plugin import name", "Out of memory while processing external plugin. Reduce number of plugins or increase available memory");
             std.debug.print("Plugin name: {s}\n", .{plugin_config.name});
             std.process.exit(1);
         };
-        
+
         const plugin_info = PluginInfo{
             .name = plugin_config.name,
             .import_name = import_name,
@@ -219,8 +218,7 @@ pub fn buildWithExternalPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcl
             .dependency = plugin_dep,
         };
         plugins.append(plugin_info) catch {
-            logging.buildError("Plugin System", "memory allocation", "Failed to add plugin to plugin list", 
-                "Out of memory while adding external plugin. Reduce number of plugins or increase available memory");
+            logging.buildError("Plugin System", "memory allocation", "Failed to add plugin to plugin list", "Out of memory while adding external plugin. Reduce number of plugins or increase available memory");
             std.debug.print("Plugin name: {s}\n", .{plugin_config.name});
             std.process.exit(1);
         };

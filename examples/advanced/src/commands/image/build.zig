@@ -52,33 +52,33 @@ pub const Options = struct {
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     if (!options.quiet) {
         try context.stdout().print("Building image from context: {s}\n", .{args.context});
-        
+
         const dockerfile = options.file orelse "Dockerfile";
         try context.stdout().print("Using Dockerfile: {s}\n", .{dockerfile});
-        
+
         if (options.no_cache) {
             try context.stdout().print("Building without cache\n", .{});
         }
-        
+
         if (options.pull) {
             try context.stdout().print("Pulling base images\n", .{});
         }
-        
+
         if (options.build_arg.len > 0) {
             try context.stdout().print("Build arguments:\n", .{});
             for (options.build_arg) |arg| {
                 try context.stdout().print("  {s}\n", .{arg});
             }
         }
-        
+
         if (options.target) |target| {
             try context.stdout().print("Target stage: {s}\n", .{target});
         }
-        
+
         if (options.platform) |platform| {
             try context.stdout().print("Platform: {s}\n", .{platform});
         }
-        
+
         // Simulate build steps
         try context.stdout().print("\nStep 1/5 : FROM node:16-alpine\n", .{});
         try context.stdout().print(" ---> a1b2c3d4e5f6\n", .{});
@@ -94,10 +94,10 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         try context.stdout().print(" ---> a1b2c3d4e5f6\n", .{});
         try context.stdout().print("Successfully built a1b2c3d4e5f6\n", .{});
     }
-    
+
     // Generate image ID
     const image_id = "sha256:a1b2c3d4e5f6789abcdef0123456789abcdef0123456789abcdef0123456789a";
-    
+
     if (options.tag.len > 0) {
         for (options.tag) |tag| {
             if (options.quiet) {
@@ -109,7 +109,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     } else if (options.quiet) {
         try context.stdout().print("{s}\n", .{image_id});
     }
-    
+
     if (options.squash and !options.quiet) {
         try context.stdout().print("Squashed image layers into single layer\n", .{});
     }

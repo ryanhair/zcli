@@ -12,10 +12,10 @@ pub const BaseCommandExecutor = struct {
                 @compileError("Context must have 'io' field");
             }
         }
-        
+
         // Get the command type from args
         const CommandType = @TypeOf(args);
-        
+
         // Look for an execute function on the command
         if (@hasDecl(CommandType, "execute")) {
             // Call the command's execute function
@@ -39,10 +39,10 @@ pub const BaseErrorHandler = struct {
                 @compileError("Context must have 'io' field");
             }
         }
-        
+
         // Default error handling - just print the error
         const error_name = @errorName(err);
-        
+
         // Try to provide helpful error messages for common errors
         switch (err) {
             error.CommandNotFound => {
@@ -74,7 +74,7 @@ pub const BaseErrorHandler = struct {
                 try ctx.io.stderr.print("Error: {s}\n", .{error_name});
             },
         }
-        
+
         // Propagate the original error after handling
         return err;
     }
@@ -92,37 +92,37 @@ const TestContext = struct {
         stderr: std.io.AnyWriter,
         stdin: std.io.AnyReader,
     },
-    
+
     pub fn init(allocator: std.mem.Allocator) TestContext {
         var self = TestContext{
             .stdout_buffer = std.ArrayList(u8).init(allocator),
             .stderr_buffer = std.ArrayList(u8).init(allocator),
             .io = undefined,
         };
-        
+
         // Set up the writers after the buffers are in place
         self.io = .{
             .stdout = self.stdout_buffer.writer().any(),
             .stderr = self.stderr_buffer.writer().any(),
             .stdin = std.io.getStdIn().reader().any(),
         };
-        
+
         return self;
     }
-    
+
     pub fn deinit(self: *TestContext) void {
         self.stdout_buffer.deinit();
         self.stderr_buffer.deinit();
     }
-    
+
     pub fn getStdoutContents(self: *const TestContext) []const u8 {
         return self.stdout_buffer.items;
     }
-    
+
     pub fn getStderrContents(self: *const TestContext) []const u8 {
         return self.stderr_buffer.items;
     }
-    
+
     pub fn clearBuffers(self: *TestContext) void {
         self.stdout_buffer.clearRetainingCapacity();
         self.stderr_buffer.clearRetainingCapacity();
@@ -138,12 +138,12 @@ test "BaseCommandExecutor executes commands" {
             // Test command execution
         }
     };
-    
+
     var test_ctx = TestContext.init(std.testing.allocator);
     defer test_ctx.deinit();
-    
+
     const test_args = TestCommand{};
-    
+
     try BaseCommandExecutor.execute(test_ctx, test_args);
 }
 
@@ -151,10 +151,10 @@ test "BaseErrorHandler handles common errors" {
     // Let's try a completely different approach: use fixed arrays instead of ArrayLists
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [1024]u8 = undefined;
-    
+
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
-    
+
     const test_ctx = struct {
         io: struct {
             stdout: std.io.AnyWriter,
@@ -169,21 +169,21 @@ test "BaseErrorHandler handles common errors" {
             .stdin = std.io.getStdIn().reader().any(),
         },
     };
-    
+
     // Test handling CommandNotFound
     _ = BaseErrorHandler.handle(error.CommandNotFound, test_ctx) catch {};
-    
+
     // Verify the error message was written to stderr
     const stderr_output = stderr_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, stderr_output, "Error: Command not found") != null);
     try std.testing.expect(std.mem.indexOf(u8, stderr_output, "Unknown command: 'test'") != null);
-    
+
     // Reset the stream for the next test
     stderr_stream.reset();
-    
+
     // Test handling InvalidArgument
     _ = BaseErrorHandler.handle(error.InvalidArgument, test_ctx) catch {};
-    
+
     // Verify InvalidArgument error message
     const stderr_output2 = stderr_stream.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, stderr_output2, "Error: Invalid argument provided") != null);

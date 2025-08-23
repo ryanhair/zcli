@@ -207,14 +207,20 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
 
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
-                var cmd_list: []const []const u8 = &.{};
-                // Add regular commands
+                var cmd_list: []const []const []const u8 = &.{};
+                // Add regular commands (convert space-separated paths to arrays)
                 for (commands) |cmd| {
-                    cmd_list = cmd_list ++ .{cmd.path};
+                    // Split command path by spaces to create hierarchical array
+                    var parts: []const []const u8 = &.{};
+                    var iter = std.mem.splitScalar(u8, cmd.path, ' ');
+                    while (iter.next()) |part| {
+                        parts = parts ++ .{part};
+                    }
+                    cmd_list = cmd_list ++ .{parts};
                 }
-                // Add plugin commands
+                // Add plugin commands (they are single names)
                 for (plugin_command_info) |plugin_cmd| {
-                    cmd_list = cmd_list ++ .{plugin_cmd.name};
+                    cmd_list = cmd_list ++ .{&.{plugin_cmd.name}};
                 }
                 break :blk cmd_list;
             };
@@ -228,7 +234,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                 .app_version = config.app_version,
                 .app_description = config.app_description,
                 .available_commands = available_commands,
-                .current_command = null,
+                .command_path = null,
             };
             defer context.deinit();
 
@@ -368,106 +374,142 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             if (args.len == 0) {
                 // Run hooks for empty command case
                 var parsed_args = zcli.ParsedArgs.init(context.allocator);
-                
+
                 // Run postParse hooks
                 inline for (sorted_plugins) |Plugin| {
                     if (@hasDecl(Plugin, "postParse")) {
-                        if (try Plugin.postParse(context, "", parsed_args)) |new_parsed| {
+                        if (try Plugin.postParse(context, parsed_args)) |new_parsed| {
                             parsed_args = new_parsed;
                         }
                     }
                 }
-                
+
                 // Run preExecute hooks - this allows help plugin to handle --help with no command
                 inline for (sorted_plugins) |Plugin| {
                     if (@hasDecl(Plugin, "preExecute")) {
-                        if (try Plugin.preExecute(context, "", parsed_args)) |new_parsed| {
+                        if (try Plugin.preExecute(context, parsed_args)) |new_parsed| {
                             parsed_args = new_parsed;
                         } else {
                             return; // Plugin cancelled execution
                         }
                     }
                 }
-                
+
                 // No actual command to execute
                 return;
             }
 
             // Try to find matching command
-            const command_name = args[0];
-            const remaining_args = args[1..];
-
-            // Check regular commands first
             var found = false;
+            var matched_command: []const u8 = "";
+            var remaining_args: []const []const u8 = args;
+
+            // Check regular commands first - try to match hierarchical commands
             inline for (commands) |cmd| {
-                if (std.mem.eql(u8, cmd.path, command_name)) {
-                    found = true;
+                // Count parts and check if we have enough args
+                var parts_count: usize = 0;
+                var temp_iterator = std.mem.splitScalar(u8, cmd.path, ' ');
+                while (temp_iterator.next()) |_| {
+                    parts_count += 1;
+                }
 
-                    // Run postParse hooks
-                    var parsed_args = zcli.ParsedArgs.init(context.allocator);
-                    parsed_args.positional = remaining_args;
+                if (parts_count <= args.len) {
+                    // Check if all parts match
+                    var parts_match = true;
+                    var part_index: usize = 0;
+                    var parts_iter = std.mem.splitScalar(u8, cmd.path, ' ');
 
-                    inline for (sorted_plugins) |Plugin| {
-                        if (@hasDecl(Plugin, "postParse")) {
-                            if (try Plugin.postParse(context, command_name, parsed_args)) |new_parsed| {
-                                parsed_args = new_parsed;
-                            }
+                    while (parts_iter.next()) |part| {
+                        if (part_index >= args.len or !std.mem.eql(u8, part, args[part_index])) {
+                            parts_match = false;
+                            break;
                         }
+                        part_index += 1;
                     }
 
-                    // Run preExecute hooks
-                    inline for (sorted_plugins) |Plugin| {
-                        if (@hasDecl(Plugin, "preExecute")) {
-                            if (try Plugin.preExecute(context, command_name, parsed_args)) |new_parsed| {
-                                parsed_args = new_parsed;
-                            } else {
-                                return; // Plugin cancelled execution
-                            }
+                    if (parts_match) {
+                        found = true;
+                        matched_command = cmd.path;
+                        remaining_args = args[parts_count..];
+
+                        // Set command_path to the command parts array
+                        var command_parts = std.ArrayList([]const u8).init(context.allocator);
+                        defer command_parts.deinit();
+
+                        var cmd_parts_iter = std.mem.splitScalar(u8, matched_command, ' ');
+                        while (cmd_parts_iter.next()) |part| {
+                            try command_parts.append(part);
                         }
-                    }
 
-                    // Execute the command
-                    var success = true;
-                    if (@hasDecl(cmd.module, "execute")) {
-                        // Use the original remaining_args for parsing both args and options
-                        // This ensures options are available to parseOptions
-                        const final_args = parsed_args.positional;
+                        context.command_path = try command_parts.toOwnedSlice();
 
-                        const args_instance = if (@hasDecl(cmd.module, "Args"))
-                            try self.parseArgs(cmd.module.Args, final_args)
-                        else
-                            struct {}{};
+                        // Run postParse hooks
+                        var parsed_args = zcli.ParsedArgs.init(context.allocator);
+                        parsed_args.positional = remaining_args;
 
-                        const options_instance = if (@hasDecl(cmd.module, "Options"))
-                            try self.parseOptions(cmd.module.Options, final_args, context.allocator)
-                        else
-                            struct {}{};
-
-                        cmd.module.execute(args_instance, options_instance, context) catch |err| {
-                            success = false;
-
-                            // Run error hooks
-                            inline for (sorted_plugins) |Plugin| {
-                                if (@hasDecl(Plugin, "onError")) {
-                                    try Plugin.onError(context, err, command_name);
+                        inline for (sorted_plugins) |Plugin| {
+                            if (@hasDecl(Plugin, "postParse")) {
+                                if (try Plugin.postParse(context, parsed_args)) |new_parsed| {
+                                    parsed_args = new_parsed;
                                 }
                             }
-
-                            return err;
-                        };
-                    } else {
-                        try context.stderr().print("Command '{s}' does not implement execute function\n", .{cmd.path});
-                        success = false;
-                    }
-
-                    // Run postExecute hooks
-                    inline for (sorted_plugins) |Plugin| {
-                        if (@hasDecl(Plugin, "postExecute")) {
-                            try Plugin.postExecute(context, command_name, success);
                         }
-                    }
 
-                    return;
+                        // Run preExecute hooks
+                        inline for (sorted_plugins) |Plugin| {
+                            if (@hasDecl(Plugin, "preExecute")) {
+                                if (try Plugin.preExecute(context, parsed_args)) |new_parsed| {
+                                    parsed_args = new_parsed;
+                                } else {
+                                    return; // Plugin cancelled execution
+                                }
+                            }
+                        }
+
+                        // Execute the command
+                        var success = true;
+                        if (@hasDecl(cmd.module, "execute")) {
+                            // Use the original remaining_args for parsing both args and options
+                            // This ensures options are available to parseOptions
+                            const final_args = parsed_args.positional;
+
+                            const args_instance = if (@hasDecl(cmd.module, "Args"))
+                                try self.parseArgs(cmd.module.Args, final_args)
+                            else
+                                struct {}{};
+
+                            const options_instance = if (@hasDecl(cmd.module, "Options"))
+                                try self.parseOptions(cmd.module.Options, final_args, context.allocator)
+                            else
+                                struct {}{};
+
+                            cmd.module.execute(args_instance, options_instance, context) catch |err| {
+                                success = false;
+
+                                // Run error hooks
+                                inline for (sorted_plugins) |Plugin| {
+                                    if (@hasDecl(Plugin, "onError")) {
+                                        const handled = try Plugin.onError(context, err);
+                                        if (handled) break;
+                                    }
+                                }
+
+                                return err;
+                            };
+                        } else {
+                            try context.stderr().print("Command '{s}' does not implement execute function\n", .{cmd.path});
+                            success = false;
+                        }
+
+                        // Run postExecute hooks
+                        inline for (sorted_plugins) |Plugin| {
+                            if (@hasDecl(Plugin, "postExecute")) {
+                                try Plugin.postExecute(context, success);
+                            }
+                        }
+
+                        break; // Exit the loop since we found and executed the command
+                    }
                 }
             }
 
@@ -477,16 +519,22 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                     const cmd_info = @typeInfo(Plugin.commands);
                     if (cmd_info == .@"struct") {
                         inline for (cmd_info.@"struct".decls) |decl| {
-                            if (std.mem.eql(u8, decl.name, command_name)) {
+                            if (std.mem.eql(u8, decl.name, args[0])) {
                                 found = true;
+                                const plugin_command_name = args[0];
+                                const plugin_remaining_args = args[1..];
+                                // Set command_path as array with single command
+                                var plugin_command_array = try context.allocator.alloc([]const u8, 1);
+                                plugin_command_array[0] = plugin_command_name;
+                                context.command_path = plugin_command_array;
 
                                 // Run postParse hooks
                                 var parsed_args = zcli.ParsedArgs.init(context.allocator);
-                                parsed_args.positional = remaining_args;
+                                parsed_args.positional = plugin_remaining_args;
 
                                 inline for (sorted_plugins) |HookPlugin| {
                                     if (@hasDecl(HookPlugin, "postParse")) {
-                                        if (try HookPlugin.postParse(context, command_name, parsed_args)) |new_parsed| {
+                                        if (try HookPlugin.postParse(context, parsed_args)) |new_parsed| {
                                             parsed_args = new_parsed;
                                         }
                                     }
@@ -495,7 +543,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                                 // Run preExecute hooks
                                 inline for (sorted_plugins) |HookPlugin| {
                                     if (@hasDecl(HookPlugin, "preExecute")) {
-                                        if (try HookPlugin.preExecute(context, command_name, parsed_args)) |new_parsed| {
+                                        if (try HookPlugin.preExecute(context, parsed_args)) |new_parsed| {
                                             parsed_args = new_parsed;
                                         } else {
                                             return; // Plugin cancelled execution
@@ -525,20 +573,21 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                                         // Run onError hooks
                                         inline for (sorted_plugins) |HookPlugin| {
                                             if (@hasDecl(HookPlugin, "onError")) {
-                                                try HookPlugin.onError(context, err, command_name);
+                                                const handled = try HookPlugin.onError(context, err);
+                                                if (handled) break;
                                             }
                                         }
                                         return err;
                                     };
                                 } else {
-                                    try context.stderr().print("Plugin command '{s}' does not implement execute function\n", .{command_name});
+                                    try context.stderr().print("Plugin command '{s}' does not implement execute function\n", .{plugin_command_name});
                                     success = false;
                                 }
 
                                 // Run postExecute hooks
                                 inline for (sorted_plugins) |HookPlugin| {
                                     if (@hasDecl(HookPlugin, "postExecute")) {
-                                        try HookPlugin.postExecute(context, command_name, success);
+                                        try HookPlugin.postExecute(context, success);
                                     }
                                 }
 
@@ -550,23 +599,32 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             }
 
             if (!found) {
-                // Store the command name for error handling
-                context.current_command = command_name;
-                
+                // Set command_path to the attempted command parts for error handling
+                var attempted_command_array = try context.allocator.alloc([]const u8, 1);
+                attempted_command_array[0] = args[0];
+                context.command_path = attempted_command_array;
+
                 // Run onError hooks for CommandNotFound
                 var error_handled = false;
                 inline for (sorted_plugins) |Plugin| {
                     if (@hasDecl(Plugin, "onError")) {
-                        try Plugin.onError(context, error.CommandNotFound, command_name);
-                        error_handled = true; // If any plugin has onError, consider it handled
+                        const handled = try Plugin.onError(context, error.CommandNotFound);
+                        if (handled) {
+                            error_handled = true;
+                            break; // Stop processing further error handlers
+                        }
                     }
                 }
-                
+
                 // If no plugin handled the error, print a basic message
                 if (!error_handled) {
-                    try context.stderr().print("command {s} not found\n", .{command_name});
+                    const cmd_name = if (context.command_path) |cmd_parts|
+                        if (cmd_parts.len > 0) cmd_parts[0] else "unknown"
+                    else
+                        "unknown";
+                    try context.stderr().print("command {s} not found\n", .{cmd_name});
                 }
-                
+
                 // Return the error regardless
                 return error.CommandNotFound;
             }
@@ -585,7 +643,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
 
             // Work directly with raw_args to find positional arguments
             // No dynamic allocation needed - fixes use-after-free bug
-            
+
             // Assign positional arguments to fields directly from raw_args
             inline for (fields, 0..) |field, field_idx| {
                 switch (field.type) {
@@ -593,7 +651,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                         // Find the field_idx-th positional argument in raw_args
                         var found_count: usize = 0;
                         var found = false;
-                        
+
                         var i: usize = 0;
                         while (i < raw_args.len) {
                             const arg = raw_args[i];
@@ -615,7 +673,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                                 i += 1;
                             }
                         }
-                        
+
                         if (!found) {
                             // Required field missing
                             try std.io.getStdErr().writer().print("Error: Missing required argument '{s}'\n", .{field.name});
@@ -626,7 +684,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                         // Find the field_idx-th positional argument in raw_args (optional)
                         var found_count: usize = 0;
                         var found = false;
-                        
+
                         var i: usize = 0;
                         while (i < raw_args.len) {
                             const arg = raw_args[i];
@@ -648,7 +706,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                                 i += 1;
                             }
                         }
-                        
+
                         if (!found) {
                             @field(result, field.name) = null;
                         }
@@ -697,6 +755,5 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             }
             return transform_result;
         }
-
     };
 }

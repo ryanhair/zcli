@@ -33,13 +33,13 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         try context.stdout().print("Adding all modified and new files to the index\n", .{});
         return;
     }
-    
+
     if (args.files.len == 0) {
         try context.stderr().print("Error: No files specified\n", .{});
         try context.stderr().print("Use 'add --all' to add all files or specify files to add\n", .{});
         return;
     }
-    
+
     for (args.files) |file| {
         if (options.patch) {
             try context.stdout().print("Interactively adding {s} (patch mode)\n", .{file});

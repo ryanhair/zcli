@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    
+
     // Add zcli as a dependency when building standalone
     const zcli_module = b.createModule(.{
         .root_source_file = b.path("../../src/zcli.zig"),
@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
 
     const run_plugin_tests = b.addRunArtifact(plugin_tests);
     const run_levenshtein_tests = b.addRunArtifact(levenshtein_tests);
-    
+
     const test_step = b.step("test", "Run plugin tests");
     test_step.dependOn(&run_plugin_tests.step);
     test_step.dependOn(&run_levenshtein_tests.step);

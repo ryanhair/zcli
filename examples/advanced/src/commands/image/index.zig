@@ -30,7 +30,7 @@ pub const Options = struct {};
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     _ = args;
     _ = options;
-    
+
     try context.stdout().print("Image management commands:\n\n", .{});
     try context.stdout().print("  build     Build an image from a Dockerfile\n", .{});
     try context.stdout().print("  ls        List images\n", .{});

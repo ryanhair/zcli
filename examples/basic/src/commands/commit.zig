@@ -27,13 +27,13 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     _ = args;
-    
+
     if (options.all) {
         try context.stdout().print("Staging all modified and deleted files\n", .{});
     }
-    
+
     const commit_msg = options.message orelse "Default commit message";
-    
+
     if (options.amend) {
         try context.stdout().print("Amending previous commit with message: \"{s}\"\n", .{commit_msg});
     } else {

@@ -19,7 +19,7 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
     // We'll work with the shorter string as columns to minimize memory usage
     const shorter_len = @min(a_len, b_len);
     const longer_len = @max(a_len, b_len);
-    
+
     const shorter_str = if (a_len <= b_len) a[0..a_len] else b[0..b_len];
     const longer_str = if (a_len <= b_len) b[0..b_len] else a[0..a_len];
 
@@ -41,19 +41,16 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
     // Fill the matrix row by row
     for (1..longer_len + 1) |i| {
         curr_row[0] = i;
-        
+
         for (1..shorter_len + 1) |j| {
             const cost: usize = if (longer_str[i - 1] == shorter_str[j - 1]) 0 else 1;
 
-            curr_row[j] = @min(
-                @min(
-                    prev_row[j] + 1,      // deletion
-                    curr_row[j - 1] + 1   // insertion
-                ), 
-                prev_row[j - 1] + cost    // substitution
-            );
+            curr_row[j] = @min(@min(prev_row[j] + 1, // deletion
+                curr_row[j - 1] + 1 // insertion
+                ), prev_row[j - 1] + cost // substitution
+                );
         }
-        
+
         // Swap rows
         const temp = prev_row;
         prev_row = curr_row;
@@ -81,13 +78,7 @@ pub fn findSimilarCommands(input: []const u8, candidates: []const []const u8, al
 }
 
 /// Find similar commands with configurable threshold and max suggestions
-pub fn findSimilarCommandsWithConfig(
-    input: []const u8, 
-    candidates: []const []const u8, 
-    allocator: std.mem.Allocator,
-    max_distance: usize,
-    max_suggestions: usize
-) ![][]const u8 {
+pub fn findSimilarCommandsWithConfig(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator, max_distance: usize, max_suggestions: usize) ![][]const u8 {
     var suggestions_with_distance = std.ArrayList(struct { command: []const u8, distance: usize }).init(allocator);
     defer suggestions_with_distance.deinit();
 
@@ -142,7 +133,7 @@ test "findSimilarCommandsWithConfig" {
 
     const suggestions = try findSimilarCommandsWithConfig("stat", &commands, std.testing.allocator, 2, 3);
     defer std.testing.allocator.free(suggestions);
-    
+
     try std.testing.expect(suggestions.len > 0);
     // Should find "status" and "start" as similar to "stat"
     var found_status = false;
@@ -159,10 +150,10 @@ test "editDistance edge cases" {
     try std.testing.expectEqual(@as(usize, 0), editDistance("", ""));
     try std.testing.expectEqual(@as(usize, 5), editDistance("", "hello"));
     try std.testing.expectEqual(@as(usize, 3), editDistance("abc", ""));
-    
+
     // Identical strings
     try std.testing.expectEqual(@as(usize, 0), editDistance("identical", "identical"));
-    
+
     // Very different strings
     try std.testing.expectEqual(@as(usize, 6), editDistance("abc", "xyz123"));
 }

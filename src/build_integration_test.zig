@@ -423,7 +423,7 @@ test "build integration: performance with many commands" {
     // Verify generated source contains all commands
     i = 0;
     while (i < num_commands) : (i += 1) {
-        const search_pattern = try std.fmt.allocPrint(allocator, ".register(\"cmd{}\", cmd_cmd{})", .{i, i});
+        const search_pattern = try std.fmt.allocPrint(allocator, ".register(\"cmd{}\", cmd_cmd{})", .{ i, i });
         defer allocator.free(search_pattern);
         try std.testing.expect(std.mem.indexOf(u8, registry_source, search_pattern) != null);
     }

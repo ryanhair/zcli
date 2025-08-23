@@ -22,14 +22,14 @@ pub fn build(b: *std.Build) void {
     // Core test files (these should be safe)
     const core_test_files = [_][]const u8{
         "src/zcli.zig",
-        "src/args.zig", 
+        "src/args.zig",
         "src/options.zig",
         "src/errors.zig",
         "src/build_utils.zig",
         "src/execution.zig",
     };
 
-    // Plugin test files  
+    // Plugin test files
     const plugin_test_files = [_][]const u8{
         "src/plugin_global_options_test.zig",
         "src/plugin_system_test.zig",
@@ -83,7 +83,7 @@ pub fn build(b: *std.Build) void {
     // This creates a completely separate dependency chain for sequential execution
     const all_test_files = core_test_files ++ plugin_test_files ++ integration_test_files;
     var previous_step: ?*std.Build.Step = null;
-    
+
     for (all_test_files) |test_file| {
         const sequential_tests = b.addTest(.{
             .root_source_file = b.path(test_file),
@@ -91,13 +91,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         const sequential_run_tests = b.addRunArtifact(sequential_tests);
-        
+
         if (previous_step) |prev| {
             sequential_run_tests.step.dependOn(prev);
         }
         previous_step = &sequential_run_tests.step;
     }
-    
+
     if (previous_step) |final_step| {
         test_sequential_step.dependOn(final_step);
     }

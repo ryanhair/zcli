@@ -208,9 +208,9 @@ test "Context extension generation" {
     try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(auth)") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(logger)") != null);
 
-    // Verify new init function signature 
+    // Verify new init function signature
     try std.testing.expect(std.mem.indexOf(u8, source, "pub fn init(allocator: std.mem.Allocator) @TypeOf(registry)") != null);
-    
+
     // Note: The new registry approach doesn't need a deinit function
 }
 
@@ -304,10 +304,10 @@ test "Commands struct with plugin commands" {
     // Verify plugins are also registered (combined approach)
     try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(auth)") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(zcli_help)") != null);
-    
+
     // Verify registry is built
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
-    
+
     // Note: The new registry approach handles command discovery differently
 }
 
@@ -340,7 +340,7 @@ test "empty plugin list handling" {
     // Should still generate valid code with no plugins
     try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = @TypeOf(registry).Context;") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, "pub const registry = zcli.Registry.init") != null);
-    
+
     // Registry should build successfully even with no plugins
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
 }

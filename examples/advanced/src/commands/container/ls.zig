@@ -38,11 +38,11 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     _ = args;
-    
+
     // Debug: print filter array info
     std.debug.print("DEBUG: filter array len = {d}\n", .{options.filter.len});
     std.debug.print("DEBUG: filter array ptr = {any}\n", .{options.filter.ptr});
-    
+
     // Sample container data
     const containers = [_]struct {
         id: []const u8,
@@ -85,19 +85,19 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             .size = "32MB",
         },
     };
-    
+
     // Apply filters (simplified to avoid allocator complexity)
     var filtered_containers: [3]@TypeOf(containers[0]) = undefined;
     var filtered_count: usize = 0;
-    
+
     for (containers) |container| {
         var include = true;
-        
+
         // Filter by status
         if (!options.all and std.mem.indexOf(u8, container.status, "Exited") != null) {
             include = false;
         }
-        
+
         // Apply custom filters
         for (options.filter) |filter| {
             if (std.mem.startsWith(u8, filter, "status=")) {
@@ -107,13 +107,13 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                 }
             }
         }
-        
+
         if (include and filtered_count < filtered_containers.len) {
             filtered_containers[filtered_count] = container;
             filtered_count += 1;
         }
     }
-    
+
     // Handle special display options
     if (options.quiet) {
         for (filtered_containers[0..filtered_count]) |container| {
@@ -122,17 +122,17 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         }
         return;
     }
-    
+
     // Handle latest option
     if (options.latest and filtered_count > 0) {
         const container = filtered_containers[0];
         try printContainer(container, options, context);
         return;
     }
-    
+
     // Handle last N option
     const display_count = if (options.last) |last| @min(last, filtered_count) else filtered_count;
-    
+
     // Print header for table format
     if (options.format == null or std.mem.eql(u8, options.format.?, "table")) {
         try context.stdout().print("CONTAINER ID   IMAGE          COMMAND                  CREATED       STATUS                   PORTS                NAMES", .{});
@@ -141,7 +141,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         }
         try context.stdout().print("\n", .{});
     }
-    
+
     // Print containers
     for (filtered_containers[0..display_count]) |container| {
         try printContainer(container, options, context);
@@ -152,15 +152,13 @@ fn printContainer(container: anytype, options: Options, context: *zcli.Context) 
     const id = if (options.no_trunc) container.id else container.id[0..@min(12, container.id.len)];
     const image = if (options.no_trunc) container.image else truncateString(container.image, 14);
     const command = if (options.no_trunc) container.command else truncateString(container.command, 24);
-    
-    try context.stdout().print("{s:<12}   {s:<14} {s:<24} {s:<13} {s:<24} {s:<20} {s}", .{
-        id, image, command, container.created, container.status, container.ports, container.names
-    });
-    
+
+    try context.stdout().print("{s:<12}   {s:<14} {s:<24} {s:<13} {s:<24} {s:<20} {s}", .{ id, image, command, container.created, container.status, container.ports, container.names });
+
     if (options.size) {
         try context.stdout().print("   {s:>8}", .{container.size});
     }
-    
+
     try context.stdout().print("\n", .{});
 }
 

@@ -24,7 +24,7 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     _ = args;
-    
+
     if (options.porcelain or options.short) {
         try context.stdout().print("M  main.zig\n", .{});
         try context.stdout().print("A  new-file.zig\n", .{});
@@ -34,12 +34,12 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         try context.stdout().print("Changes to be committed:\n", .{});
         try context.stdout().print("  (use \"git reset HEAD <file>...\" to unstage)\n\n", .{});
         try context.stdout().print("\tnew file:   new-file.zig\n\n", .{});
-        
+
         try context.stdout().print("Changes not staged for commit:\n", .{});
         try context.stdout().print("  (use \"git add <file>...\" to update what will be committed)\n", .{});
         try context.stdout().print("  (use \"git checkout -- <file>...\" to discard changes)\n\n", .{});
         try context.stdout().print("\tmodified:   main.zig\n\n", .{});
-        
+
         try context.stdout().print("Untracked files:\n", .{});
         try context.stdout().print("  (use \"git add <file>...\" to include in what will be committed)\n\n", .{});
         try context.stdout().print("\tuntracked.txt\n\n", .{});
