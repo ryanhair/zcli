@@ -36,12 +36,6 @@ This document tracks features that are planned for future iterations of zcli.
 - Table formatting utilities
 - Progress bars and spinners
 
-### Plugin System
-
-- Allow external packages to provide commands
-- Runtime plugin loading (if needed)
-- Plugin discovery and registration
-
 ### Interactive Mode
 
 - REPL for command exploration
