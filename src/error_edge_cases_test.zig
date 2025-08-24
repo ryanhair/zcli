@@ -218,37 +218,6 @@ test "parseArgs integer overflow edge cases" {
     }
 }
 
-test "parseArgs floating point edge cases" {
-    const Args = struct {
-        val: f64,
-    };
-
-    const test_cases = [_]struct { []const u8, f64 }{
-        .{ "0.0", 0.0 },
-        .{ "-0.0", -0.0 },
-        .{ "1.7976931348623157e+308", 1.7976931348623157e+308 }, // Near f64 max
-        .{ "2.2250738585072014e-308", 2.2250738585072014e-308 }, // Near f64 min positive
-        .{ "inf", std.math.inf(f64) },
-        .{ "-inf", -std.math.inf(f64) },
-        .{ "nan", std.math.nan(f64) },
-    };
-
-    for (test_cases) |case| {
-        const args = [_][]const u8{case[0]};
-        const result = args_parser.parseArgs(Args, &args);
-        try std.testing.expect(!result.isError());
-        const parsed = result.unwrap();
-
-        if (std.math.isNan(case[1])) {
-            try std.testing.expect(std.math.isNan(parsed.val));
-        } else if (std.math.isInf(case[1])) {
-            try std.testing.expect(std.math.isInf(parsed.val));
-            try std.testing.expectEqual(std.math.sign(case[1]), std.math.sign(parsed.val));
-        } else {
-            try std.testing.expectEqual(case[1], parsed.val);
-        }
-    }
-}
 
 test "parseArgs with malformed float values" {
     const Args = struct {

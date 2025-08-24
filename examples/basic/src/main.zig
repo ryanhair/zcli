@@ -8,10 +8,7 @@ pub fn main() !void {
 
     var app = registry.registry.init();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    app.execute(args[1..]) catch |err| switch (err) {
+    app.run(allocator) catch |err| switch (err) {
         error.CommandNotFound => {
             // Error was already handled by plugins or registry
             std.process.exit(1);

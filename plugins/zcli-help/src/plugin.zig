@@ -31,17 +31,13 @@ pub fn preExecute(
     const help_requested = context.getGlobalData([]const u8, "help_requested") orelse "false";
     if (std.mem.eql(u8, help_requested, "true")) {
         // If command_path is empty, show app help; otherwise show command help
-        if (context.command_path) |command_parts| {
-            if (command_parts.len == 0) {
-                try showAppHelp(context);
-            } else {
-                // Join command parts with spaces for display
-                const command_string = try std.mem.join(context.allocator, " ", command_parts);
-                defer context.allocator.free(command_string);
-                try showCommandHelp(context, command_string);
-            }
-        } else {
+        if (context.command_path.len == 0) {
             try showAppHelp(context);
+        } else {
+            // Join command parts with spaces for display
+            const command_string = try std.mem.join(context.allocator, " ", context.command_path);
+            defer context.allocator.free(command_string);
+            try showCommandHelp(context, command_string);
         }
 
         // Return null to stop execution
@@ -59,26 +55,24 @@ pub fn onError(
 ) !bool {
     if (err == error.CommandNotFound) {
         // Check if this looks like a command group (has subcommands)
-        if (context.command_path) |attempted_command_parts| {
-            if (attempted_command_parts.len > 0) {
-                const attempted_command = attempted_command_parts[0];
-                var subcommands = std.ArrayList([]const u8).init(context.allocator);
-                defer subcommands.deinit();
+        if (context.command_path.len > 0) {
+            const attempted_command = context.command_path[0];
+            var subcommands = std.ArrayList([]const u8).init(context.allocator);
+            defer subcommands.deinit();
 
-                // Find all commands that start with the attempted command
-                for (context.available_commands) |cmd_parts| {
-                    // Check if this command starts with the attempted command
-                    if (cmd_parts.len >= 2 and std.mem.eql(u8, cmd_parts[0], attempted_command)) {
-                        // This is a subcommand - get the next part
-                        try subcommands.append(cmd_parts[1]);
-                    }
+            // Find all commands that start with the attempted command
+            for (context.available_commands) |cmd_parts| {
+                // Check if this command starts with the attempted command
+                if (cmd_parts.len >= 2 and std.mem.eql(u8, cmd_parts[0], attempted_command)) {
+                    // This is a subcommand - get the next part
+                    try subcommands.append(cmd_parts[1]);
                 }
+            }
 
-                // If we found subcommands, show group help and handle the error
-                if (subcommands.items.len > 0) {
-                    try showCommandGroupHelp(context, attempted_command, subcommands.items);
-                    return true; // Error handled, don't let it propagate
-                }
+            // If we found subcommands, show group help and handle the error
+            if (subcommands.items.len > 0) {
+                try showCommandGroupHelp(context, attempted_command, subcommands.items);
+                return true; // Error handled, don't let it propagate
             }
         }
     }

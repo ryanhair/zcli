@@ -358,7 +358,7 @@ pub const OptionEvent = struct {
 /// Event data for handleError (legacy)
 pub const ErrorEvent = struct {
     err: anyerror,
-    command_path: ?[]const u8,
+    command_path: []const []const u8,
     available_commands: ?[]const []const []const u8 = null,
 };
 

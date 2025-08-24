@@ -200,10 +200,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             return Self{};
         }
 
-        pub fn execute(self: *Self, args: []const []const u8) !void {
-            var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-            defer _ = gpa.deinit();
-            const allocator = gpa.allocator();
+        pub fn run_with_args(self: *Self, allocator: std.mem.Allocator, args: []const []const u8) !void {
 
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
@@ -234,7 +231,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                 .app_version = config.app_version,
                 .app_description = config.app_description,
                 .available_commands = available_commands,
-                .command_path = null,
+                .command_path = &.{},
             };
             defer context.deinit();
 
@@ -268,6 +265,14 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
 
             // 4. Route to command
             try self.executeCommand(&context, current_args);
+        }
+
+        /// Convenient run method that handles process args automatically
+        pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
+            const args = try std.process.argsAlloc(allocator);
+            defer std.process.argsFree(allocator, args);
+            
+            try self.run_with_args(allocator, args[1..]);
         }
 
         pub fn parseGlobalOptions(self: *Self, context: *zcli.Context, args: []const []const u8) !zcli.GlobalOptionsResult {
@@ -618,10 +623,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
 
                 // If no plugin handled the error, print a basic message
                 if (!error_handled) {
-                    const cmd_name = if (context.command_path) |cmd_parts|
-                        if (cmd_parts.len > 0) cmd_parts[0] else "unknown"
-                    else
-                        "unknown";
+                    const cmd_name = if (context.command_path.len > 0) context.command_path[0] else "unknown";
                     try context.stderr().print("command {s} not found\n", .{cmd_name});
                 }
 
@@ -633,92 +635,31 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
         /// Parse arguments for a command (fixed use-after-free bug)
         fn parseArgs(self: *Self, comptime ArgsType: type, raw_args: []const []const u8) !ArgsType {
             _ = self;
-
-            const fields = std.meta.fields(ArgsType);
-            if (fields.len == 0) {
-                return ArgsType{};
-            }
-
-            var result: ArgsType = undefined;
-
-            // Work directly with raw_args to find positional arguments
-            // No dynamic allocation needed - fixes use-after-free bug
-
-            // Assign positional arguments to fields directly from raw_args
-            inline for (fields, 0..) |field, field_idx| {
-                switch (field.type) {
-                    []const u8 => {
-                        // Find the field_idx-th positional argument in raw_args
-                        var found_count: usize = 0;
-                        var found = false;
-
-                        var i: usize = 0;
-                        while (i < raw_args.len) {
-                            const arg = raw_args[i];
-                            if (std.mem.startsWith(u8, arg, "-")) {
-                                // Skip option
-                                i += 1;
-                                // Skip option value if it doesn't start with -
-                                if (i < raw_args.len and !std.mem.startsWith(u8, raw_args[i], "-")) {
-                                    i += 1;
-                                }
-                            } else {
-                                // This is a positional argument
-                                if (found_count == field_idx) {
-                                    @field(result, field.name) = arg;
-                                    found = true;
-                                    break;
-                                }
-                                found_count += 1;
-                                i += 1;
-                            }
-                        }
-
-                        if (!found) {
-                            // Required field missing
-                            try std.io.getStdErr().writer().print("Error: Missing required argument '{s}'\n", .{field.name});
-                            return error.MissingArgument;
-                        }
+            const args = @import("args.zig");
+            
+            // For now, just pass raw_args directly and let args.zig handle it
+            // This avoids the use-after-free issue with temporary arrays
+            // TODO: args.zig needs to be modified to skip options during parsing
+            const result = args.parseArgs(ArgsType, raw_args);
+            if (result.isError()) {
+                const err = result.getError().?;
+                switch (err) {
+                    .argument_missing_required => |ctx| {
+                        try std.io.getStdErr().writer().print("Error: Missing required argument '{s}'\n", .{ctx.field_name});
+                        return error.MissingArgument;
                     },
-                    ?[]const u8 => {
-                        // Find the field_idx-th positional argument in raw_args (optional)
-                        var found_count: usize = 0;
-                        var found = false;
-
-                        var i: usize = 0;
-                        while (i < raw_args.len) {
-                            const arg = raw_args[i];
-                            if (std.mem.startsWith(u8, arg, "-")) {
-                                // Skip option
-                                i += 1;
-                                // Skip option value if it doesn't start with -
-                                if (i < raw_args.len and !std.mem.startsWith(u8, raw_args[i], "-")) {
-                                    i += 1;
-                                }
-                            } else {
-                                // This is a positional argument
-                                if (found_count == field_idx) {
-                                    @field(result, field.name) = arg;
-                                    found = true;
-                                    break;
-                                }
-                                found_count += 1;
-                                i += 1;
-                            }
-                        }
-
-                        if (!found) {
-                            @field(result, field.name) = null;
-                        }
+                    .argument_invalid_value => |ctx| {
+                        try std.io.getStdErr().writer().print("Error: Invalid value '{?s}' for argument '{s}'\n", .{ ctx.provided_value, ctx.field_name });
+                        return error.InvalidArgument;
                     },
-                    else => {
-                        // Initialize other types with default/undefined values
-                        @field(result, field.name) = @as(field.type, undefined);
+                    .argument_too_many => |ctx| {
+                        try std.io.getStdErr().writer().print("Error: Too many arguments (expected {d}, got {?})\n", .{ ctx.position, ctx.actual_count });
+                        return error.TooManyArguments;
                     },
+                    else => return error.ParseError,
                 }
             }
-
-            return result;
+            return result.unwrap();
         }
 
         /// Parse options for a command (using the real options parser)

@@ -52,69 +52,67 @@ pub const Options = struct {
     cpus: ?f32 = null,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, _: *zcli.Context) !void {
     // Show what would be executed
-    try context.stdout().print("Running container from image: {s}\n", .{args.image});
+    std.log.info("Running container from image: {s}\n", .{args.image});
 
     if (options.name) |name| {
-        try context.stdout().print("Container name: {s}\n", .{name});
+        std.log.info("Container name: {s}\n", .{name});
     }
 
     if (options.detach) {
-        try context.stdout().print("Running in detached mode\n", .{});
+        std.log.info("Running in detached mode\n", .{});
     }
 
     if (options.interactive and options.tty) {
-        try context.stdout().print("Running in interactive mode with TTY\n", .{});
+        std.log.info("Running in interactive mode with TTY\n", .{});
     }
 
     if (options.env.len > 0) {
-        try context.stdout().print("Environment variables:\n", .{});
+        std.log.info("Environment variables:\n", .{});
         for (options.env) |env_var| {
-            try context.stdout().print("  {s}\n", .{env_var});
+            std.log.info("  {s}\n", .{env_var});
         }
     }
 
     if (options.publish.len > 0) {
-        try context.stdout().print("Port mappings:\n", .{});
+        std.log.info("Port mappings:\n", .{});
         for (options.publish) |port| {
-            try context.stdout().print("  {s}\n", .{port});
+            std.log.info("  {s}\n", .{port});
         }
     }
 
     if (options.volume.len > 0) {
-        try context.stdout().print("Volume mounts:\n", .{});
+        std.log.info("Volume mounts:\n", .{});
         for (options.volume) |vol| {
-            try context.stdout().print("  {s}\n", .{vol});
+            std.log.info("  {s}\n", .{vol});
         }
     }
 
     if (options.workdir) |workdir| {
-        try context.stdout().print("Working directory: {s}\n", .{workdir});
+        std.log.info("Working directory: {s}\n", .{workdir});
     }
 
     if (options.memory) |memory| {
-        try context.stdout().print("Memory limit: {s}\n", .{memory});
+        std.log.info("Memory limit: {s}\n", .{memory});
     }
 
     if (options.cpus) |cpus| {
-        try context.stdout().print("CPU limit: {d}\n", .{cpus});
+        std.log.info("CPU limit: {d}\n", .{cpus});
     }
 
     if (args.command) |command| {
-        try context.stdout().print("Command: {s}", .{command});
-        if (args.args.len > 0) {
-            for (args.args) |arg| {
-                try context.stdout().print(" {s}", .{arg});
-            }
+        std.log.info("Command: {s}", .{command});
+        for (args.args) |arg| {
+            std.log.info(" {s}", .{arg});
         }
-        try context.stdout().print("\n", .{});
+        std.log.info("\n", .{});
     }
 
     // Simulate container ID
-    try context.stdout().print("Container ID: abc123def456\n", .{});
+    std.log.info("Container ID: abc123def456\n", .{});
 
     if (options.rm) {
-        try context.stdout().print("Container will be automatically removed when it exits\n", .{});
+        std.log.info("Container will be automatically removed when it exits\n", .{});
     }
 }

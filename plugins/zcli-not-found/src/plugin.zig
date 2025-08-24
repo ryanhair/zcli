@@ -13,10 +13,7 @@ pub fn onError(
 ) !bool {
     if (err == error.CommandNotFound) {
         // Get available commands directly from context
-        const attempted_command = if (context.command_path) |cmd_parts|
-            if (cmd_parts.len > 0) cmd_parts[0] else "unknown"
-        else
-            "unknown";
+        const attempted_command = if (context.command_path.len > 0) context.command_path[0] else "unknown";
         try generateCommandNotFoundHelp(context, attempted_command, context.available_commands);
 
         // We've shown helpful suggestions, but let the error continue to propagate

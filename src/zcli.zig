@@ -41,7 +41,7 @@ pub const Context = struct {
     app_version: []const u8 = "unknown",
     app_description: []const u8 = "",
     available_commands: []const []const []const u8 = &.{},
-    command_path: ?[]const []const u8 = null,
+    command_path: []const []const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) @This() {
         return .{
@@ -53,9 +53,7 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        if (self.command_path) |cmd_path| {
-            self.allocator.free(cmd_path);
-        }
+        // command_path is now a const slice, no need to free
         self.plugin_extensions.deinit();
         self.environment.deinit();
     }
