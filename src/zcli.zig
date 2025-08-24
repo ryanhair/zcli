@@ -53,7 +53,10 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        // command_path is now a const slice, no need to free
+        // Free command_path if it was allocated (non-empty means it was allocated)
+        if (self.command_path.len > 0) {
+            self.allocator.free(self.command_path);
+        }
         self.plugin_extensions.deinit();
         self.environment.deinit();
     }

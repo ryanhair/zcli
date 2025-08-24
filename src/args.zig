@@ -35,14 +35,16 @@ pub fn ParseResult(comptime T: type) type {
 /// Parse positional arguments based on the provided Args struct type
 ///
 /// The args parameter should come from command-line arguments (e.g., from std.process.argsAlloc).
-/// For varargs fields ([][]const u8), the returned slice references the original args without copying.
+/// For varargs fields ([]const []const u8 or [][]const u8), the returned slice references the original args without copying.
+/// Prefer using []const []const u8 to avoid @constCast.
 /// This means the lifetime of varargs fields is tied to the lifetime of the input args parameter.
 ///
 /// Example:
 /// ```zig
 /// const Args = struct {
 ///     command: []const u8,
-///     files: [][]const u8,  // varargs - captures all remaining arguments
+///     files: []const []const u8,  // varargs - captures all remaining arguments (recommended)
+///     // or: files: [][]const u8,  // also supported but requires @constCast internally
 /// };
 ///
 /// const args = try std.process.argsAlloc(allocator);
@@ -111,11 +113,23 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ParseRes
         const field_type = field.type;
 
         if (comptime isVarArgs(field_type)) {
-            // This is a varargs field ([][]const u8) - capture remaining positional arguments
-            // We need to create a slice that references the original args but skips options
-            // For now, use a simpler approach that works with current memory model
+            // This is a varargs field - capture remaining positional arguments
+            // The field can be either [][]const u8 or []const []const u8
             const remaining_args = args[arg_index..];
-            @field(result, field.name) = @constCast(remaining_args);
+            
+            // Check if we need @constCast based on the field type
+            const field_type_info = @typeInfo(field_type);
+            if (field_type_info.pointer.is_const) {
+                // Field type is []const []const u8 - no cast needed
+                @field(result, field.name) = remaining_args;
+            } else {
+                // Field type is [][]const u8 - need to remove outer const
+                // SAFETY: This cast is safe because:
+                // 1. We only remove the outer const qualifier from the slice
+                // 2. The inner strings remain const and are never modified
+                // 3. The slice itself is only used for iteration, not mutation
+                @field(result, field.name) = @constCast(remaining_args);
+            }
             break;
         } else if (@typeInfo(field_type) == .optional) {
             // Optional field - find next positional argument
@@ -224,7 +238,7 @@ fn parseValue(comptime T: type, value: []const u8) SimpleParseError!T {
     }
 }
 
-/// Check if a type represents varargs ([][]const u8)
+/// Check if a type represents varargs ([][]const u8 or []const []const u8)
 pub fn isVarArgs(comptime T: type) bool {
     const type_info = @typeInfo(T);
     if (type_info == .pointer) {
@@ -301,6 +315,7 @@ test "isVarArgs function" {
 
     // Test that varargs type IS varargs
     try std.testing.expect(isVarArgs([][]const u8));
+    try std.testing.expect(isVarArgs([]const []const u8));
 }
 
 test "parseArgs basic types" {
@@ -685,6 +700,21 @@ test "parseArgs varargs empty" {
     try std.testing.expect(!result.isError());
     const parsed = result.unwrap();
     try std.testing.expectEqual(@as(usize, 0), parsed.files.len);
+}
+
+test "parseArgs varargs with const-safe type" {
+    const TestArgs = struct {
+        files: []const []const u8,  // Using const-safe type
+    };
+
+    const args = [_][]const u8{ "file1.txt", "file2.txt", "file3.txt" };
+    const result = parseArgs(TestArgs, &args);
+    try std.testing.expect(!result.isError());
+    const parsed = result.unwrap();
+    try std.testing.expectEqual(@as(usize, 3), parsed.files.len);
+    try std.testing.expectEqualStrings("file1.txt", parsed.files[0]);
+    try std.testing.expectEqualStrings("file2.txt", parsed.files[1]);
+    try std.testing.expectEqualStrings("file3.txt", parsed.files[2]);
 }
 
 test "parseArgs varargs with preceding required args" {
