@@ -26,6 +26,59 @@ const std = @import("std");
 /// ```
 ///
 /// See ERROR_HANDLING.md for comprehensive documentation.
+/// Context information for resource limit violations
+pub const ResourceLimitErrorContext = struct {
+    limit_type: []const u8, // "option_array_size", "option_count", etc.
+    limit_value: usize,
+    actual_value: usize,
+    suggestion: ?[]const u8 = null,
+
+    pub fn optionArrayTooLarge(limit: usize, actual: usize) @This() {
+        return .{
+            .limit_type = "option_array_size",
+            .limit_value = limit,
+            .actual_value = actual,
+            .suggestion = "Consider using configuration files for large option sets",
+        };
+    }
+
+    pub fn tooManyOptions(limit: usize, actual: usize) @This() {
+        return .{
+            .limit_type = "option_count",
+            .limit_value = limit,
+            .actual_value = actual,
+            .suggestion = "Reduce the number of options or increase the limit",
+        };
+    }
+
+    pub fn optionNameTooLong(limit: usize, actual: usize) @This() {
+        return .{
+            .limit_type = "option_name_length",
+            .limit_value = limit,
+            .actual_value = actual,
+            .suggestion = "Use shorter option names",
+        };
+    }
+
+    pub fn tooManyArguments(limit: usize, actual: usize) @This() {
+        return .{
+            .limit_type = "argument_count",
+            .limit_value = limit,
+            .actual_value = actual,
+            .suggestion = "Reduce the number of arguments or use option arrays",
+        };
+    }
+
+    pub fn commandNestingTooDeep(limit: usize, actual: usize) @This() {
+        return .{
+            .limit_type = "command_depth",
+            .limit_value = limit,
+            .actual_value = actual,
+            .suggestion = "Reduce command nesting depth",
+        };
+    }
+};
+
 /// Context information for argument parsing errors
 pub const ArgumentErrorContext = struct {
     field_name: []const u8,
@@ -194,6 +247,9 @@ pub const StructuredError = union(enum) {
     help_requested: void,
     version_requested: void,
 
+    // Resource limit violations
+    resource_limit_exceeded: ResourceLimitErrorContext,
+
     // Low-level system errors (wrapped)
     system_out_of_memory: void,
     system_file_not_found: []const u8, // file path
@@ -221,6 +277,8 @@ pub const StructuredError = union(enum) {
 
             .help_requested => error.HelpRequested,
             .version_requested => error.VersionRequested,
+
+            .resource_limit_exceeded => error.ResourceLimitExceeded,
 
             .system_out_of_memory => error.OutOfMemory,
             .system_file_not_found => error.FileNotFound,
@@ -254,6 +312,17 @@ pub const StructuredError = union(enum) {
 
             .help_requested => std.fmt.allocPrint(allocator, "Help requested", .{}),
             .version_requested => std.fmt.allocPrint(allocator, "Version requested", .{}),
+
+            .resource_limit_exceeded => |ctx| blk: {
+                const base_msg = try std.fmt.allocPrint(allocator, "Resource limit exceeded: {s} limit of {d} exceeded (got {d})", .{ ctx.limit_type, ctx.limit_value, ctx.actual_value });
+                if (ctx.suggestion) |suggestion| {
+                    const full_msg = try std.fmt.allocPrint(allocator, "{s}. Suggestion: {s}", .{ base_msg, suggestion });
+                    allocator.free(base_msg);
+                    break :blk full_msg;
+                } else {
+                    break :blk base_msg;
+                }
+            },
 
             .system_out_of_memory => std.fmt.allocPrint(allocator, "Out of memory", .{}),
             .system_file_not_found => |path| std.fmt.allocPrint(allocator, "File not found: {s}", .{path}),

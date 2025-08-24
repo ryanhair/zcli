@@ -5,7 +5,10 @@ const array_utils = @import("array_utils.zig");
 const logging = @import("../logging.zig");
 const args_parser = @import("../args.zig");
 const StructuredError = @import("../structured_errors.zig").StructuredError;
+const ResourceLimitErrorContext = @import("../structured_errors.zig").ResourceLimitErrorContext;
 const ErrorBuilder = @import("../structured_errors.zig").ErrorBuilder;
+const ResourceLimits = @import("../resource_limits.zig").ResourceLimits;
+const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 
 /// Result type for option parsing operations
 pub fn OptionsParseResult(comptime OptionsType: type) type {
@@ -141,6 +144,9 @@ pub fn parseOptionsWithMeta(
     const struct_info = type_info.@"struct";
     var result: OptionsType = undefined;
 
+    // Initialize resource tracker with default limits
+    var resource_tracker = ResourceTracker.init(ResourceLimits.getDefault());
+
     // Track array accumulation for each field
     var array_lists: [struct_info.fields.len]?array_utils.ArrayListUnion = [_]?array_utils.ArrayListUnion{null} ** struct_info.fields.len;
     defer {
@@ -196,14 +202,42 @@ pub fn parseOptionsWithMeta(
                 continue;
             }
 
+            // Check resource limits before processing option
+            resource_tracker.checkOptionCount() catch |err| {
+                const limit_error = switch (err) {
+                    error.TooManyOptions => StructuredError{
+                        .resource_limit_exceeded = ResourceLimitErrorContext.tooManyOptions(
+                            resource_tracker.limits.max_total_options,
+                            resource_tracker.option_count,
+                        ),
+                    },
+                    else => StructuredError{ .system_out_of_memory = {} },
+                };
+                break :blk args_parser.ParseResult(types.OptionsResult(OptionsType)){ .err = limit_error };
+            };
+
             if (std.mem.startsWith(u8, arg, "--")) {
-                // Long option
+                // Long option - check option name length
+                const option_name = if (std.mem.indexOf(u8, arg[2..], "=")) |eq_pos|
+                    arg[2 .. 2 + eq_pos]
+                else
+                    arg[2..];
+                
+                resource_tracker.checkOptionNameLength(option_name) catch |err| {
+                    const limit_error = switch (err) {
+                        error.OptionNameTooLong => StructuredError{
+                            .resource_limit_exceeded = ResourceLimitErrorContext.optionNameTooLong(
+                                resource_tracker.limits.max_option_name_length,
+                                option_name.len,
+                            ),
+                        },
+                        else => StructuredError{ .system_out_of_memory = {} },
+                    };
+                    break :blk args_parser.ParseResult(types.OptionsResult(OptionsType)){ .err = limit_error };
+                };
+
                 const consumed = parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator) catch |err| {
                     // Convert error to structured error with context
-                    const option_name = if (std.mem.indexOf(u8, arg[2..], "=")) |eq_pos|
-                        arg[2 .. 2 + eq_pos]
-                    else
-                        arg[2..];
                     const option_value = if (std.mem.indexOf(u8, arg[2..], "=")) |eq_pos|
                         arg[2 + eq_pos + 1 ..]
                     else if (arg_index + 1 < args.len) args[arg_index + 1] else null;
@@ -1376,6 +1410,35 @@ pub fn parseOptionsAndArgs(
         },
         .err => |structured_err| {
             return OptionsAndArgsParseResult(OptionsType){ .err = structured_err };
+        },
+    }
+}
+
+test "resource limits option count basic functionality" {
+    const TestOptions = struct {
+        verbose: bool = false,
+        name: ?[]const u8 = null,
+        count: u32 = 0,
+        debug: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    
+    // Test that basic functionality still works with resource limits enabled
+    const args = [_][]const u8{ "--verbose", "--name", "test", "--count", "42", "--debug" };
+    const result = parseOptions(TestOptions, allocator, &args);
+    
+    switch (result) {
+        .ok => |parsed| {
+            defer cleanupOptions(TestOptions, parsed.options, allocator);
+            try std.testing.expectEqual(true, parsed.options.verbose);
+            try std.testing.expectEqualStrings("test", parsed.options.name.?);
+            try std.testing.expectEqual(@as(u32, 42), parsed.options.count);
+            try std.testing.expectEqual(true, parsed.options.debug);
+        },
+        .err => |err| {
+            std.debug.print("Unexpected error: {}\n", .{err});
+            try std.testing.expect(false);
         },
     }
 }

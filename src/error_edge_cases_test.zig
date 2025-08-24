@@ -30,7 +30,7 @@ test "parseOptions with extremely long option names" {
     const result = options_parser.parseOptions(Options, allocator, &args);
     try std.testing.expect(result.isError());
     const err = result.getError().?;
-    try std.testing.expect(err == .option_unknown);
+    try std.testing.expect(err == .resource_limit_exceeded);
 }
 
 test "parseOptions with many array elements" {
