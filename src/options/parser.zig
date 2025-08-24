@@ -142,7 +142,7 @@ pub fn parseOptionsWithMeta(
     var result: OptionsType = undefined;
 
     // Track array accumulation for each field
-    var array_lists: [struct_info.fields.len]?array_utils.ArrayListUnion = undefined;
+    var array_lists: [struct_info.fields.len]?array_utils.ArrayListUnion = [_]?array_utils.ArrayListUnion{null} ** struct_info.fields.len;
     defer {
         for (&array_lists) |*list| {
             if (list.*) |*l| {
@@ -153,8 +153,6 @@ pub fn parseOptionsWithMeta(
 
     // Initialize with default values
     inline for (struct_info.fields, 0..) |field, i| {
-        array_lists[i] = null;
-
         if (comptime utils.isArrayType(field.type)) {
             // Initialize array fields with empty arrays of the correct type
             const element_type = @typeInfo(field.type).pointer.child;
@@ -311,7 +309,6 @@ fn parseLongOptions(
     array_lists: anytype,
     allocator: std.mem.Allocator,
 ) !usize {
-    _ = allocator; // Currently unused
     const arg = args[arg_index];
     const option_part = arg[2..]; // Skip "--"
 
@@ -327,8 +324,9 @@ fn parseLongOptions(
     }
 
     // Convert dashes to underscores for field name
-    var option_field_name_buf: [64]u8 = undefined;
-    const option_field_name = utils.dashesToUnderscores(option_field_name_buf[0..], option_name) catch |err| {
+    const option_field_name_buf = try allocator.alloc(u8, option_name.len);
+    defer allocator.free(option_field_name_buf);
+    const option_field_name = utils.dashesToUnderscores(option_field_name_buf, option_name) catch |err| {
         return err;
     };
 

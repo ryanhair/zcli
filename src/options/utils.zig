@@ -124,9 +124,16 @@ test "dashesToUnderscores function" {
     const result3 = try dashesToUnderscores(&buf, "verbose");
     try std.testing.expectEqualStrings("verbose", result3);
 
-    // Too long
+    // Too long for fixed buffer - should fail
     const long_name = "this-is-a-very-long-option-name-that-exceeds-the-maximum-allowed-length";
     try std.testing.expectError(error.UnknownOption, dashesToUnderscores(&buf, long_name));
+    
+    // Test with dynamic allocation - should succeed
+    const allocator = std.testing.allocator;
+    const dynamic_buf = try allocator.alloc(u8, long_name.len);
+    defer allocator.free(dynamic_buf);
+    const result4 = try dashesToUnderscores(dynamic_buf, long_name);
+    try std.testing.expectEqualStrings("this_is_a_very_long_option_name_that_exceeds_the_maximum_allowed_length", result4);
 }
 
 test "parseOptionValue integer types" {
