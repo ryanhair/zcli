@@ -70,7 +70,8 @@ pub fn parseOptionValue(comptime T: type, value: []const u8) !T {
             }
         },
         .int => {
-            return std.fmt.parseInt(T, value, 0) catch {
+            // Use base 10 exclusively to avoid ambiguity with octal (010) or hex (0x10)
+            return std.fmt.parseInt(T, value, 10) catch {
                 return error.InvalidOptionValue;
             };
         },
@@ -146,6 +147,41 @@ test "parseOptionValue integer types" {
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "not_a_number"));
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(u8, "256"));
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(u32, "-1"));
+}
+
+test "parseOptionValue decimal-only parsing" {
+    // Leading zeros should be parsed as decimal, not octal
+    try std.testing.expectEqual(@as(i32, 10), try parseOptionValue(i32, "010"));
+    try std.testing.expectEqual(@as(i32, 8), try parseOptionValue(i32, "08"));
+    try std.testing.expectEqual(@as(i32, 9), try parseOptionValue(i32, "09"));
+    try std.testing.expectEqual(@as(i32, 7), try parseOptionValue(i32, "007"));
+    try std.testing.expectEqual(@as(i32, 0), try parseOptionValue(i32, "0"));
+    try std.testing.expectEqual(@as(i32, 0), try parseOptionValue(i32, "00"));
+    try std.testing.expectEqual(@as(i32, 0), try parseOptionValue(i32, "000"));
+    
+    // Hex notation should fail (no longer auto-detected)
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0x10"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0X10"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0xABC"));
+    
+    // Binary notation should fail
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0b101"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0B101"));
+    
+    // Octal notation (0o prefix) should fail
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0o10"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0O10"));
+    
+    // Boundary values
+    try std.testing.expectEqual(@as(i8, 127), try parseOptionValue(i8, "127"));
+    try std.testing.expectEqual(@as(i8, -128), try parseOptionValue(i8, "-128"));
+    try std.testing.expectEqual(@as(u8, 255), try parseOptionValue(u8, "255"));
+    try std.testing.expectEqual(@as(u8, 0), try parseOptionValue(u8, "0"));
+    
+    // Edge cases with whitespace (parseInt handles this)
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, " 42"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "42 "));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, ""));
 }
 
 test "parseOptionValue float types" {
