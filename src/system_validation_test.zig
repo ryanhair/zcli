@@ -12,10 +12,7 @@ test "system validation: args parsing with correct API" {
     };
 
     const args = [_][]const u8{ "test", "42", "true" };
-    const result = zcli.parseArgs(TestArgs, &args);
-
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try zcli.parseArgs(TestArgs, &args);
 
     try std.testing.expectEqualStrings("test", parsed.name);
     try std.testing.expectEqual(@as(u32, 42), parsed.count);
@@ -31,15 +28,13 @@ test "system validation: args parsing error handling" {
     // Test missing arguments
     {
         const args = [_][]const u8{};
-        const result = zcli.parseArgs(TestArgs, &args);
-        try std.testing.expect(result.isError());
+        try std.testing.expectError(zcli.ZcliError.ArgumentMissingRequired, zcli.parseArgs(TestArgs, &args));
     }
 
     // Test invalid number
     {
         const args = [_][]const u8{ "test", "not_a_number" };
-        const result = zcli.parseArgs(TestArgs, &args);
-        try std.testing.expect(result.isError());
+        try std.testing.expectError(zcli.ZcliError.ArgumentInvalidValue, zcli.parseArgs(TestArgs, &args));
     }
 }
 
@@ -51,12 +46,8 @@ test "system validation: options parsing with correct API" {
     };
 
     const args = [_][]const u8{ "--verbose", "--count", "42", "--name", "test" };
-    const result = zcli.parseOptions(TestOptions, std.testing.allocator, &args);
-
-    try std.testing.expect(!result.isError());
-    defer zcli.cleanupOptions(TestOptions, result.unwrap().options, std.testing.allocator);
-
-    const parsed = result.unwrap();
+    const parsed = try zcli.parseOptions(TestOptions, std.testing.allocator, &args);
+    defer zcli.cleanupOptions(TestOptions, parsed.options, std.testing.allocator);
     try std.testing.expectEqual(true, parsed.options.verbose);
     try std.testing.expectEqual(@as(u32, 42), parsed.options.count);
     try std.testing.expectEqualStrings("test", parsed.options.name.?);
@@ -70,15 +61,13 @@ test "system validation: options parsing error handling" {
     // Test unknown option
     {
         const args = [_][]const u8{"--unknown"};
-        const result = zcli.parseOptions(TestOptions, std.testing.allocator, &args);
-        try std.testing.expect(result.isError());
+        try std.testing.expectError(zcli.ZcliError.OptionUnknown, zcli.parseOptions(TestOptions, std.testing.allocator, &args));
     }
 
     // Test missing value
     {
         const args = [_][]const u8{"--count"};
-        const result = zcli.parseOptions(TestOptions, std.testing.allocator, &args);
-        try std.testing.expect(result.isError());
+        try std.testing.expectError(zcli.ZcliError.OptionMissingValue, zcli.parseOptions(TestOptions, std.testing.allocator, &args));
     }
 }
 
@@ -90,17 +79,14 @@ test "system validation: enum parsing" {
     // Valid enum
     {
         const args = [_][]const u8{"json"};
-        const result = zcli.parseArgs(TestArgs, &args);
-        try std.testing.expect(!result.isError());
-        const parsed = result.unwrap();
+        const parsed = try zcli.parseArgs(TestArgs, &args);
         try std.testing.expectEqual(@as(@TypeOf(parsed.format), .json), parsed.format);
     }
 
     // Invalid enum
     {
         const args = [_][]const u8{"invalid"};
-        const result = zcli.parseArgs(TestArgs, &args);
-        try std.testing.expect(result.isError());
+        try std.testing.expectError(zcli.ZcliError.ArgumentInvalidValue, zcli.parseArgs(TestArgs, &args));
     }
 }
 
@@ -113,9 +99,7 @@ test "system validation: optional args" {
     // With optional provided
     {
         const args = [_][]const u8{ "required", "42" };
-        const result = zcli.parseArgs(TestArgs, &args);
-        try std.testing.expect(!result.isError());
-        const parsed = result.unwrap();
+        const parsed = try zcli.parseArgs(TestArgs, &args);
         try std.testing.expectEqualStrings("required", parsed.required);
         try std.testing.expectEqual(@as(?u32, 42), parsed.optional);
     }
@@ -123,9 +107,7 @@ test "system validation: optional args" {
     // Without optional
     {
         const args = [_][]const u8{"required"};
-        const result = zcli.parseArgs(TestArgs, &args);
-        try std.testing.expect(!result.isError());
-        const parsed = result.unwrap();
+        const parsed = try zcli.parseArgs(TestArgs, &args);
         try std.testing.expectEqualStrings("required", parsed.required);
         try std.testing.expectEqual(@as(?u32, null), parsed.optional);
     }
@@ -138,10 +120,7 @@ test "system validation: varargs" {
     };
 
     const args = [_][]const u8{ "process", "file1.txt", "file2.txt", "file3.txt" };
-    const result = zcli.parseArgs(TestArgs, &args);
-
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try zcli.parseArgs(TestArgs, &args);
     // Note: cleanupArgs may not be needed for simple types
 
     try std.testing.expectEqualStrings("process", parsed.command);
@@ -157,12 +136,8 @@ test "system validation: array options" {
     };
 
     const args = [_][]const u8{ "--tags", "tag1", "--tags", "tag2", "--tags", "tag3" };
-    const result = zcli.parseOptions(TestOptions, std.testing.allocator, &args);
-
-    try std.testing.expect(!result.isError());
-    defer zcli.cleanupOptions(TestOptions, result.unwrap().options, std.testing.allocator);
-
-    const parsed = result.unwrap();
+    const parsed = try zcli.parseOptions(TestOptions, std.testing.allocator, &args);
+    defer zcli.cleanupOptions(TestOptions, parsed.options, std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 3), parsed.options.tags.len);
     try std.testing.expectEqualStrings("tag1", parsed.options.tags[0]);
     try std.testing.expectEqualStrings("tag2", parsed.options.tags[1]);
@@ -184,17 +159,13 @@ test "system validation: complex realistic command" {
 
     // Parse arguments
     const args = [_][]const u8{ "README.md", "src/main.zig" };
-    const args_result = zcli.parseArgs(CommitArgs, &args);
-    try std.testing.expect(!args_result.isError());
-    const parsed_args = args_result.unwrap();
+    const parsed_args = try zcli.parseArgs(CommitArgs, &args);
     // Note: cleanupArgs may not be needed for simple types
 
     // Parse options
     const opts = [_][]const u8{ "--message", "Initial commit", "--author", "John Doe", "--all" };
-    const opts_result = zcli.parseOptions(CommitOptions, std.testing.allocator, &opts);
-    try std.testing.expect(!opts_result.isError());
-    defer zcli.cleanupOptions(CommitOptions, opts_result.unwrap().options, std.testing.allocator);
-    const parsed_opts = opts_result.unwrap();
+    const parsed_opts = try zcli.parseOptions(CommitOptions, std.testing.allocator, &opts);
+    defer zcli.cleanupOptions(CommitOptions, parsed_opts.options, std.testing.allocator);
 
     // Validate results
     try std.testing.expectEqual(@as(usize, 2), parsed_args.files.len);
@@ -334,20 +305,17 @@ test "system validation: memory management" {
     while (i < 5) : (i += 1) {
         // Parse args
         const args = [_][]const u8{ "file1.txt", "file2.txt", "file3.txt" };
-        const args_result = zcli.parseArgs(TestArgs, &args);
-        try std.testing.expect(!args_result.isError());
-        const parsed_args = args_result.unwrap();
+        const parsed_args = try zcli.parseArgs(TestArgs, &args);
         // Note: cleanupArgs may not be needed for simple types
 
         // Parse options
         const opts = [_][]const u8{ "--tags", "tag1", "--tags", "tag2", "--names", "name1", "--names", "name2" };
-        const opts_result = zcli.parseOptions(TestOptions, std.testing.allocator, &opts);
-        try std.testing.expect(!opts_result.isError());
-        defer zcli.cleanupOptions(TestOptions, opts_result.unwrap().options, std.testing.allocator);
+        const parsed_opts = try zcli.parseOptions(TestOptions, std.testing.allocator, &opts);
+        defer zcli.cleanupOptions(TestOptions, parsed_opts.options, std.testing.allocator);
 
         // Validate
         try std.testing.expectEqual(@as(usize, 3), parsed_args.files.len);
-        try std.testing.expectEqual(@as(usize, 2), opts_result.unwrap().options.tags.len);
+        try std.testing.expectEqual(@as(usize, 2), parsed_opts.options.tags.len);
     }
 }
 
@@ -359,19 +327,10 @@ test "system validation: error message quality" {
     };
 
     const args = [_][]const u8{"not_a_number"};
-    const result = zcli.parseArgs(TestArgs, &args);
-
-    try std.testing.expect(result.isError());
-
-    // The error should contain useful information
-    const error_info = switch (result) {
-        .err => |err| err,
-        .ok => unreachable,
-    };
+    try std.testing.expectError(zcli.ZcliError.ArgumentInvalidValue, zcli.parseArgs(TestArgs, &args));
 
     // Basic validation that we have error information
     // Note: The exact structure depends on the specific error type
-    _ = error_info; // Just verify we got an error
 }
 
 test "system validation: type introspection" {

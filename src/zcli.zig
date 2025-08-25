@@ -5,6 +5,11 @@ const error_handler = @import("errors.zig");
 const execution = @import("execution.zig");
 pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
+const diagnostic_errors = @import("diagnostic_errors.zig");
+
+// Re-export error types
+pub const ZcliError = diagnostic_errors.ZcliError;
+pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 
 // Re-export plugin types for user convenience
 pub const Metadata = plugin_types.Metadata;
@@ -184,7 +189,7 @@ pub const parseArgs = args_parser.parseArgs;
 
 /// Parse command-line options into a struct using default field names.
 ///
-/// Returns a `ParseResult` with either successful parsing or structured error details.
+/// Returns `ZcliError!OptionsResult(T)` with either successful parsing or ZcliError on failure.
 ///
 /// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
 /// ```zig
@@ -205,7 +210,7 @@ pub const parseOptions = options_parser.parseOptions;
 
 /// Parse command-line options with custom metadata for option names.
 ///
-/// Returns a `ParseResult` with either successful parsing or structured error details.
+/// Returns `ZcliError!OptionsResult(T)` with either successful parsing or ZcliError on failure.
 ///
 /// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
 /// Always call `cleanupOptions` when done. See `parseOptions` for details.
@@ -215,7 +220,7 @@ pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
 
 /// Parse options from anywhere in arguments, returning options and remaining positional arguments.
 ///
-/// Returns a `ParseResult` with either successful parsing or structured error details.
+/// Returns `ZcliError!ParseOptionsAndArgsResult(T)` with either successful parsing or ZcliError on failure.
 /// This function separates options from positional arguments regardless of their order.
 ///
 /// **Memory Management**: ⚠️ CRITICAL - Both array options AND remaining_args allocate memory!
@@ -247,8 +252,8 @@ pub const cleanupOptions = options_parser.cleanupOptions;
 /// Error types for argument parsing failures.
 ///
 /// **Note**: This is the legacy error type for backwards compatibility.
-/// New code should use `parseArgs()` which returns `ParseResult` with rich structured errors
-/// that provide detailed context including field names, positions, and expected types.
+/// New code should use `parseArgs()` which returns `ZcliError!T` with standard Zig error handling
+/// and optional rich diagnostic information when needed.
 ///
 /// These errors can occur when parsing positional arguments:
 /// - `InvalidArgumentType`: Argument cannot be parsed to expected type
@@ -343,9 +348,7 @@ fn getAvailableSubcommands(comptime group: anytype, allocator: std.mem.Allocator
     return result;
 }
 
-// Import structured error types
-const StructuredError = @import("structured_errors.zig").StructuredError;
-const CommandErrorContext = @import("structured_errors.zig").CommandErrorContext;
+// Error handling using standard Zig error patterns
 
 /// I/O abstraction for command input/output operations.
 ///
@@ -1012,14 +1015,11 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
         fn showSubcommandNotFound(self: *Self, group: []const u8, subcommand: []const u8) !void {
             const stderr = std.io.getStdErr().writer();
 
-            // Create structured error
-            const structured_error = StructuredError{ .subcommand_not_found = CommandErrorContext.unknownSubcommand(subcommand, &[_][]const u8{group}) };
-
-            // Display the structured error and available subcommands
-            try self.showSubcommandNotFoundComptime(self.registry.commands, group, subcommand, stderr, structured_error);
+            // Display the error and available subcommands
+            try self.showSubcommandNotFoundComptime(self.registry.commands, group, subcommand, stderr);
         }
 
-        fn showSubcommandNotFoundComptime(self: *Self, commands: anytype, group_name: []const u8, subcommand: []const u8, stderr: anytype, structured_error: StructuredError) !void {
+        fn showSubcommandNotFoundComptime(self: *Self, commands: anytype, group_name: []const u8, subcommand: []const u8, stderr: anytype) !void {
             const CommandsType = @TypeOf(commands);
 
             // Find the group to get its subcommands
@@ -1042,39 +1042,25 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
                             // Get available subcommands for better error messages
                             const available_subcommands = getAvailableSubcommands(cmd, self.allocator) catch {
                                 // Fallback to simple error display
-                                const description = try structured_error.description(self.allocator);
-                                defer self.allocator.free(description);
-                                try stderr.print("Error: {s}\n\n", .{description});
+                                try stderr.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, group_name });
                                 try stderr.print("Run '{s} {s} --help' to see available subcommands.\n", .{ self.name, group_name });
                                 return;
                             };
                             defer self.allocator.free(available_subcommands);
 
+                            // Display main error message
+                            try stderr.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, group_name });
+
                             // Try to get suggestions
                             const suggestions = error_handler.findSimilarCommands(subcommand, available_subcommands, self.allocator) catch null;
                             if (suggestions) |sug| {
                                 defer self.allocator.free(sug);
-                                // Create error with suggestions
-                                var error_with_suggestions = structured_error;
-                                error_with_suggestions.subcommand_not_found.suggested_commands = sug;
-
-                                const description = try error_with_suggestions.description(self.allocator);
-                                defer self.allocator.free(description);
-                                try stderr.print("Error: {s}\n\n", .{description});
-
                                 // Show suggestions
-                                if (error_with_suggestions.suggestions()) |cmd_suggestions| {
-                                    try stderr.print("Did you mean:\n", .{});
-                                    for (cmd_suggestions[0..@min(3, cmd_suggestions.len)]) |suggestion| {
-                                        try stderr.print("    {s}\n", .{suggestion});
-                                    }
-                                    try stderr.print("\n", .{});
+                                try stderr.print("Did you mean:\n", .{});
+                                for (sug[0..@min(3, sug.len)]) |suggestion| {
+                                    try stderr.print("    {s}\n", .{suggestion});
                                 }
-                            } else {
-                                // Display without suggestions
-                                const description = try structured_error.description(self.allocator);
-                                defer self.allocator.free(description);
-                                try stderr.print("Error: {s}\n\n", .{description});
+                                try stderr.print("\n", .{});
                             }
 
                             // Show available subcommands
@@ -1091,9 +1077,7 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
             }
 
             // Fallback if group not found or not a group
-            const description = try structured_error.description(self.allocator);
-            defer self.allocator.free(description);
-            try stderr.print("Error: {s}\n\n", .{description});
+            try stderr.print("Error: Unknown subcommand '{s}' for '{s}'\n\n", .{ subcommand, group_name });
             try stderr.print("Run '{s} {s} --help' to see available subcommands.\n", .{ self.name, group_name });
         }
     };

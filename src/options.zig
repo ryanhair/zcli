@@ -8,8 +8,7 @@ const parser = @import("options/parser.zig");
 // PUBLIC API - These functions and types are intended for end users
 // ============================================================================
 
-// Core types
-pub const ParseResult = types.ParseResult;
+// Core types  
 pub const OptionsResult = types.OptionsResult;
 
 // Main parsing functions

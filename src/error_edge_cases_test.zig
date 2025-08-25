@@ -27,10 +27,7 @@ test "parseOptions with extremely long option names" {
 
     const args = [_][]const u8{ long_name, "value" };
 
-    const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result.isError());
-    const err = result.getError().?;
-    try std.testing.expect(err == .resource_limit_exceeded);
+    try std.testing.expectError(zcli.ZcliError.ResourceLimitExceeded, options_parser.parseOptions(Options, allocator, &args));
 }
 
 test "parseOptions with many array elements" {
@@ -63,9 +60,7 @@ test "parseOptions with many array elements" {
         try many_args.append(filename);
     }
 
-    const result = options_parser.parseOptions(Options, allocator, many_args.items);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try options_parser.parseOptions(Options, allocator, many_args.items);
     defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
     try std.testing.expectEqual(file_count, parsed.options.files.len);
@@ -79,9 +74,7 @@ test "parseArgs with multiple primitive types" {
     };
 
     const args = [_][]const u8{ "42", "test", "true" };
-    const result = args_parser.parseArgs(Args, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try args_parser.parseArgs(Args, &args);
 
     try std.testing.expectEqual(@as(u32, 42), parsed.count);
     try std.testing.expectEqualStrings("test", parsed.name);
@@ -108,9 +101,7 @@ test "parseArgs with Unicode characters" {
 
     for (unicode_tests) |unicode_str| {
         const args = [_][]const u8{unicode_str};
-        const result = args_parser.parseArgs(Args, &args);
-        try std.testing.expect(!result.isError());
-        const parsed = result.unwrap();
+        const parsed = try args_parser.parseArgs(Args, &args);
         try std.testing.expectEqualStrings(unicode_str, parsed.message);
     }
 }
@@ -129,9 +120,7 @@ test "parseOptions with Unicode option values" {
         "--files", "測試.txt", // Chinese filename
     };
 
-    const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try options_parser.parseOptions(Options, allocator, &args);
     defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
     try std.testing.expectEqualStrings("🎉 Success!", parsed.options.message);
@@ -160,9 +149,7 @@ test "parseArgs with maximum integer values" {
         "4294967295", // u32 max
     };
 
-    const result = args_parser.parseArgs(Args, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try args_parser.parseArgs(Args, &args);
 
     try std.testing.expectEqual(@as(i64, 9223372036854775807), parsed.max_i64);
     try std.testing.expectEqual(@as(u64, 18446744073709551615), parsed.max_u64);
@@ -185,9 +172,7 @@ test "parseArgs with minimum integer values" {
         "-128", // i8 min
     };
 
-    const result = args_parser.parseArgs(Args, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try args_parser.parseArgs(Args, &args);
 
     try std.testing.expectEqual(@as(i64, -9223372036854775808), parsed.min_i64);
     try std.testing.expectEqual(@as(i32, -2147483648), parsed.min_i32);
@@ -211,10 +196,7 @@ test "parseArgs integer overflow edge cases" {
 
     for (overflow_cases) |case| {
         const args = [_][]const u8{case};
-        const result = args_parser.parseArgs(Args, &args);
-        try std.testing.expect(result.isError());
-        const err = result.getError().?;
-        try std.testing.expect(err == .argument_invalid_value);
+        try std.testing.expectError(zcli.ZcliError.ArgumentInvalidValue, args_parser.parseArgs(Args, &args));
     }
 }
 
@@ -236,10 +218,12 @@ test "parseArgs with malformed float values" {
 
     for (invalid_floats) |invalid| {
         const args = [_][]const u8{invalid};
-        const result = args_parser.parseArgs(Args, &args);
-        try std.testing.expect(result.isError());
-        const err = result.getError().?;
-        try std.testing.expect(err == .argument_invalid_value or err == .argument_missing_required);
+        // We expect ArgumentInvalidValue for malformed float values
+        _ = args_parser.parseArgs(Args, &args) catch |err| {
+            try std.testing.expect(err == zcli.ZcliError.ArgumentInvalidValue or err == zcli.ZcliError.ArgumentMissingRequired);
+            continue;
+        };
+        return error.TestFailed; // Should not reach here
     }
 }
 
@@ -322,9 +306,7 @@ test "parseOptions with duplicate option handling" {
         "--files", "b.txt", // Array options should accumulate
     };
 
-    const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try options_parser.parseOptions(Options, allocator, &args);
     defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
     try std.testing.expectEqual(@as(u32, 10), parsed.options.count); // Last value wins
@@ -350,9 +332,7 @@ test "parseOptions with mixed short and long options" {
 
     const args = [_][]const u8{ "-v", "--count", "42", "-o", "file.txt" };
 
-    const result = options_parser.parseOptionsWithMeta(Options, meta, allocator, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try options_parser.parseOptionsWithMeta(Options, meta, allocator, &args);
     defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
     try std.testing.expectEqual(true, parsed.options.verbose);
@@ -374,9 +354,7 @@ test "parseOptions with option-like values" {
         "--message", "normal-value", // Normal value
     };
 
-    const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try options_parser.parseOptions(Options, allocator, &args);
     defer options_parser.cleanupOptions(Options, parsed.options, allocator);
 
     try std.testing.expectEqualStrings("normal-value", parsed.options.message);
@@ -444,9 +422,7 @@ test "options cleanup with nested arrays" {
         "--tags",    "bug-fix",
     };
 
-    const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(!result.isError());
-    const parsed = result.unwrap();
+    const parsed = try options_parser.parseOptions(Options, allocator, &args);
 
     // Verify arrays were allocated properly
     try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
@@ -471,10 +447,7 @@ test "parseOptions memory cleanup on error" {
         "--count", "not_a_number", // This will cause an error
     };
 
-    const result = options_parser.parseOptions(Options, allocator, &args);
-    try std.testing.expect(result.isError());
-    const err = result.getError().?;
-    try std.testing.expect(err == .option_invalid_value);
+    try std.testing.expectError(zcli.ZcliError.OptionInvalidValue, options_parser.parseOptions(Options, allocator, &args));
 
     // Memory should be cleaned up automatically on error
     // No explicit cleanup needed since parsing failed

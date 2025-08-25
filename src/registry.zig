@@ -640,39 +640,50 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             // For now, just pass raw_args directly and let args.zig handle it
             // This avoids the use-after-free issue with temporary arrays
             // TODO: args.zig needs to be modified to skip options during parsing
-            const result = args.parseArgs(ArgsType, raw_args);
-            if (result.isError()) {
-                const err = result.getError().?;
+            const result = args.parseArgs(ArgsType, raw_args) catch |err| {
+                const stderr = std.io.getStdErr().writer();
                 switch (err) {
-                    .argument_missing_required => |ctx| {
-                        try std.io.getStdErr().writer().print("Error: Missing required argument '{s}'\n", .{ctx.field_name});
+                    zcli.ZcliError.ArgumentMissingRequired => {
+                        try stderr.print("Error: Missing required argument\n", .{});
                         return error.MissingArgument;
                     },
-                    .argument_invalid_value => |ctx| {
-                        try std.io.getStdErr().writer().print("Error: Invalid value '{?s}' for argument '{s}'\n", .{ ctx.provided_value, ctx.field_name });
+                    zcli.ZcliError.ArgumentInvalidValue => {
+                        try stderr.print("Error: Invalid argument value\n", .{});
                         return error.InvalidArgument;
                     },
-                    .argument_too_many => |ctx| {
-                        try std.io.getStdErr().writer().print("Error: Too many arguments (expected {d}, got {?})\n", .{ ctx.position, ctx.actual_count });
+                    zcli.ZcliError.ArgumentTooMany => {
+                        try stderr.print("Error: Too many arguments\n", .{});
                         return error.TooManyArguments;
                     },
                     else => return error.ParseError,
                 }
-            }
-            return result.unwrap();
+            };
+            return result;
         }
 
         /// Parse options for a command (using the real options parser)
         fn parseOptions(self: *Self, comptime OptionsType: type, raw_args: []const []const u8, allocator: std.mem.Allocator) !OptionsType {
             _ = self;
-            const parse_result = options_parser.parseOptions(OptionsType, allocator, raw_args);
+            const parse_result = options_parser.parseOptions(OptionsType, allocator, raw_args) catch |err| {
+                const stderr = std.io.getStdErr().writer();
+                switch (err) {
+                    zcli.ZcliError.OptionUnknown => {
+                        try stderr.print("Error: Unknown option\n", .{});
+                        return OptionsType{};
+                    },
+                    zcli.ZcliError.OptionMissingValue => {
+                        try stderr.print("Error: Option missing value\n", .{});
+                        return OptionsType{};
+                    },
+                    zcli.ZcliError.OptionInvalidValue => {
+                        try stderr.print("Error: Invalid option value\n", .{});
+                        return OptionsType{};
+                    },
+                    else => return OptionsType{},
+                }
+            };
 
-            if (parse_result.isError()) {
-                return OptionsType{};
-            }
-
-            const parsed = parse_result.unwrap();
-            return parsed.options;
+            return parse_result.options;
         }
 
         // Testing/introspection methods for the test suite
