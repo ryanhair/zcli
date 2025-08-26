@@ -23,7 +23,6 @@ pub const PostCommandEvent = plugin_types.PostCommandEvent;
 // Re-export new plugin system types
 pub const GlobalOption = plugin_types.GlobalOption;
 pub const TransformResult = plugin_types.TransformResult;
-pub const CommandRegistration = plugin_types.CommandRegistration;
 pub const ParsedArgs = plugin_types.ParsedArgs;
 pub const GlobalOptionsResult = plugin_types.GlobalOptionsResult;
 pub const PluginEntry = plugin_types.PluginEntry;
@@ -249,25 +248,6 @@ pub const parseOptionsAndArgs = options_parser.parseOptionsAndArgs;
 /// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
 pub const cleanupOptions = options_parser.cleanupOptions;
 
-/// Error types for argument parsing failures.
-///
-/// **Note**: This is the legacy error type for backwards compatibility.
-/// New code should use `parseArgs()` which returns `ZcliError!T` with standard Zig error handling
-/// and optional rich diagnostic information when needed.
-///
-/// These errors can occur when parsing positional arguments:
-/// - `InvalidArgumentType`: Argument cannot be parsed to expected type
-/// - `OutOfMemory`: Memory allocation failed
-pub const ParseError = args_parser.ParseError;
-
-// Main help generation (removed - now handled by plugins)
-
-// ============================================================================
-// ADVANCED API - Lower-level functions for advanced use cases
-// ============================================================================
-
-// Advanced help generation (removed - now handled by plugins)
-
 // Advanced error handling (for custom error handling)
 pub const CLIErrors = struct {
     pub const handleCommandNotFound = error_handler.handleCommandNotFound;
@@ -294,7 +274,7 @@ pub const BaseErrorHandler = execution.BaseErrorHandler;
 
 /// Base help generator that plugins can transform.
 /// Plugins wrap this to customize help output, add examples, etc.
-pub const BaseHelpGenerator = execution.BaseHelpGenerator;
+/// (Note: BaseHelpGenerator moved to plugin system)
 
 // ============================================================================
 // INTERNAL API - Used by the App struct, not intended for direct user access
@@ -1191,4 +1171,9 @@ test "Context creation" {
     _ = context.stdout();
     _ = context.stderr();
     _ = context.stdin();
+}
+
+// Include tests from all imported modules
+test {
+    std.testing.refAllDecls(@This());
 }

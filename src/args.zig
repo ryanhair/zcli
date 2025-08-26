@@ -5,6 +5,18 @@ const diagnostic_errors = @import("diagnostic_errors.zig");
 pub const ZcliError = diagnostic_errors.ZcliError;
 pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 
+/// Check if a struct field has a default value
+fn hasDefaultValue(comptime T: type, comptime field_name: []const u8) bool {
+    const type_info = @typeInfo(T);
+    if (type_info != .@"struct") return false;
+    
+    inline for (type_info.@"struct".fields) |field| {
+        if (std.mem.eql(u8, field.name, field_name)) {
+            return field.default_value_ptr != null;
+        }
+    }
+    return false;
+}
 
 /// Parse positional arguments based on the provided Args struct type
 ///
@@ -80,6 +92,17 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ZcliErro
     var result: ArgsType = undefined;
     var arg_index: usize = 0;
 
+    // First, initialize all fields with defaults where available
+    inline for (struct_info.fields) |field| {
+        if (comptime hasDefaultValue(ArgsType, field.name)) {
+            // Set the default value from the type definition
+            if (field.default_value_ptr) |default_ptr| {
+                const default_value: *const field.type = @ptrCast(@alignCast(default_ptr));
+                @field(result, field.name) = default_value.*;
+            }
+        }
+    }
+
     // Process each field in the struct
     inline for (struct_info.fields, 0..) |field, field_index| {
         const field_type = field.type;
@@ -113,6 +136,14 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ZcliErro
                 // Use null for optional
                 @field(result, field.name) = null;
             }
+        } else if (comptime hasDefaultValue(ArgsType, field.name)) {
+            // Field with default value - optional in parsing
+            const next_positional = findNextPositional(args, arg_index);
+            if (next_positional) |pos| {
+                @field(result, field.name) = try parseValue(field_type, args[pos]);
+                arg_index = pos + 1;
+            }
+            // If no argument provided, default value is already set by struct initialization
         } else {
             // Required field - find next positional argument
             const next_positional = findNextPositional(args, arg_index);
@@ -698,5 +729,35 @@ test "parseArgs varargs lifetime and safety" {
 
     // This demonstrates that we're not copying the strings, just referencing them
     // The @constCast is safe because we maintain the immutability of the strings
+}
+
+test "parseArgs default values - no value provided" {
+    const TestArgs = struct {
+        name: []const u8,
+        count: u32 = 42,
+        file: ?[]const u8 = null,
+    };
+    
+    const args = [_][]const u8{"testname"};
+    const result = try parseArgs(TestArgs, &args);
+    
+    try std.testing.expectEqualStrings("testname", result.name);
+    try std.testing.expectEqual(@as(u32, 42), result.count); // Should use default
+    try std.testing.expect(result.file == null);
+}
+
+test "parseArgs default values - value provided" {
+    const TestArgs = struct {
+        name: []const u8,
+        count: u32 = 42,
+        file: ?[]const u8 = null,
+    };
+    
+    const args = [_][]const u8{"testname", "123"};
+    const result = try parseArgs(TestArgs, &args);
+    
+    try std.testing.expectEqualStrings("testname", result.name);
+    try std.testing.expectEqual(@as(u32, 123), result.count); // Should use provided value
+    try std.testing.expect(result.file == null);
 }
 

@@ -63,3 +63,7 @@ The framework follows these key principles:
    - Compile errors for deviations from conventions
 
 See DESIGN.md for the complete design specification.
+
+# Zig standards
+
+Don't add a line like `_ = some_param` for unused parameters, just set the unused parameter to `_` directly in the function declaration.

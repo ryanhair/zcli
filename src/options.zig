@@ -37,3 +37,11 @@ const createArrayListUnion = array_utils.createArrayListUnion;
 const appendToArrayListUnion = array_utils.appendToArrayListUnion;
 const appendToArrayListUnionShort = array_utils.appendToArrayListUnionShort;
 const arrayListUnionToOwnedSlice = array_utils.arrayListUnionToOwnedSlice;
+
+// Import tests from sub-modules to include them in the test suite
+test {
+    // Import all tests from sub-modules
+    _ = parser;
+    _ = array_utils;
+    _ = utils;
+}

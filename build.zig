@@ -16,23 +16,23 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     const test_core_step = b.step("test-core", "Run core tests only");
     const test_plugins_step = b.step("test-plugins", "Run plugin tests only");
+    const test_security_step = b.step("test-security", "Run security tests only");
     const test_sequential_step = b.step("test-seq", "Run tests sequentially (avoids conflicts)");
     const test_debug_step = b.step("test-debug", "Debug test hanging issue");
 
-    // Core test files (these should be safe)
+    // Core test files - zcli.zig imports everything else through the dependency chain
     const core_test_files = [_][]const u8{
-        "src/zcli.zig",
-        "src/args.zig",
-        "src/options.zig",
-        "src/errors.zig",
-        "src/build_utils.zig",
-        "src/execution.zig",
+        "src/zcli.zig",        // Main entry point - imports args, options, errors, execution, etc.
+        "src/build_utils.zig", // Standalone utility (has its own tests)
     };
 
     // Plugin test files
     const plugin_test_files = [_][]const u8{
         "src/plugin_global_options_test.zig",
         "src/plugin_system_test.zig",
+        "src/plugin_integration_test.zig",
+        "src/plugin_test.zig",
+        "src/plugin_transformation_test.zig",
     };
 
     // Integration and edge case tests
@@ -41,8 +41,14 @@ pub fn build(b: *std.Build) void {
         "src/build_integration_test.zig",
         "src/error_edge_cases_test.zig",
         "src/pipeline_integration_test.zig",
-        // "src/array_options_test.zig",  // Keep commented if it doesn't exist
-        // "src/benchmark.zig",  // Keep commented as it's not a test file
+        "src/array_options_test.zig",
+    };
+
+    // Security and fuzzing test files (separate category due to different requirements)
+    const security_test_files = [_][]const u8{
+        "src/security_test.zig",
+        "src/plugin_security_test.zig",
+        "src/fuzz_test.zig",
     };
 
     // Add core tests
@@ -79,9 +85,21 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    // Add security tests (parallel execution)
+    for (security_test_files) |test_file| {
+        const tests = b.addTest(.{
+            .root_source_file = b.path(test_file),
+            .target = target,
+            .optimize = optimize,
+        });
+        const run_tests = b.addRunArtifact(tests);
+        test_security_step.dependOn(&run_tests.step);
+        test_step.dependOn(&run_tests.step);
+    }
+
     // Sequential test execution (separate from parallel execution above)
     // This creates a completely separate dependency chain for sequential execution
-    const all_test_files = core_test_files ++ plugin_test_files ++ integration_test_files;
+    const all_test_files = core_test_files ++ plugin_test_files ++ integration_test_files ++ security_test_files;
     var previous_step: ?*std.Build.Step = null;
 
     for (all_test_files) |test_file| {
