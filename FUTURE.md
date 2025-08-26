@@ -152,3 +152,109 @@ pub const MyError = union(enum) {
 ### Updates
 
 - Support auto updates with hooks into common hosting systems.
+
+## Multiple Error Collection and Recovery
+
+### Motivation
+
+Currently, zcli stops at the first parsing error encountered, requiring users to fix errors one-by-one and re-run commands repeatedly. This creates a poor developer experience, especially when learning a new CLI tool or when multiple arguments have issues.
+
+### Desired Functionality
+
+**Error Collection Mode**: Parse all arguments and options, collecting multiple errors before reporting them together.
+
+**Best Effort Mode**: Parse what's possible, use sensible defaults for problematic fields, and report issues for reference while still executing the command.
+
+**Smart Error Recovery**: Provide context-aware suggestions and corrections ("Did you mean --verbose instead of --verbos?").
+
+### Example User Experience
+
+```bash
+# Current behavior (stops at first error)
+$ myapp --unknown-opt --count=abc --name="" command arg1
+Error: Unknown option: --unknown-opt
+
+# After fixing first error
+$ myapp --count=abc --name="" command arg1  
+Error: Invalid value 'abc' for option --count. Expected integer.
+
+# After fixing second error
+$ myapp --count=5 --name="" command arg1
+Error: Empty value for required option --name
+
+# Desired behavior (collect all errors)
+$ myapp --unknown-opt --count=abc --name="" command arg1
+Multiple errors found:
+1. Unknown option: --unknown-opt. Did you mean --known-opt?
+2. Invalid value 'abc' for option --count. Expected integer.
+3. Empty value for required option --name
+```
+
+### Benefits
+
+1. **Improved Developer Experience**: Fix multiple issues in one iteration instead of discovering them one-by-one
+2. **Better Learning Curve**: New users see all the issues with their command at once
+3. **Faster Development Cycles**: Especially valuable for complex commands with many options
+4. **Smart Suggestions**: Help users discover correct options and values
+5. **Graceful Degradation**: Best effort mode allows partial execution when some arguments are problematic
+
+### Design Principles for Future Implementation
+
+**Standard Zig Patterns**: Use normal error unions, avoid complex result types or thread-local storage
+
+**Simple API**: Extend existing functions with optional modes rather than introducing entirely new APIs
+
+**Zero Runtime Overhead**: Error collection should be opt-in with minimal performance impact when disabled
+
+**Backward Compatibility**: Existing code should continue working unchanged
+
+### Potential Implementation Approach
+
+```zig
+// Simple extension to existing API
+pub const ParseOptions = struct {
+    collect_errors: bool = false,
+    best_effort: bool = false,
+    max_errors: usize = 10,
+};
+
+// Enhanced parsing that returns collected errors via out parameter
+pub fn parseArgsExtended(
+    comptime T: type,
+    args: []const []const u8,
+    options: ParseOptions,
+    errors: ?*std.ArrayList(ZcliDiagnostic), // Optional error collection
+) ZcliError!T {
+    // Implementation would collect errors in the ArrayList if provided
+    // Still return first error via normal error union for compatibility
+}
+
+// Usage for error collection
+var collected_errors = std.ArrayList(ZcliDiagnostic).init(allocator);
+defer collected_errors.deinit();
+
+const result = parseArgsExtended(MyArgs, args, .{ .collect_errors = true }, &collected_errors);
+if (result) |parsed| {
+    // Success case
+} else |err| {
+    // Handle primary error, check collected_errors for additional context
+    for (collected_errors.items) |diagnostic| {
+        // Display each error with full context
+    }
+}
+```
+
+### Key Challenges to Solve Later
+
+1. **Memory Management**: How to handle allocated diagnostic strings cleanly
+2. **Error Prioritization**: Which error to return as the "primary" error when collecting multiple
+3. **Recovery Strategies**: How to provide sensible defaults for different field types
+4. **Error Deduplication**: Avoiding duplicate or redundant error messages
+5. **Integration**: Making it work seamlessly with both args and options parsing
+
+### Advanced Features (Even Further Future)
+
+- **Error Grouping**: Group related errors together (e.g., all issues with the same option)
+- **Interactive Correction**: Prompt users to fix errors interactively
+- **Learning Mode**: Remember common mistakes and provide proactive suggestions
+- **Structured Output**: Machine-readable error output for tooling integration
