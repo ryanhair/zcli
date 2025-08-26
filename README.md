@@ -58,10 +58,14 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("zcli", zcli_module);
 
-    // Generate command registry automatically from your commands directory
+    // Generate command registry with built-in plugins
     const zcli_build = @import("zcli");
-    const cmd_registry = zcli_build.generateCommandRegistry(b, target, optimize, zcli_module, .{
+    const cmd_registry = zcli_build.buildWithExternalPlugins(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
+        .plugins = &[_]zcli_build.PluginConfig{
+            .{ .name = "zcli-help", .path = "path/to/zcli/plugins/zcli-help" },
+            .{ .name = "zcli-not-found", .path = "path/to/zcli/plugins/zcli-not-found" },
+        },
         .app_name = "myapp",
         .app_version = "1.0.0",
         .app_description = "My awesome CLI app",
@@ -76,7 +80,6 @@ pub fn build(b: *std.Build) void {
 
 ```zig
 const std = @import("std");
-const zcli = @import("zcli");
 const registry = @import("command_registry");
 
 pub fn main() !void {
@@ -84,20 +87,15 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var app = zcli.App(@TypeOf(registry.registry)).init(
-        allocator,
-        registry.registry,
-        .{
-            .name = registry.app_name,
-            .version = registry.app_version,
-            .description = registry.app_description,
+    var app = registry.registry.init();
+
+    app.run(allocator) catch |err| switch (err) {
+        error.CommandNotFound => {
+            // Error was already handled by plugins or registry
+            std.process.exit(1);
         },
-    );
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    try app.run(args[1..]);
+        else => return err,
+    };
 }
 ```
 
@@ -248,13 +246,13 @@ pub const Options = struct {
 When using zcli through the framework, array cleanup is automatic. For manual usage:
 
 ```zig
-// Manual parsing requires cleanup
-const parsed = try zcli.parseOptions(Options, allocator, args);
-defer zcli.cleanupOptions(Options, parsed.options, allocator);
+// Unified parsing - handles mixed args and options
+const result = try zcli.parseCommandLine(Args, Options, null, allocator, args);
+defer result.deinit(); // Automatic cleanup
 
-// Or cleanup individual fields
-const parsed = try zcli.parseOptions(Options, allocator, args);
-defer allocator.free(parsed.options.files);
+// Access parsed arguments and options
+const my_args = result.args;
+const my_options = result.options;
 ```
 
 ### Complex Arguments
@@ -270,9 +268,9 @@ pub const Args = struct {
 ## Documentation
 
 - [DESIGN.md](DESIGN.md) - Complete framework design specification
-- [API.md](API.md) - Public API reference with stability guarantees  
-- [MEMORY.md](MEMORY.md) - **Comprehensive memory management guide**
-- [BUILD.md](BUILD.md) - **Build-time code generation and command discovery**
+- [ERROR_HANDLING.md](ERROR_HANDLING.md) - Comprehensive error handling guide
+- [MEMORY.md](MEMORY.md) - Comprehensive memory management guide
+- [BUILD.md](BUILD.md) - Build-time code generation and command discovery
 - [Examples](examples/) - Working example projects
 
 ## License

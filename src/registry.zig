@@ -1,6 +1,5 @@
 const std = @import("std");
-const args_parser = @import("args.zig");
-const options_parser = @import("options.zig");
+const command_parser = @import("command_parser.zig");
 const plugin_types = @import("plugin_types.zig");
 const zcli = @import("zcli.zig");
 
@@ -374,7 +373,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             };
         }
 
-        fn executeCommand(self: *Self, context: *zcli.Context, args: []const []const u8) !void {
+        fn executeCommand(_: *Self, context: *zcli.Context, args: []const []const u8) !void {
             // Handle the case where no command is specified - still run hooks with empty command
             if (args.len == 0) {
                 // Run hooks for empty command case
@@ -474,19 +473,24 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                         // Execute the command
                         var success = true;
                         if (@hasDecl(cmd.module, "execute")) {
-                            // Use the original remaining_args for parsing both args and options
-                            // This ensures options are available to parseOptions
-                            const final_args = parsed_args.positional;
-
-                            const args_instance = if (@hasDecl(cmd.module, "Args"))
-                                try self.parseArgs(cmd.module.Args, final_args)
-                            else
-                                struct {}{};
-
-                            const options_instance = if (@hasDecl(cmd.module, "Options"))
-                                try self.parseOptions(cmd.module.Options, final_args, context.allocator)
-                            else
-                                struct {}{};
+                            // Use unified parser for mixed arguments and options
+                            const full_args = parsed_args.positional;
+                            
+                            const ArgsType = if (@hasDecl(cmd.module, "Args")) cmd.module.Args else struct {};
+                            const OptionsType = if (@hasDecl(cmd.module, "Options")) cmd.module.Options else struct {};
+                            const cmd_meta = if (@hasDecl(cmd.module, "meta")) cmd.module.meta else null;
+                            
+                            const parse_result = try command_parser.parseCommandLine(
+                                ArgsType,
+                                OptionsType, 
+                                cmd_meta,
+                                context.allocator,
+                                full_args
+                            );
+                            defer parse_result.deinit();
+                            
+                            const args_instance = parse_result.args;
+                            const options_instance = parse_result.options;
 
                             cmd.module.execute(args_instance, options_instance, context) catch |err| {
                                 success = false;
@@ -561,16 +565,22 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
 
                                 const CommandModule = @field(Plugin.commands, decl.name);
 
-                                // Parse args and options like regular commands
-                                const cmd_args = if (@hasDecl(CommandModule, "Args"))
-                                    try self.parseArgs(CommandModule.Args, parsed_args.positional)
-                                else
-                                    struct {}{};
-
-                                const cmd_options = if (@hasDecl(CommandModule, "Options"))
-                                    try self.parseOptions(CommandModule.Options, parsed_args.positional, context.allocator)
-                                else
-                                    struct {}{};
+                                // Parse args and options using unified parser
+                                const ArgsType = if (@hasDecl(CommandModule, "Args")) CommandModule.Args else struct {};
+                                const OptionsType = if (@hasDecl(CommandModule, "Options")) CommandModule.Options else struct {};
+                                const cmd_meta = if (@hasDecl(CommandModule, "meta")) CommandModule.meta else null;
+                                
+                                const parse_result = try command_parser.parseCommandLine(
+                                    ArgsType,
+                                    OptionsType, 
+                                    cmd_meta,
+                                    context.allocator,
+                                    parsed_args.positional,
+                                );
+                                defer parse_result.deinit();
+                                
+                                const cmd_args = parse_result.args;
+                                const cmd_options = parse_result.options;
 
                                 if (@hasDecl(CommandModule, "execute")) {
                                     CommandModule.execute(cmd_args, cmd_options, context) catch |err| {
@@ -632,59 +642,6 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             }
         }
 
-        /// Parse arguments for a command (fixed use-after-free bug)
-        fn parseArgs(self: *Self, comptime ArgsType: type, raw_args: []const []const u8) !ArgsType {
-            _ = self;
-            const args = @import("args.zig");
-            
-            // For now, just pass raw_args directly and let args.zig handle it
-            // This avoids the use-after-free issue with temporary arrays
-            // TODO: args.zig needs to be modified to skip options during parsing
-            const result = args.parseArgs(ArgsType, raw_args) catch |err| {
-                const stderr = std.io.getStdErr().writer();
-                switch (err) {
-                    zcli.ZcliError.ArgumentMissingRequired => {
-                        try stderr.print("Error: Missing required argument\n", .{});
-                        return error.MissingArgument;
-                    },
-                    zcli.ZcliError.ArgumentInvalidValue => {
-                        try stderr.print("Error: Invalid argument value\n", .{});
-                        return error.InvalidArgument;
-                    },
-                    zcli.ZcliError.ArgumentTooMany => {
-                        try stderr.print("Error: Too many arguments\n", .{});
-                        return error.TooManyArguments;
-                    },
-                    else => return error.ParseError,
-                }
-            };
-            return result;
-        }
-
-        /// Parse options for a command (using the real options parser)
-        fn parseOptions(self: *Self, comptime OptionsType: type, raw_args: []const []const u8, allocator: std.mem.Allocator) !OptionsType {
-            _ = self;
-            const parse_result = options_parser.parseOptions(OptionsType, allocator, raw_args) catch |err| {
-                const stderr = std.io.getStdErr().writer();
-                switch (err) {
-                    zcli.ZcliError.OptionUnknown => {
-                        try stderr.print("Error: Unknown option\n", .{});
-                        return OptionsType{};
-                    },
-                    zcli.ZcliError.OptionMissingValue => {
-                        try stderr.print("Error: Option missing value\n", .{});
-                        return OptionsType{};
-                    },
-                    zcli.ZcliError.OptionInvalidValue => {
-                        try stderr.print("Error: Invalid option value\n", .{});
-                        return OptionsType{};
-                    },
-                    else => return OptionsType{},
-                }
-            };
-
-            return parse_result.options;
-        }
 
         // Testing/introspection methods for the test suite
         pub fn getGlobalOptions(self: *Self) []const plugin_types.GlobalOption {

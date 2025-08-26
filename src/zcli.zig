@@ -1,6 +1,7 @@
 const std = @import("std");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
+const command_parser = @import("command_parser.zig");
 const error_handler = @import("errors.zig");
 const execution = @import("execution.zig");
 pub const plugin_types = @import("plugin_types.zig");
@@ -178,74 +179,42 @@ pub const Config = registry.Config;
 // PUBLIC API - Core functionality for end users
 // ============================================================================
 
-/// Parse positional arguments from command-line arguments into a struct.
+
+/// Parse command line with mixed arguments and options in a single pass.
 ///
-/// **Memory Management**: No cleanup required - references input args directly.
-/// Keep `args` parameter alive while using the returned struct.
+/// This unified parser handles both positional arguments and options together,
+/// supporting mixed syntax like `cmd arg1 --option value arg2 --flag`.
 ///
-/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
+/// **Memory Management**: ⚠️ CRITICAL - Call `result.deinit()` to cleanup!
+/// ```zig
+/// const result = try parseCommandLine(Args, Options, null, allocator, args);
+/// defer result.deinit(); // REQUIRED!
+/// // Use result.args and result.options...
+/// ```
+///
+/// 📖 See command_parser.zig for detailed documentation and examples.
+pub const parseCommandLine = command_parser.parseCommandLine;
+pub const CommandParseResult = command_parser.CommandParseResult;
+
+// ============================================================================
+// LEGACY API - For testing and internal use only
+// ============================================================================
+// NOTE: These are kept for specialized testing and internal implementation.
+// All user code should use `parseCommandLine` above for best results.
+
+/// @deprecated Use `parseCommandLine` for production code
 pub const parseArgs = args_parser.parseArgs;
 
-/// Parse command-line options into a struct using default field names.
-///
-/// Returns `ZcliError!OptionsResult(T)` with either successful parsing or ZcliError on failure.
-///
-/// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
-/// ```zig
-/// const result = parseOptions(Options, allocator, args);
-/// switch (result) {
-///     .ok => |parsed| {
-///         defer cleanupOptions(Options, parsed.options, allocator);  // REQUIRED!
-///         // Use parsed.options...
-///     },
-///     .err => |structured_err| {
-///         // Handle structured_err with rich context
-///     },
-/// }
-/// ```
-///
-/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
+/// @deprecated Use `parseCommandLine` for production code  
 pub const parseOptions = options_parser.parseOptions;
 
-/// Parse command-line options with custom metadata for option names.
-///
-/// Returns `ZcliError!OptionsResult(T)` with either successful parsing or ZcliError on failure.
-///
-/// **Memory Management**: ⚠️ CRITICAL - Array options allocate memory!
-/// Always call `cleanupOptions` when done. See `parseOptions` for details.
-///
-/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
+/// @deprecated Use `parseCommandLine` for production code
 pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
 
-/// Parse options from anywhere in arguments, returning options and remaining positional arguments.
-///
-/// Returns `ZcliError!ParseOptionsAndArgsResult(T)` with either successful parsing or ZcliError on failure.
-/// This function separates options from positional arguments regardless of their order.
-///
-/// **Memory Management**: ⚠️ CRITICAL - Both array options AND remaining_args allocate memory!
-/// ```zig
-/// const result = parseOptionsAndArgs(Options, meta, allocator, args);
-/// switch (result) {
-///     .ok => |parsed| {
-///         defer cleanupOptions(Options, parsed.options, allocator);  // REQUIRED!
-///         defer parsed.deinit();  // REQUIRED for remaining_args!
-///         // Use parsed.options and parsed.remaining_args...
-///     },
-///     .err => |structured_err| {
-///         // Handle structured_err with rich context
-///     },
-/// }
-/// ```
-///
-/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
+/// @deprecated Use `parseCommandLine` for production code
 pub const parseOptionsAndArgs = options_parser.parseOptionsAndArgs;
 
-/// Clean up memory allocated for array options by parseOptions/parseOptionsWithMeta.
-///
-/// **When to use**: Required for all direct API usage with array options.
-/// **Framework mode**: Cleanup is automatic - don't call this manually.
-///
-/// 📖 See [MEMORY.md](../../../MEMORY.md) for detailed memory management guide.
+/// @deprecated Use `parseCommandLine` for production code
 pub const cleanupOptions = options_parser.cleanupOptions;
 
 // Advanced error handling (for custom error handling)

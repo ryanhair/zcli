@@ -1,7 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli.zig");
-const args = @import("args.zig");
-const options = @import("options.zig");
+const command_parser = @import("command_parser.zig");
 const build_utils = @import("build_utils.zig");
 
 /// Performance benchmark results
@@ -74,10 +73,15 @@ fn benchParseSimpleArgs() !void {
         count: u32,
         verbose: bool,
     };
+    const TestOptions = struct {};
 
     const test_args = [_][]const u8{ "myapp", "42", "true" };
-    const result = args.parseArgs(TestArgs, &test_args);
-    if (result.isError()) return error.ParseError;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
+    defer result.deinit();
 }
 
 /// Benchmark parsing complex arguments with optionals and varargs
@@ -89,14 +93,20 @@ fn benchParseComplexArgs() !void {
         verbose: bool,
         files: [][]const u8,
     };
+    const TestOptions = struct {};
 
     const test_args = [_][]const u8{ "serve", "8080", "localhost", "false", "file1.txt", "file2.txt", "file3.txt" };
-    const result = args.parseArgs(TestArgs, &test_args);
-    if (result.isError()) return error.ParseError;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
+    defer result.deinit();
 }
 
 /// Benchmark parsing options
 fn benchParseOptions() !void {
+    const TestArgs = struct {};
     const TestOptions = struct {
         output: ?[]const u8 = null,
         verbose: bool = false,
@@ -106,11 +116,11 @@ fn benchParseOptions() !void {
 
     const allocator = std.heap.page_allocator;
     const test_args = [_][]const u8{ "--output", "result.txt", "--verbose", "--jobs", "4", "--include", "src", "--include", "lib" };
-    const result = try options.parseOptions(TestOptions, allocator, &test_args);
-    defer options.cleanupOptions(TestOptions, result.options, allocator);
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
+    defer result.deinit();
 }
 
-/// Benchmark mixed args and options parsing
+/// Benchmark mixed args and options parsing (unified parser)
 fn benchParseMixed() !void {
     const TestArgs = struct {
         command: []const u8,
@@ -125,14 +135,9 @@ fn benchParseMixed() !void {
     const allocator = std.heap.page_allocator;
     const test_input = [_][]const u8{ "--verbose", "--jobs", "8", "build", "release" };
 
-    // Parse options first to extract them from the arguments
-    const opts_result = try options.parseOptions(TestOptions, allocator, &test_input);
-    defer options.cleanupOptions(TestOptions, opts_result.options, allocator);
-
-    // Parse remaining args (should be ["build", "release"] after options are removed)
-    const remaining = test_input[opts_result.result.next_arg_index..];
-    const args_result = args.parseArgs(TestArgs, remaining);
-    if (args_result.isError()) return error.ParseError;
+    // Single unified parsing call - much simpler and handles mixed syntax correctly
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_input);
+    defer result.deinit();
 }
 
 /// Benchmark command discovery for build system
@@ -158,7 +163,7 @@ fn benchCommandDiscovery() !void {
     const commands_subpath = try std.fs.path.join(allocator, &.{ commands_path, "commands" });
     defer allocator.free(commands_subpath);
 
-    const discovered = try build_utils.discoverCommands(allocator, commands_subpath);
+    var discovered = try build_utils.discoverCommands(allocator, commands_subpath);
     defer discovered.deinit();
 }
 
@@ -168,10 +173,15 @@ fn benchParseEnum() !void {
     const TestArgs = struct {
         level: LogLevel,
     };
+    const TestOptions = struct {};
 
     const test_args = [_][]const u8{"warn"};
-    const result = args.parseArgs(TestArgs, &test_args);
-    if (result.isError()) return error.ParseError;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
+    defer result.deinit();
 }
 
 /// Benchmark error path performance
@@ -180,11 +190,21 @@ fn benchErrorPath() !void {
         name: []const u8,
         count: u32,
     };
+    const TestOptions = struct {};
 
     // Intentionally invalid input
     const test_args = [_][]const u8{ "myapp", "not_a_number" };
-    const result = args.parseArgs(TestArgs, &test_args);
-    if (!result.isError()) return error.ExpectedError;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    
+    const result = command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
+    if (result) |parsed| {
+        parsed.deinit();
+        return error.ExpectedError;
+    } else |_| {
+        // Expected error path
+    }
 }
 
 /// Run all benchmarks

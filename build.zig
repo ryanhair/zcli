@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
         "src/error_edge_cases_test.zig",
         "src/pipeline_integration_test.zig",
         "src/array_options_test.zig",
+        "src/command_parser_e2e_test.zig",
     };
 
     // Security and fuzzing test files (separate category due to different requirements)
