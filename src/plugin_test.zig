@@ -274,8 +274,9 @@ test "Commands struct with plugin commands" {
     // Add a native command
     const hello_cmd = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "hello"),
-        .path = try allocator.dupe(u8, "src/commands/hello.zig"),
-        .is_group = false,
+        .path = &.{try allocator.dupe(u8, "hello")},
+        .file_path = try allocator.dupe(u8, "src/commands/hello.zig"),
+        .command_type = .leaf,
         .subcommands = null,
     };
     try commands.root.put(try allocator.dupe(u8, "hello"), hello_cmd);

@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Add file contents to the index",
-    .usage = "add [--all] [--patch] <files>...",
     .examples = &.{
         "add file.txt",
         "add *.js",

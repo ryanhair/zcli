@@ -8,6 +8,20 @@ pub const PluginResult = plugin_types.PluginResult;
 pub const OptionEvent = plugin_types.OptionEvent;
 pub const ErrorEvent = plugin_types.ErrorEvent;
 
+/// Split a path string into components at compile time
+fn splitPath(comptime path: []const u8) []const []const u8 {
+    comptime {
+        var components: []const []const u8 = &.{};
+        var it = std.mem.splitSequence(u8, path, " ");
+        while (it.next()) |component| {
+            if (component.len > 0) {
+                components = components ++ [_][]const u8{component};
+            }
+        }
+        return components;
+    }
+}
+
 /// Configuration for the application
 pub const Config = struct {
     app_name: []const u8,
@@ -17,7 +31,7 @@ pub const Config = struct {
 
 /// Command entry for the registry
 pub const CommandEntry = struct {
-    path: []const u8,
+    path: []const []const u8,
     module: type,
 };
 
@@ -40,14 +54,30 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
             return @This(){};
         }
 
-        pub fn register(comptime self: @This(), comptime path: []const u8, comptime Module: type) RegistryBuilder(config, commands ++ [_]CommandEntry{.{ .path = path, .module = Module }}, new_plugins) {
+        pub fn register(comptime self: @This(), comptime path: []const u8, comptime Module: type) RegistryBuilder(
+            config,
+            commands ++ [_]CommandEntry{.{ .path = splitPath(path), .module = Module }},
+            new_plugins,
+        ) {
             _ = self;
-            return RegistryBuilder(config, commands ++ [_]CommandEntry{.{ .path = path, .module = Module }}, new_plugins).init();
+            return RegistryBuilder(
+                config,
+                commands ++ [_]CommandEntry{.{ .path = splitPath(path), .module = Module }},
+                new_plugins,
+            ).init();
         }
 
-        pub fn registerPlugin(comptime self: @This(), comptime Plugin: type) RegistryBuilder(config, commands, new_plugins ++ [_]type{Plugin}) {
+        pub fn registerPlugin(comptime self: @This(), comptime Plugin: type) RegistryBuilder(
+            config,
+            commands,
+            new_plugins ++ [_]type{Plugin},
+        ) {
             _ = self;
-            return RegistryBuilder(config, commands, new_plugins ++ [_]type{Plugin}).init();
+            return RegistryBuilder(
+                config,
+                commands,
+                new_plugins ++ [_]type{Plugin},
+            ).init();
         }
 
         pub fn build(comptime self: @This()) type {
@@ -58,21 +88,74 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
 }
 
 /// Compiled registry with all command and plugin information
-fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandEntry, comptime new_plugins: []const type) type {
+fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const CommandEntry, comptime new_plugins: []const type) type {
     // Validate plugin conflicts at compile time
     comptime {
         // Use arrays to check for conflicts since ComptimeStringMap may not be available
         var global_option_names: []const []const u8 = &.{};
-        var command_paths: []const []const u8 = &.{};
+        var command_paths: []const []const []const u8 = &.{};
 
         // Check for command path conflicts among regular commands
-        for (commands) |cmd| {
+        for (cmd_entries) |cmd| {
             for (command_paths) |existing_path| {
-                if (std.mem.eql(u8, existing_path, cmd.path)) {
-                    @compileError("Duplicate command path: " ++ cmd.path);
+                // Compare path arrays element by element
+                var paths_equal = existing_path.len == cmd.path.len;
+                if (paths_equal) {
+                    for (existing_path, 0..) |existing_component, i| {
+                        if (!std.mem.eql(u8, existing_component, cmd.path[i])) {
+                            paths_equal = false;
+                            break;
+                        }
+                    }
+                }
+                if (paths_equal) {
+                    // Convert path to string for error message
+                    const path_str = std.mem.join(&[_]u8{}, " ", cmd.path);
+                    @compileError("Duplicate command path: " ++ path_str);
                 }
             }
             command_paths = command_paths ++ .{cmd.path};
+        }
+
+        // Validate optional command groups (commands that have subcommands)
+        for (cmd_entries) |cmd| {
+            // Check if this command has subcommands
+            var has_subcommands = false;
+            for (cmd_entries) |other_cmd| {
+                // Skip self
+                if (other_cmd.path.len <= cmd.path.len) continue;
+
+                // Check if other_cmd is a subcommand of cmd
+                var is_subcommand = true;
+                for (cmd.path, 0..) |component, i| {
+                    if (!std.mem.eql(u8, component, other_cmd.path[i])) {
+                        is_subcommand = false;
+                        break;
+                    }
+                }
+
+                if (is_subcommand) {
+                    has_subcommands = true;
+                    break;
+                }
+            }
+
+            // If this command has subcommands, validate it's an optional command group
+            if (has_subcommands) {
+                if (@hasDecl(cmd.module, "Args")) {
+                    const args_fields = std.meta.fields(cmd.module.Args);
+                    if (args_fields.len > 0) {
+                        // Build path string for error message
+                        var path_str: []const u8 = "";
+                        for (cmd.path, 0..) |component, idx| {
+                            if (idx > 0) path_str = path_str ++ " ";
+                            path_str = path_str ++ component;
+                        }
+                        @compileError("Optional command group '" ++ path_str ++ "' cannot have Args fields. " ++
+                            "Command groups with subcommands must have an empty Args struct.");
+                    }
+                }
+            }
         }
 
         // Check for conflicts between plugin commands and regular commands
@@ -93,7 +176,18 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                 for (plugin_cmd_names) |plugin_cmd_path| {
                     // Check against regular commands
                     for (command_paths) |existing_path| {
-                        if (std.mem.eql(u8, existing_path, plugin_cmd_path)) {
+                        // Convert plugin path to array for comparison
+                        const plugin_path_array = &[_][]const u8{plugin_cmd_path};
+                        var paths_equal = existing_path.len == plugin_path_array.len;
+                        if (paths_equal) {
+                            for (existing_path, 0..) |existing_component, i| {
+                                if (!std.mem.eql(u8, existing_component, plugin_path_array[i])) {
+                                    paths_equal = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (paths_equal) {
                             @compileError("Plugin command conflicts with existing command: " ++ plugin_cmd_path);
                         }
                     }
@@ -125,6 +219,9 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
 
     return struct {
         const Self = @This();
+
+        // Expose commands array for testing and introspection
+        pub const commands = cmd_entries;
 
         // Collect all global options at compile time
         const global_options = blk: {
@@ -204,21 +301,42 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
-                // Add regular commands (convert space-separated paths to arrays)
-                for (commands) |cmd| {
-                    // Split command path by spaces to create hierarchical array
-                    var parts: []const []const u8 = &.{};
-                    var iter = std.mem.splitScalar(u8, cmd.path, ' ');
-                    while (iter.next()) |part| {
-                        parts = parts ++ .{part};
-                    }
-                    cmd_list = cmd_list ++ .{parts};
+                // Add regular commands (paths are already arrays)
+                for (cmd_entries) |cmd| {
+                    cmd_list = cmd_list ++ .{cmd.path};
                 }
                 // Add plugin commands (they are single names)
                 for (plugin_command_info) |plugin_cmd| {
                     cmd_list = cmd_list ++ .{&.{plugin_cmd.name}};
                 }
                 break :blk cmd_list;
+            };
+
+            // Build command info for plugins at compile time
+            const plugin_command_info_list = comptime blk: {
+                var cmd_info_list: []const zcli.CommandInfo = &.{};
+                // Add regular commands with their metadata
+                for (cmd_entries) |cmd| {
+                    var description: ?[]const u8 = null;
+                    var examples: ?[]const []const u8 = null;
+
+                    if (@hasDecl(cmd.module, "meta")) {
+                        const meta = cmd.module.meta;
+                        if (@hasField(@TypeOf(meta), "description")) {
+                            description = meta.description;
+                        }
+                        if (@hasField(@TypeOf(meta), "examples")) {
+                            examples = meta.examples;
+                        }
+                    }
+
+                    cmd_info_list = cmd_info_list ++ .{zcli.CommandInfo{
+                        .path = cmd.path,
+                        .description = description,
+                        .examples = examples,
+                    }};
+                }
+                break :blk cmd_info_list;
             };
 
             var context = zcli.Context{
@@ -231,6 +349,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                 .app_description = config.app_description,
                 .available_commands = available_commands,
                 .command_path = &.{},
+                .plugin_command_info = plugin_command_info_list,
             };
             defer context.deinit();
 
@@ -270,7 +389,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
         pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
             const args = try std.process.argsAlloc(allocator);
             defer std.process.argsFree(allocator, args);
-            
+
             try self.run_with_args(allocator, args[1..]);
         }
 
@@ -403,49 +522,113 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                 return;
             }
 
-            // Try to find matching command
-            var found = false;
-            var matched_command: []const u8 = "";
-            var remaining_args: []const []const u8 = args;
+            // Sort commands by path length (longest first) at compile time to ensure longest match wins
+            const sorted_commands = comptime blk: {
+                var cmds = cmd_entries[0..cmd_entries.len].*;
 
-            // Check regular commands first - try to match hierarchical commands
-            inline for (commands) |cmd| {
-                // Count parts and check if we have enough args
-                var parts_count: usize = 0;
-                var temp_iterator = std.mem.splitScalar(u8, cmd.path, ' ');
-                while (temp_iterator.next()) |_| {
-                    parts_count += 1;
+                // Bubble sort by path length (descending)
+                var changed = true;
+                while (changed) {
+                    changed = false;
+                    var i: usize = 0;
+                    while (i < cmds.len - 1) : (i += 1) {
+                        if (cmds[i].path.len < cmds[i + 1].path.len) {
+                            const temp = cmds[i];
+                            cmds[i] = cmds[i + 1];
+                            cmds[i + 1] = temp;
+                            changed = true;
+                        }
+                    }
                 }
+                break :blk cmds;
+            };
+
+            // Try to find matching command (longest first due to sorting)
+            var found = false;
+            command_loop: inline for (sorted_commands) |cmd| {
+
+                // Get parts count directly from the path array
+                const parts_count: usize = cmd.path.len;
 
                 if (parts_count <= args.len) {
                     // Check if all parts match
                     var parts_match = true;
-                    var part_index: usize = 0;
-                    var parts_iter = std.mem.splitScalar(u8, cmd.path, ' ');
-
-                    while (parts_iter.next()) |part| {
-                        if (part_index >= args.len or !std.mem.eql(u8, part, args[part_index])) {
+                    for (cmd.path, 0..) |part, i| {
+                        if (i >= args.len or !std.mem.eql(u8, part, args[i])) {
                             parts_match = false;
                             break;
                         }
-                        part_index += 1;
                     }
 
                     if (parts_match) {
+                        const matched_command = cmd.path;
+                        const remaining_args = args[parts_count..];
+
                         found = true;
-                        matched_command = cmd.path;
-                        remaining_args = args[parts_count..];
 
-                        // Set command_path to the command parts array
-                        var command_parts = std.ArrayList([]const u8).init(context.allocator);
-                        defer command_parts.deinit();
+                        // Set command_path to the command parts array (already an array)
+                        var command_parts = try context.allocator.alloc([]const u8, matched_command.len);
+                        for (matched_command, 0..) |part, i| {
+                            command_parts[i] = try context.allocator.dupe(u8, part);
+                        }
+                        context.command_path = command_parts;
+                        context.command_path_allocated = true;
 
-                        var cmd_parts_iter = std.mem.splitScalar(u8, matched_command, ' ');
-                        while (cmd_parts_iter.next()) |part| {
-                            try command_parts.append(part);
+                        // Store basic command metadata
+                        if (@hasDecl(cmd.module, "meta")) {
+                            const meta = cmd.module.meta;
+                            context.command_meta = zcli.CommandMeta{
+                                .description = if (@hasField(@TypeOf(meta), "description")) meta.description else null,
+                                .examples = if (@hasField(@TypeOf(meta), "examples")) meta.examples else null,
+                            };
                         }
 
-                        context.command_path = try command_parts.toOwnedSlice();
+                        // Extract field info at compile time and allocate for runtime use
+                        var args_field_list: []const zcli.FieldInfo = &.{};
+                        var options_field_list: []const zcli.FieldInfo = &.{};
+
+                        if (@hasDecl(cmd.module, "Args")) {
+                            const ArgsType = cmd.module.Args;
+                            const args_type_info = @typeInfo(ArgsType);
+                            if (args_type_info == .@"struct") {
+                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                inline for (args_type_info.@"struct".fields) |field| {
+                                    const field_type_info = @typeInfo(field.type);
+                                    try field_list.append(zcli.FieldInfo{
+                                        .name = field.name,
+                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
+                                        .is_array = field_type_info == .pointer and field_type_info.pointer.child != u8,
+                                    });
+                                }
+                                args_field_list = try field_list.toOwnedSlice();
+                            }
+                        }
+
+                        if (@hasDecl(cmd.module, "Options")) {
+                            const OptionsType = cmd.module.Options;
+                            const options_type_info = @typeInfo(OptionsType);
+                            if (options_type_info == .@"struct") {
+                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                inline for (options_type_info.@"struct".fields) |field| {
+                                    const field_type_info = @typeInfo(field.type);
+                                    try field_list.append(zcli.FieldInfo{
+                                        .name = field.name,
+                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
+                                        .is_array = field_type_info == .pointer and field_type_info.pointer.child != u8,
+                                    });
+                                }
+                                options_field_list = try field_list.toOwnedSlice();
+                            }
+                        }
+
+                        // Store raw command module info for plugins to introspect
+                        context.command_module_info = zcli.CommandModuleInfo{
+                            .has_args = @hasDecl(cmd.module, "Args"),
+                            .has_options = @hasDecl(cmd.module, "Options"),
+                            .raw_meta_ptr = if (@hasDecl(cmd.module, "meta")) &cmd.module.meta else null,
+                            .args_fields = args_field_list,
+                            .options_fields = options_field_list,
+                        };
 
                         // Run postParse hooks
                         var parsed_args = zcli.ParsedArgs.init(context.allocator);
@@ -475,20 +658,27 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                         if (@hasDecl(cmd.module, "execute")) {
                             // Use unified parser for mixed arguments and options
                             const full_args = parsed_args.positional;
-                            
+
                             const ArgsType = if (@hasDecl(cmd.module, "Args")) cmd.module.Args else struct {};
                             const OptionsType = if (@hasDecl(cmd.module, "Options")) cmd.module.Options else struct {};
                             const cmd_meta = if (@hasDecl(cmd.module, "meta")) cmd.module.meta else null;
-                            
-                            const parse_result = try command_parser.parseCommandLine(
-                                ArgsType,
-                                OptionsType, 
-                                cmd_meta,
-                                context.allocator,
-                                full_args
-                            );
+
+                            // Before parsing, check if this command expects no arguments
+                            // but we have arguments that look like subcommands (not options).
+                            // This usually means the user was trying to specify a subcommand that doesn't exist.
+                            const args_fields = std.meta.fields(ArgsType);
+                            if (args_fields.len == 0 and remaining_args.len > 0) {
+                                // Check if the first remaining arg looks like a subcommand (doesn't start with -)
+                                if (!std.mem.startsWith(u8, remaining_args[0], "-")) {
+                                    // Command expects no arguments, but we have what looks like a subcommand
+                                    // This looks like a command not found rather than too many arguments
+                                    return error.CommandNotFound;
+                                }
+                            }
+
+                            const parse_result = try command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, full_args);
                             defer parse_result.deinit();
-                            
+
                             const args_instance = parse_result.args;
                             const options_instance = parse_result.options;
 
@@ -506,7 +696,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                                 return err;
                             };
                         } else {
-                            try context.stderr().print("Command '{s}' does not implement execute function\n", .{cmd.path});
+                            try context.stderr().print("Command '{s}' does not implement execute function\n", .{matched_command});
                             success = false;
                         }
 
@@ -517,7 +707,7 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                             }
                         }
 
-                        break; // Exit the loop since we found and executed the command
+                        break :command_loop; // Exit the loop since we found and executed the command
                     }
                 }
             }
@@ -534,8 +724,9 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                                 const plugin_remaining_args = args[1..];
                                 // Set command_path as array with single command
                                 var plugin_command_array = try context.allocator.alloc([]const u8, 1);
-                                plugin_command_array[0] = plugin_command_name;
+                                plugin_command_array[0] = try context.allocator.dupe(u8, plugin_command_name);
                                 context.command_path = plugin_command_array;
+                                context.command_path_allocated = true;
 
                                 // Run postParse hooks
                                 var parsed_args = zcli.ParsedArgs.init(context.allocator);
@@ -569,16 +760,16 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                                 const ArgsType = if (@hasDecl(CommandModule, "Args")) CommandModule.Args else struct {};
                                 const OptionsType = if (@hasDecl(CommandModule, "Options")) CommandModule.Options else struct {};
                                 const cmd_meta = if (@hasDecl(CommandModule, "meta")) CommandModule.meta else null;
-                                
+
                                 const parse_result = try command_parser.parseCommandLine(
                                     ArgsType,
-                                    OptionsType, 
+                                    OptionsType,
                                     cmd_meta,
                                     context.allocator,
                                     parsed_args.positional,
                                 );
                                 defer parse_result.deinit();
-                                
+
                                 const cmd_args = parse_result.args;
                                 const cmd_options = parse_result.options;
 
@@ -616,8 +807,9 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
             if (!found) {
                 // Set command_path to the attempted command parts for error handling
                 var attempted_command_array = try context.allocator.alloc([]const u8, 1);
-                attempted_command_array[0] = args[0];
+                attempted_command_array[0] = try context.allocator.dupe(u8, args[0]);
                 context.command_path = attempted_command_array;
+                context.command_path_allocated = true;
 
                 // Run onError hooks for CommandNotFound
                 var error_handled = false;
@@ -631,17 +823,17 @@ fn CompiledRegistry(comptime config: Config, comptime commands: []const CommandE
                     }
                 }
 
-                // If no plugin handled the error, print a basic message
+                // If no plugin handled the error, print a basic message and return error
                 if (!error_handled) {
                     const cmd_name = if (context.command_path.len > 0) context.command_path[0] else "unknown";
                     try context.stderr().print("command {s} not found\n", .{cmd_name});
+                    return error.CommandNotFound;
                 }
-
-                // Return the error regardless
-                return error.CommandNotFound;
+                
+                // Plugin handled the error, so we don't return an error
+                return;
             }
         }
-
 
         // Testing/introspection methods for the test suite
         pub fn getGlobalOptions(self: *Self) []const plugin_types.GlobalOption {

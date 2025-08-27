@@ -200,7 +200,6 @@ test "parseArgs integer overflow edge cases" {
     }
 }
 
-
 test "parseArgs with malformed float values" {
     const Args = struct {
         val: f32,

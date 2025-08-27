@@ -34,6 +34,35 @@ pub const option = plugin_types.option;
 // Context for Command Execution
 // ============================================================================
 
+/// Command metadata for help generation and introspection
+pub const CommandMeta = struct {
+    description: ?[]const u8 = null,
+    examples: ?[]const []const u8 = null,
+};
+
+/// Command information available to plugins for introspection
+pub const CommandInfo = struct {
+    path: []const []const u8,
+    description: ?[]const u8 = null,
+    examples: ?[]const []const u8 = null,
+};
+
+/// Field info that can be stored at runtime
+pub const FieldInfo = struct {
+    name: []const u8,
+    is_optional: bool,
+    is_array: bool,
+};
+
+/// Information about command module structure for plugin introspection
+pub const CommandModuleInfo = struct {
+    has_args: bool = false,
+    has_options: bool = false,
+    raw_meta_ptr: ?*const anyopaque = null, // Points to cmd.module.meta
+    args_fields: []const FieldInfo = &.{}, // Runtime-safe field info
+    options_fields: []const FieldInfo = &.{}, // Runtime-safe field info
+};
+
 /// Execution context provided to commands and plugins
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -47,6 +76,12 @@ pub const Context = struct {
     app_description: []const u8 = "",
     available_commands: []const []const []const u8 = &.{},
     command_path: []const []const u8 = &.{},
+    command_path_allocated: bool = false, // Track if command_path was allocated
+    command_meta: ?CommandMeta = null,
+    command_module_info: ?CommandModuleInfo = null,
+
+    // Plugin-specific command information for introspection
+    plugin_command_info: []const CommandInfo = &.{},
 
     pub fn init(allocator: std.mem.Allocator) @This() {
         return .{
@@ -58,10 +93,26 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        // Free command_path if it was allocated (non-empty means it was allocated)
-        if (self.command_path.len > 0) {
+        // Free command_path only if it was allocated
+        if (self.command_path_allocated and self.command_path.len > 0) {
+            // Free individual string components first
+            for (self.command_path) |component| {
+                self.allocator.free(component);
+            }
+            // Then free the array itself
             self.allocator.free(self.command_path);
         }
+
+        // Free allocated field info arrays
+        if (self.command_module_info) |info| {
+            if (info.args_fields.len > 0) {
+                self.allocator.free(info.args_fields);
+            }
+            if (info.options_fields.len > 0) {
+                self.allocator.free(info.options_fields);
+            }
+        }
+
         self.plugin_extensions.deinit();
         self.environment.deinit();
     }
@@ -129,6 +180,31 @@ pub const Context = struct {
             else => @panic("Unsupported type for getData"),
         };
     }
+
+    /// Get command description by path (for plugins)
+    /// Returns null if command not found or has no description
+    pub fn getCommandDescription(self: *@This(), command_path: []const []const u8) ?[]const u8 {
+        for (self.plugin_command_info) |cmd_info| {
+            if (command_path.len == cmd_info.path.len) {
+                var matches = true;
+                for (command_path, cmd_info.path) |provided_part, stored_part| {
+                    if (!std.mem.eql(u8, provided_part, stored_part)) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    return cmd_info.description;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Get all available command information (for plugins)
+    pub fn getAvailableCommandInfo(self: *@This()) []const CommandInfo {
+        return self.plugin_command_info;
+    }
 };
 
 /// I/O abstraction for testing
@@ -179,7 +255,6 @@ pub const Config = registry.Config;
 // PUBLIC API - Core functionality for end users
 // ============================================================================
 
-
 /// Parse command line with mixed arguments and options in a single pass.
 ///
 /// This unified parser handles both positional arguments and options together,
@@ -205,7 +280,7 @@ pub const CommandParseResult = command_parser.CommandParseResult;
 /// @deprecated Use `parseCommandLine` for production code
 pub const parseArgs = args_parser.parseArgs;
 
-/// @deprecated Use `parseCommandLine` for production code  
+/// @deprecated Use `parseCommandLine` for production code
 pub const parseOptions = options_parser.parseOptions;
 
 /// @deprecated Use `parseCommandLine` for production code
@@ -397,7 +472,6 @@ fn getAvailableSubcommands(comptime group: anytype, allocator: std.mem.Allocator
 ///
 /// ## Fields
 /// - `description`: Brief description of what the command does (required)
-/// - `usage`: Optional custom usage string (overrides auto-generated usage)
 /// - `examples`: Optional array of example command invocations
 ///
 /// ## Examples
@@ -421,12 +495,6 @@ fn getAvailableSubcommands(comptime group: anytype, allocator: std.mem.Allocator
 /// ## Auto-Generated vs Custom Usage
 /// If `usage` is null, zcli will auto-generate usage text based on Args and Options structs.
 /// Provide a custom usage string when you need more specific formatting or descriptions.
-pub const CommandMeta = struct {
-    description: []const u8,
-    usage: ?[]const u8 = null,
-    examples: ?[]const []const u8 = null,
-};
-
 /// Create a CLI application struct with automatic command routing and help generation.
 ///
 /// This function returns a struct type that handles all CLI application logic including

@@ -3,23 +3,11 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Manage containers",
-    .usage = "container COMMAND",
     .examples = &.{
         "container ls",
         "container run ubuntu",
         "container stop my-container",
         "container rm old-container",
-    },
-    .subcommands = .{
-        .ls = "List containers",
-        .run = "Run a command in a new container",
-        .stop = "Stop one or more running containers",
-        .start = "Start one or more stopped containers",
-        .restart = "Restart one or more containers",
-        .rm = "Remove one or more containers",
-        .exec = "Run a command in a running container",
-        .logs = "Fetch the logs of a container",
-        .inspect = "Display detailed information on one or more containers",
     },
 };
 

@@ -3,24 +3,11 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Manage images",
-    .usage = "image COMMAND",
     .examples = &.{
         "image ls",
         "image build .",
         "image pull ubuntu:latest",
         "image push my-registry.com/my-app:latest",
-    },
-    .subcommands = .{
-        .build = "Build an image from a Dockerfile",
-        .ls = "List images",
-        .pull = "Pull an image or a repository from a registry",
-        .push = "Push an image or a repository to a registry",
-        .rm = "Remove one or more images",
-        .tag = "Create a tag TARGET_IMAGE that refers to SOURCE_IMAGE",
-        .inspect = "Display detailed information on one or more images",
-        .history = "Show the history of an image",
-        .save = "Save one or more images to a tar archive",
-        .load = "Load an image from a tar archive or STDIN",
     },
 };
 

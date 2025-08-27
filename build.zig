@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
 
     // Core test files - zcli.zig imports everything else through the dependency chain
     const core_test_files = [_][]const u8{
-        "src/zcli.zig",        // Main entry point - imports args, options, errors, execution, etc.
+        "src/zcli.zig", // Main entry point - imports args, options, errors, execution, etc.
         "src/build_utils.zig", // Standalone utility (has its own tests)
     };
 
@@ -43,6 +43,8 @@ pub fn build(b: *std.Build) void {
         "src/pipeline_integration_test.zig",
         "src/array_options_test.zig",
         "src/command_parser_e2e_test.zig",
+        "src/help_system_e2e_test.zig",
+        "src/command_routing_test.zig",
     };
 
     // Security and fuzzing test files (separate category due to different requirements)

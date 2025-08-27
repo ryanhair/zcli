@@ -4,6 +4,7 @@ const types = @import("types.zig");
 const PluginInfo = types.PluginInfo;
 const DiscoveredCommands = types.DiscoveredCommands;
 const CommandInfo = types.CommandInfo;
+const CommandType = types.CommandType;
 const BuildConfig = types.BuildConfig;
 
 // ============================================================================
@@ -36,6 +37,9 @@ pub fn generateComptimeRegistrySource(
     // Generate the simple registry
     try generateSimpleRegistry(writer, commands, config, plugins, allocator);
 
+    // Generate pure command groups metadata
+    try generatePureCommandGroups(writer, commands, allocator);
+
     return source.toOwnedSlice();
 }
 
@@ -46,7 +50,15 @@ fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
         const cmd_name = entry.key_ptr.*;
         const cmd_info = entry.value_ptr.*;
 
-        if (cmd_info.is_group) {
+        if (cmd_info.command_type != .leaf) {
+            // Generate import for optional group with index file
+            if (cmd_info.command_type == .optional_group) {
+                const module_name = try std.fmt.allocPrint(commands.allocator, "{s}_index", .{cmd_name});
+                defer commands.allocator.free(module_name);
+
+                try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
+            }
+            // Generate imports for subcommands
             try generateGroupImports(writer, cmd_name, &cmd_info);
         } else {
             const module_name = if (std.mem.eql(u8, cmd_name, "test"))
@@ -69,7 +81,7 @@ fn generateGroupImports(writer: anytype, group_name: []const u8, group_info: *co
             const subcmd_name = entry.key_ptr.*;
             const subcmd_info = entry.value_ptr.*;
 
-            if (subcmd_info.is_group) {
+            if (subcmd_info.command_type != .leaf) {
                 try generateGroupImports(writer, subcmd_name, &subcmd_info);
             } else {
                 const module_name = try std.fmt.allocPrint(subcommands.allocator, "{s}_{s}", .{ group_name, subcmd_name });
@@ -129,6 +141,40 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
     , .{ config.app_name, config.app_version, config.app_description });
 }
 
+/// Generate metadata for pure command groups
+fn generatePureCommandGroups(writer: anytype, commands: DiscoveredCommands, allocator: std.mem.Allocator) !void {
+    try writer.writeAll("// Pure command groups (directories without index.zig)\n");
+    try writer.writeAll("pub const pure_command_groups = [_][]const []const u8{\n");
+
+    // Recursively find and generate pure command groups
+    try generatePureGroupsFromMap(writer, &commands.root, allocator);
+
+    try writer.writeAll("};\n\n");
+}
+
+/// Recursively generate pure command group entries
+fn generatePureGroupsFromMap(writer: anytype, command_map: *const std.StringHashMap(CommandInfo), allocator: std.mem.Allocator) !void {
+    var it = command_map.iterator();
+    while (it.next()) |entry| {
+        const cmd_info = entry.value_ptr.*;
+
+        if (cmd_info.command_type == .pure_group) {
+            // Generate entry for this pure group
+            try writer.writeAll("    &.{");
+            for (cmd_info.path, 0..) |component, idx| {
+                if (idx > 0) try writer.writeAll(", ");
+                try writer.print("\"{s}\"", .{component});
+            }
+            try writer.writeAll("},\n");
+        }
+
+        // Recursively process subcommands
+        if (cmd_info.subcommands) |subcommands| {
+            try generatePureGroupsFromMap(writer, &subcommands, allocator);
+        }
+    }
+}
+
 /// Generate command registrations
 fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, allocator: std.mem.Allocator) !void {
     var it = commands.root.iterator();
@@ -136,7 +182,18 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
         const cmd_name = entry.key_ptr.*;
         const cmd_info = entry.value_ptr.*;
 
-        if (cmd_info.is_group) {
+        if (cmd_info.command_type != .leaf) {
+            // Register optional group with index file as a command
+            if (cmd_info.command_type == .optional_group) {
+                const module_name = try std.fmt.allocPrint(allocator, "{s}_index", .{cmd_name});
+                defer allocator.free(module_name);
+
+                const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
+                defer allocator.free(command_path_str);
+
+                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name });
+            }
+            // Register subcommands
             try generateGroupRegistrations(writer, cmd_name, &cmd_info, allocator);
         } else {
             const module_name = if (std.mem.eql(u8, cmd_name, "test"))
@@ -145,7 +202,11 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
                 try std.fmt.allocPrint(allocator, "cmd_{s}", .{cmd_name});
             defer if (!std.mem.eql(u8, cmd_name, "test")) allocator.free(module_name);
 
-            try writer.print("\n    .register(\"{s}\", {s})", .{ cmd_name, module_name });
+            // Use the actual command path from CommandInfo (it's now an array)
+            const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
+            defer allocator.free(command_path_str);
+
+            try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name });
         }
     }
 }
@@ -158,19 +219,17 @@ fn generateGroupRegistrations(writer: anytype, group_name: []const u8, group_inf
             const subcmd_name = entry.key_ptr.*;
             const subcmd_info = entry.value_ptr.*;
 
-            if (subcmd_info.is_group) {
+            if (subcmd_info.command_type != .leaf) {
                 try generateGroupRegistrations(writer, subcmd_name, &subcmd_info, allocator);
             } else {
                 const module_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ group_name, subcmd_name });
                 defer allocator.free(module_name);
 
-                const command_path = if (std.mem.eql(u8, subcmd_name, "index"))
-                    try std.fmt.allocPrint(allocator, "{s}", .{group_name})
-                else
-                    try std.fmt.allocPrint(allocator, "{s} {s}", .{ group_name, subcmd_name });
-                defer allocator.free(command_path);
+                // Use the actual command path from the CommandInfo (it's now an array)
+                const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
+                defer allocator.free(command_path_str);
 
-                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path, module_name });
+                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name });
             }
         }
     }

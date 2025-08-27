@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Show the Docker version information",
-    .usage = "version [OPTIONS]",
     .examples = &.{
         "version",
         "version --format json",

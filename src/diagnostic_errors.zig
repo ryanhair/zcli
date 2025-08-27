@@ -138,14 +138,11 @@ pub const ZcliDiagnostic = union(enum) {
 comptime {
     const error_fields = std.meta.fields(ZcliError);
     const diagnostic_fields = std.meta.fields(std.meta.FieldEnum(ZcliDiagnostic));
-    
+
     if (error_fields.len != diagnostic_fields.len) {
-        @compileError(std.fmt.comptimePrint(
-            "ZcliError and ZcliDiagnostic field count mismatch: {} vs {}", 
-            .{error_fields.len, diagnostic_fields.len}
-        ));
+        @compileError(std.fmt.comptimePrint("ZcliError and ZcliDiagnostic field count mismatch: {} vs {}", .{ error_fields.len, diagnostic_fields.len }));
     }
-    
+
     // Verify each error has a corresponding diagnostic
     for (error_fields) |error_field| {
         var found = false;
@@ -174,19 +171,12 @@ pub fn hasDiagnostic(err: anyerror) bool {
 /// Get a user-friendly description of a diagnostic
 pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator) ![]u8 {
     return switch (diagnostic) {
-        .ArgumentMissingRequired => |ctx| std.fmt.allocPrint(allocator, 
-            "Missing required argument '{s}' at position {d}. Expected type: {s}", 
-            .{ ctx.field_name, ctx.position + 1, ctx.expected_type }),
-        .ArgumentInvalidValue => |ctx| std.fmt.allocPrint(allocator, 
-            "Invalid value '{s}' for argument '{s}' at position {d}. Expected type: {s}", 
-            .{ ctx.provided_value, ctx.field_name, ctx.position + 1, ctx.expected_type }),
-        .ArgumentTooMany => |ctx| std.fmt.allocPrint(allocator, 
-            "Too many arguments provided. Expected {d} arguments, got {d}", 
-            .{ ctx.expected_count, ctx.actual_count }),
+        .ArgumentMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required argument '{s}' at position {d}. Expected type: {s}", .{ ctx.field_name, ctx.position + 1, ctx.expected_type }),
+        .ArgumentInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected type: {s}", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, ctx.expected_type }),
+        .ArgumentTooMany => |ctx| std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments, got {d}", .{ ctx.expected_count, ctx.actual_count }),
         .OptionUnknown => |ctx| blk: {
-            const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", 
-                .{ if (ctx.is_short) "-" else "--", ctx.option_name });
-            
+            const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name });
+
             if (ctx.suggestions.len > 0) {
                 var full_msg = std.ArrayList(u8).init(allocator);
                 defer full_msg.deinit();
@@ -201,21 +191,13 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
                 break :blk base_msg;
             }
         },
-        .OptionMissingValue => |ctx| std.fmt.allocPrint(allocator, 
-            "Option '{s}{s}' requires a value of type: {s}", 
-            .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.expected_type }),
-        .OptionInvalidValue => |ctx| std.fmt.allocPrint(allocator, 
-            "Invalid value '{s}' for option '{s}{s}'. Expected type: {s}", 
-            .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, ctx.expected_type }),
-        .OptionBooleanWithValue => |ctx| std.fmt.allocPrint(allocator, 
-            "Boolean option '{s}{s}' does not accept a value (got '{s}')", 
-            .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.provided_value }),
-        .OptionDuplicate => |ctx| std.fmt.allocPrint(allocator, 
-            "Duplicate option '{s}{s}'", 
-            .{ if (ctx.is_short) "-" else "--", ctx.option_name }),
+        .OptionMissingValue => |ctx| std.fmt.allocPrint(allocator, "Option '{s}{s}' requires a value of type: {s}", .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.expected_type }),
+        .OptionInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected type: {s}", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, ctx.expected_type }),
+        .OptionBooleanWithValue => |ctx| std.fmt.allocPrint(allocator, "Boolean option '{s}{s}' does not accept a value (got '{s}')", .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.provided_value }),
+        .OptionDuplicate => |ctx| std.fmt.allocPrint(allocator, "Duplicate option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name }),
         .CommandNotFound => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown command '{s}'", .{ctx.attempted_command});
-            
+
             if (ctx.suggestions.len > 0) {
                 var full_msg = std.ArrayList(u8).init(allocator);
                 defer full_msg.deinit();
@@ -230,12 +212,9 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
                 break :blk base_msg;
             }
         },
-        .SubcommandNotFound => |ctx| std.fmt.allocPrint(allocator, 
-            "Unknown subcommand '{s}' for command path: {s}", 
-            .{ ctx.subcommand_name, if (ctx.parent_path.len > 0) ctx.parent_path[ctx.parent_path.len - 1] else "root" }),
+        .SubcommandNotFound => |ctx| std.fmt.allocPrint(allocator, "Unknown subcommand '{s}' for command path: {s}", .{ ctx.subcommand_name, if (ctx.parent_path.len > 0) ctx.parent_path[ctx.parent_path.len - 1] else "root" }),
         .BuildCommandDiscoveryFailed => |ctx| blk: {
-            const base_msg = try std.fmt.allocPrint(allocator, 
-                "Command discovery failed in '{s}': {s}", .{ ctx.file_path, ctx.details });
+            const base_msg = try std.fmt.allocPrint(allocator, "Command discovery failed in '{s}': {s}", .{ ctx.file_path, ctx.details });
             if (ctx.suggestion) |suggestion| {
                 const full_msg = try std.fmt.allocPrint(allocator, "{s}. {s}", .{ base_msg, suggestion });
                 allocator.free(base_msg);
@@ -254,17 +233,14 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
                 break :blk base_msg;
             }
         },
-        .BuildOutOfMemory => |ctx| std.fmt.allocPrint(allocator, 
-            "Out of memory during {s}: {s}", .{ ctx.operation, ctx.details }),
+        .BuildOutOfMemory => |ctx| std.fmt.allocPrint(allocator, "Out of memory during {s}: {s}", .{ ctx.operation, ctx.details }),
         .SystemOutOfMemory => try allocator.dupe(u8, "Out of memory"),
         .SystemFileNotFound => |ctx| std.fmt.allocPrint(allocator, "File not found: {s}", .{ctx.file_path}),
         .SystemAccessDenied => |ctx| std.fmt.allocPrint(allocator, "Access denied: {s}", .{ctx.file_path}),
         .HelpRequested => try allocator.dupe(u8, "Help requested"),
         .VersionRequested => try allocator.dupe(u8, "Version requested"),
         .ResourceLimitExceeded => |ctx| blk: {
-            const base_msg = try std.fmt.allocPrint(allocator, 
-                "Resource limit exceeded: {s} limit of {d} exceeded (got {d})", 
-                .{ ctx.limit_type, ctx.limit_value, ctx.actual_value });
+            const base_msg = try std.fmt.allocPrint(allocator, "Resource limit exceeded: {s} limit of {d} exceeded (got {d})", .{ ctx.limit_type, ctx.limit_value, ctx.actual_value });
             if (ctx.suggestion) |suggestion| {
                 const full_msg = try std.fmt.allocPrint(allocator, "{s}. Suggestion: {s}", .{ base_msg, suggestion });
                 allocator.free(base_msg);
@@ -280,7 +256,7 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
 test "compile-time error/diagnostic sync validation" {
     // This test ensures that the compile-time validation works
     // If we add/remove errors without updating diagnostics, compilation will fail
-    
+
     // Test that we can check if errors have diagnostics
     try std.testing.expect(hasDiagnostic(ZcliError.ArgumentMissingRequired));
     try std.testing.expect(hasDiagnostic(ZcliError.OptionUnknown));
@@ -289,31 +265,31 @@ test "compile-time error/diagnostic sync validation" {
 
 test "diagnostic formatting" {
     const allocator = std.testing.allocator;
-    
+
     // Test argument error diagnostic
     const arg_diag = ZcliDiagnostic{ .ArgumentMissingRequired = .{
         .field_name = "username",
         .position = 0,
         .expected_type = "string",
-    }};
-    
+    } };
+
     const arg_msg = try formatDiagnostic(arg_diag, allocator);
     defer allocator.free(arg_msg);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, arg_msg, "username") != null);
     try std.testing.expect(std.mem.indexOf(u8, arg_msg, "position 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, arg_msg, "string") != null);
-    
+
     // Test option error diagnostic
     const opt_diag = ZcliDiagnostic{ .OptionUnknown = .{
         .option_name = "verbose",
         .is_short = false,
-        .suggestions = &.{"verbosity", "version"},
-    }};
-    
+        .suggestions = &.{ "verbosity", "version" },
+    } };
+
     const opt_msg = try formatDiagnostic(opt_diag, allocator);
     defer allocator.free(opt_msg);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, opt_msg, "--verbose") != null);
     try std.testing.expect(std.mem.indexOf(u8, opt_msg, "Did you mean") != null);
     try std.testing.expect(std.mem.indexOf(u8, opt_msg, "verbosity") != null);

@@ -3,6 +3,7 @@ const logging = @import("../logging.zig");
 const types = @import("types.zig");
 
 const CommandInfo = types.CommandInfo;
+const CommandType = types.CommandType;
 const DiscoveredCommands = types.DiscoveredCommands;
 
 // ============================================================================
@@ -26,7 +27,7 @@ pub fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) 
     defer dir.close();
 
     const max_depth = 6; // Reasonable maximum nesting depth
-    try scanDirectory(allocator, dir, &commands.root, "", 0, max_depth);
+    try scanDirectory(allocator, dir, &commands.root, &.{}, 0, max_depth);
 
     return commands;
 }
@@ -36,13 +37,16 @@ fn scanDirectory(
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
     commands: *std.StringHashMap(CommandInfo),
-    current_path: []const u8,
+    current_path: []const []const u8, // Array of path components
     depth: u32,
     max_depth: u32,
 ) !void {
     // Prevent excessive nesting
     if (depth >= max_depth) {
-        logging.maxNestingDepthReached(max_depth, current_path);
+        // Convert path array to string for logging
+        const path_string = if (current_path.len == 0) "" else std.mem.join(std.heap.page_allocator, "/", current_path) catch "unknown";
+        defer if (current_path.len > 0) std.heap.page_allocator.free(path_string);
+        logging.maxNestingDepthReached(max_depth, path_string);
         return;
     }
     var iterator = dir.iterate();
@@ -53,21 +57,42 @@ fn scanDirectory(
                 if (std.mem.endsWith(u8, entry.name, ".zig")) {
                     const name_without_ext = entry.name[0 .. entry.name.len - 4];
 
+                    // Skip index.zig files - they are handled as group defaults
+                    if (std.mem.eql(u8, name_without_ext, "index")) {
+                        continue;
+                    }
+
                     // Skip invalid command names
                     if (!isValidCommandName(name_without_ext)) {
                         logging.invalidCommandName(name_without_ext, "contains invalid characters or patterns");
                         continue;
                     }
 
-                    const full_path = if (current_path.len == 0)
-                        try allocator.dupe(u8, entry.name)
-                    else
-                        try std.fmt.allocPrint(allocator, "{s}/{s}", .{ current_path, entry.name });
+                    // Build command path as array of components
+                    var path_list = std.ArrayList([]const u8).init(allocator);
+                    defer path_list.deinit();
+
+                    // Add current path components
+                    for (current_path) |component| {
+                        try path_list.append(try allocator.dupe(u8, component));
+                    }
+                    // Add current command name
+                    try path_list.append(try allocator.dupe(u8, name_without_ext));
+
+                    // Build filesystem path
+                    var fs_path_list = std.ArrayList([]const u8).init(allocator);
+                    defer fs_path_list.deinit();
+                    for (current_path) |component| {
+                        try fs_path_list.append(component);
+                    }
+                    try fs_path_list.append(entry.name);
+                    const file_path = try std.mem.join(allocator, "/", fs_path_list.items);
 
                     const command_info = CommandInfo{
                         .name = try allocator.dupe(u8, name_without_ext),
-                        .path = full_path,
-                        .is_group = false,
+                        .path = try path_list.toOwnedSlice(),
+                        .file_path = file_path,
+                        .command_type = .leaf,
                         .subcommands = null,
                     };
 
@@ -94,20 +119,46 @@ fn scanDirectory(
                 // Create subcommand map
                 var subcommands = std.StringHashMap(CommandInfo).init(allocator);
 
-                const new_path = if (current_path.len == 0)
-                    try allocator.dupe(u8, entry.name)
-                else
-                    try std.fmt.allocPrint(allocator, "{s}/{s}", .{ current_path, entry.name });
+                // Build new path as array of components
+                var new_path_list = std.ArrayList([]const u8).init(allocator);
+                defer new_path_list.deinit();
+
+                // Add current path components
+                for (current_path) |component| {
+                    try new_path_list.append(try allocator.dupe(u8, component));
+                }
+                // Add current directory name
+                try new_path_list.append(try allocator.dupe(u8, entry.name));
+
+                const new_path = try new_path_list.toOwnedSlice();
 
                 // Recursively scan subdirectory
                 try scanDirectory(allocator, subdir, &subcommands, new_path, depth + 1, max_depth);
 
+                const has_index = hasIndexFile(subdir);
+
                 // Only create group if it has subcommands or an index file
-                if (subcommands.count() > 0 or hasIndexFile(subdir)) {
+                if (subcommands.count() > 0 or has_index) {
+                    // Build filesystem path for group - point to index.zig if it exists
+                    var group_fs_path_list = std.ArrayList([]const u8).init(allocator);
+                    defer group_fs_path_list.deinit();
+                    for (current_path) |component| {
+                        try group_fs_path_list.append(component);
+                    }
+                    try group_fs_path_list.append(entry.name);
+                    if (has_index) {
+                        try group_fs_path_list.append("index.zig");
+                    }
+                    const group_file_path = try std.mem.join(allocator, "/", group_fs_path_list.items);
+
+                    // Determine command type based on presence of index.zig
+                    const command_type: CommandType = if (has_index) .optional_group else .pure_group;
+
                     const command_info = CommandInfo{
                         .name = try allocator.dupe(u8, entry.name),
                         .path = new_path,
-                        .is_group = true,
+                        .file_path = group_file_path,
+                        .command_type = command_type,
                         .subcommands = subcommands,
                     };
 
@@ -115,6 +166,10 @@ fn scanDirectory(
                 } else {
                     // No subcommands and no index file, cleanup and skip
                     subcommands.deinit();
+                    // Free path components
+                    for (new_path) |component| {
+                        allocator.free(component);
+                    }
                     allocator.free(new_path);
                 }
             },

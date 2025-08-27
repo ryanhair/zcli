@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Run a command in a new container",
-    .usage = "container run [OPTIONS] IMAGE [COMMAND] [ARG...]",
     .examples = &.{
         "container run ubuntu",
         "container run -it ubuntu bash",

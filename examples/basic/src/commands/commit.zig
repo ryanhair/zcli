@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Record changes to the repository",
-    .usage = "commit [--message <msg>] [--amend] [--all]",
     .examples = &.{
         "commit --message \"Add new feature\"",
         "commit -m \"Fix bug in parser\"",

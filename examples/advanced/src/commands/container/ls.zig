@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "List containers",
-    .usage = "container ls [OPTIONS]",
     .examples = &.{
         "container ls",
         "container ls --all",

@@ -14,7 +14,7 @@ const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 fn hasDefaultValue(comptime T: type, comptime field_name: []const u8) bool {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") return false;
-    
+
     inline for (type_info.@"struct".fields) |field| {
         if (std.mem.eql(u8, field.name, field_name)) {
             return field.default_value_ptr != null;
@@ -22,7 +22,6 @@ fn hasDefaultValue(comptime T: type, comptime field_name: []const u8) bool {
     }
     return false;
 }
-
 
 /// Parse command-line options based on the provided Options struct type
 ///
@@ -101,7 +100,6 @@ pub fn parseOptions(
 ) ZcliError!types.OptionsResult(OptionsType) {
     return parseOptionsWithMeta(OptionsType, null, allocator, args);
 }
-
 
 /// Parse command-line options with custom metadata for option names and descriptions.
 ///
@@ -231,7 +229,7 @@ pub fn parseOptionsWithMeta(
                 arg[2 .. 2 + eq_pos]
             else
                 arg[2..];
-            
+
             resource_tracker.checkOptionNameLength(option_name) catch |err| {
                 return switch (err) {
                     error.OptionNameTooLong => ZcliError.ResourceLimitExceeded,
@@ -1282,12 +1280,12 @@ test "resource limits option count basic functionality" {
     };
 
     const allocator = std.testing.allocator;
-    
+
     // Test that basic functionality still works with resource limits enabled
     const args = [_][]const u8{ "--verbose", "--name", "test", "--count", "42", "--debug" };
     const parsed = try parseOptions(TestOptions, allocator, &args);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
-    
+
     try std.testing.expectEqual(true, parsed.options.verbose);
     try std.testing.expectEqualStrings("test", parsed.options.name.?);
     try std.testing.expectEqual(@as(u32, 42), parsed.options.count);
@@ -1300,13 +1298,13 @@ test "parseOptions default values - no options provided" {
         count: u32 = 42,
         files: []const []const u8 = &.{},
     };
-    
+
     const allocator = std.testing.allocator;
     const args: [0][]const u8 = .{};
-    
+
     const result = try parseOptions(TestOptions, allocator, &args);
     defer cleanupOptions(TestOptions, result.options, allocator);
-    
+
     try std.testing.expectEqualStrings("stdout", result.options.output);
     try std.testing.expectEqual(@as(u32, 42), result.options.count);
     try std.testing.expectEqual(@as(usize, 0), result.options.files.len);
@@ -1318,15 +1316,14 @@ test "parseOptions default values - some options provided" {
         count: u32 = 42,
         files: []const []const u8 = &.{},
     };
-    
+
     const allocator = std.testing.allocator;
-    const args = [_][]const u8{"--count", "100"};
-    
+    const args = [_][]const u8{ "--count", "100" };
+
     const result = try parseOptions(TestOptions, allocator, &args);
     defer cleanupOptions(TestOptions, result.options, allocator);
-    
+
     try std.testing.expectEqualStrings("stdout", result.options.output); // Should use default
     try std.testing.expectEqual(@as(u32, 100), result.options.count); // Should use provided value
     try std.testing.expectEqual(@as(usize, 0), result.options.files.len); // Should be empty
 }
-

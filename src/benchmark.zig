@@ -79,7 +79,7 @@ fn benchParseSimpleArgs() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
+
     const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     defer result.deinit();
 }
@@ -99,7 +99,7 @@ fn benchParseComplexArgs() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
+
     const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     defer result.deinit();
 }
@@ -179,7 +179,7 @@ fn benchParseEnum() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
+
     const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     defer result.deinit();
 }
@@ -197,7 +197,7 @@ fn benchErrorPath() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
+
     const result = command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     if (result) |parsed| {
         parsed.deinit();

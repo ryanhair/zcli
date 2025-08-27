@@ -119,16 +119,17 @@ test "build integration: nested command groups" {
 
     // Verify users group structure
     const users_group = discovered.root.get("users").?;
-    try std.testing.expect(users_group.is_group);
-    try std.testing.expect(users_group.subcommands.?.contains("index"));
+    try std.testing.expect(users_group.command_type != .leaf);
+    // index.zig is no longer a subcommand - it's the group's default command
+    try std.testing.expect(!users_group.subcommands.?.contains("index"));
     try std.testing.expect(users_group.subcommands.?.contains("list"));
     try std.testing.expect(users_group.subcommands.?.contains("create"));
     try std.testing.expect(users_group.subcommands.?.contains("permissions"));
-    try std.testing.expectEqual(@as(u32, 4), users_group.subcommands.?.count());
+    try std.testing.expectEqual(@as(u32, 3), users_group.subcommands.?.count());
 
     // Verify nested permissions group
     const permissions_group = users_group.subcommands.?.get("permissions").?;
-    try std.testing.expect(permissions_group.is_group);
+    try std.testing.expect(permissions_group.command_type != .leaf);
     try std.testing.expect(permissions_group.subcommands.?.contains("list"));
     try std.testing.expectEqual(@as(u32, 1), permissions_group.subcommands.?.count());
 }
@@ -194,11 +195,12 @@ test "build integration: empty directories and edge cases" {
     try std.testing.expect(discovered.root.contains("no_index"));
 
     const index_only = discovered.root.get("index_only").?;
-    try std.testing.expect(index_only.is_group);
-    try std.testing.expect(index_only.subcommands.?.contains("index"));
+    try std.testing.expect(index_only.command_type != .leaf);
+    // index.zig is no longer a subcommand - it's the group's default command
+    try std.testing.expect(!index_only.subcommands.?.contains("index"));
 
     const no_index = discovered.root.get("no_index").?;
-    try std.testing.expect(no_index.is_group);
+    try std.testing.expect(no_index.command_type != .leaf);
     try std.testing.expect(no_index.subcommands.?.contains("subcmd"));
     try std.testing.expect(!no_index.subcommands.?.contains("index"));
 }
@@ -232,11 +234,11 @@ test "build integration: maximum nesting depth" {
 
     // Navigate to verify we can reach the command at level5
     var current = discovered.root.get("level1").?;
-    try std.testing.expect(current.is_group);
+    try std.testing.expect(current.command_type != .leaf);
     try std.testing.expect(current.subcommands.?.contains("level2"));
 
     current = current.subcommands.?.get("level2").?;
-    try std.testing.expect(current.is_group);
+    try std.testing.expect(current.command_type != .leaf);
     try std.testing.expect(current.subcommands.?.contains("level3"));
 
     // Should be able to reach level5 where our command is

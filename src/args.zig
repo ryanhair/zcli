@@ -9,7 +9,7 @@ pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 fn hasDefaultValue(comptime T: type, comptime field_name: []const u8) bool {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") return false;
-    
+
     inline for (type_info.@"struct".fields) |field| {
         if (std.mem.eql(u8, field.name, field_name)) {
             return field.default_value_ptr != null;
@@ -80,7 +80,6 @@ pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ZcliError!Ar
     return parseArgsInternal(ArgsType, args);
 }
 
-
 /// Internal implementation of argument parsing
 fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ZcliError!ArgsType {
     const type_info = @typeInfo(ArgsType);
@@ -111,7 +110,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ZcliErro
             // This is a varargs field - capture remaining positional arguments
             // The field can be either [][]const u8 or []const []const u8
             const remaining_args = args[arg_index..];
-            
+
             // Check if we need @constCast based on the field type
             const field_type_info = @typeInfo(field_type);
             if (field_type_info.pointer.is_const) {
@@ -151,7 +150,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ZcliErro
                 logging.missingRequiredArgument(field.name, field_index + 1);
                 return ZcliError.ArgumentMissingRequired;
             }
-            
+
             const pos = next_positional.?;
             @field(result, field.name) = try parseValue(field_type, args[pos]);
             arg_index = pos + 1;
@@ -623,7 +622,7 @@ test "parseArgs varargs empty" {
 
 test "parseArgs varargs with const-safe type" {
     const TestArgs = struct {
-        files: []const []const u8,  // Using const-safe type
+        files: []const []const u8, // Using const-safe type
     };
 
     const args = [_][]const u8{ "file1.txt", "file2.txt", "file3.txt" };
@@ -737,10 +736,10 @@ test "parseArgs default values - no value provided" {
         count: u32 = 42,
         file: ?[]const u8 = null,
     };
-    
+
     const args = [_][]const u8{"testname"};
     const result = try parseArgs(TestArgs, &args);
-    
+
     try std.testing.expectEqualStrings("testname", result.name);
     try std.testing.expectEqual(@as(u32, 42), result.count); // Should use default
     try std.testing.expect(result.file == null);
@@ -752,12 +751,11 @@ test "parseArgs default values - value provided" {
         count: u32 = 42,
         file: ?[]const u8 = null,
     };
-    
-    const args = [_][]const u8{"testname", "123"};
+
+    const args = [_][]const u8{ "testname", "123" };
     const result = try parseArgs(TestArgs, &args);
-    
+
     try std.testing.expectEqualStrings("testname", result.name);
     try std.testing.expectEqual(@as(u32, 123), result.count); // Should use provided value
     try std.testing.expect(result.file == null);
 }
-

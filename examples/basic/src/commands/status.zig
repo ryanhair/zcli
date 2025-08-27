@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Show the working tree status",
-    .usage = "status [--short] [--porcelain]",
     .examples = &.{
         "status",
         "status --short",

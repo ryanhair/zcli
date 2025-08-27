@@ -57,21 +57,21 @@ pub fn onError(
         // Check if this looks like a command group (has subcommands)
         if (context.command_path.len > 0) {
             const attempted_command = context.command_path[0];
-            var subcommands = std.ArrayList([]const u8).init(context.allocator);
-            defer subcommands.deinit();
 
-            // Find all commands that start with the attempted command
-            for (context.available_commands) |cmd_parts| {
-                // Check if this command starts with the attempted command
-                if (cmd_parts.len >= 2 and std.mem.eql(u8, cmd_parts[0], attempted_command)) {
-                    // This is a subcommand - get the next part
-                    try subcommands.append(cmd_parts[1]);
+            // Check if there are any subcommands for this command group
+            const command_infos = context.getAvailableCommandInfo();
+            var has_subcommands = false;
+
+            for (command_infos) |cmd_info| {
+                if (cmd_info.path.len >= 2 and std.mem.eql(u8, cmd_info.path[0], attempted_command)) {
+                    has_subcommands = true;
+                    break;
                 }
             }
 
             // If we found subcommands, show group help and handle the error
-            if (subcommands.items.len > 0) {
-                try showCommandGroupHelp(context, attempted_command, subcommands.items);
+            if (has_subcommands) {
+                try showCommandGroupHelp(context, attempted_command);
                 return true; // Error handled, don't let it propagate
             }
         }
@@ -81,7 +81,7 @@ pub fn onError(
 }
 
 /// Show help for a command group with subcommands
-fn showCommandGroupHelp(context: *zcli.Context, group_name: []const u8, subcommands: []const []const u8) !void {
+fn showCommandGroupHelp(context: *zcli.Context, group_name: []const u8) !void {
     const writer = context.stderr();
 
     try writer.print("'{s}' is a command group. Available subcommands:\n\n", .{group_name});
@@ -90,8 +90,35 @@ fn showCommandGroupHelp(context: *zcli.Context, group_name: []const u8, subcomma
     try writer.print("    {s} {s} <subcommand>\n\n", .{ context.app_name, group_name });
 
     try writer.writeAll("SUBCOMMANDS:\n");
-    for (subcommands) |subcmd| {
-        try writer.print("    {s}    \n", .{subcmd});
+
+    const command_infos = context.getAvailableCommandInfo();
+    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
+    defer displayed_names.deinit();
+
+    for (command_infos) |cmd_info| {
+        // Find direct subcommands of this group
+        if (cmd_info.path.len >= 2 and std.mem.eql(u8, cmd_info.path[0], group_name)) {
+            const subcmd_name = cmd_info.path[1];
+
+            // Avoid duplicates
+            var already_added = false;
+            for (displayed_names.items) |existing| {
+                if (std.mem.eql(u8, existing, subcmd_name)) {
+                    already_added = true;
+                    break;
+                }
+            }
+
+            if (!already_added) {
+                try displayed_names.append(subcmd_name);
+
+                if (cmd_info.description) |desc| {
+                    try writer.print("    {s:<15} {s}\n", .{ subcmd_name, desc });
+                } else {
+                    try writer.print("    {s}\n", .{subcmd_name});
+                }
+            }
+        }
     }
     try writer.writeAll("\n");
 
@@ -140,16 +167,78 @@ fn showAppHelp(context: *zcli.Context) !void {
     try writer.writeAll("\n");
 
     try writer.writeAll("USAGE:\n");
-    try writer.print("    {s} [command] [options]\n\n", .{app_name});
+    try writer.print("    {s} [GLOBAL OPTIONS] <COMMAND> [ARGS]\n\n", .{app_name});
 
     try writer.writeAll("COMMANDS:\n");
-    try writer.writeAll("    help    Show help for commands\n");
-    // TODO: List other available commands when we have registry access
-    try writer.writeAll("\n");
 
-    try writer.writeAll("GLOBAL OPTIONS:\n");
-    try writer.writeAll("    --help, -h    Show help message\n");
+    // Collect top-level commands and their info using new command info system
+    const CommandInfo = struct {
+        name: []const u8,
+        description: ?[]const u8,
+        is_group: bool,
+    };
+
+    var top_level_commands = std.ArrayList(CommandInfo).init(context.allocator);
+    defer top_level_commands.deinit();
+
+    const command_infos = context.getAvailableCommandInfo();
+    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
+    defer displayed_names.deinit();
+
+    for (command_infos) |cmd_info| {
+        if (cmd_info.path.len == 1) {
+            const cmd_name = cmd_info.path[0];
+
+            // Avoid duplicates
+            var already_added = false;
+            for (displayed_names.items) |existing| {
+                if (std.mem.eql(u8, existing, cmd_name)) {
+                    already_added = true;
+                    break;
+                }
+            }
+
+            if (!already_added) {
+                try displayed_names.append(cmd_name);
+
+                // Check if this command has subcommands (making it a group)
+                var has_subcommands = false;
+                for (command_infos) |other_cmd_info| {
+                    if (other_cmd_info.path.len > 1 and std.mem.eql(u8, other_cmd_info.path[0], cmd_name)) {
+                        has_subcommands = true;
+                        break;
+                    }
+                }
+
+                try top_level_commands.append(CommandInfo{
+                    .name = cmd_name,
+                    .description = cmd_info.description,
+                    .is_group = has_subcommands,
+                });
+            }
+        }
+    }
+
+    // Show top-level commands with descriptions
+    for (top_level_commands.items) |cmd| {
+        // Skip showing help command here since it's handled by the plugin system
+        if (std.mem.eql(u8, cmd.name, "help")) continue;
+
+        if (cmd.description) |desc| {
+            try writer.print("    {s:<12} {s}\n", .{ cmd.name, desc });
+        } else {
+            try writer.print("    {s:<12} \n", .{cmd.name});
+        }
+    }
+
+    // Always show help command last
+    try writer.writeAll("    help         Show help for commands\n");
+
+    try writer.writeAll("\nGLOBAL OPTIONS:\n");
+    try writer.writeAll("    -h, --help       Show help information\n");
+    try writer.writeAll("    -V, --version    Show version information\n");
     try writer.writeAll("\n");
+    try writer.print("Run '{s} <command> --help' for more information on a command.\n", .{app_name});
 }
 
 /// Show help for a specific command
@@ -158,16 +247,292 @@ fn showCommandHelp(context: *zcli.Context, command: []const u8) !void {
 
     try writer.print("Help for command: {s}\n\n", .{command});
 
-    // TODO: When we have access to command metadata, show:
-    // - Command description
-    // - Usage
-    // - Arguments
-    // - Options
-    // - Examples
+    // Access command metadata from context
+    if (context.command_meta) |meta| {
+        // Show description
+        if (meta.description) |desc| {
+            try writer.print("{s}\n\n", .{desc});
+        }
 
-    try writer.writeAll("OPTIONS:\n");
-    try writer.writeAll("    --help, -h    Show this help message\n");
-    try writer.writeAll("\n");
+        // Show usage (always generated)
+        const usage_string = try generateUsage(context);
+        defer context.allocator.free(usage_string);
+
+        try writer.writeAll("USAGE:\n");
+        try writer.print("    {s}\n\n", .{usage_string});
+
+        // Show arguments (generated from command module info)
+        if (context.command_module_info) |module_info| {
+            if (module_info.has_args) {
+                if (generateArgsHelp(module_info, context) catch null) |args_help| {
+                    defer context.allocator.free(args_help);
+                    try writer.writeAll("ARGUMENTS:\n");
+                    try writer.writeAll(args_help);
+                    try writer.writeAll("\n");
+                }
+            }
+        }
+
+        // Show subcommands (dynamically discovered)
+        try showSubcommands(context, writer);
+
+        // Show options (generated from command module info)
+        try writer.writeAll("OPTIONS:\n");
+        if (context.command_module_info) |module_info| {
+            if (module_info.has_options) {
+                if (generateOptionsHelp(module_info, context) catch null) |options_help| {
+                    defer context.allocator.free(options_help);
+                    try writer.writeAll(options_help);
+                }
+            }
+        }
+        try writer.print("    {s:<15} Show this help message\n\n", .{"--help, -h"});
+
+        // Show examples
+        if (meta.examples) |examples| {
+            try writer.writeAll("EXAMPLES:\n");
+            for (examples) |example| {
+                try writer.print("    {s}\n", .{example});
+            }
+            try writer.writeAll("\n");
+        }
+    } else {
+        // Fallback when no metadata is available
+        try writer.writeAll("OPTIONS:\n");
+        try writer.print("    {s:<15} Show this help message\n", .{"--help, -h"});
+        try writer.writeAll("\n");
+    }
+}
+
+/// Generate usage string based on command structure
+fn generateUsage(context: *zcli.Context) ![]const u8 {
+    var usage_parts = std.ArrayList([]const u8).init(context.allocator);
+    defer usage_parts.deinit();
+
+    // Track allocated strings that need to be freed
+    var allocated_pattern: ?[]const u8 = null;
+    defer if (allocated_pattern) |pattern| context.allocator.free(pattern);
+
+    // Start with app name
+    try usage_parts.append(context.app_name);
+
+    // Add command path
+    for (context.command_path) |path_part| {
+        try usage_parts.append(path_part);
+    }
+
+    // Check if this command has subcommands
+    const has_subcommands = blk: {
+        for (context.available_commands) |cmd_parts| {
+            if (cmd_parts.len == context.command_path.len + 1) {
+                // Check if the prefix matches current command path
+                var matches = true;
+                for (context.command_path, 0..) |path_part, i| {
+                    if (!std.mem.eql(u8, path_part, cmd_parts[i])) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) break :blk true;
+            }
+        }
+        break :blk false;
+    };
+
+    if (has_subcommands) {
+        // This is a command group - show COMMAND
+        try usage_parts.append("COMMAND");
+    } else {
+        // This is a leaf command - show [OPTIONS] and args pattern
+        var has_options = false;
+        var has_args = false;
+
+        // Check if we have options or args from command module info
+        if (context.command_module_info) |module_info| {
+            has_options = module_info.has_options;
+            has_args = module_info.has_args;
+        }
+
+        if (has_options) {
+            try usage_parts.append("[OPTIONS]");
+        }
+
+        if (has_args) {
+            // Generate args pattern from command module info
+            if (context.command_module_info) |module_info| {
+                if (generateArgsPattern(module_info, context) catch null) |pattern| {
+                    allocated_pattern = pattern; // Remember to free this later
+                    try usage_parts.append(pattern);
+                } else {
+                    try usage_parts.append("[ARGS...]");
+                }
+            } else {
+                try usage_parts.append("[ARGS...]");
+            }
+        }
+    }
+
+    // Join all parts with spaces
+    return try std.mem.join(context.allocator, " ", usage_parts.items);
+}
+
+/// Show available subcommands for the current command
+fn showSubcommands(context: *zcli.Context, writer: anytype) !void {
+    const command_infos = context.getAvailableCommandInfo();
+    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
+    defer displayed_names.deinit();
+
+    var has_commands = false;
+
+    for (command_infos) |cmd_info| {
+        var should_display = false;
+        var display_name: []const u8 = undefined;
+
+        if (context.command_path.len == 0) {
+            // At root level, show all top-level commands
+            if (cmd_info.path.len == 1) {
+                should_display = true;
+                display_name = cmd_info.path[0];
+            }
+        } else {
+            // Find subcommands that extend the current path
+            if (cmd_info.path.len == context.command_path.len + 1) {
+                // Check if the prefix matches
+                var matches = true;
+                for (context.command_path, 0..) |path_part, i| {
+                    if (!std.mem.eql(u8, path_part, cmd_info.path[i])) {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches) {
+                    should_display = true;
+                    display_name = cmd_info.path[context.command_path.len];
+                }
+            }
+        }
+
+        if (should_display) {
+            // Avoid duplicates
+            var already_added = false;
+            for (displayed_names.items) |existing| {
+                if (std.mem.eql(u8, existing, display_name)) {
+                    already_added = true;
+                    break;
+                }
+            }
+
+            if (!already_added) {
+                try displayed_names.append(display_name);
+
+                if (!has_commands) {
+                    try writer.writeAll("COMMANDS:\n");
+                    has_commands = true;
+                }
+
+                if (cmd_info.description) |desc| {
+                    try writer.print("    {s:<15} {s}\n", .{ display_name, desc });
+                } else {
+                    try writer.print("    {s}\n", .{display_name});
+                }
+            }
+        }
+    }
+
+    if (has_commands) {
+        try writer.writeAll("\n");
+    }
+}
+
+/// Generate args pattern from command module info (e.g., "IMAGE [COMMAND] [ARG...]")
+/// Returns null if there are no args to display
+fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: *zcli.Context) !?[]u8 {
+    if (!module_info.has_args or module_info.args_fields.len == 0) return null;
+
+    var buffer = std.ArrayList(u8).init(context.allocator);
+    errdefer buffer.deinit();
+    var writer = buffer.writer();
+
+    var first = true;
+    for (module_info.args_fields) |field_info| {
+        if (!first) try writer.writeAll(" ");
+        first = false;
+
+        // Convert field name to UPPERCASE for usage
+        var field_name_buf: [64]u8 = std.mem.zeroes([64]u8);
+
+        // Protect against buffer overflow
+        const safe_len = @min(field_info.name.len, field_name_buf.len);
+        for (field_info.name[0..safe_len], 0..) |c, i| {
+            field_name_buf[i] = std.ascii.toUpper(c);
+        }
+        const field_name = field_name_buf[0..safe_len];
+
+        if (field_info.is_array) {
+            // Varargs field
+            if (field_info.is_optional) {
+                try writer.print("[{s}...]", .{field_name});
+            } else {
+                try writer.print("{s}...", .{field_name});
+            }
+        } else {
+            // Regular field
+            if (field_info.is_optional) {
+                try writer.print("[{s}]", .{field_name});
+            } else {
+                try writer.print("{s}", .{field_name});
+            }
+        }
+    }
+
+    return try buffer.toOwnedSlice();
+}
+
+/// Generate args help text from command module info
+/// Returns null if there are no args to display
+fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Context) !?[]u8 {
+    if (!module_info.has_args or module_info.args_fields.len == 0) return null;
+
+    var buffer = std.ArrayList(u8).init(context.allocator);
+    errdefer buffer.deinit();
+    var writer = buffer.writer();
+
+    // Generate basic help from field names - description extraction would require
+    // casting raw_meta_ptr which we can't do generically at runtime
+    for (module_info.args_fields) |field_info| {
+        // TODO: Extract descriptions from meta if available (needs type-specific casting)
+        try writer.print("    {s}    {s}\n", .{ field_info.name, field_info.name });
+    }
+
+    return try buffer.toOwnedSlice();
+}
+
+/// Generate options help text from command module info
+/// Returns null if there are no options to display
+fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Context) !?[]u8 {
+    if (!module_info.has_options or module_info.options_fields.len == 0) return null;
+
+    var buffer = std.ArrayList(u8).init(context.allocator);
+    errdefer buffer.deinit();
+    var writer = buffer.writer();
+
+    // Generate basic help from field names
+    for (module_info.options_fields) |field_info| {
+        // Convert underscores to dashes in field name
+        var option_name_buf: [64]u8 = undefined;
+        var i: usize = 0;
+        for (field_info.name) |c| {
+            option_name_buf[i] = if (c == '_') '-' else c;
+            i += 1;
+        }
+        const option_name = option_name_buf[0..field_info.name.len];
+
+        // TODO: Extract descriptions and short flags from meta if available
+        try writer.print("    --{s:<13} {s}\n", .{ option_name, field_info.name });
+    }
+
+    return try buffer.toOwnedSlice();
 }
 
 // Context extension - optional configuration for the help plugin
@@ -197,7 +562,6 @@ pub const ContextExtension = struct {
 /// Metadata about a command for help generation
 const CommandMetadata = struct {
     description: ?[]const u8 = null,
-    usage: ?[]const u8 = null,
     examples: ?[]const []const u8 = null,
 };
 

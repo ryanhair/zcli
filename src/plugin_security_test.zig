@@ -49,14 +49,14 @@ const MaliciousPlugin = struct {
 
         // Try to extract sensitive information from errors
         const error_name = @errorName(err);
-        
+
         // Plugin should not be able to access system internals through error handling
         if (std.mem.indexOf(u8, error_name, "System") != null or
             std.mem.indexOf(u8, error_name, "Access") != null)
         {
             // Test that plugins can't leak system information
             const leaked_info = try std.fmt.allocPrint(context.allocator, "LEAKED: {s} from {*}", .{ error_name, context });
-            
+
             return plugin_types.PluginResult{
                 .handled = true,
                 .output = leaked_info,
@@ -111,7 +111,7 @@ const ResourceExhaustionPlugin = struct {
 /// Plugin that attempts to access file system inappropriately
 const FileSystemAccessPlugin = struct {
     pub const meta = .{
-        .name = "filesystem-access-plugin", 
+        .name = "filesystem-access-plugin",
         .description = "Plugin that tries to access files",
         .version = "1.0.0",
     };
@@ -123,7 +123,7 @@ const FileSystemAccessPlugin = struct {
             // Attempt to read sensitive system files
             const sensitive_files = [_][]const u8{
                 "/etc/passwd",
-                "/etc/shadow", 
+                "/etc/shadow",
                 "/var/log/auth.log",
                 "/proc/self/environ",
                 "C:\\Windows\\System32\\config\\SAM",
@@ -139,7 +139,7 @@ const FileSystemAccessPlugin = struct {
                     try results.writer().print("Skipped non-absolute path: {s}\n", .{file_path});
                     continue;
                 }
-                
+
                 const file = std.fs.openFileAbsolute(file_path, .{}) catch |err| {
                     try results.writer().print("Failed to open {s}: {}\n", .{ file_path, err });
                     continue;
@@ -190,9 +190,8 @@ const CommandInjectionPlugin = struct {
         for (injection_patterns) |pattern| {
             if (std.mem.indexOf(u8, event.option, pattern) != null) {
                 // Plugin should treat this as literal text, not execute commands
-                const safe_output = try std.fmt.allocPrint(context.allocator, 
-                    "DETECTED potential command injection: {s}", .{pattern});
-                
+                const safe_output = try std.fmt.allocPrint(context.allocator, "DETECTED potential command injection: {s}", .{pattern});
+
                 return plugin_types.PluginResult{
                     .handled = true,
                     .output = safe_output,
@@ -236,7 +235,7 @@ test "plugin security: resource exhaustion prevention" {
     if (result) |plugin_result| {
         // If plugin returned a result, verify it's safe
         try testing.expect(plugin_result.handled);
-        
+
         if (plugin_result.output) |output| {
             // Should not contain sensitive system information
             try testing.expect(std.mem.indexOf(u8, output, "/etc/") == null);
@@ -253,7 +252,7 @@ test "plugin security: sensitive option access prevention" {
 
     const sensitive_options = [_][]const u8{
         "api-key",
-        "secret", 
+        "secret",
         "password",
         "token",
         "private-key",
@@ -276,7 +275,7 @@ test "plugin security: sensitive option access prevention" {
             // Plugin should detect the security violation attempt
             try testing.expect(plugin_result.handled);
             try testing.expect(plugin_result.stop_execution); // Should stop execution for security
-            
+
             if (plugin_result.output) |output| {
                 try testing.expect(std.mem.indexOf(u8, output, "SECURITY_VIOLATION") != null);
             }
@@ -304,14 +303,14 @@ test "plugin security: file system access restrictions" {
 
     if (result) |plugin_result| {
         defer if (plugin_result.output) |output| allocator.free(output);
-        
+
         try testing.expect(plugin_result.handled);
-        
+
         if (plugin_result.output) |output| {
             // Should report failed access attempts, not successful reads of sensitive files
             const has_security_risk = std.mem.indexOf(u8, output, "SECURITY RISK") != null;
             const has_failed_attempts = std.mem.indexOf(u8, output, "Failed to") != null;
-            
+
             // Either should fail to access files, or if it succeeds, should be flagged as security risk
             try testing.expect(has_failed_attempts or has_security_risk);
         }
@@ -325,7 +324,7 @@ test "plugin security: command injection prevention" {
     defer context.deinit();
 
     const injection_tests = [_][]const u8{
-        "--exec=$(whoami)", 
+        "--exec=$(whoami)",
         "--command=`id`",
         "--script=; cat /etc/passwd",
         "--run=&& rm -rf /",
@@ -346,14 +345,14 @@ test "plugin security: command injection prevention" {
 
         if (result) |plugin_result| {
             defer if (plugin_result.output) |output| allocator.free(output);
-            
+
             try testing.expect(plugin_result.handled);
             try testing.expect(plugin_result.stop_execution); // Should stop for security
-            
+
             if (plugin_result.output) |output| {
                 // Should detect the injection attempt
                 try testing.expect(std.mem.indexOf(u8, output, "command injection") != null);
-                
+
                 // Should not contain evidence of actual command execution
                 try testing.expect(std.mem.indexOf(u8, output, "uid=") == null); // No `id` command output
                 try testing.expect(std.mem.indexOf(u8, output, "root:") == null); // No /etc/passwd content
@@ -380,14 +379,14 @@ test "plugin security: information disclosure prevention" {
 
         if (result) |plugin_result| {
             defer if (plugin_result.output) |output| allocator.free(output);
-            
+
             if (plugin_result.output) |output| {
                 // Should not contain memory addresses or system paths
                 try testing.expect(std.mem.indexOf(u8, output, "/Users/") == null);
                 try testing.expect(std.mem.indexOf(u8, output, "/home/") == null);
                 try testing.expect(std.mem.indexOf(u8, output, "C:\\Users\\") == null);
                 try testing.expect(std.mem.indexOf(u8, output, "0x") == null); // No memory addresses
-                
+
                 // Should not expose internal system details
                 try testing.expect(std.mem.indexOf(u8, output, "src/") == null);
                 try testing.expect(std.mem.indexOf(u8, output, ".zig") == null);
@@ -417,7 +416,7 @@ test "plugin security: plugin metadata validation" {
     for (unsafe_metadata_tests) |test_case| {
         // Test plugin name validation
         const is_safe_name = isPluginNameSafe(test_case.name);
-        
+
         if (test_case.should_be_rejected) {
             try testing.expect(!is_safe_name);
         } else {
@@ -458,27 +457,27 @@ test "plugin security: plugin capability enforcement" {
 fn isPluginNameSafe(name: []const u8) bool {
     // Check length limits
     if (name.len == 0 or name.len > 100) return false;
-    
+
     // Check for path traversal
     if (std.mem.indexOf(u8, name, "..") != null) return false;
     if (std.mem.indexOf(u8, name, "/") != null) return false;
     if (std.mem.indexOf(u8, name, "\\") != null) return false;
-    
+
     // Check for command injection patterns
     if (std.mem.indexOf(u8, name, "$(") != null) return false;
     if (std.mem.indexOf(u8, name, "`") != null) return false;
     if (std.mem.indexOf(u8, name, ";") != null) return false;
     if (std.mem.indexOf(u8, name, "&") != null) return false;
     if (std.mem.indexOf(u8, name, "|") != null) return false;
-    
+
     // Check for null bytes and control characters
     for (name) |c| {
         if (c == 0 or c < 32) return false;
     }
-    
+
     // Check for format string patterns
     if (std.mem.indexOf(u8, name, "%") != null) return false;
-    
+
     return true;
 }
 
@@ -514,7 +513,7 @@ test "plugin security: integration with command processing" {
 
     // Test that malicious plugin doesn't interfere with normal options
     const result = try MaliciousPlugin.handleOption(&context, normal_event, struct {});
-    
+
     // Should return null (not handled) for normal options
     try testing.expect(result == null);
 }
@@ -525,7 +524,7 @@ test "plugin security: plugin isolation" {
     // Test that plugins can't interfere with each other
     var context1 = zcli.Context.init(allocator);
     defer context1.deinit();
-    
+
     var context2 = zcli.Context.init(allocator);
     defer context2.deinit();
 

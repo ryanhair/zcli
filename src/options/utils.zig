@@ -421,7 +421,7 @@ test "dashesToUnderscores function" {
     // Too long for fixed buffer - should fail
     const long_name = "this-is-a-very-long-option-name-that-exceeds-the-maximum-allowed-length";
     try std.testing.expectError(error.UnknownOption, dashesToUnderscores(&buf, long_name));
-    
+
     // Test with dynamic allocation - should succeed
     const allocator = std.testing.allocator;
     const dynamic_buf = try allocator.alloc(u8, long_name.len);
@@ -451,26 +451,26 @@ test "parseOptionValue decimal-only parsing" {
     try std.testing.expectEqual(@as(i32, 0), try parseOptionValue(i32, "0"));
     try std.testing.expectEqual(@as(i32, 0), try parseOptionValue(i32, "00"));
     try std.testing.expectEqual(@as(i32, 0), try parseOptionValue(i32, "000"));
-    
+
     // Hex notation should fail (no longer auto-detected)
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0x10"));
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0X10"));
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0xABC"));
-    
+
     // Binary notation should fail
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0b101"));
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0B101"));
-    
+
     // Octal notation (0o prefix) should fail
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0o10"));
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "0O10"));
-    
+
     // Boundary values
     try std.testing.expectEqual(@as(i8, 127), try parseOptionValue(i8, "127"));
     try std.testing.expectEqual(@as(i8, -128), try parseOptionValue(i8, "-128"));
     try std.testing.expectEqual(@as(u8, 255), try parseOptionValue(u8, "255"));
     try std.testing.expectEqual(@as(u8, 0), try parseOptionValue(u8, "0"));
-    
+
     // Edge cases with whitespace (parseInt handles this)
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, " 42"));
     try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, "42 "));

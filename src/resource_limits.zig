@@ -4,22 +4,22 @@ const std = @import("std");
 pub const ResourceLimits = struct {
     /// Maximum number of elements in any option array (e.g., --files a.txt b.txt ...)
     max_option_array_elements: usize = 1000,
-    
+
     /// Maximum length of option names to prevent buffer overflow attacks
     max_option_name_length: usize = 256,
-    
+
     /// Maximum total number of options that can be provided
     max_total_options: usize = 100,
-    
+
     /// Maximum number of positional arguments
     max_argument_count: usize = 1000,
-    
+
     /// Maximum command nesting depth (e.g., cmd sub1 sub2 sub3 ...)
     max_command_depth: usize = 10,
-    
+
     /// Maximum number of suggestions to generate for unknown commands
     max_suggestions: usize = 10,
-    
+
     /// Timeout for suggestion generation in milliseconds
     suggestion_timeout_ms: u64 = 100,
 
@@ -115,27 +115,27 @@ test "ResourceLimits default values" {
 
 test "ResourceTracker option counting" {
     var tracker = ResourceTracker.init(ResourceLimits{ .max_total_options = 2 });
-    
+
     try tracker.checkOptionCount(); // 1st option - OK
     try tracker.checkOptionCount(); // 2nd option - OK
-    
+
     try std.testing.expectError(ResourceLimitError.TooManyOptions, tracker.checkOptionCount()); // 3rd option - should fail
 }
 
 test "ResourceTracker array size checking" {
     var tracker = ResourceTracker.init(ResourceLimits{ .max_option_array_elements = 5 });
-    
+
     try tracker.checkArraySize(3); // OK
     try tracker.checkArraySize(5); // OK (at limit)
-    
+
     try std.testing.expectError(ResourceLimitError.OptionArrayTooLarge, tracker.checkArraySize(6)); // Should fail
 }
 
 test "ResourceTracker option name length checking" {
     const tracker = ResourceTracker.init(ResourceLimits{ .max_option_name_length = 10 });
-    
+
     try tracker.checkOptionNameLength("short"); // OK
     try tracker.checkOptionNameLength("exactly10c"); // OK (exactly at limit)
-    
+
     try std.testing.expectError(ResourceLimitError.OptionNameTooLong, tracker.checkOptionNameLength("this-is-too-long")); // Should fail
 }

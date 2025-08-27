@@ -284,7 +284,6 @@ pub const ContextExtensions = struct {
 /// Standardized metadata structure for commands
 pub const Metadata = struct {
     description: ?[]const u8 = null,
-    usage: ?[]const u8 = null,
     examples: ?[]const []const u8 = null,
     options: ?OptionMetadata = null,
     arguments: ?ArgumentMetadata = null,

@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Build an image from a Dockerfile",
-    .usage = "image build [OPTIONS] PATH | URL | -",
     .examples = &.{
         "image build .",
         "image build --tag my-app:latest .",

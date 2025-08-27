@@ -12,12 +12,12 @@ pub fn CommandParseResult(comptime ArgsType: type, comptime OptionsType: type) t
         options: OptionsType,
         allocator: ?std.mem.Allocator = null, // Only set if cleanup is needed
         _positional_slice: ?[]const []const u8 = null, // Keep varargs slice alive
-        
+
         pub fn deinit(self: @This()) void {
             if (self.allocator) |allocator| {
                 // Cleanup any allocated arrays in options
                 options_parser.cleanupOptions(OptionsType, self.options, allocator);
-                
+
                 // Cleanup positional slice if we allocated it
                 if (self._positional_slice) |slice| {
                     allocator.free(slice);
@@ -35,48 +35,48 @@ pub fn CommandParseResult(comptime ArgsType: type, comptime OptionsType: type) t
 /// ```
 /// const Args = struct { file: []const u8, output: ?[]const u8 = null };
 /// const Options = struct { verbose: bool = false, format: enum { json, yaml } = .json };
-/// 
-/// const result = try parseCommandLine(Args, Options, null, allocator, 
+///
+/// const result = try parseCommandLine(Args, Options, null, allocator,
 ///     &.{"input.txt", "--verbose", "--format", "json", "output.txt"});
 /// defer result.deinit();
-/// 
+///
 /// // result.args.file = "input.txt"
-/// // result.args.output = "output.txt" 
+/// // result.args.output = "output.txt"
 /// // result.options.verbose = true
 /// // result.options.format = .json
 /// ```
 pub fn parseCommandLine(
-    comptime ArgsType: type, 
+    comptime ArgsType: type,
     comptime OptionsType: type,
     comptime meta: anytype,
     allocator: std.mem.Allocator,
     args: []const []const u8,
 ) ZcliError!CommandParseResult(ArgsType, OptionsType) {
     _ = meta; // TODO: Use meta for option customization
-    
+
     // First pass: separate options from positional arguments
     var option_args = std.ArrayList([]const u8).init(allocator);
     defer option_args.deinit();
     var positional_args = std.ArrayList([]const u8).init(allocator);
     defer positional_args.deinit();
-    
+
     var i: usize = 0;
     while (i < args.len) {
         const arg = args[i];
-        
+
         // Handle "--" separator (everything after is positional)
         if (std.mem.eql(u8, arg, "--")) {
             // Add remaining args as positional
-            for (args[i + 1..]) |remaining_arg| {
+            for (args[i + 1 ..]) |remaining_arg| {
                 positional_args.append(remaining_arg) catch return ZcliError.SystemOutOfMemory;
             }
             break;
         }
-        
+
         // Handle options (start with -, but not negative numbers)
         if (std.mem.startsWith(u8, arg, "-") and !isNegativeNumber(arg)) {
             option_args.append(arg) catch return ZcliError.SystemOutOfMemory;
-            
+
             // Check if this option expects a value
             if (std.mem.startsWith(u8, arg, "--")) {
                 // Long option
@@ -101,7 +101,7 @@ pub fn parseCommandLine(
                     // Single short option, might need value
                     const option_char = option_chars[0];
                     if (needsValueShort(OptionsType, option_char) and i + 1 < args.len) {
-                        i += 1; 
+                        i += 1;
                         if (i < args.len) {
                             option_args.append(args[i]) catch return ZcliError.SystemOutOfMemory;
                         }
@@ -113,16 +113,16 @@ pub fn parseCommandLine(
             // Positional argument
             positional_args.append(arg) catch return ZcliError.SystemOutOfMemory;
         }
-        
+
         i += 1;
     }
-    
+
     // Parse options from the collected option arguments
     const options = if (option_args.items.len > 0)
         try parseOptionsFromArgs(OptionsType, allocator, option_args.items)
     else
         initializeDefaultOptions(OptionsType);
-    
+
     // Parse positional arguments
     // Note: We need to keep positional_args.items alive for the lifetime of the result
     // because parseArgs may create references to the input slice (for varargs)
@@ -132,7 +132,7 @@ pub fn parseCommandLine(
         allocator.free(positional_slice);
         return err;
     };
-    
+
     const has_varargs = hasVarargsFields(ArgsType);
     const needs_cleanup = hasArrayFields(OptionsType) or has_varargs;
     return CommandParseResult(ArgsType, OptionsType){
@@ -150,7 +150,7 @@ pub fn parseCommandLine(
 /// Check if a string represents a negative number
 fn isNegativeNumber(arg: []const u8) bool {
     if (arg.len < 2 or arg[0] != '-') return false;
-    
+
     // Check if the character after '-' is a digit
     return std.ascii.isDigit(arg[1]);
 }
@@ -159,12 +159,12 @@ fn isNegativeNumber(arg: []const u8) bool {
 fn needsValue(comptime OptionsType: type, option_name: []const u8) bool {
     const type_info = @typeInfo(OptionsType);
     if (type_info != .@"struct") return false;
-    
+
     inline for (type_info.@"struct".fields) |field| {
         if (std.mem.eql(u8, field.name, option_name)) {
             return field.type != bool;
         }
-        
+
         // Also check with dash conversion (field_name -> field-name)
         var dash_name_buf: [64]u8 = undefined;
         const dash_name = convertUnderscoresToDashes(field.name, &dash_name_buf);
@@ -172,7 +172,7 @@ fn needsValue(comptime OptionsType: type, option_name: []const u8) bool {
             return field.type != bool;
         }
     }
-    
+
     return false;
 }
 
@@ -208,9 +208,9 @@ fn initializeDefaultOptions(comptime OptionsType: type) OptionsType {
     if (type_info != .@"struct") {
         @compileError("OptionsType must be a struct");
     }
-    
+
     var result: OptionsType = undefined;
-    
+
     inline for (type_info.@"struct".fields) |field| {
         if (field.type == bool) {
             @field(result, field.name) = false;
@@ -222,7 +222,7 @@ fn initializeDefaultOptions(comptime OptionsType: type) OptionsType {
             @field(result, field.name) = undefined;
         }
     }
-    
+
     return result;
 }
 
@@ -230,7 +230,7 @@ fn initializeDefaultOptions(comptime OptionsType: type) OptionsType {
 fn hasArrayFields(comptime OptionsType: type) bool {
     const type_info = @typeInfo(OptionsType);
     if (type_info != .@"struct") return false;
-    
+
     inline for (type_info.@"struct".fields) |field| {
         if (@typeInfo(field.type) == .pointer) {
             const ptr_info = @typeInfo(field.type).pointer;
@@ -239,7 +239,7 @@ fn hasArrayFields(comptime OptionsType: type) bool {
             }
         }
     }
-    
+
     return false;
 }
 
@@ -248,14 +248,14 @@ fn hasVarargsFields(comptime ArgsType: type) bool {
     const type_info = @typeInfo(ArgsType);
     if (type_info != .@"struct") return false;
     if (type_info.@"struct".fields.len == 0) return false;
-    
+
     // Check if the last field is an array/slice
     const last_field = type_info.@"struct".fields[type_info.@"struct".fields.len - 1];
     if (@typeInfo(last_field.type) == .pointer) {
         const ptr_info = @typeInfo(last_field.type).pointer;
         return ptr_info.size == .slice;
     }
-    
+
     return false;
 }
 
@@ -263,27 +263,21 @@ fn hasVarargsFields(comptime ArgsType: type) bool {
 test "parseCommandLine basic usage" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const Args = struct {
         file: []const u8,
         output: ?[]const u8 = null,
     };
-    
+
     const Options = struct {
         verbose: bool = false,
         format: enum { json, yaml } = .json,
     };
-    
+
     // Test mixed args and options
-    const result = try parseCommandLine(
-        Args, 
-        Options, 
-        null, 
-        allocator, 
-        &.{"input.txt", "--verbose", "output.txt"}
-    );
+    const result = try parseCommandLine(Args, Options, null, allocator, &.{ "input.txt", "--verbose", "output.txt" });
     defer result.deinit();
-    
+
     try testing.expectEqualStrings("input.txt", result.args.file);
     try testing.expectEqualStrings("output.txt", result.args.output.?);
     try testing.expect(result.options.verbose);
@@ -293,25 +287,19 @@ test "parseCommandLine basic usage" {
 test "parseCommandLine options only" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const Args = struct {
         file: ?[]const u8 = null,
     };
-    
+
     const Options = struct {
         verbose: bool = false,
         count: u32 = 1,
     };
-    
-    const result = try parseCommandLine(
-        Args, 
-        Options, 
-        null, 
-        allocator, 
-        &.{"--verbose", "--count", "5"}
-    );
+
+    const result = try parseCommandLine(Args, Options, null, allocator, &.{ "--verbose", "--count", "5" });
     defer result.deinit();
-    
+
     try testing.expect(result.args.file == null);
     try testing.expect(result.options.verbose);
     try testing.expectEqual(@as(u32, 5), result.options.count);

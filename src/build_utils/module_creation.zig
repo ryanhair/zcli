@@ -16,7 +16,18 @@ pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module
         const cmd_name = entry.key_ptr.*;
         const cmd_info = entry.value_ptr.*;
 
-        if (cmd_info.is_group) {
+        if (cmd_info.command_type != .leaf) {
+            // Create module for optional group with index file
+            if (cmd_info.command_type == .optional_group) {
+                const module_name = b.fmt("{s}_index", .{cmd_name});
+                const full_path = b.fmt("{s}/{s}", .{ commands_dir, cmd_info.file_path });
+                const cmd_module = b.addModule(module_name, .{
+                    .root_source_file = b.path(full_path),
+                });
+                cmd_module.addImport("zcli", zcli_module);
+                registry_module.addImport(module_name, cmd_module);
+            }
+            // Create modules for subcommands
             createGroupModules(b, registry_module, zcli_module, cmd_name, &cmd_info, commands_dir);
         } else {
             const module_name = if (std.mem.eql(u8, cmd_name, "test"))
@@ -24,7 +35,7 @@ pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module
             else
                 b.fmt("cmd_{s}", .{cmd_name});
 
-            const full_path = b.fmt("{s}/{s}", .{ commands_dir, cmd_info.path });
+            const full_path = b.fmt("{s}/{s}", .{ commands_dir, cmd_info.file_path });
             const cmd_module = b.addModule(module_name, .{
                 .root_source_file = b.path(full_path),
             });
@@ -42,12 +53,12 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
             const subcmd_name = entry.key_ptr.*;
             const subcmd_info = entry.value_ptr.*;
 
-            if (subcmd_info.is_group) {
+            if (subcmd_info.command_type != .leaf) {
                 createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir);
             } else {
                 const module_name = b.fmt("{s}_{s}", .{ group_name, subcmd_name });
 
-                const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.path });
+                const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.file_path });
                 const cmd_module = b.addModule(module_name, .{
                     .root_source_file = b.path(full_path),
                 });

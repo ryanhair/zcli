@@ -12,16 +12,32 @@ pub const PluginInfo = struct {
     dependency: ?*std.Build.Dependency,
 };
 
+/// Command type classification
+pub const CommandType = enum {
+    /// Leaf command - regular .zig file that can have Args and Options
+    leaf,
+    /// Pure command group - directory without index.zig, always shows help
+    pure_group,
+    /// Optional command group - directory with index.zig, can execute but no Args allowed
+    optional_group,
+};
+
 /// Information about a discovered command
 pub const CommandInfo = struct {
     name: []const u8,
-    path: []const u8,
-    is_group: bool,
+    path: []const []const u8, // Array of command path components
+    file_path: []const u8, // Filesystem path for module loading
+    command_type: CommandType,
     subcommands: ?std.StringHashMap(CommandInfo),
 
     pub fn deinit(self: *CommandInfo, allocator: std.mem.Allocator) void {
         // Free allocated strings
         allocator.free(self.name);
+        allocator.free(self.file_path);
+        // Free path components
+        for (self.path) |component| {
+            allocator.free(component);
+        }
         allocator.free(self.path);
 
         // Free subcommands if they exist

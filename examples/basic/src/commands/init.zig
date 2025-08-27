@@ -3,7 +3,6 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "Initialize a new Git repository",
-    .usage = "init [--bare] [directory]",
     .examples = &.{
         "init",
         "init my-project",
