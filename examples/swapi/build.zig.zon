@@ -1,0 +1,16 @@
+.{
+    .name = .swapi,
+    .version = "0.1.0",
+    .fingerprint = 0xdcfcf43a0f50850f,
+    .minimum_zig_version = "0.14.1",
+    .dependencies = .{
+        .zcli = .{ .path = "../.." },
+        .@"zcli-help" = .{ .path = "../../plugins/zcli-help" },
+        .@"zcli-not-found" = .{ .path = "../../plugins/zcli-not-found" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

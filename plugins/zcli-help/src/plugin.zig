@@ -54,6 +54,12 @@ pub fn onError(
     err: anyerror,
 ) !bool {
     if (err == error.CommandNotFound) {
+        // If no command was provided at all, show app help
+        if (context.command_path.len == 0) {
+            try showAppHelp(context);
+            return true; // Error handled, don't let it propagate
+        }
+        
         // Check if this looks like a command group (has subcommands)
         if (context.command_path.len > 0) {
             const attempted_command = context.command_path[0];

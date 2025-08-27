@@ -518,7 +518,18 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     }
                 }
 
-                // No actual command to execute
+                // No actual command to execute - trigger CommandNotFound so help plugin can handle it
+                var error_handled = false;
+                inline for (sorted_plugins) |Plugin| {
+                    if (@hasDecl(Plugin, "onError")) {
+                        error_handled = try Plugin.onError(context, error.CommandNotFound) or error_handled;
+                    }
+                }
+                
+                if (!error_handled) {
+                    try context.stderr().print("No command specified. Use --help for usage information.\n", .{});
+                    return error.CommandNotFound;
+                }
                 return;
             }
 
