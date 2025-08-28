@@ -15,10 +15,10 @@ pub fn fetchFromSwapi(allocator: std.mem.Allocator, endpoint: []const u8, id: ?u
         try std.fmt.bufPrint(url_buf[0..], "{s}/{s}", .{ SWAPI_BASE_URL, endpoint });
 
     const uri = std.Uri.parse(url) catch return error.InvalidUri;
-    
+
     const header_buffer = try allocator.alloc(u8, 1024);
     defer allocator.free(header_buffer);
-    
+
     var req = client.open(.GET, uri, .{
         .server_header_buffer = header_buffer,
     }) catch |err| {
@@ -33,7 +33,7 @@ pub fn fetchFromSwapi(allocator: std.mem.Allocator, endpoint: []const u8, id: ?u
     if (req.response.status != .ok) {
         return error.HttpRequestFailed;
     }
-    
+
     const body = try req.reader().readAllAlloc(allocator, 1024 * 1024);
     defer allocator.free(body);
 
@@ -51,35 +51,28 @@ pub fn printJsonPretty(allocator: std.mem.Allocator, value: std.json.Value, writ
 
 pub const meta = .{
     .description = "Get information about Star Wars films",
-    .long_description = 
-        \\Retrieve information about Star Wars films from the SWAPI database.
-        \\
-        \\Examples:
-        \\  swapi films           # List all films
-        \\  swapi films 1         # Get A New Hope
-        \\  swapi films 2         # Get The Empire Strikes Back
+    .long_description =
+    \\Retrieve information about Star Wars films from the SWAPI database.
+    \\
+    \\Examples:
+    \\  swapi films           # List all films
+    \\  swapi films 1         # Get A New Hope
+    \\  swapi films 2         # Get The Empire Strikes Back
     ,
+    .args = .{
+        .id = "Film ID (optional - omit to list all)",
+    },
+    .options = .{
+        .pretty = .{ .desc = "Pretty print JSON output", .short = 'p' },
+    },
 };
 
 pub const Args = struct {
     id: ?u32 = null,
-
-    pub const __meta__ = .{
-        .id = .{
-            .description = "Film ID (optional - omit to list all)",
-        },
-    };
 };
 
 pub const Options = struct {
-    @"pretty": bool = true,
-
-    pub const __meta__ = .{
-        .@"pretty" = .{
-            .description = "Pretty print JSON output",
-            .short = 'p',
-        },
-    };
+    pretty: bool = true,
 };
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {

@@ -13,12 +13,12 @@ fn createTestCommands(allocator: std.mem.Allocator) !build_utils.DiscoveredComma
 
     // Create a pure command group (no index.zig)
     var network_subcommands = std.StringHashMap(build_utils.CommandInfo).init(allocator);
-    
+
     // Create path array properly
     var network_ls_path = try allocator.alloc([]const u8, 2);
     network_ls_path[0] = try allocator.dupe(u8, "network");
     network_ls_path[1] = try allocator.dupe(u8, "ls");
-    
+
     const network_ls = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "ls"),
         .path = network_ls_path,
@@ -30,7 +30,7 @@ fn createTestCommands(allocator: std.mem.Allocator) !build_utils.DiscoveredComma
 
     var network_path = try allocator.alloc([]const u8, 1);
     network_path[0] = try allocator.dupe(u8, "network");
-    
+
     const network_group = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "network"),
         .path = network_path,
@@ -45,7 +45,7 @@ fn createTestCommands(allocator: std.mem.Allocator) !build_utils.DiscoveredComma
     var container_run_path = try allocator.alloc([]const u8, 2);
     container_run_path[0] = try allocator.dupe(u8, "container");
     container_run_path[1] = try allocator.dupe(u8, "run");
-    
+
     const container_run = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "run"),
         .path = container_run_path,
@@ -57,7 +57,7 @@ fn createTestCommands(allocator: std.mem.Allocator) !build_utils.DiscoveredComma
 
     var container_path = try allocator.alloc([]const u8, 1);
     container_path[0] = try allocator.dupe(u8, "container");
-    
+
     const container_group = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "container"),
         .path = container_path,
@@ -70,7 +70,7 @@ fn createTestCommands(allocator: std.mem.Allocator) !build_utils.DiscoveredComma
     // Create a leaf command
     var version_path = try allocator.alloc([]const u8, 1);
     version_path[0] = try allocator.dupe(u8, "version");
-    
+
     const version_cmd = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "version"),
         .path = version_path,
@@ -190,12 +190,12 @@ test "nested pure command groups" {
 
     // Create nested structure: docker -> compose (pure) -> up (leaf)
     var compose_subcommands = std.StringHashMap(build_utils.CommandInfo).init(allocator);
-    
+
     var compose_up_path = try allocator.alloc([]const u8, 3);
     compose_up_path[0] = try allocator.dupe(u8, "docker");
     compose_up_path[1] = try allocator.dupe(u8, "compose");
     compose_up_path[2] = try allocator.dupe(u8, "up");
-    
+
     const compose_up = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "up"),
         .path = compose_up_path,
@@ -209,7 +209,7 @@ test "nested pure command groups" {
     var compose_path = try allocator.alloc([]const u8, 2);
     compose_path[0] = try allocator.dupe(u8, "docker");
     compose_path[1] = try allocator.dupe(u8, "compose");
-    
+
     const compose_group = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "compose"),
         .path = compose_path,
@@ -224,7 +224,7 @@ test "nested pure command groups" {
 
     var docker_path = try allocator.alloc([]const u8, 1);
     docker_path[0] = try allocator.dupe(u8, "docker");
-    
+
     const docker_group = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "docker"),
         .path = docker_path,
@@ -352,11 +352,11 @@ test "mixed command types in same parent" {
 
     // Pure group
     var pure_subcommands = std.StringHashMap(build_utils.CommandInfo).init(allocator);
-    
+
     var pure_cmd_path = try allocator.alloc([]const u8, 2);
     pure_cmd_path[0] = try allocator.dupe(u8, "pure");
     pure_cmd_path[1] = try allocator.dupe(u8, "list");
-    
+
     const pure_cmd = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "list"),
         .path = pure_cmd_path,
@@ -368,7 +368,7 @@ test "mixed command types in same parent" {
 
     var pure_path = try allocator.alloc([]const u8, 1);
     pure_path[0] = try allocator.dupe(u8, "pure");
-    
+
     const pure_group = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "pure"),
         .path = pure_path,
@@ -380,11 +380,11 @@ test "mixed command types in same parent" {
 
     // Optional group
     var optional_subcommands = std.StringHashMap(build_utils.CommandInfo).init(allocator);
-    
+
     var optional_cmd_path = try allocator.alloc([]const u8, 2);
     optional_cmd_path[0] = try allocator.dupe(u8, "optional");
     optional_cmd_path[1] = try allocator.dupe(u8, "exec");
-    
+
     const optional_cmd = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "exec"),
         .path = optional_cmd_path,
@@ -396,7 +396,7 @@ test "mixed command types in same parent" {
 
     var optional_path = try allocator.alloc([]const u8, 1);
     optional_path[0] = try allocator.dupe(u8, "optional");
-    
+
     const optional_group = build_utils.CommandInfo{
         .name = try allocator.dupe(u8, "optional"),
         .path = optional_path,

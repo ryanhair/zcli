@@ -525,7 +525,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         error_handled = try Plugin.onError(context, error.CommandNotFound) or error_handled;
                     }
                 }
-                
+
                 if (!error_handled) {
                     try context.stderr().print("No command specified. Use --help for usage information.\n", .{});
                     return error.CommandNotFound;
@@ -622,10 +622,34 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                 var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
                                 inline for (options_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
+
+                                    // Extract metadata from meta.options
+                                    var short: ?u8 = null;
+                                    var description: ?[]const u8 = null;
+
+                                    // Extract from meta.options in module
+                                    if (@hasDecl(cmd.module, "meta")) {
+                                        const meta = cmd.module.meta;
+                                        if (@hasField(@TypeOf(meta), "options")) {
+                                            const options_meta = meta.options;
+                                            if (@hasField(@TypeOf(options_meta), field.name)) {
+                                                const field_meta = @field(options_meta, field.name);
+                                                if (@hasField(@TypeOf(field_meta), "short")) {
+                                                    short = field_meta.short;
+                                                }
+                                                if (@hasField(@TypeOf(field_meta), "desc")) {
+                                                    description = field_meta.desc;
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     try field_list.append(zcli.FieldInfo{
                                         .name = field.name,
                                         .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                                         .is_array = field_type_info == .pointer and field_type_info.pointer.child != u8,
+                                        .short = short,
+                                        .description = description,
                                     });
                                 }
                                 options_field_list = try field_list.toOwnedSlice();
@@ -840,7 +864,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     try context.stderr().print("command {s} not found\n", .{cmd_name});
                     return error.CommandNotFound;
                 }
-                
+
                 // Plugin handled the error, so we don't return an error
                 return;
             }

@@ -52,6 +52,9 @@ pub const FieldInfo = struct {
     name: []const u8,
     is_optional: bool,
     is_array: bool,
+    // Metadata for help generation
+    short: ?u8 = null,
+    description: ?[]const u8 = null,
 };
 
 /// Information about command module structure for plugin introspection

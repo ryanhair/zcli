@@ -59,7 +59,7 @@ pub fn onError(
             try showAppHelp(context);
             return true; // Error handled, don't let it propagate
         }
-        
+
         // Check if this looks like a command group (has subcommands)
         if (context.command_path.len > 0) {
             const attempted_command = context.command_path[0];
@@ -523,7 +523,7 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Conte
     errdefer buffer.deinit();
     var writer = buffer.writer();
 
-    // Generate basic help from field names
+    // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {
         // Convert underscores to dashes in field name
         var option_name_buf: [64]u8 = undefined;
@@ -534,8 +534,21 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Conte
         }
         const option_name = option_name_buf[0..field_info.name.len];
 
-        // TODO: Extract descriptions and short flags from meta if available
-        try writer.print("    --{s:<13} {s}\n", .{ option_name, field_info.name });
+        // Build option display string with short code if available
+        var option_display = std.ArrayList(u8).init(context.allocator);
+        defer option_display.deinit();
+
+        // Add long form first, then short form (consistent with --help, -h)
+        if (field_info.short) |short_char| {
+            try option_display.writer().print("--{s}, -{c}", .{ option_name, short_char });
+        } else {
+            try option_display.writer().print("--{s}", .{option_name});
+        }
+
+        // Use description from metadata, fallback to field name
+        const description = field_info.description orelse field_info.name;
+
+        try writer.print("    {s:<15} {s}\n", .{ option_display.items, description });
     }
 
     return try buffer.toOwnedSlice();
