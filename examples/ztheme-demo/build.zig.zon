@@ -1,0 +1,17 @@
+.{
+    .name = .ztheme_demo,
+    .version = "1.0.0",
+    .fingerprint = 0x805f87020eb4ac2,
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        .zcli = .{ .path = "../.." },
+        .@"zcli-help" = .{ .path = "../../plugins/zcli-help" },
+        .@"zcli-not-found" = .{ .path = "../../plugins/zcli-not-found" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}

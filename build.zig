@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     const test_core_step = b.step("test-core", "Run core tests only");
     const test_plugins_step = b.step("test-plugins", "Run plugin tests only");
     const test_security_step = b.step("test-security", "Run security tests only");
+    const test_ztheme_step = b.step("test-ztheme", "Run ZTheme DSL tests only");
     const test_sequential_step = b.step("test-seq", "Run tests sequentially (avoids conflicts)");
     const test_debug_step = b.step("test-debug", "Debug test hanging issue");
 
@@ -52,6 +53,11 @@ pub fn build(b: *std.Build) void {
         "src/security_test.zig",
         "src/plugin_security_test.zig",
         "src/fuzz_test.zig",
+    };
+
+    // ZTheme DSL test files
+    const ztheme_dsl_test_files = [_][]const u8{
+        "src/ztheme_dsl_test.zig",
     };
 
     // Add core tests
@@ -100,9 +106,21 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    // Add ZTheme DSL tests (parallel execution)
+    for (ztheme_dsl_test_files) |test_file| {
+        const tests = b.addTest(.{
+            .root_source_file = b.path(test_file),
+            .target = target,
+            .optimize = optimize,
+        });
+        const run_tests = b.addRunArtifact(tests);
+        test_ztheme_step.dependOn(&run_tests.step);
+        test_step.dependOn(&run_tests.step);
+    }
+
     // Sequential test execution (separate from parallel execution above)
     // This creates a completely separate dependency chain for sequential execution
-    const all_test_files = core_test_files ++ plugin_test_files ++ integration_test_files ++ security_test_files;
+    const all_test_files = core_test_files ++ plugin_test_files ++ integration_test_files ++ security_test_files ++ ztheme_dsl_test_files;
     var previous_step: ?*std.Build.Step = null;
 
     for (all_test_files) |test_file| {
