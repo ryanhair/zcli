@@ -4,6 +4,14 @@ const zcli = @import("zcli");
 /// zcli-help Plugin
 ///
 /// Provides help functionality for CLI applications using the lifecycle hook plugin system.
+
+// Helper struct for collecting command information
+const CommandInfo = struct {
+    name: []const u8,
+    description: ?[]const u8,
+    is_group: bool,
+};
+
 /// Global options provided by this plugin
 pub const global_options = [_]zcli.GlobalOption{
     zcli.option("help", bool, .{ .short = 'h', .default = false, .description = "Show help message" }),
@@ -86,50 +94,229 @@ pub fn onError(
     return false; // Error not handled
 }
 
-/// Show help for a command group with subcommands
-fn showCommandGroupHelp(context: *zcli.Context, group_name: []const u8) !void {
+/// Unified help display function that handles all help scenarios
+fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     const writer = context.stderr();
-
-    try writer.print("'{s}' is a command group. Available subcommands:\n\n", .{group_name});
-
-    try writer.writeAll("USAGE:\n");
-    try writer.print("    {s} {s} <subcommand>\n\n", .{ context.app_name, group_name });
-
-    try writer.writeAll("SUBCOMMANDS:\n");
-
-    const command_infos = context.getAvailableCommandInfo();
-    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
-    defer displayed_names.deinit();
-
-    for (command_infos) |cmd_info| {
-        // Find direct subcommands of this group
-        if (cmd_info.path.len >= 2 and std.mem.eql(u8, cmd_info.path[0], group_name)) {
-            const subcmd_name = cmd_info.path[1];
-
-            // Avoid duplicates
-            var already_added = false;
-            for (displayed_names.items) |existing| {
-                if (std.mem.eql(u8, existing, subcmd_name)) {
-                    already_added = true;
-                    break;
+    const app_name = context.app_name;
+    const app_version = context.app_version;
+    const app_description = context.app_description;
+    
+    // Print appropriate header based on help type
+    switch (help_type) {
+        .app => {
+            try writer.print("{s} v{s}\n", .{ app_name, app_version });
+            if (app_description.len > 0) {
+                try writer.print("{s}\n", .{app_description});
+            }
+            try writer.writeAll("\n");
+        },
+        .root => {
+            try writer.print("{s} v{s}\n", .{ app_name, app_version });
+            try writer.print("{s}\n\n", .{app_description});
+        },
+        .command_group => |group_name| {
+            try writer.print("'{s}' is a command group. Available subcommands:\n\n", .{group_name});
+        },
+        .command => |command_name| {
+            try writer.print("Help for command: {s}\n\n", .{command_name});
+            
+            // Show description if available
+            if (context.command_meta) |meta| {
+                if (meta.description) |desc| {
+                    try writer.print("{s}\n\n", .{desc});
                 }
             }
-
-            if (!already_added) {
-                try displayed_names.append(subcmd_name);
-
-                if (cmd_info.description) |desc| {
-                    try writer.print("    {s:<15} {s}\n", .{ subcmd_name, desc });
-                } else {
-                    try writer.print("    {s}\n", .{subcmd_name});
+        },
+    }
+    
+    // Show usage
+    try writer.writeAll("USAGE:\n");
+    switch (help_type) {
+        .app, .root => {
+            if (help_type == .root) {
+                // Root command can be invoked directly
+                try writer.print("    {s} [OPTIONS]", .{app_name});
+                if (context.command_module_info) |module_info| {
+                    if (module_info.has_args) {
+                        try writer.writeAll(" [ARGS...]");
+                    }
+                }
+                try writer.writeAll("\n");
+            }
+            try writer.print("    {s} [GLOBAL OPTIONS] <COMMAND> [ARGS]\n\n", .{app_name});
+        },
+        .command_group => |group_name| {
+            try writer.print("    {s} {s} <subcommand>\n\n", .{ app_name, group_name });
+        },
+        .command => {
+            const usage_string = try generateUsage(context);
+            defer context.allocator.free(usage_string);
+            try writer.print("    {s}\n\n", .{usage_string});
+        },
+    }
+    
+    // Show arguments (for commands that have them)
+    if (help_type == .command or help_type == .root) {
+        if (context.command_module_info) |module_info| {
+            if (module_info.has_args) {
+                if (generateArgsHelp(module_info, context) catch null) |args_help| {
+                    defer context.allocator.free(args_help);
+                    try writer.writeAll("ARGUMENTS:\n");
+                    try writer.writeAll(args_help);
+                    try writer.writeAll("\n");
                 }
             }
         }
     }
+    
+    // Show root command's options first (for root help)
+    if (help_type == .root) {
+        if (context.command_module_info) |module_info| {
+            if (module_info.has_options) {
+                if (generateOptionsHelp(module_info, context) catch null) |options_help| {
+                    defer context.allocator.free(options_help);
+                    try writer.writeAll("OPTIONS:\n");
+                    try writer.writeAll(options_help);
+                    try writer.print("    {s:<15} Show this help message\n\n", .{"--help, -h"});
+                }
+            }
+        }
+    }
+    
+    // Show commands/subcommands
+    switch (help_type) {
+        .app, .root => {
+            try showCommandList(context, writer, .top_level);
+        },
+        .command_group => |group_name| {
+            try showCommandList(context, writer, .{ .subcommands_of = group_name });
+        },
+        .command => {
+            // Show subcommands if any
+            try showSubcommands(context, writer);
+        },
+    }
+    
+    // Show options (for non-root commands)
+    if (help_type == .command) {
+        try writer.writeAll("OPTIONS:\n");
+        if (context.command_module_info) |module_info| {
+            if (module_info.has_options) {
+                if (generateOptionsHelp(module_info, context) catch null) |options_help| {
+                    defer context.allocator.free(options_help);
+                    try writer.writeAll(options_help);
+                }
+            }
+        }
+        try writer.print("    {s:<15} Show this help message\n\n", .{"--help, -h"});
+    }
+    
+    // Show global options (for app and root help)
+    if (help_type == .app or help_type == .root) {
+        try writer.writeAll("\nGLOBAL OPTIONS:\n");
+        try writer.writeAll("    -h, --help       Show help information\n");
+        try writer.writeAll("    -V, --version    Show version information\n");
+    }
+    
+    // Show examples if available
+    if ((help_type == .command or help_type == .root) and context.command_meta != null) {
+        if (context.command_meta.?.examples) |examples| {
+            try writer.writeAll("\nEXAMPLES:\n");
+            for (examples) |example| {
+                try writer.print("    {s}\n", .{example});
+            }
+        }
+    }
+    
+    // Show footer
     try writer.writeAll("\n");
+    switch (help_type) {
+        .app, .root => {
+            try writer.print("Run '{s} <command> --help' for more information on a command.\n", .{app_name});
+        },
+        .command_group => |group_name| {
+            try writer.print("Run '{s} {s} <subcommand> --help' for more information on a specific subcommand.\n", .{ app_name, group_name });
+            try writer.print("Run '{s} --help' for general help.\n", .{app_name});
+        },
+        .command => {},
+    }
+}
 
-    try writer.print("Run '{s} {s} <subcommand> --help' for more information on a specific subcommand.\n", .{ context.app_name, group_name });
-    try writer.print("Run '{s} --help' for general help.\n", .{context.app_name});
+/// Type of help to display
+const HelpType = union(enum) {
+    app,                        // General application help
+    root,                       // Root command help (app help with root's options)
+    command_group: []const u8,  // Command group help (shows subcommands)
+    command: []const u8,        // Specific command help
+};
+
+/// List type for showCommandList
+const CommandListType = union(enum) {
+    top_level,                  // Show top-level commands
+    subcommands_of: []const u8, // Show subcommands of a specific command
+};
+
+/// Show a list of commands (used by unified help function)
+fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandListType) !void {
+    try writer.writeAll(if (list_type == .top_level) "COMMANDS:\n" else "SUBCOMMANDS:\n");
+    
+    const command_infos = context.getAvailableCommandInfo();
+    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
+    defer displayed_names.deinit();
+    
+    for (command_infos) |cmd_info| {
+        var should_display = false;
+        var display_name: []const u8 = undefined;
+        
+        switch (list_type) {
+            .top_level => {
+                if (cmd_info.path.len == 1) {
+                    should_display = true;
+                    display_name = cmd_info.path[0];
+                }
+            },
+            .subcommands_of => |parent| {
+                if (cmd_info.path.len >= 2 and std.mem.eql(u8, cmd_info.path[0], parent)) {
+                    should_display = true;
+                    display_name = cmd_info.path[1];
+                }
+            },
+        }
+        
+        if (should_display) {
+            // Avoid duplicates
+            var already_added = false;
+            for (displayed_names.items) |existing| {
+                if (std.mem.eql(u8, existing, display_name)) {
+                    already_added = true;
+                    break;
+                }
+            }
+            
+            if (!already_added) {
+                // Skip help command for top-level (we'll add it manually)
+                if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
+                
+                try displayed_names.append(display_name);
+                
+                if (cmd_info.description) |desc| {
+                    try writer.print("    {s:<12} {s}\n", .{ display_name, desc });
+                } else {
+                    try writer.print("    {s:<12} \n", .{display_name});
+                }
+            }
+        }
+    }
+    
+    // Always show help command last for top-level
+    if (list_type == .top_level) {
+        try writer.writeAll("    help         Show help for commands\n");
+    }
+}
+
+/// Show help for a command group with subcommands
+fn showCommandGroupHelp(context: *zcli.Context, group_name: []const u8) !void {
+    try showHelp(context, .{ .command_group = group_name });
 }
 
 /// Commands provided by this plugin
@@ -159,155 +346,23 @@ pub const commands = struct {
 
 /// Show help for the entire application
 fn showAppHelp(context: *zcli.Context) !void {
-    const writer = context.stderr();
+    try showHelp(context, .app);
+}
 
-    // Get app metadata from context
-    const app_name = context.app_name;
-    const app_version = context.app_version;
-    const app_description = context.app_description;
-
-    try writer.print("{s} v{s}\n", .{ app_name, app_version });
-    if (app_description.len > 0) {
-        try writer.print("{s}\n", .{app_description});
-    }
-    try writer.writeAll("\n");
-
-    try writer.writeAll("USAGE:\n");
-    try writer.print("    {s} [GLOBAL OPTIONS] <COMMAND> [ARGS]\n\n", .{app_name});
-
-    try writer.writeAll("COMMANDS:\n");
-
-    // Collect top-level commands and their info using new command info system
-    const CommandInfo = struct {
-        name: []const u8,
-        description: ?[]const u8,
-        is_group: bool,
-    };
-
-    var top_level_commands = std.ArrayList(CommandInfo).init(context.allocator);
-    defer top_level_commands.deinit();
-
-    const command_infos = context.getAvailableCommandInfo();
-    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
-    defer displayed_names.deinit();
-
-    for (command_infos) |cmd_info| {
-        if (cmd_info.path.len == 1) {
-            const cmd_name = cmd_info.path[0];
-
-            // Avoid duplicates
-            var already_added = false;
-            for (displayed_names.items) |existing| {
-                if (std.mem.eql(u8, existing, cmd_name)) {
-                    already_added = true;
-                    break;
-                }
-            }
-
-            if (!already_added) {
-                try displayed_names.append(cmd_name);
-
-                // Check if this command has subcommands (making it a group)
-                var has_subcommands = false;
-                for (command_infos) |other_cmd_info| {
-                    if (other_cmd_info.path.len > 1 and std.mem.eql(u8, other_cmd_info.path[0], cmd_name)) {
-                        has_subcommands = true;
-                        break;
-                    }
-                }
-
-                try top_level_commands.append(CommandInfo{
-                    .name = cmd_name,
-                    .description = cmd_info.description,
-                    .is_group = has_subcommands,
-                });
-            }
-        }
-    }
-
-    // Show top-level commands with descriptions
-    for (top_level_commands.items) |cmd| {
-        // Skip showing help command here since it's handled by the plugin system
-        if (std.mem.eql(u8, cmd.name, "help")) continue;
-
-        if (cmd.description) |desc| {
-            try writer.print("    {s:<12} {s}\n", .{ cmd.name, desc });
-        } else {
-            try writer.print("    {s:<12} \n", .{cmd.name});
-        }
-    }
-
-    // Always show help command last
-    try writer.writeAll("    help         Show help for commands\n");
-
-    try writer.writeAll("\nGLOBAL OPTIONS:\n");
-    try writer.writeAll("    -h, --help       Show help information\n");
-    try writer.writeAll("    -V, --version    Show version information\n");
-    try writer.writeAll("\n");
-    try writer.print("Run '{s} <command> --help' for more information on a command.\n", .{app_name});
+/// Show help for root command (special case - shows app-level help with root's options)
+fn showRootCommandHelp(context: *zcli.Context) !void {
+    try showHelp(context, .root);
 }
 
 /// Show help for a specific command
 fn showCommandHelp(context: *zcli.Context, command: []const u8) !void {
-    const writer = context.stderr();
-
-    try writer.print("Help for command: {s}\n\n", .{command});
-
-    // Access command metadata from context
-    if (context.command_meta) |meta| {
-        // Show description
-        if (meta.description) |desc| {
-            try writer.print("{s}\n\n", .{desc});
-        }
-
-        // Show usage (always generated)
-        const usage_string = try generateUsage(context);
-        defer context.allocator.free(usage_string);
-
-        try writer.writeAll("USAGE:\n");
-        try writer.print("    {s}\n\n", .{usage_string});
-
-        // Show arguments (generated from command module info)
-        if (context.command_module_info) |module_info| {
-            if (module_info.has_args) {
-                if (generateArgsHelp(module_info, context) catch null) |args_help| {
-                    defer context.allocator.free(args_help);
-                    try writer.writeAll("ARGUMENTS:\n");
-                    try writer.writeAll(args_help);
-                    try writer.writeAll("\n");
-                }
-            }
-        }
-
-        // Show subcommands (dynamically discovered)
-        try showSubcommands(context, writer);
-
-        // Show options (generated from command module info)
-        try writer.writeAll("OPTIONS:\n");
-        if (context.command_module_info) |module_info| {
-            if (module_info.has_options) {
-                if (generateOptionsHelp(module_info, context) catch null) |options_help| {
-                    defer context.allocator.free(options_help);
-                    try writer.writeAll(options_help);
-                }
-            }
-        }
-        try writer.print("    {s:<15} Show this help message\n\n", .{"--help, -h"});
-
-        // Show examples
-        if (meta.examples) |examples| {
-            try writer.writeAll("EXAMPLES:\n");
-            for (examples) |example| {
-                try writer.print("    {s}\n", .{example});
-            }
-            try writer.writeAll("\n");
-        }
-    } else {
-        // Fallback when no metadata is available
-        try writer.writeAll("OPTIONS:\n");
-        try writer.print("    {s:<15} Show this help message\n", .{"--help, -h"});
-        try writer.writeAll("\n");
+    // Special handling for root command
+    if (std.mem.eql(u8, command, "root")) {
+        try showRootCommandHelp(context);
+        return;
     }
+    
+    try showHelp(context, .{ .command = command });
 }
 
 /// Generate usage string based on command structure
