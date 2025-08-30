@@ -301,8 +301,12 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
-                // Add regular commands (paths are already arrays)
+                // Add regular commands (paths are already arrays), but skip "root"
                 for (cmd_entries) |cmd| {
+                    // Skip root command from the visible commands list
+                    if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) {
+                        continue;
+                    }
                     cmd_list = cmd_list ++ .{cmd.path};
                 }
                 // Add plugin commands (they are single names)
@@ -315,8 +319,13 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             // Build command info for plugins at compile time
             const plugin_command_info_list = comptime blk: {
                 var cmd_info_list: []const zcli.CommandInfo = &.{};
-                // Add regular commands with their metadata
+                // Add regular commands with their metadata, but skip "root"
                 for (cmd_entries) |cmd| {
+                    // Skip root command from the visible commands list
+                    if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) {
+                        continue;
+                    }
+                    
                     var description: ?[]const u8 = null;
                     var examples: ?[]const []const u8 = null;
 
@@ -492,10 +501,47 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             };
         }
 
-        fn executeCommand(_: *Self, context: *zcli.Context, args: []const []const u8) !void {
-            // Handle the case where no command is specified - still run hooks with empty command
+        fn executeCommand(_: *Self, context: *zcli.Context, args_input: []const []const u8) !void {
+            // Check if we should use the root command
+            // Root command is executed when:
+            // 1. No arguments provided, OR
+            // 2. First argument starts with '-' (it's an option, not a command)
+            const use_root_command = blk: {
+                if (args_input.len == 0) {
+                    break :blk true;
+                }
+                // Check if first arg is an option (starts with -)
+                if (args_input.len > 0 and std.mem.startsWith(u8, args_input[0], "-")) {
+                    break :blk true;
+                }
+                break :blk false;
+            };
+            
+            // Determine which args to use
+            const args = if (use_root_command) blk: {
+                // Check if there's a root command
+                const root_exists = comptime check: {
+                    for (cmd_entries) |cmd| {
+                        if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) {
+                            break :check true;
+                        }
+                    }
+                    break :check false;
+                };
+                
+                if (root_exists) {
+                    // Create args array with "root" prepended (but this is internal only)
+                    // We'll still pass the original args to the command for option parsing
+                    const root_args = [_][]const u8{"root"};
+                    break :blk &root_args;
+                } else {
+                    break :blk args_input;
+                }
+            } else args_input;
+            
+            // Handle the case where no command is specified and no root command exists
             if (args.len == 0) {
-                // Run hooks for empty command case
+                // No root command - run hooks for empty command case
                 var parsed_args = zcli.ParsedArgs.init(context.allocator);
 
                 // Run postParse hooks
@@ -573,7 +619,12 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
                     if (parts_match) {
                         const matched_command = cmd.path;
-                        const remaining_args = args[parts_count..];
+                        // For root command, use original args (they're all options/args for root)
+                        // For other commands, skip the command parts
+                        const remaining_args = if (use_root_command and std.mem.eql(u8, cmd.path[0], "root"))
+                            args_input  // Use original args for root command
+                        else
+                            args[parts_count..];  // Skip command parts for regular commands
 
                         found = true;
 
