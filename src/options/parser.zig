@@ -5,23 +5,11 @@ const array_utils = @import("array_utils.zig");
 const logging = @import("../logging.zig");
 const args_parser = @import("../args.zig");
 const diagnostic_errors = @import("../diagnostic_errors.zig");
+const type_utils = @import("../type_utils.zig");
 const ZcliError = diagnostic_errors.ZcliError;
 const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 const ResourceLimits = @import("../resource_limits.zig").ResourceLimits;
 const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
-
-/// Check if a struct field has a default value
-fn hasDefaultValue(comptime T: type, comptime field_name: []const u8) bool {
-    const type_info = @typeInfo(T);
-    if (type_info != .@"struct") return false;
-
-    inline for (type_info.@"struct".fields) |field| {
-        if (std.mem.eql(u8, field.name, field_name)) {
-            return field.default_value_ptr != null;
-        }
-    }
-    return false;
-}
 
 /// Parse command-line options based on the provided Options struct type
 ///
@@ -177,7 +165,7 @@ pub fn parseOptionsWithMeta(
             @field(result, field.name) = null;
         } else if (field.type == bool) {
             @field(result, field.name) = false;
-        } else if (comptime hasDefaultValue(OptionsType, field.name)) {
+        } else if (comptime type_utils.hasDefaultValue(OptionsType, field.name)) {
             // Set the default value from the type definition
             if (field.default_value_ptr) |default_ptr| {
                 const default_value: *const field.type = @ptrCast(@alignCast(default_ptr));

@@ -52,8 +52,8 @@ test "global options with different types" {
     };
 
     const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
+        pub const Args = zcli.NoArgs;
+        pub const Options = zcli.NoOptions;
 
         pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
@@ -110,8 +110,8 @@ test "global options short flags" {
     };
 
     const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
+        pub const Args = zcli.NoArgs;
+        pub const Options = zcli.NoOptions;
 
         pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
@@ -165,7 +165,7 @@ test "commands inherit global options" {
     };
 
     const TestCommand = struct {
-        pub const Args = struct {};
+        pub const Args = zcli.NoArgs;
         pub const Options = struct {
             local: bool = false,
         };
@@ -220,8 +220,8 @@ test "global option defaults" {
     };
 
     const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
+        pub const Args = zcli.NoArgs;
+        pub const Options = zcli.NoOptions;
 
         pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
@@ -286,8 +286,8 @@ test "multiple plugins with global options" {
     };
 
     const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
+        pub const Args = zcli.NoArgs;
+        pub const Options = zcli.NoOptions;
 
         pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;

@@ -14,16 +14,14 @@ pub const meta = .{
     },
 };
 
-pub const Args = struct {};
+pub const Args = zcli.NoArgs;
 
 pub const Options = struct {
     short: bool = false,
     porcelain: bool = false,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-    _ = args;
-
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
     if (options.porcelain or options.short) {
         try context.stdout().print("M  main.zig\n", .{});
         try context.stdout().print("A  new-file.zig\n", .{});

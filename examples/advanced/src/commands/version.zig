@@ -12,15 +12,13 @@ pub const meta = .{
     },
 };
 
-pub const Args = struct {};
+pub const Args = zcli.NoArgs;
 
 pub const Options = struct {
     format: ?[]const u8 = null,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-    _ = args;
-
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
     if (options.format) |format| {
         if (std.mem.eql(u8, format, "json")) {
             try context.stdout().print(

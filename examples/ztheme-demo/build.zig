@@ -20,13 +20,13 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.root_module.addImport("zcli", zcli_module);
-    
+
     // Import ztheme module from parent project
     const ztheme_module = b.createModule(.{
         .root_source_file = b.path("../../src/ztheme/ztheme.zig"),
     });
     exe.root_module.addImport("ztheme", ztheme_module);
-    
+
     // Generate command registry using the plugin-aware build system
     const zcli_build = @import("zcli");
 
@@ -46,13 +46,13 @@ pub fn build(b: *std.Build) void {
 
     // Make ztheme available to command modules
     const registry_module = cmd_registry;
-    
+
     // Get the root command module and add ztheme import to it
     const cmd_root = b.modules.get("cmd_root");
     if (cmd_root) |root_module| {
         root_module.addImport("ztheme", ztheme_module);
     }
-    
+
     exe.root_module.addImport("command_registry", registry_module);
 
     b.installArtifact(exe);
@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the ZTheme demo application");
     run_step.dependOn(&run_cmd.step);
-    
+
     // Test step
     const test_cmd = b.addTest(.{
         .root_source_file = b.path("src/commands/root.zig"),
@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) void {
     });
     test_cmd.root_module.addImport("zcli", zcli_module);
     test_cmd.root_module.addImport("ztheme", ztheme_module);
-    
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(test_cmd).step);
 }

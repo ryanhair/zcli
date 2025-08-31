@@ -15,13 +15,13 @@ const AstNode = ast.AstNode;
 /// Result of parsing markdown - contains the AST and provides rendering methods
 pub const MarkdownStyled = struct {
     ast: AstNode,
-    
+
     /// Get the plain text content without any styling
     pub fn getContent(_: MarkdownStyled) []const u8 {
         // TODO: Implement proper text extraction from AST
         return "placeholder content";
     }
-    
+
     /// Render the styled content to a writer
     pub fn render(self: MarkdownStyled, writer: anytype, theme_ctx: anytype) !void {
         try renderAstNode(self.ast, writer, theme_ctx);
@@ -55,7 +55,7 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
             const style = Style{ .italic = true };
             const seq = style.sequenceForCapability(theme_ctx.getCapability());
             try writer.writeAll(seq);
-            
+
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
@@ -67,7 +67,7 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
             const style = Style{ .bold = true };
             const seq = style.sequenceForCapability(theme_ctx.getCapability());
             try writer.writeAll(seq);
-            
+
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
@@ -79,7 +79,7 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
             const style = Style{ .bold = true, .italic = true };
             const seq = style.sequenceForCapability(theme_ctx.getCapability());
             try writer.writeAll(seq);
-            
+
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
@@ -93,7 +93,7 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
             const style = Style{ .fg = code_color };
             const seq = style.sequenceForCapability(theme_ctx.getCapability());
             try writer.writeAll(seq);
-            
+
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
@@ -107,7 +107,7 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
             const style = Style{ .fg = code_color };
             const seq = style.sequenceForCapability(theme_ctx.getCapability());
             try writer.writeAll(seq);
-            
+
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
@@ -119,7 +119,7 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
             const style = Style{ .dim = true };
             const seq = style.sequenceForCapability(theme_ctx.getCapability());
             try writer.writeAll(seq);
-            
+
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
@@ -135,11 +135,11 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
                 const seq = style.sequenceForCapability(theme_ctx.getCapability());
                 try writer.writeAll(seq);
             }
-            
+
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
-            
+
             try writer.writeAll("\x1b[0m");
         },
         else => {
@@ -147,7 +147,7 @@ fn renderAstNode(node: AstNode, writer: anytype, theme_ctx: anytype) !void {
             for (node.children) |child| {
                 try renderAstNode(child, writer, theme_ctx);
             }
-        }
+        },
     }
 }
 
@@ -165,19 +165,19 @@ test "basic text rendering" {
         // Just verify it compiles for now
         _ = styled;
     }
-    
+
     // Runtime test
     var buffer: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var list = std.ArrayList(u8).init(fba.allocator());
-    
+
     // Create a test AST directly for runtime testing
     const test_ast = ast.AstBuilder.root(&.{
         ast.AstBuilder.text("hello"),
         ast.AstBuilder.text(" "),
         ast.AstBuilder.text("world"),
     });
-    
+
     // Create a mock theme context for testing
     const MockTheme = struct {
         pub fn getCapability(_: @This()) @import("../detection/capability.zig").TerminalCapability {
@@ -185,7 +185,7 @@ test "basic text rendering" {
         }
     };
     const mock_theme = MockTheme{};
-    
+
     try renderAstNode(test_ast, list.writer(), &mock_theme);
     try std.testing.expectEqualStrings("hello world", list.items);
 }
@@ -196,19 +196,19 @@ test "italic rendering" {
         // Just verify it compiles for now
         _ = styled;
     }
-    
+
     // Runtime test
     var buffer: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var list = std.ArrayList(u8).init(fba.allocator());
-    
+
     // Create a test AST directly for runtime testing
     const test_ast = ast.AstBuilder.root(&.{
         ast.AstBuilder.italic(&.{
             ast.AstBuilder.text("italic"),
         }),
     });
-    
+
     // Create a mock theme context for testing
     const MockTheme = struct {
         pub fn getCapability(_: @This()) @import("../detection/capability.zig").TerminalCapability {
@@ -216,9 +216,9 @@ test "italic rendering" {
         }
     };
     const mock_theme = MockTheme{};
-    
+
     try renderAstNode(test_ast, list.writer(), &mock_theme);
-    
+
     // Should contain some form of styling and the text content
     try std.testing.expect(std.mem.indexOf(u8, list.items, "italic") != null);
     try std.testing.expect(std.mem.indexOf(u8, list.items, "\x1b[0m") != null);
@@ -230,29 +230,29 @@ test "bold rendering" {
         // Just verify it compiles for now
         _ = styled;
     }
-    
+
     // Runtime test
     var buffer: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var list = std.ArrayList(u8).init(fba.allocator());
-    
+
     // Create a test AST directly for runtime testing
     const test_ast = ast.AstBuilder.root(&.{
         ast.AstBuilder.bold(&.{
             ast.AstBuilder.text("bold"),
         }),
     });
-    
-    // Create a mock theme context for testing  
+
+    // Create a mock theme context for testing
     const MockTheme = struct {
         pub fn getCapability(_: @This()) @import("../detection/capability.zig").TerminalCapability {
             return .ansi_16;
         }
     };
     const mock_theme = MockTheme{};
-    
+
     try renderAstNode(test_ast, list.writer(), &mock_theme);
-    
+
     // Should contain some form of styling and the text content
     try std.testing.expect(std.mem.indexOf(u8, list.items, "bold") != null);
     try std.testing.expect(std.mem.indexOf(u8, list.items, "\x1b[0m") != null);

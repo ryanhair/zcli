@@ -20,7 +20,7 @@ pub const meta = .{
 };
 
 // No positional arguments for this demo
-pub const Args = struct {};
+pub const Args = zcli.NoArgs;
 
 // Command options
 pub const Options = struct {
@@ -366,7 +366,7 @@ const markdown_examples = struct {
     const bold_italic_demo = ztheme.md("This is ***bold and italic*** text");
     const mixed_demo = ztheme.md("*Processing* **100** files with `advanced` algorithms...");
     const dim_mixed_demo = ztheme.md("*italic* **bold** `code` ~dim~ text styles");
-    
+
     // Phase 2: Semantic tags
     const success_semantic = ztheme.md("<success>✓ Build completed successfully!</success>");
     const error_semantic = ztheme.md("<error>✗ Connection failed</error>");
@@ -374,26 +374,26 @@ const markdown_examples = struct {
     const info_semantic = ztheme.md("<info>ℹ Processing 1,234 items...</info>");
     const command_semantic = ztheme.md("Run <command>git commit -m</command> <value>\"message\"</value>");
     const path_semantic = ztheme.md("File not found: <path>/usr/local/bin/app</path>");
-    
+
     // Mixed markdown and semantic tags
     const mixed_semantic = ztheme.md("**Status**: <success>All tests passed!</success> with <warning>3 warnings</warning>");
     const nested_semantic = ztheme.md("<success>Build **completed** in *2.3s*!</success>");
-    
-    // Real-world examples with semantic tags  
+
+    // Real-world examples with semantic tags
     const cli_help_semantic = ztheme.md("Use <flag>--verbose</flag> for *detailed* output");
-    
+
     // Phase 3: Extended semantic roles
     const primary_semantic = ztheme.md("<primary>Main Application Content</primary>");
     const secondary_semantic = ztheme.md("<secondary>Supporting information</secondary>");
     const accent_semantic = ztheme.md("<accent>✨ Featured highlight!</accent>");
-    
+
     // Phase 3: Complex nesting examples
     const complex_nesting = ztheme.md("<success>***Very important*** with `**bold nested**` <accent>*highlighted*</accent></success>");
     const deep_nesting = ztheme.md("***<primary>**<value>*<accent>`ultra deep`</accent>*</value>**</primary>***");
     const practical_complex = ztheme.md("<info>Processing **1,234** files: <path>/app/src/*.zig</path> → <success>*compiled*</success> <accent>**successfully**!</accent></info>");
     const file_operation = ztheme.md("**Copied** <path>src/main.zig</path> to <path>build/main.zig</path>");
     const build_output = ztheme.md("<info>Building...</info> <success>Done!</success> Output: <path>target/release/app</path>");
-    
+
     // Comparison examples
     const markdown_comparison = ztheme.md("**Error**: File not found!");
     const semantic_comparison = ztheme.md("<error>Error</error>: File not found!");
@@ -402,108 +402,108 @@ const markdown_examples = struct {
 fn displayMarkdownDsl(writer: anytype, _: std.mem.Allocator, theme_ctx: *const ztheme.Theme) !void {
     try writer.writeAll("📝 Markdown DSL (Phase 1, 2 & 3):\n");
     try writer.writeAll("   ZTheme supports compile-time markdown + semantic tags for easy styling!\n\n");
-    
+
     // Phase 1: Basic markdown examples
     try writer.writeAll("   Phase 1 - Basic Styles:\n   ");
-    
+
     try markdown_examples.italic_demo.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.bold_demo.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.code_demo.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.code_block_demo.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.dim_demo.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.bold_italic_demo.render(writer, theme_ctx);
     try writer.writeAll("\n\n");
-    
+
     // Phase 2: Semantic tags
     try writer.writeAll("   Phase 2 - Semantic Tags:\n   ");
-    
+
     try markdown_examples.success_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.error_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.warning_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.info_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n\n");
-    
+
     // CLI-specific semantic roles
     try writer.writeAll("   CLI-Specific Semantics:\n   ");
-    
+
     try markdown_examples.command_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.path_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.cli_help_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n\n");
-    
+
     // Mixed markdown and semantic tags
     try writer.writeAll("   Mixed Syntax (Phase 1 + 2):\n   ");
-    
+
     try markdown_examples.mixed_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.dim_mixed_demo.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.nested_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.file_operation.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.build_output.render(writer, theme_ctx);
     try writer.writeAll("\n\n");
-    
+
     // Phase 3: Extended semantic roles and complex nesting
     try writer.writeAll("   Phase 3 - Extended Roles & Complex Nesting:\n   ");
-    
+
     try markdown_examples.primary_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.secondary_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.accent_semantic.render(writer, theme_ctx);
     try writer.writeAll("\n\n");
-    
+
     // Complex nesting examples
     try writer.writeAll("   Complex Nesting Support:\n   ");
-    
+
     try markdown_examples.complex_nesting.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.deep_nesting.render(writer, theme_ctx);
     try writer.writeAll("\n   ");
-    
+
     try markdown_examples.practical_complex.render(writer, theme_ctx);
     try writer.writeAll("\n\n");
-    
+
     // Show the progression
     try writer.writeAll("   Compare the evolution:\n\n");
     try writer.writeAll("   Traditional API:\n   ");
     const traditional = ztheme.theme("Error").bold().red();
     try traditional.render(writer, theme_ctx);
     try writer.writeAll(": File not found!\n\n");
-    
+
     try writer.writeAll("   Phase 1 (Markdown):\n   ");
     try markdown_examples.markdown_comparison.render(writer, theme_ctx);
     try writer.writeAll("\n\n");
-    
+
     try writer.writeAll("   Phase 2 (Semantic):\n   ");
     try markdown_examples.semantic_comparison.render(writer, theme_ctx);
     try writer.writeAll("\n\n   🎯 Readable, maintainable, AND semantically meaningful!\n\n");

@@ -10,43 +10,43 @@ pub const SemanticRole = @import("../adaptive/semantic.zig").SemanticRole;
 /// Node types in the markdown AST
 pub const NodeType = enum {
     // Container nodes
-    root,           // Top-level container
-    
+    root, // Top-level container
+
     // Text nodes
-    text,           // Plain text content
-    
+    text, // Plain text content
+
     // Markdown styling nodes
-    italic,         // *text*
-    bold,           // **text**
-    bold_italic,    // ***text***
-    code,           // `text`
-    code_block,     // ```text```
-    dim,            // ~text~
-    strikethrough,  // ~~text~~
-    
+    italic, // *text*
+    bold, // **text**
+    bold_italic, // ***text***
+    code, // `text`
+    code_block, // ```text```
+    dim, // ~text~
+    strikethrough, // ~~text~~
+
     // Semantic nodes
-    semantic,       // <tag>text</tag>
-    
+    semantic, // <tag>text</tag>
+
     // Future extensions
-    header,         // # text (future)
-    link,           // [text](url) (future)
-    list_item,      // - item (future)
+    header, // # text (future)
+    link, // [text](url) (future)
+    list_item, // - item (future)
 };
 
 /// AST node representing a styled piece of content
 pub const AstNode = struct {
     /// Type of this node
     node_type: NodeType,
-    
+
     /// Raw text content (for text nodes)
     content: []const u8 = "",
-    
+
     /// Semantic role (for semantic nodes)
     semantic_role: ?SemanticRole = null,
-    
+
     /// Child nodes (for container nodes)
     children: []const AstNode = &.{},
-    
+
     /// Get the plain text content of this node and all its children
     pub fn getTextContent(self: AstNode, allocator: std.mem.Allocator) ![]const u8 {
         switch (self.node_type) {
@@ -54,28 +54,28 @@ pub const AstNode = struct {
             .root, .italic, .bold, .bold_italic, .code, .code_block, .dim, .strikethrough, .semantic, .header => {
                 var result = std.ArrayList(u8).init(allocator);
                 defer result.deinit();
-                
+
                 if (self.content.len > 0) {
                     try result.appendSlice(self.content);
                 }
-                
+
                 for (self.children) |child| {
                     const child_content = try child.getTextContent(allocator);
                     defer allocator.free(child_content);
                     try result.appendSlice(child_content);
                 }
-                
+
                 return result.toOwnedSlice();
             },
             else => return "",
         }
     }
-    
+
     /// Check if this node has any styling (non-text node)
     pub fn hasStyle(self: AstNode) bool {
         return self.node_type != .text and self.node_type != .root;
     }
-    
+
     /// Get the semantic role if this is a semantic node
     pub fn getSemanticRole(self: AstNode) ?SemanticRole {
         return if (self.node_type == .semantic) self.semantic_role else null;
@@ -91,7 +91,7 @@ pub const AstBuilder = struct {
             .children = children,
         };
     }
-    
+
     /// Create a plain text node
     pub fn text(comptime content: []const u8) AstNode {
         return AstNode{
@@ -99,7 +99,7 @@ pub const AstBuilder = struct {
             .content = content,
         };
     }
-    
+
     /// Create an italic node
     pub fn italic(comptime children: []const AstNode) AstNode {
         return AstNode{
@@ -107,7 +107,7 @@ pub const AstBuilder = struct {
             .children = children,
         };
     }
-    
+
     /// Create a bold node
     pub fn bold(comptime children: []const AstNode) AstNode {
         return AstNode{
@@ -115,7 +115,7 @@ pub const AstBuilder = struct {
             .children = children,
         };
     }
-    
+
     /// Create a bold italic node
     pub fn boldItalic(comptime children: []const AstNode) AstNode {
         return AstNode{
@@ -123,7 +123,7 @@ pub const AstBuilder = struct {
             .children = children,
         };
     }
-    
+
     /// Create a code node
     pub fn code(comptime children: []const AstNode) AstNode {
         return AstNode{
@@ -131,7 +131,7 @@ pub const AstBuilder = struct {
             .children = children,
         };
     }
-    
+
     /// Create a code block node
     pub fn codeBlock(comptime children: []const AstNode) AstNode {
         return AstNode{
@@ -139,7 +139,7 @@ pub const AstBuilder = struct {
             .children = children,
         };
     }
-    
+
     /// Create a dim node
     pub fn dim(comptime children: []const AstNode) AstNode {
         return AstNode{
@@ -147,7 +147,7 @@ pub const AstBuilder = struct {
             .children = children,
         };
     }
-    
+
     /// Create a semantic node
     pub fn semantic(comptime role: SemanticRole, comptime children: []const AstNode) AstNode {
         return AstNode{
@@ -168,20 +168,16 @@ test "ast node creation" {
 }
 
 test "ast node with children" {
-    const italic_node = AstBuilder.italic(&.{
-        AstBuilder.text("italic text")
-    });
-    
+    const italic_node = AstBuilder.italic(&.{AstBuilder.text("italic text")});
+
     try std.testing.expectEqual(NodeType.italic, italic_node.node_type);
     try std.testing.expectEqual(@as(usize, 1), italic_node.children.len);
     try std.testing.expectEqualStrings("italic text", italic_node.children[0].content);
 }
 
 test "semantic node" {
-    const success_node = AstBuilder.semantic(.success, &.{
-        AstBuilder.text("Success!")
-    });
-    
+    const success_node = AstBuilder.semantic(.success, &.{AstBuilder.text("Success!")});
+
     try std.testing.expectEqual(NodeType.semantic, success_node.node_type);
     try std.testing.expectEqual(SemanticRole.success, success_node.semantic_role.?);
     try std.testing.expectEqual(@as(usize, 1), success_node.children.len);

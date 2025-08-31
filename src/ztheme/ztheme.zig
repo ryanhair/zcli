@@ -6,7 +6,7 @@
 //! Basic usage:
 //! ```zig
 //! const ztheme = @import("ztheme");
-//! 
+//!
 //! // Simple coloring
 //! try ztheme.theme("Error").red().bold().render(writer, &theme_ctx);
 //!
@@ -56,7 +56,7 @@ test {
     std.testing.refAllDecls(@import("adaptive/semantic_test.zig"));
     std.testing.refAllDecls(@import("adaptive/palettes.zig"));
     std.testing.refAllDecls(@import("adaptive/palettes_test.zig"));
-    
+
     // DSL tests
     std.testing.refAllDecls(@import("dsl/ast.zig"));
     std.testing.refAllDecls(@import("dsl/tokenizer.zig"));

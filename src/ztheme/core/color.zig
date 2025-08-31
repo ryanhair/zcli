@@ -139,67 +139,67 @@ fn approximateToAnsi16(idx: u8) u8 {
 pub fn approximateRgbToAnsi16(r: u8, g: u8, b: u8) u8 {
     // First, try semantic color matching for better results
     // This helps colors like coral red map to red, light blue map to cyan, etc.
-    
+
     // Find the dominant color component
     const max_component = @max(@max(r, g), b);
     const min_component = @min(@min(r, g), b);
     const brightness = (@as(u16, r) + @as(u16, g) + @as(u16, b)) / 3;
-    
+
     // Check for grayscale
     const color_range = max_component - min_component;
     if (color_range < 30) {
         // It's grayscale
-        if (brightness < 64) return 0;        // black
-        if (brightness <= 128) return 8;     // bright black (gray) - include 128
-        if (brightness < 192) return 7;      // white
-        return 15;                           // bright white
+        if (brightness < 64) return 0; // black
+        if (brightness <= 128) return 8; // bright black (gray) - include 128
+        if (brightness < 192) return 7; // white
+        return 15; // bright white
     }
-    
+
     // Determine if it's a bright color - consider both overall brightness and individual component intensity
     // Pure colors like (255,0,0) should be bright even if overall brightness is low
     const is_bright = brightness > 140 or max_component > 200;
-    
+
     // Categorize by dominant hue using improved logic
     const r_dominance = @as(i16, r) - @divTrunc((@as(i16, g) + @as(i16, b)), 2);
     const g_dominance = @as(i16, g) - @divTrunc((@as(i16, r) + @as(i16, b)), 2);
     const b_dominance = @as(i16, b) - @divTrunc((@as(i16, r) + @as(i16, g)), 2);
-    
+
     // Yellow-ish (high red and green, lower blue) - check first before red/green
     if (r > 150 and g > 150 and b < (@as(u16, r) + @as(u16, g)) / 2) {
         return if (is_bright) 11 else 3; // bright yellow or yellow
     }
-    
+
     // Red-ish (including coral red)
     if (r_dominance > 20 and r > g and r > b) {
         return if (is_bright) 9 else 1; // bright red or red
     }
-    
+
     // Green-ish
     if (g_dominance > 20 and g > r and g > b) {
         return if (is_bright) 10 else 2; // bright green or green
     }
-    
+
     // Blue-ish (including light blue)
     if (b_dominance > 20 and b > r and b > g) {
         return if (is_bright) 12 else 4; // bright blue or blue
     }
-    
+
     // Cyan-ish (high green and blue, low red) - this handles light blue → cyan mapping
     if (g > 100 and b > 100 and r < g - 30 and r < b - 30) {
         return if (is_bright) 14 else 6; // bright cyan or cyan
     }
-    
+
     // Magenta-ish (high red and blue, low green)
     if (r > 100 and b > 100 and g < r - 50 and g < b - 50) {
         return if (is_bright) 13 else 5; // bright magenta or magenta
     }
-    
+
     // Fallback to perceptual distance if semantic matching fails
     const ansi_colors = [_][3]u8{
-        .{ 0, 0, 0 }, .{ 128, 0, 0 }, .{ 0, 128, 0 }, .{ 128, 128, 0 },
-        .{ 0, 0, 128 }, .{ 128, 0, 128 }, .{ 0, 128, 128 }, .{ 192, 192, 192 },
-        .{ 128, 128, 128 }, .{ 255, 0, 0 }, .{ 0, 255, 0 }, .{ 255, 255, 0 },
-        .{ 0, 0, 255 }, .{ 255, 0, 255 }, .{ 0, 255, 255 }, .{ 255, 255, 255 },
+        .{ 0, 0, 0 },       .{ 128, 0, 0 },   .{ 0, 128, 0 },   .{ 128, 128, 0 },
+        .{ 0, 0, 128 },     .{ 128, 0, 128 }, .{ 0, 128, 128 }, .{ 192, 192, 192 },
+        .{ 128, 128, 128 }, .{ 255, 0, 0 },   .{ 0, 255, 0 },   .{ 255, 255, 0 },
+        .{ 0, 0, 255 },     .{ 255, 0, 255 }, .{ 0, 255, 255 }, .{ 255, 255, 255 },
     };
 
     var best_idx: u8 = 7; // default to white
@@ -210,7 +210,7 @@ pub fn approximateRgbToAnsi16(r: u8, g: u8, b: u8) u8 {
         const dg = @as(i32, g) - @as(i32, ansi_rgb[1]);
         const db = @as(i32, b) - @as(i32, ansi_rgb[2]);
         const distance = @as(u32, @intCast(dr * dr + dg * dg + db * db));
-        
+
         if (distance < best_distance) {
             best_distance = distance;
             best_idx = @as(u8, @intCast(idx));

@@ -16,7 +16,7 @@ pub const meta = .{
     },
 };
 
-pub const Args = struct {};
+pub const Args = zcli.NoArgs;
 
 pub const Options = struct {
     message: ?[]const u8 = null,
@@ -24,9 +24,7 @@ pub const Options = struct {
     all: bool = false,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-    _ = args;
-
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
     if (options.all) {
         try context.stdout().print("Staging all modified and deleted files\n", .{});
     }

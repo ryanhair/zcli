@@ -9,8 +9,8 @@ const RootCommand = struct {
         .description = "Root command",
     };
 
-    pub const Args = struct {};
-    pub const Options = struct {};
+    pub const Args = zcli.NoArgs;
+    pub const Options = zcli.NoOptions;
 
     pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
         try context.io.stdout.print("root executed\n", .{});

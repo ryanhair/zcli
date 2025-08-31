@@ -325,7 +325,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) {
                         continue;
                     }
-                    
+
                     var description: ?[]const u8 = null;
                     var examples: ?[]const []const u8 = null;
 
@@ -516,7 +516,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 }
                 break :blk false;
             };
-            
+
             // Determine which args to use
             const args = if (use_root_command) blk: {
                 // Check if there's a root command
@@ -528,7 +528,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     }
                     break :check false;
                 };
-                
+
                 if (root_exists) {
                     // Create args array with "root" prepended (but this is internal only)
                     // We'll still pass the original args to the command for option parsing
@@ -538,7 +538,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     break :blk args_input;
                 }
             } else args_input;
-            
+
             // Handle the case where no command is specified and no root command exists
             if (args.len == 0) {
                 // No root command - run hooks for empty command case
@@ -622,9 +622,9 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         // For root command, use original args (they're all options/args for root)
                         // For other commands, skip the command parts
                         const remaining_args = if (use_root_command and std.mem.eql(u8, cmd.path[0], "root"))
-                            args_input  // Use original args for root command
+                            args_input // Use original args for root command
                         else
-                            args[parts_count..];  // Skip command parts for regular commands
+                            args[parts_count..]; // Skip command parts for regular commands
 
                         found = true;
 

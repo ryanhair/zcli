@@ -7,6 +7,7 @@ const execution = @import("execution.zig");
 pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
+const type_utils = @import("type_utils.zig");
 
 // Re-export error types
 pub const ZcliError = diagnostic_errors.ZcliError;
@@ -29,6 +30,10 @@ pub const GlobalOptionsResult = plugin_types.GlobalOptionsResult;
 pub const PluginEntry = plugin_types.PluginEntry;
 pub const ContextExtensions = plugin_types.ContextExtensions;
 pub const option = plugin_types.option;
+
+// Re-export standard empty types
+pub const NoArgs = type_utils.NoArgs;
+pub const NoOptions = type_utils.NoOptions;
 
 // ============================================================================
 // Context for Command Execution

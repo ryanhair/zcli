@@ -22,7 +22,7 @@ pub const meta = .{
     },
 };
 
-pub const Args = struct {};
+pub const Args = zcli.NoArgs;
 
 pub const Options = struct {
     all: bool = false,
@@ -35,8 +35,7 @@ pub const Options = struct {
     size: bool = false,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-    _ = args;
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
 
     // Debug: print filter array info
     std.debug.print("DEBUG: filter array len = {d}\n", .{options.filter.len});

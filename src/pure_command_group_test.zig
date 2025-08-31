@@ -14,8 +14,8 @@ const NetworkLs = struct {
     pub const meta = .{
         .description = "List networks",
     };
-    pub const Args = struct {};
-    pub const Options = struct {};
+    pub const Args = zcli.NoArgs;
+    pub const Options = zcli.NoOptions;
     pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
         try context.stdout().print("listing networks...\n", .{});
     }

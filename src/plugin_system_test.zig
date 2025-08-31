@@ -225,8 +225,8 @@ test "plugin lifecycle hooks execution order" {
     // No longer need to reset static state
 
     const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
+        pub const Args = zcli.NoArgs;
+        pub const Options = zcli.NoOptions;
 
         pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
@@ -434,8 +434,8 @@ test "plugin execution priority" {
 // Test for error handling hooks
 test "plugin error handling" {
     const ErrorCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
+        pub const Args = zcli.NoArgs;
+        pub const Options = zcli.NoOptions;
 
         pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;

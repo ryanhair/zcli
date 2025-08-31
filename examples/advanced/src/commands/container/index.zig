@@ -11,13 +11,10 @@ pub const meta = .{
     },
 };
 
-pub const Args = struct {};
-pub const Options = struct {};
+pub const Args = zcli.NoArgs;
+pub const Options = zcli.NoOptions;
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-    _ = args;
-    _ = options;
-
+pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
     try context.stdout().print("Container management commands:\n\n", .{});
     try context.stdout().print("  ls        List containers\n", .{});
     try context.stdout().print("  run       Run a command in a new container\n", .{});

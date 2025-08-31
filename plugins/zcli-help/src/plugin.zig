@@ -100,7 +100,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
-    
+
     // Print appropriate header based on help type
     switch (help_type) {
         .app => {
@@ -119,7 +119,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
         },
         .command => |command_name| {
             try writer.print("Help for command: {s}\n\n", .{command_name});
-            
+
             // Show description if available
             if (context.command_meta) |meta| {
                 if (meta.description) |desc| {
@@ -128,7 +128,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             }
         },
     }
-    
+
     // Show usage
     try writer.writeAll("USAGE:\n");
     switch (help_type) {
@@ -154,7 +154,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             try writer.print("    {s}\n\n", .{usage_string});
         },
     }
-    
+
     // Show arguments (for commands that have them)
     if (help_type == .command or help_type == .root) {
         if (context.command_module_info) |module_info| {
@@ -168,7 +168,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             }
         }
     }
-    
+
     // Show root command's options first (for root help)
     if (help_type == .root) {
         if (context.command_module_info) |module_info| {
@@ -182,7 +182,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             }
         }
     }
-    
+
     // Show commands/subcommands
     switch (help_type) {
         .app, .root => {
@@ -196,7 +196,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             try showSubcommands(context, writer);
         },
     }
-    
+
     // Show options (for non-root commands)
     if (help_type == .command) {
         try writer.writeAll("OPTIONS:\n");
@@ -210,14 +210,14 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
         }
         try writer.print("    {s:<15} Show this help message\n\n", .{"--help, -h"});
     }
-    
+
     // Show global options (for app and root help)
     if (help_type == .app or help_type == .root) {
         try writer.writeAll("\nGLOBAL OPTIONS:\n");
         try writer.writeAll("    -h, --help       Show help information\n");
         try writer.writeAll("    -V, --version    Show version information\n");
     }
-    
+
     // Show examples if available
     if ((help_type == .command or help_type == .root) and context.command_meta != null) {
         if (context.command_meta.?.examples) |examples| {
@@ -227,7 +227,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             }
         }
     }
-    
+
     // Show footer
     try writer.writeAll("\n");
     switch (help_type) {
@@ -244,30 +244,30 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
 
 /// Type of help to display
 const HelpType = union(enum) {
-    app,                        // General application help
-    root,                       // Root command help (app help with root's options)
-    command_group: []const u8,  // Command group help (shows subcommands)
-    command: []const u8,        // Specific command help
+    app, // General application help
+    root, // Root command help (app help with root's options)
+    command_group: []const u8, // Command group help (shows subcommands)
+    command: []const u8, // Specific command help
 };
 
 /// List type for showCommandList
 const CommandListType = union(enum) {
-    top_level,                  // Show top-level commands
+    top_level, // Show top-level commands
     subcommands_of: []const u8, // Show subcommands of a specific command
 };
 
 /// Show a list of commands (used by unified help function)
 fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandListType) !void {
     try writer.writeAll(if (list_type == .top_level) "COMMANDS:\n" else "SUBCOMMANDS:\n");
-    
+
     const command_infos = context.getAvailableCommandInfo();
     var displayed_names = std.ArrayList([]const u8).init(context.allocator);
     defer displayed_names.deinit();
-    
+
     for (command_infos) |cmd_info| {
         var should_display = false;
         var display_name: []const u8 = undefined;
-        
+
         switch (list_type) {
             .top_level => {
                 if (cmd_info.path.len == 1) {
@@ -282,7 +282,7 @@ fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandLi
                 }
             },
         }
-        
+
         if (should_display) {
             // Avoid duplicates
             var already_added = false;
@@ -292,13 +292,13 @@ fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandLi
                     break;
                 }
             }
-            
+
             if (!already_added) {
                 // Skip help command for top-level (we'll add it manually)
                 if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
-                
+
                 try displayed_names.append(display_name);
-                
+
                 if (cmd_info.description) |desc| {
                     try writer.print("    {s:<12} {s}\n", .{ display_name, desc });
                 } else {
@@ -307,7 +307,7 @@ fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandLi
             }
         }
     }
-    
+
     // Always show help command last for top-level
     if (list_type == .top_level) {
         try writer.writeAll("    help         Show help for commands\n");
@@ -327,7 +327,7 @@ pub const commands = struct {
             command: ?[]const u8 = null,
         };
 
-        pub const Options = struct {};
+        pub const Options = zcli.NoOptions;
 
         pub const meta = .{
             .description = "Show help for commands",
@@ -361,7 +361,7 @@ fn showCommandHelp(context: *zcli.Context, command: []const u8) !void {
         try showRootCommandHelp(context);
         return;
     }
-    
+
     try showHelp(context, .{ .command = command });
 }
 

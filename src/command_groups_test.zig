@@ -263,7 +263,7 @@ test "nested pure command groups" {
 
 // Test structures for compile-time validation
 const ValidOptionalGroup = struct {
-    pub const Args = struct {};
+    pub const Args = zcli.NoArgs;
     pub const Options = struct {
         verbose: bool = false,
     };
@@ -274,7 +274,7 @@ const InvalidOptionalGroup = struct {
     pub const Args = struct {
         name: []const u8, // This should fail validation!
     };
-    pub const Options = struct {};
+    pub const Options = zcli.NoOptions;
     pub fn execute(_: Args, _: Options, _: *zcli.Context) !void {}
 };
 

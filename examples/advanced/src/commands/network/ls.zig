@@ -5,13 +5,12 @@ pub const meta = .{
     .description = "List networks",
 };
 
-pub const Args = struct {};
+pub const Args = zcli.NoArgs;
 pub const Options = struct {
     filter: ?[]const u8 = null,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-    _ = args;
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
     _ = options;
     try context.stdout().print("Listing networks...\n", .{});
 }
