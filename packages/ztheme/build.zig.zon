@@ -1,0 +1,14 @@
+.{
+    .name = .ztheme,
+    .version = "0.1.0",
+    .fingerprint = 0x4a2c9f11b1237865,
+    .minimum_zig_version = "0.14.1",
+    .dependencies = .{
+        // No external dependencies - ztheme is a pure Zig library
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+    },
+}
