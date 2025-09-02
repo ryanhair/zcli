@@ -649,9 +649,6 @@ test "compile-time rendering optimization" {
     const styled = comptime theme("CompTime").red().bold();
     try styled.renderComptime(buffer.writer(), .ansi_16);
 
-    // Debug: check what we got
-    std.debug.print("Comptime buffer: '{s}' (len={})\n", .{ buffer.items, buffer.items.len });
-
     // Should contain red and bold codes
     try testing.expect(std.mem.indexOf(u8, buffer.items, "CompTime") != null);
     try testing.expect(buffer.items.len > 8); // Has styling + content + reset
