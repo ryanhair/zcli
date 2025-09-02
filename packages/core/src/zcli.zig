@@ -549,7 +549,7 @@ fn getAvailableSubcommands(comptime group: anytype, allocator: std.mem.Allocator
 /// Typically used with build-time command registry generation:
 /// ```zig
 /// // In build.zig:
-/// const registry = zcli.generateCommandRegistry(b, target, optimize, zcli_module, .{
+/// const registry = zcli.generate(b, exe, zcli_module, .{
 ///     .commands_dir = "src/commands",
 ///     .app_name = "myapp",
 ///     .app_version = "1.0.0",

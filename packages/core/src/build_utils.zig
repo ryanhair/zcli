@@ -10,13 +10,10 @@
 // - build_utils/code_generation.zig  - Registry source code generation
 // - build_utils/module_creation.zig  - Build-time module creation
 // - build_utils/main.zig             - High-level coordination functions
-//
-// This file re-exports all functionality for backward compatibility.
 
 const main = @import("build_utils/main.zig");
 
 // Re-export all types
-pub const PluginInfo = main.PluginInfo;
 pub const CommandInfo = main.CommandInfo;
 pub const DiscoveredCommands = main.DiscoveredCommands;
 pub const BuildConfig = main.BuildConfig;
@@ -30,85 +27,19 @@ pub const command_discovery = main.command_discovery;
 pub const code_generation = main.code_generation;
 pub const module_creation = main.module_creation;
 
-// Re-export plugin system functions
-pub const plugin = main.plugin;
-pub const scanLocalPlugins = main.scanLocalPlugins;
-pub const combinePlugins = main.combinePlugins;
-pub const addPluginModules = main.addPluginModules;
-
 // Re-export command discovery functions
 pub const discoverCommands = main.discoverCommands;
 pub const isValidCommandName = main.isValidCommandName;
-
-// Re-export code generation functions
-pub const generateComptimeRegistrySource = main.generatePluginRegistrySource;
-pub const generatePluginRegistrySource = main.generatePluginRegistrySource;
-pub const generateRegistrySource = main.generateRegistrySource;
 
 // Re-export module creation functions
 pub const createDiscoveredModules = main.createDiscoveredModules;
 
 // Re-export high-level build functions
-pub const buildWithPlugins = main.buildWithPlugins;
-pub const generatePluginRegistry = main.generatePluginRegistry;
-pub const generateCommandRegistry = main.generateCommandRegistry;
-pub const buildWithExternalPlugins = main.buildWithExternalPlugins;
+pub const generate = main.generate;
 
 const std = @import("std");
 const zcli = @import("zcli.zig");
-
-// Test to verify that the pipeline integration works correctly
-// This test simulates the actual build process to verify pipeline functionality
-
-test "pipeline integration with example registry" {
-    const allocator = std.testing.allocator;
-
-    // Create a temporary directory for testing
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(tmp_path);
-
-    // Create test command files
-    try tmp_dir.dir.writeFile(.{
-        .sub_path = "hello.zig",
-        .data =
-        \\const zcli = @import("zcli");
-        \\pub const meta = .{ .description = "Test hello command" };
-        \\pub const Args = struct { name: []const u8 };
-        \\pub fn execute(args: Args, options: struct{}, context: *zcli.Context) !void {
-        \\    try context.stdout().print("Hello, {s}!\n", .{args.name});
-        \\}
-        ,
-    });
-
-    // Discover commands
-    var discovered = try discoverCommands(allocator, tmp_path);
-    defer discovered.deinit();
-
-    // Generate registry with no plugins (baseline test)
-    const options = .{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test CLI for pipeline integration",
-    };
-
-    const registry_source = try generateRegistrySource(allocator, discovered, options);
-    defer allocator.free(registry_source);
-
-    // Debug: print the registry source to see what's generated
-    // std.debug.print("\n--- Generated Registry Source ---\n{s}\n--- End ---\n", .{registry_source});
-
-    // Verify basic registry structure is present (pipelines might not be generated without plugins)
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const app_name") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const app_version") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "test-app") != null);
-
-    // Verify command registration is present in new format
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "zcli.Registry.init") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".register(\"hello\"") != null);
-}
+const PluginInfo = @import("build_utils/types.zig").PluginInfo;
 
 test "pipeline integration preserves backwards compatibility" {
     const allocator = std.testing.allocator;
@@ -238,9 +169,6 @@ test "PluginInfo struct creation" {
     try std.testing.expect(external_plugin.is_local == false);
 }
 
-// Note: combinePlugins requires a real std.Build object which we can't easily mock in tests
-// This functionality is tested through integration tests when the build system runs
-
 test "BuildConfig with plugins" {
     const config = BuildConfig{
         .commands_dir = "src/commands",
@@ -284,7 +212,7 @@ test "plugin registry generation with imports" {
     };
 
     // Generate registry source
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -330,7 +258,7 @@ test "plugin name sanitization for imports" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -366,7 +294,7 @@ test "Context extension generation" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -409,7 +337,7 @@ test "pipeline composition ordering" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -444,7 +372,7 @@ test "Commands struct with plugin commands" {
     // Add a native command
     var hello_path = try allocator.alloc([]const u8, 1);
     hello_path[0] = try allocator.dupe(u8, "hello");
-    
+
     const hello_cmd = CommandInfo{
         .name = try allocator.dupe(u8, "hello"),
         .path = hello_path,
@@ -463,7 +391,7 @@ test "Commands struct with plugin commands" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -503,7 +431,7 @@ test "empty plugin list handling" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -886,7 +814,7 @@ test "generated code structure validation" {
     };
 
     // Generate registry source
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,

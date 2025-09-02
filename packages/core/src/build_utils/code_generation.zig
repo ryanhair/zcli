@@ -249,20 +249,3 @@ fn generatePluginRegistrations(writer: anytype, plugins: []const PluginInfo, all
 fn pluginVarName(allocator: std.mem.Allocator, plugin_name: []const u8) ![]const u8 {
     return std.mem.replaceOwned(u8, allocator, plugin_name, "-", "_") catch plugin_name;
 }
-
-/// Legacy function for backward compatibility - generates registry source without plugins
-/// This is a wrapper around generateComptimeRegistrySource for tests that expect the old interface
-pub fn generateRegistrySource(allocator: std.mem.Allocator, commands: DiscoveredCommands, options: anytype) ![]u8 {
-    // Convert options to BuildConfig
-    const config = BuildConfig{
-        .commands_dir = "", // Not used in code generation
-        .plugins_dir = null,
-        .plugins = null,
-        .app_name = options.app_name,
-        .app_version = options.app_version,
-        .app_description = options.app_description,
-    };
-
-    // Call the new function with no plugins
-    return generateComptimeRegistrySource(allocator, commands, config, &.{});
-}

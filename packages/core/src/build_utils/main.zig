@@ -9,7 +9,6 @@ pub const code_generation = @import("code_generation.zig");
 pub const module_creation = @import("module_creation.zig");
 
 // Re-export commonly used types
-pub const PluginInfo = types.PluginInfo;
 pub const CommandInfo = types.CommandInfo;
 pub const DiscoveredCommands = types.DiscoveredCommands;
 pub const BuildConfig = types.BuildConfig;
@@ -17,16 +16,8 @@ pub const PluginConfig = types.PluginConfig;
 pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 
 // Re-export main functions for backward compatibility
-pub const plugin = plugin_system.plugin;
-pub const scanLocalPlugins = plugin_system.scanLocalPlugins;
-pub const combinePlugins = plugin_system.combinePlugins;
-pub const addPluginModules = plugin_system.addPluginModules;
-
 pub const discoverCommands = command_discovery.discoverCommands;
 pub const isValidCommandName = command_discovery.isValidCommandName;
-
-pub const generatePluginRegistrySource = code_generation.generateComptimeRegistrySource;
-pub const generateRegistrySource = code_generation.generateRegistrySource;
 
 pub const createDiscoveredModules = module_creation.createDiscoveredModules;
 
@@ -35,7 +26,7 @@ pub const createDiscoveredModules = module_creation.createDiscoveredModules;
 // ============================================================================
 
 /// Build function with plugin support that accepts zcli module
-pub fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: BuildConfig) *std.Build.Module {
+fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: BuildConfig) *std.Build.Module {
     // Get target and optimize from executable
     const target = exe.root_module.resolved_target orelse b.graph.host;
     const optimize = exe.root_module.optimize orelse .Debug;
@@ -59,13 +50,13 @@ pub fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module
 }
 
 /// Generate registry with plugin support
-pub fn generatePluginRegistry(
+fn generatePluginRegistry(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     zcli_module: *std.Build.Module,
     config: BuildConfig,
-    plugins: []const PluginInfo,
+    plugins: []const types.PluginInfo,
 ) *std.Build.Module {
     _ = target; // Will be used for plugin compilation
     _ = optimize; // Will be used for plugin compilation
@@ -127,78 +118,10 @@ pub fn generatePluginRegistry(
     return registry_module;
 }
 
-/// Legacy function for backward compatibility
-pub fn generateCommandRegistry(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, zcli_module: *std.Build.Module, options: struct {
-    commands_dir: []const u8,
-    app_name: []const u8,
-    app_version: []const u8,
-    app_description: []const u8,
-}) *std.Build.Module {
-    _ = target; // Currently unused but may be needed later
-    _ = optimize; // Currently unused but may be needed later
-
-    // Discover all commands at build time
-    var discovered_commands = command_discovery.discoverCommands(b.allocator, options.commands_dir) catch |err| {
-        switch (err) {
-            error.InvalidPath => {
-                logging.buildError("Command Discovery Error", options.commands_dir, "Invalid commands directory path.\nPath contains '..' which is not allowed for security reasons", "Please use a relative path without '..' or an absolute path");
-            },
-            error.FileNotFound => {
-                logging.buildError("Command Discovery Error", options.commands_dir, "Commands directory not found", "Please ensure the directory exists and the path is correct");
-            },
-            error.AccessDenied => {
-                logging.buildError("Command Discovery Error", options.commands_dir, "Access denied to commands directory", "Please check file permissions for the directory");
-            },
-            error.OutOfMemory => {
-                logging.buildError("Build Error", "memory allocation", "Out of memory during command discovery", "Try reducing the number of commands or increasing available memory");
-            },
-            else => {
-                logging.buildError("Command Discovery Error", options.commands_dir, "Failed to discover commands", "Check the command directory structure and file permissions");
-                std.debug.print("Error details: {any}\n", .{err});
-            },
-        }
-        // Use a generic exit since we've already logged details
-        std.process.exit(1);
-    };
-    defer discovered_commands.deinit();
-
-    // Generate registry source code
-    const registry_source = code_generation.generateRegistrySource(b.allocator, discovered_commands, options) catch |err| {
-        switch (err) {
-            error.OutOfMemory => {
-                logging.registryGenerationOutOfMemory();
-            },
-        }
-        std.process.exit(1);
-    };
-    defer b.allocator.free(registry_source);
-
-    // Create a write file step to write the generated source
-    const write_registry = b.addWriteFiles();
-    const registry_file = write_registry.add("zcli_generated.zig", registry_source);
-
-    // Create a module from the generated file
-    const registry_module = b.addModule("command_registry", .{
-        .root_source_file = registry_file,
-    });
-
-    // Add zcli import to registry module
-    registry_module.addImport("zcli", zcli_module);
-
-    // Create modules for all discovered command files dynamically
-    module_creation.createDiscoveredModules(b, registry_module, zcli_module, discovered_commands, options.commands_dir);
-
-    return registry_module;
-}
-
 /// Build function for external plugins with explicit plugin configuration
-pub fn buildWithExternalPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: ExternalPluginBuildConfig) *std.Build.Module {
-    // Variables needed for potential future use
-    _ = exe.root_module.resolved_target orelse b.graph.host;
-    _ = exe.root_module.optimize orelse .Debug;
-
+pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: ExternalPluginBuildConfig) *std.Build.Module {
     // Convert PluginConfig array to PluginInfo array
-    var plugins = std.ArrayList(PluginInfo).init(b.allocator);
+    var plugins = std.ArrayList(types.PluginInfo).init(b.allocator);
     defer plugins.deinit();
 
     for (config.plugins) |plugin_config| {
@@ -211,7 +134,7 @@ pub fn buildWithExternalPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcl
             std.process.exit(1);
         };
 
-        const plugin_info = PluginInfo{
+        const plugin_info = types.PluginInfo{
             .name = plugin_config.name,
             .import_name = import_name,
             .is_local = false, // External plugins are not local
@@ -248,12 +171,12 @@ pub fn buildWithExternalPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcl
 // Test helper for creating plugin structures
 const PluginTestHelper = struct {
     allocator: std.mem.Allocator,
-    plugins: std.ArrayList(PluginInfo),
+    plugins: std.ArrayList(types.PluginInfo),
 
     fn init(allocator: std.mem.Allocator) PluginTestHelper {
         return .{
             .allocator = allocator,
-            .plugins = std.ArrayList(PluginInfo).init(allocator),
+            .plugins = std.ArrayList(types.PluginInfo).init(allocator),
         };
     }
 
@@ -286,7 +209,7 @@ const PluginTestHelper = struct {
 
 test "PluginInfo struct creation" {
     // Test local plugin
-    const local_plugin = PluginInfo{
+    const local_plugin = types.PluginInfo{
         .name = "logger",
         .import_name = "plugins/logger",
         .is_local = true,
@@ -298,7 +221,7 @@ test "PluginInfo struct creation" {
     try std.testing.expect(local_plugin.dependency == null);
 
     // Test external plugin
-    const external_plugin = PluginInfo{
+    const external_plugin = types.PluginInfo{
         .name = "zcli-auth",
         .import_name = "zcli-auth",
         .is_local = false,
@@ -308,7 +231,6 @@ test "PluginInfo struct creation" {
     try std.testing.expectEqualStrings(external_plugin.import_name, "zcli-auth");
     try std.testing.expect(external_plugin.is_local == false);
 }
-
 // Note: combinePlugins requires a real std.Build object which we can't easily mock in tests
 // This functionality is tested through integration tests when the build system runs
 
@@ -355,7 +277,7 @@ test "plugin registry generation with imports" {
     };
 
     // Generate registry source
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -401,7 +323,7 @@ test "plugin name sanitization for imports" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -437,7 +359,7 @@ test "Context extension generation" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -480,7 +402,7 @@ test "pipeline composition ordering" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -515,7 +437,7 @@ test "Commands struct with plugin commands" {
     // Add a native command
     var hello_path = try allocator.alloc([]const u8, 1);
     hello_path[0] = try allocator.dupe(u8, "hello");
-    
+
     const hello_cmd = CommandInfo{
         .name = try allocator.dupe(u8, "hello"),
         .path = hello_path,
@@ -534,7 +456,7 @@ test "Commands struct with plugin commands" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -574,7 +496,7 @@ test "empty plugin list handling" {
         .app_description = "Test app",
     };
 
-    const source = try generatePluginRegistrySource(
+    const source = try code_generation.generateComptimeRegistrySource(
         allocator,
         commands,
         config,

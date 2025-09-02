@@ -152,9 +152,7 @@ pub fn build(b: *std.Build) void {
 }
 
 // Re-export build utilities for both backwards compatibility and new plugin features
-pub const generateCommandRegistry = build_utils.generateCommandRegistry;
 pub const BuildConfig = build_utils.BuildConfig;
-pub const buildWithPlugins = build_utils.buildWithPlugins;
 pub const PluginConfig = build_utils.PluginConfig;
 pub const ExternalPluginBuildConfig = build_utils.ExternalPluginBuildConfig;
-pub const buildWithExternalPlugins = build_utils.buildWithExternalPlugins;
+pub const generate = build_utils.generate;

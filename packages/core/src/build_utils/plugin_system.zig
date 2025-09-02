@@ -11,16 +11,6 @@ const PluginConfig = types.PluginConfig;
 // PLUGIN SYSTEM - Discovery, management, and configuration
 // ============================================================================
 
-/// Helper function to create external plugin references
-pub fn plugin(b: *std.Build, name: []const u8) PluginInfo {
-    return PluginInfo{
-        .name = name,
-        .import_name = name,
-        .is_local = false,
-        .dependency = b.lazyDependency(name, .{}),
-    };
-}
-
 /// Scan local plugins directory and return plugin info
 pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
     var plugins = std.ArrayList(PluginInfo).init(b.allocator);

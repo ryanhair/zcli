@@ -248,6 +248,8 @@ test "build integration: maximum nesting depth" {
     try std.testing.expect(current.subcommands.?.contains("cmd"));
 }
 
+const code_generation = @import("build_utils/code_generation.zig");
+
 test "build integration: registry source generation" {
     const allocator = std.testing.allocator;
     var test_dir = try TestDir.init(allocator);
@@ -280,13 +282,17 @@ test "build integration: registry source generation" {
     defer discovered.deinit();
 
     // Generate registry source
-    const options = .{
+    const config = build_utils.BuildConfig{
+        .commands_dir = "", // Not used in code generation
+        .plugins_dir = null,
+        .plugins = null,
         .app_name = "testapp",
         .app_version = "1.0.0",
         .app_description = "Test CLI application",
     };
 
-    const registry_source = try build_utils.generateRegistrySource(allocator, discovered, options);
+    // Call the new function with no plugins
+    const registry_source = try code_generation.generateComptimeRegistrySource(allocator, discovered, config, &.{});
     defer allocator.free(registry_source);
 
     // Verify the generated source contains expected elements
@@ -321,13 +327,17 @@ test "build integration: special command names" {
     try std.testing.expect(discovered.root.contains("test"));
 
     // Generate registry to verify special name handling
-    const options = .{
+    const config = build_utils.BuildConfig{
+        .commands_dir = "", // Not used in code generation
+        .plugins_dir = null,
+        .plugins = null,
         .app_name = "testapp",
         .app_version = "1.0.0",
         .app_description = "Test CLI",
     };
 
-    const registry_source = try build_utils.generateRegistrySource(allocator, discovered, options);
+    // Call the new function with no plugins
+    const registry_source = try code_generation.generateComptimeRegistrySource(allocator, discovered, config, &.{});
     defer allocator.free(registry_source);
 
     // Verify that 'test' command is properly registered in new format
@@ -407,14 +417,18 @@ test "build integration: performance with many commands" {
     try std.testing.expect(discovery_time < max_discovery_time_ns);
 
     // Measure registry generation performance
-    const options = .{
+    const gen_start_time = std.time.nanoTimestamp();
+    const config = build_utils.BuildConfig{
+        .commands_dir = "", // Not used in code generation
+        .plugins_dir = null,
+        .plugins = null,
         .app_name = "perftest",
         .app_version = "1.0.0",
         .app_description = "Performance test CLI",
     };
 
-    const gen_start_time = std.time.nanoTimestamp();
-    const registry_source = try build_utils.generateRegistrySource(allocator, discovered, options);
+    // Call the new function with no plugins
+    const registry_source = try code_generation.generateComptimeRegistrySource(allocator, discovered, config, &.{});
     defer allocator.free(registry_source);
     const generation_time = std.time.nanoTimestamp() - gen_start_time;
 

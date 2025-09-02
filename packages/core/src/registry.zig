@@ -1064,6 +1064,8 @@ test "command type detection: leaf command" {
 // CODE GENERATION TESTS
 // ============================================================================
 
+const code_generation = @import("build_utils/code_generation.zig");
+
 test "code generation: pure groups are not registered as commands" {
     const allocator = testing.allocator;
     var commands = try createTestCommands(allocator);
@@ -1078,7 +1080,7 @@ test "code generation: pure groups are not registered as commands" {
         .app_description = "Test application",
     };
 
-    const source = try build_utils.generateComptimeRegistrySource(allocator, commands, config, &.{});
+    const source = try code_generation.generateComptimeRegistrySource(allocator, commands, config, &.{});
     defer allocator.free(source);
 
     // Pure group "network" should NOT be in .register() calls
@@ -1105,7 +1107,7 @@ test "code generation: pure groups listed in metadata" {
         .app_description = "Test application",
     };
 
-    const source = try build_utils.generateComptimeRegistrySource(allocator, commands, config, &.{});
+    const source = try code_generation.generateComptimeRegistrySource(allocator, commands, config, &.{});
     defer allocator.free(source);
 
     // Should have pure_command_groups array
@@ -1180,7 +1182,7 @@ test "nested pure command groups" {
         .app_description = "Test application",
     };
 
-    const source = try build_utils.generateComptimeRegistrySource(allocator, commands, config, &.{});
+    const source = try code_generation.generateComptimeRegistrySource(allocator, commands, config, &.{});
     defer allocator.free(source);
 
     // Nested pure group should be in metadata
@@ -1631,7 +1633,6 @@ test "pure command group behavior: always shows help without error" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
 
-
     // Test 1: Pure command group without --help should show help and succeed
     TestHelpPlugin.reset();
     try app.execute(&.{"network"});
@@ -1652,7 +1653,6 @@ test "pure command group: subcommands execute normally" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
 
-
     // Subcommand should execute normally without help plugin intervention
     TestHelpPlugin.reset();
     try app.execute(&.{ "network", "ls" });
@@ -1662,7 +1662,6 @@ test "pure command group: subcommands execute normally" {
 test "error handling: plugin returns true prevents error propagation" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
-
 
     // This tests the fix - when a plugin handles CommandNotFound by returning true,
     // the registry should not propagate the error

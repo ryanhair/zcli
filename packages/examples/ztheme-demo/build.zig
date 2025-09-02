@@ -28,11 +28,11 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("ztheme", ztheme_module);
 
     // Generate command registry using the plugin-aware build system
-    const zcli_build = @import("zcli");
+    const zcli = @import("zcli");
 
-    const cmd_registry = zcli_build.buildWithExternalPlugins(b, exe, zcli_module, .{
+    const cmd_registry = zcli.generate(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
-        .plugins = &[_]zcli_build.PluginConfig{ .{
+        .plugins = &[_]zcli.PluginConfig{ .{
             .name = "zcli-help",
             .path = "../../plugins/zcli-help",
         }, .{
