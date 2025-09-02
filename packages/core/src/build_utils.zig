@@ -11,31 +11,12 @@
 // - build_utils/module_creation.zig  - Build-time module creation
 // - build_utils/main.zig             - High-level coordination functions
 
-const main = @import("build_utils/main.zig");
+const types = @import("build_utils/types.zig");
+const CommandInfo = types.CommandInfo;
+const DiscoveredCommands = types.DiscoveredCommands;
+const BuildConfig = types.BuildConfig;
 
-// Re-export all types
-pub const CommandInfo = main.CommandInfo;
-pub const DiscoveredCommands = main.DiscoveredCommands;
-pub const BuildConfig = main.BuildConfig;
-pub const PluginConfig = main.PluginConfig;
-pub const ExternalPluginBuildConfig = main.ExternalPluginBuildConfig;
-
-// Re-export submodules
-pub const types = main.types;
-pub const plugin_system = main.plugin_system;
-pub const command_discovery = main.command_discovery;
-pub const code_generation = main.code_generation;
-pub const module_creation = main.module_creation;
-
-// Re-export command discovery functions
-pub const discoverCommands = main.discoverCommands;
-pub const isValidCommandName = main.isValidCommandName;
-
-// Re-export module creation functions
-pub const createDiscoveredModules = main.createDiscoveredModules;
-
-// Re-export high-level build functions
-pub const generate = main.generate;
+const generateComptimeRegistrySource = @import("build_utils/code_generation.zig").generateComptimeRegistrySource;
 
 const std = @import("std");
 const zcli = @import("zcli.zig");
@@ -212,7 +193,7 @@ test "plugin registry generation with imports" {
     };
 
     // Generate registry source
-    const source = try code_generation.generateComptimeRegistrySource(
+    const source = try generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -258,7 +239,7 @@ test "plugin name sanitization for imports" {
         .app_description = "Test app",
     };
 
-    const source = try code_generation.generateComptimeRegistrySource(
+    const source = try generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -294,7 +275,7 @@ test "Context extension generation" {
         .app_description = "Test app",
     };
 
-    const source = try code_generation.generateComptimeRegistrySource(
+    const source = try generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -337,7 +318,7 @@ test "pipeline composition ordering" {
         .app_description = "Test app",
     };
 
-    const source = try code_generation.generateComptimeRegistrySource(
+    const source = try generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -391,7 +372,7 @@ test "Commands struct with plugin commands" {
         .app_description = "Test app",
     };
 
-    const source = try code_generation.generateComptimeRegistrySource(
+    const source = try generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -431,7 +412,7 @@ test "empty plugin list handling" {
         .app_description = "Test app",
     };
 
-    const source = try code_generation.generateComptimeRegistrySource(
+    const source = try generateComptimeRegistrySource(
         allocator,
         commands,
         config,
@@ -814,7 +795,7 @@ test "generated code structure validation" {
     };
 
     // Generate registry source
-    const source = try code_generation.generateComptimeRegistrySource(
+    const source = try generateComptimeRegistrySource(
         allocator,
         commands,
         config,

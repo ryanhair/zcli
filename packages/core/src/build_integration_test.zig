@@ -1,5 +1,7 @@
 const std = @import("std");
 const build_utils = @import("build_utils.zig");
+const command_discovery = @import("build_utils/command_discovery.zig");
+const types = @import("build_utils/types.zig");
 
 /// Integration tests for the build system command discovery and registry generation.
 /// These tests verify that the build-time code generation works correctly across
@@ -65,7 +67,7 @@ test "build integration: basic command discovery" {
     );
 
     // Test command discovery
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Verify commands were discovered
@@ -110,7 +112,7 @@ test "build integration: nested command groups" {
         \\}
     );
 
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Verify top-level groups
@@ -150,7 +152,7 @@ test "build integration: command name validation" {
     try test_dir.createFile("../traverse.zig", "pub fn execute() !void {}"); // path traversal
     try test_dir.createFile(".hidden.zig", "pub fn execute() !void {}"); // hidden file
 
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Only valid names should be discovered
@@ -183,7 +185,7 @@ test "build integration: empty directories and edge cases" {
     // Group with no index but with subcommands
     try test_dir.createFile("no_index/subcmd.zig", "pub fn execute() !void {}");
 
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Empty directories should not be included
@@ -222,7 +224,7 @@ test "build integration: maximum nesting depth" {
     const beyond_depth_path = "deep/l1/l2/l3/l4/l5/l6/l7/ignored.zig";
     try test_dir.createFile(beyond_depth_path, "pub fn execute() !void {}");
 
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Should discover the structure within allowed depth
@@ -278,11 +280,11 @@ test "build integration: registry source generation" {
         \\}
     );
 
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     // Generate registry source
-    const config = build_utils.BuildConfig{
+    const config = types.BuildConfig{
         .commands_dir = "", // Not used in code generation
         .plugins_dir = null,
         .plugins = null,
@@ -321,13 +323,13 @@ test "build integration: special command names" {
     // Test command with name that's a Zig keyword
     try test_dir.createFile("test.zig", "pub fn execute() !void {}");
 
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
 
     try std.testing.expect(discovered.root.contains("test"));
 
     // Generate registry to verify special name handling
-    const config = build_utils.BuildConfig{
+    const config = types.BuildConfig{
         .commands_dir = "", // Not used in code generation
         .plugins_dir = null,
         .plugins = null,
@@ -347,34 +349,34 @@ test "build integration: special command names" {
 
 test "build integration: isValidCommandName function" {
     // Test the validation function directly
-    try std.testing.expect(build_utils.isValidCommandName("hello"));
-    try std.testing.expect(build_utils.isValidCommandName("hello-world"));
-    try std.testing.expect(build_utils.isValidCommandName("hello_world"));
-    try std.testing.expect(build_utils.isValidCommandName("hello123"));
-    try std.testing.expect(build_utils.isValidCommandName("UPPERCASE"));
-    try std.testing.expect(build_utils.isValidCommandName("Mixed-Case_123"));
+    try std.testing.expect(command_discovery.isValidCommandName("hello"));
+    try std.testing.expect(command_discovery.isValidCommandName("hello-world"));
+    try std.testing.expect(command_discovery.isValidCommandName("hello_world"));
+    try std.testing.expect(command_discovery.isValidCommandName("hello123"));
+    try std.testing.expect(command_discovery.isValidCommandName("UPPERCASE"));
+    try std.testing.expect(command_discovery.isValidCommandName("Mixed-Case_123"));
 
     // Invalid names
-    try std.testing.expect(!build_utils.isValidCommandName(""));
-    try std.testing.expect(!build_utils.isValidCommandName("../traverse"));
-    try std.testing.expect(!build_utils.isValidCommandName("hello/world"));
-    try std.testing.expect(!build_utils.isValidCommandName("hello\\world"));
-    try std.testing.expect(!build_utils.isValidCommandName(".hidden"));
-    try std.testing.expect(!build_utils.isValidCommandName("hello world"));
-    try std.testing.expect(!build_utils.isValidCommandName("hello@world"));
-    try std.testing.expect(!build_utils.isValidCommandName("hello$world"));
-    try std.testing.expect(!build_utils.isValidCommandName("hello;rm -rf"));
+    try std.testing.expect(!command_discovery.isValidCommandName(""));
+    try std.testing.expect(!command_discovery.isValidCommandName("../traverse"));
+    try std.testing.expect(!command_discovery.isValidCommandName("hello/world"));
+    try std.testing.expect(!command_discovery.isValidCommandName("hello\\world"));
+    try std.testing.expect(!command_discovery.isValidCommandName(".hidden"));
+    try std.testing.expect(!command_discovery.isValidCommandName("hello world"));
+    try std.testing.expect(!command_discovery.isValidCommandName("hello@world"));
+    try std.testing.expect(!command_discovery.isValidCommandName("hello$world"));
+    try std.testing.expect(!command_discovery.isValidCommandName("hello;rm -rf"));
 }
 
 test "build integration: error handling for invalid paths" {
     const allocator = std.testing.allocator;
 
     // Test with non-existent directory
-    const result = build_utils.discoverCommands(allocator, "/nonexistent/directory/path");
+    const result = command_discovery.discoverCommands(allocator, "/nonexistent/directory/path");
     try std.testing.expectError(error.FileNotFound, result);
 
     // Test with path traversal attempt
-    const traversal_result = build_utils.discoverCommands(allocator, "../../../etc");
+    const traversal_result = command_discovery.discoverCommands(allocator, "../../../etc");
     try std.testing.expectError(error.InvalidPath, traversal_result);
 }
 
@@ -405,7 +407,7 @@ test "build integration: performance with many commands" {
 
     // Measure discovery performance
     const start_time = std.time.nanoTimestamp();
-    var discovered = try build_utils.discoverCommands(allocator, test_dir.path);
+    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
     defer discovered.deinit();
     const discovery_time = std.time.nanoTimestamp() - start_time;
 
@@ -418,7 +420,7 @@ test "build integration: performance with many commands" {
 
     // Measure registry generation performance
     const gen_start_time = std.time.nanoTimestamp();
-    const config = build_utils.BuildConfig{
+    const config = types.BuildConfig{
         .commands_dir = "", // Not used in code generation
         .plugins_dir = null,
         .plugins = null,

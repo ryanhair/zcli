@@ -1,25 +1,15 @@
 const std = @import("std");
 const logging = @import("../logging.zig");
+const types = @import("types.zig");
+const module_creation = @import("module_creation.zig");
+const plugin_system = @import("plugin_system.zig");
+const command_discovery = @import("command_discovery.zig");
+const code_generation = @import("code_generation.zig");
 
-// Import all specialized modules
-pub const types = @import("types.zig");
-pub const plugin_system = @import("plugin_system.zig");
-pub const command_discovery = @import("command_discovery.zig");
-pub const code_generation = @import("code_generation.zig");
-pub const module_creation = @import("module_creation.zig");
-
-// Re-export commonly used types
-pub const CommandInfo = types.CommandInfo;
-pub const DiscoveredCommands = types.DiscoveredCommands;
-pub const BuildConfig = types.BuildConfig;
-pub const PluginConfig = types.PluginConfig;
-pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
-
-// Re-export main functions for backward compatibility
-pub const discoverCommands = command_discovery.discoverCommands;
-pub const isValidCommandName = command_discovery.isValidCommandName;
-
-pub const createDiscoveredModules = module_creation.createDiscoveredModules;
+const CommandInfo = types.CommandInfo;
+const BuildConfig = types.BuildConfig;
+const DiscoveredCommands = types.DiscoveredCommands;
+const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 
 // ============================================================================
 // HIGH-LEVEL BUILD FUNCTIONS - Main entry points for build.zig

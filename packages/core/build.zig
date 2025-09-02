@@ -1,5 +1,6 @@
 const std = @import("std");
-const build_utils = @import("src/build_utils.zig");
+const types = @import("src/build_utils/types.zig");
+const main = @import("src/build_utils/main.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -152,7 +153,7 @@ pub fn build(b: *std.Build) void {
 }
 
 // Re-export build utilities for both backwards compatibility and new plugin features
-pub const BuildConfig = build_utils.BuildConfig;
-pub const PluginConfig = build_utils.PluginConfig;
-pub const ExternalPluginBuildConfig = build_utils.ExternalPluginBuildConfig;
-pub const generate = build_utils.generate;
+pub const BuildConfig = types.BuildConfig;
+pub const PluginConfig = types.PluginConfig;
+pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
+pub const generate = main.generate;
