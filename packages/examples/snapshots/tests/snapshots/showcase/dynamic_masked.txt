@@ -1,0 +1,7 @@
+User ID: [UUID]
+Timestamp: 1705312245
+ISO Time: [TIMESTAMP]
+Memory address: [MEMORY_ADDR]
+Pointer: [MEMORY_ADDR]
+Session: sess_a1b2c3d4e5f67890
+Request ID: req_12345678

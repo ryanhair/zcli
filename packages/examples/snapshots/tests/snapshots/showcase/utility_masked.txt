@@ -1,0 +1,1 @@
+User [UUID] logged in at [TIMESTAMP] from [MEMORY_ADDR]

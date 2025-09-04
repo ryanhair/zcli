@@ -1,0 +1,7 @@
+[[TIMESTAMP]] INFO  Starting snapshot demo application
+[[TIMESTAMP]] DEBUG Loading configuration from config.json
+[[TIMESTAMP]] INFO  User login: user_[UUID]
+[[TIMESTAMP]] WARN  Rate limit approaching: 95/100 requests
+[[TIMESTAMP]] ERROR Database connection failed: timeout after 5s
+[[TIMESTAMP]] INFO  Retrying with backup database...
+[[TIMESTAMP]] INFO  Connection established at [MEMORY_ADDR]

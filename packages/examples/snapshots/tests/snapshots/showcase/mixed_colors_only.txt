@@ -1,0 +1,3 @@
+[34m[INFO][0m Session 550e8400-e29b-41d4-a716-446655440000 started
+[33m[WARN][0m Memory usage at 0x7fff5fbff710: high
+[32m[SUCCESS][0m Operation completed at 2024-01-15T10:30:45.123Z

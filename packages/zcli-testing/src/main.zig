@@ -1,7 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
-pub const snapshot = @import("snapshot.zig");
+pub const snapshot = @import("snapshot");
 pub const runner = @import("runner.zig");
 pub const assertions = @import("assertions.zig");
 
@@ -11,9 +11,8 @@ pub const interactive = @import("interactive.zig");
 
 // Re-export snapshot functions at the top level for convenience
 pub const expectSnapshot = snapshot.expectSnapshot;
+pub const SnapshotOptions = snapshot.SnapshotOptions;
 pub const expectSnapshotWithData = snapshot.expectSnapshotWithData; // For framework testing only
-pub const expectSnapshotAnsi = snapshot.expectSnapshotAnsi;
-pub const expectSnapshotWithMasking = snapshot.expectSnapshotWithMasking;
 pub const maskDynamicContent = snapshot.maskDynamicContent;
 pub const stripAnsi = snapshot.stripAnsi;
 pub const expectExitCode = assertions.expectExitCode;

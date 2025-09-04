@@ -1,15 +1,12 @@
 .{
-    .name = .zcli_testing,
+    .name = .snapshot_showcase,
     .version = "0.1.0",
-    .fingerprint = 0xbe1ce8d0b2d08d42,
+    .fingerprint = 0x3f37a296cd16c2b3,
     .minimum_zig_version = "0.14.0",
     
     .dependencies = .{
-        .zcli = .{
-            .path = "../core",
-        },
         .snapshot = .{
-            .path = "../snapshot",
+            .path = "../../snapshot",
         },
     },
     
@@ -17,6 +14,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        "DESIGN.md",
+        "tests",
+        "README.md",
     },
 }

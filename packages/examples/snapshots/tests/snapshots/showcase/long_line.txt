@@ -1,0 +1,1 @@
+This is a very long line that should be truncated in the diff output when there are mismatches because it exceeds the reasonable display width for terminal output and would make the diff hard to read

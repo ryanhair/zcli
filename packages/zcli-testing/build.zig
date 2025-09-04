@@ -7,8 +7,12 @@ pub fn build(b: *std.Build) void {
     // Add update-snapshots option
     const update_snapshots = b.option(bool, "update-snapshots", "Update test snapshots") orelse false;
 
-    // Get zcli dependency
+    // Get dependencies
     const zcli_dep = b.dependency("zcli", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const snapshot_dep = b.dependency("snapshot", .{
         .target = target,
         .optimize = optimize,
     });
@@ -23,6 +27,10 @@ pub fn build(b: *std.Build) void {
                 .name = "zcli",
                 .module = zcli_dep.module("zcli"),
             },
+            .{
+                .name = "snapshot",
+                .module = snapshot_dep.module("snapshot"),
+            },
         },
     });
 
@@ -33,6 +41,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     lib_tests.root_module.addImport("zcli", zcli_dep.module("zcli"));
+    lib_tests.root_module.addImport("snapshot", snapshot_dep.module("snapshot"));
     
     const lib_test_options = b.addOptions();
     lib_test_options.addOption(bool, "update_snapshots", update_snapshots);

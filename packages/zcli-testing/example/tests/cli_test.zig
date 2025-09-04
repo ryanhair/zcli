@@ -99,7 +99,7 @@ test "help command output snapshot" {
     defer result.deinit();
 
     try testing.expectExitCode(result, 0);
-    try testing.expectSnapshot(result.stderr, @src(), "help_output");
+    try testing.expectSnapshot(result.stderr, @src(), "help_output", .{});
 }
 
 test "hello command variations snapshot" {
@@ -129,7 +129,7 @@ test "hello command variations snapshot" {
         try output.writer().print("Excited: {s}", .{result.stdout});
     }
 
-    try testing.expectSnapshot(output.items, @src(), "hello_variations");
+    try testing.expectSnapshot(output.items, @src(), "hello_variations", .{});
 }
 
 test "echo command variations snapshot" {
@@ -159,5 +159,5 @@ test "echo command variations snapshot" {
         try output.writer().print("No newline: '{s}'\\n", .{result.stdout});
     }
 
-    try testing.expectSnapshot(output.items, @src(), "echo_variations");
+    try testing.expectSnapshot(output.items, @src(), "echo_variations", .{});
 }

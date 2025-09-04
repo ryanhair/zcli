@@ -53,14 +53,6 @@ pub fn expectNotContains(output: []const u8, needle: []const u8) !void {
     }
 }
 
-/// Assert that two strings are equal
-pub fn expectEqualStrings(expected: []const u8, actual: []const u8) !void {
-    if (!std.mem.eql(u8, expected, actual)) {
-        if (!builtin.is_test) std.debug.print("\nStrings not equal!\n\nExpected:\n{s}\n\nActual:\n{s}\n", .{ expected, actual });
-        return error.StringMismatch;
-    }
-}
-
 /// Assert that output is valid JSON
 pub fn expectValidJson(output: []const u8) !void {
     const allocator = std.heap.page_allocator;
@@ -78,14 +70,14 @@ test "expectExitCode" {
         .exit_code = 0,
         .allocator = undefined,
     };
-    
+
     try expectExitCode(result, 0);
     try std.testing.expectError(error.ExitCodeMismatch, expectExitCode(result, 1));
 }
 
 test "expectContains" {
     const output = "Hello, World!";
-    
+
     try expectContains(output, "Hello");
     try expectContains(output, "World");
     try std.testing.expectError(error.SubstringNotFound, expectContains(output, "Goodbye"));
@@ -95,7 +87,7 @@ test "expectValidJson" {
     try expectValidJson(
         \\{"name": "test", "value": 42}
     );
-    
+
     try std.testing.expectError(error.InvalidJson, expectValidJson("not json"));
 }
 
@@ -106,14 +98,14 @@ test "expectStdoutEmpty" {
         .exit_code = 0,
         .allocator = undefined,
     };
-    
+
     const non_empty_result = runner.Result{
         .stdout = "output",
         .stderr = "",
         .exit_code = 0,
         .allocator = undefined,
     };
-    
+
     try expectStdoutEmpty(empty_result);
     try std.testing.expectError(error.StdoutNotEmpty, expectStdoutEmpty(non_empty_result));
 }
@@ -125,32 +117,32 @@ test "expectStderrEmpty" {
         .exit_code = 0,
         .allocator = undefined,
     };
-    
+
     const non_empty_result = runner.Result{
         .stdout = "",
         .stderr = "error",
         .exit_code = 0,
         .allocator = undefined,
     };
-    
+
     try expectStderrEmpty(empty_result);
     try std.testing.expectError(error.StderrNotEmpty, expectStderrEmpty(non_empty_result));
 }
 
 test "expectContains with edge cases" {
     // Empty string tests
-    try expectContains("hello", "");  // Empty substring should always be found
+    try expectContains("hello", ""); // Empty substring should always be found
     try std.testing.expectError(error.SubstringNotFound, expectContains("", "hello"));
-    
+
     // Case sensitivity
     try expectContains("Hello World", "Hello");
     try std.testing.expectError(error.SubstringNotFound, expectContains("Hello World", "hello"));
-    
+
     // Special characters
     try expectContains("Line 1\nLine 2\tTabbed", "\n");
     try expectContains("Line 1\nLine 2\tTabbed", "\t");
     try expectContains("Contains \"quotes\"", "\"quotes\"");
-    
+
     // Unicode support
     try expectContains("Hello 🌍 World", "🌍");
     try expectContains("café", "é");
@@ -163,26 +155,26 @@ test "expectExitCode with various codes" {
         .exit_code = 0,
         .allocator = undefined,
     };
-    
+
     const error_result = runner.Result{
         .stdout = "",
         .stderr = "",
         .exit_code = 1,
         .allocator = undefined,
     };
-    
+
     const signal_result = runner.Result{
         .stdout = "",
         .stderr = "",
-        .exit_code = 130,  // SIGINT
+        .exit_code = 130, // SIGINT
         .allocator = undefined,
     };
-    
+
     // Test various exit codes
     try expectExitCode(success_result, 0);
     try expectExitCode(error_result, 1);
     try expectExitCode(signal_result, 130);
-    
+
     // Test mismatches
     try std.testing.expectError(error.ExitCodeMismatch, expectExitCode(success_result, 1));
     try std.testing.expectError(error.ExitCodeMismatch, expectExitCode(error_result, 0));
@@ -197,7 +189,7 @@ test "expectValidJson with complex structures" {
     try expectValidJson("\"string\"");
     try expectValidJson("[]");
     try expectValidJson("{}");
-    
+
     // Complex nested structure
     try expectValidJson(
         \\{
@@ -215,7 +207,7 @@ test "expectValidJson with complex structures" {
         \\  "count": 1
         \\}
     );
-    
+
     // Test invalid JSON variations
     try std.testing.expectError(error.InvalidJson, expectValidJson("{"));
     try std.testing.expectError(error.InvalidJson, expectValidJson("{\"key\": }"));

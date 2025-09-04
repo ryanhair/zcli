@@ -1,0 +1,20 @@
+{
+  "name": "snapshot-demo",
+  "version": "1.0.0",
+  "status": "active",
+  "features": [
+    "snapshot-testing",
+    "ansi-colors",
+    "dynamic-masking"
+  ],
+  "config": {
+    "debug": false,
+    "verbose": true,
+    "output_format": "json"
+  },
+  "stats": {
+    "tests_run": 42,
+    "snapshots_created": 15,
+    "success_rate": 98.5
+  }
+}

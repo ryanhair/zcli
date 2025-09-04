@@ -1,0 +1,6 @@
+[32m✅ SUCCESS:[0m Operation completed successfully
+[31m❌ ERROR:[0m Something went wrong
+[33m⚠️  WARNING:[0m This is a warning
+[34m🔍 INFO:[0m Informational message
+[35m🎨 STYLE:[0m [1mBold[0m [4mUnderline[0m [3mItalic[0m
+[36mCyan text[0m with [91mbright red[0m mixed in

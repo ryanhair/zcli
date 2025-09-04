@@ -1,0 +1,16 @@
+snapshot-demo - Showcase for snapshot testing
+
+USAGE:
+    snapshot-demo <command>
+
+COMMANDS:
+    help        Show this help message
+    colors      Display colored output
+    dynamic     Show output with dynamic content (UUIDs, timestamps)
+    json        Output structured JSON data
+    table       Display a formatted table
+    logs        Show log messages with timestamps
+
+EXAMPLES:
+    snapshot-demo colors     # Test ANSI color handling
+    snapshot-demo dynamic    # Test dynamic content masking
