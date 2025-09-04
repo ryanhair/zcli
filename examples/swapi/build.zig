@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
 
     // Create the executable
     const exe = b.addExecutable(.{
-        .name = "dockr",
+        .name = "swapi",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -26,15 +26,16 @@ pub fn build(b: *std.Build) void {
 
     const cmd_registry = zcli.generate(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
-        .plugins = &[_]zcli.PluginConfig{
-            .{
-                .name = "zcli-help",
-                .path = "../../plugins/zcli-help",
-            },
-        },
-        .app_name = "dockr",
-        .app_version = "0.1.0",
-        .app_description = "A Docker-like container management CLI built with zcli",
+        .plugins = &[_]zcli.PluginConfig{ .{
+            .name = "zcli-help",
+            .path = "../../plugins/plugins/zcli-help",
+        }, .{
+            .name = "zcli-not-found",
+            .path = "../../plugins/plugins/zcli-not-found/",
+        } },
+        .app_name = "swapi",
+        .app_version = "1.0.0",
+        .app_description = "A Star Wars API CLI tool built with zcli",
     });
 
     exe.root_module.addImport("command_registry", cmd_registry);

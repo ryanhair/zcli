@@ -4,9 +4,9 @@
     .fingerprint = 0xdcfcf43a0f50850f,
     .minimum_zig_version = "0.14.1",
     .dependencies = .{
-        .zcli = .{ .path = "../../core" },
-        .@"zcli-help" = .{ .path = "../../plugins/zcli-help" },
-        .@"zcli-not-found" = .{ .path = "../../plugins/zcli-not-found" },
+        .zcli = .{ .path = "../../packages/core" },
+        .@"zcli-help" = .{ .path = "../../packages/plugins/zcli-help" },
+        .@"zcli-not-found" = .{ .path = "../../packages/plugins/zcli-not-found" },
     },
     .paths = .{
         "build.zig",
