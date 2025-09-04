@@ -1,0 +1,17 @@
+example-cli v1.0.0
+Example CLI for testing zcli-testing
+
+USAGE:
+    example-cli [GLOBAL OPTIONS] <COMMAND> [ARGS]
+
+COMMANDS:
+    echo         Echo arguments back
+    tty_test     Test TTY detection
+    hello        Say hello to someone
+    help         Show help for commands
+
+GLOBAL OPTIONS:
+    -h, --help       Show help information
+    -V, --version    Show version information
+
+Run 'example-cli <command> --help' for more information on a command.
