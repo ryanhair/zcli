@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_utils = @import("src/build_utils.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -26,3 +27,6 @@ pub fn build(b: *std.Build) void {
     // Install the module (for use by other packages)
     b.installArtifact(snapshot_tests);
 }
+
+// Re-export build utilities for use in other build.zig files
+pub const setup = build_utils.setup;

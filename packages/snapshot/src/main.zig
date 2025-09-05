@@ -1,5 +1,6 @@
 const std = @import("std");
 const snapshot = @import("snapshot.zig");
+pub const build_utils = @import("build_utils.zig");
 
 // Export main snapshot testing function with options
 pub const expectSnapshot = snapshot.expectSnapshot;
