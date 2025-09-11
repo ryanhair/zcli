@@ -28,10 +28,10 @@ pub fn build(b: *std.Build) void {
         .commands_dir = "src/commands",
         .plugins = &[_]zcli.PluginConfig{ .{
             .name = "zcli-help",
-            .path = "../../plugins/plugins/zcli-help",
+            .path = "../../core/plugins/zcli-help",
         }, .{
             .name = "zcli-not-found",
-            .path = "../../plugins/plugins/zcli-not-found/",
+            .path = "../../core/plugins/zcli-not-found",
         } },
         .app_name = "swapi",
         .app_version = "1.0.0",

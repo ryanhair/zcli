@@ -13,6 +13,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Build utilities module for build.zig files
+    _ = b.addModule("build_utils", .{
+        .root_source_file = b.path("src/build_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Tests
     const test_step = b.step("test", "Run unit tests");
     const test_core_step = b.step("test-core", "Run core tests only");

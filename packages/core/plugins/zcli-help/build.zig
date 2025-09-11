@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
     // Add zcli as a dependency when building standalone
     // When used as part of the main build, zcli will be provided
     const zcli_module = b.createModule(.{
-        .root_source_file = b.path("../../core/src/zcli.zig"),
+        .root_source_file = b.path("../../src/zcli.zig"),
         .target = target,
         .optimize = optimize,
     });

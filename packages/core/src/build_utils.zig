@@ -896,3 +896,8 @@ test "plugin error propagation" {
     const result = Pipeline.execute(ctx, .{});
     try std.testing.expectError(error.PluginFailure, result);
 }
+
+// Re-export the main API
+pub const main = @import("build_utils/main.zig");
+pub const generate = main.generate;
+pub const PluginConfig = @import("build_utils/types.zig").ExternalPluginBuildConfig.PluginConfig;

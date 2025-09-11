@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
         .plugins = &[_]zcli.PluginConfig{
             .{
                 .name = "zcli-help",
-                .path = "../../packages/plugins/zcli-help",
+                .path = "../../packages/core/plugins/zcli-help",
             },
         },
         .app_name = "dockr",
