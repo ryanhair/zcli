@@ -12,18 +12,21 @@ pub fn build(b: *std.Build) void {
 
     const test_projects = [_]ProjectInfo{
         .{ .name = "core", .path = "packages/core" },
-        // .{ .name = "ztheme", .path = "packages/ztheme" },
+        .{ .name = "capabilities", .path = "packages/capabilities" },
+        .{ .name = "testing", .path = "packages/testing" },
+        .{ .name = "vterm", .path = "packages/vterm" },
         .{ .name = "interactive", .path = "packages/interactive" },
-        .{ .name = "zcli-testing", .path = "packages/zcli-testing" },
+        .{ .name = "markdown-fmt", .path = "packages/markdown-fmt" },
         .{ .name = "zcli-help-plugin", .path = "packages/core/plugins/zcli-help" },
         .{ .name = "zcli-not-found-plugin", .path = "packages/core/plugins/zcli-not-found" },
     };
 
     const example_projects = [_]ProjectInfo{
-        .{ .name = "basic-example", .path = "packages/examples/basic" },
-        .{ .name = "advanced-example", .path = "packages/examples/advanced" },
-        .{ .name = "swapi-example", .path = "packages/examples/swapi" },
-        .{ .name = "ztheme-demo-example", .path = "packages/examples/ztheme-demo" },
+        .{ .name = "basic-example", .path = "examples/basic" },
+        .{ .name = "advanced-example", .path = "examples/advanced" },
+        .{ .name = "swapi-example", .path = "examples/swapi" },
+        .{ .name = "ztheme-example", .path = "examples/ztheme" },
+        .{ .name = "vterm-example", .path = "packages/vterm/example" },
     };
 
     // Create main test step that runs all tests

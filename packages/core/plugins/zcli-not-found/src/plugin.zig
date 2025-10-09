@@ -190,7 +190,7 @@ test "onError handles CommandNotFound" {
     // Create a temporary file to capture stderr output
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    
+
     var output_file = try tmp_dir.dir.createFile("test_output.txt", .{ .read = true });
     defer output_file.close();
 
@@ -214,12 +214,12 @@ test "onError handles CommandNotFound" {
     // Test command not found error - should not return error, just print suggestions
     const handled = try onError(&context, error.CommandNotFound);
     _ = handled;
-    
+
     // Read back the captured output
     try output_file.seekTo(0);
     const captured_output = try output_file.readToEndAlloc(allocator, 4096);
     defer allocator.free(captured_output);
-    
+
     // Validate the captured output
     try std.testing.expect(captured_output.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, captured_output, "Error: Unknown command") != null);

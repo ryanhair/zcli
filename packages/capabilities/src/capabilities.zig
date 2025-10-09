@@ -172,8 +172,40 @@ pub fn detect(allocator: std.mem.Allocator) DetectionError!TerminalCapabilities 
 pub fn detectWithTimeout(allocator: std.mem.Allocator, timeout_ms: u32) DetectionError!TerminalCapabilities {
     _ = allocator;
     _ = timeout_ms;
-    // Implementation will be added after tests
-    return TerminalCapabilities{};
+
+    // Start with basic detection using existing functions
+    var caps = TerminalCapabilities{};
+
+    // Detect color support
+    caps.color = detectColor(null) catch .none;
+
+    // Detect terminal size
+    caps.size = detectSize() catch .{ .width = 80, .height = 24 };
+
+    // Basic Unicode support detection (assume UTF-8 in modern terminals)
+    if (caps.color != .none) {
+        caps.unicode.utf8 = true;
+        caps.unicode.wide_chars = true;
+        caps.unicode.emoji = true;
+    }
+
+    // Basic feature detection based on terminal type
+    if (std.posix.getenv("TERM")) |term| {
+        if (std.mem.containsAtLeast(u8, term, 1, "xterm")) {
+            caps.terminal_type = .xterm;
+            caps.cursor_control = true;
+            caps.alternate_screen.available = true;
+            caps.mouse.basic = true;
+        } else if (std.mem.containsAtLeast(u8, term, 1, "screen")) {
+            caps.terminal_type = .screen;
+            caps.cursor_control = true;
+        } else if (std.mem.containsAtLeast(u8, term, 1, "tmux")) {
+            caps.terminal_type = .tmux;
+            caps.cursor_control = true;
+        }
+    }
+
+    return caps;
 }
 
 /// Environment interface for dependency injection in tests
@@ -263,10 +295,7 @@ pub fn detectSize() DetectionError!TerminalSize {
         return .{ .width = 80, .height = 24 };
     }
 
-    return .{
-        .width = winsize.col,
-        .height = winsize.row
-    };
+    return .{ .width = winsize.col, .height = winsize.row };
 }
 
 /// Check if current environment is a TTY
@@ -385,8 +414,8 @@ test "size detection" {
     } else |err| {
         // These are the expected error types
         try std.testing.expect(err == DetectionError.DetectionFailed or
-                              err == DetectionError.NotATty or
-                              err == DetectionError.Timeout);
+            err == DetectionError.NotATty or
+            err == DetectionError.Timeout);
     }
 }
 
@@ -402,9 +431,9 @@ test "full detection with timeout" {
     } else |err| {
         // Expected errors during testing
         try std.testing.expect(err == DetectionError.DetectionFailed or
-                              err == DetectionError.NotATty or
-                              err == DetectionError.Timeout or
-                              err == DetectionError.NoResponse);
+            err == DetectionError.NotATty or
+            err == DetectionError.Timeout or
+            err == DetectionError.NoResponse);
     }
 }
 
@@ -421,12 +450,7 @@ test "UnicodeSupport combinations" {
     try std.testing.expect(!unicode_basic.wide_chars);
     try std.testing.expect(!unicode_basic.emoji);
 
-    const unicode_full = UnicodeSupport{
-        .utf8 = true,
-        .wide_chars = true,
-        .emoji = true,
-        .combining_chars = true
-    };
+    const unicode_full = UnicodeSupport{ .utf8 = true, .wide_chars = true, .emoji = true, .combining_chars = true };
     try std.testing.expect(unicode_full.utf8);
     try std.testing.expect(unicode_full.wide_chars);
     try std.testing.expect(unicode_full.emoji);
@@ -438,13 +462,7 @@ test "MouseSupport feature detection" {
     try std.testing.expect(mouse_basic.basic);
     try std.testing.expect(!mouse_basic.motion);
 
-    const mouse_advanced = MouseSupport{
-        .basic = true,
-        .motion = true,
-        .wheel = true,
-        .drag = true,
-        .sgr_mode = true
-    };
+    const mouse_advanced = MouseSupport{ .basic = true, .motion = true, .wheel = true, .drag = true, .sgr_mode = true };
     try std.testing.expect(mouse_advanced.basic);
     try std.testing.expect(mouse_advanced.motion);
     try std.testing.expect(mouse_advanced.wheel);
@@ -457,20 +475,14 @@ test "AlternateScreenSupport options" {
     try std.testing.expect(alt_basic.available);
     try std.testing.expect(!alt_basic.preserves_scrollback);
 
-    const alt_advanced = AlternateScreenSupport{
-        .available = true,
-        .preserves_scrollback = true
-    };
+    const alt_advanced = AlternateScreenSupport{ .available = true, .preserves_scrollback = true };
     try std.testing.expect(alt_advanced.available);
     try std.testing.expect(alt_advanced.preserves_scrollback);
 }
 
 test "TerminalType identification" {
     // Test all terminal types are accessible
-    const types = [_]TerminalType{
-        .unknown, .xterm, .linux_console, .windows_console,
-        .windows_terminal, .terminal_app, .iterm2, .tmux, .screen, .ssh
-    };
+    const types = [_]TerminalType{ .unknown, .xterm, .linux_console, .windows_console, .windows_terminal, .terminal_app, .iterm2, .tmux, .screen, .ssh };
 
     for (types) |terminal_type| {
         const caps = TerminalCapabilities{ .terminal_type = terminal_type };

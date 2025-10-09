@@ -22,5 +22,4 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run ztheme library tests");
     test_step.dependOn(&run_ztheme_tests.step);
-
 }

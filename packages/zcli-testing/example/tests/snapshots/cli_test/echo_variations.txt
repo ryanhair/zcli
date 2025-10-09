@@ -1,3 +1,0 @@
-Basic: Hello.d World.d
-Uppercase: HELLO WORLD
-No newline: 'test.d'\n

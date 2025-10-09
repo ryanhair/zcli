@@ -196,6 +196,7 @@ pub const Theme = struct {
             .true_color => "true color (24-bit)",
         };
     }
+
 };
 
 /// Detect if output is to a TTY (terminal)

@@ -6,7 +6,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var app = registry.registry.init();
+    var app = registry.init();
 
     app.run(allocator) catch |err| switch (err) {
         error.CommandNotFound => {

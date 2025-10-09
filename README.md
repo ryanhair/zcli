@@ -1,38 +1,106 @@
 # zcli
 
-A framework for building command-line interfaces in Zig with automatic command discovery and zero runtime overhead.
+**Build beautiful CLIs in Zig with zero boilerplate.**
 
-## Features
+zcli is a batteries-included framework for building command-line interfaces. Drop `.zig` files in a directory, and zcli generates a fully-featured CLI with help text, error handling, and type-safe argument parsing—all at compile time.
 
-- 🚀 **Zero Runtime Overhead** - All command discovery and routing happens at build time
-- 🔍 **Fully Automatic Discovery** - Just drop `.zig` files in your commands directory
-- 🛡️ **Type Safe** - Full compile-time type safety for arguments and options
-- 📝 **Auto-generated Help** - Help text generated automatically from command definitions
-- 🎯 **Smart Error Handling** - Helpful error messages with "did you mean?" suggestions
-- 🗂️ **Command Groups** - Organize commands with nested directories
-- ⚡ **Fast Builds** - No external tools or file generation needed
+```bash
+# Your file structure IS your CLI structure
+src/commands/
+├── hello.zig        # → myapp hello <name>
+├── users/
+│   ├── list.zig     # → myapp users list
+│   └── create.zig   # → myapp users create <email>
+└── config/
+    └── set.zig      # → myapp config set <key> <value>
+```
+
+## Why zcli?
+
+- **Zero boilerplate** - No routing, no parsing, no help text to write
+- **Type-safe** - Arguments and options validated at compile time
+- **Zero runtime overhead** - All discovery happens at build time
+- **Beautiful output** - Colored help text with semantic highlighting
+- **Batteries included** - Help, error messages, and "did you mean?" suggestions built-in
+
+## Installation
+
+### Quick Install (Recommended)
+
+Install zcli with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh
+```
+
+This will:
+- Download the appropriate binary for your platform
+- Install it to `~/.local/bin`
+- Update your shell configuration (bash, zsh, fish, or ksh) to include `~/.local/bin` in your PATH
+
+After installation, you may need to restart your terminal or run `source ~/.zshrc` (or your shell's config file).
+
+### Homebrew
+
+```bash
+brew install ryanhair/tap/zcli
+```
+
+### Manual Download
+
+Download pre-built binaries from the [releases page](https://github.com/ryanhair/zcli/releases):
+
+1. Download the binary for your platform (e.g., `zcli-aarch64-macos` for Apple Silicon Mac)
+2. Rename it to `zcli` and make it executable:
+   ```bash
+   chmod +x zcli
+   mv zcli ~/.local/bin/zcli
+   ```
+3. Ensure `~/.local/bin` is in your PATH
+
+### Build from Source
+
+```bash
+git clone https://github.com/ryanhair/zcli.git
+cd zcli/projects/zcli
+zig build -Doptimize=ReleaseFast
+cp zig-out/bin/zcli ~/.local/bin/
+```
+
+Requires Zig 0.14.1 or later.
+
+### Using the zcli Tool
+
+Once installed, use the `zcli` command to scaffold new projects:
+
+```bash
+# Create a new CLI project
+zcli init my-cli
+
+# Add commands to your project
+cd my-cli
+zcli add command deploy
+zcli add command users/create
+```
 
 ## Quick Start
 
-NOTE: throughout all the steps, replace `myapp` with your app name
+Let's build a CLI in 60 seconds. This example will give you a working `myapp hello` command with help text, options, and validation.
 
-### 1. Create a new project (if you don't already have one)
+### 1. Add zcli to your project
 
 ```bash
-mkdir myapp
-cd myapp
+# Create a new project
+mkdir myapp && cd myapp
 zig init
+
+# Add zcli
+zig fetch --save git+https://github.com/ryanhair/zcli
 ```
 
-### 2. Add zcli to your project
+### 2. Configure `build.zig`
 
-Add `zcli` as a dependency:
-
-```bash
-zig fetch --save "git+https://github.com/ryanhair/zcli"
-```
-
-### 3. Set up your `build.zig`
+Replace your `build.zig` with this:
 
 ```zig
 const std = @import("std");
@@ -59,12 +127,12 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("zcli", zcli_module);
 
     // Generate command registry with built-in plugins
-    const zcli_build = @import("zcli");
-    const cmd_registry = zcli_build.buildWithExternalPlugins(b, exe, zcli_module, .{
+    const zcli = @import("zcli");
+    const cmd_registry = zcli.generate(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
-        .plugins = &[_]zcli_build.PluginConfig{
-            .{ .name = "zcli-help", .path = "path/to/zcli/plugins/zcli-help" },
-            .{ .name = "zcli-not-found", .path = "path/to/zcli/plugins/zcli-not-found" },
+        .plugins = &[_]zcli.PluginConfig{
+            .{ .name = "zcli-help", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli-help") },
+            .{ .name = "zcli-not-found", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli-not-found") },
         },
         .app_name = "myapp",
         .app_version = "1.0.0",
@@ -73,10 +141,18 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("command_registry", cmd_registry);
     b.installArtifact(exe);
+
+    // Add run step for convenience
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_cmd.addArgs(args);
+
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
 }
 ```
 
-### 4. Create your `src/main.zig`
+### 3. Create `src/main.zig`
 
 ```zig
 const std = @import("std");
@@ -85,26 +161,20 @@ const registry = @import("command_registry");
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
-    var app = registry.registry.init();
-
-    app.run(allocator) catch |err| switch (err) {
-        error.CommandNotFound => {
-            // Error was already handled by plugins or registry
-            std.process.exit(1);
-        },
+    var app = registry.init();
+    app.run(gpa.allocator()) catch |err| switch (err) {
+        error.CommandNotFound => std.process.exit(1),
         else => return err,
     };
 }
 ```
 
-### 5. Create your commands
+### 4. Create your first command
 
-Just drop `.zig` files in `src/commands/` - they're discovered automatically!
+Create `src/commands/hello.zig`:
 
 ```zig
-// src/commands/hello.zig
 const std = @import("std");
 const zcli = @import("zcli");
 
@@ -126,38 +196,21 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     const greeting = if (options.loud) "HELLO" else "Hello";
-    try context.stdout.print("{s}, {s}!\n", .{ greeting, args.name });
+    try context.stdout().print("{s}, {s}!\n", .{ greeting, args.name });
 }
 ```
 
-### 6. Organize with command groups (optional)
-
-Create directories for command groups:
-
-```
-src/commands/
-├── hello.zig           # myapp hello <name>
-├── users/
-│   ├── index.zig       # myapp users (group help)
-│   ├── list.zig        # myapp users list
-│   └── create.zig      # myapp users create
-└── files/
-    ├── index.zig       # myapp files (group help)
-    └── upload.zig      # myapp files upload
-```
-
-### 7. Build and run your CLI
+### 5. Build and run
 
 ```bash
 $ zig build
-$ cd zig-out/bin
-$ ./myapp hello World
+$ ./zig-out/bin/myapp hello World
 Hello, World!
 
-$ ./myapp hello Alice --loud
+$ ./zig-out/bin/myapp hello Alice --loud
 HELLO, Alice!
 
-$ ./myapp --help
+$ ./zig-out/bin/myapp --help
 myapp v1.0.0
 My awesome CLI app
 
@@ -165,114 +218,276 @@ USAGE:
     myapp [GLOBAL OPTIONS] <COMMAND> [ARGS]
 
 COMMANDS:
-    hello        Say hello to someone
-    users        (command group)
-    files        (command group)
+    hello            Say hello to someone
 
-$ ./myapp users list
-[User data here...]
+GLOBAL OPTIONS:
+    -h, --help       Show help information
+    -V, --version    Show version information
+
+$ ./zig-out/bin/myapp hello --help
+Help for command: hello
+
+Say hello to someone
+
+USAGE:
+    myapp hello [OPTIONS] NAME
+
+ARGUMENTS:
+    name             name
+
+OPTIONS:
+    --loud           loud
+    --help, -h       Show this help message
+
+EXAMPLES:
+    hello World
+    hello Alice --loud
 ```
 
-## Key Features Explained
+**That's it!** You have a working CLI with colored output, help text, and error handling.
 
-### 🔍 **Fully Automatic Discovery**
+## How It Works
 
-- No build configuration needed - just create `.zig` files
-- Commands are discovered by scanning `src/commands/` at build time
-- File structure directly maps to CLI structure
+zcli uses **convention over configuration**:
 
-### 🗂️ **Command Groups**
+1. **File structure = CLI structure** - The directory layout in `src/commands/` directly maps to your CLI commands
+2. **Types = validation** - Your `Args` and `Options` structs define what inputs are valid
+3. **Compile-time discovery** - zcli scans your commands directory at build time and generates the routing code
+4. **Zero runtime overhead** - All command discovery and validation happens at compile time
 
-- Create directories to organize related commands
-- Each group directory needs an `index.zig` for group-level help
-- Unlimited nesting supported
+### The Magic Explained
 
-### 🛡️ **Type-Safe Arguments & Options**
+When you run `zig build`, zcli:
 
-- Define `Args` struct for positional arguments
-- Define `Options` struct for flags and options
-- Automatic parsing and validation based on types
-- Support for arrays, enums, optionals, and more
+1. Scans `src/commands/` for `.zig` files
+2. Reads the `Args`, `Options`, and `meta` from each command
+3. Generates a static registry that routes commands to the right `execute()` function
+4. Generates type-safe parsing code for each command's arguments and options
 
-### 🎯 **Rich Error Handling**
+There's no runtime reflection, no dynamic dispatch—just static function calls.
 
-- Structured errors with detailed context (field names, positions, values)
-- Smart suggestions for typos in commands and options
-- Human-readable error messages with actionable feedback
-- Consistent error handling across all parsing functions
+## Building Real CLIs
 
-### 📝 **Auto-Generated Help**
+### Command Groups
 
-- Help text generated from `meta`, `Args`, and `Options`
-- Command-specific help with examples
-- Smart error messages with suggestions
+Organize related commands into groups using directories:
 
-### ⚡ **Zero Runtime Overhead**
+```
+src/commands/
+├── hello.zig          # myapp hello <name>
+├── users/
+│   ├── list.zig       # myapp users list
+│   ├── create.zig     # myapp users create <email>
+│   └── delete.zig     # myapp users delete <id>
+└── config/
+    ├── get.zig        # myapp config get <key>
+    └── set.zig        # myapp config set <key> <value>
+```
 
-- All command discovery happens at build time
-- Static dispatch - no reflection or dynamic lookup
-- Optimal binary size and performance
+**Example: `src/commands/users/create.zig`**
 
-## Advanced Features
+```zig
+const std = @import("std");
+const zcli = @import("zcli");
 
-### Custom Option Names
+pub const meta = .{
+    .description = "Create a new user",
+    .examples = &.{ "users create alice@example.com --admin" },
+};
+
+pub const Args = struct {
+    email: []const u8,
+};
+
+pub const Options = struct {
+    admin: bool = false,
+    name: ?[]const u8 = null,
+};
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    const role = if (options.admin) "admin" else "user";
+    const display_name = options.name orelse args.email;
+
+    try context.stdout().print("Creating {s} '{s}' ({s})\n",
+        .{ role, display_name, args.email });
+}
+```
+
+```bash
+$ myapp users create alice@example.com --admin --name Alice
+Creating admin 'Alice' (alice@example.com)
+```
+
+### Rich Metadata for Better Help
+
+Add descriptions, examples, and field-level documentation:
+
+```zig
+pub const meta = .{
+    .description = "Deploy your application",
+    .examples = &.{
+        "deploy production",
+        "deploy staging --rollback",
+        "deploy production --replicas 5",
+    },
+    .args = .{
+        .environment = "Target environment (production, staging, development)",
+    },
+    .options = .{
+        .replicas = .{ .desc = "Number of instances to deploy" },
+        .rollback = .{ .desc = "Rollback to previous version instead of deploying" },
+    },
+};
+
+pub const Args = struct {
+    environment: []const u8,
+};
+
+pub const Options = struct {
+    replicas: ?u32 = null,
+    rollback: bool = false,
+};
+```
+
+### Complex Arguments
+
+Handle multiple argument types, including optional arguments and arrays:
+
+```zig
+pub const Args = struct {
+    source: []const u8,              // Required
+    destination: ?[]const u8,        // Optional
+    files: [][]const u8,             // Remaining args as array
+};
+
+// Usage: myapp copy source.txt dest.txt file1.txt file2.txt
+```
+
+### Array Options
+
+Accumulate multiple values for an option:
 
 ```zig
 pub const Options = struct {
-    output_file: []const u8,
+    include: [][]const u8 = &.{},    // Can specify --include multiple times
+    exclude: [][]const u8 = &.{},
+    verbose: bool = false,
+};
+
+// Usage: myapp process --include *.zig --include *.md --exclude test.zig
+```
+
+### Short Flags
+
+Add single-character shortcuts for options:
+
+```zig
+pub const Options = struct {
+    verbose: bool = false,
+    output: ?[]const u8 = null,
 };
 
 pub const meta = .{
     .description = "Process files",
     .options = .{
-        .output_file = .{ .name = "output" }, // Use --output instead of --output-file
+        .verbose = .{ .short = 'v' },
+        .output = .{ .short = 'o' },
+    },
+};
+
+// Usage: myapp process -v -o output.txt
+// Usage: myapp process -vo output.txt    (combined)
+```
+
+### Error Handling
+
+zcli provides rich, contextual error messages automatically:
+
+```bash
+$ myapp deploy prod --replicas abc
+Error: Invalid value 'abc' for option '--replicas'
+Expected: unsigned integer
+
+$ myapp deploi production
+Error: Command 'deploi' not found
+
+Did you mean?
+    deploy
+```
+
+### Custom Option Names
+
+Override the automatic naming:
+
+```zig
+pub const Options = struct {
+    output_file: []const u8,
+    max_connections: u32 = 10,
+};
+
+pub const meta = .{
+    .options = .{
+        .output_file = .{ .name = "output" },      // --output instead of --output-file
+        .max_connections = .{ .name = "max-conn" }, // --max-conn instead of --max-connections
     },
 };
 ```
 
-### Array Options
+## Working with Context
+
+The `context` parameter gives you access to I/O streams, environment variables, and more:
 
 ```zig
-pub const Options = struct {
-    files: [][]const u8 = &.{}, // Accumulates multiple --files values
-    verbose: bool = false,
-};
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    // Output streams
+    try context.stdout().print("Success!\n", .{});
+    try context.stderr().print("Warning: ...\n", .{});
 
-// Usage: myapp process --files file1.txt --files file2.txt --verbose
+    // Environment variables
+    const home = context.environment.get("HOME");
+
+    // App metadata
+    const app_name = context.app_name;
+    const app_version = context.app_version;
+
+    // Command path (for nested commands)
+    // For "myapp users create", command_path = ["users", "create"]
+    const path = context.command_path;
+}
 ```
 
-### Memory Management
+## Plugin System
 
-When using zcli through the framework, array cleanup is automatic. For manual usage:
+zcli includes two essential plugins:
 
-```zig
-// Unified parsing - handles mixed args and options
-const result = try zcli.parseCommandLine(Args, Options, null, allocator, args);
-defer result.deinit(); // Automatic cleanup
+- **zcli-help** - Automatic help generation with colored output
+- **zcli-not-found** - "Did you mean?" suggestions for typos
 
-// Access parsed arguments and options
-const my_args = result.args;
-const my_options = result.options;
-```
+Both are included by default in the quick start example. The plugin system is extensible—you can create custom plugins to add global options, hooks, and behaviors.
 
-### Complex Arguments
+## Examples
 
-```zig
-pub const Args = struct {
-    source: []const u8,           // Required positional
-    destination: ?[]const u8,     // Optional positional
-    extra_files: [][]const u8,    // Remaining arguments
-};
-```
+Check out the [examples/](examples/) directory for complete working projects:
+
+- **[examples/basic](examples/basic)** - Simple Git-like CLI with nested commands
+- **[examples/swapi](examples/swapi)** - API client with HTTP requests
+- **[examples/advanced](examples/advanced)** - Docker-like CLI with complex commands
 
 ## Documentation
 
-- [DESIGN.md](DESIGN.md) - Complete framework design specification
-- [ERROR_HANDLING.md](ERROR_HANDLING.md) - Comprehensive error handling guide
-- [MEMORY.md](MEMORY.md) - Comprehensive memory management guide
-- [BUILD.md](BUILD.md) - Build-time code generation and command discovery
-- [Examples](examples/) - Working example projects
+- **[DESIGN.md](packages/core/DESIGN.md)** - Complete framework design and architecture
+- **[Error Handling Guide](packages/core/ERROR_HANDLING.md)** - Comprehensive error handling patterns
+- **[Memory Management](packages/core/MEMORY.md)** - Memory ownership and cleanup guide
+- **[Build System](packages/core/BUILD.md)** - Build-time code generation details
+
+## Requirements
+
+- Zig 0.14.1 or later
 
 ## License
 
 MIT
+
+---
+
+Built with ❤️ for the Zig community. Contributions welcome!

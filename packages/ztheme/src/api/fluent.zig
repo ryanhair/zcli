@@ -317,14 +317,25 @@ pub fn Themed(comptime T: type) type {
             return self.applySemantic(.link);
         }
 
+        /// Set semantic role for adaptive theming
+        pub fn semanticRole(self: Self, role: SemanticRole) Self {
+            var new_style = self.style;
+            new_style.semantic_role = role;
+            return .{
+                .content = self.content,
+                .style = new_style,
+            };
+        }
+
         /// Render styled content to writer with capability-aware styling
         pub fn render(self: Self, writer: anytype, theme_ctx: *const Theme) !void {
             const capability = theme_ctx.getCapability();
 
-            // Apply semantic coloring if semantic role is present
             var effective_style = self.style;
+
+            // Apply semantic coloring if semantic role is present
             if (effective_style.semantic_role) |role| {
-                effective_style.fg = palettes.getSemanticColor(role);
+                effective_style.foreground = palettes.getSemanticColor(role);
             }
 
             // Generate appropriate escape sequence for terminal capability
@@ -424,7 +435,7 @@ pub fn Themed(comptime T: type) type {
         /// Check if any styling is applied
         pub fn hasStyle(self: Self) bool {
             const s = self.style;
-            return s.fg != null or s.bg != null or s.bold or s.italic or s.underline or s.dim or s.strikethrough;
+            return s.foreground != null or s.background != null or s.bold or s.italic or s.underline or s.dim or s.strikethrough or s.reverse;
         }
 
         /// Clone the styled content
@@ -438,14 +449,20 @@ pub fn Themed(comptime T: type) type {
         // Internal helper methods
         fn withFgColor(self: Self, color: Color) Self {
             var new_style = self.style;
-            new_style.fg = color;
-            return .{ .content = self.content, .style = new_style };
+            new_style.foreground = color;
+            return .{
+                .content = self.content,
+                .style = new_style,
+            };
         }
 
         fn withBgColor(self: Self, color: Color) Self {
             var new_style = self.style;
-            new_style.bg = color;
-            return .{ .content = self.content, .style = new_style };
+            new_style.background = color;
+            return .{
+                .content = self.content,
+                .style = new_style,
+            };
         }
 
         fn withStyle(self: Self, style_mods: anytype) Self {
@@ -460,7 +477,7 @@ pub fn Themed(comptime T: type) type {
 
             // Apply semantic color
             // The color is applied immediately using our carefully designed palette
-            new_style.fg = palettes.getSemanticColor(role);
+            new_style.foreground = palettes.getSemanticColor(role);
 
             // Apply any default style attributes for this role
             const default_style = role.getDefaultStyle();
@@ -471,7 +488,10 @@ pub fn Themed(comptime T: type) type {
             // Store the semantic role for later adaptive rendering
             new_style.semantic_role = role;
 
-            return .{ .content = self.content, .style = new_style };
+            return .{
+                .content = self.content,
+                .style = new_style,
+            };
         }
     };
 }
@@ -490,13 +510,13 @@ test "fluent API basics" {
 
     // Test color chaining
     const red_text = theme("Error").red();
-    try testing.expect(red_text.style.fg != null);
-    try testing.expect(red_text.style.fg.? == Color.red);
+    try testing.expect(red_text.style.foreground != null);
+    try testing.expect(red_text.style.foreground.? == Color.red);
 
     // Test style chaining
     const bold_red = theme("Error").red().bold();
     try testing.expect(bold_red.style.bold);
-    try testing.expect(bold_red.style.fg.? == Color.red);
+    try testing.expect(bold_red.style.foreground.? == Color.red);
 
     // Test render to buffer (basic)
     var buffer = std.ArrayList(u8).init(testing.allocator);
@@ -512,23 +532,23 @@ test "comprehensive color methods" {
     const testing = std.testing;
 
     // Test all basic colors
-    try testing.expect(theme("text").black().style.fg.? == Color.black);
-    try testing.expect(theme("text").red().style.fg.? == Color.red);
-    try testing.expect(theme("text").green().style.fg.? == Color.green);
-    try testing.expect(theme("text").yellow().style.fg.? == Color.yellow);
-    try testing.expect(theme("text").blue().style.fg.? == Color.blue);
-    try testing.expect(theme("text").magenta().style.fg.? == Color.magenta);
-    try testing.expect(theme("text").cyan().style.fg.? == Color.cyan);
-    try testing.expect(theme("text").white().style.fg.? == Color.white);
+    try testing.expect(theme("text").black().style.foreground.? == Color.black);
+    try testing.expect(theme("text").red().style.foreground.? == Color.red);
+    try testing.expect(theme("text").green().style.foreground.? == Color.green);
+    try testing.expect(theme("text").yellow().style.foreground.? == Color.yellow);
+    try testing.expect(theme("text").blue().style.foreground.? == Color.blue);
+    try testing.expect(theme("text").magenta().style.foreground.? == Color.magenta);
+    try testing.expect(theme("text").cyan().style.foreground.? == Color.cyan);
+    try testing.expect(theme("text").white().style.foreground.? == Color.white);
 
     // Test bright colors
-    try testing.expect(theme("text").brightRed().style.fg.? == Color.bright_red);
-    try testing.expect(theme("text").brightGreen().style.fg.? == Color.bright_green);
-    try testing.expect(theme("text").brightBlue().style.fg.? == Color.bright_blue);
+    try testing.expect(theme("text").brightRed().style.foreground.? == Color.bright_red);
+    try testing.expect(theme("text").brightGreen().style.foreground.? == Color.bright_green);
+    try testing.expect(theme("text").brightBlue().style.foreground.? == Color.bright_blue);
 
     // Test aliases
-    try testing.expect(theme("text").gray().style.fg.? == Color.bright_black);
-    try testing.expect(theme("text").grey().style.fg.? == Color.bright_black);
+    try testing.expect(theme("text").gray().style.foreground.? == Color.bright_black);
+    try testing.expect(theme("text").grey().style.foreground.? == Color.bright_black);
 }
 
 test "advanced color methods" {
@@ -536,8 +556,8 @@ test "advanced color methods" {
 
     // Test RGB color
     const rgb_themed = theme("rainbow").rgb(255, 128, 64);
-    try testing.expect(rgb_themed.style.fg != null);
-    switch (rgb_themed.style.fg.?) {
+    try testing.expect(rgb_themed.style.foreground != null);
+    switch (rgb_themed.style.foreground.?) {
         .rgb => |rgb| {
             try testing.expect(rgb.r == 255);
             try testing.expect(rgb.g == 128);
@@ -548,16 +568,16 @@ test "advanced color methods" {
 
     // Test hex color (compile-time)
     const hex_themed = comptime theme("hex").hex("#FF8040");
-    try testing.expect(hex_themed.style.fg != null);
-    switch (hex_themed.style.fg.?) {
+    try testing.expect(hex_themed.style.foreground != null);
+    switch (hex_themed.style.foreground.?) {
         .hex => |hex| try testing.expect(std.mem.eql(u8, hex, "#FF8040")),
         else => try testing.expect(false), // Should be hex
     }
 
     // Test 256-color
     const indexed_themed = theme("indexed").color256(196);
-    try testing.expect(indexed_themed.style.fg != null);
-    switch (indexed_themed.style.fg.?) {
+    try testing.expect(indexed_themed.style.foreground != null);
+    switch (indexed_themed.style.foreground.?) {
         .indexed => |idx| try testing.expect(idx == 196),
         else => try testing.expect(false), // Should be indexed
     }
@@ -579,18 +599,18 @@ test "background color methods" {
     const testing = std.testing;
 
     // Test basic background colors
-    try testing.expect(theme("text").onRed().style.bg.? == Color.red);
-    try testing.expect(theme("text").onBlue().style.bg.? == Color.blue);
-    try testing.expect(theme("text").onGreen().style.bg.? == Color.green);
+    try testing.expect(theme("text").onRed().style.background.? == Color.red);
+    try testing.expect(theme("text").onBlue().style.background.? == Color.blue);
+    try testing.expect(theme("text").onGreen().style.background.? == Color.green);
 
     // Test bright background colors
-    try testing.expect(theme("text").onBrightYellow().style.bg.? == Color.bright_yellow);
-    try testing.expect(theme("text").onGray().style.bg.? == Color.bright_black);
-    try testing.expect(theme("text").onGrey().style.bg.? == Color.bright_black);
+    try testing.expect(theme("text").onBrightYellow().style.background.? == Color.bright_yellow);
+    try testing.expect(theme("text").onGray().style.background.? == Color.bright_black);
+    try testing.expect(theme("text").onGrey().style.background.? == Color.bright_black);
 
     // Test advanced background colors
     const rgb_bg = theme("text").onRgb(100, 150, 200);
-    switch (rgb_bg.style.bg.?) {
+    switch (rgb_bg.style.background.?) {
         .rgb => |rgb| {
             try testing.expect(rgb.r == 100);
             try testing.expect(rgb.g == 150);
@@ -600,7 +620,7 @@ test "background color methods" {
     }
 
     const indexed_bg = theme("text").onColor256(42);
-    switch (indexed_bg.style.bg.?) {
+    switch (indexed_bg.style.background.?) {
         .indexed => |idx| try testing.expect(idx == 42),
         else => try testing.expect(false),
     }
@@ -617,8 +637,8 @@ test "complex chaining and rendering" {
         .underline()
         .italic();
 
-    try testing.expect(complex.style.fg.? == Color.bright_red);
-    try testing.expect(complex.style.bg.? == Color.blue);
+    try testing.expect(complex.style.foreground.? == Color.bright_red);
+    try testing.expect(complex.style.background.? == Color.blue);
     try testing.expect(complex.style.bold);
     try testing.expect(complex.style.underline);
     try testing.expect(complex.style.italic);
@@ -661,7 +681,7 @@ test "generic interface utilities" {
     const original = theme("Hello").red().bold();
     const with_number = original.withContent(@as(i32, 42));
     try testing.expect(with_number.content == 42);
-    try testing.expect(with_number.style.fg.? == Color.red);
+    try testing.expect(with_number.style.foreground.? == Color.red);
     try testing.expect(with_number.style.bold);
 
     // Test reset
@@ -680,6 +700,6 @@ test "generic interface utilities" {
     const original_themed = theme("original").cyan().bold();
     const cloned = original_themed.clone();
     try testing.expect(std.mem.eql(u8, cloned.content, original_themed.content));
-    try testing.expect(std.meta.eql(cloned.style.fg.?, original_themed.style.fg.?));
+    try testing.expect(std.meta.eql(cloned.style.foreground.?, original_themed.style.foreground.?));
     try testing.expect(cloned.style.bold == original_themed.style.bold);
 }

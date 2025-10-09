@@ -10,7 +10,7 @@ pub fn main() !void {
     }
 
     const command = args[1];
-    
+
     if (std.mem.eql(u8, command, "help")) {
         try showHelp();
     } else if (std.mem.eql(u8, command, "colors")) {
@@ -30,7 +30,7 @@ pub fn main() !void {
 }
 
 fn showHelp() !void {
-    const help_text = 
+    const help_text =
         \\snapshot-demo - Showcase for snapshot testing
         \\
         \\USAGE:
@@ -49,13 +49,13 @@ fn showHelp() !void {
         \\    snapshot-demo dynamic    # Test dynamic content masking
         \\
     ;
-    
+
     try std.io.getStdErr().writeAll(help_text);
 }
 
 fn showColors() !void {
     const stdout = std.io.getStdOut().writer();
-    
+
     try stdout.print("\x1b[32m✅ SUCCESS:\x1b[0m Operation completed successfully\n", .{});
     try stdout.print("\x1b[31m❌ ERROR:\x1b[0m Something went wrong\n", .{});
     try stdout.print("\x1b[33m⚠️  WARNING:\x1b[0m This is a warning\n", .{});
@@ -66,25 +66,23 @@ fn showColors() !void {
 
 fn showDynamicContent() !void {
     const stdout = std.io.getStdOut().writer();
-    
+
     // Generate some UUIDs and timestamps
     var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
     const random = prng.random();
-    
+
     // Mock UUID generation
-    try stdout.print("User ID: {x:0>8}-{x:0>4}-{x:0>4}-{x:0>4}-{x:0>12}\n", .{
-        random.int(u32), random.int(u16), random.int(u16), random.int(u16), random.int(u48)
-    });
-    
+    try stdout.print("User ID: {x:0>8}-{x:0>4}-{x:0>4}-{x:0>4}-{x:0>12}\n", .{ random.int(u32), random.int(u16), random.int(u16), random.int(u16), random.int(u48) });
+
     // Current timestamp
     const timestamp = std.time.timestamp();
     try stdout.print("Timestamp: {d}\n", .{timestamp});
     try stdout.print("ISO Time: 2024-01-15T10:30:45.123Z\n", .{});
-    
+
     // Memory addresses (simulated)
     try stdout.print("Memory address: 0x{x}\n", .{random.int(u64)});
     try stdout.print("Pointer: 0x{x}\n", .{random.int(usize)});
-    
+
     // Session tokens
     try stdout.print("Session: sess_{x:0>16}\n", .{random.int(u64)});
     try stdout.print("Request ID: req_{x:0>8}\n", .{random.int(u32)});
@@ -92,8 +90,8 @@ fn showDynamicContent() !void {
 
 fn showJson() !void {
     const stdout = std.io.getStdOut().writer();
-    
-    const json_output = 
+
+    const json_output =
         \\{
         \\  "name": "snapshot-demo",
         \\  "version": "1.0.0",
@@ -115,14 +113,14 @@ fn showJson() !void {
         \\  }
         \\}
     ;
-    
+
     try stdout.writeAll(json_output);
     try stdout.writeAll("\n");
 }
 
 fn showTable() !void {
     const stdout = std.io.getStdOut().writer();
-    
+
     try stdout.writeAll("╭─────────────────┬──────────┬──────────┬─────────────╮\n");
     try stdout.writeAll("│ Feature         │ Status   │ Coverage │ Last Update │\n");
     try stdout.writeAll("├─────────────────┼──────────┼──────────┼─────────────┤\n");
@@ -136,7 +134,7 @@ fn showTable() !void {
 
 fn showLogs() !void {
     const stdout = std.io.getStdOut().writer();
-    
+
     // Simulate log entries with timestamps
     try stdout.print("[2024-01-15T10:30:45.123Z] INFO  Starting snapshot demo application\n", .{});
     try stdout.print("[2024-01-15T10:30:45.124Z] DEBUG Loading configuration from config.json\n", .{});

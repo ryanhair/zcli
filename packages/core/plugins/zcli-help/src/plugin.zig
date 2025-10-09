@@ -1,9 +1,13 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const md = @import("markdown-fmt");
 
 /// zcli-help Plugin
 ///
 /// Provides help functionality for CLI applications using the lifecycle hook plugin system.
+
+// Column where descriptions should start (after indentation)
+const DESCRIPTION_COLUMN: usize = 20;
 
 // Helper struct for collecting command information
 const CommandInfo = struct {
@@ -97,6 +101,7 @@ pub fn onError(
 /// Unified help display function that handles all help scenarios
 fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     const writer = context.stderr();
+    const fmt = md.formatter(writer);
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
@@ -104,21 +109,21 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     // Print appropriate header based on help type
     switch (help_type) {
         .app => {
-            try writer.print("{s} v{s}\n", .{ app_name, app_version });
+            try fmt.write("<command>{s}</command> v{s}\n", .{ app_name, app_version });
             if (app_description.len > 0) {
                 try writer.print("{s}\n", .{app_description});
             }
             try writer.writeAll("\n");
         },
         .root => {
-            try writer.print("{s} v{s}\n", .{ app_name, app_version });
+            try fmt.write("<command>{s}</command> v{s}\n", .{ app_name, app_version });
             try writer.print("{s}\n\n", .{app_description});
         },
         .command_group => |group_name| {
-            try writer.print("'{s}' is a command group. Available subcommands:\n\n", .{group_name});
+            try fmt.write("'<command>{s}</command>' is a command group. Available subcommands:\n\n", .{group_name});
         },
         .command => |command_name| {
-            try writer.print("Help for command: {s}\n\n", .{command_name});
+            try fmt.write("Help for command: <command>{s}</command>\n\n", .{command_name});
 
             // Show description if available
             if (context.command_meta) |meta| {
@@ -130,12 +135,12 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     }
 
     // Show usage
-    try writer.writeAll("USAGE:\n");
+    try fmt.write("**USAGE:**\n", .{});
     switch (help_type) {
         .app, .root => {
             if (help_type == .root) {
                 // Root command can be invoked directly
-                try writer.print("    {s} [OPTIONS]", .{app_name});
+                try fmt.write("    <command>{s}</command> [OPTIONS]", .{app_name});
                 if (context.command_module_info) |module_info| {
                     if (module_info.has_args) {
                         try writer.writeAll(" [ARGS...]");
@@ -143,10 +148,10 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
                 }
                 try writer.writeAll("\n");
             }
-            try writer.print("    {s} [GLOBAL OPTIONS] <COMMAND> [ARGS]\n\n", .{app_name});
+            try fmt.write("    <command>{s}</command> [GLOBAL OPTIONS] <COMMAND> [ARGS]\n\n", .{app_name});
         },
         .command_group => |group_name| {
-            try writer.print("    {s} {s} <subcommand>\n\n", .{ app_name, group_name });
+            try fmt.write("    <command>{s}</command> <command>{s}</command> <subcommand>\n\n", .{ app_name, group_name });
         },
         .command => {
             const usage_string = try generateUsage(context);
@@ -161,7 +166,7 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             if (module_info.has_args) {
                 if (generateArgsHelp(module_info, context) catch null) |args_help| {
                     defer context.allocator.free(args_help);
-                    try writer.writeAll("ARGUMENTS:\n");
+                    try fmt.write("**ARGUMENTS:**\n", .{});
                     try writer.writeAll(args_help);
                     try writer.writeAll("\n");
                 }
@@ -175,9 +180,9 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
             if (module_info.has_options) {
                 if (generateOptionsHelp(module_info, context) catch null) |options_help| {
                     defer context.allocator.free(options_help);
-                    try writer.writeAll("OPTIONS:\n");
+                    try fmt.write("**OPTIONS:**\n", .{});
                     try writer.writeAll(options_help);
-                    try writer.print("    {s:<15} Show this help message\n\n", .{"--help, -h"});
+                    try fmt.write("    <flag>--help</flag>, <flag>-h</flag>{s:<6} Show this help message\n\n", .{""});
                 }
             }
         }
@@ -186,20 +191,20 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     // Show commands/subcommands
     switch (help_type) {
         .app, .root => {
-            try showCommandList(context, writer, .top_level);
+            try showCommandList(context, fmt, .top_level);
         },
         .command_group => |group_name| {
-            try showCommandList(context, writer, .{ .subcommands_of = group_name });
+            try showCommandList(context, fmt, .{ .subcommands_of = group_name });
         },
         .command => {
             // Show subcommands if any
-            try showSubcommands(context, writer);
+            try showSubcommands(context, fmt);
         },
     }
 
     // Show options (for non-root commands)
     if (help_type == .command) {
-        try writer.writeAll("OPTIONS:\n");
+        try fmt.write("**OPTIONS:**\n", .{});
         if (context.command_module_info) |module_info| {
             if (module_info.has_options) {
                 if (generateOptionsHelp(module_info, context) catch null) |options_help| {
@@ -208,20 +213,20 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
                 }
             }
         }
-        try writer.print("    {s:<15} Show this help message\n\n", .{"--help, -h"});
+        try fmt.write("    <flag>--help</flag>, <flag>-h</flag>{s:<6} Show this help message\n\n", .{""});
     }
 
     // Show global options (for app and root help)
     if (help_type == .app or help_type == .root) {
-        try writer.writeAll("\nGLOBAL OPTIONS:\n");
-        try writer.writeAll("    -h, --help       Show help information\n");
-        try writer.writeAll("    -V, --version    Show version information\n");
+        try fmt.write("\n**GLOBAL OPTIONS:**\n", .{});
+        try fmt.write("    <flag>-h</flag>, <flag>--help</flag>{s:<6} Show help information\n", .{""});
+        try fmt.write("    <flag>-V</flag>, <flag>--version</flag>{s:<3} Show version information\n", .{""});
     }
 
     // Show examples if available
     if ((help_type == .command or help_type == .root) and context.command_meta != null) {
         if (context.command_meta.?.examples) |examples| {
-            try writer.writeAll("\nEXAMPLES:\n");
+            try fmt.write("\n**EXAMPLES:**\n", .{});
             for (examples) |example| {
                 try writer.print("    {s}\n", .{example});
             }
@@ -232,11 +237,11 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     try writer.writeAll("\n");
     switch (help_type) {
         .app, .root => {
-            try writer.print("Run '{s} <command> --help' for more information on a command.\n", .{app_name});
+            try fmt.write("Run '<command>{s}</command> <command><COMMAND></command> <flag>--help</flag>' for more information on a command.\n", .{app_name});
         },
         .command_group => |group_name| {
-            try writer.print("Run '{s} {s} <subcommand> --help' for more information on a specific subcommand.\n", .{ app_name, group_name });
-            try writer.print("Run '{s} --help' for general help.\n", .{app_name});
+            try fmt.write("Run '<command>{s}</command> <command>{s}</command> <subcommand> <flag>--help</flag>' for more information on a specific subcommand.\n", .{ app_name, group_name });
+            try fmt.write("Run '<command>{s}</command> <flag>--help</flag>' for general help.\n", .{app_name});
         },
         .command => {},
     }
@@ -257,8 +262,12 @@ const CommandListType = union(enum) {
 };
 
 /// Show a list of commands (used by unified help function)
-fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandListType) !void {
-    try writer.writeAll(if (list_type == .top_level) "COMMANDS:\n" else "SUBCOMMANDS:\n");
+fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListType) !void {
+    if (list_type == .top_level) {
+        try fmt.write("**COMMANDS:**\n", .{});
+    } else {
+        try fmt.write("**SUBCOMMANDS:**\n", .{});
+    }
 
     const command_infos = context.getAvailableCommandInfo();
     var displayed_names = std.ArrayList([]const u8).init(context.allocator);
@@ -270,7 +279,8 @@ fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandLi
 
         switch (list_type) {
             .top_level => {
-                if (cmd_info.path.len == 1) {
+                // Show both individual commands (path.len == 1) and command groups (first part of path.len >= 2)
+                if (cmd_info.path.len >= 1) {
                     should_display = true;
                     display_name = cmd_info.path[0];
                 }
@@ -300,9 +310,9 @@ fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandLi
                 try displayed_names.append(display_name);
 
                 if (cmd_info.description) |desc| {
-                    try writer.print("    {s:<12} {s}\n", .{ display_name, desc });
+                    try fmt.write("    <command>{s:<16}</command> {s}\n", .{ display_name, desc });
                 } else {
-                    try writer.print("    {s:<12} \n", .{display_name});
+                    try fmt.write("    <command>{s:<16}</command>\n", .{display_name});
                 }
             }
         }
@@ -310,7 +320,7 @@ fn showCommandList(context: *zcli.Context, writer: anytype, list_type: CommandLi
 
     // Always show help command last for top-level
     if (list_type == .top_level) {
-        try writer.writeAll("    help         Show help for commands\n");
+        try fmt.write("    <command>{s:<16}</command> Show help for commands\n\n", .{"help"});
     }
 }
 
@@ -367,26 +377,22 @@ fn showCommandHelp(context: *zcli.Context, command: []const u8) !void {
 
 /// Generate usage string based on command structure
 fn generateUsage(context: *zcli.Context) ![]const u8 {
-    var usage_parts = std.ArrayList([]const u8).init(context.allocator);
-    defer usage_parts.deinit();
+    // Build a markdown-formatted usage string using the formatter
+    var buf = std.ArrayList(u8).init(context.allocator);
+    errdefer buf.deinit();
+    const buf_writer = buf.writer();
+    const fmt = md.formatter(buf_writer);
 
-    // Track allocated strings that need to be freed
-    var allocated_pattern: ?[]const u8 = null;
-    defer if (allocated_pattern) |pattern| context.allocator.free(pattern);
-
-    // Start with app name
-    try usage_parts.append(context.app_name);
-
-    // Add command path
+    // Start with app name and command path
+    try fmt.write("<command>{s}</command>", .{context.app_name});
     for (context.command_path) |path_part| {
-        try usage_parts.append(path_part);
+        try fmt.write(" <command>{s}</command>", .{path_part});
     }
 
     // Check if this command has subcommands
     const has_subcommands = blk: {
         for (context.available_commands) |cmd_parts| {
             if (cmd_parts.len == context.command_path.len + 1) {
-                // Check if the prefix matches current command path
                 var matches = true;
                 for (context.command_path, 0..) |path_part, i| {
                     if (!std.mem.eql(u8, path_part, cmd_parts[i])) {
@@ -401,44 +407,39 @@ fn generateUsage(context: *zcli.Context) ![]const u8 {
     };
 
     if (has_subcommands) {
-        // This is a command group - show COMMAND
-        try usage_parts.append("COMMAND");
+        try buf_writer.writeAll(" COMMAND");
     } else {
-        // This is a leaf command - show [OPTIONS] and args pattern
         var has_options = false;
         var has_args = false;
 
-        // Check if we have options or args from command module info
         if (context.command_module_info) |module_info| {
             has_options = module_info.has_options;
             has_args = module_info.has_args;
         }
 
         if (has_options) {
-            try usage_parts.append("[OPTIONS]");
+            try buf_writer.writeAll(" [OPTIONS]");
         }
 
         if (has_args) {
-            // Generate args pattern from command module info
             if (context.command_module_info) |module_info| {
                 if (generateArgsPattern(module_info, context) catch null) |pattern| {
-                    allocated_pattern = pattern; // Remember to free this later
-                    try usage_parts.append(pattern);
+                    defer context.allocator.free(pattern);
+                    try buf_writer.print(" {s}", .{pattern});
                 } else {
-                    try usage_parts.append("[ARGS...]");
+                    try buf_writer.writeAll(" [ARGS...]");
                 }
             } else {
-                try usage_parts.append("[ARGS...]");
+                try buf_writer.writeAll(" [ARGS...]");
             }
         }
     }
 
-    // Join all parts with spaces
-    return try std.mem.join(context.allocator, " ", usage_parts.items);
+    return try buf.toOwnedSlice();
 }
 
 /// Show available subcommands for the current command
-fn showSubcommands(context: *zcli.Context, writer: anytype) !void {
+fn showSubcommands(context: *zcli.Context, fmt: anytype) !void {
     const command_infos = context.getAvailableCommandInfo();
     var displayed_names = std.ArrayList([]const u8).init(context.allocator);
     defer displayed_names.deinit();
@@ -488,21 +489,21 @@ fn showSubcommands(context: *zcli.Context, writer: anytype) !void {
                 try displayed_names.append(display_name);
 
                 if (!has_commands) {
-                    try writer.writeAll("COMMANDS:\n");
+                    try fmt.write("**COMMANDS:**\n", .{});
                     has_commands = true;
                 }
 
                 if (cmd_info.description) |desc| {
-                    try writer.print("    {s:<15} {s}\n", .{ display_name, desc });
+                    try fmt.write("    <command>{s:<15}</command> {s}\n", .{ display_name, desc });
                 } else {
-                    try writer.print("    {s}\n", .{display_name});
+                    try fmt.write("    <command>{s}</command>\n", .{display_name});
                 }
             }
         }
     }
 
     if (has_commands) {
-        try writer.writeAll("\n");
+        try fmt.write("\n", .{});
     }
 }
 
@@ -557,13 +558,12 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Context)
 
     var buffer = std.ArrayList(u8).init(context.allocator);
     errdefer buffer.deinit();
-    var writer = buffer.writer();
+    const buf_writer = buffer.writer();
+    const buf_fmt = md.formatter(buf_writer);
 
-    // Generate basic help from field names - description extraction would require
-    // casting raw_meta_ptr which we can't do generically at runtime
+    // Generate basic help from field names
     for (module_info.args_fields) |field_info| {
-        // TODO: Extract descriptions from meta if available (needs type-specific casting)
-        try writer.print("    {s}    {s}\n", .{ field_info.name, field_info.name });
+        try buf_fmt.write("    <value>{s:<16}</value> {s}\n", .{ field_info.name, field_info.name });
     }
 
     return try buffer.toOwnedSlice();
@@ -576,7 +576,8 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Conte
 
     var buffer = std.ArrayList(u8).init(context.allocator);
     errdefer buffer.deinit();
-    var writer = buffer.writer();
+    const buf_writer = buffer.writer();
+    const buf_fmt = md.formatter(buf_writer);
 
     // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {
@@ -589,21 +590,33 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Conte
         }
         const option_name = option_name_buf[0..field_info.name.len];
 
-        // Build option display string with short code if available
-        var option_display = std.ArrayList(u8).init(context.allocator);
-        defer option_display.deinit();
-
-        // Add long form first, then short form (consistent with --help, -h)
-        if (field_info.short) |short_char| {
-            try option_display.writer().print("--{s}, -{c}", .{ option_name, short_char });
-        } else {
-            try option_display.writer().print("--{s}", .{option_name});
-        }
-
         // Use description from metadata, fallback to field name
         const description = field_info.description orelse field_info.name;
 
-        try writer.print("    {s:<15} {s}\n", .{ option_display.items, description });
+        // Calculate padding to align descriptions at column 20
+        // Format: "    --option, -o" or "    --option"
+        // We need to pad to make total reach 20 characters (4 indent + 16 content)
+        const option_length = if (field_info.short) |_|
+            2 + option_name.len + 4 // "--name, -x"
+        else
+            2 + option_name.len; // "--name"
+
+        const padding_needed = if (option_length < 16)
+            16 - option_length
+        else
+            1; // At least one space
+
+        // Build padding string
+        var padding_buf: [32]u8 = undefined;
+        @memset(&padding_buf, ' ');
+        const padding = padding_buf[0..padding_needed];
+
+        // Add long form first, then short form (consistent with --help, -h)
+        if (field_info.short) |short_char| {
+            try buf_fmt.write("    <flag>--{s}</flag>, <flag>-{c}</flag>{s} {s}\n", .{ option_name, short_char, padding, description });
+        } else {
+            try buf_fmt.write("    <flag>--{s}</flag>{s} {s}\n", .{ option_name, padding, description });
+        }
     }
 
     return try buffer.toOwnedSlice();
@@ -639,6 +652,10 @@ const CommandMetadata = struct {
     examples: ?[]const []const u8 = null,
 };
 
+test {
+    std.testing.refAllDecls(@This());
+}
+
 // Tests
 test "help plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "global_options"));
@@ -670,7 +687,7 @@ test "help command execution" {
     // Create a temporary file to capture stderr output
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    
+
     var output_file = try tmp_dir.dir.createFile("test_output.txt", .{ .read = true });
     defer output_file.close();
 
@@ -692,12 +709,12 @@ test "help command execution" {
     const options = commands.help.Options{};
 
     try commands.help.execute(args, options, &context);
-    
+
     // Read back the captured output
     try output_file.seekTo(0);
     const captured_output = try output_file.readToEndAlloc(allocator, 4096);
     defer allocator.free(captured_output);
-    
+
     // Validate the captured output
     try std.testing.expect(captured_output.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, captured_output, "USAGE:") != null);

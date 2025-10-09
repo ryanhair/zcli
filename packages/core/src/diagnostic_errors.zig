@@ -1,7 +1,5 @@
 const std = @import("std");
 
-/// Standard Zig error types for zcli parsing operations
-/// These align with the current StructuredError variants but follow standard Zig patterns
 pub const ZcliError = error{
     // Argument parsing errors
     ArgumentMissingRequired,
@@ -37,8 +35,6 @@ pub const ZcliError = error{
     ResourceLimitExceeded,
 };
 
-/// Rich diagnostic information corresponding to each error type
-/// This provides the same context as StructuredError but only when explicitly requested
 pub const ZcliDiagnostic = union(enum) {
     // Argument parsing errors
     ArgumentMissingRequired: struct {

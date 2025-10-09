@@ -23,6 +23,11 @@ const std = @import("std");
 pub const Color = @import("core/color.zig").Color;
 pub const Style = @import("core/style.zig").Style;
 
+// Semantic theming
+pub const SemanticRole = @import("adaptive/semantic.zig").SemanticRole;
+pub const getSemanticColor = @import("adaptive/palettes.zig").getSemanticColor;
+pub const getSemanticRGB = @import("adaptive/palettes.zig").getSemanticRGB;
+
 // Terminal detection and capability management
 pub const TerminalCapability = @import("detection/capability.zig").TerminalCapability;
 pub const Theme = @import("detection/capability.zig").Theme;
@@ -30,9 +35,6 @@ pub const Theme = @import("detection/capability.zig").Theme;
 // Main API
 pub const Themed = @import("api/fluent.zig").Themed;
 pub const theme = @import("api/fluent.zig").theme;
-
-// Markdown DSL API
-pub const md = @import("dsl/markdown.zig").md;
 
 // Test API - simple function to verify structure
 pub fn version() []const u8 {
@@ -56,10 +58,4 @@ test {
     std.testing.refAllDecls(@import("adaptive/semantic_test.zig"));
     std.testing.refAllDecls(@import("adaptive/palettes.zig"));
     std.testing.refAllDecls(@import("adaptive/palettes_test.zig"));
-
-    // DSL tests
-    std.testing.refAllDecls(@import("dsl/ast.zig"));
-    std.testing.refAllDecls(@import("dsl/tokenizer.zig"));
-    std.testing.refAllDecls(@import("dsl/parser.zig"));
-    std.testing.refAllDecls(@import("dsl/markdown.zig"));
 }

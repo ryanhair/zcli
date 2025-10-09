@@ -76,6 +76,7 @@ The current `StructuredError` enum is closed and specific to zcli's parsing erro
 ### Potential Implementation Approaches
 
 #### Option 1: Error Template System
+
 ```zig
 // Developer defines error templates with sanitization rules
 pub const AppErrors = zcli.ErrorTemplate(.{
@@ -93,6 +94,7 @@ pub const AppErrors = zcli.ErrorTemplate(.{
 ```
 
 #### Option 2: Sanitization Utilities
+
 ```zig
 // Provide utilities that developers can use in their own error handling
 const sanitized_path = zcli.sanitize.path(full_path);
@@ -100,11 +102,12 @@ const sanitized_url = zcli.sanitize.url(connection_string);
 ```
 
 #### Option 3: Custom Error Type with Trait
+
 ```zig
 // Allow developers to implement a sanitization trait
 pub const MyError = union(enum) {
     database_error: []const u8,
-    
+
     pub fn sanitize(self: @This(), verbosity: zcli.ErrorVerbosity) []const u8 {
         return switch (verbosity) {
             .production => "Database error",
@@ -175,7 +178,7 @@ $ myapp --unknown-opt --count=abc --name="" command arg1
 Error: Unknown option: --unknown-opt
 
 # After fixing first error
-$ myapp --count=abc --name="" command arg1  
+$ myapp --count=abc --name="" command arg1
 Error: Invalid value 'abc' for option --count. Expected integer.
 
 # After fixing second error

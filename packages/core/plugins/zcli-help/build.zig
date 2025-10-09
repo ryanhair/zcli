@@ -20,6 +20,14 @@ pub fn build(b: *std.Build) void {
     });
     plugin_module.addImport("zcli", zcli_module);
 
+    // Add markdown-fmt as a dependency
+    const markdown_fmt_module = b.createModule(.{
+        .root_source_file = b.path("../../../markdown-fmt/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    plugin_module.addImport("markdown-fmt", markdown_fmt_module);
+
     // Tests for the plugin
     const plugin_tests = b.addTest(.{
         .root_source_file = b.path("src/plugin.zig"),
@@ -27,6 +35,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     plugin_tests.root_module.addImport("zcli", zcli_module);
+    plugin_tests.root_module.addImport("markdown-fmt", markdown_fmt_module);
 
     const run_tests = b.addRunArtifact(plugin_tests);
     const test_step = b.step("test", "Run plugin tests");

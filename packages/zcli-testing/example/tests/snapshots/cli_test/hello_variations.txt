@@ -1,3 +1,0 @@
-Default: Hello, World.
-Custom: Hi, zcli.
-Excited: Hello, World!

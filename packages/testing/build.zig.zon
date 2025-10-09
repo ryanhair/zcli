@@ -1,0 +1,16 @@
+.{
+    .name = .testing,
+    .version = "0.1.0",
+    .fingerprint = 0xe8f35a06e212c7ff,
+    .minimum_zig_version = "0.14.0",
+
+    .dependencies = .{
+        // No external dependencies - only uses std library
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -108,9 +108,9 @@ fn generatePluginImports(writer: anytype, plugins: []const PluginInfo, allocator
 
 /// Generate the simple comptime registry
 fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config: BuildConfig, plugins: []const PluginInfo, allocator: std.mem.Allocator) !void {
-    // Generate the registry
+    // Generate the registry type (private)
     try writer.print(
-        \\pub const registry = zcli.Registry.init(.{{
+        \\const RegistryType = zcli.Registry.init(.{{
         \\    .app_name = "{s}",
         \\    .app_version = "{s}",
         \\    .app_description = "{s}",
@@ -123,19 +123,18 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
     // Register plugins
     try generatePluginRegistrations(writer, plugins, allocator);
 
-    // Build the final registry
+    // Build the final registry type
     try writer.writeAll("\n    .build();\n\n");
 
     // Export app config constants and initialization function
     try writer.print(
-        \\pub const Context = @TypeOf(registry).Context;
+        \\pub const Context = RegistryType.Context;
         \\pub const app_name = "{s}";
         \\pub const app_version = "{s}";
         \\pub const app_description = "{s}";
         \\
-        \\pub fn init(allocator: std.mem.Allocator) @TypeOf(registry) {{
-        \\    _ = allocator;
-        \\    return registry;
+        \\pub fn init() RegistryType {{
+        \\    return RegistryType.init();
         \\}}
         \\
     , .{ config.app_name, config.app_version, config.app_description });

@@ -570,7 +570,9 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 var error_handled = false;
                 inline for (sorted_plugins) |Plugin| {
                     if (@hasDecl(Plugin, "onError")) {
-                        error_handled = try Plugin.onError(context, error.CommandNotFound) or error_handled;
+                        if (!error_handled) {
+                            error_handled = try Plugin.onError(context, error.CommandNotFound);
+                        }
                     }
                 }
 

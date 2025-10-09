@@ -311,7 +311,7 @@ test "parseCommandLine options only" {
 test "e2e: arguments only" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicArgs = struct {
         file: []const u8,
         output: ?[]const u8 = null,
@@ -327,7 +327,7 @@ test "e2e: arguments only" {
 test "e2e: optional arguments" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicArgs = struct {
         file: []const u8,
         output: ?[]const u8 = null,
@@ -343,7 +343,7 @@ test "e2e: optional arguments" {
 test "e2e: boolean flags only" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,
@@ -363,7 +363,7 @@ test "e2e: boolean flags only" {
 test "e2e: value options" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,
@@ -383,12 +383,12 @@ test "e2e: value options" {
 test "e2e: options after arguments" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicArgs = struct {
         file: []const u8,
         output: ?[]const u8 = null,
     };
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,
@@ -408,12 +408,12 @@ test "e2e: options after arguments" {
 test "e2e: options before arguments" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicArgs = struct {
         file: []const u8,
         output: ?[]const u8 = null,
     };
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,
@@ -433,12 +433,12 @@ test "e2e: options before arguments" {
 test "e2e: fully interleaved options and arguments" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicArgs = struct {
         file: []const u8,
         output: ?[]const u8 = null,
     };
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,
@@ -459,7 +459,7 @@ test "e2e: fully interleaved options and arguments" {
 test "e2e: multiple array values" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const ArrayOptions = struct {
         files: [][]const u8 = &.{},
         numbers: []i32 = &.{},
@@ -478,7 +478,7 @@ test "e2e: multiple array values" {
 test "e2e: array options mixed with other options" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const ArrayOptions = struct {
         files: [][]const u8 = &.{},
         numbers: []i32 = &.{},
@@ -591,12 +591,12 @@ test "e2e: empty string values" {
 test "e2e: missing required arguments" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicArgs = struct {
         file: []const u8,
         output: ?[]const u8 = null,
     };
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,
@@ -615,7 +615,7 @@ test "e2e: too many arguments" {
     const LimitedArgs = struct {
         single_arg: []const u8,
     };
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,
@@ -630,12 +630,12 @@ test "e2e: too many arguments" {
 test "e2e: unknown option" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    
+
     const BasicArgs = struct {
         file: []const u8,
         output: ?[]const u8 = null,
     };
-    
+
     const BasicOptions = struct {
         verbose: bool = false,
         debug: bool = false,

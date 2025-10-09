@@ -52,7 +52,7 @@ test "cross-capability rendering consistency" {
             .capability = cap,
             .is_tty = true,
             .color_enabled = cap != .no_color,
-            };
+        };
 
         try styled_text.render(buffer.writer(), &theme_ctx);
 
@@ -104,8 +104,8 @@ test "style composition and interaction" {
     const complex = base.brightYellow().onBrightBlack().bold().italic().underline();
 
     try testing.expect(complex.hasStyle());
-    try testing.expect(std.meta.eql(complex.style.fg.?, ztheme.Color.bright_yellow));
-    try testing.expect(std.meta.eql(complex.style.bg.?, ztheme.Color.bright_black));
+    try testing.expect(std.meta.eql(complex.style.foreground.?, ztheme.Color.bright_yellow));
+    try testing.expect(std.meta.eql(complex.style.background.?, ztheme.Color.bright_black));
     try testing.expect(complex.style.bold);
     try testing.expect(complex.style.italic);
     try testing.expect(complex.style.underline);
@@ -155,7 +155,7 @@ test "error handling and edge cases" {
     const transformed = original.withContent(@as(u8, 255));
 
     try testing.expect(transformed.content == 255);
-    try testing.expect(std.meta.eql(transformed.style.fg.?, ztheme.Color.red));
+    try testing.expect(std.meta.eql(transformed.style.foreground.?, ztheme.Color.red));
 
     // Test reset functionality
     const heavily_styled = ztheme.theme("text").brightMagenta().onCyan().bold().italic().underline();

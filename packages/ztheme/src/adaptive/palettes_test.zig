@@ -19,9 +19,9 @@ test "palettes return colors for semantic roles" {
 // Test that all semantic roles have colors
 test "all semantic roles have colors" {
     const roles = [_]SemanticRole{
-        .success, .err,  .warning, .info,      .muted,
-        .command, .flag, .path,    .value,
-        .header,  .link, .primary, .secondary, .accent,
+        .success, .err,     .warning,   .info,   .muted,
+        .command, .flag,    .path,      .value,  .header,
+        .link,    .primary, .secondary, .accent,
     };
 
     for (roles) |role| {

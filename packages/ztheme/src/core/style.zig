@@ -43,14 +43,25 @@ const TerminalCapability = @import("../detection/capability.zig").TerminalCapabi
 
 /// Complete text styling information
 pub const Style = struct {
-    fg: ?Color = null,
-    bg: ?Color = null,
+    // Core styling
+    foreground: ?Color = null,
+    background: ?Color = null,
     bold: bool = false,
     italic: bool = false,
     underline: bool = false,
     strikethrough: bool = false,
     dim: bool = false,
+    reverse: bool = false,
     semantic_role: ?SemanticRole = null, // For adaptive color adjustment
+
+    // Legacy aliases for backward compatibility
+    pub fn fg(self: Style) ?Color {
+        return self.foreground;
+    }
+
+    pub fn bg(self: Style) ?Color {
+        return self.background;
+    }
 
     /// Create a new style with the given modifications
     pub fn with(self: @This(), modifications: anytype) Style {
@@ -107,15 +118,19 @@ pub const Style = struct {
             seq_parts[part_count] = "9";
             part_count += 1;
         }
+        if (self.reverse) {
+            seq_parts[part_count] = "7";
+            part_count += 1;
+        }
 
         // Add foreground color
-        if (self.fg) |fg_color| {
+        if (self.foreground) |fg_color| {
             seq_parts[part_count] = generateColorCode(fg_color, capability, true);
             part_count += 1;
         }
 
         // Add background color
-        if (self.bg) |bg_color| {
+        if (self.background) |bg_color| {
             seq_parts[part_count] = generateColorCode(bg_color, capability, false);
             part_count += 1;
         }
@@ -161,15 +176,19 @@ pub const Style = struct {
                 seq_parts[part_count] = "9";
                 part_count += 1;
             }
+            if (self.reverse) {
+                seq_parts[part_count] = "7";
+                part_count += 1;
+            }
 
             // Add foreground color
-            if (self.fg) |fg_color| {
+            if (self.foreground) |fg_color| {
                 seq_parts[part_count] = generateColorCodeComptime(fg_color, capability, true);
                 part_count += 1;
             }
 
             // Add background color
-            if (self.bg) |bg_color| {
+            if (self.background) |bg_color| {
                 seq_parts[part_count] = generateColorCodeComptime(bg_color, capability, false);
                 part_count += 1;
             }
@@ -358,6 +377,7 @@ fn formatU8(value: u8) []const u8 {
         2 => "2",
         3 => "3",
         4 => "4",
+        7 => "7",
         9 => "9",
         else => "0", // fallback
     };
@@ -461,16 +481,16 @@ test "style creation and modification" {
     // Test basic style
     const basic_style = Style{};
     try testing.expect(!basic_style.bold);
-    try testing.expect(basic_style.fg == null);
+    try testing.expect(basic_style.foreground == null);
 
     // Test style modification
     const bold_style = basic_style.with(.{ .bold = true });
     try testing.expect(bold_style.bold);
 
     // Test color style
-    const red_style = Style{ .fg = Color.red };
-    try testing.expect(red_style.fg != null);
-    try testing.expect(red_style.fg.? == Color.red);
+    const red_style = Style{ .foreground = Color.red };
+    try testing.expect(red_style.foreground != null);
+    try testing.expect(red_style.foreground.? == Color.red);
 }
 
 test "ANSI sequence generation for different capabilities" {
@@ -482,19 +502,19 @@ test "ANSI sequence generation for different capabilities" {
     try testing.expect(std.mem.eql(u8, bold_style.sequenceForCapability(.no_color), ""));
 
     // Test red foreground
-    const red_style = Style{ .fg = Color.red };
+    const red_style = Style{ .foreground = Color.red };
     try testing.expect(std.mem.eql(u8, red_style.sequenceForCapability(.ansi_16), "\x1B[31m"));
 
     // Test bright red (should use 90+ codes)
-    const bright_red_style = Style{ .fg = Color.bright_red };
+    const bright_red_style = Style{ .foreground = Color.bright_red };
     try testing.expect(std.mem.eql(u8, bright_red_style.sequenceForCapability(.ansi_16), "\x1B[91m"));
 
     // Test background color
-    const bg_blue_style = Style{ .bg = Color.blue };
+    const bg_blue_style = Style{ .background = Color.blue };
     try testing.expect(std.mem.eql(u8, bg_blue_style.sequenceForCapability(.ansi_16), "\x1B[44m"));
 
     // Test combined styles
-    const complex_style = Style{ .fg = Color.red, .bold = true, .underline = true };
+    const complex_style = Style{ .foreground = Color.red, .bold = true, .underline = true };
     const seq = complex_style.sequenceForCapability(.ansi_16);
     // Should contain all components: bold (1), underline (4), red (31)
     try testing.expect(std.mem.indexOf(u8, seq, "1") != null);
@@ -506,7 +526,7 @@ test "compile-time sequence generation" {
     const testing = std.testing;
 
     // Test compile-time generation
-    const red_bold = Style{ .fg = Color.red, .bold = true };
+    const red_bold = Style{ .foreground = Color.red, .bold = true };
     const comptime_seq = comptime red_bold.sequenceComptime(.ansi_16);
 
     // Should be a valid ANSI sequence
@@ -520,7 +540,7 @@ test "RGB and 256-color sequence generation" {
     const testing = std.testing;
 
     // Test RGB color in true color mode
-    const rgb_style = Style{ .fg = Color{ .rgb = .{ .r = 255, .g = 128, .b = 64 } } };
+    const rgb_style = Style{ .foreground = Color{ .rgb = .{ .r = 255, .g = 128, .b = 64 } } };
     const rgb_seq = rgb_style.sequenceForCapability(.true_color);
 
     // Should contain RGB values
@@ -530,7 +550,7 @@ test "RGB and 256-color sequence generation" {
     try testing.expect(std.mem.indexOf(u8, rgb_seq, "38;2") != null); // True color foreground
 
     // Test 256-color mode
-    const indexed_style = Style{ .fg = Color{ .indexed = 196 } }; // Bright red in 256-color
+    const indexed_style = Style{ .foreground = Color{ .indexed = 196 } }; // Bright red in 256-color
     const color256_seq = indexed_style.sequenceForCapability(.ansi_256);
     try testing.expect(std.mem.indexOf(u8, color256_seq, "38;5;196") != null);
 }
