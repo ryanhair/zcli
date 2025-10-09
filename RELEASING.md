@@ -11,10 +11,9 @@ This document outlines how to create a new release of zcli.
 
 ### 1. Update Version Numbers
 
-Update the version in the following files:
+Update the version in the following file:
 
 - `projects/zcli/build.zig` - Update `.app_version`
-- `Formula/zcli.rb` - Update `version` at the top
 
 ### 2. Test the Build
 
@@ -51,31 +50,7 @@ The release workflow will automatically:
 
 Monitor the workflow at: https://github.com/ryanhair/zcli/actions
 
-### 5. Update Homebrew Formula
-
-Once the release is created, download the checksums and update the formula:
-
-1. Download checksums from the release page
-2. Update `Formula/zcli.rb` with the correct SHA256 hashes:
-   ```bash
-   # Get checksums
-   curl -L https://github.com/ryanhair/zcli/releases/download/v0.1.0/checksums.txt
-   ```
-
-3. Replace the placeholder SHA256 values in `Formula/zcli.rb`:
-   - `REPLACE_WITH_AARCH64_MACOS_SHA256`
-   - `REPLACE_WITH_X86_64_MACOS_SHA256`
-   - `REPLACE_WITH_AARCH64_LINUX_SHA256`
-   - `REPLACE_WITH_X86_64_LINUX_SHA256`
-
-4. Commit and push the updated formula:
-   ```bash
-   git add Formula/zcli.rb
-   git commit -m "Update Homebrew formula checksums for v0.1.0"
-   git push
-   ```
-
-### 6. Test Installation
+### 5. Test Installation
 
 Test all installation methods:
 
@@ -85,19 +60,13 @@ curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh
 zcli --version
 ```
 
-#### Homebrew (if tap is set up)
-```bash
-brew install ryanhair/tap/zcli
-zcli --version
-```
-
 #### Manual Download
 ```bash
 # Download binary from releases page
 # Test it works
 ```
 
-### 7. Update Release Notes
+### 6. Update Release Notes
 
 Edit the GitHub release to add:
 - Overview of changes
@@ -132,9 +101,8 @@ echo "Monitor build at: https://github.com/ryanhair/zcli/actions"
 echo ""
 echo "Next steps:"
 echo "1. Wait for GitHub Actions to complete"
-echo "2. Update Homebrew formula with checksums"
-echo "3. Test installation methods"
-echo "4. Update release notes"
+echo "2. Test installation methods"
+echo "3. Update release notes"
 ```
 
 ## Troubleshooting

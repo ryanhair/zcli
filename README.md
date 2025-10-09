@@ -40,12 +40,6 @@ This will:
 
 After installation, you may need to restart your terminal or run `source ~/.zshrc` (or your shell's config file).
 
-### Homebrew
-
-```bash
-brew install ryanhair/tap/zcli
-```
-
 ### Manual Download
 
 Download pre-built binaries from the [releases page](https://github.com/ryanhair/zcli/releases):
@@ -85,94 +79,63 @@ zcli add command users/create
 
 ## Quick Start
 
-Let's build a CLI in 60 seconds. This example will give you a working `myapp hello` command with help text, options, and validation.
+Build a complete CLI in 30 seconds with the `zcli` tool.
 
-### 1. Add zcli to your project
+### 1. Create a new project
 
 ```bash
-# Create a new project
-mkdir myapp && cd myapp
-zig init
-
-# Add zcli
-zig fetch --save git+https://github.com/ryanhair/zcli
+zcli init myapp
+cd myapp
 ```
 
-### 2. Configure `build.zig`
+This scaffolds a complete project with:
+- `build.zig` configured with zcli
+- `src/main.zig` with the app entry point
+- `src/commands/hello.zig` as an example command
+- Help and error handling plugins pre-configured
 
-Replace your `build.zig` with this:
+### 2. Build and run
 
-```zig
-const std = @import("std");
+```bash
+$ zig build
+$ ./zig-out/bin/myapp hello World
+Hello, World!
 
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+$ ./zig-out/bin/myapp hello Alice --loud
+HELLO, Alice!
 
-    // Get zcli dependency
-    const zcli_dep = b.dependency("zcli", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zcli_module = zcli_dep.module("zcli");
+$ ./zig-out/bin/myapp --help
+myapp v0.1.0
+A CLI application built with zcli
 
-    // Create your executable
-    const exe = b.addExecutable(.{
-        .name = "myapp",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+USAGE:
+    myapp [GLOBAL OPTIONS] <COMMAND> [ARGS]
 
-    exe.root_module.addImport("zcli", zcli_module);
+COMMANDS:
+    hello            Say hello to someone
 
-    // Generate command registry with built-in plugins
-    const zcli = @import("zcli");
-    const cmd_registry = zcli.generate(b, exe, zcli_module, .{
-        .commands_dir = "src/commands",
-        .plugins = &[_]zcli.PluginConfig{
-            .{ .name = "zcli-help", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli-help") },
-            .{ .name = "zcli-not-found", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli-not-found") },
-        },
-        .app_name = "myapp",
-        .app_version = "1.0.0",
-        .app_description = "My awesome CLI app",
-    });
-
-    exe.root_module.addImport("command_registry", cmd_registry);
-    b.installArtifact(exe);
-
-    // Add run step for convenience
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
-
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
-}
+GLOBAL OPTIONS:
+    -h, --help       Show help information
+    -V, --version    Show version information
 ```
 
-### 3. Create `src/main.zig`
+**That's it!** You have a working CLI with colored output, help text, and error handling.
 
-```zig
-const std = @import("std");
-const registry = @import("command_registry");
+### 3. Add more commands
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+```bash
+$ zcli add command deploy --description "Deploy your app"
+Creating command: deploy
+✓ Created src/commands/deploy.zig
 
-    var app = registry.init();
-    app.run(gpa.allocator()) catch |err| switch (err) {
-        error.CommandNotFound => std.process.exit(1),
-        else => return err,
-    };
-}
+$ zcli add command users/create --description "Create a new user"
+Creating command: users/create
+✓ Created src/commands/users/create.zig
 ```
 
-### 4. Create your first command
+### 4. Customize your commands
 
-Create `src/commands/hello.zig`:
+Edit the generated command files to add your logic. Here's what the example `hello.zig` looks like:
 
 ```zig
 const std = @import("std");
@@ -200,51 +163,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 }
 ```
 
-### 5. Build and run
-
-```bash
-$ zig build
-$ ./zig-out/bin/myapp hello World
-Hello, World!
-
-$ ./zig-out/bin/myapp hello Alice --loud
-HELLO, Alice!
-
-$ ./zig-out/bin/myapp --help
-myapp v1.0.0
-My awesome CLI app
-
-USAGE:
-    myapp [GLOBAL OPTIONS] <COMMAND> [ARGS]
-
-COMMANDS:
-    hello            Say hello to someone
-
-GLOBAL OPTIONS:
-    -h, --help       Show help information
-    -V, --version    Show version information
-
-$ ./zig-out/bin/myapp hello --help
-Help for command: hello
-
-Say hello to someone
-
-USAGE:
-    myapp hello [OPTIONS] NAME
-
-ARGUMENTS:
-    name             name
-
-OPTIONS:
-    --loud           loud
-    --help, -h       Show this help message
-
-EXAMPLES:
-    hello World
-    hello Alice --loud
-```
-
-**That's it!** You have a working CLI with colored output, help text, and error handling.
+That's all you need! zcli handles parsing, validation, and help text generation automatically.
 
 ## How It Works
 
