@@ -31,9 +31,16 @@ pub fn build(b: *std.Build) void {
                 .name = "zcli-help",
                 .path = "../../packages/core/plugins/zcli-help",
             },
+            .{
+                .name = "zcli-version",
+                .path = "../../packages/core/plugins/zcli-version",
+            },
+            .{
+                .name = "zcli-not-found",
+                .path = "../../packages/core/plugins/zcli-not-found",
+            },
         },
         .app_name = "dockr",
-        .app_version = "0.1.0",
         .app_description = "A Docker-like container management CLI built with zcli",
     });
 

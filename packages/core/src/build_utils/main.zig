@@ -12,6 +12,50 @@ const DiscoveredCommands = types.DiscoveredCommands;
 const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 
 // ============================================================================
+// VERSION MANAGEMENT - Read version from build.zig.zon
+// ============================================================================
+
+/// Read version from the project's build.zig.zon file
+fn readVersionFromZon(b: *std.Build) []const u8 {
+    const zon_path = b.pathFromRoot("build.zig.zon");
+
+    // Read the file
+    const zon_file = std.fs.cwd().openFile(zon_path, .{}) catch |err| {
+        logging.logBuildWarning("Could not read build.zig.zon at '{s}', using default version 0.0.0: {any}", .{ zon_path, err });
+        return "0.0.0";
+    };
+    defer zon_file.close();
+
+    const content = zon_file.readToEndAlloc(b.allocator, 1024 * 1024) catch |err| {
+        logging.logBuildWarning("Could not read build.zig.zon at '{s}', using default version 0.0.0: {any}", .{ zon_path, err });
+        return "0.0.0";
+    };
+    // Don't defer free - we're returning a slice of this content
+
+    // Parse the .version = "x.y.z" line
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, ".version")) {
+            // Extract version string between quotes
+            if (std.mem.indexOf(u8, trimmed, "\"")) |start| {
+                const after_first = trimmed[start + 1..];
+                if (std.mem.indexOf(u8, after_first, "\"")) |end| {
+                    // Duplicate the version string so we can free the content
+                    const version = b.allocator.dupe(u8, after_first[0..end]) catch "0.0.0";
+                    b.allocator.free(content);
+                    return version;
+                }
+            }
+        }
+    }
+
+    b.allocator.free(content);
+    logging.logBuildWarning("Could not parse version from build.zig.zon at '{s}', using default version 0.0.0", .{zon_path});
+    return "0.0.0";
+}
+
+// ============================================================================
 // HIGH-LEVEL BUILD FUNCTIONS - Main entry points for build.zig
 // ============================================================================
 
@@ -113,9 +157,11 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
     // Validate required fields
     if (!@hasField(@TypeOf(config), "commands_dir")) @compileError("config must have 'commands_dir' field");
     if (!@hasField(@TypeOf(config), "app_name")) @compileError("config must have 'app_name' field");
-    if (!@hasField(@TypeOf(config), "app_version")) @compileError("config must have 'app_version' field");
     if (!@hasField(@TypeOf(config), "app_description")) @compileError("config must have 'app_description' field");
     if (!@hasField(@TypeOf(config), "plugins")) @compileError("config must have 'plugins' field");
+
+    // Always read version from build.zig.zon - single source of truth
+    const app_version = readVersionFromZon(b);
 
     // Convert plugin configs to PluginInfo array
     var plugins = std.ArrayList(types.PluginInfo).init(b.allocator);
@@ -161,7 +207,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
         .plugins_dir = null,
         .plugins = plugins.items,
         .app_name = config.app_name,
-        .app_version = config.app_version,
+        .app_version = app_version,
         .app_description = config.app_description,
     };
 
