@@ -63,10 +63,11 @@ pub fn build(b: *std.Build) void {
     const cmd_registry = zcli.build(b, exe, zcli_module, .{
         .commands_dir = "src/commands",  // Optional, defaults to "src/commands"
         .app_name = "myapp",
-        .app_version = "1.0.0", 
         .app_description = "My CLI application",
+        // Note: Version is automatically read from build.zig.zon
         .plugins = &.{
             .{ .name = "zcli-help", .path = "path/to/help/plugin" },
+            .{ .name = "zcli-version", .path = "path/to/version/plugin" },
             .{ .name = "zcli-not-found", .path = "path/to/suggestions/plugin" },
         },
         .global_options = .{
@@ -99,7 +100,7 @@ const zcli_not_found = @import("zcli_not_found");
 
 pub const registry = zcli.Registry.init(.{
     .app_name = "myapp",
-    .app_version = "1.0.0",
+    .app_version = "1.0.0",  // This comes from build system
     .app_description = "My CLI application",
 })
     .register("init", cmd_init)
@@ -615,8 +616,8 @@ pub fn build(b: *std.Build) void {
     const cmd_registry = zcli.generateCommandRegistry(b, .{
         .commands_dir = "src/commands",
         .app_name = "myapp",
-        .app_version = "1.0.0",
         .app_description = "My awesome CLI app",
+        // Version automatically read from build.zig.zon
     });
 
     exe.step.dependOn(&cmd_registry.step);

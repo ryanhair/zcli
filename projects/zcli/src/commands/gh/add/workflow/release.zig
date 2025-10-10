@@ -158,13 +158,17 @@ pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
 
     try stdout.print("✓ Created .github/workflows/release.yml\n\n", .{});
     try stdout.print("Next steps:\n", .{});
-    try stdout.print("  1. Commit the workflow file:\n", .{});
+    try stdout.print("  1. Commit and push the workflow file:\n", .{});
     try stdout.print("     git add .github/workflows/release.yml\n", .{});
-    try stdout.print("     git commit -m \"Add release workflow\"\n", .{});
+    try stdout.print("     git commit -m \"Add GitHub release workflow\"\n", .{});
     try stdout.print("     git push\n\n", .{});
-    try stdout.print("  2. Create a release:\n", .{});
-    try stdout.print("     git tag -a v0.1.0 -m \"Release v0.1.0\"\n", .{});
+    try stdout.print("  2. Create your first release tag:\n", .{});
+    try stdout.print("     git tag -a v0.1.0 -m \"Initial release\"\n", .{});
     try stdout.print("     git push origin v0.1.0\n\n", .{});
-    try stdout.print("  3. Monitor the build at:\n", .{});
+    try stdout.print("  3. For subsequent releases, use the zcli release command:\n", .{});
+    try stdout.print("     zcli release patch   # 0.1.0 → 0.1.1\n", .{});
+    try stdout.print("     zcli release minor   # 0.1.0 → 0.2.0\n", .{});
+    try stdout.print("     zcli release major   # 0.1.0 → 1.0.0\n\n", .{});
+    try stdout.print("  4. Monitor builds at:\n", .{});
     try stdout.print("     https://github.com/YOUR_USERNAME/YOUR_REPO/actions\n\n", .{});
 }

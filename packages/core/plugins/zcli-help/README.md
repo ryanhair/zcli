@@ -91,8 +91,8 @@ pub fn build(b: *std.Build) void {
             zcli.plugin(b, "zcli-help"),
         },
         .app_name = "myapp",
-        .app_version = "1.0.0", 
         .app_description = "My CLI application",
+        // Note: Version is automatically read from build.zig.zon
     });
 }
 ```

@@ -149,11 +149,12 @@ const cmd_registry = zcli_build.buildWithExternalPlugins(b, exe, zcli_module, .{
     .commands_dir = "src/commands",
     .plugins = &[_]zcli_build.PluginConfig{
         .{ .name = "zcli-help", .path = "../../plugins/zcli-help" },
+        .{ .name = "zcli-version", .path = "../../plugins/zcli-version" },
         .{ .name = "zcli-not-found", .path = "../../plugins/zcli-not-found" },
     },
     .app_name = "myapp",
-    .app_version = "1.0.0",
     .app_description = "My CLI application",
+    // Note: Version is automatically read from build.zig.zon
 });
 ```
 
@@ -168,8 +169,8 @@ The build system starts by scanning the configured commands directory:
 const cmd_registry = zcli_build.generateCommandRegistry(b, target, optimize, zcli_module, .{
     .commands_dir = "src/commands",  // Starting point
     .app_name = "myapp",
-    .app_version = "1.0.0", 
     .app_description = "My CLI app",
+    // Note: Version is automatically read from build.zig.zon
 });
 ```
 

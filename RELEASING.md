@@ -5,105 +5,93 @@ This document outlines how to create a new release of zcli.
 ## Prerequisites
 
 - Push access to the repository
-- GitHub CLI (`gh`) installed (optional, but recommended)
+- Working directory must be clean (all changes committed)
+- On the `main` branch
 
-## Release Steps
+## Quick Release (Recommended)
 
-### 1. Update Version Numbers
-
-Update the version in the following file:
-
-- `projects/zcli/build.zig` - Update `.app_version`
-
-### 2. Test the Build
-
-Ensure everything builds and tests pass:
+The `zcli release` command automates the entire release process:
 
 ```bash
 cd projects/zcli
-zig build -Doptimize=ReleaseFast
-zig build test
+
+# Bump patch version (1.0.0 → 1.0.1)
+zig-out/bin/zcli release patch
+
+# Bump minor version (1.0.0 → 1.1.0)
+zig-out/bin/zcli release minor
+
+# Bump major version (1.0.0 → 2.0.0)
+zig-out/bin/zcli release major
+
+# Set explicit version
+zig-out/bin/zcli release 1.5.0
 ```
 
-Test the CLI:
+### What the Release Command Does
+
+1. **Detects current version** from git tags
+2. **Calculates new version** based on your input
+3. **Runs safety checks**:
+   - Ensures working tree is clean
+   - Verifies you're on the correct branch (default: `main`)
+4. **Runs tests** (`zig build test`)
+5. **Opens editor** for release notes (pre-filled with commit log)
+6. **Prompts for confirmation**
+7. **Creates annotated git tag** with release notes
+8. **Pushes tag to origin**
+
+### Release Options
 
 ```bash
-./zig-out/bin/zcli --version
-./zig-out/bin/zcli --help
+# Preview without executing
+zcli release patch --dry-run
+
+# Skip tests (not recommended)
+zcli release patch --skip-tests
+
+# Create tag but don't push
+zcli release patch --no-push
+
+# Skip safety checks
+zcli release patch --skip-checks
+
+# Sign the tag with GPG
+zcli release patch --sign
+
+# Provide release message directly (skip editor)
+zcli release patch --message "Bug fixes and improvements"
+
+# Release from different branch
+zcli release patch --branch develop
 ```
 
-### 3. Create and Push Git Tag
+## After Release
 
-```bash
-# From the repository root
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
-```
+### 1. Wait for GitHub Actions
 
-### 4. Wait for GitHub Actions
-
-The release workflow will automatically:
-- Build binaries for all platforms (macOS x86_64/arm64, Linux x86_64/arm64)
-- Create a GitHub release
-- Upload the binaries
-- Generate checksums
+The release workflow automatically:
+- Builds binaries for all platforms (macOS x86_64/arm64, Linux x86_64/arm64)
+- Creates a GitHub release
+- Uploads the binaries
+- Generates checksums
 
 Monitor the workflow at: https://github.com/ryanhair/zcli/actions
 
-### 5. Test Installation
+### 2. Test Installation
 
-Test all installation methods:
+Test the installation script:
 
-#### Install Script
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh
 zcli --version
 ```
 
-#### Manual Download
-```bash
-# Download binary from releases page
-# Test it works
-```
+### 3. Verify Release
 
-### 6. Update Release Notes
-
-Edit the GitHub release to add:
-- Overview of changes
-- Breaking changes (if any)
-- Migration guide (if needed)
-- Link to changelog
-
-## Automation Script (Optional)
-
-You can create a helper script to automate some of these steps:
-
-```bash
-#!/bin/bash
-# release.sh - Helper script for creating releases
-
-VERSION=$1
-
-if [ -z "$VERSION" ]; then
-    echo "Usage: ./release.sh v0.1.0"
-    exit 1
-fi
-
-# Update version in files
-echo "Updating version to $VERSION..."
-
-# Create and push tag
-git tag -a "$VERSION" -m "Release $VERSION"
-git push origin "$VERSION"
-
-echo "Release $VERSION created!"
-echo "Monitor build at: https://github.com/ryanhair/zcli/actions"
-echo ""
-echo "Next steps:"
-echo "1. Wait for GitHub Actions to complete"
-echo "2. Test installation methods"
-echo "3. Update release notes"
-```
+- Check that all binaries were uploaded
+- Test downloading and running a binary
+- Verify checksums match
 
 ## Troubleshooting
 
