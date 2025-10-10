@@ -18,15 +18,15 @@ BINARY_NAME="zcli"
 
 # Print functions
 print_info() {
-    printf "${BLUE}==>${NC} %s\n" "$1"
+    printf "${BLUE}==>${NC} %s\n" "$1" >&2
 }
 
 print_success() {
-    printf "${GREEN}✓${NC} %s\n" "$1"
+    printf "${GREEN}✓${NC} %s\n" "$1" >&2
 }
 
 print_warning() {
-    printf "${YELLOW}!${NC} %s\n" "$1"
+    printf "${YELLOW}!${NC} %s\n" "$1" >&2
 }
 
 print_error() {
@@ -263,7 +263,7 @@ add_to_path() {
 # Main installation flow
 main() {
     print_info "Installing zcli..."
-    echo ""
+    echo "" >&2
 
     # Detect platform
     local os=$(detect_os)
@@ -292,9 +292,9 @@ main() {
     # Clean up temp files
     rm -rf "$(dirname "${binary_path}")"
 
-    echo ""
+    echo "" >&2
     print_success "zcli v${version} installed successfully!"
-    echo ""
+    echo "" >&2
 
     # Check PATH and configure if needed
     if is_in_path "${INSTALL_DIR}"; then
@@ -308,22 +308,22 @@ main() {
 
         local config_file=$(add_to_path "${shell_type}")
 
-        echo ""
+        echo "" >&2
         print_info "To use zcli immediately, run:"
-        echo ""
+        echo "" >&2
         case "${shell_type}" in
             fish)
-                printf "    ${GREEN}source %s${NC}\n" "${config_file}"
+                printf "    ${GREEN}source %s${NC}\n" "${config_file}" >&2
                 ;;
             *)
-                printf "    ${GREEN}source %s${NC}\n" "${config_file}"
+                printf "    ${GREEN}source %s${NC}\n" "${config_file}" >&2
                 ;;
         esac
-        echo ""
+        echo "" >&2
         print_info "Or restart your terminal, then run:"
-        echo ""
-        printf "    ${GREEN}zcli --help${NC}\n"
-        echo ""
+        echo "" >&2
+        printf "    ${GREEN}zcli --help${NC}\n" >&2
+        echo "" >&2
     fi
 }
 

@@ -172,7 +172,22 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         try getReleaseNotes(allocator, current_version_str, new_version_str);
     defer allocator.free(release_notes);
 
-    stdout.print("  Release notes:\n{s}\n", .{release_notes}) catch {};
+    stdout.print("\nRelease notes:\n{s}\n", .{release_notes}) catch {};
+
+    // 5.5. Confirm release (unless using --message flag or dry-run)
+    if (options.message == null and !options.@"dry-run") {
+        stdout.print("\nContinue with release v{s}? [Y/n]: ", .{new_version_str}) catch {};
+        const stdin = std.io.getStdIn().reader();
+        var buf: [10]u8 = undefined;
+        const response = (try stdin.readUntilDelimiterOrEof(&buf, '\n')) orelse "";
+        const trimmed = std.mem.trim(u8, response, " \t\r\n");
+
+        // Default to yes - only abort if explicitly "n" or "N"
+        if (std.mem.eql(u8, trimmed, "n") or std.mem.eql(u8, trimmed, "N")) {
+            try stdout.print("Release aborted.\n", .{});
+            return;
+        }
+    }
 
     // 6. Create annotated tag
     const tag_name = try std.fmt.allocPrint(allocator, "v{s}", .{new_version_str});
