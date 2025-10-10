@@ -5,6 +5,7 @@
 ## Phase 1: MVP (Week 1)
 
 ### ✅ Project Scaffolding (`zcli init`)
+
 ```bash
 zcli init my-app
 # Creates full project structure with build.zig, main.zig, example command
@@ -14,9 +15,11 @@ zcli init my-app
 zcli init my-app --template api-client
 # Templates: basic, api-client, daemon, git-like, docker-like
 ```
+
 **Impact:** Eliminates the "copy build.zig, adjust paths, hope it works" friction.
 
 ### ✅ Command Generation (`zcli add command`)
+
 ```bash
 zcli add command deploy
 # Creates src/commands/deploy.zig with smart defaults
@@ -30,9 +33,11 @@ zcli add command users/create
 zcli add command deploy --args "environment target" --option "replicas:int"
 # Generates full command structure non-interactively
 ```
+
 **Impact:** Eliminates "what's the boilerplate again?" problem.
 
 ### Structure Visualization (`zcli tree`)
+
 ```bash
 zcli tree
 # Shows beautiful tree of all commands:
@@ -48,9 +53,11 @@ zcli tree
 zcli tree --show-options
 # Includes arguments and options in the tree
 ```
+
 **Impact:** Visual representation helps maintain mental model as projects grow.
 
 ### Live Development (`zcli dev`)
+
 ```bash
 zcli dev
 # Watches src/ for changes, rebuilds automatically
@@ -60,11 +67,13 @@ zcli dev
 zcli dev -- users create alice@example.com
 # Auto-rebuild + run specific command on changes
 ```
+
 **Impact:** Makes iteration instant. No more manual zig build → run → repeat cycle.
 
 ## Phase 2: Core Features (Week 2-3)
 
 ### Interactive Command Builder (`zcli interactive`)
+
 ```bash
 zcli interactive
 # or: zcli i
@@ -107,9 +116,11 @@ zcli interactive
 ✓ Created src/commands/deploy.zig
 ✓ Run: zig build && ./zig-out/bin/my-app deploy --help
 ```
+
 **Impact:** Removes ALL friction. User describes intent, tool generates perfect code.
 
 ### Smart Code Modification
+
 ```bash
 zcli add option deploy --name rollback --type bool --desc "Rollback instead of deploying"
 # Adds to existing deploy.zig without manual editing
@@ -120,9 +131,11 @@ zcli rename deploy → ship
 zcli move users/create → user/new
 # Refactors command paths safely
 ```
+
 **Impact:** Code modification is harder than creation. These make evolution easy.
 
 ### Documentation Generation (`zcli docs`)
+
 ```bash
 zcli docs
 # Generates README.md with:
@@ -134,9 +147,11 @@ zcli docs
 zcli docs --format html
 # Generates static site with searchable docs
 ```
+
 **Impact:** Documentation stays in sync with code automatically.
 
 ### Validation & Linting (`zcli check`)
+
 ```bash
 zcli check
 # Validates:
@@ -150,11 +165,13 @@ zcli check
 zcli check --fix
 # Auto-fixes common issues
 ```
+
 **Impact:** Prevents bad UX before it ships. Enforces best practices.
 
 ## Phase 3: Advanced Features (Month 2)
 
 ### Plugin Development
+
 ```bash
 zcli plugin new my-feature
 # Scaffolds plugin with:
@@ -166,9 +183,11 @@ zcli plugin new my-feature
 zcli plugin add zcli-telemetry
 # Adds plugin dependency, updates build.zig
 ```
+
 **Impact:** Makes extending zcli accessible to everyone.
 
 ### Migration Tools
+
 ```bash
 zcli migrate from-cobra main.go
 # Analyzes cobra CLI, generates equivalent zcli structure
@@ -176,9 +195,11 @@ zcli migrate from-cobra main.go
 zcli migrate from-clap src/main.rs
 # Rust clap → Zig zcli
 ```
+
 **Impact:** Lowers barrier to adoption. "Port your existing CLI in 5 minutes."
 
 ### Live Preview Server
+
 ```bash
 zcli preview
 # Starts web server on :3000
@@ -186,9 +207,11 @@ zcli preview
 # Try commands in browser, see output
 # Share link with team for design review
 ```
+
 **Impact:** Design review before implementation. Test UX without coding.
 
 ### Snapshot Testing
+
 ```bash
 zcli snapshot record
 # Records all command outputs as snapshots
@@ -197,11 +220,13 @@ zcli snapshot verify
 # Ensures outputs haven't changed unexpectedly
 # Perfect for regression testing help text
 ```
+
 **Impact:** Prevents accidental breaking changes to UX.
 
 ## Experimental / Future Ideas
 
 ### Natural Language → Code (AI)
+
 ```bash
 zcli ai "create a command that fetches users from an API and can filter by role"
 
@@ -212,9 +237,11 @@ zcli ai "create a command that fetches users from an API and can filter by role"
 # - Skeleton HTTP fetch code
 # - Proper error handling
 ```
+
 **Impact:** Describe intent, get working code. This is the future.
 
 ### Code Templates & Snippets
+
 ```bash
 zcli snippet add http-get
 # Adds pre-built HTTP GET request template
@@ -224,6 +251,7 @@ zcli snippet add json-parse
 ```
 
 ### Testing Utilities
+
 ```bash
 zcli test generate
 # Generates test cases for all commands
@@ -231,6 +259,7 @@ zcli test generate
 ```
 
 ### Performance Analysis
+
 ```bash
 zcli analyze
 # Shows:
@@ -255,6 +284,65 @@ zcli analyze
 - Time from idea to working command: < 2 minutes
 - User satisfaction: "This is the most fun I've had building a CLI"
 - Adoption: This tool becomes THE reason people choose zcli
+
+## Release Command Enhancements
+
+Future enhancements for the `zcli release` command:
+
+### GitHub Integration
+
+- **GitHub Release Creation**: Automatically create GitHub releases via `gh` CLI
+- **Release Assets**: Upload build artifacts to GitHub releases
+- **Release Templates**: Customizable release description templates
+- **Draft Releases**: Create draft releases for review before publishing
+
+### Advanced Changelog Management
+
+- **Changelog Automation**: Auto-update CHANGELOG.md with commits since last release
+- **Conventional Commits**: Parse conventional commit format for categorized changelogs
+- **Breaking Changes Detection**: Highlight breaking changes in release notes
+- **Multi-format Changelogs**: Generate changelogs in markdown, JSON, or custom formats
+
+### Pre-release Support
+
+- **Pre-release Versions**: `zcli release patch --pre alpha` → `0.1.1-alpha.1`
+- **Pre-release Channels**: Support alpha, beta, rc channels
+- **Version Progression**: Auto-increment pre-release numbers
+
+### Version File Management
+
+- **Multi-file Updates**: Auto-update version in multiple files:
+  - `build.zig.zon`
+  - `package.json`
+  - `README.md` badges
+  - Custom version files
+- **File Pattern Matching**: Configure version patterns via regex
+- **Commit Inclusion**: Automatically commit version bumps
+
+### Release Hooks & Customization
+
+- **Custom Scripts**: Run scripts at different stages:
+  - `pre-release`: Before any release actions
+  - `post-tag`: After tag creation
+  - `post-push`: After successful push
+  - `on-error`: Cleanup on failure
+- **Hook Configuration**: Define hooks in `.zcli/release.zig` or config file
+- **Rollback Support**: Automatic rollback on script failure
+
+### Release Management Commands
+
+- **Rollback Command**: `zcli release rollback [tag]` - Delete tag and revert
+- **List Releases**: `zcli release list` - Show recent releases
+- **Compare Releases**: `zcli release diff v1.0.0 v1.1.0` - Show changes between versions
+- **Validate Release**: `zcli release validate` - Check release readiness without creating
+
+### Advanced Features
+
+- **Monorepo Support**: Tag and version individual packages
+- **Cross-platform Builds**: Trigger CI builds for multiple platforms
+- **Release Signing**: GPG sign releases and artifacts
+- **Notification Integration**: Post to Slack, Discord, etc. on release
+- **Analytics**: Track release metrics and adoption
 
 ## Contributing
 
