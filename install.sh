@@ -299,7 +299,7 @@ main() {
     # Check PATH and configure if needed
     if is_in_path "${INSTALL_DIR}"; then
         print_success "${INSTALL_DIR} is already in your PATH"
-        print_info "You can now use: ${GREEN}zcli --help${NC}"
+        printf "${BLUE}==>${NC} You can now use: ${GREEN}zcli --help${NC}\n" >&2
     else
         print_warning "${INSTALL_DIR} is not in your PATH"
 
