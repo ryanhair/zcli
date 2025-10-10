@@ -311,12 +311,13 @@ fn getReleaseNotes(allocator: std.mem.Allocator, current_version: []const u8, ne
     const editor = std.process.getEnvVarOwned(allocator, "EDITOR") catch try allocator.dupe(u8, "vim");
     defer allocator.free(editor);
 
-    const edit_result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ editor, tmp_file_path },
-    });
-    defer allocator.free(edit_result.stdout);
-    defer allocator.free(edit_result.stderr);
+    var child = std.process.Child.init(&.{ editor, tmp_file_path }, allocator);
+    // Don't redirect stdin/stdout/stderr - let the editor have terminal control
+    const term = try child.spawnAndWait();
+
+    if (term.Exited != 0) {
+        return error.EditorFailed;
+    }
 
     // Read the edited file
     const edited_file = try dir.openFile("RELEASE_NOTES.txt", .{});
