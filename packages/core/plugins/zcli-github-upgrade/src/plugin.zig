@@ -98,6 +98,11 @@ pub fn init(config: Config) type {
             try stdout.print("Verifying checksum...\n", .{});
             try verifyChecksum(allocator, plugin_config.repo, latest_version, temp_path, binary_name);
 
+            // Make binary executable before testing
+            const temp_file = try std.fs.cwd().openFile(temp_path, .{});
+            defer temp_file.close();
+            try temp_file.chmod(0o755);
+
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
             try testBinary(temp_path);
@@ -176,7 +181,8 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8) ![]const u
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
-    var header_buffer: [4096]u8 = undefined;
+    // Use 16KB buffer for headers (GitHub can send large headers, especially with redirects)
+    var header_buffer: [16384]u8 = undefined;
     var request = try client.open(.GET, uri, .{
         .server_header_buffer = &header_buffer,
         .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
@@ -252,7 +258,8 @@ fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, version: []con
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
-    var header_buffer: [4096]u8 = undefined;
+    // Use 16KB buffer for headers (GitHub can send large headers, especially with redirects)
+    var header_buffer: [16384]u8 = undefined;
     var request = try client.open(.GET, uri, .{
         .server_header_buffer = &header_buffer,
         .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
@@ -291,7 +298,8 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, version: []con
     defer client.deinit();
 
     const uri = try std.Uri.parse(checksums_url);
-    var header_buffer: [4096]u8 = undefined;
+    // Use 16KB buffer for headers (GitHub can send large headers, especially with redirects)
+    var header_buffer: [16384]u8 = undefined;
     var request = try client.open(.GET, uri, .{
         .server_header_buffer = &header_buffer,
         .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
@@ -353,7 +361,14 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, version: []con
 
 /// Test that the new binary works
 fn testBinary(path: []const u8) !void {
-    var child = std.process.Child.init(&.{ path, "--version" }, std.heap.page_allocator);
+    // Need to use absolute path or ./ prefix for executable
+    const exe_path = if (std.fs.path.isAbsolute(path))
+        path
+    else
+        try std.fmt.allocPrint(std.heap.page_allocator, "./{s}", .{path});
+    defer if (!std.fs.path.isAbsolute(path)) std.heap.page_allocator.free(exe_path);
+
+    var child = std.process.Child.init(&.{ exe_path, "--version" }, std.heap.page_allocator);
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
 

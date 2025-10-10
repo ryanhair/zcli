@@ -189,7 +189,25 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         }
     }
 
-    // 6. Create annotated tag
+    // 6. Update build.zig.zon with new version
+    stdout.print("\n→ Updating build.zig.zon to v{s}...\n", .{new_version_str}) catch {};
+    if (options.@"dry-run") {
+        stdout.print("  (dry-run: would update build.zig.zon)\n", .{}) catch {};
+    } else {
+        try updateBuildZonVersion(allocator, new_version_str);
+        stdout.print("  ✓ build.zig.zon updated\n", .{}) catch {};
+
+        // Commit the version bump
+        stdout.print("\n→ Committing version bump...\n", .{}) catch {};
+        const commit_msg = try std.fmt.allocPrint(allocator, "Bump version to {s}", .{new_version_str});
+        defer allocator.free(commit_msg);
+
+        _ = try runCommand(allocator, &.{ "git", "add", "build.zig.zon" });
+        _ = try runCommand(allocator, &.{ "git", "commit", "-m", commit_msg });
+        stdout.print("  ✓ Changes committed\n", .{}) catch {};
+    }
+
+    // 7. Create annotated tag
     const tag_name = try std.fmt.allocPrint(allocator, "v{s}", .{new_version_str});
     defer allocator.free(tag_name);
 
@@ -212,18 +230,21 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         stdout.print("  ✓ Tag created\n", .{}) catch {};
     }
 
-    // 7. Push tag
+    // 8. Push commit and tag
     if (!options.@"no-push") {
-        stdout.print("\n→ Pushing tag to origin...\n", .{}) catch {};
+        stdout.print("\n→ Pushing to origin...\n", .{}) catch {};
         if (options.@"dry-run") {
-            stdout.print("  (dry-run: would push tag)\n", .{}) catch {};
+            stdout.print("  (dry-run: would push commit and tag)\n", .{}) catch {};
         } else {
+            // Push the commit first
+            _ = try runCommand(allocator, &.{ "git", "push" });
+            // Then push the tag
             _ = try runCommand(allocator, &.{ "git", "push", "origin", tag_name });
-            stdout.print("  ✓ Tag pushed successfully\n", .{}) catch {};
+            stdout.print("  ✓ Commit and tag pushed successfully\n", .{}) catch {};
         }
     }
 
-    // 8. Success message
+    // 9. Success message
     stdout.print("\n", .{}) catch {};
     if (options.@"dry-run") {
         stdout.print("✓ Dry-run complete! No changes were made.\n", .{}) catch {};
@@ -264,6 +285,43 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             }
         } else |_| {}
     }
+}
+
+/// Update the version in build.zig.zon
+fn updateBuildZonVersion(allocator: std.mem.Allocator, new_version: []const u8) !void {
+    const zon_path = "build.zig.zon";
+
+    // Read current file
+    const file = try std.fs.cwd().openFile(zon_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Find and replace the version line
+    var new_content = std.ArrayList(u8).init(allocator);
+    defer new_content.deinit();
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, ".version")) |_| {
+            // Replace the version value
+            const indent = blk: {
+                var i: usize = 0;
+                while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+                break :blk line[0..i];
+            };
+            try new_content.writer().print("{s}.version = \"{s}\",\n", .{ indent, new_version });
+        } else {
+            try new_content.appendSlice(line);
+            try new_content.append('\n');
+        }
+    }
+
+    // Write back to file
+    const out_file = try std.fs.cwd().createFile(zon_path, .{});
+    defer out_file.close();
+    try out_file.writeAll(new_content.items);
 }
 
 fn getCurrentVersion(allocator: std.mem.Allocator) !Version {
