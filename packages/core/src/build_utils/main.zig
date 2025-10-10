@@ -109,12 +109,23 @@ fn generatePluginRegistry(
 }
 
 /// Build function for external plugins with explicit plugin configuration
-pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: ExternalPluginBuildConfig) *std.Build.Module {
-    // Convert PluginConfig array to PluginInfo array
+pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: anytype) *std.Build.Module {
+    // Validate required fields
+    if (!@hasField(@TypeOf(config), "commands_dir")) @compileError("config must have 'commands_dir' field");
+    if (!@hasField(@TypeOf(config), "app_name")) @compileError("config must have 'app_name' field");
+    if (!@hasField(@TypeOf(config), "app_version")) @compileError("config must have 'app_version' field");
+    if (!@hasField(@TypeOf(config), "app_description")) @compileError("config must have 'app_description' field");
+    if (!@hasField(@TypeOf(config), "plugins")) @compileError("config must have 'plugins' field");
+
+    // Convert plugin configs to PluginInfo array
     var plugins = std.ArrayList(types.PluginInfo).init(b.allocator);
     defer plugins.deinit();
 
-    for (config.plugins) |plugin_config| {
+    inline for (config.plugins) |plugin_config| {
+        // Validate plugin config has required fields
+        if (!@hasField(@TypeOf(plugin_config), "name")) @compileError("plugin config must have 'name' field");
+        if (!@hasField(@TypeOf(plugin_config), "path")) @compileError("plugin config must have 'path' field");
+
         // Create a dependency for each external plugin
         const plugin_dep = b.dependency(plugin_config.name, .{});
 
@@ -124,11 +135,18 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
             std.process.exit(1);
         };
 
+        // Check if plugin has config and generate init code
+        const init_code = if (@hasField(@TypeOf(plugin_config), "config"))
+            configToInitString(b.allocator, plugin_config.config)
+        else
+            null;
+
         const plugin_info = types.PluginInfo{
             .name = plugin_config.name,
             .import_name = import_name,
-            .is_local = false, // External plugins are not local
+            .is_local = false,
             .dependency = plugin_dep,
+            .init = init_code,
         };
         plugins.append(plugin_info) catch {
             logging.buildError("Plugin System", "memory allocation", "Failed to add plugin to plugin list", "Out of memory while adding external plugin. Reduce number of plugins or increase available memory");
@@ -137,18 +155,71 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
         };
     }
 
-    // Create BuildConfig from ExternalPluginBuildConfig
+    // Create BuildConfig
     const build_config = BuildConfig{
         .commands_dir = config.commands_dir,
-        .plugins_dir = null, // No local plugins directory
+        .plugins_dir = null,
         .plugins = plugins.items,
         .app_name = config.app_name,
         .app_version = config.app_version,
         .app_description = config.app_description,
     };
 
-    // Use the existing buildWithPlugins function
     return buildWithPlugins(b, exe, zcli_module, build_config);
+}
+
+/// Convert a comptime config struct to an init string
+fn configToInitString(allocator: std.mem.Allocator, comptime config: anytype) []const u8 {
+    const T = @TypeOf(config);
+    const type_info = @typeInfo(T);
+
+    const fields = switch (type_info) {
+        .@"struct" => |s| s.fields,
+        else => @compileError("Plugin config must be a struct, got: " ++ @typeName(T)),
+    };
+
+    var result = std.ArrayList(u8).init(allocator);
+    const writer = result.writer();
+
+    writer.writeAll(".init(.{") catch unreachable;
+
+    inline for (fields, 0..) |field, i| {
+        if (i > 0) writer.writeAll(", ") catch unreachable;
+
+        writer.print(".{s} = ", .{field.name}) catch unreachable;
+
+        const value = @field(config, field.name);
+        switch (@typeInfo(field.type)) {
+            .pointer => |ptr_info| {
+                // Handle string slices and array pointers
+                const child_info = @typeInfo(ptr_info.child);
+                const is_string = switch (child_info) {
+                    .int => |int_info| int_info.bits == 8 and int_info.signedness == .unsigned,
+                    .array => |arr_info| arr_info.child == u8,
+                    else => false,
+                };
+
+                if (is_string) {
+                    writer.print("\"{s}\"", .{value}) catch unreachable;
+                } else {
+                    @compileError("Unsupported pointer type in plugin config: " ++ @typeName(field.type));
+                }
+            },
+            .bool => {
+                writer.print("{}", .{value}) catch unreachable;
+            },
+            .int, .comptime_int => {
+                writer.print("{d}", .{value}) catch unreachable;
+            },
+            else => {
+                @compileError("Unsupported type in plugin config: " ++ @typeName(field.type));
+            },
+        }
+    }
+
+    writer.writeAll("})") catch unreachable;
+
+    return result.toOwnedSlice() catch unreachable;
 }
 
 // ============================================================================

@@ -46,17 +46,50 @@ pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module
 }
 
 /// Create modules for command groups recursively
-fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, group_name: []const u8, group_info: *const CommandInfo, commands_dir: []const u8) void {
+fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, _: []const u8, group_info: *const CommandInfo, commands_dir: []const u8) void {
     if (group_info.subcommands) |subcommands| {
         var it = subcommands.iterator();
         while (it.next()) |entry| {
             const subcmd_name = entry.key_ptr.*;
             const subcmd_info = entry.value_ptr.*;
 
-            if (subcmd_info.command_type != .leaf) {
+            if (subcmd_info.command_type == .optional_group) {
+                // Create module for nested optional group
+                var module_name_parts = std.ArrayList([]const u8).init(b.allocator);
+                defer module_name_parts.deinit();
+
+                for (subcmd_info.path) |part| {
+                    const sanitized_part = std.mem.replaceOwned(u8, b.allocator, part, "-", "_") catch part;
+                    module_name_parts.append(sanitized_part) catch unreachable;
+                }
+
+                const module_name = std.mem.join(b.allocator, "_", module_name_parts.items) catch unreachable;
+                const module_name_with_index = b.fmt("{s}_index", .{module_name});
+
+                const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.file_path });
+                const cmd_module = b.addModule(module_name_with_index, .{
+                    .root_source_file = b.path(full_path),
+                });
+                cmd_module.addImport("zcli", zcli_module);
+                registry_module.addImport(module_name_with_index, cmd_module);
+
+                // Also recurse for its subcommands
+                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir);
+            } else if (subcmd_info.command_type == .pure_group) {
+                // Pure groups have no module, just recurse
                 createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir);
             } else {
-                const module_name = b.fmt("{s}_{s}", .{ group_name, subcmd_name });
+                // Generate module name from the full command path to handle nested directories
+                // This ensures unique module names even for deeply nested commands
+                var module_name_parts = std.ArrayList([]const u8).init(b.allocator);
+                defer module_name_parts.deinit();
+
+                for (subcmd_info.path) |part| {
+                    const sanitized_part = std.mem.replaceOwned(u8, b.allocator, part, "-", "_") catch part;
+                    module_name_parts.append(sanitized_part) catch unreachable;
+                }
+
+                const module_name = std.mem.join(b.allocator, "_", module_name_parts.items) catch unreachable;
 
                 const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.file_path });
                 const cmd_module = b.addModule(module_name, .{

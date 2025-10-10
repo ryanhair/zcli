@@ -74,18 +74,60 @@ fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
 }
 
 /// Generate group command imports recursively
-fn generateGroupImports(writer: anytype, group_name: []const u8, group_info: *const CommandInfo) !void {
+fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const CommandInfo) !void {
     if (group_info.subcommands) |subcommands| {
         var it = subcommands.iterator();
         while (it.next()) |entry| {
             const subcmd_name = entry.key_ptr.*;
             const subcmd_info = entry.value_ptr.*;
 
-            if (subcmd_info.command_type != .leaf) {
+            if (subcmd_info.command_type == .optional_group) {
+                // Generate import for optional group with index file
+                var module_name_parts = std.ArrayList([]const u8).init(subcommands.allocator);
+                defer module_name_parts.deinit();
+
+                for (subcmd_info.path) |part| {
+                    const sanitized_part = try sanitizeIdentifier(subcommands.allocator, part);
+                    defer if (sanitized_part.ptr != part.ptr) subcommands.allocator.free(sanitized_part);
+                    try module_name_parts.append(try subcommands.allocator.dupe(u8, sanitized_part));
+                }
+
+                const module_name = try std.mem.join(subcommands.allocator, "_", module_name_parts.items);
+                defer {
+                    for (module_name_parts.items) |part| {
+                        subcommands.allocator.free(part);
+                    }
+                    subcommands.allocator.free(module_name);
+                }
+
+                const module_name_with_index = try std.fmt.allocPrint(subcommands.allocator, "{s}_index", .{module_name});
+                defer subcommands.allocator.free(module_name_with_index);
+
+                try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name_with_index, module_name_with_index });
+
+                // Also recurse for subcommands
+                try generateGroupImports(writer, subcmd_name, &subcmd_info);
+            } else if (subcmd_info.command_type == .pure_group) {
+                // Pure groups have no imports, just recurse
                 try generateGroupImports(writer, subcmd_name, &subcmd_info);
             } else {
-                const module_name = try std.fmt.allocPrint(subcommands.allocator, "{s}_{s}", .{ group_name, subcmd_name });
-                defer subcommands.allocator.free(module_name);
+                // Generate module name from full command path to match module_creation.zig
+                var module_name_parts = std.ArrayList([]const u8).init(subcommands.allocator);
+                defer module_name_parts.deinit();
+
+                for (subcmd_info.path) |part| {
+                    const sanitized_part = try sanitizeIdentifier(subcommands.allocator, part);
+                    defer if (sanitized_part.ptr != part.ptr) subcommands.allocator.free(sanitized_part);
+                    try module_name_parts.append(try subcommands.allocator.dupe(u8, sanitized_part));
+                }
+
+                const module_name = try std.mem.join(subcommands.allocator, "_", module_name_parts.items);
+                defer {
+                    for (module_name_parts.items) |part| {
+                        subcommands.allocator.free(part);
+                    }
+                    subcommands.allocator.free(module_name);
+                }
 
                 try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
             }
@@ -93,13 +135,19 @@ fn generateGroupImports(writer: anytype, group_name: []const u8, group_info: *co
     }
 }
 
-/// Generate plugin imports
+/// Generate plugin imports and initialization
 fn generatePluginImports(writer: anytype, plugins: []const PluginInfo, allocator: std.mem.Allocator) !void {
     for (plugins) |plugin_info| {
         const plugin_var_name = try pluginVarName(allocator, plugin_info.name);
         defer if (plugin_var_name.ptr != plugin_info.name.ptr) allocator.free(plugin_var_name);
 
-        try writer.print("const {s} = @import(\"{s}\");\n", .{ plugin_var_name, plugin_info.import_name });
+        if (plugin_info.init) |init_code| {
+            // Plugin has initialization code - call it on import
+            try writer.print("const {s} = @import(\"{s}\"){s};\n", .{ plugin_var_name, plugin_info.import_name, init_code });
+        } else {
+            // Normal plugin without config - import directly
+            try writer.print("const {s} = @import(\"{s}\");\n", .{ plugin_var_name, plugin_info.import_name });
+        }
     }
     if (plugins.len > 0) {
         try writer.writeAll("\n");
@@ -211,18 +259,63 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
 }
 
 /// Generate group command registrations recursively
-fn generateGroupRegistrations(writer: anytype, group_name: []const u8, group_info: *const CommandInfo, allocator: std.mem.Allocator) !void {
+fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const CommandInfo, allocator: std.mem.Allocator) !void {
     if (group_info.subcommands) |subcommands| {
         var it = subcommands.iterator();
         while (it.next()) |entry| {
             const subcmd_name = entry.key_ptr.*;
             const subcmd_info = entry.value_ptr.*;
 
-            if (subcmd_info.command_type != .leaf) {
+            if (subcmd_info.command_type == .optional_group) {
+                // Register the optional group itself
+                var module_name_parts = std.ArrayList([]const u8).init(allocator);
+                defer module_name_parts.deinit();
+
+                for (subcmd_info.path) |part| {
+                    const sanitized_part = try sanitizeIdentifier(allocator, part);
+                    defer if (sanitized_part.ptr != part.ptr) allocator.free(sanitized_part);
+                    try module_name_parts.append(try allocator.dupe(u8, sanitized_part));
+                }
+
+                const module_name = try std.mem.join(allocator, "_", module_name_parts.items);
+                defer {
+                    for (module_name_parts.items) |part| {
+                        allocator.free(part);
+                    }
+                    allocator.free(module_name);
+                }
+
+                const module_name_with_index = try std.fmt.allocPrint(allocator, "{s}_index", .{module_name});
+                defer allocator.free(module_name_with_index);
+
+                const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
+                defer allocator.free(command_path_str);
+
+                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name_with_index });
+
+                // Also recurse for its subcommands
+                try generateGroupRegistrations(writer, subcmd_name, &subcmd_info, allocator);
+            } else if (subcmd_info.command_type == .pure_group) {
+                // Pure groups are not registered, just recurse
                 try generateGroupRegistrations(writer, subcmd_name, &subcmd_info, allocator);
             } else {
-                const module_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ group_name, subcmd_name });
-                defer allocator.free(module_name);
+                // Generate module name from full command path to match module_creation.zig
+                var module_name_parts = std.ArrayList([]const u8).init(allocator);
+                defer module_name_parts.deinit();
+
+                for (subcmd_info.path) |part| {
+                    const sanitized_part = try sanitizeIdentifier(allocator, part);
+                    defer if (sanitized_part.ptr != part.ptr) allocator.free(sanitized_part);
+                    try module_name_parts.append(try allocator.dupe(u8, sanitized_part));
+                }
+
+                const module_name = try std.mem.join(allocator, "_", module_name_parts.items);
+                defer {
+                    for (module_name_parts.items) |part| {
+                        allocator.free(part);
+                    }
+                    allocator.free(module_name);
+                }
 
                 // Use the actual command path from the CommandInfo (it's now an array)
                 const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
@@ -247,4 +340,9 @@ fn generatePluginRegistrations(writer: anytype, plugins: []const PluginInfo, all
 /// Convert plugin name to valid Zig variable name (replace hyphens with underscores)
 fn pluginVarName(allocator: std.mem.Allocator, plugin_name: []const u8) ![]const u8 {
     return std.mem.replaceOwned(u8, allocator, plugin_name, "-", "_") catch plugin_name;
+}
+
+/// Sanitize command name to valid Zig identifier (replace hyphens with underscores)
+fn sanitizeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    return std.mem.replaceOwned(u8, allocator, name, "-", "_") catch name;
 }

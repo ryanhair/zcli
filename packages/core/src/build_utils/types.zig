@@ -10,6 +10,8 @@ pub const PluginInfo = struct {
     import_name: []const u8,
     is_local: bool,
     dependency: ?*std.Build.Dependency,
+    /// Optional initialization code (from PluginConfig)
+    init: ?[]const u8 = null,
 };
 
 /// Command type classification
@@ -92,6 +94,10 @@ pub const BuildConfig = struct {
 pub const PluginConfig = struct {
     name: []const u8,
     path: []const u8,
+    /// Optional initialization code to call on the plugin
+    /// Example: ".init(.{ .repo = \"user/repo\", .command_name = \"upgrade\" })"
+    /// Will generate: const plugin = @import("name")<init_code>;
+    init: ?[]const u8 = null,
 };
 
 /// External plugin build configuration

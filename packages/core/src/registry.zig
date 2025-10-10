@@ -786,8 +786,25 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                 return err;
                             };
                         } else {
-                            try context.stderr().print("Command '{s}' does not implement execute function\n", .{matched_command});
-                            success = false;
+                            // Command group without execute function (metadata-only)
+                            // Treat this as CommandNotFound to show help for subcommands
+                            var error_handled = false;
+                            inline for (sorted_plugins) |Plugin| {
+                                if (@hasDecl(Plugin, "onError")) {
+                                    const handled = try Plugin.onError(context, error.CommandNotFound);
+                                    if (handled) {
+                                        error_handled = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!error_handled) {
+                                const cmd_name_str = try std.mem.join(context.allocator, " ", matched_command);
+                                defer context.allocator.free(cmd_name_str);
+                                try context.stderr().print("'{s}' is a command group. Use --help to see available subcommands.\n", .{cmd_name_str});
+                            }
+                            return;
                         }
 
                         // Run postExecute hooks
@@ -896,8 +913,10 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
             if (!found) {
                 // Set command_path to the attempted command parts for error handling
-                var attempted_command_array = try context.allocator.alloc([]const u8, 1);
-                attempted_command_array[0] = try context.allocator.dupe(u8, args[0]);
+                var attempted_command_array = try context.allocator.alloc([]const u8, args.len);
+                for (args, 0..) |arg, i| {
+                    attempted_command_array[i] = try context.allocator.dupe(u8, arg);
+                }
                 context.command_path = attempted_command_array;
                 context.command_path_allocated = true;
 

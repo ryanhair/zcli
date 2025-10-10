@@ -74,23 +74,40 @@ pub fn onError(
 
         // Check if this looks like a command group (has subcommands)
         if (context.command_path.len > 0) {
-            const attempted_command = context.command_path[0];
-
-            // Check if there are any subcommands for this command group
             const command_infos = context.getAvailableCommandInfo();
-            var has_subcommands = false;
 
-            for (command_infos) |cmd_info| {
-                if (cmd_info.path.len >= 2 and std.mem.eql(u8, cmd_info.path[0], attempted_command)) {
-                    has_subcommands = true;
-                    break;
+            // Try to find the deepest command group that has subcommands
+            // Start from the full path and work backwards
+            var depth = context.command_path.len;
+            while (depth > 0) : (depth -= 1) {
+                const prefix = context.command_path[0..depth];
+                var has_subcommands = false;
+
+                // Check if this prefix has any subcommands
+                for (command_infos) |cmd_info| {
+                    if (cmd_info.path.len > depth) {
+                        // Check if the prefix matches
+                        var matches = true;
+                        for (prefix, 0..) |part, i| {
+                            if (!std.mem.eql(u8, cmd_info.path[i], part)) {
+                                matches = false;
+                                break;
+                            }
+                        }
+                        if (matches) {
+                            has_subcommands = true;
+                            break;
+                        }
+                    }
                 }
-            }
 
-            // If we found subcommands, show group help and handle the error
-            if (has_subcommands) {
-                try showCommandGroupHelp(context, attempted_command);
-                return true; // Error handled, don't let it propagate
+                // If we found subcommands at this depth, show help for this group
+                if (has_subcommands) {
+                    const group_name = try std.mem.join(context.allocator, " ", prefix);
+                    defer context.allocator.free(group_name);
+                    try showCommandGroupHelp(context, group_name);
+                    return true; // Error handled, don't let it propagate
+                }
             }
         }
     }
@@ -273,48 +290,96 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
     var displayed_names = std.ArrayList([]const u8).init(context.allocator);
     defer displayed_names.deinit();
 
+    // First pass: collect unique command names and find the best description for each
+    var command_map = std.StringHashMap(?[]const u8).init(context.allocator);
+    defer command_map.deinit();
+
     for (command_infos) |cmd_info| {
-        var should_display = false;
+        var should_process = false;
         var display_name: []const u8 = undefined;
+        var is_exact_match = false;
 
         switch (list_type) {
             .top_level => {
-                // Show both individual commands (path.len == 1) and command groups (first part of path.len >= 2)
                 if (cmd_info.path.len >= 1) {
-                    should_display = true;
+                    should_process = true;
                     display_name = cmd_info.path[0];
+                    // Exact match if this is a top-level command (path.len == 1)
+                    is_exact_match = (cmd_info.path.len == 1);
                 }
             },
             .subcommands_of => |parent| {
-                if (cmd_info.path.len >= 2 and std.mem.eql(u8, cmd_info.path[0], parent)) {
-                    should_display = true;
-                    display_name = cmd_info.path[1];
+                // Split parent by spaces to get the full parent path
+                var parent_parts = std.ArrayList([]const u8).init(context.allocator);
+                defer parent_parts.deinit();
+
+                var iter = std.mem.splitScalar(u8, parent, ' ');
+                while (iter.next()) |part| {
+                    if (part.len > 0) {
+                        try parent_parts.append(part);
+                    }
+                }
+
+                const parent_depth = parent_parts.items.len;
+
+                // Check if this command is a subcommand of the parent
+                if (cmd_info.path.len > parent_depth) {
+                    // Check if all parent parts match
+                    var matches = true;
+                    for (parent_parts.items, 0..) |part, i| {
+                        if (!std.mem.eql(u8, cmd_info.path[i], part)) {
+                            matches = false;
+                            break;
+                        }
+                    }
+
+                    if (matches) {
+                        should_process = true;
+                        display_name = cmd_info.path[parent_depth];
+                        // Exact match if the path length is exactly parent_depth + 1
+                        is_exact_match = (cmd_info.path.len == parent_depth + 1);
+                    }
                 }
             },
         }
 
-        if (should_display) {
-            // Avoid duplicates
-            var already_added = false;
-            for (displayed_names.items) |existing| {
-                if (std.mem.eql(u8, existing, display_name)) {
-                    already_added = true;
-                    break;
-                }
-            }
+        if (should_process) {
+            const existing = command_map.get(display_name);
 
-            if (!already_added) {
-                // Skip help command for top-level (we'll add it manually)
-                if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
-
-                try displayed_names.append(display_name);
-
-                if (cmd_info.description) |desc| {
-                    try fmt.write("    <command>{s:<16}</command> {s}\n", .{ display_name, desc });
+            // Add or update the command in the map
+            // Only use descriptions from exact matches (commands at the correct depth)
+            if (existing == null) {
+                // First time seeing this command
+                // Only add description if it's an exact match
+                if (is_exact_match) {
+                    try command_map.put(display_name, cmd_info.description);
                 } else {
-                    try fmt.write("    <command>{s:<16}</command>\n", .{display_name});
+                    // Not an exact match, add with no description
+                    try command_map.put(display_name, null);
                 }
+            } else if (is_exact_match and cmd_info.description != null) {
+                // We have an exact match with a description, prefer it over previous entries
+                try command_map.put(display_name, cmd_info.description);
             }
+            // Otherwise keep existing entry
+        }
+    }
+
+    // Second pass: display commands in order
+    var it = command_map.iterator();
+    while (it.next()) |entry| {
+        const display_name = entry.key_ptr.*;
+        const description = entry.value_ptr.*;
+
+        // Skip help command for top-level (we'll add it manually)
+        if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
+
+        try displayed_names.append(display_name);
+
+        if (description) |desc| {
+            try fmt.write("    <command>{s:<16}</command> {s}\n", .{ display_name, desc });
+        } else {
+            try fmt.write("    <command>{s:<16}</command>\n", .{display_name});
         }
     }
 
