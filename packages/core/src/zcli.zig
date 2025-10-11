@@ -47,10 +47,20 @@ pub const CommandMeta = struct {
 };
 
 /// Command information available to plugins for introspection
+/// Option information for shell completions and introspection
+pub const OptionInfo = struct {
+    name: []const u8,
+    short: ?u8 = null,
+    description: ?[]const u8 = null,
+    takes_value: bool = false,
+};
+
+/// Command information for introspection and completions
 pub const CommandInfo = struct {
     path: []const []const u8,
     description: ?[]const u8 = null,
     examples: ?[]const []const u8 = null,
+    options: []const OptionInfo = &.{},
 };
 
 /// Field info that can be stored at runtime
@@ -91,6 +101,7 @@ pub const Context = struct {
 
     // Plugin-specific command information for introspection
     plugin_command_info: []const CommandInfo = &.{},
+    global_options: []const OptionInfo = &.{},
 
     pub fn init(allocator: std.mem.Allocator) @This() {
         return .{
@@ -213,6 +224,11 @@ pub const Context = struct {
     /// Get all available command information (for plugins)
     pub fn getAvailableCommandInfo(self: *@This()) []const CommandInfo {
         return self.plugin_command_info;
+    }
+
+    /// Get all global options (for completions)
+    pub fn getGlobalOptions(self: *@This()) []const OptionInfo {
+        return self.global_options;
     }
 };
 

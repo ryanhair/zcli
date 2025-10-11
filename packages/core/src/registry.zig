@@ -319,6 +319,20 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 break :blk cmd_list;
             };
 
+            // Convert global options to OptionInfo for completions
+            const global_options_list = comptime blk: {
+                var opts: []const zcli.OptionInfo = &.{};
+                for (global_options) |global_opt| {
+                    opts = opts ++ .{zcli.OptionInfo{
+                        .name = global_opt.name,
+                        .short = global_opt.short,
+                        .description = global_opt.description,
+                        .takes_value = global_opt.type != bool,
+                    }};
+                }
+                break :blk opts;
+            };
+
             // Build command info for plugins at compile time
             const plugin_command_info_list = comptime blk: {
                 var cmd_info_list: []const zcli.CommandInfo = &.{};
@@ -342,12 +356,128 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         }
                     }
 
+                    // Introspect Options struct to build option information
+                    var options: []const zcli.OptionInfo = &.{};
+                    if (@hasDecl(cmd.module, "Options")) {
+                        const OptionsType = cmd.module.Options;
+                        const options_info = @typeInfo(OptionsType);
+
+                        if (options_info == .@"struct") {
+                            const fields = options_info.@"struct".fields;
+                            for (fields) |field| {
+                                // Determine if this option takes a value (everything except bool)
+                                const takes_value = field.type != bool;
+
+                                var opt_desc: ?[]const u8 = null;
+                                var opt_short: ?u8 = null;
+
+                                // Check meta.options for description and short flag
+                                if (@hasDecl(cmd.module, "meta")) {
+                                    const meta = cmd.module.meta;
+                                    if (@hasField(@TypeOf(meta), "options")) {
+                                        if (@hasField(@TypeOf(meta.options), field.name)) {
+                                            const opt_meta = @field(meta.options, field.name);
+                                            if (@hasField(@TypeOf(opt_meta), "desc")) {
+                                                opt_desc = opt_meta.desc;
+                                            }
+                                            if (@hasField(@TypeOf(opt_meta), "short")) {
+                                                opt_short = opt_meta.short;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                options = options ++ .{zcli.OptionInfo{
+                                    .name = field.name,
+                                    .short = opt_short,
+                                    .description = opt_desc,
+                                    .takes_value = takes_value,
+                                }};
+                            }
+                        }
+                    }
+
                     cmd_info_list = cmd_info_list ++ .{zcli.CommandInfo{
                         .path = cmd.path,
                         .description = description,
                         .examples = examples,
+                        .options = options,
                     }};
                 }
+
+                // Add plugin commands with their metadata
+                for (new_plugins) |Plugin| {
+                    if (@hasDecl(Plugin, "commands")) {
+                        const cmd_info = @typeInfo(Plugin.commands);
+                        if (cmd_info == .@"struct") {
+                            for (cmd_info.@"struct".decls) |decl| {
+                                const CommandModule = @field(Plugin.commands, decl.name);
+
+                                var description: ?[]const u8 = null;
+                                var examples: ?[]const []const u8 = null;
+
+                                if (@hasDecl(CommandModule, "meta")) {
+                                    const meta = CommandModule.meta;
+                                    if (@hasField(@TypeOf(meta), "description")) {
+                                        description = meta.description;
+                                    }
+                                    if (@hasField(@TypeOf(meta), "examples")) {
+                                        examples = meta.examples;
+                                    }
+                                }
+
+                                // Introspect Options struct to build option information
+                                var options: []const zcli.OptionInfo = &.{};
+                                if (@hasDecl(CommandModule, "Options")) {
+                                    const OptionsType = CommandModule.Options;
+                                    const options_info = @typeInfo(OptionsType);
+
+                                    if (options_info == .@"struct") {
+                                        const fields = options_info.@"struct".fields;
+                                        for (fields) |field| {
+                                            // Determine if this option takes a value (everything except bool)
+                                            const takes_value = field.type != bool;
+
+                                            var opt_desc: ?[]const u8 = null;
+                                            var opt_short: ?u8 = null;
+
+                                            // Check meta.options for description and short flag
+                                            if (@hasDecl(CommandModule, "meta")) {
+                                                const meta = CommandModule.meta;
+                                                if (@hasField(@TypeOf(meta), "options")) {
+                                                    if (@hasField(@TypeOf(meta.options), field.name)) {
+                                                        const opt_meta = @field(meta.options, field.name);
+                                                        if (@hasField(@TypeOf(opt_meta), "desc")) {
+                                                            opt_desc = opt_meta.desc;
+                                                        }
+                                                        if (@hasField(@TypeOf(opt_meta), "short")) {
+                                                            opt_short = opt_meta.short;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            options = options ++ .{zcli.OptionInfo{
+                                                .name = field.name,
+                                                .short = opt_short,
+                                                .description = opt_desc,
+                                                .takes_value = takes_value,
+                                            }};
+                                        }
+                                    }
+                                }
+
+                                cmd_info_list = cmd_info_list ++ .{zcli.CommandInfo{
+                                    .path = &.{decl.name},
+                                    .description = description,
+                                    .examples = examples,
+                                    .options = options,
+                                }};
+                            }
+                        }
+                    }
+                }
+
                 break :blk cmd_info_list;
             };
 
@@ -362,6 +492,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 .available_commands = available_commands,
                 .command_path = &.{},
                 .plugin_command_info = plugin_command_info_list,
+                .global_options = global_options_list,
             };
             defer context.deinit();
 

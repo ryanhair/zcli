@@ -43,6 +43,9 @@ pub fn build(b: *std.Build) void {
                 .command_name = "upgrade",
                 .inform_out_of_date = false,
             },
+        }, .{
+            .name = "zcli-completions",
+            .path = "../../packages/core/plugins/zcli-completions",
         } },
         .app_name = "zcli",
         .app_description = "Build beautiful CLIs with zcli - scaffold projects, add commands, and more",
