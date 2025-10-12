@@ -113,7 +113,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8) ZcliErro
                 @field(result, field.name) = @constCast(remaining_args);
             }
             break;
-        } else if (@typeInfo(field_type) == .optional) {
+        } else if (comptime @typeInfo(field_type) == .optional) {
             // Optional field - find next positional argument
             const next_positional = findNextPositional(args, arg_index);
             if (next_positional) |pos| {
@@ -637,6 +637,26 @@ test "parseArgs varargs with preceding required args" {
     try std.testing.expectEqualStrings("file1.txt", parsed.files[0]);
     try std.testing.expectEqualStrings("file2.txt", parsed.files[1]);
     try std.testing.expectEqualStrings("file3.txt", parsed.files[2]);
+}
+
+test "parseArgs single optional argument" {
+    const TestArgs = struct {
+        shell: ?[]const u8 = null,
+    };
+
+    // Test with no args - should succeed with null
+    {
+        const args = [_][]const u8{};
+        const parsed = try parseArgs(TestArgs, &args);
+        try std.testing.expectEqual(@as(?[]const u8, null), parsed.shell);
+    }
+
+    // Test with one arg - should succeed with value
+    {
+        const args = [_][]const u8{"bash"};
+        const parsed = try parseArgs(TestArgs, &args);
+        try std.testing.expectEqualStrings("bash", parsed.shell.?);
+    }
 }
 
 test "parseArgs optional at end" {
