@@ -413,7 +413,12 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             const fields = options_info.@"struct".fields;
                             for (fields) |field| {
                                 // Determine if this option takes a value (everything except bool)
-                                const takes_value = field.type != bool;
+                                // Unwrap optional types first
+                                const base_type = if (@typeInfo(field.type) == .optional)
+                                    @typeInfo(field.type).optional.child
+                                else
+                                    field.type;
+                                const takes_value = base_type != bool;
 
                                 var opt_desc: ?[]const u8 = null;
                                 var opt_short: ?u8 = null;
@@ -479,7 +484,12 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             const fields = options_info.@"struct".fields;
                             for (fields) |field| {
                                 // Determine if this option takes a value (everything except bool)
-                                const takes_value = field.type != bool;
+                                // Unwrap optional types first
+                                const base_type = if (@typeInfo(field.type) == .optional)
+                                    @typeInfo(field.type).optional.child
+                                else
+                                    field.type;
+                                const takes_value = base_type != bool;
 
                                 var opt_desc: ?[]const u8 = null;
                                 var opt_short: ?u8 = null;
@@ -1026,6 +1036,87 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         context.command_path = plugin_command_array;
                         context.command_path_allocated = true;
 
+                        // Set command metadata for help plugin (needs to be set before hooks run)
+                        const CommandModule = plugin_cmd.module;
+                        const ArgsType = if (@hasDecl(CommandModule, "Args")) CommandModule.Args else struct {};
+                        const OptionsType = if (@hasDecl(CommandModule, "Options")) CommandModule.Options else struct {};
+
+                        if (@hasDecl(CommandModule, "meta")) {
+                            const meta = CommandModule.meta;
+                            context.command_meta = zcli.CommandMeta{
+                                .description = if (@hasField(@TypeOf(meta), "description")) meta.description else null,
+                                .examples = if (@hasField(@TypeOf(meta), "examples")) meta.examples else null,
+                            };
+                        }
+
+                        // Build field lists for help generation (convert to FieldInfo)
+                        var args_field_list: []zcli.FieldInfo = &.{};
+                        if (@hasDecl(CommandModule, "Args")) {
+                            const args_type_info = @typeInfo(ArgsType);
+                            if (args_type_info == .@"struct") {
+                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                inline for (args_type_info.@"struct".fields) |field| {
+                                    const field_type_info = @typeInfo(field.type);
+                                    try field_list.append(zcli.FieldInfo{
+                                        .name = field.name,
+                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
+                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .Slice and field_type_info.pointer.child != u8,
+                                        .short = null,
+                                        .description = null,
+                                    });
+                                }
+                                args_field_list = try field_list.toOwnedSlice();
+                            }
+                        }
+
+                        var options_field_list: []zcli.FieldInfo = &.{};
+                        if (@hasDecl(CommandModule, "Options")) {
+                            const options_type_info = @typeInfo(OptionsType);
+                            if (options_type_info == .@"struct") {
+                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                inline for (options_type_info.@"struct".fields) |field| {
+                                    const field_type_info = @typeInfo(field.type);
+
+                                    // Extract metadata from meta.options
+                                    var short: ?u8 = null;
+                                    var description: ?[]const u8 = null;
+
+                                    if (@hasDecl(CommandModule, "meta")) {
+                                        const meta = CommandModule.meta;
+                                        if (@hasField(@TypeOf(meta), "options")) {
+                                            const options_meta = meta.options;
+                                            if (@hasField(@TypeOf(options_meta), field.name)) {
+                                                const field_meta = @field(options_meta, field.name);
+                                                if (@hasField(@TypeOf(field_meta), "short")) {
+                                                    short = field_meta.short;
+                                                }
+                                                if (@hasField(@TypeOf(field_meta), "desc")) {
+                                                    description = field_meta.desc;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    try field_list.append(zcli.FieldInfo{
+                                        .name = field.name,
+                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
+                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .Slice and field_type_info.pointer.child != u8,
+                                        .short = short,
+                                        .description = description,
+                                    });
+                                }
+                                options_field_list = try field_list.toOwnedSlice();
+                            }
+                        }
+
+                        context.command_module_info = zcli.CommandModuleInfo{
+                            .has_args = @hasDecl(CommandModule, "Args"),
+                            .has_options = @hasDecl(CommandModule, "Options"),
+                            .raw_meta_ptr = if (@hasDecl(CommandModule, "meta")) &CommandModule.meta else null,
+                            .args_fields = args_field_list,
+                            .options_fields = options_field_list,
+                        };
+
                         // Run postParse hooks
                         var parsed_args = zcli.ParsedArgs.init(context.allocator);
                         parsed_args.positional = plugin_remaining_args;
@@ -1051,8 +1142,6 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
                         // Execute the plugin command
                         var success = true;
-
-                        const CommandModule = plugin_cmd.module;
 
                         // Check if this command has an execute function (metadata-only groups don't)
                         if (!@hasDecl(CommandModule, "execute")) {
@@ -1081,8 +1170,6 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         }
 
                         // Parse args and options using unified parser
-                        const ArgsType = if (@hasDecl(CommandModule, "Args")) CommandModule.Args else struct {};
-                        const OptionsType = if (@hasDecl(CommandModule, "Options")) CommandModule.Options else struct {};
                         const cmd_meta = if (@hasDecl(CommandModule, "meta")) CommandModule.meta else null;
 
                         const parse_result = try command_parser.parseCommandLine(

@@ -147,7 +147,7 @@ pub const commands = struct {
 
                 try stdout.print("✓ Installed {s} completions to {s}\n\n", .{ shell_name, install_path });
 
-                // Print instructions for enabling completions
+                // Always print manual instructions
                 try printEnableInstructions(shell_type, context);
             }
         };
@@ -197,9 +197,10 @@ pub const commands = struct {
                     if (err == error.FileNotFound) {
                         try stdout.print("Completions not installed at {s}\n", .{install_path});
                         return;
+                    } else {
+                        try stderr.print("Error: failed to remove '{s}': {}\n", .{ install_path, err });
+                        return err;
                     }
-                    try stderr.print("Error: failed to remove '{s}': {}\n", .{ install_path, err });
-                    return err;
                 };
 
                 const shell_name = switch (shell_type) {
@@ -208,7 +209,8 @@ pub const commands = struct {
                     .fish => "fish",
                 };
 
-                try stdout.print("✓ Uninstalled {s} completions from {s}\n", .{ shell_name, install_path });
+                try stdout.print("✓ Uninstalled {s} completions from {s}\n\n", .{ shell_name, install_path });
+                try printDisableInstructions(shell_type, context);
             }
         };
     };
@@ -234,6 +236,192 @@ fn detectShell() ?ShellType {
     const shell_name = std.fs.path.basename(shell_path);
 
     return getShellType(shell_name);
+}
+
+fn promptUserForConfigure(shell_type: ShellType, context: *zcli.Context) !bool {
+    const stdout = context.stdout();
+    const stdin = std.io.getStdIn().reader();
+
+    const shell_name = switch (shell_type) {
+        .bash => "bash",
+        .zsh => "zsh",
+        .fish => "fish",
+    };
+
+    try stdout.print("Would you like to automatically configure your shell (~/.{s}rc)? [Y/n]: ", .{shell_name});
+
+    var buf: [10]u8 = undefined;
+    const response = (try stdin.readUntilDelimiterOrEof(&buf, '\n')) orelse return false;
+
+    // Trim whitespace
+    const trimmed = std.mem.trim(u8, response, " \t\r\n");
+
+    // Default to yes if empty or starts with 'y' or 'Y'
+    if (trimmed.len == 0) return true;
+    if (trimmed[0] == 'y' or trimmed[0] == 'Y') return true;
+
+    return false;
+}
+
+fn getShellConfigPath(allocator: std.mem.Allocator, shell_type: ShellType) ![]const u8 {
+    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+
+    return switch (shell_type) {
+        .bash => try std.fmt.allocPrint(allocator, "{s}/.bashrc", .{home}),
+        .zsh => try std.fmt.allocPrint(allocator, "{s}/.zshrc", .{home}),
+        .fish => try std.fmt.allocPrint(allocator, "{s}/.config/fish/config.fish", .{home}),
+    };
+}
+
+fn isAlreadyConfigured(config_content: []const u8, app_name: []const u8) bool {
+    const marker_start = std.fmt.allocPrint(std.heap.page_allocator, "# >>> {s} completion setup >>>", .{app_name}) catch return false;
+    defer std.heap.page_allocator.free(marker_start);
+
+    return std.mem.indexOf(u8, config_content, marker_start) != null;
+}
+
+fn configureShell(shell_type: ShellType, context: *zcli.Context) !void {
+    const allocator = context.allocator;
+
+    const config_path = try getShellConfigPath(allocator, shell_type);
+    defer allocator.free(config_path);
+
+    // Read existing config or create empty
+    const existing_content = std.fs.cwd().readFileAlloc(allocator, config_path, 1024 * 1024) catch |err| blk: {
+        if (err == error.FileNotFound) {
+            // Create parent directory if needed
+            if (std.fs.path.dirname(config_path)) |dir| {
+                try std.fs.cwd().makePath(dir);
+            }
+            break :blk try allocator.dupe(u8, "");
+        }
+        return err;
+    };
+    defer allocator.free(existing_content);
+
+    // Check if already configured
+    if (isAlreadyConfigured(existing_content, context.app_name)) {
+        return; // Already configured, nothing to do
+    }
+
+    // Build configuration block
+    const config_block = switch (shell_type) {
+        .bash => try std.fmt.allocPrint(
+            allocator,
+            \\
+            \\# >>> {s} completion setup >>>
+            \\if [ -f ~/.local/share/bash-completion/completions/{s} ]; then
+            \\    . ~/.local/share/bash-completion/completions/{s}
+            \\fi
+            \\# <<< {s} completion setup <<<
+            \\
+        ,
+            .{ context.app_name, context.app_name, context.app_name, context.app_name },
+        ),
+        .zsh => try std.fmt.allocPrint(
+            allocator,
+            \\
+            \\# >>> {s} completion setup >>>
+            \\fpath=(~/.zsh/completions $fpath)
+            \\autoload -Uz compinit && compinit
+            \\# <<< {s} completion setup <<<
+            \\
+        ,
+            .{ context.app_name, context.app_name },
+        ),
+        .fish => try std.fmt.allocPrint(
+            allocator,
+            \\
+            \\# >>> {s} completion setup >>>
+            \\# Fish completions are automatically loaded from ~/.config/fish/completions/
+            \\# <<< {s} completion setup <<<
+            \\
+        ,
+            .{ context.app_name, context.app_name },
+        ),
+    };
+    defer allocator.free(config_block);
+
+    // Append to config file
+    const file = try std.fs.cwd().openFile(config_path, .{ .mode = .read_write });
+    defer file.close();
+
+    try file.seekFromEnd(0);
+    try file.writeAll(config_block);
+}
+
+fn promptUserForUnconfigure(shell_type: ShellType, context: *zcli.Context) !bool {
+    const stdout = context.stdout();
+    const stdin = std.io.getStdIn().reader();
+
+    const shell_name = switch (shell_type) {
+        .bash => "bash",
+        .zsh => "zsh",
+        .fish => "fish",
+    };
+
+    try stdout.print("Would you like to remove shell configuration from ~/.{s}rc? [y/N]: ", .{shell_name});
+
+    var buf: [10]u8 = undefined;
+    const response = (try stdin.readUntilDelimiterOrEof(&buf, '\n')) orelse return false;
+
+    // Trim whitespace
+    const trimmed = std.mem.trim(u8, response, " \t\r\n");
+
+    // Default to no if empty, yes if starts with 'y' or 'Y'
+    if (trimmed.len == 0) return false;
+    if (trimmed[0] == 'y' or trimmed[0] == 'Y') return true;
+
+    return false;
+}
+
+fn unconfigureShell(shell_type: ShellType, context: *zcli.Context) !void {
+    const allocator = context.allocator;
+
+    const config_path = try getShellConfigPath(allocator, shell_type);
+    defer allocator.free(config_path);
+
+    // Read existing config
+    const existing_content = std.fs.cwd().readFileAlloc(allocator, config_path, 1024 * 1024) catch |err| {
+        if (err == error.FileNotFound) {
+            return; // Config doesn't exist, nothing to do
+        }
+        return err;
+    };
+    defer allocator.free(existing_content);
+
+    // Build markers
+    const marker_start = try std.fmt.allocPrint(allocator, "# >>> {s} completion setup >>>", .{context.app_name});
+    defer allocator.free(marker_start);
+    const marker_end = try std.fmt.allocPrint(allocator, "# <<< {s} completion setup <<<", .{context.app_name});
+    defer allocator.free(marker_end);
+
+    // Find the configuration block
+    const start_idx = std.mem.indexOf(u8, existing_content, marker_start) orelse {
+        return; // Not configured, nothing to do
+    };
+
+    const end_idx = std.mem.indexOf(u8, existing_content, marker_end) orelse {
+        return error.InvalidConfigurationBlock;
+    };
+
+    // Calculate the end position (include the end marker line and trailing newline if present)
+    var block_end = end_idx + marker_end.len;
+    if (block_end < existing_content.len and existing_content[block_end] == '\n') {
+        block_end += 1;
+    }
+
+    // Build new content without the configuration block
+    const new_content = try std.mem.concat(allocator, u8, &.{
+        existing_content[0..start_idx],
+        existing_content[block_end..],
+    });
+    defer allocator.free(new_content);
+
+    // Write the new content
+    const file = try std.fs.cwd().createFile(config_path, .{});
+    defer file.close();
+    try file.writeAll(new_content);
 }
 
 fn getInstallPath(allocator: std.mem.Allocator, shell_type: ShellType, app_name: []const u8) ![]const u8 {
@@ -263,7 +451,41 @@ fn printEnableInstructions(shell_type: ShellType, context: *zcli.Context) !void 
 
     switch (shell_type) {
         .bash => {
-            try stdout.writeAll("To enable completions, ensure the following is in your ~/.bashrc:\n\n");
+            try stdout.writeAll("To enable completions, add the following to your ~/.bashrc:\n\n");
+            try stdout.writeAll("  if [ -f ~/.local/share/bash-completion/completions/");
+            try stdout.print("{s}", .{context.app_name});
+            try stdout.writeAll(" ]; then\n");
+            try stdout.writeAll("    . ~/.local/share/bash-completion/completions/");
+            try stdout.print("{s}", .{context.app_name});
+            try stdout.writeAll("\n  fi\n\n");
+            try stdout.writeAll("Then clear the completion cache and reload your shell:\n");
+            try stdout.writeAll("  rm -f ~/.bash_completion.d/cache\n");
+            try stdout.writeAll("  exec bash\n");
+        },
+        .zsh => {
+            try stdout.writeAll("To enable completions, add the following to your ~/.zshrc:\n\n");
+            try stdout.writeAll("  fpath=(~/.zsh/completions $fpath)\n\n");
+            try stdout.writeAll("NOTE: If you use oh-my-zsh or another framework, add this BEFORE\n");
+            try stdout.writeAll("      sourcing the framework (which calls compinit automatically).\n");
+            try stdout.writeAll("      If you use plain zsh, also add: autoload -Uz compinit && compinit\n\n");
+            try stdout.writeAll("Then clear the completion cache and reload your shell:\n");
+            try stdout.writeAll("  rm -f ~/.zcompdump*\n");
+            try stdout.writeAll("  exec zsh\n");
+        },
+        .fish => {
+            try stdout.writeAll("Fish completions are automatically loaded from ~/.config/fish/completions/\n");
+            try stdout.writeAll("No additional configuration needed! Just start a new shell:\n");
+            try stdout.writeAll("  exec fish\n");
+        },
+    }
+}
+
+fn printDisableInstructions(shell_type: ShellType, context: *zcli.Context) !void {
+    const stdout = context.stdout();
+
+    switch (shell_type) {
+        .bash => {
+            try stdout.writeAll("To complete removal, remove these lines from your ~/.bashrc:\n\n");
             try stdout.writeAll("  if [ -f ~/.local/share/bash-completion/completions/");
             try stdout.print("{s}", .{context.app_name});
             try stdout.writeAll(" ]; then\n");
@@ -271,18 +493,19 @@ fn printEnableInstructions(shell_type: ShellType, context: *zcli.Context) !void 
             try stdout.print("{s}", .{context.app_name});
             try stdout.writeAll("\n  fi\n\n");
             try stdout.writeAll("Then reload your shell:\n");
-            try stdout.writeAll("  source ~/.bashrc\n");
+            try stdout.writeAll("  exec bash\n");
         },
         .zsh => {
-            try stdout.writeAll("To enable completions, ensure the following is in your ~/.zshrc:\n\n");
-            try stdout.writeAll("  fpath=(~/.zsh/completions $fpath)\n");
-            try stdout.writeAll("  autoload -Uz compinit && compinit\n\n");
+            try stdout.writeAll("To complete removal, remove this line from your ~/.zshrc:\n\n");
+            try stdout.writeAll("  fpath=(~/.zsh/completions $fpath)\n\n");
+            try stdout.writeAll("Or remove just this completion directory if others exist.\n\n");
             try stdout.writeAll("Then reload your shell:\n");
-            try stdout.writeAll("  source ~/.zshrc\n");
+            try stdout.writeAll("  exec zsh\n");
         },
         .fish => {
-            try stdout.writeAll("Fish completions are automatically loaded from ~/.config/fish/completions/\n");
-            try stdout.writeAll("No additional configuration needed! Start a new shell to use completions.\n");
+            try stdout.writeAll("Completions fully removed. No configuration cleanup needed.\n");
+            try stdout.writeAll("Just start a new shell:\n");
+            try stdout.writeAll("  exec fish\n");
         },
     }
 }

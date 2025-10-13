@@ -1,6 +1,246 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
+/// Escape special characters in descriptions for zsh completion
+fn escapeDescription(allocator: std.mem.Allocator, desc: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).init(allocator);
+    errdefer result.deinit();
+
+    for (desc) |c| {
+        switch (c) {
+            '(' => {
+                try result.append('\\');
+                try result.append('(');
+            },
+            ')' => {
+                try result.append('\\');
+                try result.append(')');
+            },
+            '[' => {
+                try result.append('\\');
+                try result.append('[');
+            },
+            ']' => {
+                try result.append('\\');
+                try result.append(']');
+            },
+            '\'' => {
+                // For single quotes inside single-quoted strings, we need to:
+                // end the string, add an escaped quote, and start a new string
+                try result.appendSlice("'\\''");
+            },
+            '\\' => {
+                try result.append('\\');
+                try result.append('\\');
+            },
+            else => try result.append(c),
+        }
+    }
+
+    return result.toOwnedSlice();
+}
+
+/// Generate option completions for a specific command
+fn generateOptionsForCommand(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    commands: []const zcli.CommandInfo,
+    command_path_str: []const u8,
+    indent: []const u8,
+) !void {
+    // Find the command with this path
+    var target_path = std.ArrayList([]const u8).init(allocator);
+    defer target_path.deinit();
+
+    var path_iter = std.mem.splitScalar(u8, command_path_str, ' ');
+    while (path_iter.next()) |part| {
+        try target_path.append(part);
+    }
+
+    // Find matching command
+    var found_options: ?[]const zcli.OptionInfo = null;
+    for (commands) |cmd| {
+        if (cmd.path.len != target_path.items.len) continue;
+
+        var matches = true;
+        for (cmd.path, target_path.items) |cmd_part, target_part| {
+            if (!std.mem.eql(u8, cmd_part, target_part)) {
+                matches = false;
+                break;
+            }
+        }
+
+        if (matches) {
+            found_options = cmd.options;
+            break;
+        }
+    }
+
+    // Generate _arguments call with options
+    if (found_options) |options| {
+        if (options.len > 0) {
+            // Set curcontext for this specific command
+            var context_name = std.ArrayList(u8).init(allocator);
+            defer context_name.deinit();
+
+            var context_iter = std.mem.splitScalar(u8, command_path_str, ' ');
+            while (context_iter.next()) |part| {
+                if (context_name.items.len > 0) try context_name.append('-');
+                try context_name.appendSlice(part);
+            }
+
+            try writer.print("{s}    curcontext=\"${{curcontext%:*:*}}:{s}:\"\n", .{ indent, context_name.items });
+            try writer.print("{s}    _arguments -S \\\n", .{indent});
+
+            for (options) |opt| {
+                const escaped_desc = if (opt.description) |desc|
+                    try escapeDescription(allocator, desc)
+                else
+                    null;
+                defer if (escaped_desc) |e| allocator.free(e);
+
+                if (opt.short) |short| {
+                    // Short option: '-h[description]'
+                    try writer.print("{s}        '-{c}", .{ indent, short });
+                    if (escaped_desc) |desc| {
+                        try writer.print("[{s}]", .{desc});
+                    }
+                    if (opt.takes_value) {
+                        try writer.print(":{s}:", .{opt.name});
+                    }
+                    try writer.writeAll("' \\\n");
+
+                    // Long option: '--help[description]'
+                    try writer.print("{s}        '--{s}", .{ indent, opt.name });
+                    if (escaped_desc) |desc| {
+                        try writer.print("[{s}]", .{desc});
+                    }
+                    if (opt.takes_value) {
+                        try writer.print(":{s}:", .{opt.name});
+                    }
+                    try writer.writeAll("' \\\n");
+                } else {
+                    // Long option only: '--help[description]'
+                    try writer.print("{s}        '--{s}", .{ indent, opt.name });
+                    if (escaped_desc) |desc| {
+                        try writer.print("[{s}]", .{desc});
+                    }
+                    if (opt.takes_value) {
+                        try writer.print(":{s}:", .{opt.name});
+                    }
+                    try writer.writeAll("' \\\n");
+                }
+            }
+
+            // Add catch-all for remaining arguments
+            try writer.print("{s}        '*::arg:_files'\n", .{indent});
+        }
+    }
+}
+
+/// Recursively generate nested case statements for subcommands
+fn generateNestedCases(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    command_tree: *const std.StringHashMap(std.ArrayList([]const u8)),
+    commands: []const zcli.CommandInfo,
+    current_path: []const u8,
+    depth: usize,
+) !void {
+    // Check if this path has children
+    if (command_tree.get(current_path)) |subcommands| {
+        // Always use case statements when there are subcommands to properly handle leaf nodes
+        if (subcommands.items.len > 0) {
+            // Check if any subcommands have children (for determining if we need nested recursion)
+            var has_nested_children = false;
+            for (subcommands.items) |subcmd| {
+                var child_path = std.ArrayList(u8).init(allocator);
+                defer child_path.deinit();
+                try child_path.appendSlice(current_path);
+                try child_path.append(' ');
+                try child_path.appendSlice(subcmd);
+
+                if (command_tree.contains(child_path.items)) {
+                    has_nested_children = true;
+                    break;
+                }
+            }
+
+            var indent_buf: [128]u8 = undefined;
+            const actual_indent = try std.fmt.bufPrint(&indent_buf, "{s: <[1]}", .{ "", (depth - 1) * 4 });
+
+            // Always create a case statement to handle subcommands
+            try writer.print("{s}case $line[{d}] in\n", .{ actual_indent, depth });
+
+            // Process ALL subcommands
+            for (subcommands.items) |subcmd| {
+                var child_path = std.ArrayList(u8).init(allocator);
+                defer child_path.deinit();
+                try child_path.appendSlice(current_path);
+                try child_path.append(' ');
+                try child_path.appendSlice(subcmd);
+
+                try writer.print("{s}    {s})\n", .{ actual_indent, subcmd });
+
+                if (command_tree.contains(child_path.items)) {
+                    // This subcommand has children, recurse
+                    try generateNestedCases(writer, allocator, command_tree, commands, child_path.items, depth + 1);
+                } else {
+                    // Leaf node - show options for this command
+                    try generateOptionsForCommand(writer, allocator, commands, child_path.items, actual_indent);
+                }
+
+                try writer.print("{s}        ;;\n", .{actual_indent});
+            }
+
+            // Default case: show current level completions when not in a nested branch
+            try writer.print("{s}    *)\n", .{actual_indent});
+
+            // Show completions at the current level (in default case)
+            try writer.print("{s}        local -a subcommands\n", .{actual_indent});
+            try writer.print("{s}        subcommands=(\n", .{actual_indent});
+
+            for (subcommands.items) |subcmd_name| {
+                // Find description
+                var desc: ?[]const u8 = null;
+                for (commands) |cmd| {
+                    if (cmd.path.len < 2) continue;
+                    // Check if path matches
+                    var matches = true;
+                    var path_check = std.mem.splitScalar(u8, current_path, ' ');
+                    var check_depth: usize = 0;
+                    while (path_check.next()) |part| {
+                        if (check_depth >= cmd.path.len or !std.mem.eql(u8, cmd.path[check_depth], part)) {
+                            matches = false;
+                            break;
+                        }
+                        check_depth += 1;
+                    }
+                    if (matches and check_depth < cmd.path.len and std.mem.eql(u8, cmd.path[check_depth], subcmd_name)) {
+                        desc = cmd.description;
+                        break;
+                    }
+                }
+
+                try writer.print("{s}            '{s}", .{ actual_indent, subcmd_name });
+                if (desc) |d| {
+                    const escaped = try escapeDescription(allocator, d);
+                    defer allocator.free(escaped);
+                    try writer.print(":{s}", .{escaped});
+                }
+                try writer.writeAll("'\n");
+            }
+
+            try writer.print("{s}        )\n", .{actual_indent});
+            try writer.print("{s}        _describe 'subcommand' subcommands\n", .{actual_indent});
+
+            // Close the default case and case statement
+            try writer.print("{s}        ;;\n", .{actual_indent});
+            try writer.print("{s}esac\n", .{actual_indent});
+        }
+    }
+}
+
 /// Generate zsh completion script for the given app
 pub fn generate(
     allocator: std.mem.Allocator,
@@ -20,7 +260,8 @@ pub fn generate(
 
     // Main completion function
     try writer.print("_{s}() {{\n", .{app_name});
-    try writer.writeAll("    local line state\n\n");
+    try writer.writeAll("    local curcontext=\"$curcontext\" line state\n");
+    try writer.print("    typeset -A opt_args\n\n", .{});
 
     // Build command tree structure
     var command_tree = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
@@ -33,6 +274,7 @@ pub fn generate(
     }
 
     // Build tree of commands (parent -> children)
+    // We need to create entries for ALL levels, not just the immediate parent
     for (commands) |cmd| {
         if (cmd.path.len == 1) {
             // Root level command
@@ -42,47 +284,82 @@ pub fn generate(
             }
             try entry.value_ptr.append(cmd.path[0]);
         } else {
-            // Nested command - build parent path
-            var parent_path = std.ArrayList(u8).init(allocator);
-            defer parent_path.deinit();
-            for (cmd.path[0 .. cmd.path.len - 1], 0..) |part, idx| {
-                if (idx > 0) try parent_path.append(' ');
-                try parent_path.appendSlice(part);
-            }
+            // Nested command - create entries for each level
+            for (1..cmd.path.len) |depth| {
+                // Build parent path for this depth
+                var parent_path = std.ArrayList(u8).init(allocator);
+                defer parent_path.deinit();
+                for (cmd.path[0..depth], 0..) |part, idx| {
+                    if (idx > 0) try parent_path.append(' ');
+                    try parent_path.appendSlice(part);
+                }
 
-            const parent_key = try allocator.dupe(u8, parent_path.items);
-            const entry = try command_tree.getOrPut(parent_key);
-            if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
-            } else {
-                allocator.free(parent_key);
+                const parent_key = try allocator.dupe(u8, parent_path.items);
+                const entry = try command_tree.getOrPut(parent_key);
+                if (!entry.found_existing) {
+                    entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
+                } else {
+                    allocator.free(parent_key);
+                }
+
+                // Add the child at this level (avoid duplicates)
+                const child = cmd.path[depth];
+                var already_exists = false;
+                for (entry.value_ptr.items) |existing| {
+                    if (std.mem.eql(u8, existing, child)) {
+                        already_exists = true;
+                        break;
+                    }
+                }
+                if (!already_exists) {
+                    try entry.value_ptr.append(child);
+                }
             }
-            try entry.value_ptr.append(cmd.path[cmd.path.len - 1]);
         }
     }
 
     // Generate _arguments call with global options
-    try writer.writeAll("    _arguments -C \\\n");
+    try writer.writeAll("    _arguments -S -C \\\n");
 
     // Add global options
     for (global_options) |opt| {
+        const escaped_desc = if (opt.description) |desc|
+            try escapeDescription(allocator, desc)
+        else
+            null;
+        defer if (escaped_desc) |e| allocator.free(e);
+
         if (opt.short) |short| {
-            try writer.print("        '(-{c} --{s})", .{ short, opt.name });
-            try writer.print("{{-{c},--{s}}}", .{ short, opt.name });
-        } else {
+            // Short option: '-h[description]'
+            try writer.print("        '-{c}", .{short});
+            if (escaped_desc) |desc| {
+                try writer.print("[{s}]", .{desc});
+            }
+            if (opt.takes_value) {
+                try writer.print(":{s}:", .{opt.name});
+            }
+            try writer.writeAll("' \\\n");
+
+            // Long option: '--help[description]'
             try writer.print("        '--{s}", .{opt.name});
-        }
-
-        if (opt.description) |desc| {
-            try writer.print("[{s}]", .{desc});
-        }
-
-        if (opt.takes_value) {
-            try writer.print(":{s}:'", .{opt.name});
+            if (escaped_desc) |desc| {
+                try writer.print("[{s}]", .{desc});
+            }
+            if (opt.takes_value) {
+                try writer.print(":{s}:", .{opt.name});
+            }
+            try writer.writeAll("' \\\n");
         } else {
-            try writer.print("'", .{});
+            // Long option only: '--help[description]'
+            try writer.print("        '--{s}", .{opt.name});
+            if (escaped_desc) |desc| {
+                try writer.print("[{s}]", .{desc});
+            }
+            if (opt.takes_value) {
+                try writer.print(":{s}:", .{opt.name});
+            }
+            try writer.writeAll("' \\\n");
         }
-        try writer.writeAll(" \\\n");
     }
 
     // Add subcommand argument
@@ -109,7 +386,9 @@ pub fn generate(
 
             try writer.print("                '{s}", .{cmd_name});
             if (desc) |d| {
-                try writer.print(":{s}", .{d});
+                const escaped = try escapeDescription(allocator, d);
+                defer allocator.free(escaped);
+                try writer.print(":{s}", .{escaped});
             }
             try writer.writeAll("'\n");
         }
@@ -123,71 +402,44 @@ pub fn generate(
     try writer.writeAll("        args)\n");
     try writer.writeAll("            case $line[1] in\n");
 
-    // Generate cases for each command that has subcommands
+    // Generate cases for each first-level command that has subcommands
+    // We need to build this recursively for proper nesting
+    var processed = std.StringHashMap(void).init(allocator);
+    defer processed.deinit();
+
     var tree_it = command_tree.iterator();
     while (tree_it.next()) |entry| {
         if (entry.key_ptr.len == 0) continue; // Skip root
 
-        // Convert path to case pattern (space-separated)
         const parent_path = entry.key_ptr.*;
-        const subcommands = entry.value_ptr.*;
 
-        // For nested paths, we need to check multiple levels
-        // For now, let's handle one level of nesting
-        var path_parts = std.mem.splitScalar(u8, parent_path, ' ');
-        const first_part = path_parts.next().?;
+        // Only process first-level commands here
+        if (std.mem.indexOfScalar(u8, parent_path, ' ') != null) continue;
 
-        try writer.print("                {s})\n", .{first_part});
+        // Skip if already processed
+        if (processed.contains(parent_path)) continue;
+        try processed.put(parent_path, {});
 
-        // Check if we need to go deeper
-        const rest = path_parts.rest();
-        if (rest.len > 0) {
-            // Multi-level nesting
-            try writer.print("                    case $line[2] in\n", .{});
-            try writer.print("                        {s})\n", .{rest});
-        }
+        try writer.print("                {s})\n", .{parent_path});
 
-        try writer.writeAll("                            local -a subcommands\n");
-        try writer.writeAll("                            subcommands=(\n");
-
-        for (subcommands.items) |subcmd_name| {
-            // Find description
-            var desc: ?[]const u8 = null;
-            for (commands) |cmd| {
-                if (cmd.path.len < 2) continue;
-                // Check if path matches
-                var matches = true;
-                var path_check = std.mem.splitScalar(u8, parent_path, ' ');
-                var depth: usize = 0;
-                while (path_check.next()) |part| {
-                    if (depth >= cmd.path.len or !std.mem.eql(u8, cmd.path[depth], part)) {
-                        matches = false;
-                        break;
-                    }
-                    depth += 1;
-                }
-                if (matches and depth < cmd.path.len and std.mem.eql(u8, cmd.path[depth], subcmd_name)) {
-                    desc = cmd.description;
-                    break;
-                }
-            }
-
-            try writer.print("                                '{s}", .{subcmd_name});
-            if (desc) |d| {
-                try writer.print(":{s}", .{d});
-            }
-            try writer.writeAll("'\n");
-        }
-
-        try writer.writeAll("                            )\n");
-        try writer.writeAll("                            _describe 'subcommand' subcommands\n");
-
-        if (rest.len > 0) {
-            try writer.writeAll("                            ;;\n");
-            try writer.writeAll("                    esac\n");
-        }
+        // Recursively generate nested cases
+        try generateNestedCases(writer, allocator, &command_tree, commands, parent_path, 2);
 
         try writer.writeAll("                    ;;\n");
+    }
+
+    // Now handle root-level leaf commands (commands without subcommands)
+    // These need option completions too
+    if (command_tree.get("")) |root_cmds| {
+        for (root_cmds.items) |cmd_name| {
+            // Skip if this command has children (already processed above)
+            if (command_tree.contains(cmd_name)) continue;
+
+            // This is a leaf command at root level - generate options for it
+            try writer.print("                {s})\n", .{cmd_name});
+            try generateOptionsForCommand(writer, allocator, commands, cmd_name, "            ");
+            try writer.writeAll("                    ;;\n");
+        }
     }
 
     try writer.writeAll("            esac\n");
