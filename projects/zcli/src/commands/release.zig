@@ -12,6 +12,15 @@ pub const meta = .{
         "release patch --no-push    # Create tag but don't push",
         "release patch --skip-tests # Skip test validation",
     },
+    .options = .{
+        .@"dry-run" = .{ .desc = "Preview changes without executing" },
+        .@"skip-tests" = .{ .desc = "Skip running tests before release" },
+        .@"no-push" = .{ .desc = "Create tag but don't push to remote" },
+        .@"skip-checks" = .{ .desc = "Skip safety checks (clean working tree, branch verification)" },
+        .sign = .{ .desc = "Sign the tag with GPG" },
+        .message = .{ .desc = "Release message (if not provided, editor will open)" },
+        .branch = .{ .desc = "Branch to release from" },
+    },
 };
 
 pub const Args = struct {
