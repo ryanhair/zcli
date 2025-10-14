@@ -29,13 +29,17 @@ pub fn build(b: *std.Build) void {
     plugin_module.addImport("markdown-fmt", markdown_fmt_module);
 
     // Tests for the plugin
-    const plugin_tests = b.addTest(.{
+    const test_mod = b.addModule("plugin-test", .{
         .root_source_file = b.path("src/plugin.zig"),
         .target = target,
         .optimize = optimize,
     });
-    plugin_tests.root_module.addImport("zcli", zcli_module);
-    plugin_tests.root_module.addImport("markdown-fmt", markdown_fmt_module);
+    test_mod.addImport("zcli", zcli_module);
+    test_mod.addImport("markdown-fmt", markdown_fmt_module);
+
+    const plugin_tests = b.addTest(.{
+        .root_module = test_mod,
+    });
 
     const run_tests = b.addRunArtifact(plugin_tests);
     const test_step = b.step("test", "Run plugin tests");

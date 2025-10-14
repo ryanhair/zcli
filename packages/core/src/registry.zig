@@ -531,9 +531,13 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 break :blk cmd_info_list;
             };
 
+            // Create IO and finalize before passing to Context
+            var io = zcli.IO.init();
+            io.finalize();
+
             var context = zcli.Context{
                 .allocator = allocator,
-                .io = zcli.IO.init(),
+                .io = &io,
                 .environment = zcli.Environment.init(),
                 .plugin_extensions = zcli.ContextExtensions.init(allocator),
                 .app_name = config.app_name,
@@ -587,10 +591,10 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
         }
 
         pub fn parseGlobalOptions(self: *Self, context: *zcli.Context, args: []const []const u8) !zcli.GlobalOptionsResult {
-            var consumed = std.ArrayList(usize).init(context.allocator);
-            var remaining = std.ArrayList([]const u8).init(context.allocator);
-            defer consumed.deinit();
-            defer remaining.deinit();
+            var consumed = std.ArrayList(usize){};
+            var remaining = std.ArrayList([]const u8){};
+            defer consumed.deinit(context.allocator);
+            defer remaining.deinit(context.allocator);
 
             var i: usize = 0;
             while (i < args.len) {
@@ -603,13 +607,13 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     inline for (global_options) |global_opt| {
                         if (std.mem.eql(u8, opt_name, global_opt.name)) {
                             // Handle the global option
-                            try consumed.append(i);
+                            try consumed.append(context.allocator, i);
 
                             var value: []const u8 = "true"; // Default for boolean flags
                             if (global_opt.type != bool and i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
                                 i += 1;
                                 value = args[i];
-                                try consumed.append(i);
+                                try consumed.append(context.allocator, i);
                             }
 
                             // Call the plugin's handler
@@ -636,7 +640,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     for (short_opts) |short_char| {
                         inline for (global_options) |global_opt| {
                             if (global_opt.short == short_char) {
-                                try consumed.append(i);
+                                try consumed.append(context.allocator, i);
 
                                 // For short options, assume boolean for now
                                 inline for (sorted_plugins) |Plugin| {
@@ -659,15 +663,15 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 }
 
                 if (!handled) {
-                    try remaining.append(arg);
+                    try remaining.append(context.allocator, arg);
                 }
 
                 i += 1;
             }
 
             const result = zcli.GlobalOptionsResult{
-                .consumed = try consumed.toOwnedSlice(),
-                .remaining = try remaining.toOwnedSlice(),
+                .consumed = try consumed.toOwnedSlice(context.allocator),
+                .remaining = try remaining.toOwnedSlice(context.allocator),
             };
             // Note: Caller is responsible for freeing consumed and remaining arrays
             return result;
@@ -758,7 +762,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 }
 
                 if (!error_handled) {
-                    try context.stderr().print("No command specified. Use --help for usage information.\n", .{});
+                    var stderr = context.stderr();
+                    try stderr.print("No command specified. Use --help for usage information.\n", .{});
                     return error.CommandNotFound;
                 }
                 return;
@@ -838,16 +843,16 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             const ArgsType = cmd.module.Args;
                             const args_type_info = @typeInfo(ArgsType);
                             if (args_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                var field_list = std.ArrayList(zcli.FieldInfo){};
                                 inline for (args_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
-                                    try field_list.append(zcli.FieldInfo{
+                                    try field_list.append(context.allocator, zcli.FieldInfo{
                                         .name = field.name,
                                         .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                                         .is_array = field_type_info == .pointer and field_type_info.pointer.child != u8,
                                     });
                                 }
-                                args_field_list = try field_list.toOwnedSlice();
+                                args_field_list = try field_list.toOwnedSlice(context.allocator);
                             }
                         }
 
@@ -855,7 +860,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             const OptionsType = cmd.module.Options;
                             const options_type_info = @typeInfo(OptionsType);
                             if (options_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                var field_list = std.ArrayList(zcli.FieldInfo){};
                                 inline for (options_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
 
@@ -880,7 +885,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                         }
                                     }
 
-                                    try field_list.append(zcli.FieldInfo{
+                                    try field_list.append(context.allocator, zcli.FieldInfo{
                                         .name = field.name,
                                         .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                                         .is_array = field_type_info == .pointer and field_type_info.pointer.child != u8,
@@ -888,7 +893,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                         .description = description,
                                     });
                                 }
-                                options_field_list = try field_list.toOwnedSlice();
+                                options_field_list = try field_list.toOwnedSlice(context.allocator);
                             }
                         }
 
@@ -983,7 +988,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             if (!error_handled) {
                                 const cmd_name_str = try std.mem.join(context.allocator, " ", matched_command);
                                 defer context.allocator.free(cmd_name_str);
-                                try context.stderr().print("'{s}' is a command group. Use --help to see available subcommands.\n", .{cmd_name_str});
+                                var stderr = context.stderr();
+                                try stderr.print("'{s}' is a command group. Use --help to see available subcommands.\n", .{cmd_name_str});
                             }
                             return;
                         }
@@ -1054,10 +1060,10 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         if (@hasDecl(CommandModule, "Args")) {
                             const args_type_info = @typeInfo(ArgsType);
                             if (args_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                var field_list = std.ArrayList(zcli.FieldInfo){};
                                 inline for (args_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
-                                    try field_list.append(zcli.FieldInfo{
+                                    try field_list.append(context.allocator, zcli.FieldInfo{
                                         .name = field.name,
                                         .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                                         .is_array = field_type_info == .pointer and field_type_info.pointer.size == .Slice and field_type_info.pointer.child != u8,
@@ -1065,7 +1071,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                         .description = null,
                                     });
                                 }
-                                args_field_list = try field_list.toOwnedSlice();
+                                args_field_list = try field_list.toOwnedSlice(context.allocator);
                             }
                         }
 
@@ -1073,7 +1079,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         if (@hasDecl(CommandModule, "Options")) {
                             const options_type_info = @typeInfo(OptionsType);
                             if (options_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).init(context.allocator);
+                                var field_list = std.ArrayList(zcli.FieldInfo){};
                                 inline for (options_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
 
@@ -1097,7 +1103,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                         }
                                     }
 
-                                    try field_list.append(zcli.FieldInfo{
+                                    try field_list.append(context.allocator, zcli.FieldInfo{
                                         .name = field.name,
                                         .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                                         .is_array = field_type_info == .pointer and field_type_info.pointer.size == .Slice and field_type_info.pointer.child != u8,
@@ -1105,7 +1111,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                         .description = description,
                                     });
                                 }
-                                options_field_list = try field_list.toOwnedSlice();
+                                options_field_list = try field_list.toOwnedSlice(context.allocator);
                             }
                         }
 
@@ -1232,7 +1238,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 // If no plugin handled the error, print a basic message and return error
                 if (!error_handled) {
                     const cmd_name = if (context.command_path.len > 0) context.command_path[0] else "unknown";
-                    try context.stderr().print("command {s} not found\n", .{cmd_name});
+                    var stderr = context.stderr();
+                    try stderr.print("command {s} not found\n", .{cmd_name});
                     return error.CommandNotFound;
                 }
 

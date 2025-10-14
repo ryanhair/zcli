@@ -12,10 +12,13 @@ pub fn build(b: *std.Build) void {
     });
 
     // Tests for the ztheme library - run all tests through main module
-    const ztheme_tests = b.addTest(.{
+    const test_mod = b.addModule("test-ztheme", .{
         .root_source_file = b.path("src/ztheme.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const ztheme_tests = b.addTest(.{
+        .root_module = test_mod,
     });
 
     const run_ztheme_tests = b.addRunArtifact(ztheme_tests);

@@ -62,9 +62,9 @@ pub fn fetchFromSwapi(allocator: std.mem.Allocator, endpoint: []const u8, id: ?u
 
 pub fn printJsonPretty(allocator: std.mem.Allocator, value: std.json.Value, writer: anytype) !void {
     // Convert to pretty-printed JSON string
-    var string = std.ArrayList(u8).init(allocator);
-    defer string.deinit();
+    var string = std.ArrayList(u8){};
+    defer string.deinit(allocator);
 
-    try std.json.stringify(value, .{ .whitespace = .indent_4 }, string.writer());
+    try std.json.stringify(value, .{ .whitespace = .indent_4 }, string.writer(allocator));
     try writer.writeAll(string.items);
 }

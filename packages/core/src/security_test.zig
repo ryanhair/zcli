@@ -229,14 +229,14 @@ test "security: resource exhaustion - memory limits" {
     const allocator = testing.allocator;
 
     // Test protection against memory exhaustion via large option arrays
-    var large_args = std.ArrayList([]const u8).init(allocator);
-    defer large_args.deinit();
+    var large_args: std.ArrayList([]const u8) = .empty;
+    defer large_args.deinit(allocator);
 
     // Create a reasonable number of file options for testing
     const file_count = 100; // Reasonable test size to avoid actually exhausting memory
     for (0..file_count) |i| {
-        try large_args.append("--files");
-        try large_args.append(try std.fmt.allocPrint(allocator, "file{d}.txt", .{i}));
+        try large_args.append(allocator, "--files");
+        try large_args.append(allocator, try std.fmt.allocPrint(allocator, "file{d}.txt", .{i}));
     }
     defer {
         // Clean up allocated filenames
@@ -412,7 +412,7 @@ test "security: boundary conditions - extreme values" {
 
         // All string inputs should succeed
         const parsed = args_parser.parseArgs(TestArgs, &args) catch |err| {
-            std.log.err("Input '{}' failed unexpectedly: {}", .{ std.zig.fmtEscapes(input), err });
+            std.log.err("Input '{s}' failed unexpectedly: {}", .{ input, err });
             return err;
         };
 

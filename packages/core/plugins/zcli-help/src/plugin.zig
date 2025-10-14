@@ -117,8 +117,8 @@ pub fn onError(
 
 /// Unified help display function that handles all help scenarios
 fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
-    const writer = context.stderr();
-    const fmt = md.formatter(writer);
+    var writer = context.stderr();
+    var fmt = md.formatter(writer);
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
@@ -208,14 +208,14 @@ fn showHelp(context: *zcli.Context, help_type: HelpType) !void {
     // Show commands/subcommands
     switch (help_type) {
         .app, .root => {
-            try showCommandList(context, fmt, .top_level);
+            try showCommandList(context, &fmt, .top_level);
         },
         .command_group => |group_name| {
-            try showCommandList(context, fmt, .{ .subcommands_of = group_name });
+            try showCommandList(context, &fmt, .{ .subcommands_of = group_name });
         },
         .command => {
             // Show subcommands if any
-            try showSubcommands(context, fmt);
+            try showSubcommands(context, &fmt);
         },
     }
 
@@ -287,8 +287,8 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
     }
 
     const command_infos = context.getAvailableCommandInfo();
-    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
-    defer displayed_names.deinit();
+    var displayed_names: std.ArrayList([]const u8) = .empty;
+    defer displayed_names.deinit(context.allocator);
 
     // First pass: collect unique command names and find the best description for each
     var command_map = std.StringHashMap(?[]const u8).init(context.allocator);
@@ -310,13 +310,13 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
             },
             .subcommands_of => |parent| {
                 // Split parent by spaces to get the full parent path
-                var parent_parts = std.ArrayList([]const u8).init(context.allocator);
-                defer parent_parts.deinit();
+                var parent_parts: std.ArrayList([]const u8) = .empty;
+                defer parent_parts.deinit(context.allocator);
 
                 var iter = std.mem.splitScalar(u8, parent, ' ');
                 while (iter.next()) |part| {
                     if (part.len > 0) {
-                        try parent_parts.append(part);
+                        try parent_parts.append(context.allocator, part);
                     }
                 }
 
@@ -374,7 +374,7 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
         // Skip help command for top-level (we'll add it manually)
         if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
 
-        try displayed_names.append(display_name);
+        try displayed_names.append(context.allocator, display_name);
 
         if (description) |desc| {
             try fmt.write("    <command>{s:<16}</command> {s}\n", .{ display_name, desc });
@@ -443,10 +443,10 @@ fn showCommandHelp(context: *zcli.Context, command: []const u8) !void {
 /// Generate usage string based on command structure
 fn generateUsage(context: *zcli.Context) ![]const u8 {
     // Build a markdown-formatted usage string using the formatter
-    var buf = std.ArrayList(u8).init(context.allocator);
-    errdefer buf.deinit();
-    const buf_writer = buf.writer();
-    const fmt = md.formatter(buf_writer);
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(context.allocator);
+    const buf_writer = buf.writer(context.allocator);
+    var fmt = md.formatter(buf_writer);
 
     // Start with app name and command path
     try fmt.write("<command>{s}</command>", .{context.app_name});
@@ -500,14 +500,14 @@ fn generateUsage(context: *zcli.Context) ![]const u8 {
         }
     }
 
-    return try buf.toOwnedSlice();
+    return try buf.toOwnedSlice(context.allocator);
 }
 
 /// Show available subcommands for the current command
 fn showSubcommands(context: *zcli.Context, fmt: anytype) !void {
     const command_infos = context.getAvailableCommandInfo();
-    var displayed_names = std.ArrayList([]const u8).init(context.allocator);
-    defer displayed_names.deinit();
+    var displayed_names: std.ArrayList([]const u8) = .empty;
+    defer displayed_names.deinit(context.allocator);
 
     var has_commands = false;
 
@@ -551,7 +551,7 @@ fn showSubcommands(context: *zcli.Context, fmt: anytype) !void {
             }
 
             if (!already_added) {
-                try displayed_names.append(display_name);
+                try displayed_names.append(context.allocator, display_name);
 
                 if (!has_commands) {
                     try fmt.write("**COMMANDS:**\n", .{});
@@ -577,9 +577,9 @@ fn showSubcommands(context: *zcli.Context, fmt: anytype) !void {
 fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: *zcli.Context) !?[]u8 {
     if (!module_info.has_args or module_info.args_fields.len == 0) return null;
 
-    var buffer = std.ArrayList(u8).init(context.allocator);
-    errdefer buffer.deinit();
-    var writer = buffer.writer();
+    var buffer: std.ArrayList(u8) = .empty;
+    errdefer buffer.deinit(context.allocator);
+    var writer = buffer.writer(context.allocator);
 
     var first = true;
     for (module_info.args_fields) |field_info| {
@@ -613,7 +613,7 @@ fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: *zcli.Conte
         }
     }
 
-    return try buffer.toOwnedSlice();
+    return try buffer.toOwnedSlice(context.allocator);
 }
 
 /// Generate args help text from command module info
@@ -621,17 +621,17 @@ fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: *zcli.Conte
 fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Context) !?[]u8 {
     if (!module_info.has_args or module_info.args_fields.len == 0) return null;
 
-    var buffer = std.ArrayList(u8).init(context.allocator);
-    errdefer buffer.deinit();
-    const buf_writer = buffer.writer();
-    const buf_fmt = md.formatter(buf_writer);
+    var buffer: std.ArrayList(u8) = .empty;
+    errdefer buffer.deinit(context.allocator);
+    const buf_writer = buffer.writer(context.allocator);
+    var buf_fmt = md.formatter(buf_writer);
 
     // Generate basic help from field names
     for (module_info.args_fields) |field_info| {
         try buf_fmt.write("    <value>{s:<16}</value> {s}\n", .{ field_info.name, field_info.name });
     }
 
-    return try buffer.toOwnedSlice();
+    return try buffer.toOwnedSlice(context.allocator);
 }
 
 /// Generate options help text from command module info
@@ -639,10 +639,10 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Context)
 fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Context) !?[]u8 {
     if (!module_info.has_options or module_info.options_fields.len == 0) return null;
 
-    var buffer = std.ArrayList(u8).init(context.allocator);
-    errdefer buffer.deinit();
-    const buf_writer = buffer.writer();
-    const buf_fmt = md.formatter(buf_writer);
+    var buffer: std.ArrayList(u8) = .empty;
+    errdefer buffer.deinit(context.allocator);
+    const buf_writer = buffer.writer(context.allocator);
+    var buf_fmt = md.formatter(buf_writer);
 
     // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {
@@ -684,7 +684,7 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: *zcli.Conte
         }
     }
 
-    return try buffer.toOwnedSlice();
+    return try buffer.toOwnedSlice(context.allocator);
 }
 
 // Context extension - optional configuration for the help plugin
@@ -700,7 +700,7 @@ pub const ContextExtension = struct {
         return .{
             .show_examples = true,
             .show_tips = true,
-            .color_output = std.io.tty.detectConfig(std.io.getStdErr()) != .no_color,
+            .color_output = std.io.tty.detectConfig(std.fs.File.stderr()) != .no_color,
             .max_width = 80,
             .command_metadata = std.StringHashMap(CommandMetadata).init(allocator),
         };
@@ -734,7 +734,10 @@ test "handleGlobalOption handles help flag" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    var context = zcli.Context.init(gpa.allocator());
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(gpa.allocator(), &io);
     defer context.deinit();
 
     // Test handling --help flag
@@ -756,14 +759,16 @@ test "help command execution" {
     var output_file = try tmp_dir.dir.createFile("test_output.txt", .{ .read = true });
     defer output_file.close();
 
-    // Create context with the temporary file as stderr
+    // Create IO and set custom stderr for test
+    var io = zcli.IO.init();
+    io.stdout_writer = std.fs.File.stdout().writer(&.{});
+    io.stderr_writer = output_file.writer(&.{});
+    io.stdin_reader = std.fs.File.stdin().reader(&.{});
+
+    // Create context with custom IO that writes to a file
     var context = zcli.Context{
         .allocator = allocator,
-        .io = .{
-            .stdout = std.io.getStdOut().writer(),
-            .stderr = output_file.writer(),
-            .stdin = std.io.getStdIn().reader(),
-        },
+        .io = &io,
         .environment = zcli.Environment.init(),
         .plugin_extensions = zcli.ContextExtensions.init(allocator),
     };

@@ -310,21 +310,21 @@ pub fn maskDynamicContent(allocator: std.mem.Allocator, text: []const u8) ![]con
 
 /// Mask UUID patterns
 fn maskUUIDs(allocator: std.mem.Allocator, text: []const u8, replacement: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(allocator);
+    var result = std.ArrayList(u8){};
     var i: usize = 0;
 
     while (i < text.len) {
         if (i + 36 <= text.len and isUUID(text[i .. i + 36])) {
             // Found a UUID, replace it
-            try result.appendSlice(replacement);
+            try result.appendSlice(allocator, replacement);
             i += 36;
         } else {
-            try result.append(text[i]);
+            try result.append(allocator, text[i]);
             i += 1;
         }
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Check if a 36-character string is a UUID
@@ -345,7 +345,7 @@ fn isUUID(text: []const u8) bool {
 
 /// Mask ISO 8601 timestamps
 fn maskTimestamps(allocator: std.mem.Allocator, text: []const u8, replacement: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(allocator);
+    var result = std.ArrayList(u8){};
     var i: usize = 0;
 
     while (i < text.len) {
@@ -353,7 +353,7 @@ fn maskTimestamps(allocator: std.mem.Allocator, text: []const u8, replacement: [
             // Look for YYYY-MM-DDTHH:MM:SS pattern
             if (isTimestamp(text[i .. i + 19])) {
                 // Found a timestamp, replace it
-                try result.appendSlice(replacement);
+                try result.appendSlice(allocator, replacement);
                 i += 19;
 
                 // Skip optional milliseconds and timezone
@@ -364,11 +364,11 @@ fn maskTimestamps(allocator: std.mem.Allocator, text: []const u8, replacement: [
             }
         }
 
-        try result.append(text[i]);
+        try result.append(allocator, text[i]);
         i += 1;
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Check if text matches YYYY-MM-DDTHH:MM:SS
@@ -387,7 +387,7 @@ fn isTimestamp(text: []const u8) bool {
 
 /// Mask memory addresses (0x followed by hex)
 fn maskMemoryAddresses(allocator: std.mem.Allocator, text: []const u8, replacement: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(allocator);
+    var result = std.ArrayList(u8){};
     var i: usize = 0;
 
     while (i < text.len) {
@@ -400,17 +400,17 @@ fn maskMemoryAddresses(allocator: std.mem.Allocator, text: []const u8, replaceme
 
             if (end > i + 2) {
                 // Found a valid hex address, replace it
-                try result.appendSlice(replacement);
+                try result.appendSlice(allocator, replacement);
                 i = end;
                 continue;
             }
         }
 
-        try result.append(text[i]);
+        try result.append(allocator, text[i]);
         i += 1;
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Helper for framework testing - allows testing specific snapshot error conditions
@@ -445,7 +445,7 @@ pub fn expectSnapshotWithData(
 
 /// Strip ANSI escape sequences from text for clean comparison
 pub fn stripAnsi(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(allocator);
+    var result = std.ArrayList(u8){};
 
     var i: usize = 0;
     while (i < text.len) {
@@ -461,10 +461,10 @@ pub fn stripAnsi(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
                 }
             }
         } else {
-            try result.append(text[i]);
+            try result.append(allocator, text[i]);
             i += 1;
         }
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }

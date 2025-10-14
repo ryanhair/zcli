@@ -158,15 +158,14 @@ pub const VTerm = struct {
 
     pub fn viewportToBuffer(self: *VTerm, viewport_y: u16) ?u16 {
         // Convert viewport Y to buffer line index
-        if (self.total_lines_written == 0) return null;
 
-        // Special case: if we have fewer lines than viewport height,
-        // just map viewport_y directly to logical line
+        // Special case: if we have no content or fewer lines than viewport height,
+        // just map viewport_y directly to logical line (for the entire viewport)
         if (self.total_lines_written <= self.height and self.viewport_offset == 0) {
-            if (viewport_y < self.total_lines_written) {
+            if (viewport_y < self.height) {
                 return self.bufferLineIndex(@as(u32, viewport_y));
             } else {
-                return null; // Beyond content
+                return null; // Beyond viewport
             }
         }
 
@@ -363,10 +362,17 @@ pub const VTerm = struct {
         // Wrap when cursor reaches width (immediate wrapping for putChar)
         // This allows cursor to be positioned at width for delayed wrapping in write()
         if (self.cursor.x >= self.width) {
-            self.cursor.x = 0;
-            self.virtual_cursor_y += 1;
-            self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
-            self.total_lines_written = @max(self.total_lines_written, self.virtual_cursor_y + 1);
+            // Check if we're already at the last line - if so, clamp cursor instead of wrapping
+            if (self.cursor.y >= self.height - 1 and self.virtual_cursor_y >= self.height - 1) {
+                // At bottom of terminal - clamp cursor to last position instead of wrapping
+                self.cursor.x = self.width - 1;
+            } else {
+                // Normal wrapping behavior
+                self.cursor.x = 0;
+                self.virtual_cursor_y += 1;
+                self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
+                self.total_lines_written = @max(self.total_lines_written, self.virtual_cursor_y + 1);
+            }
         } else {
             // Update cursor.y to match virtual_cursor_y when not wrapping
             self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
@@ -535,37 +541,24 @@ pub const VTerm = struct {
                     self.private_sequence = true;
                 }
             },
-            // Valid CSI final characters (only commonly used ones in terminals)
-            'A',
-            'B',
-            'C',
-            'D', // Cursor movement
-            'H',
-            'f', // Cursor position
-            'J',
-            'K', // Erase commands
-            'S',
-            'T', // Scroll commands
-            'h',
-            'l', // Mode set/reset
-            'm', // SGR (colors/attributes)
-            'n', // Device status report
-            's',
-            'u', // Save/restore cursor
-            'r', // Set scroll region
-            'c', // Device attributes
-            'g', // Tab clear
-            '@',
-            '~',
-            => {
-                // Final character - execute command
+            // CSI final bytes: 0x40-0x7E (@A-Z[\]^_`a-z{|}~)
+            // All bytes in this range are valid CSI final bytes per ANSI spec
+            0x40...0x7E => {
+                // Final character - execute command if supported, otherwise ignore
                 self.executeCSI(byte);
                 self.parser_state = .Ground;
             },
             else => {
-                // Invalid character, abort sequence and process this character as ground
-                self.parser_state = .Ground;
-                self.handleGround(byte);
+                // Truly invalid character (control char, etc), abort sequence
+                // For characters outside the CSI final byte range, process as ground
+                if (byte < 0x40) {
+                    // Control or parameter characters appearing at wrong time - abort and process
+                    self.parser_state = .Ground;
+                    self.handleGround(byte);
+                } else {
+                    // Other invalid sequences - just abort without processing
+                    self.parser_state = .Ground;
+                }
             },
         }
     }
@@ -872,8 +865,8 @@ pub const VTerm = struct {
     }
 
     pub fn getAllText(self: *VTerm, allocator: Allocator) ![]u8 {
-        var result = std.ArrayList(u8).init(allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
 
         for (0..self.height) |y| {
             for (0..self.width) |x| {
@@ -882,30 +875,30 @@ pub const VTerm = struct {
                     // Skip continuation cells, the wide character was already processed
                     continue;
                 } else if (cell.char == 0) {
-                    try result.append(' ');
+                    try result.append(allocator, ' ');
                 } else if (cell.char < 128) {
                     // ASCII character
-                    try result.append(@intCast(cell.char));
+                    try result.append(allocator, @intCast(cell.char));
                 } else {
                     // UTF-8 encode the character
                     var buf: [4]u8 = undefined;
                     const len = std.unicode.utf8Encode(cell.char, &buf) catch {
-                        try result.append('?');
+                        try result.append(allocator, '?');
                         continue;
                     };
-                    try result.appendSlice(buf[0..len]);
+                    try result.appendSlice(allocator, buf[0..len]);
                 }
             }
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(allocator);
     }
 
     pub fn getLine(self: *VTerm, allocator: Allocator, line_y: u16) ![]u8 {
         if (line_y >= self.height) return allocator.alloc(u8, 0);
 
-        var result = std.ArrayList(u8).init(allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
 
         for (0..self.width) |x| {
             const cell = self.getCell(@intCast(x), line_y);
@@ -913,23 +906,23 @@ pub const VTerm = struct {
                 // Skip continuation cells, the wide character was already processed
                 continue;
             } else if (cell.char == 0) {
-                try result.append(' ');
+                try result.append(allocator, ' ');
             } else if (cell.char < 128) {
                 // ASCII character
-                try result.append(@intCast(cell.char));
+                try result.append(allocator, @intCast(cell.char));
             } else {
                 // UTF-8 encode the character
                 var buf: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(cell.char, &buf) catch {
-                    try result.append('?');
+                    try result.append(allocator, '?');
                     continue;
                 };
-                try result.appendSlice(buf[0..len]);
+                try result.appendSlice(allocator, buf[0..len]);
             }
         }
 
         // Get the content
-        const final_content = try result.toOwnedSlice();
+        const final_content = try result.toOwnedSlice(allocator);
 
         // Trim trailing spaces by finding actual end
         var actual_len = final_content.len;
@@ -1034,22 +1027,22 @@ pub const VTerm = struct {
             // Check each terminal row
             for (0..self.height) |row| {
                 // Get the row as a string
-                var line_buf = std.ArrayList(u8).init(std.heap.page_allocator);
-                defer line_buf.deinit();
+                var line_buf: std.ArrayList(u8) = .empty;
+                defer line_buf.deinit(std.heap.page_allocator);
 
                 for (0..self.width) |col| {
                     const cell = self.getCell(@intCast(col), @intCast(row));
                     if (cell.char == 0) {
-                        line_buf.append(' ') catch break;
+                        line_buf.append(std.heap.page_allocator, ' ') catch break;
                     } else if (cell.char < 128) {
-                        line_buf.append(@intCast(cell.char)) catch break;
+                        line_buf.append(std.heap.page_allocator, @intCast(cell.char)) catch break;
                     } else {
                         // UTF-8 character - for simplicity, skip in pattern matching
-                        line_buf.append('?') catch break;
+                        line_buf.append(std.heap.page_allocator, '?') catch break;
                     }
                 }
 
-                const line = line_buf.toOwnedSlice() catch continue;
+                const line = line_buf.toOwnedSlice(std.heap.page_allocator) catch continue;
                 defer std.heap.page_allocator.free(line);
 
                 if (std.mem.startsWith(u8, line, pat)) {
@@ -1065,22 +1058,22 @@ pub const VTerm = struct {
             // Check each terminal row (since \n moves cursor but doesn't store \n in cells)
             for (0..self.height) |row| {
                 // Get the row as a string and trim trailing spaces
-                var line_buf = std.ArrayList(u8).init(std.heap.page_allocator);
-                defer line_buf.deinit();
+                var line_buf: std.ArrayList(u8) = .empty;
+                defer line_buf.deinit(std.heap.page_allocator);
 
                 for (0..self.width) |col| {
                     const cell = self.getCell(@intCast(col), @intCast(row));
                     if (cell.char == 0) {
-                        line_buf.append(' ') catch break;
+                        line_buf.append(std.heap.page_allocator, ' ') catch break;
                     } else if (cell.char < 128) {
-                        line_buf.append(@intCast(cell.char)) catch break;
+                        line_buf.append(std.heap.page_allocator, @intCast(cell.char)) catch break;
                     } else {
                         // UTF-8 character - for simplicity, skip in pattern matching
-                        line_buf.append('?') catch break;
+                        line_buf.append(std.heap.page_allocator, '?') catch break;
                     }
                 }
 
-                const line = line_buf.toOwnedSlice() catch continue;
+                const line = line_buf.toOwnedSlice(std.heap.page_allocator) catch continue;
                 defer std.heap.page_allocator.free(line);
 
                 // Trim trailing spaces
@@ -1103,8 +1096,8 @@ pub const VTerm = struct {
 
     pub fn findPattern(self: *VTerm, allocator: Allocator, pattern: []const u8) ![]Position {
         // Simplified implementation - find first occurrence
-        var positions = std.ArrayList(Position).init(allocator);
-        errdefer positions.deinit();
+        var positions: std.ArrayList(Position) = .empty;
+        errdefer positions.deinit(allocator);
 
         const text = try self.getAllText(allocator);
         defer allocator.free(text);
@@ -1122,10 +1115,10 @@ pub const VTerm = struct {
             // Convert linear index to x,y position
             const y = @as(u16, @intCast(index / self.width));
             const x = @as(u16, @intCast(index % self.width));
-            try positions.append(Position{ .x = x, .y = y });
+            try positions.append(allocator, Position{ .x = x, .y = y });
         }
 
-        return positions.toOwnedSlice();
+        return positions.toOwnedSlice(allocator);
     }
 
     pub fn containsTextIgnoreCase(self: *VTerm, text: []const u8) bool {
@@ -1174,12 +1167,12 @@ pub const VTerm = struct {
     }
 
     pub fn getRegion(self: *VTerm, allocator: Allocator, x: u16, y: u16, width: u16, height: u16) ![]u8 {
-        var result = std.ArrayList(u8).init(allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
 
         for (0..height) |row| {
             if (row > 0) {
-                try result.append('\n');
+                try result.append(allocator, '\n');
             }
             for (0..width) |col| {
                 const cell_x = x + @as(u16, @intCast(col));
@@ -1188,26 +1181,26 @@ pub const VTerm = struct {
                 if (self.isValidPos(cell_x, cell_y)) {
                     const cell = self.getCell(cell_x, cell_y);
                     if (cell.char == 0) {
-                        try result.append(' ');
+                        try result.append(allocator, ' ');
                     } else if (cell.char < 128) {
                         // ASCII character
-                        try result.append(@intCast(cell.char));
+                        try result.append(allocator, @intCast(cell.char));
                     } else {
                         // UTF-8 encode the character
                         var buf: [4]u8 = undefined;
                         const len = std.unicode.utf8Encode(cell.char, &buf) catch {
-                            try result.append('?');
+                            try result.append(allocator, '?');
                             continue;
                         };
-                        try result.appendSlice(buf[0..len]);
+                        try result.appendSlice(allocator, buf[0..len]);
                     }
                 } else {
-                    try result.append(' ');
+                    try result.append(allocator, ' ');
                 }
             }
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(allocator);
     }
 
     pub fn containsTextInRegion(self: *VTerm, text: []const u8, x: u16, y: u16, width: u16, height: u16) bool {
@@ -1244,8 +1237,8 @@ pub const VTerm = struct {
             return error.DifferentDimensions;
         }
 
-        var changed = std.ArrayList(u16).init(allocator);
-        errdefer changed.deinit();
+        var changed: std.ArrayList(u16) = .empty;
+        errdefer changed.deinit(allocator);
 
         for (0..self.height) |y| {
             var line_differs = false;
@@ -1260,12 +1253,12 @@ pub const VTerm = struct {
             }
 
             if (line_differs) {
-                try changed.append(@intCast(y));
+                try changed.append(allocator, @intCast(y));
             }
         }
 
         return TerminalDiff{
-            .changedLines = try changed.toOwnedSlice(),
+            .changedLines = try changed.toOwnedSlice(allocator),
             .allocator = allocator,
         };
     }

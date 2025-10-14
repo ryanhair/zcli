@@ -62,32 +62,32 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
 
 /// Find commands similar to the input using edit distance
 pub fn findSimilarCommands(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator) ![][]const u8 {
-    var suggestions = std.ArrayList([]const u8).init(allocator);
-    defer suggestions.deinit();
+    var suggestions = std.ArrayList([]const u8){};
+    defer suggestions.deinit(allocator);
 
     for (candidates) |candidate| {
         const distance = editDistance(input, candidate);
 
         // Only suggest if the edit distance is reasonable
         if (distance <= 3 and distance < input.len) {
-            try suggestions.append(candidate);
+            try suggestions.append(allocator, candidate);
         }
     }
 
-    return suggestions.toOwnedSlice();
+    return suggestions.toOwnedSlice(allocator);
 }
 
 /// Find similar commands with configurable threshold and max suggestions
 pub fn findSimilarCommandsWithConfig(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator, max_distance: usize, max_suggestions: usize) ![][]const u8 {
-    var suggestions_with_distance = std.ArrayList(struct { command: []const u8, distance: usize }).init(allocator);
-    defer suggestions_with_distance.deinit();
+    var suggestions_with_distance = std.ArrayList(struct { command: []const u8, distance: usize }){};
+    defer suggestions_with_distance.deinit(allocator);
 
     for (candidates) |candidate| {
         const distance = editDistance(input, candidate);
 
         // Only suggest if the edit distance is within threshold
         if (distance <= max_distance and distance < input.len) {
-            try suggestions_with_distance.append(.{ .command = candidate, .distance = distance });
+            try suggestions_with_distance.append(allocator, .{ .command = candidate, .distance = distance });
         }
     }
 
@@ -99,15 +99,15 @@ pub fn findSimilarCommandsWithConfig(input: []const u8, candidates: []const []co
     }.lessThan);
 
     // Extract just the command names, limited to max_suggestions
-    var result = std.ArrayList([]const u8).init(allocator);
-    defer result.deinit();
+    var result = std.ArrayList([]const u8){};
+    defer result.deinit(allocator);
 
     const limit = @min(max_suggestions, suggestions_with_distance.items.len);
     for (suggestions_with_distance.items[0..limit]) |item| {
-        try result.append(item.command);
+        try result.append(allocator, item.command);
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 // Tests

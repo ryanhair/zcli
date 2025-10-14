@@ -3,7 +3,7 @@
     .version = "1.0.0",
     .fingerprint = 0xe9f361152e58e6c0,
     .description = "Version information display plugin for zcli",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         // No dependencies - this is a standalone plugin
     },

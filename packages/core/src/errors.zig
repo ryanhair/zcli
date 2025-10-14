@@ -151,19 +151,19 @@ pub fn handleMissingOptionValue(
 
 /// Find commands similar to the input using edit distance
 pub fn findSimilarCommands(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator) ![][]const u8 {
-    var suggestions = std.ArrayList([]const u8).init(allocator);
-    defer suggestions.deinit();
+    var suggestions: std.ArrayList([]const u8) = .empty;
+    defer suggestions.deinit(allocator);
 
     for (candidates) |candidate| {
         const distance = editDistance(input, candidate);
 
         // Only suggest if the edit distance is reasonable
         if (distance <= 3 and distance < input.len) {
-            try suggestions.append(candidate);
+            try suggestions.append(allocator, candidate);
         }
     }
 
-    return suggestions.toOwnedSlice();
+    return suggestions.toOwnedSlice(allocator);
 }
 
 /// Calculate Levenshtein edit distance between two strings

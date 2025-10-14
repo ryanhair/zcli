@@ -57,10 +57,13 @@ pub fn build(b: *std.Build) void {
 
     // Add core tests
     for (core_test_files) |test_file| {
-        const tests = b.addTest(.{
+        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
             .root_source_file = b.path(test_file),
             .target = target,
             .optimize = optimize,
+        });
+        const tests = b.addTest(.{
+            .root_module = test_mod,
         });
         const run_tests = b.addRunArtifact(tests);
         test_core_step.dependOn(&run_tests.step);
@@ -69,10 +72,13 @@ pub fn build(b: *std.Build) void {
 
     // Plugin tests - deadlock issue resolved by using stderr for output
     for (plugin_test_files) |test_file| {
-        const tests = b.addTest(.{
+        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
             .root_source_file = b.path(test_file),
             .target = target,
             .optimize = optimize,
+        });
+        const tests = b.addTest(.{
+            .root_module = test_mod,
         });
         const run_tests = b.addRunArtifact(tests);
         test_plugins_step.dependOn(&run_tests.step);
@@ -80,10 +86,13 @@ pub fn build(b: *std.Build) void {
 
     // Add integration tests (parallel execution)
     for (integration_test_files) |test_file| {
-        const tests = b.addTest(.{
+        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
             .root_source_file = b.path(test_file),
             .target = target,
             .optimize = optimize,
+        });
+        const tests = b.addTest(.{
+            .root_module = test_mod,
         });
         const run_tests = b.addRunArtifact(tests);
         test_step.dependOn(&run_tests.step);
@@ -91,10 +100,13 @@ pub fn build(b: *std.Build) void {
 
     // Add security tests (parallel execution)
     for (security_test_files) |test_file| {
-        const tests = b.addTest(.{
+        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
             .root_source_file = b.path(test_file),
             .target = target,
             .optimize = optimize,
+        });
+        const tests = b.addTest(.{
+            .root_module = test_mod,
         });
         const run_tests = b.addRunArtifact(tests);
         test_security_step.dependOn(&run_tests.step);
@@ -107,10 +119,13 @@ pub fn build(b: *std.Build) void {
     var previous_step: ?*std.Build.Step = null;
 
     for (all_test_files) |test_file| {
-        const sequential_tests = b.addTest(.{
+        const test_mod = b.addModule(b.fmt("seq-test-{s}", .{test_file}), .{
             .root_source_file = b.path(test_file),
             .target = target,
             .optimize = optimize,
+        });
+        const sequential_tests = b.addTest(.{
+            .root_module = test_mod,
         });
         const sequential_run_tests = b.addRunArtifact(sequential_tests);
 
@@ -125,10 +140,13 @@ pub fn build(b: *std.Build) void {
     }
 
     // Debug step - test just one potentially problematic file
-    const debug_test = b.addTest(.{
+    const debug_mod = b.addModule("debug-test", .{
         .root_source_file = b.path("src/benchmark.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const debug_test = b.addTest(.{
+        .root_module = debug_mod,
     });
     const run_debug_test = b.addRunArtifact(debug_test);
     test_debug_step.dependOn(&run_debug_test.step);
@@ -136,9 +154,11 @@ pub fn build(b: *std.Build) void {
     // Benchmark step
     const benchmark_exe = b.addExecutable(.{
         .name = "benchmark",
-        .root_source_file = b.path("src/benchmark_runner.zig"),
-        .target = target,
-        .optimize = .ReleaseFast, // Always optimize benchmarks
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmark_runner.zig"),
+            .target = target,
+            .optimize = .ReleaseFast, // Always optimize benchmarks
+        }),
     });
 
     const run_benchmark = b.addRunArtifact(benchmark_exe);
@@ -148,9 +168,11 @@ pub fn build(b: *std.Build) void {
     // Regression test step
     const regression_exe = b.addExecutable(.{
         .name = "regression",
-        .root_source_file = b.path("src/benchmark_runner.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmark_runner.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
     });
 
     const run_regression = b.addRunArtifact(regression_exe);

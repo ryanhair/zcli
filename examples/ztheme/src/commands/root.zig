@@ -35,7 +35,7 @@ pub const Options = struct {
 
 pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
     const allocator = context.allocator;
-    const writer = context.io.stdout;
+    const writer = context.stdout();
 
     // Debug: print parsed options
     // std.debug.print("DEBUG: force_color={}, no_color={}, capability={?}\n", .{options.force_color, options.no_color, options.capability});

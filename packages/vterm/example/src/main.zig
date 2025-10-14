@@ -28,17 +28,18 @@ pub fn main() !void {
 }
 
 fn printUsage() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("Usage: demo-cli <command> [options]\n", .{});
-    try stdout.print("Try 'demo-cli help' for more information.\n", .{});
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    try stdout_writer.interface.writeAll("Usage: demo-cli <command> [options]\n");
+    try stdout_writer.interface.writeAll("Try 'demo-cli help' for more information.\n");
 }
 
 fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     // Print colored header with ANSI codes
     try stdout.print("\x1b[1;34mDemo CLI Tool v{s}\x1b[0m\n", .{VERSION});
-    try stdout.print("\x1b[90m{'='<60}\x1b[0m\n", .{""});
+    try stdout.print("\x1b[90m{s:=<60}\x1b[0m\n", .{""});
     try stdout.print("\n", .{});
 
     try stdout.print("\x1b[1mUSAGE:\x1b[0m\n", .{});
@@ -64,13 +65,15 @@ fn printHelp() !void {
 }
 
 fn printVersion() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
     try stdout.print("demo-cli version {s}\n", .{VERSION});
     try stdout.print("Built with Zig\n", .{});
 }
 
 fn handleList(args: [][:0]u8) !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     var verbose = false;
     for (args) |arg| {
@@ -97,7 +100,8 @@ fn handleList(args: [][:0]u8) !void {
 }
 
 fn printStatus() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     // Clear screen and move cursor home
     try stdout.print("\x1b[2J\x1b[H", .{});
@@ -118,7 +122,8 @@ fn printStatus() !void {
 }
 
 fn printError(cmd: [:0]u8) !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
     try stdout.print("\x1b[31mError:\x1b[0m Unknown command '{s}'\n", .{cmd});
     try stdout.print("Try 'demo-cli help' for a list of available commands.\n", .{});
 }

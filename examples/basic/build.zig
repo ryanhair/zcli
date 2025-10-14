@@ -14,9 +14,11 @@ pub fn build(b: *std.Build) void {
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "gitt",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     exe.root_module.addImport("zcli", zcli_module);

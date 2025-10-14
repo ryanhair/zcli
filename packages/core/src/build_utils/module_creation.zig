@@ -55,12 +55,12 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
 
             if (subcmd_info.command_type == .optional_group) {
                 // Create module for nested optional group
-                var module_name_parts = std.ArrayList([]const u8).init(b.allocator);
-                defer module_name_parts.deinit();
+                var module_name_parts = std.ArrayList([]const u8){};
+                defer module_name_parts.deinit(b.allocator);
 
                 for (subcmd_info.path) |part| {
                     const sanitized_part = std.mem.replaceOwned(u8, b.allocator, part, "-", "_") catch part;
-                    module_name_parts.append(sanitized_part) catch unreachable;
+                    module_name_parts.append(b.allocator, sanitized_part) catch unreachable;
                 }
 
                 const module_name = std.mem.join(b.allocator, "_", module_name_parts.items) catch unreachable;
@@ -81,12 +81,12 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
             } else {
                 // Generate module name from the full command path to handle nested directories
                 // This ensures unique module names even for deeply nested commands
-                var module_name_parts = std.ArrayList([]const u8).init(b.allocator);
-                defer module_name_parts.deinit();
+                var module_name_parts = std.ArrayList([]const u8){};
+                defer module_name_parts.deinit(b.allocator);
 
                 for (subcmd_info.path) |part| {
                     const sanitized_part = std.mem.replaceOwned(u8, b.allocator, part, "-", "_") catch part;
-                    module_name_parts.append(sanitized_part) catch unreachable;
+                    module_name_parts.append(b.allocator, sanitized_part) catch unreachable;
                 }
 
                 const module_name = std.mem.join(b.allocator, "_", module_name_parts.items) catch unreachable;

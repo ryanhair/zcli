@@ -37,10 +37,10 @@ pub const FuzzTesting = struct {
         for (0..iterations) |_| {
             // Generate random number of arguments (1-10)
             const arg_count = random.uintLessThan(usize, 10) + 1;
-            var args = std.ArrayList([]const u8).init(allocator);
+            var args: std.ArrayList([]const u8) = .empty;
             defer {
                 for (args.items) |arg| allocator.free(arg);
-                args.deinit();
+                args.deinit(allocator);
             }
 
             // Generate random arguments
@@ -59,7 +59,7 @@ pub const FuzzTesting = struct {
                     }
                 }
 
-                try args.append(arg);
+                try args.append(allocator, arg);
             }
 
             // Test that random input doesn't crash the parser
@@ -91,10 +91,10 @@ pub const FuzzTesting = struct {
         for (0..iterations) |_| {
             // Generate random number of option arguments (0-20)
             const arg_count = random.uintLessThan(usize, 21);
-            var args = std.ArrayList([]const u8).init(allocator);
+            var args: std.ArrayList([]const u8) = .empty;
             defer {
                 for (args.items) |arg| allocator.free(arg);
-                args.deinit();
+                args.deinit(allocator);
             }
 
             // Generate option-like arguments
@@ -118,7 +118,7 @@ pub const FuzzTesting = struct {
                     }
                 }
 
-                try args.append(option_name);
+                try args.append(allocator, option_name);
                 j += 1;
 
                 // Maybe add a value for this option
@@ -136,7 +136,7 @@ pub const FuzzTesting = struct {
                         }
                     }
 
-                    try args.append(value);
+                    try args.append(allocator, value);
                     j += 1;
                 }
             }

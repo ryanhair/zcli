@@ -2,7 +2,7 @@
     .name = .interactive,
     .version = "0.1.0",
     .fingerprint = 0x3b5f8d37280ce6c8,
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
 
     .dependencies = .{
         .capabilities = .{

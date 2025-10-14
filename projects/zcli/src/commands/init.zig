@@ -27,8 +27,8 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     const allocator = context.allocator;
-    const stdout = context.stdout();
-    const stderr = context.stderr();
+    var stdout = context.stdout();
+    var stderr = context.stderr();
 
     const project_name = args.name;
     const app_description = options.description orelse "A CLI application built with zcli";

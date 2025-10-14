@@ -58,9 +58,9 @@ test "semantic methods produce colored output" {
     // Test success (should use green-ish color)
     {
         const success_text = theme("OK").success();
-        var buf = std.ArrayList(u8).init(allocator);
-        defer buf.deinit();
-        try success_text.render(buf.writer(), &theme_ctx);
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
+        try success_text.render(buf.writer(allocator), &theme_ctx);
 
         const output = buf.items;
         // Should contain ANSI escape codes
@@ -74,9 +74,9 @@ test "semantic methods produce colored output" {
     // Test error (should use red-ish color)
     {
         const error_text = theme("FAIL").err(); // 'error' is reserved
-        var buf = std.ArrayList(u8).init(allocator);
-        defer buf.deinit();
-        try error_text.render(buf.writer(), &theme_ctx);
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
+        try error_text.render(buf.writer(allocator), &theme_ctx);
 
         const output = buf.items;
         try testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
@@ -91,9 +91,9 @@ test "semantic methods respect color disabled" {
     var theme_ctx = Theme.initWithCapability(.no_color);
 
     const success_text = theme("OK").success();
-    var buf = std.ArrayList(u8).init(allocator);
-    defer buf.deinit();
-    try success_text.render(buf.writer(), &theme_ctx);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try success_text.render(buf.writer(allocator), &theme_ctx);
 
     // Should only contain the text, no escape codes
     try testing.expectEqualStrings("OK", buf.items);

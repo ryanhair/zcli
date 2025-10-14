@@ -221,7 +221,7 @@ pub fn Formatter(comptime Writer: type, comptime palette: SemanticPalette) type 
         const Self = @This();
 
         /// Write formatted markdown to the writer
-        pub fn write(self: Self, comptime markdown: []const u8, args: anytype) !void {
+        pub fn write(self: *Self, comptime markdown: []const u8, args: anytype) !void {
             const fmt_string = comptime parseWithPalette(markdown, palette);
             try self.writer.print(fmt_string, args);
         }
@@ -345,7 +345,7 @@ test "formatter basic usage" {
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
 
-    const fmt = formatter(fbs.writer());
+    var fmt = formatter(fbs.writer());
     try fmt.write("Build **{s}** in *{d}s*", .{"completed", 12});
 
     const output = fbs.getWritten();
@@ -358,7 +358,7 @@ test "formatter with semantic tags" {
     var buf: [256]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
 
-    const fmt = formatter(fbs.writer());
+    var fmt = formatter(fbs.writer());
     try fmt.write("<success>**{d}** tests passed</success>", .{42});
 
     const output = fbs.getWritten();
@@ -375,7 +375,7 @@ test "formatter with custom palette" {
         .success = .{ .r = 255, .g = 0, .b = 0 }, // Red instead of green
     };
 
-    const fmt = formatterWithPalette(fbs.writer(), custom_palette);
+    var fmt = formatterWithPalette(fbs.writer(), custom_palette);
     try fmt.write("<success>Custom color</success>", .{});
 
     const output = fbs.getWritten();
@@ -657,7 +657,7 @@ test "formatter with complex document" {
     var buf: [2048]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
 
-    const fmt = formatter(fbs.writer());
+    var fmt = formatter(fbs.writer());
 
     const markdown =
         \\# Status: **{s}**

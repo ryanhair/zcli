@@ -50,11 +50,13 @@ fn showHelp() !void {
         \\
     ;
 
-    try std.io.getStdErr().writeAll(help_text);
+    var stderr_writer = std.fs.File.stderr().writer(&.{});
+    try stderr_writer.interface.writeAll(help_text);
 }
 
 fn showColors() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     try stdout.print("\x1b[32m✅ SUCCESS:\x1b[0m Operation completed successfully\n", .{});
     try stdout.print("\x1b[31m❌ ERROR:\x1b[0m Something went wrong\n", .{});
@@ -65,7 +67,8 @@ fn showColors() !void {
 }
 
 fn showDynamicContent() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     // Generate some UUIDs and timestamps
     var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
@@ -89,7 +92,8 @@ fn showDynamicContent() !void {
 }
 
 fn showJson() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     const json_output =
         \\{
@@ -119,7 +123,8 @@ fn showJson() !void {
 }
 
 fn showTable() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     try stdout.writeAll("╭─────────────────┬──────────┬──────────┬─────────────╮\n");
     try stdout.writeAll("│ Feature         │ Status   │ Coverage │ Last Update │\n");
@@ -133,7 +138,8 @@ fn showTable() !void {
 }
 
 fn showLogs() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_writer = std.fs.File.stdout().writer(&.{});
+    const stdout = &stdout_writer.interface;
 
     // Simulate log entries with timestamps
     try stdout.print("[2024-01-15T10:30:45.123Z] INFO  Starting snapshot demo application\n", .{});
@@ -146,7 +152,8 @@ fn showLogs() !void {
 }
 
 fn showError(comptime msg: []const u8) !void {
-    const stderr = std.io.getStdErr().writer();
+    var stderr_writer = std.fs.File.stderr().writer(&.{});
+    const stderr = &stderr_writer.interface;
     try stderr.print("\x1b[31mError:\x1b[0m {s}\n\n", .{msg});
     try stderr.writeAll("Run 'snapshot-demo help' for usage information.\n");
 }

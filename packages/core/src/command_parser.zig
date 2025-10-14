@@ -55,10 +55,10 @@ pub fn parseCommandLine(
     _ = meta; // TODO: Use meta for option customization
 
     // First pass: separate options from positional arguments
-    var option_args = std.ArrayList([]const u8).init(allocator);
-    defer option_args.deinit();
-    var positional_args = std.ArrayList([]const u8).init(allocator);
-    defer positional_args.deinit();
+    var option_args = std.ArrayList([]const u8){};
+    defer option_args.deinit(allocator);
+    var positional_args = std.ArrayList([]const u8){};
+    defer positional_args.deinit(allocator);
 
     var i: usize = 0;
     while (i < args.len) {
@@ -68,14 +68,14 @@ pub fn parseCommandLine(
         if (std.mem.eql(u8, arg, "--")) {
             // Add remaining args as positional
             for (args[i + 1 ..]) |remaining_arg| {
-                positional_args.append(remaining_arg) catch return ZcliError.SystemOutOfMemory;
+                positional_args.append(allocator, remaining_arg) catch return ZcliError.SystemOutOfMemory;
             }
             break;
         }
 
         // Handle options (start with -, but not negative numbers)
         if (std.mem.startsWith(u8, arg, "-") and !isNegativeNumber(arg)) {
-            option_args.append(arg) catch return ZcliError.SystemOutOfMemory;
+            option_args.append(allocator, arg) catch return ZcliError.SystemOutOfMemory;
 
             // Check if this option expects a value
             if (std.mem.startsWith(u8, arg, "--")) {
@@ -90,7 +90,7 @@ pub fn parseCommandLine(
                     if (needsValue(OptionsType, option_name) and i + 1 < args.len) {
                         i += 1;
                         if (i < args.len) {
-                            option_args.append(args[i]) catch return ZcliError.SystemOutOfMemory;
+                            option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
                         }
                     }
                 }
@@ -103,7 +103,7 @@ pub fn parseCommandLine(
                     if (needsValueShort(OptionsType, option_char) and i + 1 < args.len) {
                         i += 1;
                         if (i < args.len) {
-                            option_args.append(args[i]) catch return ZcliError.SystemOutOfMemory;
+                            option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
                         }
                     }
                 }
@@ -111,7 +111,7 @@ pub fn parseCommandLine(
             }
         } else {
             // Positional argument
-            positional_args.append(arg) catch return ZcliError.SystemOutOfMemory;
+            positional_args.append(allocator, arg) catch return ZcliError.SystemOutOfMemory;
         }
 
         i += 1;
@@ -126,7 +126,7 @@ pub fn parseCommandLine(
     // Parse positional arguments
     // Note: We need to keep positional_args.items alive for the lifetime of the result
     // because parseArgs may create references to the input slice (for varargs)
-    const positional_slice = positional_args.toOwnedSlice() catch return ZcliError.SystemOutOfMemory;
+    const positional_slice = positional_args.toOwnedSlice(allocator) catch return ZcliError.SystemOutOfMemory;
     const parsed_args = args_parser.parseArgs(ArgsType, positional_slice) catch |err| {
         // If parseArgs fails, we need to clean up the slice we allocated
         allocator.free(positional_slice);

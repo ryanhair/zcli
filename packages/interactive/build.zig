@@ -19,12 +19,15 @@ pub fn build(b: *std.Build) void {
     interactive_mod.addImport("capabilities", capabilities.module("capabilities"));
 
     // Tests for the interactive framework
-    const lib_tests = b.addTest(.{
+    const test_mod = b.addModule("test-interactive", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    lib_tests.root_module.addImport("capabilities", capabilities.module("capabilities"));
+    test_mod.addImport("capabilities", capabilities.module("capabilities"));
+    const lib_tests = b.addTest(.{
+        .root_module = test_mod,
+    });
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
 

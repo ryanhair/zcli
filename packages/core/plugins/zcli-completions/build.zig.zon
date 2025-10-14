@@ -3,7 +3,7 @@
     .version = "1.0.0",
     .fingerprint = 0x328092defdf3a390,
     .description = "Shell completion management plugin for zcli",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         // No dependencies - this is a standalone plugin
     },

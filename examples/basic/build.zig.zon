@@ -2,7 +2,7 @@
     .name = .basic,
     .version = "0.1.0",
     .fingerprint = 0x9079755382f78382,
-    .minimum_zig_version = "0.14.1",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .zcli = .{ .path = "../../packages/core" },
         .@"zcli-help" = .{ .path = "../../packages/core/plugins/zcli-help" },

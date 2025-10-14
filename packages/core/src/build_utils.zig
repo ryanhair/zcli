@@ -94,7 +94,7 @@ const PluginTestHelper = struct {
     fn init(allocator: std.mem.Allocator) PluginTestHelper {
         return .{
             .allocator = allocator,
-            .plugins = std.ArrayList(PluginInfo).init(allocator),
+            .plugins = std.ArrayList(PluginInfo){},
         };
     }
 
@@ -103,11 +103,11 @@ const PluginTestHelper = struct {
             self.allocator.free(plugin_info.name);
             self.allocator.free(plugin_info.import_name);
         }
-        self.plugins.deinit();
+        self.plugins.deinit(self.allocator);
     }
 
     fn addLocal(self: *PluginTestHelper, name: []const u8, import_name: []const u8) !void {
-        try self.plugins.append(.{
+        try self.plugins.append(self.allocator, .{
             .name = try self.allocator.dupe(u8, name),
             .import_name = try self.allocator.dupe(u8, import_name),
             .is_local = true,
@@ -116,7 +116,7 @@ const PluginTestHelper = struct {
     }
 
     fn addExternal(self: *PluginTestHelper, name: []const u8) !void {
-        try self.plugins.append(.{
+        try self.plugins.append(self.allocator, .{
             .name = try self.allocator.dupe(u8, name),
             .import_name = try self.allocator.dupe(u8, name),
             .is_local = false,
@@ -206,10 +206,10 @@ test "plugin registry generation with imports" {
     try std.testing.expect(std.mem.indexOf(u8, source, "const zcli_auth = @import(\"zcli-auth\");") != null);
 
     // Verify new comptime registry Context generation
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = @TypeOf(registry).Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = RegistryType.Context;") != null);
 
     // Verify registry generation (replaces pipeline generation)
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const RegistryType = zcli.Registry.init") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
     // Note: In the new comptime approach, plugins are registered and called through the registry
     // rather than generating complex pipeline code
@@ -288,7 +288,7 @@ test "Context extension generation" {
     try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(logger)") != null);
 
     // Verify new init function signature
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn init(allocator: std.mem.Allocator) @TypeOf(registry)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn init() RegistryType") != null);
 
     // Note: The new registry approach doesn't need a deinit function
 }
@@ -421,8 +421,8 @@ test "empty plugin list handling" {
     defer allocator.free(source);
 
     // Should still generate valid code with no plugins
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = @TypeOf(registry).Context;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = RegistryType.Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const RegistryType = zcli.Registry.init") != null);
 
     // Registry should build successfully even with no plugins
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
@@ -517,9 +517,9 @@ test "plugin pipeline composition order" {
         pub fn transformCommand(comptime next: anytype) type {
             return struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
-                    try ctx.order.append(1);
+                    try ctx.order.append(std.testing.allocator, 1);
                     try next.execute(ctx, args);
-                    try ctx.order.append(4);
+                    try ctx.order.append(std.testing.allocator, 4);
                 }
             };
         }
@@ -529,9 +529,9 @@ test "plugin pipeline composition order" {
         pub fn transformCommand(comptime next: anytype) type {
             return struct {
                 pub fn execute(ctx: anytype, args: anytype) !void {
-                    try ctx.order.append(2);
+                    try ctx.order.append(std.testing.allocator, 2);
                     try next.execute(ctx, args);
-                    try ctx.order.append(3);
+                    try ctx.order.append(std.testing.allocator, 3);
                 }
             };
         }
@@ -541,8 +541,8 @@ test "plugin pipeline composition order" {
     const Pipeline2 = IntegrationPlugin2.transformCommand(execution.BaseCommandExecutor);
     const Pipeline1 = IntegrationPlugin1.transformCommand(Pipeline2);
 
-    var order = std.ArrayList(u8).init(std.testing.allocator);
-    defer order.deinit();
+    var order = std.ArrayList(u8){};
+    defer order.deinit(std.testing.allocator);
 
     const ctx = struct {
         order: *std.ArrayList(u8),
@@ -559,7 +559,7 @@ test "plugin pipeline composition order" {
     const TestCommand = struct {
         pub fn execute(context: anytype, args: anytype) !void {
             _ = args;
-            try context.order.append(0); // Base execution
+            try context.order.append(std.testing.allocator, 0); // Base execution
         }
     };
 
@@ -606,9 +606,9 @@ test "error pipeline with multiple transformers" {
         pub fn transformError(comptime next: anytype) type {
             return struct {
                 pub fn handle(err: anyerror, ctx: anytype) !void {
-                    try ctx.messages.append("Plugin1: before");
+                    try ctx.messages.append(std.testing.allocator, "Plugin1: before");
                     try next.handle(err, ctx);
-                    try ctx.messages.append("Plugin1: after");
+                    try ctx.messages.append(std.testing.allocator, "Plugin1: after");
                 }
             };
         }
@@ -618,9 +618,9 @@ test "error pipeline with multiple transformers" {
         pub fn transformError(comptime next: anytype) type {
             return struct {
                 pub fn handle(err: anyerror, ctx: anytype) !void {
-                    try ctx.messages.append("Plugin2: before");
+                    try ctx.messages.append(std.testing.allocator, "Plugin2: before");
                     try next.handle(err, ctx);
-                    try ctx.messages.append("Plugin2: after");
+                    try ctx.messages.append(std.testing.allocator, "Plugin2: after");
                 }
             };
         }
@@ -630,7 +630,7 @@ test "error pipeline with multiple transformers" {
     const TestBaseHandler = struct {
         pub fn handle(err: anyerror, ctx: anytype) !void {
             switch (err) {
-                error.TestError => try ctx.messages.append("Base: handled"),
+                error.TestError => try ctx.messages.append(std.testing.allocator, "Base: handled"),
                 else => return err,
             }
         }
@@ -640,8 +640,8 @@ test "error pipeline with multiple transformers" {
     const Pipeline2 = IntegrationPlugin2.transformError(TestBaseHandler);
     const Pipeline1 = IntegrationPlugin1.transformError(Pipeline2);
 
-    var messages = std.ArrayList([]const u8).init(allocator);
-    defer messages.deinit();
+    var messages = std.ArrayList([]const u8){};
+    defer messages.deinit(allocator);
 
     const ctx = struct {
         messages: *std.ArrayList([]const u8),
@@ -766,10 +766,10 @@ test "generated code structure validation" {
     const allocator = std.testing.allocator;
 
     // Create test plugin info
-    var plugins = std.ArrayList(PluginInfo).init(allocator);
-    defer plugins.deinit();
+    var plugins = std.ArrayList(PluginInfo){};
+    defer plugins.deinit(allocator);
 
-    try plugins.append(.{
+    try plugins.append(allocator, .{
         .name = try allocator.dupe(u8, "test-plugin"),
         .import_name = try allocator.dupe(u8, "plugins/test"),
         .is_local = true,
@@ -804,8 +804,8 @@ test "generated code structure validation" {
     defer allocator.free(source);
 
     // Validate key structures are present in new registry format
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = @TypeOf(registry).Context;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = RegistryType.Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const RegistryType = zcli.Registry.init") != null);
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
 
     // Verify plugins are registered

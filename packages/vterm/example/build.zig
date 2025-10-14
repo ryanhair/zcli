@@ -12,9 +12,11 @@ pub fn build(b: *std.Build) void {
     // Build the example CLI application
     const exe = b.addExecutable(.{
         .name = "demo-cli",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     exe.root_module.addImport("vterm", vterm_mod);
     b.installArtifact(exe);
@@ -30,9 +32,11 @@ pub fn build(b: *std.Build) void {
 
     // Create test executable
     const test_exe = b.addTest(.{
-        .root_source_file = b.path("tests/cli_test.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/cli_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     test_exe.root_module.addImport("vterm", vterm_mod);
 

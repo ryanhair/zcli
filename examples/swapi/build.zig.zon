@@ -2,7 +2,7 @@
     .name = .swapi,
     .version = "0.1.0",
     .fingerprint = 0xdcfcf43a0f50850f,
-    .minimum_zig_version = "0.14.1",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .zcli = .{ .path = "../../packages/core" },
         .@"zcli-help" = .{ .path = "../../packages/core/plugins/zcli-help" },

@@ -83,36 +83,59 @@ pub const BaseErrorHandler = struct {
 // Help functionality is provided entirely by plugins
 // No base help generator in zcli core
 
-// Helper types for tests - using a simpler approach that avoids struct copying issues
+// Helper types for tests - wraps AnyWriter/AnyReader but provides IO-compatible interface
+const TestIO = struct {
+    stdout: std.io.AnyWriter,
+    stderr: std.io.AnyWriter,
+    stdin: std.io.AnyReader,
+
+    // Provide methods that match Context's expectations
+    // Note: This works because the methods just return the stored values
+    pub fn stdoutPtr(self: *@This()) std.io.AnyWriter {
+        return self.stdout;
+    }
+
+    pub fn stderrPtr(self: *@This()) std.io.AnyWriter {
+        return self.stderr;
+    }
+
+    pub fn stdinPtr(self: *@This()) std.io.AnyReader {
+        return self.stdin;
+    }
+};
+
 const TestContext = struct {
+    allocator: std.mem.Allocator,
     stdout_buffer: std.ArrayList(u8),
     stderr_buffer: std.ArrayList(u8),
-    io: struct {
-        stdout: std.io.AnyWriter,
-        stderr: std.io.AnyWriter,
-        stdin: std.io.AnyReader,
-    },
+    stdin_buffer: []const u8,
+    stdin_stream: std.io.FixedBufferStream([]const u8),
+    io: TestIO,
 
     pub fn init(allocator: std.mem.Allocator) TestContext {
+        const stdin_data = "";
         var self = TestContext{
-            .stdout_buffer = std.ArrayList(u8).init(allocator),
-            .stderr_buffer = std.ArrayList(u8).init(allocator),
+            .allocator = allocator,
+            .stdout_buffer = .empty,
+            .stderr_buffer = .empty,
+            .stdin_buffer = stdin_data,
+            .stdin_stream = std.io.fixedBufferStream(stdin_data),
             .io = undefined,
         };
 
-        // Set up the writers after the buffers are in place
+        // Set up the IO wrapper
         self.io = .{
-            .stdout = self.stdout_buffer.writer().any(),
-            .stderr = self.stderr_buffer.writer().any(),
-            .stdin = std.io.getStdIn().reader().any(),
+            .stdout = self.stdout_buffer.writer(allocator).any(),
+            .stderr = self.stderr_buffer.writer(allocator).any(),
+            .stdin = self.stdin_stream.reader().any(),
         };
 
         return self;
     }
 
     pub fn deinit(self: *TestContext) void {
-        self.stdout_buffer.deinit();
-        self.stderr_buffer.deinit();
+        self.stdout_buffer.deinit(self.allocator);
+        self.stderr_buffer.deinit(self.allocator);
     }
 
     pub fn getStdoutContents(self: *const TestContext) []const u8 {
@@ -148,12 +171,14 @@ test "BaseCommandExecutor executes commands" {
 }
 
 test "BaseErrorHandler handles common errors" {
-    // Let's try a completely different approach: use fixed arrays instead of ArrayLists
+    // Use fixed buffers for testing
     var stdout_buf: [1024]u8 = undefined;
     var stderr_buf: [1024]u8 = undefined;
+    const stdin_data = "";
 
     var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
     var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    var stdin_stream = std.io.fixedBufferStream(stdin_data);
 
     const test_ctx = struct {
         io: struct {
@@ -166,7 +191,7 @@ test "BaseErrorHandler handles common errors" {
         .io = .{
             .stdout = stdout_stream.writer().any(),
             .stderr = stderr_stream.writer().any(),
-            .stdin = std.io.getStdIn().reader().any(),
+            .stdin = stdin_stream.reader().any(),
         },
     };
 

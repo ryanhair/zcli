@@ -8,9 +8,9 @@ pub fn generate(
     commands: []const zcli.CommandInfo,
     global_options: []const zcli.OptionInfo,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    const writer = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
 
     // Header
     try writer.print("# fish completion for {s}\n", .{app_name});
@@ -45,7 +45,7 @@ pub fn generate(
     defer {
         var it = command_tree.valueIterator();
         while (it.next()) |list| {
-            list.deinit();
+            list.deinit(allocator);
         }
         command_tree.deinit();
     }
@@ -59,38 +59,38 @@ pub fn generate(
             // Root level command
             const entry = try command_tree.getOrPut("");
             if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
+                entry.value_ptr.* = std.ArrayList([]const u8){};
             }
-            try entry.value_ptr.append(cmd.path[0]);
+            try entry.value_ptr.append(allocator, cmd.path[0]);
         } else {
             // Nested command - mark parents
             for (0..cmd.path.len - 1) |i| {
-                var parent_path = std.ArrayList(u8).init(allocator);
-                defer parent_path.deinit();
+                var parent_path = std.ArrayList(u8){};
+                defer parent_path.deinit(allocator);
                 for (cmd.path[0 .. i + 1], 0..) |part, idx| {
-                    if (idx > 0) try parent_path.append(' ');
-                    try parent_path.appendSlice(part);
+                    if (idx > 0) try parent_path.append(allocator, ' ');
+                    try parent_path.appendSlice(allocator, part);
                 }
                 const parent_key = try allocator.dupe(u8, parent_path.items);
                 try parent_paths.put(parent_key, {});
             }
 
             // Add to command tree
-            var parent_path = std.ArrayList(u8).init(allocator);
-            defer parent_path.deinit();
+            var parent_path = std.ArrayList(u8){};
+            defer parent_path.deinit(allocator);
             for (cmd.path[0 .. cmd.path.len - 1], 0..) |part, idx| {
-                if (idx > 0) try parent_path.append(' ');
-                try parent_path.appendSlice(part);
+                if (idx > 0) try parent_path.append(allocator, ' ');
+                try parent_path.appendSlice(allocator, part);
             }
 
             const parent_key = try allocator.dupe(u8, parent_path.items);
             const entry = try command_tree.getOrPut(parent_key);
             if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
+                entry.value_ptr.* = std.ArrayList([]const u8){};
             } else {
                 allocator.free(parent_key);
             }
-            try entry.value_ptr.append(cmd.path[cmd.path.len - 1]);
+            try entry.value_ptr.append(allocator, cmd.path[cmd.path.len - 1]);
         }
     }
 
@@ -125,26 +125,25 @@ pub fn generate(
         const subcommands = entry.value_ptr.*;
 
         // Build condition: __fish_seen_subcommand_from parent1 parent2 ...
-        var condition = std.ArrayList(u8).init(allocator);
-        defer condition.deinit();
-        try condition.appendSlice("__fish_seen_subcommand_from");
+        var condition = std.ArrayList(u8){};
+        defer condition.deinit(allocator);
+        try condition.appendSlice(allocator, "__fish_seen_subcommand_from");
 
         var path_parts = std.mem.splitScalar(u8, parent_path, ' ');
         while (path_parts.next()) |part| {
-            try condition.append(' ');
-            try condition.appendSlice(part);
+            try condition.append(allocator, ' ');
+            try condition.appendSlice(allocator, part);
         }
 
         // Only show these subcommands if not already at a deeper level
         // Check that we haven't seen any of the subcommands yet
         var has_deeper = false;
         for (subcommands.items) |subcmd_name| {
-            var full_path = std.ArrayList(u8).init(allocator);
-            defer full_path.deinit();
-            try full_path.appendSlice(parent_path);
-            try full_path.append(' ');
-            try full_path.appendSlice(subcmd_name);
-
+            var full_path = std.ArrayList(u8){};
+            defer full_path.deinit(allocator);
+            try full_path.appendSlice(allocator, parent_path);
+            try full_path.append(allocator, ' ');
+            try full_path.appendSlice(allocator, subcmd_name);
             if (parent_paths.contains(full_path.items)) {
                 has_deeper = true;
                 break;
@@ -175,11 +174,11 @@ pub fn generate(
             try writer.print("complete -c {s} -f -n \"{s}\"", .{ app_name, condition.items });
 
             // If this subcommand itself has subcommands, add condition to not show it after it's been used
-            var full_subcmd_path = std.ArrayList(u8).init(allocator);
-            defer full_subcmd_path.deinit();
-            try full_subcmd_path.appendSlice(parent_path);
-            try full_subcmd_path.append(' ');
-            try full_subcmd_path.appendSlice(subcmd_name);
+            var full_subcmd_path = std.ArrayList(u8){};
+            defer full_subcmd_path.deinit(allocator);
+            try full_subcmd_path.appendSlice(allocator, parent_path);
+            try full_subcmd_path.append(allocator, ' ');
+            try full_subcmd_path.appendSlice(allocator, subcmd_name);
 
             if (parent_paths.contains(full_subcmd_path.items)) {
                 try writer.print("; and not __fish_seen_subcommand_from {s}", .{subcmd_name});
@@ -200,5 +199,5 @@ pub fn generate(
     // would require more complex introspection
     // TODO: Add per-command option completions
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }

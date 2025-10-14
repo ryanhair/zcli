@@ -85,7 +85,7 @@ pub const CommandModuleInfo = struct {
 /// Execution context provided to commands and plugins
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    io: IO,
+    io: *IO,  // Pointer to avoid copying issues with self-referential pointers
     environment: Environment,
     plugin_extensions: ContextExtensions,
 
@@ -103,10 +103,21 @@ pub const Context = struct {
     plugin_command_info: []const CommandInfo = &.{},
     global_options: []const OptionInfo = &.{},
 
-    pub fn init(allocator: std.mem.Allocator) @This() {
+    /// Initialize a new Context with the provided IO.
+    /// The IO struct is stored by pointer to avoid copying issues with
+    /// self-referential pointers in File.Writer.interface.
+    ///
+    /// Example usage:
+    /// ```zig
+    /// var io = zcli.IO.init();
+    /// io.finalize();
+    /// var context = zcli.Context.init(allocator, &io);
+    /// defer context.deinit();
+    /// ```
+    pub fn init(allocator: std.mem.Allocator, io: *IO) @This() {
         return .{
             .allocator = allocator,
-            .io = IO.init(),
+            .io = io,
             .environment = Environment.init(),
             .plugin_extensions = ContextExtensions.init(allocator),
         };
@@ -138,18 +149,16 @@ pub const Context = struct {
     }
 
     // Convenience methods for I/O
-    pub fn stdout(self: *@This()) std.fs.File.Writer {
-        // Return stderr instead of stdout to avoid deadlock in parallel tests
-        // This is a workaround for a Zig build system issue with stdout synchronization
-        return self.io.stderr;
+    pub fn stdout(self: *@This()) *std.Io.Writer {
+        return self.io.stdout();
     }
 
-    pub fn stderr(self: *@This()) std.fs.File.Writer {
-        return self.io.stderr;
+    pub fn stderr(self: *@This()) *std.Io.Writer {
+        return self.io.stderr();
     }
 
-    pub fn stdin(self: *@This()) std.fs.File.Reader {
-        return self.io.stdin;
+    pub fn stdin(self: *@This()) *std.Io.Reader {
+        return self.io.stdin();
     }
 
     // Convenience methods for plugin support
@@ -234,16 +243,40 @@ pub const Context = struct {
 
 /// I/O abstraction for testing
 pub const IO = struct {
-    stdout: std.fs.File.Writer,
-    stderr: std.fs.File.Writer,
-    stdin: std.fs.File.Reader,
+    stdout_writer: std.fs.File.Writer = undefined,
+    stderr_writer: std.fs.File.Writer = undefined,
+    stdin_reader: std.fs.File.Reader = undefined,
 
+    /// Initialize the IO struct with default (uninitialized) values.
+    /// IMPORTANT: You must call finalize() after the struct is in its final location
+    /// to properly initialize the writers. This is necessary because File.Writer
+    /// contains self-referential pointers that become invalid when the struct is copied.
     pub fn init() @This() {
-        return .{
-            .stdout = std.io.getStdOut().writer(),
-            .stderr = std.io.getStdErr().writer(),
-            .stdin = std.io.getStdIn().reader(),
-        };
+        return .{};
+    }
+
+    /// Finalize the IO struct by creating writers in-place.
+    /// This MUST be called after the IO struct is in its final memory location
+    /// (i.e., after it's been assigned to Context.io).
+    ///
+    /// This prevents the issue where copying the struct invalidates the
+    /// self-referential pointers in File.Writer.interface.
+    pub fn finalize(self: *@This()) void {
+        self.stdout_writer = std.fs.File.stdout().writer(&.{});
+        self.stderr_writer = std.fs.File.stderr().writer(&.{});
+        self.stdin_reader = std.fs.File.stdin().reader(&.{});
+    }
+
+    pub fn stdout(self: *@This()) *std.Io.Writer {
+        return &self.stdout_writer.interface;
+    }
+
+    pub fn stderr(self: *@This()) *std.Io.Writer {
+        return &self.stderr_writer.interface;
+    }
+
+    pub fn stdin(self: *@This()) *std.Io.Reader {
+        return &self.stdin_reader.interface;
     }
 };
 
@@ -365,11 +398,11 @@ fn getAvailableCommands(comptime reg: anytype, allocator: std.mem.Allocator) ![]
 
         var parts_iter = std.mem.splitScalar(u8, cmd.path, ' ');
         while (parts_iter.next()) |part| {
-            try parts_list.append(part);
+            try parts_list.append(allocator, part);
         }
 
         // Convert to owned slice
-        result[i] = try parts_list.toOwnedSlice();
+        result[i] = try parts_list.toOwnedSlice(allocator);
     }
 
     return result;
@@ -858,11 +891,7 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
             else
                 ContextType{
                     .allocator = self.allocator,
-                    .io = IO{
-                        .stdout = std.io.getStdOut().writer(),
-                        .stderr = std.io.getStdErr().writer(),
-                        .stdin = std.io.getStdIn().reader(),
-                    },
+                    .io = IO.init(),
                     .environment = Environment{
                         .env = env,
                     },
@@ -917,11 +946,7 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
             else
                 ContextType{
                     .allocator = self.allocator,
-                    .io = IO{
-                        .stdout = std.io.getStdOut().writer(),
-                        .stderr = std.io.getStdErr().writer(),
-                        .stdin = std.io.getStdIn().reader(),
-                    },
+                    .io = IO.init(),
                     .environment = Environment{
                         .env = env,
                     },
@@ -981,11 +1006,7 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
                 else
                     ContextType{
                         .allocator = self.allocator,
-                        .io = IO{
-                            .stdout = std.io.getStdOut().writer(),
-                            .stderr = std.io.getStdErr().writer(),
-                            .stdin = std.io.getStdIn().reader(),
-                        },
+                        .io = IO.init(),
                         .environment = Environment{
                             .env = env,
                         },
@@ -1226,7 +1247,10 @@ test "Context creation" {
     const allocator = testing.allocator;
 
     // Just verify the Context struct can be created
-    var context = Context.init(allocator);
+    var io = IO.init();
+    io.finalize();
+
+    var context = Context.init(allocator, &io);
     defer context.deinit();
 
     // Test that convenience methods work

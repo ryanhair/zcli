@@ -2,7 +2,7 @@
     .name = .ztheme_demo,
     .version = "1.0.0",
     .fingerprint = 0x805f87020eb4ac2,
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .zcli = .{ .path = "../../packages/core" },
         .@"zcli-help" = .{ .path = "../../packages/core/plugins/zcli-help" },

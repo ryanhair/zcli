@@ -4,8 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Get snapshot dependency
-    const snapshot_dep = b.dependency("snapshot", .{
+    // Get testing dependency (includes snapshot functionality)
+    const testing_dep = b.dependency("testing", .{
         .target = target,
         .optimize = optimize,
     });
@@ -13,20 +13,24 @@ pub fn build(b: *std.Build) void {
     // Create example executable that generates test data
     const example_exe = b.addExecutable(.{
         .name = "snapshot-demo",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const install_exe_step = b.addInstallArtifact(example_exe, .{});
 
     // Create test step (standard Zig way)
     const showcase_tests = b.addTest(.{
-        .root_source_file = b.path("tests/showcase.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/showcase.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
-    showcase_tests.root_module.addImport("snapshot", snapshot_dep.module("snapshot"));
+    showcase_tests.root_module.addImport("testing", testing_dep.module("testing"));
     showcase_tests.step.dependOn(&install_exe_step.step);
 
     // Standard test command
@@ -35,8 +39,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
 
     // Add update-snapshots functionality - just one line!
-    const snapshot = @import("snapshot");
-    snapshot.setup(b, showcase_tests);
+    const testing = @import("testing");
+    testing.setup(b, showcase_tests);
 
     // Demo executable run step
     const run_demo = b.addRunArtifact(example_exe);

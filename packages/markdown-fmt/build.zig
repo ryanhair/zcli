@@ -5,18 +5,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Create the markdown-fmt module
-    _ = b.addModule("markdown-fmt", .{
+    const markdown_fmt_mod = b.addModule("markdown-fmt", .{
         .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
     });
 
     // Unit tests
     const test_step = b.step("test", "Run unit tests");
     const main_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     const run_main_tests = b.addRunArtifact(main_tests);
     test_step.dependOn(&run_main_tests.step);
@@ -24,14 +24,11 @@ pub fn build(b: *std.Build) void {
     // Example/demo
     const demo = b.addExecutable(.{
         .name = "markdown-fmt-demo",
-        .root_source_file = b.path("examples/demo.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const markdown_fmt_mod = b.addModule("markdown-fmt", .{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/demo.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     demo.root_module.addImport("markdown-fmt", markdown_fmt_mod);
 

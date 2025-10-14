@@ -411,9 +411,9 @@ pub fn Themed(comptime T: type) type {
 
         /// Get the styled content as a string (requires allocator)
         pub fn toString(self: Self, allocator: std.mem.Allocator, theme_ctx: *const Theme) ![]u8 {
-            var list = std.ArrayList(u8).init(allocator);
-            try self.render(list.writer(), theme_ctx);
-            return list.toOwnedSlice();
+            var list: std.ArrayList(u8) = .empty;
+            try self.render(list.writer(allocator), theme_ctx);
+            return list.toOwnedSlice(allocator);
         }
 
         /// Create a copy with different content but same styling
@@ -519,11 +519,11 @@ test "fluent API basics" {
     try testing.expect(bold_red.style.foreground.? == Color.red);
 
     // Test render to buffer (basic)
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(testing.allocator);
 
     const theme_ctx = Theme.init();
-    try theme("test").render(buffer.writer(), &theme_ctx);
+    try theme("test").render(buffer.writer(testing.allocator), &theme_ctx);
 
     try testing.expect(buffer.items.len >= 4); // At least "test"
 }
@@ -644,18 +644,18 @@ test "complex chaining and rendering" {
     try testing.expect(complex.style.italic);
 
     // Test rendering with different content types
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(testing.allocator);
 
     const theme_ctx = Theme{ .capability = .ansi_16, .is_tty = true, .color_enabled = true };
 
     // Render string content
-    try theme("Hello").red().render(buffer.writer(), &theme_ctx);
+    try theme("Hello").red().render(buffer.writer(testing.allocator), &theme_ctx);
     try testing.expect(buffer.items.len > 5); // Has styling + "Hello"
 
     // Clear and test number content
     buffer.clearRetainingCapacity();
-    try theme(@as(i32, 42)).green().render(buffer.writer(), &theme_ctx);
+    try theme(@as(i32, 42)).green().render(buffer.writer(testing.allocator), &theme_ctx);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "42") != null);
 }
 
@@ -663,11 +663,11 @@ test "compile-time rendering optimization" {
     const testing = std.testing;
 
     // Test compile-time rendering
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(testing.allocator);
 
     const styled = comptime theme("CompTime").red().bold();
-    try styled.renderComptime(buffer.writer(), .ansi_16);
+    try styled.renderComptime(buffer.writer(testing.allocator), .ansi_16);
 
     // Should contain red and bold codes
     try testing.expect(std.mem.indexOf(u8, buffer.items, "CompTime") != null);

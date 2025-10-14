@@ -34,8 +34,8 @@ pub const commands = struct {
 
             pub fn execute(args: Args, _: Options, context: *zcli.Context) !void {
                 const allocator = context.allocator;
-                const stdout = context.stdout();
-                const stderr = context.stderr();
+                var stdout = context.stdout();
+                var stderr = context.stderr();
 
                 // Determine shell type (from arg or auto-detect)
                 const shell_type = if (args.shell) |shell_arg|
@@ -86,8 +86,8 @@ pub const commands = struct {
 
             pub fn execute(args: Args, _: Options, context: *zcli.Context) !void {
                 const allocator = context.allocator;
-                const stdout = context.stdout();
-                const stderr = context.stderr();
+                var stdout = context.stdout();
+                var stderr = context.stderr();
 
                 // Determine shell type (from arg or auto-detect)
                 const shell_type = if (args.shell) |shell_arg|
@@ -171,8 +171,8 @@ pub const commands = struct {
 
             pub fn execute(args: Args, _: Options, context: *zcli.Context) !void {
                 const allocator = context.allocator;
-                const stdout = context.stdout();
-                const stderr = context.stderr();
+                var stdout = context.stdout();
+                var stderr = context.stderr();
 
                 // Determine shell type (from arg or auto-detect)
                 const shell_type = if (args.shell) |shell_arg|
@@ -261,7 +261,7 @@ fn getInstallPath(allocator: std.mem.Allocator, shell_type: ShellType, app_name:
 }
 
 fn printEnableInstructions(shell_type: ShellType, context: *zcli.Context) !void {
-    const stdout = context.stdout();
+    var stdout = context.stdout();
 
     switch (shell_type) {
         .bash => {
@@ -295,7 +295,7 @@ fn printEnableInstructions(shell_type: ShellType, context: *zcli.Context) !void 
 }
 
 fn printDisableInstructions(shell_type: ShellType, context: *zcli.Context) !void {
-    const stdout = context.stdout();
+    var stdout = context.stdout();
 
     switch (shell_type) {
         .bash => {

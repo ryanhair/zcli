@@ -8,9 +8,9 @@ pub fn generate(
     commands: []const zcli.CommandInfo,
     global_options: []const zcli.OptionInfo,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    const writer = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
 
     // Header comment
     try writer.print("# bash completion for {s}\n", .{app_name});
@@ -64,7 +64,7 @@ pub fn generate(
     defer {
         var it = depth_map.valueIterator();
         while (it.next()) |list| {
-            list.deinit();
+            list.deinit(allocator);
         }
         depth_map.deinit();
     }
@@ -73,20 +73,20 @@ pub fn generate(
         const depth = cmd.path.len;
         const entry = try depth_map.getOrPut(depth);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
+            entry.value_ptr.* = std.ArrayList([]const u8){};
         }
 
         // Get the command name at this level
         const cmd_name = cmd.path[depth - 1];
-        try entry.value_ptr.append(cmd_name);
+        try entry.value_ptr.append(allocator, cmd_name);
     }
 
     // Sort depths for consistent output
-    var depths = std.ArrayList(usize).init(allocator);
-    defer depths.deinit();
+    var depths = std.ArrayList(usize){};
+    defer depths.deinit(allocator);
     var depth_it = depth_map.keyIterator();
     while (depth_it.next()) |depth| {
-        try depths.append(depth.*);
+        try depths.append(allocator, depth.*);
     }
     std.mem.sort(usize, depths.items, {}, std.sort.asc(usize));
 
@@ -113,7 +113,7 @@ pub fn generate(
             defer {
                 var it = parent_map.valueIterator();
                 while (it.next()) |list| {
-                    list.deinit();
+                    list.deinit(allocator);
                 }
                 parent_map.deinit();
             }
@@ -122,23 +122,23 @@ pub fn generate(
                 if (cmd.path.len != depth) continue;
 
                 // Build parent path string
-                var parent_path = std.ArrayList(u8).init(allocator);
-                defer parent_path.deinit();
+                var parent_path = std.ArrayList(u8){};
+                defer parent_path.deinit(allocator);
                 for (cmd.path[0 .. depth - 1], 0..) |part, idx| {
-                    if (idx > 0) try parent_path.append(' ');
-                    try parent_path.appendSlice(part);
+                    if (idx > 0) try parent_path.append(allocator, ' ');
+                    try parent_path.appendSlice(allocator, part);
                 }
 
                 const parent_key = try allocator.dupe(u8, parent_path.items);
                 const entry = try parent_map.getOrPut(parent_key);
                 if (!entry.found_existing) {
-                    entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
+                    entry.value_ptr.* = std.ArrayList([]const u8){};
                 } else {
                     allocator.free(parent_key);
                 }
 
                 const cmd_name = cmd.path[depth - 1];
-                try entry.value_ptr.append(cmd_name);
+                try entry.value_ptr.append(allocator, cmd_name);
             }
 
             // Generate case for each parent path
@@ -169,5 +169,5 @@ pub fn generate(
     // Register completion
     try writer.print("complete -F _{s}_completions {s}\n", .{ app_name, app_name });
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }

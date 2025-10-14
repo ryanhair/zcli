@@ -14,9 +14,11 @@ pub fn build(b: *std.Build) void {
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "ztheme-demo",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     exe.root_module.addImport("zcli", zcli_module);
@@ -24,6 +26,8 @@ pub fn build(b: *std.Build) void {
     // Import ztheme module from parent project
     const ztheme_module = b.createModule(.{
         .root_source_file = b.path("../../packages/ztheme/src/ztheme.zig"),
+        .target = target,
+        .optimize = optimize,
     });
     exe.root_module.addImport("ztheme", ztheme_module);
 
@@ -70,9 +74,11 @@ pub fn build(b: *std.Build) void {
 
     // Test step
     const test_cmd = b.addTest(.{
-        .root_source_file = b.path("src/commands/root.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/commands/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     test_cmd.root_module.addImport("zcli", zcli_module);
     test_cmd.root_module.addImport("ztheme", ztheme_module);

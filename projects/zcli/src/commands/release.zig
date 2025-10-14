@@ -87,8 +87,8 @@ const Version = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     const allocator = context.allocator;
-    const stdout = context.stdout();
-    const stderr = context.stderr();
+    var stdout = context.stdout();
+    var stderr = context.stderr();
 
     // 1. Get current version from git tags
     stdout.print("→ Detecting current version...\n", .{}) catch {};
@@ -186,9 +186,8 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     // 5.5. Confirm release (unless using --message flag or dry-run)
     if (options.message == null and !options.@"dry-run") {
         stdout.print("\nContinue with release v{s}? [Y/n]: ", .{new_version_str}) catch {};
-        const stdin = std.io.getStdIn().reader();
-        var buf: [10]u8 = undefined;
-        const response = (try stdin.readUntilDelimiterOrEof(&buf, '\n')) orelse "";
+        var stdin = context.stdin();
+        const response = try stdin.takeDelimiterExclusive('\n');
         const trimmed = std.mem.trim(u8, response, " \t\r\n");
 
         // Default to yes - only abort if explicitly "n" or "N"
@@ -224,16 +223,16 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     if (options.@"dry-run") {
         stdout.print("  (dry-run: would create tag)\n", .{}) catch {};
     } else {
-        var tag_cmd = std.ArrayList([]const u8).init(allocator);
-        defer tag_cmd.deinit();
+        var tag_cmd = std.ArrayList([]const u8){};
+        defer tag_cmd.deinit(allocator);
 
-        try tag_cmd.append("git");
-        try tag_cmd.append("tag");
-        try tag_cmd.append("-a");
-        if (options.sign) try tag_cmd.append("-s");
-        try tag_cmd.append(tag_name);
-        try tag_cmd.append("-m");
-        try tag_cmd.append(release_notes);
+        try tag_cmd.append(allocator, "git");
+        try tag_cmd.append(allocator, "tag");
+        try tag_cmd.append(allocator, "-a");
+        if (options.sign) try tag_cmd.append(allocator, "-s");
+        try tag_cmd.append(allocator, tag_name);
+        try tag_cmd.append(allocator, "-m");
+        try tag_cmd.append(allocator, release_notes);
 
         _ = try runCommand(allocator, tag_cmd.items);
         stdout.print("  ✓ Tag created\n", .{}) catch {};
@@ -268,8 +267,8 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             const clean_url = std.mem.trim(u8, url, "\n ");
             // Convert git@github.com:user/repo.git to https://github.com/user/repo
             if (std.mem.indexOf(u8, clean_url, "github.com")) |_| {
-                var repo_url = std.ArrayList(u8).init(allocator);
-                defer repo_url.deinit();
+                var repo_url = std.ArrayList(u8){};
+                defer repo_url.deinit(allocator);
 
                 if (std.mem.startsWith(u8, clean_url, "git@")) {
                     // SSH format: git@github.com:user/repo.git
@@ -279,15 +278,15 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                         path[0..path.len - 4]
                     else
                         path;
-                    try repo_url.appendSlice("https://github.com/");
-                    try repo_url.appendSlice(path_clean);
+                    try repo_url.appendSlice(allocator, "https://github.com/");
+                    try repo_url.appendSlice(allocator, path_clean);
                 } else if (std.mem.startsWith(u8, clean_url, "https://")) {
                     // HTTPS format: https://github.com/user/repo.git
                     const path_clean = if (std.mem.endsWith(u8, clean_url, ".git"))
                         clean_url[0..clean_url.len - 4]
                     else
                         clean_url;
-                    try repo_url.appendSlice(path_clean);
+                    try repo_url.appendSlice(allocator, path_clean);
                 }
 
                 stdout.print("  • View release: {s}/releases/tag/{s}\n", .{ repo_url.items, tag_name }) catch {};
@@ -308,8 +307,8 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, new_version: []const u8) 
     defer allocator.free(content);
 
     // Find and replace the version line
-    var new_content = std.ArrayList(u8).init(allocator);
-    defer new_content.deinit();
+    var new_content = std.ArrayList(u8){};
+    defer new_content.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -320,10 +319,10 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, new_version: []const u8) 
                 while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
                 break :blk line[0..i];
             };
-            try new_content.writer().print("{s}.version = \"{s}\",\n", .{ indent, new_version });
+            try new_content.writer(allocator).print("{s}.version = \"{s}\",\n", .{ indent, new_version });
         } else {
-            try new_content.appendSlice(line);
-            try new_content.append('\n');
+            try new_content.appendSlice(allocator, line);
+            try new_content.append(allocator, '\n');
         }
     }
 

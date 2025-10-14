@@ -13,10 +13,13 @@ pub fn build(b: *std.Build) void {
 
     // Unit tests
     const test_step = b.step("test", "Run unit tests");
-    const main_tests = b.addTest(.{
+    const test_mod = b.addModule("test-capabilities", .{
         .root_source_file = b.path("src/capabilities.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const main_tests = b.addTest(.{
+        .root_module = test_mod,
     });
     const run_main_tests = b.addRunArtifact(main_tests);
     test_step.dependOn(&run_main_tests.step);
@@ -24,9 +27,11 @@ pub fn build(b: *std.Build) void {
     // Example/demo
     const example = b.addExecutable(.{
         .name = "capabilities-demo",
-        .root_source_file = b.path("examples/demo.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/demo.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     example.root_module.addImport("capabilities", capabilities_mod);
 

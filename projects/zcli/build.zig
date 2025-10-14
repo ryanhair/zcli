@@ -14,9 +14,11 @@ pub fn build(b: *std.Build) void {
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "zcli",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     exe.root_module.addImport("zcli", zcli_module);
@@ -65,14 +67,17 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Set up tests
-    const tests = b.addTest(.{
+    const test_mod = b.addModule("zcli-test", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addImport("zcli", zcli_module);
+    test_mod.addImport("command_registry", cmd_registry);
 
-    tests.root_module.addImport("zcli", zcli_module);
-    tests.root_module.addImport("command_registry", cmd_registry);
+    const tests = b.addTest(.{
+        .root_module = test_mod,
+    });
 
     const run_tests = b.addRunArtifact(tests);
 

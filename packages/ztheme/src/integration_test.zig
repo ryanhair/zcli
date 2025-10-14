@@ -6,8 +6,8 @@ const ztheme = @import("ztheme.zig");
 
 test "full integration: theme creation to rendering" {
     // Test complete flow from theme creation to rendered output
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = std.ArrayList(u8){};
+    defer buffer.deinit(testing.allocator);
 
     // Force a color-capable theme for testing (override TTY detection)
     const theme_ctx = ztheme.Theme{
@@ -23,7 +23,7 @@ test "full integration: theme creation to rendering" {
         .bold()
         .underline();
 
-    try complex_string.render(buffer.writer(), &theme_ctx);
+    try complex_string.render(buffer.writer(testing.allocator), &theme_ctx);
 
     // Debug: check what we actually got
     // std.debug.print("Buffer contents: '{s}' (len={})\n", .{ buffer.items, buffer.items.len });
@@ -38,8 +38,8 @@ test "full integration: theme creation to rendering" {
 
 test "cross-capability rendering consistency" {
     // Test that different capabilities produce consistent results
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = std.ArrayList(u8){};
+    defer buffer.deinit(testing.allocator);
 
     const styled_text = ztheme.theme("Hello World").green().bold();
 
@@ -54,7 +54,7 @@ test "cross-capability rendering consistency" {
             .color_enabled = cap != .no_color,
         };
 
-        try styled_text.render(buffer.writer(), &theme_ctx);
+        try styled_text.render(buffer.writer(testing.allocator), &theme_ctx);
 
         // All should contain the content
         try testing.expect(std.mem.indexOf(u8, buffer.items, "Hello World") != null);
@@ -71,12 +71,12 @@ test "cross-capability rendering consistency" {
 test "memory safety with different content types" {
     // Test that themed wrapper works safely with various Zig types
     const theme_ctx = ztheme.Theme.init();
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = std.ArrayList(u8){};
+    defer buffer.deinit(testing.allocator);
 
     // Test with integer
     const int_themed = ztheme.theme(@as(i32, -42)).red();
-    try int_themed.render(buffer.writer(), &theme_ctx);
+    try int_themed.render(buffer.writer(testing.allocator), &theme_ctx);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "-42") != null or
         std.mem.indexOf(u8, buffer.items, "42") != null);
 
@@ -84,7 +84,7 @@ test "memory safety with different content types" {
 
     // Test with float
     const float_themed = ztheme.theme(@as(f32, 3.14)).blue();
-    try float_themed.render(buffer.writer(), &theme_ctx);
+    try float_themed.render(buffer.writer(testing.allocator), &theme_ctx);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "3.14") != null or
         std.mem.indexOf(u8, buffer.items, "3") != null);
 
@@ -92,7 +92,7 @@ test "memory safety with different content types" {
 
     // Test with boolean
     const bool_themed = ztheme.theme(true).green();
-    try bool_themed.render(buffer.writer(), &theme_ctx);
+    try bool_themed.render(buffer.writer(testing.allocator), &theme_ctx);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "true") != null);
 }
 
@@ -115,11 +115,11 @@ test "style composition and interaction" {
 
 test "compile-time vs runtime equivalence" {
     // Test that compile-time and runtime paths produce equivalent results
-    var comptime_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer comptime_buffer.deinit();
+    var comptime_buffer = std.ArrayList(u8){};
+    defer comptime_buffer.deinit(testing.allocator);
 
-    var runtime_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer runtime_buffer.deinit();
+    var runtime_buffer = std.ArrayList(u8){};
+    defer runtime_buffer.deinit(testing.allocator);
 
     const styled = comptime ztheme.theme("CompTime Test").red().bold();
     const theme_ctx = ztheme.Theme{
@@ -129,10 +129,10 @@ test "compile-time vs runtime equivalence" {
     };
 
     // Compile-time rendering
-    try styled.renderComptime(comptime_buffer.writer(), .ansi_16);
+    try styled.renderComptime(comptime_buffer.writer(testing.allocator), .ansi_16);
 
     // Runtime rendering
-    try styled.render(runtime_buffer.writer(), &theme_ctx);
+    try styled.render(runtime_buffer.writer(testing.allocator), &theme_ctx);
 
     // Both should contain the content (exact sequences may differ due to implementation)
     try testing.expect(std.mem.indexOf(u8, comptime_buffer.items, "CompTime Test") != null);

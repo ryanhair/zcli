@@ -69,28 +69,28 @@ fn scanDirectory(
                     }
 
                     // Build command path as array of components
-                    var path_list = std.ArrayList([]const u8).init(allocator);
-                    defer path_list.deinit();
+                    var path_list = std.ArrayList([]const u8){};
+                    defer path_list.deinit(allocator);
 
                     // Add current path components
                     for (current_path) |component| {
-                        try path_list.append(try allocator.dupe(u8, component));
+                        try path_list.append(allocator, try allocator.dupe(u8, component));
                     }
                     // Add current command name
-                    try path_list.append(try allocator.dupe(u8, name_without_ext));
+                    try path_list.append(allocator, try allocator.dupe(u8, name_without_ext));
 
                     // Build filesystem path
-                    var fs_path_list = std.ArrayList([]const u8).init(allocator);
-                    defer fs_path_list.deinit();
+                    var fs_path_list = std.ArrayList([]const u8){};
+                    defer fs_path_list.deinit(allocator);
                     for (current_path) |component| {
-                        try fs_path_list.append(component);
+                        try fs_path_list.append(allocator, component);
                     }
-                    try fs_path_list.append(entry.name);
+                    try fs_path_list.append(allocator, entry.name);
                     const file_path = try std.mem.join(allocator, "/", fs_path_list.items);
 
                     const command_info = CommandInfo{
                         .name = try allocator.dupe(u8, name_without_ext),
-                        .path = try path_list.toOwnedSlice(),
+                        .path = try path_list.toOwnedSlice(allocator),
                         .file_path = file_path,
                         .command_type = .leaf,
                         .subcommands = null,
@@ -120,17 +120,17 @@ fn scanDirectory(
                 var subcommands = std.StringHashMap(CommandInfo).init(allocator);
 
                 // Build new path as array of components
-                var new_path_list = std.ArrayList([]const u8).init(allocator);
-                defer new_path_list.deinit();
+                var new_path_list = std.ArrayList([]const u8){};
+                defer new_path_list.deinit(allocator);
 
                 // Add current path components
                 for (current_path) |component| {
-                    try new_path_list.append(try allocator.dupe(u8, component));
+                    try new_path_list.append(allocator, try allocator.dupe(u8, component));
                 }
                 // Add current directory name
-                try new_path_list.append(try allocator.dupe(u8, entry.name));
+                try new_path_list.append(allocator, try allocator.dupe(u8, entry.name));
 
-                const new_path = try new_path_list.toOwnedSlice();
+                const new_path = try new_path_list.toOwnedSlice(allocator);
 
                 // Recursively scan subdirectory
                 try scanDirectory(allocator, subdir, &subcommands, new_path, depth + 1, max_depth);
@@ -140,14 +140,14 @@ fn scanDirectory(
                 // Only create group if it has subcommands or an index file
                 if (subcommands.count() > 0 or has_index) {
                     // Build filesystem path for group - point to index.zig if it exists
-                    var group_fs_path_list = std.ArrayList([]const u8).init(allocator);
-                    defer group_fs_path_list.deinit();
+                    var group_fs_path_list = std.ArrayList([]const u8){};
+                    defer group_fs_path_list.deinit(allocator);
                     for (current_path) |component| {
-                        try group_fs_path_list.append(component);
+                        try group_fs_path_list.append(allocator, component);
                     }
-                    try group_fs_path_list.append(entry.name);
+                    try group_fs_path_list.append(allocator, entry.name);
                     if (has_index) {
-                        try group_fs_path_list.append("index.zig");
+                        try group_fs_path_list.append(allocator, "index.zig");
                     }
                     const group_file_path = try std.mem.join(allocator, "/", group_fs_path_list.items);
 

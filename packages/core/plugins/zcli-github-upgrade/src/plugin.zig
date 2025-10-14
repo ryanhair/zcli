@@ -56,7 +56,7 @@ pub fn init(config: Config) type {
         /// Execute the upgrade command
         fn executeUpgrade(options: commands.upgrade.Options, context: *zcli.Context) !void {
             const allocator = context.allocator;
-            const stdout = context.stdout();
+            var stdout = context.stdout();
 
             // Check for latest version
             const current_version = context.app_version;
@@ -134,30 +134,30 @@ pub fn init(config: Config) type {
             const current_version = context.app_version;
             if (isNewerVersion(current_version, latest_version)) {
                 // Format and show the out-of-date message
-                var message = std.ArrayList(u8).init(allocator);
-                defer message.deinit();
+                var message = std.ArrayList(u8){};
+                defer message.deinit(allocator);
 
                 var iter = std.mem.splitScalar(u8, plugin_config.out_of_date_message, '{');
                 var first = true;
                 while (iter.next()) |part| {
                     if (first) {
-                        try message.appendSlice(part);
+                        try message.appendSlice(allocator, part);
                         first = false;
                         continue;
                     }
 
                     if (std.mem.startsWith(u8, part, "app}")) {
-                        try message.appendSlice(context.app_name);
-                        try message.appendSlice(part[4..]);
+                        try message.appendSlice(allocator, context.app_name);
+                        try message.appendSlice(allocator, part[4..]);
                     } else if (std.mem.startsWith(u8, part, "current}")) {
-                        try message.appendSlice(current_version);
-                        try message.appendSlice(part[8..]);
+                        try message.appendSlice(allocator, current_version);
+                        try message.appendSlice(allocator, part[8..]);
                     } else if (std.mem.startsWith(u8, part, "latest}")) {
-                        try message.appendSlice(latest_version);
-                        try message.appendSlice(part[7..]);
+                        try message.appendSlice(allocator, latest_version);
+                        try message.appendSlice(allocator, part[7..]);
                     } else {
-                        try message.append('{');
-                        try message.appendSlice(part);
+                        try message.append(allocator, '{');
+                        try message.appendSlice(allocator, part);
                     }
                 }
 
@@ -181,24 +181,25 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8) ![]const u
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
-    // Use 16KB buffer for headers (GitHub can send large headers, especially with redirects)
-    var header_buffer: [16384]u8 = undefined;
-    var request = try client.open(.GET, uri, .{
-        .server_header_buffer = &header_buffer,
+    var request = try client.request(.GET, uri, .{
         .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
     });
     defer request.deinit();
 
-    try request.send();
-    try request.finish();
-    try request.wait();
+    try request.sendBodiless();
 
-    if (request.response.status != .ok) {
+    // Use 1KB buffer for redirect handling
+    var redirect_buffer: [1024]u8 = undefined;
+    var response = try request.receiveHead(&redirect_buffer);
+
+    if (response.head.status != .ok) {
         return error.FailedToFetchVersion;
     }
 
     // Read response body
-    const body = try request.reader().readAllAlloc(allocator, 1024 * 1024); // 1MB max
+    var transfer_buffer: [4096]u8 = undefined;
+    var body_reader = response.reader(&transfer_buffer);
+    const body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(1024 * 1024)); // 1MB max
     defer allocator.free(body);
 
     // Parse JSON to extract tag_name
@@ -258,19 +259,17 @@ fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, version: []con
     defer client.deinit();
 
     const uri = try std.Uri.parse(url);
-    // Use 16KB buffer for headers (GitHub can send large headers, especially with redirects)
-    var header_buffer: [16384]u8 = undefined;
-    var request = try client.open(.GET, uri, .{
-        .server_header_buffer = &header_buffer,
+    var request = try client.request(.GET, uri, .{
         .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
     });
     defer request.deinit();
 
-    try request.send();
-    try request.finish();
-    try request.wait();
+    try request.sendBodiless();
 
-    if (request.response.status != .ok) {
+    var redirect_buffer: [1024]u8 = undefined;
+    var response = try request.receiveHead(&redirect_buffer);
+
+    if (response.head.status != .ok) {
         return error.FailedToDownloadBinary;
     }
 
@@ -278,11 +277,13 @@ fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, version: []con
     var temp_file = try temp_dir.createFile(temp_filename, .{});
     defer temp_file.close();
 
-    var buffer: [8192]u8 = undefined;
+    var transfer_buffer: [8192]u8 = undefined;
+    var body_reader = response.reader(&transfer_buffer);
+    var read_buffer: [8192]u8 = undefined;
     while (true) {
-        const bytes_read = try request.reader().read(&buffer);
+        const bytes_read = try body_reader.readSliceShort(&read_buffer);
         if (bytes_read == 0) break;
-        try temp_file.writeAll(buffer[0..bytes_read]);
+        try temp_file.writeAll(read_buffer[0..bytes_read]);
     }
 
     return temp_filename;
@@ -298,23 +299,23 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, version: []con
     defer client.deinit();
 
     const uri = try std.Uri.parse(checksums_url);
-    // Use 16KB buffer for headers (GitHub can send large headers, especially with redirects)
-    var header_buffer: [16384]u8 = undefined;
-    var request = try client.open(.GET, uri, .{
-        .server_header_buffer = &header_buffer,
+    var request = try client.request(.GET, uri, .{
         .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
     });
     defer request.deinit();
 
-    try request.send();
-    try request.finish();
-    try request.wait();
+    try request.sendBodiless();
 
-    if (request.response.status != .ok) {
+    var redirect_buffer: [1024]u8 = undefined;
+    var response = try request.receiveHead(&redirect_buffer);
+
+    if (response.head.status != .ok) {
         return error.FailedToDownloadChecksums;
     }
 
-    const checksums_content = try request.reader().readAllAlloc(allocator, 1024 * 1024);
+    var transfer_buffer: [4096]u8 = undefined;
+    var body_reader = response.reader(&transfer_buffer);
+    const checksums_content = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(checksums_content);
 
     // Find the checksum for our binary
@@ -350,8 +351,7 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, version: []con
     hasher.final(&hash_bytes);
 
     // Convert to hex string
-    var actual_checksum: [64]u8 = undefined;
-    _ = try std.fmt.bufPrint(&actual_checksum, "{x}", .{std.fmt.fmtSliceHexLower(&hash_bytes)});
+    const actual_checksum = std.fmt.bytesToHex(&hash_bytes, .lower);
 
     // Compare checksums
     if (!std.mem.eql(u8, expected_checksum.?, &actual_checksum)) {

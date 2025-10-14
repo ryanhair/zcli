@@ -13,8 +13,8 @@ pub const Args = struct {};
 pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
-    const stdout = context.stdout();
-    const stderr = context.stderr();
+    var stdout = context.stdout();
+    var stderr = context.stderr();
 
     // Verify we're in a zcli project
     const cwd = std.fs.cwd();

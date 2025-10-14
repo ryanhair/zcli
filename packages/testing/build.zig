@@ -13,10 +13,13 @@ pub fn build(b: *std.Build) void {
     });
 
     // Create tests
-    const main_tests = b.addTest(.{
+    const test_mod = b.addModule("test-testing", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const main_tests = b.addTest(.{
+        .root_module = test_mod,
     });
 
     const run_main_tests = b.addRunArtifact(main_tests);

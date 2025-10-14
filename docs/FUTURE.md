@@ -233,8 +233,8 @@ pub fn parseArgsExtended(
 }
 
 // Usage for error collection
-var collected_errors = std.ArrayList(ZcliDiagnostic).init(allocator);
-defer collected_errors.deinit();
+var collected_errors = std.ArrayList(ZcliDiagnostic){};
+defer collected_errors.deinit(allocator);
 
 const result = parseArgsExtended(MyArgs, args, .{ .collect_errors = true }, &collected_errors);
 if (result) |parsed| {

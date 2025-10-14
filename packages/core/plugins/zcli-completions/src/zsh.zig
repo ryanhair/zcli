@@ -3,41 +3,41 @@ const zcli = @import("zcli");
 
 /// Escape special characters in descriptions for zsh completion
 fn escapeDescription(allocator: std.mem.Allocator, desc: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result = std.ArrayList(u8){};
+    errdefer result.deinit(allocator);
 
     for (desc) |c| {
         switch (c) {
             '(' => {
-                try result.append('\\');
-                try result.append('(');
+                try result.append(allocator, '\\');
+                try result.append(allocator, '(');
             },
             ')' => {
-                try result.append('\\');
-                try result.append(')');
+                try result.append(allocator, '\\');
+                try result.append(allocator, ')');
             },
             '[' => {
-                try result.append('\\');
-                try result.append('[');
+                try result.append(allocator, '\\');
+                try result.append(allocator, '[');
             },
             ']' => {
-                try result.append('\\');
-                try result.append(']');
+                try result.append(allocator, '\\');
+                try result.append(allocator, ']');
             },
             '\'' => {
                 // For single quotes inside single-quoted strings, we need to:
                 // end the string, add an escaped quote, and start a new string
-                try result.appendSlice("'\\''");
+                try result.appendSlice(allocator, "'\\''");
             },
             '\\' => {
-                try result.append('\\');
-                try result.append('\\');
+                try result.append(allocator, '\\');
+                try result.append(allocator, '\\');
             },
-            else => try result.append(c),
+            else => try result.append(allocator, c),
         }
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Generate option completions for a specific command
@@ -49,12 +49,12 @@ fn generateOptionsForCommand(
     indent: []const u8,
 ) !void {
     // Find the command with this path
-    var target_path = std.ArrayList([]const u8).init(allocator);
-    defer target_path.deinit();
+    var target_path = std.ArrayList([]const u8){};
+    defer target_path.deinit(allocator);
 
     var path_iter = std.mem.splitScalar(u8, command_path_str, ' ');
     while (path_iter.next()) |part| {
-        try target_path.append(part);
+        try target_path.append(allocator, part);
     }
 
     // Find matching command
@@ -80,13 +80,13 @@ fn generateOptionsForCommand(
     if (found_options) |options| {
         if (options.len > 0) {
             // Set curcontext for this specific command
-            var context_name = std.ArrayList(u8).init(allocator);
-            defer context_name.deinit();
+            var context_name = std.ArrayList(u8){};
+            defer context_name.deinit(allocator);
 
             var context_iter = std.mem.splitScalar(u8, command_path_str, ' ');
             while (context_iter.next()) |part| {
-                if (context_name.items.len > 0) try context_name.append('-');
-                try context_name.appendSlice(part);
+                if (context_name.items.len > 0) try context_name.append(allocator, '-');
+                try context_name.appendSlice(allocator, part);
             }
 
             try writer.print("{s}    curcontext=\"${{curcontext%:*:*}}:{s}:\"\n", .{ indent, context_name.items });
@@ -154,11 +154,11 @@ fn generateNestedCases(
             // Check if any subcommands have children (for determining if we need nested recursion)
             var has_nested_children = false;
             for (subcommands.items) |subcmd| {
-                var child_path = std.ArrayList(u8).init(allocator);
-                defer child_path.deinit();
-                try child_path.appendSlice(current_path);
-                try child_path.append(' ');
-                try child_path.appendSlice(subcmd);
+                var child_path = std.ArrayList(u8){};
+                defer child_path.deinit(allocator);
+                try child_path.appendSlice(allocator, current_path);
+                try child_path.append(allocator, ' ');
+                try child_path.appendSlice(allocator, subcmd);
 
                 if (command_tree.contains(child_path.items)) {
                     has_nested_children = true;
@@ -174,11 +174,11 @@ fn generateNestedCases(
 
             // Process ALL subcommands
             for (subcommands.items) |subcmd| {
-                var child_path = std.ArrayList(u8).init(allocator);
-                defer child_path.deinit();
-                try child_path.appendSlice(current_path);
-                try child_path.append(' ');
-                try child_path.appendSlice(subcmd);
+                var child_path = std.ArrayList(u8){};
+                defer child_path.deinit(allocator);
+                try child_path.appendSlice(allocator, current_path);
+                try child_path.append(allocator, ' ');
+                try child_path.appendSlice(allocator, subcmd);
 
                 try writer.print("{s}    {s})\n", .{ actual_indent, subcmd });
 
@@ -248,9 +248,9 @@ pub fn generate(
     commands: []const zcli.CommandInfo,
     global_options: []const zcli.OptionInfo,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    const writer = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
 
     // Header
     try writer.print("#compdef {s}\n", .{app_name});
@@ -268,7 +268,7 @@ pub fn generate(
     defer {
         var it = command_tree.valueIterator();
         while (it.next()) |list| {
-            list.deinit();
+            list.deinit(allocator);
         }
         command_tree.deinit();
     }
@@ -280,24 +280,24 @@ pub fn generate(
             // Root level command
             const entry = try command_tree.getOrPut("");
             if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
+                entry.value_ptr.* = std.ArrayList([]const u8){};
             }
-            try entry.value_ptr.append(cmd.path[0]);
+            try entry.value_ptr.append(allocator, cmd.path[0]);
         } else {
             // Nested command - create entries for each level
             for (1..cmd.path.len) |depth| {
                 // Build parent path for this depth
-                var parent_path = std.ArrayList(u8).init(allocator);
-                defer parent_path.deinit();
+                var parent_path = std.ArrayList(u8){};
+                defer parent_path.deinit(allocator);
                 for (cmd.path[0..depth], 0..) |part, idx| {
-                    if (idx > 0) try parent_path.append(' ');
-                    try parent_path.appendSlice(part);
+                    if (idx > 0) try parent_path.append(allocator, ' ');
+                    try parent_path.appendSlice(allocator, part);
                 }
 
                 const parent_key = try allocator.dupe(u8, parent_path.items);
                 const entry = try command_tree.getOrPut(parent_key);
                 if (!entry.found_existing) {
-                    entry.value_ptr.* = std.ArrayList([]const u8).init(allocator);
+                    entry.value_ptr.* = std.ArrayList([]const u8){};
                 } else {
                     allocator.free(parent_key);
                 }
@@ -312,7 +312,7 @@ pub fn generate(
                     }
                 }
                 if (!already_exists) {
-                    try entry.value_ptr.append(child);
+                    try entry.value_ptr.append(allocator, child);
                 }
             }
         }
@@ -451,5 +451,5 @@ pub fn generate(
     // Call the function
     try writer.print("_{s} \"$@\"\n", .{app_name});
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }

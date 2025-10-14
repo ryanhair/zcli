@@ -478,7 +478,10 @@ test "basic argument transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const args = [_][]const u8{ "hello", "world" };
@@ -503,22 +506,22 @@ test "transformation with argument consumption" {
             context: *zcli.Context,
             args: []const []const u8,
         ) !zcli.TransformResult {
-            var filtered = std.ArrayList([]const u8).init(context.allocator);
-            var consumed = std.ArrayList(usize).init(context.allocator);
-            defer filtered.deinit();
-            defer consumed.deinit();
+            var filtered: std.ArrayList([]const u8) = .empty;
+            var consumed: std.ArrayList(usize) = .empty;
+            defer filtered.deinit(context.allocator);
+            defer consumed.deinit(context.allocator);
 
             for (args, 0..) |arg, i| {
                 if (std.mem.startsWith(u8, arg, "--internal-")) {
-                    try consumed.append(i);
+                    try consumed.append(context.allocator, i);
                 } else {
-                    try filtered.append(arg);
+                    try filtered.append(context.allocator, arg);
                 }
             }
 
             return .{
-                .args = try filtered.toOwnedSlice(),
-                .consumed_indices = try consumed.toOwnedSlice(),
+                .args = try filtered.toOwnedSlice(context.allocator),
+                .consumed_indices = try consumed.toOwnedSlice(context.allocator),
             };
         }
     };
@@ -532,7 +535,10 @@ test "transformation with argument consumption" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const args = [_][]const u8{ "command", "--internal-debug", "arg1", "--internal-trace", "arg2" };
@@ -607,7 +613,10 @@ test "transformation chain with multiple plugins" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const args = [_][]const u8{ "alias", "arg" };
@@ -668,7 +677,10 @@ test "stopping transformation pipeline" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     TransformNeverCalledPlugin.was_called = false;
@@ -690,23 +702,23 @@ test "environment variable expansion transformation" {
             context: *zcli.Context,
             args: []const []const u8,
         ) !zcli.TransformResult {
-            var new_args = std.ArrayList([]const u8).init(context.allocator);
-            defer new_args.deinit();
+            var new_args: std.ArrayList([]const u8) = .empty;
+            defer new_args.deinit(context.allocator);
 
             for (args) |arg| {
                 if (std.mem.startsWith(u8, arg, "$")) {
                     const env_var = arg[1..];
                     if (context.environment.get(env_var)) |value| {
-                        try new_args.append(value);
+                        try new_args.append(context.allocator, value);
                     } else {
-                        try new_args.append(arg); // Keep original if not found
+                        try new_args.append(context.allocator, arg); // Keep original if not found
                     }
                 } else {
-                    try new_args.append(arg);
+                    try new_args.append(context.allocator, arg);
                 }
             }
 
-            return .{ .args = try new_args.toOwnedSlice() };
+            return .{ .args = try new_args.toOwnedSlice(context.allocator) };
         }
     };
 
@@ -719,7 +731,10 @@ test "environment variable expansion transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     // Set environment variables
@@ -745,20 +760,20 @@ test "path expansion transformation" {
             context: *zcli.Context,
             args: []const []const u8,
         ) !zcli.TransformResult {
-            var new_args = std.ArrayList([]const u8).init(context.allocator);
-            defer new_args.deinit();
+            var new_args: std.ArrayList([]const u8) = .empty;
+            defer new_args.deinit(context.allocator);
 
             for (args) |arg| {
                 if (std.mem.startsWith(u8, arg, "~/")) {
                     const home = context.environment.get("HOME") orelse "/home/user";
                     const expanded = try std.fmt.allocPrint(context.allocator, "{s}{s}", .{ home, arg[1..] });
-                    try new_args.append(expanded);
+                    try new_args.append(context.allocator, expanded);
                 } else {
-                    try new_args.append(arg);
+                    try new_args.append(context.allocator, arg);
                 }
             }
 
-            return .{ .args = try new_args.toOwnedSlice() };
+            return .{ .args = try new_args.toOwnedSlice(context.allocator) };
         }
     };
 
@@ -771,7 +786,10 @@ test "path expansion transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     try context.environment.put("HOME", "/home/testuser");
@@ -833,7 +851,10 @@ test "argument injection transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     // Test injection when -m is missing
@@ -881,7 +902,10 @@ test "transformation error handling" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const args = [_][]const u8{ "error", "command" };

@@ -303,12 +303,12 @@ test "build integration: registry source generation" {
     try std.testing.expect(std.mem.indexOf(u8, registry_source, "Test CLI application") != null);
 
     // Verify new comptime registry format
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const registry = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "const RegistryType = zcli.Registry.init") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry_source, ".build();") != null);
 
     // Verify registry exports
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const Context = @TypeOf(registry).Context;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub fn init(allocator: std.mem.Allocator)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const Context = RegistryType.Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub fn init() RegistryType") != null);
 
     // Note: The new comptime registry approach doesn't need cleanup functions
 

@@ -44,10 +44,10 @@ pub fn runInProcess(allocator: std.mem.Allocator, comptime RegistryType: type, a
 /// Run a command as a subprocess (for external binaries)
 pub fn runSubprocess(allocator: std.mem.Allocator, exe_path: []const u8, args: []const []const u8) !Result {
     // Prepare arguments
-    var argv = std.ArrayList([]const u8).init(allocator);
-    defer argv.deinit();
-    try argv.append(exe_path);
-    try argv.appendSlice(args);
+    var argv = std.ArrayList([]const u8){};
+    defer argv.deinit(allocator);
+    try argv.append(allocator, exe_path);
+    try argv.appendSlice(allocator, args);
 
     // Run the subprocess
     const result = try std.process.Child.run(.{

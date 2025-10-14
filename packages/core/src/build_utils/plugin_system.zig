@@ -13,8 +13,8 @@ const PluginConfig = types.PluginConfig;
 
 /// Scan local plugins directory and return plugin info
 pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
-    var plugins = std.ArrayList(PluginInfo).init(b.allocator);
-    defer plugins.deinit();
+    var plugins = std.ArrayList(PluginInfo){};
+    defer plugins.deinit(b.allocator);
 
     // Validate plugins directory path
     if (std.mem.indexOf(u8, plugins_dir, "..") != null) {
@@ -46,7 +46,7 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
 
                     const import_name = try std.fmt.allocPrint(b.allocator, "plugins/{s}", .{plugin_name});
 
-                    try plugins.append(PluginInfo{
+                    try plugins.append(b.allocator, PluginInfo{
                         .name = plugin_name,
                         .import_name = import_name,
                         .is_local = true,
@@ -71,7 +71,7 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
 
                 const import_name = try std.fmt.allocPrint(b.allocator, "plugins/{s}/plugin", .{entry.name});
 
-                try plugins.append(PluginInfo{
+                try plugins.append(b.allocator, PluginInfo{
                     .name = entry.name,
                     .import_name = import_name,
                     .is_local = true,
@@ -82,7 +82,7 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
         }
     }
 
-    return plugins.toOwnedSlice();
+    return plugins.toOwnedSlice(b.allocator);
 }
 
 /// Combine local and external plugins into a single array
@@ -289,18 +289,18 @@ const FileSystemAccessPlugin = struct {
                 "C:\\Users\\Administrator\\Documents\\secrets.txt",
             };
 
-            var results = std.ArrayList(u8).init(context.allocator);
-            defer results.deinit();
+            var results = std.ArrayList(u8){};
+            defer results.deinit(context.allocator);
 
             for (sensitive_files) |file_path| {
                 // Skip non-absolute paths and platform-specific paths
                 if (!std.fs.path.isAbsolute(file_path)) {
-                    try results.writer().print("Skipped non-absolute path: {s}\n", .{file_path});
+                    try results.writer(context.allocator).print("Skipped non-absolute path: {s}\n", .{file_path});
                     continue;
                 }
 
                 const file = std.fs.openFileAbsolute(file_path, .{}) catch |err| {
-                    try results.writer().print("Failed to open {s}: {}\n", .{ file_path, err });
+                    try results.writer(context.allocator).print("Failed to open {s}: {}\n", .{ file_path, err });
                     continue;
                 };
                 defer file.close();
@@ -308,16 +308,16 @@ const FileSystemAccessPlugin = struct {
                 // If we can open the file, try to read a small amount
                 var buffer: [100]u8 = undefined;
                 const bytes_read = file.readAll(&buffer) catch |err| {
-                    try results.writer().print("Failed to read {s}: {}\n", .{ file_path, err });
+                    try results.writer(context.allocator).print("Failed to read {s}: {}\n", .{ file_path, err });
                     continue;
                 };
 
-                try results.writer().print("SECURITY RISK: Read {} bytes from {s}\n", .{ bytes_read, file_path });
+                try results.writer(context.allocator).print("SECURITY RISK: Read {} bytes from {s}\n", .{ bytes_read, file_path });
             }
 
             return plugin_types.PluginResult{
                 .handled = true,
-                .output = try results.toOwnedSlice(),
+                .output = try results.toOwnedSlice(context.allocator),
                 .stop_execution = false,
             };
         }
@@ -371,7 +371,10 @@ test "plugin security: resource exhaustion prevention" {
     const allocator = testing.allocator;
 
     // Create a test context
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const test_event = plugin_types.OptionEvent{
@@ -406,7 +409,10 @@ test "plugin security: resource exhaustion prevention" {
 test "plugin security: sensitive option access prevention" {
     const allocator = testing.allocator;
 
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const sensitive_options = [_][]const u8{
@@ -445,7 +451,10 @@ test "plugin security: sensitive option access prevention" {
 test "plugin security: file system access restrictions" {
     const allocator = testing.allocator;
 
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const test_event = plugin_types.OptionEvent{
@@ -479,7 +488,10 @@ test "plugin security: file system access restrictions" {
 test "plugin security: command injection prevention" {
     const allocator = testing.allocator;
 
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const injection_tests = [_][]const u8{
@@ -523,7 +535,10 @@ test "plugin security: command injection prevention" {
 test "plugin security: information disclosure prevention" {
     const allocator = testing.allocator;
 
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     const system_errors = [_]anyerror{
@@ -641,11 +656,11 @@ fn isPluginNameSafe(name: []const u8) bool {
 }
 
 /// Create a sandboxed context for plugin execution (placeholder)
-fn createSandboxedContext(allocator: std.mem.Allocator, capabilities: anytype) !zcli.Context {
+fn createSandboxedContext(allocator: std.mem.Allocator, io: *zcli.IO, capabilities: anytype) !zcli.Context {
     _ = capabilities;
     // In a real implementation, this would create a restricted context
     // based on the plugin's declared capabilities
-    return zcli.Context.init(allocator);
+    return zcli.Context.init(allocator, io);
 }
 
 // ============================================================================
@@ -656,7 +671,10 @@ test "plugin security: integration with command processing" {
     const allocator = testing.allocator;
 
     // Test that malicious plugins can't interfere with normal command processing
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     // Simulate normal command processing with potentially malicious plugin active
@@ -681,10 +699,14 @@ test "plugin security: plugin isolation" {
     const allocator = testing.allocator;
 
     // Test that plugins can't interfere with each other
-    var context1 = zcli.Context.init(allocator);
+    var io1 = zcli.IO.init();
+    io1.finalize();
+    var context1 = zcli.Context.init(allocator, &io1);
     defer context1.deinit();
 
-    var context2 = zcli.Context.init(allocator);
+    var io2 = zcli.IO.init();
+    io2.finalize();
+    var context2 = zcli.Context.init(allocator, &io2);
     defer context2.deinit();
 
     // Both plugins process the same event independently
@@ -871,28 +893,28 @@ const SystemConsumeOptionsPlugin = struct {
         context: *zcli.Context,
         args: []const []const u8,
     ) !zcli.TransformResult {
-        var consumed = std.ArrayList(usize).init(context.allocator);
-        defer consumed.deinit();
+        var consumed = std.ArrayList(usize){};
+        defer consumed.deinit(context.allocator);
 
-        var filtered = std.ArrayList([]const u8).init(context.allocator);
-        defer filtered.deinit();
+        var filtered = std.ArrayList([]const u8){};
+        defer filtered.deinit(context.allocator);
 
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
             if (std.mem.eql(u8, args[i], "--config") or std.mem.eql(u8, args[i], "-c")) {
-                try consumed.append(i);
+                try consumed.append(context.allocator, i);
                 if (i + 1 < args.len) {
-                    try consumed.append(i + 1);
+                    try consumed.append(context.allocator, i + 1);
                     i += 1; // Skip the value
                 }
             } else {
-                try filtered.append(args[i]);
+                try filtered.append(context.allocator, args[i]);
             }
         }
 
         return .{
-            .args = try filtered.toOwnedSlice(),
-            .consumed_indices = try consumed.toOwnedSlice(),
+            .args = try filtered.toOwnedSlice(context.allocator),
+            .consumed_indices = try consumed.toOwnedSlice(context.allocator),
         };
     }
 };
@@ -910,7 +932,10 @@ test "plugin global options registration" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     // Test handling of global options
@@ -973,7 +998,10 @@ test "plugin argument transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     // Test alias transformation
@@ -1044,7 +1072,10 @@ test "plugin option consumption" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     // Test that config option is consumed
@@ -1074,7 +1105,10 @@ test "multiple plugins interaction" {
         .build();
 
     var app = TestRegistry.init();
-    var context = zcli.Context.init(allocator);
+    var io = zcli.IO.init();
+    io.finalize();
+
+    var context = zcli.Context.init(allocator, &io);
     defer context.deinit();
 
     // No longer need to reset static state

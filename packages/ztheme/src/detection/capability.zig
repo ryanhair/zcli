@@ -202,7 +202,7 @@ pub const Theme = struct {
 /// Detect if output is to a TTY (terminal)
 fn detectTTY() bool {
     // Check if stdout is a TTY
-    return std.io.getStdOut().isTty();
+    return std.fs.File.stdout().isTty();
 }
 
 test "capability detection basics" {

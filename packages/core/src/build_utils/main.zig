@@ -164,8 +164,8 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
     const app_version = readVersionFromZon(b);
 
     // Convert plugin configs to PluginInfo array
-    var plugins = std.ArrayList(types.PluginInfo).init(b.allocator);
-    defer plugins.deinit();
+    var plugins = std.ArrayList(types.PluginInfo){};
+    defer plugins.deinit(b.allocator);
 
     inline for (config.plugins) |plugin_config| {
         // Validate plugin config has required fields
@@ -194,7 +194,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
             .dependency = plugin_dep,
             .init = init_code,
         };
-        plugins.append(plugin_info) catch {
+        plugins.append(b.allocator, plugin_info) catch {
             logging.buildError("Plugin System", "memory allocation", "Failed to add plugin to plugin list", "Out of memory while adding external plugin. Reduce number of plugins or increase available memory");
             std.debug.print("Plugin name: {s}\n", .{plugin_config.name});
             std.process.exit(1);
@@ -224,8 +224,8 @@ fn configToInitString(allocator: std.mem.Allocator, comptime config: anytype) []
         else => @compileError("Plugin config must be a struct, got: " ++ @typeName(T)),
     };
 
-    var result = std.ArrayList(u8).init(allocator);
-    const writer = result.writer();
+    var result = std.ArrayList(u8){};
+    const writer = result.writer(allocator);
 
     writer.writeAll(".init(.{") catch unreachable;
 
@@ -265,7 +265,7 @@ fn configToInitString(allocator: std.mem.Allocator, comptime config: anytype) []
 
     writer.writeAll("})") catch unreachable;
 
-    return result.toOwnedSlice() catch unreachable;
+    return result.toOwnedSlice(allocator) catch unreachable;
 }
 
 // ============================================================================
@@ -283,7 +283,7 @@ const PluginTestHelper = struct {
     fn init(allocator: std.mem.Allocator) PluginTestHelper {
         return .{
             .allocator = allocator,
-            .plugins = std.ArrayList(types.PluginInfo).init(allocator),
+            .plugins = std.ArrayList(types.PluginInfo){},
         };
     }
 
@@ -292,11 +292,11 @@ const PluginTestHelper = struct {
             self.allocator.free(plugin_info.name);
             self.allocator.free(plugin_info.import_name);
         }
-        self.plugins.deinit();
+        self.plugins.deinit(self.allocator);
     }
 
     fn addLocal(self: *PluginTestHelper, name: []const u8, import_name: []const u8) !void {
-        try self.plugins.append(.{
+        try self.plugins.append(self.allocator, .{
             .name = try self.allocator.dupe(u8, name),
             .import_name = try self.allocator.dupe(u8, import_name),
             .is_local = true,
@@ -305,7 +305,7 @@ const PluginTestHelper = struct {
     }
 
     fn addExternal(self: *PluginTestHelper, name: []const u8) !void {
-        try self.plugins.append(.{
+        try self.plugins.append(self.allocator, .{
             .name = try self.allocator.dupe(u8, name),
             .import_name = try self.allocator.dupe(u8, name),
             .is_local = false,

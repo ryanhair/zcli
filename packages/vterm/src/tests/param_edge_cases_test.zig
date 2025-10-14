@@ -80,10 +80,12 @@ test "incomplete CSI sequence behavior" {
     try testing.expect(term.containsText("Normal"));
     try testing.expect(term.containsText("ext")); // Only "ext", not full "Text"
 
-    // Test with invalid final character to ensure recovery
-    term.write("\x1b[123456;456X"); // 'X' is not valid CSI final char
+    // Test with unsupported CSI command to ensure it's consumed
+    term.write("\x1b[123456;456X"); // 'X' is a valid CSI final byte but unsupported command
     term.write("More");
 
-    // 'X' should abort sequence and be processed as normal text
-    try testing.expect(term.containsText("XMore"));
+    // 'X' should be consumed as part of the CSI sequence (per ANSI spec)
+    // Only "More" should be written as text
+    try testing.expect(term.containsText("More"));
+    try testing.expect(!term.containsText("XMore")); // 'X' was consumed, not written
 }

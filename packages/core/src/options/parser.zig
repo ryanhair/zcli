@@ -148,7 +148,7 @@ pub fn parseOptionsWithMeta(
     defer {
         for (&array_lists) |*list| {
             if (list.*) |*l| {
-                l.deinit();
+                l.deinit(allocator);
             }
         }
     }
@@ -160,7 +160,7 @@ pub fn parseOptionsWithMeta(
             const element_type = @typeInfo(field.type).pointer.child;
             @field(result, field.name) = @as(field.type, &[_]element_type{});
             // Create ArrayList for accumulation based on element type
-            array_lists[i] = array_utils.createArrayListUnion(element_type, allocator);
+            array_lists[i] = array_utils.createArrayListUnion(element_type);
         } else if (@typeInfo(field.type) == .optional) {
             @field(result, field.name) = null;
         } else if (field.type == bool) {
@@ -242,7 +242,7 @@ pub fn parseOptionsWithMeta(
     inline for (struct_info.fields, 0..) |field, i| {
         if (comptime utils.isArrayType(field.type)) {
             if (array_lists[i]) |*list_union| {
-                @field(result, field.name) = array_utils.arrayListUnionToOwnedSlice(field.type, list_union) catch {
+                @field(result, field.name) = array_utils.arrayListUnionToOwnedSlice(field.type, allocator, list_union) catch {
                     return ZcliError.SystemOutOfMemory;
                 };
             }
@@ -365,7 +365,7 @@ fn parseLongOptions(
                 // Handle array accumulation
                 const element_type = @typeInfo(field.type).pointer.child;
                 if (array_lists[i]) |*list_union| {
-                    try array_utils.appendToArrayListUnion(element_type, list_union, value, option_name);
+                    try array_utils.appendToArrayListUnion(element_type, allocator, list_union, value, option_name);
                 }
             } else {
                 // Handle single values
@@ -398,7 +398,6 @@ fn parseShortOptionsWithMeta(
     array_lists: anytype,
     allocator: std.mem.Allocator,
 ) !usize {
-    _ = allocator; // Currently unused
     const arg = args[arg_index];
     const options_part = arg[1..]; // Skip "-"
 
@@ -533,7 +532,7 @@ fn parseShortOptionsWithMeta(
                         // For array types, accumulate values
                         if (array_lists.*[i]) |*list_union| {
                             const element_type = @typeInfo(field.type).pointer.child;
-                            try array_utils.appendToArrayListUnionShort(element_type, list_union, value, char);
+                            try array_utils.appendToArrayListUnionShort(element_type, allocator, list_union, value, char);
                         }
                     } else {
                         const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
@@ -566,7 +565,6 @@ fn parseShortOptions(
     array_lists: anytype,
     allocator: std.mem.Allocator,
 ) !usize {
-    _ = allocator; // Currently unused
     const arg = args[arg_index];
     const options_part = arg[1..]; // Skip "-"
 
@@ -647,7 +645,7 @@ fn parseShortOptions(
                         // For array types, accumulate values
                         if (array_lists.*[i]) |*list_union| {
                             const element_type = @typeInfo(field.type).pointer.child;
-                            try array_utils.appendToArrayListUnionShort(element_type, list_union, value, char);
+                            try array_utils.appendToArrayListUnionShort(element_type, allocator, list_union, value, char);
                         }
                     } else {
                         const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
@@ -1190,10 +1188,10 @@ pub fn parseOptionsAndArgs(
     args: []const []const u8,
 ) ZcliError!ParseOptionsAndArgsResult(OptionsType) {
     // Lists to collect options and remaining args
-    var option_args = std.ArrayList([]const u8).init(allocator);
-    defer option_args.deinit();
-    var remaining_args = std.ArrayList([]const u8).init(allocator);
-    defer remaining_args.deinit();
+    var option_args = std.ArrayList([]const u8){};
+    defer option_args.deinit(allocator);
+    var remaining_args = std.ArrayList([]const u8){};
+    defer remaining_args.deinit(allocator);
 
     var i: usize = 0;
     while (i < args.len) {
@@ -1201,7 +1199,7 @@ pub fn parseOptionsAndArgs(
 
         // Check if this is an option
         if (std.mem.startsWith(u8, arg, "-") and !utils.isNegativeNumber(arg)) {
-            option_args.append(arg) catch {
+            option_args.append(allocator, arg) catch {
                 return ZcliError.SystemOutOfMemory;
             };
 
@@ -1231,7 +1229,7 @@ pub fn parseOptionsAndArgs(
             if (expects_value and i + 1 < args.len) {
                 const next_arg = args[i + 1];
                 if (!std.mem.startsWith(u8, next_arg, "-") or utils.isNegativeNumber(next_arg)) {
-                    option_args.append(next_arg) catch {
+                    option_args.append(allocator, next_arg) catch {
                         return ZcliError.SystemOutOfMemory;
                     };
                     i += 1;
@@ -1239,7 +1237,7 @@ pub fn parseOptionsAndArgs(
             }
         } else {
             // This is a positional argument
-            remaining_args.append(arg) catch {
+            remaining_args.append(allocator, arg) catch {
                 return ZcliError.SystemOutOfMemory;
             };
         }
@@ -1249,7 +1247,7 @@ pub fn parseOptionsAndArgs(
 
     // Parse the collected options
     const parsed = try parseOptionsWithMeta(OptionsType, meta, allocator, option_args.items);
-    const remaining_slice = remaining_args.toOwnedSlice() catch {
+    const remaining_slice = remaining_args.toOwnedSlice(allocator) catch {
         return ZcliError.SystemOutOfMemory;
     };
     return ParseOptionsAndArgsResult(OptionsType){

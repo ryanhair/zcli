@@ -26,20 +26,20 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     const allocator = context.allocator;
-    const stdout = context.stdout();
-    const stderr = context.stderr();
+    var stdout = context.stdout();
+    var stderr = context.stderr();
 
     const command_path = args.path;
     const description = options.description orelse "TODO: Add description";
 
     // Parse the command path
-    var path_parts = std.ArrayList([]const u8).init(allocator);
-    defer path_parts.deinit();
+    var path_parts = std.ArrayList([]const u8){};
+    defer path_parts.deinit(allocator);
 
     var iter = std.mem.splitScalar(u8, command_path, '/');
     while (iter.next()) |part| {
         if (part.len > 0) {
-            try path_parts.append(part);
+            try path_parts.append(allocator, part);
         }
     }
 
@@ -57,23 +57,23 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     };
 
     // Build the file path
-    var file_path = std.ArrayList(u8).init(allocator);
-    defer file_path.deinit();
+    var file_path = std.ArrayList(u8){};
+    defer file_path.deinit(allocator);
 
-    try file_path.appendSlice("src/commands");
+    try file_path.appendSlice(allocator, "src/commands");
 
     // Create intermediate directories if needed
-    var current_path = std.ArrayList(u8).init(allocator);
-    defer current_path.deinit();
-    try current_path.appendSlice("src/commands");
+    var current_path = std.ArrayList(u8){};
+    defer current_path.deinit(allocator);
+    try current_path.appendSlice(allocator, "src/commands");
 
     if (path_parts.items.len > 1) {
         for (path_parts.items[0 .. path_parts.items.len - 1]) |dir| {
-            try file_path.append('/');
-            try file_path.appendSlice(dir);
+            try file_path.append(allocator, '/');
+            try file_path.appendSlice(allocator, dir);
 
-            try current_path.append('/');
-            try current_path.appendSlice(dir);
+            try current_path.append(allocator, '/');
+            try current_path.appendSlice(allocator, dir);
 
             // Create directory if it doesn't exist
             cwd.makeDir(current_path.items) catch |err| switch (err) {
@@ -85,9 +85,9 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 
     // Add the final command file
     const command_name = path_parts.items[path_parts.items.len - 1];
-    try file_path.append('/');
-    try file_path.appendSlice(command_name);
-    try file_path.appendSlice(".zig");
+    try file_path.append(allocator, '/');
+    try file_path.appendSlice(allocator, command_name);
+    try file_path.appendSlice(allocator, ".zig");
 
     // Check if file already exists
     cwd.access(file_path.items, .{}) catch |err| switch (err) {

@@ -3,7 +3,7 @@
     .version = "1.0.0",
     .fingerprint = 0xfa3d7828b570ff4b,
     .description = "Command not found handler with 'did you mean' suggestions for zcli",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         // No dependencies - this is a standalone plugin
     },

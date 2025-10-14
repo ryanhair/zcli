@@ -30,7 +30,7 @@ fn generateCommandNotFoundHelp(
     attempted_command: []const u8,
     available_commands: []const []const []const u8,
 ) !void {
-    const writer = context.stderr();
+    var writer = context.stderr();
 
     // Error header
     try writer.print("Error: Unknown command '{s}'\n\n", .{attempted_command});
@@ -43,17 +43,17 @@ fn generateCommandNotFoundHelp(
     }
 
     // Convert hierarchical commands to flat strings for suggestion processing
-    var flat_commands = std.ArrayList([]const u8).init(context.allocator);
+    var flat_commands = std.ArrayList([]const u8){};
     defer {
         for (flat_commands.items) |cmd| {
             context.allocator.free(cmd);
         }
-        flat_commands.deinit();
+        flat_commands.deinit(context.allocator);
     }
 
     for (available_commands) |cmd_parts| {
         const joined_cmd = try std.mem.join(context.allocator, " ", cmd_parts);
-        try flat_commands.append(joined_cmd);
+        try flat_commands.append(context.allocator, joined_cmd);
     }
 
     // Find similar commands
@@ -157,22 +157,24 @@ pub const ContextExtension = struct {
     max_distance: usize = 3,
     color_output: bool = true,
     command_list: std.ArrayList([]const u8),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) !@This() {
         return .{
             .max_suggestions = 3,
             .max_distance = 3,
             .color_output = std.io.tty.detectConfig(std.io.getStdErr()) != .no_color,
-            .command_list = std.ArrayList([]const u8).init(allocator),
+            .command_list = std.ArrayList([]const u8){},
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *@This()) void {
-        self.command_list.deinit();
+        self.command_list.deinit(self.allocator);
     }
 
     pub fn addCommand(self: *@This(), command: []const u8) !void {
-        try self.command_list.append(command);
+        try self.command_list.append(self.allocator, command);
     }
 };
 
@@ -194,14 +196,16 @@ test "onError handles CommandNotFound" {
     var output_file = try tmp_dir.dir.createFile("test_output.txt", .{ .read = true });
     defer output_file.close();
 
+    // Create IO and set custom stderr for test
+    var io = zcli.IO.init();
+    io.stdout_writer = std.fs.File.stdout().writer(&.{});
+    io.stderr_writer = output_file.writer(&.{});
+    io.stdin_reader = std.fs.File.stdin().reader(&.{});
+
     // Create context with the temporary file as stderr
     var context = zcli.Context{
         .allocator = allocator,
-        .io = .{
-            .stdout = std.io.getStdOut().writer(),
-            .stderr = output_file.writer(),
-            .stdin = std.io.getStdIn().reader(),
-        },
+        .io = &io,
         .environment = zcli.Environment.init(),
         .plugin_extensions = zcli.ContextExtensions.init(allocator),
     };

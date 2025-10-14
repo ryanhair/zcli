@@ -117,10 +117,10 @@ pub const TerminalCapabilities = struct {
 
     /// Get a human-readable description of capabilities
     pub fn describe(self: TerminalCapabilities, allocator: std.mem.Allocator) ![]const u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(allocator);
 
-        const writer = buffer.writer();
+        const writer = buffer.writer(allocator);
 
         try writer.print("Terminal: {s}\n", .{@tagName(self.terminal_type)});
         try writer.print("Size: {}x{}\n", .{ self.size.width, self.size.height });
@@ -146,7 +146,7 @@ pub const TerminalCapabilities = struct {
             try writer.writeAll("Mouse: ✗ Not supported\n");
         }
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(allocator);
     }
 };
 

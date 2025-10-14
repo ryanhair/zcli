@@ -17,56 +17,31 @@ pub fn fetchFromSwapi(allocator: std.mem.Allocator, endpoint: []const u8, id: ?u
 
     const uri = std.Uri.parse(url) catch return error.InvalidUri;
 
-    // Try the most basic request possible
-    const header_buffer = try allocator.alloc(u8, 1024);
-    defer allocator.free(header_buffer);
-
-    var req = client.open(.GET, uri, .{
-        .server_header_buffer = header_buffer,
-    }) catch |err| {
-        std.log.err("Failed to open request: {}", .{err});
-        return err;
-    };
+    // Make HTTP request
+    var redirect_buffer: [4096]u8 = undefined;
+    var req = try client.request(.GET, uri, .{});
     defer req.deinit();
 
-    req.send() catch |err| {
-        std.log.err("Failed to send: {}", .{err});
-        return err;
-    };
+    try req.sendBodiless();
+    var response = try req.receiveHead(&redirect_buffer);
 
-    req.finish() catch |err| {
-        std.log.err("Failed to finish: {}", .{err});
-        return err;
-    };
-
-    req.wait() catch |err| {
-        std.log.err("Failed to wait: {}", .{err});
-        return err;
-    };
-
-    if (req.response.status != .ok) {
-        std.log.err("HTTP request failed with status: {}", .{req.response.status});
+    if (response.head.status != .ok) {
+        std.log.err("HTTP request failed with status: {}", .{response.head.status});
         return error.HttpRequestFailed;
     }
 
     // Read body
-    const body = req.reader().readAllAlloc(allocator, 1024 * 1024) catch |err| {
-        std.log.err("Failed to read body: {}", .{err});
-        return err;
-    };
+    var transfer_buffer: [4096]u8 = undefined;
+    const body = try response.reader(&transfer_buffer).allocRemaining(allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(body);
 
     // Parse as JSON
     return std.json.parseFromSlice(std.json.Value, allocator, body, .{});
 }
 
-pub fn printJsonPretty(allocator: std.mem.Allocator, value: std.json.Value, writer: anytype) !void {
-    // Convert to pretty-printed JSON string
-    var string = std.ArrayList(u8).init(allocator);
-    defer string.deinit();
-
-    try std.json.stringify(value, .{ .whitespace = .indent_4 }, string.writer());
-    try writer.writeAll(string.items);
+pub fn printJsonPretty(_: std.mem.Allocator, value: std.json.Value, writer: anytype) !void {
+    // Write pretty-printed JSON directly to writer
+    try std.json.Stringify.value(value, .{ .whitespace = .indent_4 }, writer);
 }
 
 pub const meta = .{
@@ -111,7 +86,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         try printJsonPretty(allocator, response.value, stdout);
         try stdout.writeAll("\n");
     } else {
-        try std.json.stringify(response.value, .{}, stdout);
+        try std.json.Stringify.value(response.value, .{}, stdout);
         try stdout.writeAll("\n");
     }
 }

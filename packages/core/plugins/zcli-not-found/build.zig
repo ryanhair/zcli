@@ -20,18 +20,26 @@ pub fn build(b: *std.Build) void {
     plugin_module.addImport("zcli", zcli_module);
 
     // Tests for the plugin
-    const plugin_tests = b.addTest(.{
+    const plugin_test_mod = b.addModule("plugin-test", .{
         .root_source_file = b.path("src/plugin.zig"),
         .target = target,
         .optimize = optimize,
     });
-    plugin_tests.root_module.addImport("zcli", zcli_module);
+    plugin_test_mod.addImport("zcli", zcli_module);
+
+    const plugin_tests = b.addTest(.{
+        .root_module = plugin_test_mod,
+    });
 
     // Tests for the levenshtein module
-    const levenshtein_tests = b.addTest(.{
+    const levenshtein_test_mod = b.addModule("levenshtein-test", .{
         .root_source_file = b.path("src/levenshtein.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const levenshtein_tests = b.addTest(.{
+        .root_module = levenshtein_test_mod,
     });
 
     const run_plugin_tests = b.addRunArtifact(plugin_tests);
