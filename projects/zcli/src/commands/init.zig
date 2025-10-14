@@ -61,7 +61,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\.{{
         \\    .name = .{s},
         \\    .version = "{s}",
-        \\    .minimum_zig_version = "0.14.1",
+        \\    .minimum_zig_version = "0.15.1",
         \\    .dependencies = .{{
         \\        .zcli = .{{
         \\            .url = "https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz",

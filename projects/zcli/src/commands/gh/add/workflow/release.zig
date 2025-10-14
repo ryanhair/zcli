@@ -82,7 +82,7 @@ pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
         \\      - name: Setup Zig
         \\        uses: goto-bus-stop/setup-zig@v2
         \\        with:
-        \\          version: 0.14.1
+        \\          version: 0.15.1
         \\
         \\      - name: Build binary
         \\        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}

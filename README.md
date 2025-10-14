@@ -34,6 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh
 ```
 
 This will:
+
 - Download the appropriate binary for your platform
 - Install it to `~/.local/bin`
 - Update your shell configuration (bash, zsh, fish, or ksh) to include `~/.local/bin` in your PATH
@@ -61,7 +62,7 @@ zig build -Doptimize=ReleaseFast
 cp zig-out/bin/zcli ~/.local/bin/
 ```
 
-Requires Zig 0.14.1 or later.
+Requires Zig 0.15.1 or later.
 
 ### Using the zcli Tool
 
@@ -89,6 +90,7 @@ cd myapp
 ```
 
 This scaffolds a complete project with:
+
 - `build.zig` configured with zcli
 - `src/main.zig` with the app entry point
 - `src/commands/hello.zig` as an example command
@@ -401,7 +403,7 @@ Check out the [examples/](examples/) directory for complete working projects:
 
 ## Requirements
 
-- Zig 0.14.1 or later
+- Zig 0.15.1 or later
 
 ## License
 
