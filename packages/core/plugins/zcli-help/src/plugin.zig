@@ -731,13 +731,10 @@ test "help plugin structure" {
 }
 
 test "handleGlobalOption handles help flag" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-
     var io = zcli.IO.init();
     io.finalize();
 
-    var context = zcli.Context.init(gpa.allocator(), &io);
+    var context = zcli.Context.init(std.testing.allocator, &io);
     defer context.deinit();
 
     // Test handling --help flag
@@ -748,10 +745,6 @@ test "handleGlobalOption handles help flag" {
 }
 
 test "help command execution" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
     // Create a temporary file to capture stderr output
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -767,10 +760,10 @@ test "help command execution" {
 
     // Create context with custom IO that writes to a file
     var context = zcli.Context{
-        .allocator = allocator,
+        .allocator = std.testing.allocator,
         .io = &io,
-        .environment = zcli.Environment.init(allocator),
-        .plugin_extensions = zcli.ContextExtensions.init(allocator),
+        .environment = zcli.Environment.init(std.testing.allocator),
+        .plugin_extensions = zcli.ContextExtensions.init(std.testing.allocator),
     };
     defer context.deinit();
 
@@ -782,8 +775,8 @@ test "help command execution" {
 
     // Read back the captured output
     try output_file.seekTo(0);
-    const captured_output = try output_file.readToEndAlloc(allocator, 4096);
-    defer allocator.free(captured_output);
+    const captured_output = try output_file.readToEndAlloc(std.testing.allocator, 4096);
+    defer std.testing.allocator.free(captured_output);
 
     // Validate the captured output
     try std.testing.expect(captured_output.len > 0);

@@ -185,10 +185,7 @@ test "not-found plugin structure" {
 }
 
 test "onError handles CommandNotFound" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
+    const allocator = std.testing.allocator;
     // Create a temporary file to capture stderr output
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
