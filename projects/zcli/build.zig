@@ -29,25 +29,25 @@ pub fn build(b: *std.Build) void {
     const cmd_registry = zcli.generate(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
         .plugins = &.{ .{
-            .name = "zcli-help",
-            .path = "../../packages/core/plugins/zcli-help",
+            .name = "zcli_help",
+            .path = "../../packages/core/plugins/zcli_help",
         }, .{
-            .name = "zcli-version",
-            .path = "../../packages/core/plugins/zcli-version",
+            .name = "zcli_version",
+            .path = "../../packages/core/plugins/zcli_version",
         }, .{
-            .name = "zcli-not-found",
-            .path = "../../packages/core/plugins/zcli-not-found",
+            .name = "zcli_not_found",
+            .path = "../../packages/core/plugins/zcli_not_found",
         }, .{
-            .name = "zcli-github-upgrade",
-            .path = "../../packages/core/plugins/zcli-github-upgrade",
+            .name = "zcli_github_upgrade",
+            .path = "../../packages/core/plugins/zcli_github_upgrade",
             .config = .{
                 .repo = "ryanhair/zcli",
                 .command_name = "upgrade",
                 .inform_out_of_date = false,
             },
         }, .{
-            .name = "zcli-completions",
-            .path = "../../packages/core/plugins/zcli-completions",
+            .name = "zcli_completions",
+            .path = "../../packages/core/plugins/zcli_completions",
         } },
         .app_name = "zcli",
         .app_description = "Build beautiful CLIs with zcli - scaffold projects, add commands, and more",

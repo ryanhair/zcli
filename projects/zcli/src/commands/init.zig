@@ -155,8 +155,8 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\    const cmd_registry = zcli.generate(b, exe, zcli_module, .{{
         \\        .commands_dir = "src/commands",
         \\        .plugins = &[_]zcli.PluginConfig{{
-        \\            .{{ .name = "zcli-help", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli-help") }},
-        \\            .{{ .name = "zcli-not-found", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli-not-found") }},
+        \\            .{{ .name = "zcli_help", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_help") }},
+        \\            .{{ .name = "zcli_not_found", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_not_found") }},
         \\        }},
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",

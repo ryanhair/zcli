@@ -37,14 +37,14 @@ pub fn build(b: *std.Build) void {
     const cmd_registry = zcli.generate(b, exe, zcli_module, .{
         .commands_dir = "src/commands",
         .plugins = &[_]zcli.PluginConfig{ .{
-            .name = "zcli-help",
-            .path = "../../packages/core/plugins/zcli-help",
+            .name = "zcli_help",
+            .path = "../../packages/core/plugins/zcli_help",
         }, .{
-            .name = "zcli-version",
-            .path = "../../packages/core/plugins/zcli-version",
+            .name = "zcli_version",
+            .path = "../../packages/core/plugins/zcli_version",
         }, .{
-            .name = "zcli-not-found",
-            .path = "../../packages/core/plugins/zcli-not-found/",
+            .name = "zcli_not_found",
+            .path = "../../packages/core/plugins/zcli_not_found",
         } },
         .app_name = "ztheme-demo",
         .app_description = "ZTheme Demo - Terminal styling showcase powered by zcli",

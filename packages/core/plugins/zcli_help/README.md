@@ -1,4 +1,4 @@
-# zcli-help Plugin
+# zcli_help Plugin
 
 A comprehensive help system plugin for zcli applications.
 
@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) void {
     zcli.build(b, exe, .{
         .commands_dir = "src/commands",
         .plugins = &.{
-            zcli.plugin(b, "zcli-help"),
+            zcli.plugin(b, "zcli_help"),
         },
         .app_name = "myapp",
         .app_description = "My CLI application",
@@ -101,8 +101,8 @@ pub fn build(b: *std.Build) void {
 
 ```zig
 .dependencies = .{
-    .@"zcli-help" = .{
-        .url = "https://github.com/example/zcli-help/archive/v1.0.0.tar.gz",
+    .zcli_help = .{
+        .url = "https://github.com/example/zcli_help/archive/v1.0.0.tar.gz",
         .hash = "...",
     },
 },
@@ -135,7 +135,7 @@ Provides help-specific configuration and state management.
 ## Testing
 
 ```bash
-cd plugins/zcli-help
+cd plugins/zcli_help
 zig build test
 ```
 

@@ -17,6 +17,7 @@ The plugin uses the **Levenshtein distance** algorithm to calculate the minimum 
 ## Commands
 
 ### `suggestions show`
+
 Display current suggestion configuration.
 
 ```bash
@@ -24,6 +25,7 @@ myapp suggestions show
 ```
 
 ### `suggestions configure`
+
 Configure suggestion settings.
 
 ```bash
@@ -33,11 +35,13 @@ myapp suggestions configure --show-all=false
 ```
 
 **Options:**
+
 - `--max-suggestions <N>`: Maximum number of suggestions to show (default: 3)
 - `--max-distance <N>`: Maximum edit distance for suggestions (default: 3)
 - `--show-all <bool>`: Whether to show all available commands (default: true)
 
 ### `suggestions test`
+
 Test the suggestion algorithm with sample data.
 
 ```bash
@@ -47,6 +51,7 @@ myapp suggestions test
 ## Plugin Features
 
 ### Error Transformer
+
 Intercepts command not found errors and enhances them with suggestions:
 
 ```zig
@@ -56,6 +61,7 @@ pub fn transformError(comptime next: anytype) type {
 ```
 
 ### Context Extension
+
 Stores suggestion-related configuration:
 
 ```zig
@@ -69,6 +75,7 @@ pub const ContextExtension = struct {
 ## Example Output
 
 **Before (without plugin):**
+
 ```
 Error: Unknown command 'serach'
 Available commands:
@@ -79,6 +86,7 @@ Available commands:
 ```
 
 **After (with plugin):**
+
 ```
 Error: Unknown command 'serach'
 
@@ -104,7 +112,7 @@ const zcli = @import("zcli");
 
 pub fn build(b: *std.Build) void {
     // ... your build setup ...
-    
+
     zcli.build(b, exe, .{
         .commands_dir = "src/commands",
         .plugins = &.{
@@ -121,7 +129,7 @@ pub fn build(b: *std.Build) void {
 
 ```zig
 .dependencies = .{
-    .@"zcli-suggestions" = .{
+    .zcli_suggestions = .{
         .url = "https://github.com/example/zcli-suggestions/archive/v1.0.0.tar.gz",
         .hash = "...",
     },
@@ -154,9 +162,9 @@ The Levenshtein distance algorithm:
 
 1. **Matrix Initialization**: Creates a 2D matrix to store distance calculations
 2. **Dynamic Programming**: Fills the matrix using optimal substructure
-3. **Cost Calculation**: 
+3. **Cost Calculation**:
    - Deletion: +1
-   - Insertion: +1  
+   - Insertion: +1
    - Substitution: +1 (or 0 if characters match)
 4. **Result**: Bottom-right cell contains the final edit distance
 
@@ -171,6 +179,7 @@ zig build test
 ```
 
 Tests cover:
+
 - Levenshtein distance calculation accuracy
 - Suggestion generation with various thresholds
 - Plugin structure and API contracts

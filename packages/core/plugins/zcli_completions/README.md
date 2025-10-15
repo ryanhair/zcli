@@ -32,7 +32,7 @@ And add to your `build.zig.zon`:
 
 ```zig
 .dependencies = .{
-    .@"zcli-completions" = .{ .path = "path/to/zcli-completions" },
+    .zcli_completions = .{ .path = "path/to/zcli_completions" },
 },
 ```
 
@@ -61,11 +61,13 @@ myapp completions install fish
 ```
 
 Installation paths:
+
 - **Bash**: `~/.local/share/bash-completion/completions/<app>`
 - **Zsh**: `~/.zsh/completions/_<app>`
 - **Fish**: `~/.config/fish/completions/<app>.fish`
 
 The install command will:
+
 1. Generate the completion script
 2. Create the necessary directories
 3. Write the completion file
@@ -117,6 +119,7 @@ pub const Options = struct {
 ```
 
 The plugin automatically generates completions for:
+
 - `--verbose` / `-v` (flag, no value)
 - `--format` / `-f` (takes value)
 
@@ -132,6 +135,7 @@ The plugin automatically generates completions for:
 **Enable completions**:
 
 Add to `~/.bashrc`:
+
 ```bash
 if [ -f ~/.local/share/bash-completion/completions/myapp ]; then
     . ~/.local/share/bash-completion/completions/myapp
@@ -150,6 +154,7 @@ Then: `source ~/.bashrc`
 **Enable completions**:
 
 Add to `~/.zshrc`:
+
 ```zsh
 fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
@@ -198,6 +203,7 @@ pub fn generate(
 ```
 
 This receives:
+
 - **commands**: All available commands with metadata
 - **global_options**: Options available to all commands
 - Returns a shell-specific completion script as a string
