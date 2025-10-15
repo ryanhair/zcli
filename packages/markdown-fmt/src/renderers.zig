@@ -81,7 +81,7 @@ pub fn renderCodeBlock(comptime language: []const u8, comptime content: []const 
         var escaped_content: []const u8 = "";
         for (content) |c| {
             if (c == '{' or c == '}') {
-                escaped_content = escaped_content ++ &[_]u8{c, c}; // {{ or }}
+                escaped_content = escaped_content ++ &[_]u8{ c, c }; // {{ or }}
             } else {
                 escaped_content = escaped_content ++ &[_]u8{c};
             }

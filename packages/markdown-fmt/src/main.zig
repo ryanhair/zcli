@@ -285,24 +285,24 @@ test "parse dim text" {
 test "parse mixed formatting" {
     const result = comptime parse("This is **bold** and *italic* text");
     const expected = "This is " ++ ANSI_BOLD ++ "bold" ++ ANSI_RESET ++
-                     " and " ++ ANSI_ITALIC ++ "italic" ++ ANSI_RESET ++ " text";
+        " and " ++ ANSI_ITALIC ++ "italic" ++ ANSI_RESET ++ " text";
     try std.testing.expectEqualStrings(expected, result);
 }
 
 test "parse preserves format specifiers" {
     const result = comptime parse("Server **{s}** returned *{d}* results");
     const expected = "Server " ++ ANSI_BOLD ++ "{s}" ++ ANSI_RESET ++
-                     " returned " ++ ANSI_ITALIC ++ "{d}" ++ ANSI_RESET ++ " results";
+        " returned " ++ ANSI_ITALIC ++ "{d}" ++ ANSI_RESET ++ " results";
     try std.testing.expectEqualStrings(expected, result);
 }
 
 test "print with runtime interpolation" {
     const allocator = std.testing.allocator;
-    const result = try print(allocator, "Server **{s}** returned *{d}* results", .{"localhost", 42});
+    const result = try print(allocator, "Server **{s}** returned *{d}* results", .{ "localhost", 42 });
     defer allocator.free(result);
 
     const expected = "Server " ++ ANSI_BOLD ++ "localhost" ++ ANSI_RESET ++
-                     " returned " ++ ANSI_ITALIC ++ "42" ++ ANSI_RESET ++ " results";
+        " returned " ++ ANSI_ITALIC ++ "42" ++ ANSI_RESET ++ " results";
     try std.testing.expectEqualStrings(expected, result);
 }
 
@@ -346,7 +346,7 @@ test "formatter basic usage" {
     var fbs = std.io.fixedBufferStream(&buf);
 
     var fmt = formatter(fbs.writer());
-    try fmt.write("Build **{s}** in *{d}s*", .{"completed", 12});
+    try fmt.write("Build **{s}** in *{d}s*", .{ "completed", 12 });
 
     const output = fbs.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, output, "completed") != null);

@@ -7,10 +7,10 @@ const std = @import("std");
 
 /// Terminal capability levels for color output
 pub const TerminalCapability = enum {
-    no_color,    // No ANSI codes at all
-    ansi_16,     // Basic 16 ANSI colors
-    ansi_256,    // 256-color palette
-    true_color,  // 24-bit RGB
+    no_color, // No ANSI codes at all
+    ansi_16, // Basic 16 ANSI colors
+    ansi_256, // 256-color palette
+    true_color, // 24-bit RGB
 };
 
 /// Semantic roles that can be used in markdown
@@ -101,7 +101,7 @@ fn approximateRgbToAnsi256(r: u8, g: u8, b: u8) u8 {
     if (max_diff < 8) {
         // Grayscale ramp: colors 232-255
         const gray_value = (@as(u16, r) + @as(u16, g) + @as(u16, b)) / 3;
-        if (gray_value < 8) return 16;  // Black
+        if (gray_value < 8) return 16; // Black
         if (gray_value > 247) return 231; // White
         return 232 + @as(u8, @intCast((gray_value - 8) / 10));
     }
@@ -222,7 +222,7 @@ fn parseMarkdownOnly(comptime markdown: []const u8, comptime capability: Termina
         while (i < markdown.len) {
             // Check for format specifiers - preserve them exactly
             if (markdown[i] == '{' and i + 2 < markdown.len and markdown[i + 2] == '}') {
-                result = result ++ markdown[i..i+3];
+                result = result ++ markdown[i .. i + 3];
                 i += 3;
                 continue;
             }

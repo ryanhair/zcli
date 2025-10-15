@@ -39,7 +39,7 @@ fn readVersionFromZon(b: *std.Build) []const u8 {
         if (std.mem.startsWith(u8, trimmed, ".version")) {
             // Extract version string between quotes
             if (std.mem.indexOf(u8, trimmed, "\"")) |start| {
-                const after_first = trimmed[start + 1..];
+                const after_first = trimmed[start + 1 ..];
                 if (std.mem.indexOf(u8, after_first, "\"")) |end| {
                     // Duplicate the version string so we can free the content
                     const version = b.allocator.dupe(u8, after_first[0..end]) catch "0.0.0";

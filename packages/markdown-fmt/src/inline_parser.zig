@@ -20,7 +20,7 @@ fn reapplyAfterResets(comptime content: []const u8, comptime format_code: []cons
 
         while (i < content.len) {
             // Look for ANSI_RESET
-            if (i + ANSI_RESET.len <= content.len and std.mem.eql(u8, content[i..i + ANSI_RESET.len], ANSI_RESET)) {
+            if (i + ANSI_RESET.len <= content.len and std.mem.eql(u8, content[i .. i + ANSI_RESET.len], ANSI_RESET)) {
                 // Found a reset - add it and then re-apply our format
                 result = result ++ ANSI_RESET;
 
@@ -58,7 +58,7 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Sem
 
             // Check for format specifiers - preserve them exactly
             if (markdown[i] == '{' and i + 2 < markdown.len and markdown[i + 2] == '}') {
-                result = result ++ markdown[i..i + 3];
+                result = result ++ markdown[i .. i + 3];
                 i += 3;
                 continue;
             }
@@ -79,7 +79,7 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Sem
                         var escaped_content: []const u8 = "";
                         for (content) |c| {
                             if (c == '{' or c == '}') {
-                                escaped_content = escaped_content ++ &[_]u8{c, c}; // {{ or }}
+                                escaped_content = escaped_content ++ &[_]u8{ c, c }; // {{ or }}
                             } else {
                                 escaped_content = escaped_content ++ &[_]u8{c};
                             }

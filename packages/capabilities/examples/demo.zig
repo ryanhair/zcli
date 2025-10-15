@@ -67,7 +67,6 @@ pub fn main() !void {
         } else {
             std.debug.print("Alternate screen: ✗ Not available\n", .{});
         }
-
     } else |err| {
         std.debug.print("Full detection failed: {}\n", .{err});
         std.debug.print("This is expected when not running in a proper terminal.\n", .{});
