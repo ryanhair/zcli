@@ -118,6 +118,7 @@ pub fn init(config: Config) type {
             try replaceBinary(allocator, temp_path);
 
             try stdout.print("✓ Successfully upgraded to {s}\n", .{latest_version});
+            try stdout.print("\nThe upgrade is complete. Run '{s} --version' to verify.\n", .{context.app_name});
         }
 
         /// Startup hook to check for updates if configured
@@ -557,6 +558,8 @@ fn replaceBinary(allocator: std.mem.Allocator, new_binary_path: []const u8) !voi
     // Get current executable path
     var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_path = try std.fs.selfExePath(&exe_path_buf);
+
+    std.debug.print("Replacing binary at: {s}\n", .{exe_path});
 
     // Step 1: Create backup path
     const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{exe_path});
