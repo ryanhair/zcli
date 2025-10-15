@@ -20,9 +20,9 @@ pub fn build(b: *std.Build) void {
     });
     plugin_module.addImport("zcli", zcli_module);
 
-    // Add markdown-fmt as a dependency
+    // Add markdown_fmt as a dependency
     const markdown_fmt_module = b.createModule(.{
-        .root_source_file = b.path("../../../markdown-fmt/src/main.zig"),
+        .root_source_file = b.path("../../../markdown_fmt/src/main.zig"),
         .target = target,
         .optimize = optimize,
     });

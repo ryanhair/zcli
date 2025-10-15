@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Create the markdown-fmt module
+    // Create the markdown_fmt module
     const markdown_fmt_mod = b.addModule("markdown-fmt", .{
         .root_source_file = b.path("src/main.zig"),
     });

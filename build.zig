@@ -16,17 +16,17 @@ pub fn build(b: *std.Build) void {
         .{ .name = "testing", .path = "packages/testing" },
         .{ .name = "vterm", .path = "packages/vterm" },
         .{ .name = "interactive", .path = "packages/interactive" },
-        .{ .name = "markdown-fmt", .path = "packages/markdown-fmt" },
-        .{ .name = "zcli-help-plugin", .path = "packages/core/plugins/zcli-help" },
-        .{ .name = "zcli-not-found-plugin", .path = "packages/core/plugins/zcli-not-found" },
+        .{ .name = "markdown_fmt", .path = "packages/markdown_fmt" },
+        .{ .name = "zcli_help_plugin", .path = "packages/core/plugins/zcli_help" },
+        .{ .name = "zcli_not_found_plugin", .path = "packages/core/plugins/zcli_not_found" },
     };
 
     const example_projects = [_]ProjectInfo{
-        .{ .name = "basic-example", .path = "examples/basic" },
-        .{ .name = "advanced-example", .path = "examples/advanced" },
-        .{ .name = "swapi-example", .path = "examples/swapi" },
-        .{ .name = "ztheme-example", .path = "examples/ztheme" },
-        .{ .name = "vterm-example", .path = "packages/vterm/example" },
+        .{ .name = "basic_example", .path = "examples/basic" },
+        .{ .name = "advanced_example", .path = "examples/advanced" },
+        .{ .name = "swapi_example", .path = "examples/swapi" },
+        .{ .name = "ztheme_example", .path = "examples/ztheme" },
+        .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 
     // Create main test step that runs all tests
@@ -37,13 +37,23 @@ pub fn build(b: *std.Build) void {
         // Create individual test step for this project
         const project_test_step = b.step(b.fmt("test-{s}", .{project.name}), b.fmt("Run tests for {s}", .{project.name}));
 
+        // Print a message before running tests for this project
+        const print_start = b.addSystemCommand(&.{"echo"});
+        print_start.addArg(b.fmt("\n==> Running tests for {s} ({s})", .{ project.name, project.path }));
+
         // Run the test step from the subproject directory
         const project_test_run = b.addSystemCommand(&.{"zig"});
         project_test_run.addArgs(&.{ "build", "test" });
         project_test_run.setCwd(b.path(project.path));
+        project_test_run.step.dependOn(&print_start.step);
 
-        project_test_step.dependOn(&project_test_run.step);
-        test_step.dependOn(&project_test_run.step);
+        // Print success message after tests pass
+        const print_success = b.addSystemCommand(&.{"echo"});
+        print_success.addArg(b.fmt("    ✓ {s} tests passed", .{project.name}));
+        print_success.step.dependOn(&project_test_run.step);
+
+        project_test_step.dependOn(&print_success.step);
+        test_step.dependOn(&print_success.step);
     }
 
     // Create build step for examples
