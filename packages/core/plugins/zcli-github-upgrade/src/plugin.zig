@@ -321,18 +321,16 @@ fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
         return error.FailedToDownloadBinary;
     }
 
+    // Read entire response body (binaries are typically under 50MB)
+    var transfer_buffer: [8192]u8 = undefined;
+    var body_reader = response.reader(&transfer_buffer);
+    const binary_data = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(100 * 1024 * 1024)); // 100MB max
+    defer allocator.free(binary_data);
+
     // Write to file
     var temp_file = try temp_dir.createFile(temp_filename, .{});
     defer temp_file.close();
-
-    var transfer_buffer: [8192]u8 = undefined;
-    var body_reader = response.reader(&transfer_buffer);
-    var read_buffer: [8192]u8 = undefined;
-    while (true) {
-        const bytes_read = try body_reader.readSliceShort(&read_buffer);
-        if (bytes_read == 0) break;
-        try temp_file.writeAll(read_buffer[0..bytes_read]);
-    }
+    try temp_file.writeAll(binary_data);
 
     return temp_filename;
 }

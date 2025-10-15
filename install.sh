@@ -57,7 +57,7 @@ get_latest_version() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | \
             grep '"tag_name":' | \
-            sed -E 's/.*"tag_name": "v([^"]+)".*/\1/'
+            sed -E 's/.*"tag_name": "zcli-v([^"]+)".*/\1/'
     else
         print_error "curl is required but not found"
         exit 1
@@ -70,12 +70,12 @@ download_binary() {
     local os="$2"
     local arch="$3"
     local target="${arch}-${os}"
-    local url="https://github.com/${REPO}/releases/download/v${version}/zcli-${target}"
-    local checksum_url="https://github.com/${REPO}/releases/download/v${version}/checksums.txt"
+    local url="https://github.com/${REPO}/releases/download/zcli-v${version}/zcli-${target}"
+    local checksum_url="https://github.com/${REPO}/releases/download/zcli-v${version}/checksums.txt"
     local tmp_dir=$(mktemp -d)
     local binary_path="${tmp_dir}/zcli"
 
-    print_info "Downloading zcli v${version} for ${target}..."
+    print_info "Downloading zcli ${version} for ${target}..."
 
     if ! curl -fsSL "${url}" -o "${binary_path}"; then
         print_error "Failed to download binary from ${url}"
@@ -293,7 +293,7 @@ main() {
     rm -rf "$(dirname "${binary_path}")"
 
     echo "" >&2
-    print_success "zcli v${version} installed successfully!"
+    print_success "zcli ${version} installed successfully!"
     echo "" >&2
 
     # Check PATH and configure if needed
