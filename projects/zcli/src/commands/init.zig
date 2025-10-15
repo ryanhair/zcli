@@ -156,7 +156,9 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\        .commands_dir = "src/commands",
         \\        .plugins = &[_]zcli.PluginConfig{{
         \\            .{{ .name = "zcli_help", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_help") }},
+        \\            .{{ .name = "zcli_version", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_version") }},
         \\            .{{ .name = "zcli_not_found", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_not_found") }},
+        \\            .{{ .name = "zcli_completions", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_completions") }},
         \\        }},
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",
