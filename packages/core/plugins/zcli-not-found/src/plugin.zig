@@ -206,7 +206,7 @@ test "onError handles CommandNotFound" {
     var context = zcli.Context{
         .allocator = allocator,
         .io = &io,
-        .environment = zcli.Environment.init(),
+        .environment = zcli.Environment.init(allocator),
         .plugin_extensions = zcli.ContextExtensions.init(allocator),
     };
     defer context.deinit();

@@ -522,7 +522,7 @@ test "fluent API basics" {
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(testing.allocator);
 
-    const theme_ctx = Theme.init();
+    const theme_ctx = Theme.init(testing.allocator);
     try theme("test").render(buffer.writer(testing.allocator), &theme_ctx);
 
     try testing.expect(buffer.items.len >= 4); // At least "test"

@@ -70,7 +70,7 @@ test "cross-capability rendering consistency" {
 
 test "memory safety with different content types" {
     // Test that themed wrapper works safely with various Zig types
-    const theme_ctx = ztheme.Theme.init();
+    const theme_ctx = ztheme.Theme.init(testing.allocator);
     var buffer = std.ArrayList(u8){};
     defer buffer.deinit(testing.allocator);
 
@@ -144,7 +144,7 @@ test "error handling and edge cases" {
 
     // Test toString with empty content
     const empty_themed = ztheme.theme("");
-    const theme_ctx = ztheme.Theme.init();
+    const theme_ctx = ztheme.Theme.init(testing.allocator);
     const result = try empty_themed.toString(testing_allocator, &theme_ctx);
     defer testing_allocator.free(result);
 
@@ -168,9 +168,9 @@ test "error handling and edge cases" {
 
 test "platform detection integration" {
     // Test that platform-specific detection functions work in integration
-    const windows_cap = ztheme.TerminalCapability.detectWindows();
-    const unix_cap = ztheme.TerminalCapability.detectUnix();
-    const generic_cap = ztheme.TerminalCapability.detectGeneric();
+    const windows_cap = ztheme.TerminalCapability.detectWindows(testing.allocator);
+    const unix_cap = ztheme.TerminalCapability.detectUnix(testing.allocator);
+    const generic_cap = ztheme.TerminalCapability.detectGeneric(testing.allocator);
 
     // All should be valid capabilities
     const valid_caps = [_]ztheme.TerminalCapability{ windows_cap, unix_cap, generic_cap };

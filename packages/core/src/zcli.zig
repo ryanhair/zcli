@@ -85,7 +85,7 @@ pub const CommandModuleInfo = struct {
 /// Execution context provided to commands and plugins
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    io: *IO,  // Pointer to avoid copying issues with self-referential pointers
+    io: *IO, // Pointer to avoid copying issues with self-referential pointers
     environment: Environment,
     plugin_extensions: ContextExtensions,
 
@@ -118,7 +118,7 @@ pub const Context = struct {
         return .{
             .allocator = allocator,
             .io = io,
-            .environment = Environment.init(),
+            .environment = Environment.init(allocator),
             .plugin_extensions = ContextExtensions.init(allocator),
         };
     }
@@ -288,11 +288,11 @@ pub const IO = struct {
 pub const Environment = struct {
     map: std.StringHashMap([]const u8),
 
-    pub fn init() @This() {
+    pub fn init(allocator: std.mem.Allocator) @This() {
         // For now, create an empty environment
         // In the future, we could populate this from std.process.getEnvMap()
         return .{
-            .map = std.StringHashMap([]const u8).init(std.heap.page_allocator),
+            .map = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -1340,7 +1340,7 @@ test "global options with different types" {
 
     // Test parsing and handling of different option types
     const args = [_][]const u8{ "--verbose", "--count", "42", "--output", "file.txt", "global-test" };
-    try app.execute(&args);
+    try app.execute(testing.allocator, &args);
 
     // Note: Since execute() creates its own context, we can't easily verify the option values.
     // The test passes if it completes without hanging, confirming static state conflicts are resolved.
@@ -1348,8 +1348,6 @@ test "global options with different types" {
 
 // Test short option flags
 test "global options short flags" {
-    _ = testing.allocator;
-
     const GlobalShortPlugin = struct {
         pub const global_options = [_]GlobalOption{
             option("verbose", bool, .{ .short = 'v', .default = false, .description = "Verbose output" }),
@@ -1397,7 +1395,7 @@ test "global options short flags" {
 
     // Test short flags
     const args = [_][]const u8{ "-v", "-q", "global-test" };
-    try app.execute(&args);
+    try app.execute(testing.allocator, &args);
 
     // Note: Since execute() creates its own context, we can't verify the option values.
     // The test passes if it completes without hanging.
@@ -1455,7 +1453,7 @@ test "commands inherit global options" {
 
     // Test that command sees global options
     const args = [_][]const u8{ "--config", "/custom/path", "--debug", "global-test", "--local" };
-    try app.execute(&args);
+    try app.execute(testing.allocator, &args);
 
     // Note: Since execute() creates its own context, we can't verify the global option values.
     // The test passes if it completes without hanging.
@@ -1508,7 +1506,7 @@ test "global option defaults" {
 
     // Execute without providing the options (should use defaults)
     const args = [_][]const u8{"global-test"};
-    try app.execute(&args);
+    try app.execute(testing.allocator, &args);
 
     // Note: Test passes if it completes without hanging (defaults would be handled internally).
 }
@@ -1574,7 +1572,7 @@ test "multiple plugins with global options" {
 
     // Test that both plugins' options work
     const args = [_][]const u8{ "--plugin1-opt", "--plugin2-opt", "global-test" };
-    try app.execute(&args);
+    try app.execute(testing.allocator, &args);
 
     // Note: Since execute() creates its own context, we can't verify the called states.
     // The test passes if it completes without hanging.
@@ -1629,7 +1627,7 @@ test "global options consumed before command" {
 
     // Global options should be consumed and not passed to command
     const args = [_][]const u8{ "--global", "global-test", "myarg", "--local" };
-    try app.execute(&args);
+    try app.execute(testing.allocator, &args);
 
     // Note: Since execute() creates its own context, we can't verify the argument processing.
     // The test passes if it completes without hanging, confirming global options are handled.

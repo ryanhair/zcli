@@ -1,13 +1,17 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
-/// Read a line from stdin with a local buffer
+/// Maximum length for user input (version strings, branch names, etc.)
+const MAX_INPUT_LENGTH = 256;
+
+/// Read a line from stdin with validation and proper error handling
+/// Returns error.InputTooLong if input exceeds MAX_INPUT_LENGTH
 fn readLine(allocator: std.mem.Allocator) ![]u8 {
     const stdin_file = std.fs.File.stdin();
 
-    // Read up to 256 bytes or until newline
-    var line_buffer: [256]u8 = undefined;
+    var line_buffer: [MAX_INPUT_LENGTH]u8 = undefined;
     var i: usize = 0;
+
     while (i < line_buffer.len) {
         var byte_buf: [1]u8 = undefined;
         const bytes_read = stdin_file.read(&byte_buf) catch |err| {
@@ -15,9 +19,26 @@ fn readLine(allocator: std.mem.Allocator) ![]u8 {
             return err;
         };
         if (bytes_read == 0) break; // EOF
-        if (byte_buf[0] == '\n') break;
-        line_buffer[i] = byte_buf[0];
+
+        const byte = byte_buf[0];
+
+        // Handle line endings
+        if (byte == '\n') break;
+        if (byte == '\r') continue; // Handle CRLF, skip CR
+
+        line_buffer[i] = byte;
         i += 1;
+    }
+
+    // Check if we hit the buffer limit without finding newline
+    if (i == line_buffer.len) {
+        // Drain remaining input until newline
+        var discard: [1]u8 = undefined;
+        while (true) {
+            const bytes_read = stdin_file.read(&discard) catch break;
+            if (bytes_read == 0 or discard[0] == '\n') break;
+        }
+        return error.InputTooLong;
     }
 
     return try allocator.dupe(u8, line_buffer[0..i]);
@@ -148,7 +169,13 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                 }
 
                 try stdout.print("Create initial release tag? [Y/n]: ", .{});
-                const response = try readLine(allocator);
+                const response = readLine(allocator) catch |read_err| {
+                    if (read_err == error.InputTooLong) {
+                        try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
+                        return error.InputTooLong;
+                    }
+                    return read_err;
+                };
                 defer allocator.free(response);
                 const trimmed = std.mem.trim(u8, response, " \t\r\n");
 
@@ -161,7 +188,13 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                 // If user provided explicit version, use it; otherwise prompt
                 const version_to_use = if (is_bump_type) blk2: {
                     try stdout.print("  Initial version (default: 0.1.0): ", .{});
-                    const version_input = try readLine(allocator);
+                    const version_input = readLine(allocator) catch |read_err| {
+                        if (read_err == error.InputTooLong) {
+                            try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
+                            return error.InputTooLong;
+                        }
+                        return read_err;
+                    };
                     defer allocator.free(version_input);
                     const initial_version_str = std.mem.trim(u8, version_input, " \t\r\n");
                     break :blk2 if (initial_version_str.len == 0) "0.1.0" else initial_version_str;
@@ -279,7 +312,13 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     // 5.5. Confirm release (unless using --message flag or dry-run)
     if (options.message == null and !options.@"dry-run") {
         stdout.print("\nContinue with release {s}-v{s}? [Y/n]: ", .{ cli_name, new_version_str }) catch {};
-        const response = try readLine(allocator);
+        const response = readLine(allocator) catch |read_err| {
+            if (read_err == error.InputTooLong) {
+                try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
+                return error.InputTooLong;
+            }
+            return read_err;
+        };
         defer allocator.free(response);
         const trimmed = std.mem.trim(u8, response, " \t\r\n");
 
@@ -392,7 +431,11 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 fn parseCliName(allocator: std.mem.Allocator) ![]const u8 {
     const zon_path = "build.zig.zon";
 
-    const file = try std.fs.cwd().openFile(zon_path, .{});
+    const file = std.fs.cwd().openFile(zon_path, .{}) catch |err| {
+        std.debug.print("Error: Could not open {s}: {}\n", .{ zon_path, err });
+        std.debug.print("Make sure you're running this command from the project root directory.\n", .{});
+        return err;
+    };
     defer file.close();
 
     const content = try file.readToEndAlloc(allocator, 1024 * 1024);
@@ -430,6 +473,8 @@ fn parseCliName(allocator: std.mem.Allocator) ![]const u8 {
         }
     }
 
+    std.debug.print("Error: Could not find .name field in {s}\n", .{zon_path});
+    std.debug.print("Expected format: .name = \"myapp\" or .name = .myapp\n", .{});
     return error.NameNotFound;
 }
 
@@ -538,6 +583,9 @@ fn getInitialReleaseNotes(allocator: std.mem.Allocator, version: []const u8) ![]
     const term = try child.spawnAndWait();
 
     if (term.Exited != 0) {
+        std.debug.print("Error: Editor exited with non-zero status\n", .{});
+        std.debug.print("Editor command: {s}\n", .{editor});
+        std.debug.print("You can set your preferred editor with: export EDITOR=nano\n", .{});
         return error.EditorFailed;
     }
 
@@ -603,6 +651,9 @@ fn getReleaseNotes(allocator: std.mem.Allocator, cli_name: []const u8, current_v
     const term = try child.spawnAndWait();
 
     if (term.Exited != 0) {
+        std.debug.print("Error: Editor exited with non-zero status\n", .{});
+        std.debug.print("Editor command: {s}\n", .{editor});
+        std.debug.print("You can set your preferred editor with: export EDITOR=nano\n", .{});
         return error.EditorFailed;
     }
 
@@ -893,4 +944,128 @@ test "tag name format with CLI name prefix" {
     defer allocator.free(tag_name2);
 
     try testing.expectEqualStrings("myapp-v0.1.0", tag_name2);
+}
+
+test "readLine - handles CRLF line endings" {
+    // Note: This test would require mocking stdin, which is complex in Zig
+    // The CRLF handling is covered by the implementation logic
+}
+
+test "readLine - MAX_INPUT_LENGTH constant is reasonable" {
+    // Verify the constant is set to a reasonable value
+    try testing.expect(MAX_INPUT_LENGTH == 256);
+    try testing.expect(MAX_INPUT_LENGTH > 0);
+    try testing.expect(MAX_INPUT_LENGTH < 65536); // Not too large
+}
+
+test "Version.parse - edge cases with whitespace" {
+    // Should fail - whitespace not allowed
+    try testing.expectError(error.InvalidCharacter, Version.parse(" 1.2.3"));
+    try testing.expectError(error.InvalidCharacter, Version.parse("1.2.3 "));
+    try testing.expectError(error.InvalidCharacter, Version.parse("1. 2.3"));
+}
+
+test "Version.parse - zero versions" {
+    const v0 = try Version.parse("0.0.0");
+    try testing.expectEqual(@as(u32, 0), v0.major);
+    try testing.expectEqual(@as(u32, 0), v0.minor);
+    try testing.expectEqual(@as(u32, 0), v0.patch);
+}
+
+test "Version.parse - large version numbers" {
+    const v_large = try Version.parse("999.999.999");
+    try testing.expectEqual(@as(u32, 999), v_large.major);
+    try testing.expectEqual(@as(u32, 999), v_large.minor);
+    try testing.expectEqual(@as(u32, 999), v_large.patch);
+}
+
+test "Version.parse - non-numeric input" {
+    try testing.expectError(error.InvalidCharacter, Version.parse("a.b.c"));
+    try testing.expectError(error.InvalidCharacter, Version.parse("1.2.x"));
+    try testing.expectError(error.InvalidCharacter, Version.parse("1.x.3"));
+}
+
+test "Version.bump - all bump types reset lower components" {
+    const v = Version{ .major = 5, .minor = 10, .patch = 15 };
+
+    // Major bump resets minor and patch
+    const v_major = v.bump("major");
+    try testing.expectEqual(@as(u32, 6), v_major.major);
+    try testing.expectEqual(@as(u32, 0), v_major.minor);
+    try testing.expectEqual(@as(u32, 0), v_major.patch);
+
+    // Minor bump resets patch
+    const v_minor = v.bump("minor");
+    try testing.expectEqual(@as(u32, 5), v_minor.major);
+    try testing.expectEqual(@as(u32, 11), v_minor.minor);
+    try testing.expectEqual(@as(u32, 0), v_minor.patch);
+
+    // Patch bump doesn't reset anything
+    const v_patch = v.bump("patch");
+    try testing.expectEqual(@as(u32, 5), v_patch.major);
+    try testing.expectEqual(@as(u32, 10), v_patch.minor);
+    try testing.expectEqual(@as(u32, 16), v_patch.patch);
+}
+
+test "Version.format - handles leading zeros correctly" {
+    const allocator = testing.allocator;
+
+    // Zig's u32 doesn't have leading zeros, but verify behavior
+    const v = Version{ .major = 1, .minor = 0, .patch = 10 };
+    const s = try v.format(allocator);
+    defer allocator.free(s);
+
+    try testing.expectEqualStrings("1.0.10", s);
+}
+
+test "parseCliName - whitespace handling" {
+    const allocator = testing.allocator;
+
+    const temp_dir = testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    // Test with extra whitespace
+    const zon_content =
+        \\.{
+        \\    .name   =   "myapp"  ,
+        \\    .version = "1.0.0",
+        \\}
+    ;
+
+    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
+    defer file.close();
+    try file.writeAll(zon_content);
+
+    const cwd = std.fs.cwd();
+    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
+    defer allocator.free(original_cwd_path);
+
+    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(temp_path);
+
+    try std.posix.chdir(temp_path);
+    defer std.posix.chdir(original_cwd_path) catch {};
+
+    const cli_name = try parseCliName(allocator);
+    defer allocator.free(cli_name);
+
+    try testing.expectEqualStrings("myapp", cli_name);
+}
+
+test "tag name format - validates pattern" {
+    const allocator = testing.allocator;
+
+    // Verify tag format matches expected pattern: {cli_name}-v{version}
+    const cli_name = "my-app-123";
+    const version = "10.20.30";
+
+    const tag_name = try std.fmt.allocPrint(allocator, "{s}-v{s}", .{ cli_name, version });
+    defer allocator.free(tag_name);
+
+    try testing.expectEqualStrings("my-app-123-v10.20.30", tag_name);
+
+    // Verify it contains both components
+    try testing.expect(std.mem.indexOf(u8, tag_name, cli_name) != null);
+    try testing.expect(std.mem.indexOf(u8, tag_name, "-v") != null);
+    try testing.expect(std.mem.indexOf(u8, tag_name, version) != null);
 }

@@ -47,28 +47,28 @@ pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
         // Capability override takes precedence, even with force_color
         switch (cap) {
             .@"16" => blk: {
-                var t = ztheme.Theme.init();
+                var t = ztheme.Theme.init(allocator);
                 t.capability = .ansi_16;
                 t.color_enabled = true; // Force enable if specified
                 break :blk t;
             },
             .@"256" => blk: {
-                var t = ztheme.Theme.init();
+                var t = ztheme.Theme.init(allocator);
                 t.capability = .ansi_256;
                 t.color_enabled = true; // Force enable if specified
                 break :blk t;
             },
             .true => blk: {
-                var t = ztheme.Theme.init();
+                var t = ztheme.Theme.init(allocator);
                 t.capability = .true_color;
                 t.color_enabled = true; // Force enable if specified
                 break :blk t;
             },
         }
     else if (options.force_color)
-        ztheme.Theme.initForced(true)
+        ztheme.Theme.initForced(allocator, true)
     else
-        ztheme.Theme.init();
+        ztheme.Theme.init(allocator);
 
     // Display all demo sections
     try displayHeader(writer, &theme_ctx);

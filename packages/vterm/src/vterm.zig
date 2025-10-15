@@ -941,7 +941,7 @@ pub const VTerm = struct {
         // For now, we'll do simple substring matching with * wildcard support
 
         // For testing purposes, use a temporary allocator
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 

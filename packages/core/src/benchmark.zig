@@ -1,7 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli.zig");
 const command_parser = @import("command_parser.zig");
-const build_utils = @import("build_utils.zig");
+const command_discovery = @import("build_utils/command_discovery.zig");
 
 /// Performance benchmark results
 const BenchmarkResult = struct {
@@ -31,24 +31,28 @@ const BenchmarkResult = struct {
 fn benchmark(
     name: []const u8,
     iterations: u64,
-    comptime benchFn: fn () anyerror!void,
+    comptime benchFn: fn (allocator: std.mem.Allocator) anyerror!void,
 ) !BenchmarkResult {
     var timer = try std.time.Timer.start();
     var min_ns: u64 = std.math.maxInt(u64);
     var max_ns: u64 = 0;
     var total_ns: u64 = 0;
 
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
     // Warm up
     var warm_up: u64 = 0;
     while (warm_up < 10) : (warm_up += 1) {
-        try benchFn();
+        try benchFn(allocator);
     }
 
     // Actual benchmark
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         timer.reset();
-        try benchFn();
+        try benchFn(allocator);
         const elapsed = timer.read();
 
         total_ns += elapsed;
@@ -67,7 +71,7 @@ fn benchmark(
 }
 
 /// Benchmark parsing simple arguments
-fn benchParseSimpleArgs() !void {
+fn benchParseSimpleArgs(allocator: std.mem.Allocator) !void {
     const TestArgs = struct {
         name: []const u8,
         count: u32,
@@ -76,16 +80,19 @@ fn benchParseSimpleArgs() !void {
     const TestOptions = struct {};
 
     const test_args = [_][]const u8{ "myapp", "42", "true" };
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
-    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
+    const result = try command_parser.parseCommandLine(
+        TestArgs,
+        TestOptions,
+        null,
+        allocator,
+        &test_args,
+    );
     defer result.deinit();
 }
 
 /// Benchmark parsing complex arguments with optionals and varargs
-fn benchParseComplexArgs() !void {
+fn benchParseComplexArgs(allocator: std.mem.Allocator) !void {
     const TestArgs = struct {
         command: []const u8,
         port: ?u16,
@@ -96,16 +103,13 @@ fn benchParseComplexArgs() !void {
     const TestOptions = struct {};
 
     const test_args = [_][]const u8{ "serve", "8080", "localhost", "false", "file1.txt", "file2.txt", "file3.txt" };
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
     const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     defer result.deinit();
 }
 
 /// Benchmark parsing options
-fn benchParseOptions() !void {
+fn benchParseOptions(allocator: std.mem.Allocator) !void {
     const TestArgs = struct {};
     const TestOptions = struct {
         output: ?[]const u8 = null,
@@ -114,14 +118,13 @@ fn benchParseOptions() !void {
         include: [][]const u8 = &.{},
     };
 
-    const allocator = std.heap.page_allocator;
     const test_args = [_][]const u8{ "--output", "result.txt", "--verbose", "--jobs", "4", "--include", "src", "--include", "lib" };
     const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     defer result.deinit();
 }
 
 /// Benchmark mixed args and options parsing (unified parser)
-fn benchParseMixed() !void {
+fn benchParseMixed(allocator: std.mem.Allocator) !void {
     const TestArgs = struct {
         command: []const u8,
         target: []const u8,
@@ -132,7 +135,6 @@ fn benchParseMixed() !void {
         jobs: u32 = 1,
     };
 
-    const allocator = std.heap.page_allocator;
     const test_input = [_][]const u8{ "--verbose", "--jobs", "8", "build", "release" };
 
     // Single unified parsing call - much simpler and handles mixed syntax correctly
@@ -141,9 +143,7 @@ fn benchParseMixed() !void {
 }
 
 /// Benchmark command discovery for build system
-fn benchCommandDiscovery() !void {
-    const allocator = std.heap.page_allocator;
-
+fn benchCommandDiscovery(allocator: std.mem.Allocator) !void {
     // Create a temporary directory structure
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -163,12 +163,12 @@ fn benchCommandDiscovery() !void {
     const commands_subpath = try std.fs.path.join(allocator, &.{ commands_path, "commands" });
     defer allocator.free(commands_subpath);
 
-    var discovered = try build_utils.discoverCommands(allocator, commands_subpath);
+    var discovered = try command_discovery.discoverCommands(allocator, commands_subpath);
     defer discovered.deinit();
 }
 
 /// Benchmark enum parsing
-fn benchParseEnum() !void {
+fn benchParseEnum(allocator: std.mem.Allocator) !void {
     const LogLevel = enum { debug, info, warn, err, fatal };
     const TestArgs = struct {
         level: LogLevel,
@@ -176,16 +176,13 @@ fn benchParseEnum() !void {
     const TestOptions = struct {};
 
     const test_args = [_][]const u8{"warn"};
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
     const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     defer result.deinit();
 }
 
 /// Benchmark error path performance
-fn benchErrorPath() !void {
+fn benchErrorPath(allocator: std.mem.Allocator) !void {
     const TestArgs = struct {
         name: []const u8,
         count: u32,
@@ -194,9 +191,6 @@ fn benchErrorPath() !void {
 
     // Intentionally invalid input
     const test_args = [_][]const u8{ "myapp", "not_a_number" };
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
     const result = command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, &test_args);
     if (result) |parsed| {
@@ -209,7 +203,9 @@ fn benchErrorPath() !void {
 
 /// Run all benchmarks
 pub fn runBenchmarks(allocator: std.mem.Allocator) !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
     try stdout.print("\n=== zcli Performance Benchmarks ===\n\n", .{});
     try stdout.print("{s:<40} | {s:>10} | {s:>10} | {s:>10} | {s:>10}\n", .{
@@ -228,17 +224,17 @@ pub fn runBenchmarks(allocator: std.mem.Allocator) !void {
     });
 
     const iterations = 10000;
-    var results = std.ArrayList(BenchmarkResult).init(allocator);
-    defer results.deinit();
+    var results = std.ArrayList(BenchmarkResult){};
+    defer results.deinit(allocator);
 
     // Run benchmarks
-    try results.append(try benchmark("Parse Simple Args", iterations, benchParseSimpleArgs));
-    try results.append(try benchmark("Parse Complex Args", iterations, benchParseComplexArgs));
-    try results.append(try benchmark("Parse Options", iterations, benchParseOptions));
-    try results.append(try benchmark("Parse Mixed Args/Options", iterations / 10, benchParseMixed));
-    try results.append(try benchmark("Parse Enum", iterations, benchParseEnum));
-    try results.append(try benchmark("Error Path", iterations, benchErrorPath));
-    try results.append(try benchmark("Command Discovery", 100, benchCommandDiscovery));
+    try results.append(allocator, try benchmark("Parse Simple Args", iterations, benchParseSimpleArgs));
+    try results.append(allocator, try benchmark("Parse Complex Args", iterations, benchParseComplexArgs));
+    try results.append(allocator, try benchmark("Parse Options", iterations, benchParseOptions));
+    try results.append(allocator, try benchmark("Parse Mixed Args/Options", iterations / 10, benchParseMixed));
+    try results.append(allocator, try benchmark("Parse Enum", iterations, benchParseEnum));
+    try results.append(allocator, try benchmark("Error Path", iterations, benchErrorPath));
+    try results.append(allocator, try benchmark("Command Discovery", 100, benchCommandDiscovery));
 
     // Print results
     for (results.items) |result| {
@@ -249,9 +245,10 @@ pub fn runBenchmarks(allocator: std.mem.Allocator) !void {
 }
 
 /// Regression test to ensure performance doesn't degrade
-pub fn runRegressionTests(allocator: std.mem.Allocator) !void {
-    _ = allocator; // Not used in this implementation
-    const stdout = std.io.getStdOut().writer();
+pub fn runRegressionTests() !void {
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
     try stdout.print("\n=== zcli Performance Regression Tests ===\n\n", .{});
 

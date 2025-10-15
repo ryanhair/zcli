@@ -5,6 +5,9 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -12,11 +15,11 @@ pub fn main() !void {
     // Check command line arguments
     if (args.len > 1) {
         if (std.mem.eql(u8, args[1], "--regression")) {
-            try benchmark.runRegressionTests(allocator);
+            try benchmark.runRegressionTests();
         } else if (std.mem.eql(u8, args[1], "--help")) {
             try printHelp();
         } else {
-            try std.io.getStdErr().writer().print("Unknown option: {s}\n", .{args[1]});
+            try stderr.print("Unknown option: {s}\n", .{args[1]});
             try printHelp();
             return error.InvalidArgument;
         }
@@ -27,7 +30,9 @@ pub fn main() !void {
 }
 
 fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
     try stdout.print(
         \\zcli Benchmark Runner
         \\

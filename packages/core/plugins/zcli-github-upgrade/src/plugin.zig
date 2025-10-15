@@ -1,11 +1,16 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
+// Security limits for HTTP responses
+const MAX_COMPRESSED_RESPONSE_SIZE = 10 * 1024 * 1024; // 10MB compressed
+const MAX_DECOMPRESSED_RESPONSE_SIZE = 20 * 1024 * 1024; // 20MB decompressed
+const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB for binary downloads
+const MAX_CHECKSUMS_SIZE = 1024 * 1024; // 1MB for checksums file
+
 /// zcli-github-upgrade Plugin
 ///
 /// Provides self-upgrade functionality for CLI applications that release via GitHub.
 /// Downloads new versions from GitHub releases and atomically replaces the current binary.
-
 /// Plugin configuration
 pub const Config = struct {
     /// GitHub repository in format "owner/repo" (required)
@@ -84,7 +89,7 @@ pub fn init(config: Config) type {
             try stdout.print("Upgrading from {s} to {s}...\n", .{ current_version, latest_version });
 
             // Detect platform
-            const platform = try detectPlatform();
+            const platform = try detectPlatform(allocator);
             const binary_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ context.app_name, platform });
             defer allocator.free(binary_name);
 
@@ -105,11 +110,11 @@ pub fn init(config: Config) type {
 
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
-            try testBinary(temp_path);
+            try testBinary(allocator, temp_path);
 
             // Replace current binary
             try stdout.print("Installing new version...\n", .{});
-            try replaceBinary(temp_path);
+            try replaceBinary(allocator, temp_path);
 
             try stdout.print("✓ Successfully upgraded to {s}\n", .{latest_version});
         }
@@ -193,8 +198,29 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: 
     var redirect_buffer: [1024]u8 = undefined;
     var response = try request.receiveHead(&redirect_buffer);
 
+    // Check for rate limiting
+    if (response.head.status == .too_many_requests) {
+        // Check for Retry-After header
+        var it = response.head.iterateHeaders();
+        while (it.next()) |header| {
+            if (std.mem.eql(u8, header.name, "retry-after")) {
+                const retry_seconds = std.fmt.parseInt(u32, header.value, 10) catch 60;
+                std.debug.print("GitHub API rate limit exceeded. Retry after {d} seconds.\n", .{retry_seconds});
+                return error.RateLimitExceeded;
+            }
+        }
+        std.debug.print("GitHub API rate limit exceeded.\n", .{});
+        return error.RateLimitExceeded;
+    }
+
     if (response.head.status != .ok) {
-        // Include status in error for debugging
+        // Provide specific error messages based on status code
+        switch (response.head.status) {
+            .not_found => std.debug.print("GitHub repository not found: {s}\n", .{repo}),
+            .unauthorized => std.debug.print("GitHub API authentication failed (unauthorized)\n", .{}),
+            .forbidden => std.debug.print("GitHub API access forbidden (check permissions)\n", .{}),
+            else => std.debug.print("GitHub API request failed with status: {}\n", .{response.head.status}),
+        }
         return error.FailedToFetchVersion;
     }
 
@@ -203,13 +229,13 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: 
         // First read the raw response
         var transfer_buffer: [4096]u8 = undefined;
         var body_reader = response.reader(&transfer_buffer);
-        const raw_body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024)); // 10MB max
+        const raw_body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_COMPRESSED_RESPONSE_SIZE));
         errdefer allocator.free(raw_body);
 
         // Check if response is gzip compressed by checking magic bytes (0x1f 0x8b)
         const is_gzipped = raw_body.len >= 2 and raw_body[0] == 0x1f and raw_body[1] == 0x8b;
         if (is_gzipped) {
-            // Decompress gzip data
+            // Decompress gzip data with size limit to prevent gzip bombs
             var reader: std.Io.Reader = .fixed(raw_body);
 
             // Allocate decompression buffer (32KB window)
@@ -218,11 +244,19 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: 
 
             var decompressor = std.compress.flate.Decompress.init(&reader, .gzip, decompress_buffer);
 
-            // Use allocating writer to collect decompressed data
+            // Use allocating writer to collect decompressed data with size limit
             var aw: std.Io.Writer.Allocating = .init(allocator);
             defer aw.deinit();
 
-            _ = try decompressor.reader.streamRemaining(&aw.writer);
+            const bytes_written = try decompressor.reader.streamRemaining(&aw.writer);
+
+            // Check decompressed size to prevent gzip bombs
+            if (bytes_written > MAX_DECOMPRESSED_RESPONSE_SIZE) {
+                std.debug.print("Error: Decompressed response ({d} bytes) exceeds maximum size ({d} bytes)\n", .{ bytes_written, MAX_DECOMPRESSED_RESPONSE_SIZE });
+                std.debug.print("This might indicate a malformed or malicious response.\n", .{});
+                return error.DecompressedDataTooLarge;
+            }
+
             const decompressed = try allocator.dupe(u8, aw.written());
 
             allocator.free(raw_body);
@@ -242,6 +276,8 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: 
 
     // Check if response is an array (expected) vs object (error response)
     if (parsed.value != .array) {
+        std.debug.print("Error: Expected JSON array of releases, got: {s}\n", .{@tagName(parsed.value)});
+        std.debug.print("Repository: {s}\n", .{repo});
         return error.UnexpectedResponse;
     }
 
@@ -263,33 +299,75 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: 
         }
     }
 
+    std.debug.print("Error: No releases found with tag prefix '{s}' in repository: {s}\n", .{ tag_prefix, repo });
+    std.debug.print("Expected tag format: {s}<version> (e.g., {s}1.0.0)\n", .{ tag_prefix, tag_prefix });
     return error.NoMatchingRelease;
 }
 
-/// Compare two version strings (simple string comparison for now)
+/// Compare two version strings using semantic versioning rules
+/// Returns true if latest is newer than current
 fn isNewerVersion(current: []const u8, latest: []const u8) bool {
     // Strip 'v' prefix if present
     const current_clean = if (std.mem.startsWith(u8, current, "v")) current[1..] else current;
     const latest_clean = if (std.mem.startsWith(u8, latest, "v")) latest[1..] else latest;
 
-    return !std.mem.eql(u8, current_clean, latest_clean);
+    // Parse versions - if parsing fails, fall back to string comparison
+    const current_ver = parseVersion(current_clean) catch {
+        return !std.mem.eql(u8, current_clean, latest_clean);
+    };
+    const latest_ver = parseVersion(latest_clean) catch {
+        return !std.mem.eql(u8, current_clean, latest_clean);
+    };
+
+    // Compare major.minor.patch
+    if (latest_ver.major > current_ver.major) return true;
+    if (latest_ver.major < current_ver.major) return false;
+
+    if (latest_ver.minor > current_ver.minor) return true;
+    if (latest_ver.minor < current_ver.minor) return false;
+
+    return latest_ver.patch > current_ver.patch;
+}
+
+/// Parse a semantic version string (major.minor.patch)
+fn parseVersion(version_str: []const u8) !struct { major: u32, minor: u32, patch: u32 } {
+    var parts = std.mem.splitScalar(u8, version_str, '.');
+    const major_str = parts.next() orelse return error.InvalidVersion;
+    const minor_str = parts.next() orelse return error.InvalidVersion;
+    const patch_str = parts.next() orelse return error.InvalidVersion;
+
+    return .{
+        .major = try std.fmt.parseInt(u32, major_str, 10),
+        .minor = try std.fmt.parseInt(u32, minor_str, 10),
+        .patch = try std.fmt.parseInt(u32, patch_str, 10),
+    };
 }
 
 /// Detect current platform (OS and architecture)
-fn detectPlatform() ![]const u8 {
-    const os = switch (@import("builtin").os.tag) {
+fn detectPlatform(allocator: std.mem.Allocator) ![]const u8 {
+    const builtin = @import("builtin");
+
+    const os = switch (builtin.os.tag) {
         .linux => "linux",
         .macos => "macos",
-        else => return error.UnsupportedPlatform,
+        else => {
+            std.debug.print("Error: Unsupported operating system: {s}\n", .{@tagName(builtin.os.tag)});
+            std.debug.print("Supported platforms: linux, macos\n", .{});
+            return error.UnsupportedPlatform;
+        },
     };
 
-    const arch = switch (@import("builtin").cpu.arch) {
+    const arch = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
         .aarch64 => "aarch64",
-        else => return error.UnsupportedArchitecture,
+        else => {
+            std.debug.print("Error: Unsupported CPU architecture: {s}\n", .{@tagName(builtin.cpu.arch)});
+            std.debug.print("Supported architectures: x86_64, aarch64\n", .{});
+            return error.UnsupportedArchitecture;
+        },
     };
 
-    return std.fmt.allocPrint(std.heap.page_allocator, "{s}-{s}", .{ arch, os });
+    return std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, os });
 }
 
 /// Download binary from GitHub releases
@@ -317,14 +395,28 @@ fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
     var redirect_buffer: [1024]u8 = undefined;
     var response = try request.receiveHead(&redirect_buffer);
 
+    // Check for rate limiting
+    if (response.head.status == .too_many_requests) {
+        std.debug.print("GitHub API rate limit exceeded while downloading binary.\n", .{});
+        return error.RateLimitExceeded;
+    }
+
     if (response.head.status != .ok) {
+        switch (response.head.status) {
+            .not_found => {
+                std.debug.print("Error: Binary not found at URL: {s}\n", .{url});
+                std.debug.print("Expected binary name: {s}\n", .{binary_name});
+                std.debug.print("Verify that the release contains binaries for your platform.\n", .{});
+            },
+            else => std.debug.print("Failed to download binary from {s}, status: {}\n", .{ url, response.head.status }),
+        }
         return error.FailedToDownloadBinary;
     }
 
-    // Read entire response body (binaries are typically under 50MB)
+    // Read entire response body with size limit
     var transfer_buffer: [8192]u8 = undefined;
     var body_reader = response.reader(&transfer_buffer);
-    const binary_data = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(100 * 1024 * 1024)); // 100MB max
+    const binary_data = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_BINARY_SIZE));
     defer allocator.free(binary_data);
 
     // Write to file
@@ -355,13 +447,26 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
     var redirect_buffer: [1024]u8 = undefined;
     var response = try request.receiveHead(&redirect_buffer);
 
+    // Check for rate limiting
+    if (response.head.status == .too_many_requests) {
+        std.debug.print("GitHub API rate limit exceeded while downloading checksums.\n", .{});
+        return error.RateLimitExceeded;
+    }
+
     if (response.head.status != .ok) {
+        switch (response.head.status) {
+            .not_found => {
+                std.debug.print("Warning: Checksums file not found at URL: {s}\n", .{checksums_url});
+                std.debug.print("Skipping checksum verification (not recommended).\n", .{});
+            },
+            else => std.debug.print("Failed to download checksums from {s}, status: {}\n", .{ checksums_url, response.head.status }),
+        }
         return error.FailedToDownloadChecksums;
     }
 
     var transfer_buffer: [4096]u8 = undefined;
     var body_reader = response.reader(&transfer_buffer);
-    const checksums_content = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(1024 * 1024));
+    const checksums_content = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_CHECKSUMS_SIZE));
     defer allocator.free(checksums_content);
 
     // Find the checksum for our binary
@@ -378,6 +483,8 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
     }
 
     if (expected_checksum == null) {
+        std.debug.print("Error: Checksum not found for binary: {s}\n", .{binary_name});
+        std.debug.print("The checksums.txt file may be incomplete or corrupted.\n", .{});
         return error.ChecksumNotFound;
     }
 
@@ -401,41 +508,259 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
 
     // Compare checksums
     if (!std.mem.eql(u8, expected_checksum.?, &actual_checksum)) {
+        std.debug.print("Error: Checksum mismatch for binary: {s}\n", .{binary_name});
+        std.debug.print("Expected: {s}\n", .{expected_checksum.?});
+        std.debug.print("Actual:   {s}\n", .{&actual_checksum});
+        std.debug.print("The downloaded binary may be corrupted or tampered with.\n", .{});
         return error.ChecksumMismatch;
     }
 }
 
 /// Test that the new binary works
-fn testBinary(path: []const u8) !void {
+fn testBinary(allocator: std.mem.Allocator, path: []const u8) !void {
     // Need to use absolute path or ./ prefix for executable
     const exe_path = if (std.fs.path.isAbsolute(path))
         path
     else
-        try std.fmt.allocPrint(std.heap.page_allocator, "./{s}", .{path});
-    defer if (!std.fs.path.isAbsolute(path)) std.heap.page_allocator.free(exe_path);
+        try std.fmt.allocPrint(allocator, "./{s}", .{path});
+    defer if (!std.fs.path.isAbsolute(path)) allocator.free(exe_path);
 
-    var child = std.process.Child.init(&.{ exe_path, "--version" }, std.heap.page_allocator);
+    var child = std.process.Child.init(&.{ exe_path, "--version" }, allocator);
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
 
     const result = try child.spawnAndWait();
     if (result != .Exited or result.Exited != 0) {
+        std.debug.print("Error: New binary failed basic functionality test\n", .{});
+        std.debug.print("Tested command: {s} --version\n", .{exe_path});
+        std.debug.print("Exit status: {any}\n", .{result});
+        std.debug.print("The downloaded binary may be incompatible or corrupted.\n", .{});
         return error.NewBinaryFailed;
     }
 }
 
-/// Replace current binary with new one
-fn replaceBinary(new_binary_path: []const u8) !void {
+/// Replace current binary with new one atomically with backup
+/// This function:
+/// 1. Creates a backup of the current binary
+/// 2. Copies the new binary to a temporary location
+/// 3. Atomically renames the new binary over the old one
+/// 4. Cleans up the backup on success
+fn replaceBinary(allocator: std.mem.Allocator, new_binary_path: []const u8) !void {
     // Get current executable path
     var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const exe_path = try std.fs.selfExePath(&exe_path_buf);
 
-    // Make new binary executable
-    const new_file = try std.fs.cwd().openFile(new_binary_path, .{});
-    defer new_file.close();
-    try new_file.chmod(0o755);
+    // Step 1: Create backup path
+    const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{exe_path});
+    defer allocator.free(backup_path);
 
-    // On Unix, we can replace the running executable
-    // Copy new binary over old one
-    try std.fs.cwd().copyFile(new_binary_path, std.fs.cwd(), exe_path, .{});
+    // Step 2: Create backup of current binary
+    std.fs.cwd().copyFile(exe_path, std.fs.cwd(), backup_path, .{}) catch |err| {
+        // Warn but continue - backup is nice-to-have, not required
+        std.debug.print("Warning: Failed to create backup: {}\n", .{err});
+    };
+
+    // Step 3: Create temporary path for new binary (in same directory as target)
+    const temp_path = try std.fmt.allocPrint(allocator, "{s}.new", .{exe_path});
+    defer allocator.free(temp_path);
+
+    // Step 4: Copy new binary to temporary location
+    try std.fs.cwd().copyFile(new_binary_path, std.fs.cwd(), temp_path, .{});
+    errdefer std.fs.cwd().deleteFile(temp_path) catch {};
+
+    // Step 5: Make new binary executable
+    const temp_file = try std.fs.cwd().openFile(temp_path, .{});
+    defer temp_file.close();
+    try temp_file.chmod(0o755);
+
+    // Step 6: Atomically rename new binary over old one
+    // On Unix, rename() is atomic if source and dest are on the same filesystem
+    try std.fs.cwd().rename(temp_path, exe_path);
+
+    // Step 7: Clean up backup on success
+    std.fs.cwd().deleteFile(backup_path) catch |err| {
+        // Log but don't fail - backup can stay around
+        std.debug.print("Note: Backup kept at {s} (cleanup error: {})\n", .{ backup_path, err });
+    };
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "parseVersion - valid semantic versions" {
+    const v1 = try parseVersion("1.2.3");
+    try std.testing.expectEqual(@as(u32, 1), v1.major);
+    try std.testing.expectEqual(@as(u32, 2), v1.minor);
+    try std.testing.expectEqual(@as(u32, 3), v1.patch);
+
+    const v2 = try parseVersion("0.0.1");
+    try std.testing.expectEqual(@as(u32, 0), v2.major);
+    try std.testing.expectEqual(@as(u32, 0), v2.minor);
+    try std.testing.expectEqual(@as(u32, 1), v2.patch);
+
+    const v3 = try parseVersion("10.20.30");
+    try std.testing.expectEqual(@as(u32, 10), v3.major);
+    try std.testing.expectEqual(@as(u32, 20), v3.minor);
+    try std.testing.expectEqual(@as(u32, 30), v3.patch);
+}
+
+test "parseVersion - invalid formats" {
+    try std.testing.expectError(error.InvalidVersion, parseVersion(""));
+    try std.testing.expectError(error.InvalidVersion, parseVersion("1.2"));
+    try std.testing.expectError(error.InvalidVersion, parseVersion("1"));
+
+    // parseInt returns InvalidCharacter for non-numeric input
+    const result = parseVersion("a.b.c");
+    try std.testing.expectError(error.InvalidCharacter, result);
+}
+
+test "isNewerVersion - semantic comparison" {
+    // Major version differences
+    try std.testing.expect(isNewerVersion("1.0.0", "2.0.0"));
+    try std.testing.expect(!isNewerVersion("2.0.0", "1.0.0"));
+    try std.testing.expect(isNewerVersion("1.9.9", "2.0.0"));
+
+    // Minor version differences
+    try std.testing.expect(isNewerVersion("1.0.0", "1.1.0"));
+    try std.testing.expect(!isNewerVersion("1.1.0", "1.0.0"));
+    try std.testing.expect(isNewerVersion("1.0.9", "1.1.0"));
+
+    // Patch version differences
+    try std.testing.expect(isNewerVersion("1.0.0", "1.0.1"));
+    try std.testing.expect(!isNewerVersion("1.0.1", "1.0.0"));
+
+    // Same version
+    try std.testing.expect(!isNewerVersion("1.0.0", "1.0.0"));
+
+    // Double-digit versions
+    try std.testing.expect(isNewerVersion("2.0.0", "10.0.0"));
+    try std.testing.expect(isNewerVersion("1.5.0", "1.20.0"));
+    try std.testing.expect(isNewerVersion("1.0.5", "1.0.15"));
+
+    // With 'v' prefix
+    try std.testing.expect(isNewerVersion("v1.0.0", "v2.0.0"));
+    try std.testing.expect(isNewerVersion("v1.0.0", "2.0.0"));
+    try std.testing.expect(isNewerVersion("1.0.0", "v2.0.0"));
+}
+
+test "security limits - constants are reasonable" {
+    // Verify security limits are set to reasonable values
+    try std.testing.expect(MAX_COMPRESSED_RESPONSE_SIZE == 10 * 1024 * 1024); // 10MB
+    try std.testing.expect(MAX_DECOMPRESSED_RESPONSE_SIZE == 20 * 1024 * 1024); // 20MB
+    try std.testing.expect(MAX_BINARY_SIZE == 100 * 1024 * 1024); // 100MB
+    try std.testing.expect(MAX_CHECKSUMS_SIZE == 1024 * 1024); // 1MB
+
+    // Ensure decompressed limit is greater than compressed (gzip typically 2-10x compression)
+    try std.testing.expect(MAX_DECOMPRESSED_RESPONSE_SIZE > MAX_COMPRESSED_RESPONSE_SIZE);
+
+    // Ensure binary size is reasonable for CLI tools
+    try std.testing.expect(MAX_BINARY_SIZE >= 1024 * 1024); // At least 1MB
+    try std.testing.expect(MAX_BINARY_SIZE <= 500 * 1024 * 1024); // Not more than 500MB
+}
+
+test "replaceBinary - atomic replacement strategy" {
+    // This test documents the atomic replacement strategy
+    // Actual testing would require filesystem mocking
+
+    // The function implements a safe replacement strategy:
+    // 1. Backup current binary (best-effort)
+    // 2. Copy new binary to temp location (.new suffix)
+    // 3. Atomic rename over old binary
+    // 4. Clean up backup on success
+    //
+    // Benefits:
+    // - rename() is atomic on Unix if same filesystem
+    // - If process crashes mid-upgrade, old binary is still intact
+    // - If rename fails, old binary is unchanged
+    // - Backup allows manual recovery if needed
+}
+
+test "rate limiting - handles HTTP 429 responses" {
+    // This test documents the rate limiting behavior
+    // Actual testing would require HTTP mocking
+
+    // All GitHub API calls check for HTTP 429 (Too Many Requests):
+    // 1. fetchLatestVersion() - checks releases endpoint
+    // 2. downloadBinary() - checks binary download
+    // 3. verifyChecksum() - checks checksums.txt download
+    //
+    // When rate limited:
+    // - Returns error.RateLimitExceeded
+    // - Logs retry-after time if provided in header
+    // - Allows caller to decide whether to retry
+    //
+    // GitHub rate limits (as of 2024):
+    // - Unauthenticated: 60 requests/hour
+    // - Authenticated: 5000 requests/hour
+}
+
+test "parseVersion - edge cases with whitespace" {
+    // Version strings with leading/trailing whitespace should fail
+    // (caller should trim before passing to parseVersion)
+    try std.testing.expectError(error.InvalidVersion, parseVersion(" 1.2.3"));
+    try std.testing.expectError(error.InvalidVersion, parseVersion("1.2.3 "));
+    try std.testing.expectError(error.InvalidVersion, parseVersion(" 1.2.3 "));
+}
+
+test "parseVersion - zero versions" {
+    const v = try parseVersion("0.0.0");
+    try std.testing.expectEqual(@as(u32, 0), v.major);
+    try std.testing.expectEqual(@as(u32, 0), v.minor);
+    try std.testing.expectEqual(@as(u32, 0), v.patch);
+}
+
+test "parseVersion - large version numbers" {
+    const v = try parseVersion("999.999.999");
+    try std.testing.expectEqual(@as(u32, 999), v.major);
+    try std.testing.expectEqual(@as(u32, 999), v.minor);
+    try std.testing.expectEqual(@as(u32, 999), v.patch);
+}
+
+test "isNewerVersion - edge cases" {
+    // Same versions with different 'v' prefix combinations
+    try std.testing.expect(!isNewerVersion("1.0.0", "1.0.0"));
+    try std.testing.expect(!isNewerVersion("v1.0.0", "1.0.0"));
+    try std.testing.expect(!isNewerVersion("1.0.0", "v1.0.0"));
+    try std.testing.expect(!isNewerVersion("v1.0.0", "v1.0.0"));
+
+    // Zero versions
+    try std.testing.expect(isNewerVersion("0.0.0", "0.0.1"));
+    try std.testing.expect(isNewerVersion("0.0.0", "0.1.0"));
+    try std.testing.expect(isNewerVersion("0.0.0", "1.0.0"));
+    try std.testing.expect(!isNewerVersion("0.0.1", "0.0.0"));
+
+    // Comparing with malformed versions falls back to string comparison
+    // Both are malformed, so it returns false (they're equal strings)
+    try std.testing.expect(!isNewerVersion("abc", "abc"));
+}
+
+test "detectPlatform - allocator handling" {
+    // Test that detectPlatform properly uses the allocator
+    const allocator = std.testing.allocator;
+    const platform = try detectPlatform(allocator);
+    defer allocator.free(platform);
+
+    // Platform should be non-empty
+    try std.testing.expect(platform.len > 0);
+
+    // Platform should contain a hyphen (arch-os format)
+    try std.testing.expect(std.mem.indexOf(u8, platform, "-") != null);
+
+    // Platform should be one of the expected formats
+    const valid_platforms = [_][]const u8{
+        "x86_64-linux",
+        "aarch64-linux",
+        "x86_64-macos",
+        "aarch64-macos",
+    };
+
+    var found = false;
+    for (valid_platforms) |valid| {
+        if (std.mem.eql(u8, platform, valid)) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }

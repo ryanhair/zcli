@@ -14,58 +14,58 @@ pub const TerminalCapability = enum {
     true_color, // 24-bit RGB color
 
     /// Detect terminal capabilities from environment variables and platform-specific context
-    pub fn detect() TerminalCapability {
+    pub fn detect(allocator: std.mem.Allocator) TerminalCapability {
         // Check NO_COLOR environment variable first (universal standard)
-        if (std.process.hasEnvVar(std.heap.page_allocator, "NO_COLOR") catch false) {
+        if (std.process.hasEnvVar(allocator, "NO_COLOR") catch false) {
             return .no_color;
         }
 
         // Platform-specific detection
         switch (builtin.os.tag) {
-            .windows => return detectWindows(),
-            .macos, .linux, .freebsd, .openbsd, .netbsd => return detectUnix(),
-            else => return detectGeneric(),
+            .windows => return detectWindows(allocator),
+            .macos, .linux, .freebsd, .openbsd, .netbsd => return detectUnix(allocator),
+            else => return detectGeneric(allocator),
         }
     }
 
     /// Windows-specific terminal capability detection
-    pub fn detectWindows() TerminalCapability {
+    pub fn detectWindows(allocator: std.mem.Allocator) TerminalCapability {
         // Check for Windows Terminal (modern terminal with true color support)
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "WT_SESSION") catch null) |wt_session| {
-            defer std.heap.page_allocator.free(wt_session);
+        if (std.process.getEnvVarOwned(allocator, "WT_SESSION") catch null) |wt_session| {
+            defer allocator.free(wt_session);
             return .true_color;
         }
 
         // Check for ConEmu (supports 256 colors)
-        if (std.process.hasEnvVar(std.heap.page_allocator, "ConEmuPID") catch false) {
+        if (std.process.hasEnvVar(allocator, "ConEmuPID") catch false) {
             return .ansi_256;
         }
 
         // Check for modern Windows 10+ with VT support
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "TERM_PROGRAM") catch null) |term_program| {
-            defer std.heap.page_allocator.free(term_program);
+        if (std.process.getEnvVarOwned(allocator, "TERM_PROGRAM") catch null) |term_program| {
+            defer allocator.free(term_program);
             if (std.mem.eql(u8, term_program, "vscode")) {
                 return .true_color;
             }
         }
 
         // Check Windows version via registry or fallback to generic detection
-        return detectGeneric();
+        return detectGeneric(allocator);
     }
 
     /// Unix/Linux/macOS-specific terminal capability detection
-    pub fn detectUnix() TerminalCapability {
+    pub fn detectUnix(allocator: std.mem.Allocator) TerminalCapability {
         // Check COLORTERM for modern terminal support
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "COLORTERM") catch null) |colorterm| {
-            defer std.heap.page_allocator.free(colorterm);
+        if (std.process.getEnvVarOwned(allocator, "COLORTERM") catch null) |colorterm| {
+            defer allocator.free(colorterm);
             if (std.mem.eql(u8, colorterm, "truecolor") or std.mem.eql(u8, colorterm, "24bit")) {
                 return .true_color;
             }
         }
 
         // Check for iTerm2 (macOS)
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "TERM_PROGRAM") catch null) |term_program| {
-            defer std.heap.page_allocator.free(term_program);
+        if (std.process.getEnvVarOwned(allocator, "TERM_PROGRAM") catch null) |term_program| {
+            defer allocator.free(term_program);
             if (std.mem.eql(u8, term_program, "iTerm.app")) {
                 return .true_color;
             }
@@ -78,19 +78,19 @@ pub const TerminalCapability = enum {
         }
 
         // Check SSH connection (might have limited capabilities)
-        if (std.process.hasEnvVar(std.heap.page_allocator, "SSH_CONNECTION") catch false) {
+        if (std.process.hasEnvVar(allocator, "SSH_CONNECTION") catch false) {
             // More conservative detection over SSH
-            return detectGeneric();
+            return detectGeneric(allocator);
         }
 
-        return detectGeneric();
+        return detectGeneric(allocator);
     }
 
     /// Generic terminal capability detection based on TERM environment variable
-    pub fn detectGeneric() TerminalCapability {
+    pub fn detectGeneric(allocator: std.mem.Allocator) TerminalCapability {
         // Check TERM environment variable for capability hints
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "TERM") catch null) |term| {
-            defer std.heap.page_allocator.free(term);
+        if (std.process.getEnvVarOwned(allocator, "TERM") catch null) |term| {
+            defer allocator.free(term);
 
             // True color terminals
             if (std.mem.indexOf(u8, term, "truecolor") != null or
@@ -133,8 +133,8 @@ pub const Theme = struct {
     color_enabled: bool,
 
     /// Initialize theme context with automatic detection
-    pub fn init() Theme {
-        const capability = TerminalCapability.detect();
+    pub fn init(allocator: std.mem.Allocator) Theme {
+        const capability = TerminalCapability.detect(allocator);
         const is_tty = detectTTY();
 
         return .{
@@ -155,8 +155,8 @@ pub const Theme = struct {
     }
 
     /// Initialize with forced color setting (override TTY detection)
-    pub fn initForced(force_color: bool) Theme {
-        const capability = TerminalCapability.detect();
+    pub fn initForced(allocator: std.mem.Allocator, force_color: bool) Theme {
+        const capability = TerminalCapability.detect(allocator);
         const is_tty = detectTTY();
 
         return .{
@@ -196,7 +196,6 @@ pub const Theme = struct {
             .true_color => "true color (24-bit)",
         };
     }
-
 };
 
 /// Detect if output is to a TTY (terminal)
@@ -213,7 +212,7 @@ test "capability detection basics" {
     try testing.expect(cap == .ansi_16);
 
     // Test theme initialization
-    const theme_ctx = Theme.init();
+    const theme_ctx = Theme.init(testing.allocator);
     try testing.expect(@TypeOf(theme_ctx.capability) == TerminalCapability);
 
     // Test capability getter
@@ -233,7 +232,7 @@ test "capability detection from environment" {
     const testing = std.testing;
 
     // Test that detection doesn't crash (actual detection depends on environment)
-    const capability = TerminalCapability.detect();
+    const capability = TerminalCapability.detect(testing.allocator);
     try testing.expect(@TypeOf(capability) == TerminalCapability);
 
     // Should be one of the valid capability values
@@ -251,7 +250,7 @@ test "TTY detection" {
     try testing.expect(@TypeOf(is_tty) == bool);
 
     // Test theme includes TTY info
-    const theme_ctx = Theme.init();
+    const theme_ctx = Theme.init(testing.allocator);
     try testing.expect(@TypeOf(theme_ctx.is_tty) == bool);
 }
 
@@ -259,15 +258,15 @@ test "platform-specific detection functions" {
     const testing = std.testing;
 
     // Test Windows detection doesn't crash
-    const windows_cap = TerminalCapability.detectWindows();
+    const windows_cap = TerminalCapability.detectWindows(testing.allocator);
     try testing.expect(@TypeOf(windows_cap) == TerminalCapability);
 
     // Test Unix detection doesn't crash
-    const unix_cap = TerminalCapability.detectUnix();
+    const unix_cap = TerminalCapability.detectUnix(testing.allocator);
     try testing.expect(@TypeOf(unix_cap) == TerminalCapability);
 
     // Test generic detection doesn't crash
-    const generic_cap = TerminalCapability.detectGeneric();
+    const generic_cap = TerminalCapability.detectGeneric(testing.allocator);
     try testing.expect(@TypeOf(generic_cap) == TerminalCapability);
 }
 
@@ -276,10 +275,10 @@ test "capability range validation" {
 
     // Test all detection paths return valid capabilities
     const capabilities = [_]TerminalCapability{
-        TerminalCapability.detectWindows(),
-        TerminalCapability.detectUnix(),
-        TerminalCapability.detectGeneric(),
-        TerminalCapability.detect(),
+        TerminalCapability.detectWindows(testing.allocator),
+        TerminalCapability.detectUnix(testing.allocator),
+        TerminalCapability.detectGeneric(testing.allocator),
+        TerminalCapability.detect(testing.allocator),
     };
 
     for (capabilities) |cap| {
@@ -301,7 +300,7 @@ test "enhanced Theme context methods" {
     try testing.expect(true_color_theme.supportsColor() == true_color_theme.color_enabled);
 
     // Test forced color mode
-    const forced_theme = Theme.initForced(true);
+    const forced_theme = Theme.initForced(testing.allocator, true);
     try testing.expect(forced_theme.color_enabled == (forced_theme.capability != .no_color));
 
     // Test no-color theme

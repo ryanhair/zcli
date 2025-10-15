@@ -5,7 +5,6 @@ const zcli = @import("zcli");
 ///
 /// Provides version information display for CLI applications.
 /// Handles --version/-V global option.
-
 /// Global options provided by this plugin
 pub const global_options = [_]zcli.GlobalOption{
     zcli.option("version", bool, .{ .short = 'V', .default = false, .description = "Show version information" }),
@@ -60,7 +59,7 @@ test "version plugin global option" {
     var context = zcli.Context{
         .allocator = allocator,
         .io = &io,
-        .environment = zcli.Environment.init(),
+        .environment = zcli.Environment.init(allocator),
         .plugin_extensions = zcli.ContextExtensions.init(allocator),
         .app_name = "test-app",
         .app_version = "1.2.3",
@@ -88,7 +87,7 @@ test "version plugin preExecute stops execution" {
     var context = zcli.Context{
         .allocator = allocator,
         .io = &io,
-        .environment = zcli.Environment.init(),
+        .environment = zcli.Environment.init(allocator),
         .plugin_extensions = zcli.ContextExtensions.init(allocator),
         .app_name = "test-app",
         .app_version = "1.2.3",
@@ -121,7 +120,7 @@ test "version plugin preExecute continues without flag" {
     var context = zcli.Context{
         .allocator = allocator,
         .io = &io,
-        .environment = zcli.Environment.init(),
+        .environment = zcli.Environment.init(allocator),
         .plugin_extensions = zcli.ContextExtensions.init(allocator),
         .app_name = "test-app",
         .app_version = "1.2.3",

@@ -345,9 +345,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             return Self{};
         }
 
-        pub fn execute(self: *Self, args: []const []const u8) !void {
-            const allocator = std.heap.page_allocator;
-
+        pub fn execute(self: *Self, allocator: std.mem.Allocator, args: []const []const u8) !void {
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
@@ -538,7 +536,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             var context = zcli.Context{
                 .allocator = allocator,
                 .io = &io,
-                .environment = zcli.Environment.init(),
+                .environment = zcli.Environment.init(allocator),
                 .plugin_extensions = zcli.ContextExtensions.init(allocator),
                 .app_name = config.app_name,
                 .app_version = config.app_version,
@@ -587,7 +585,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             const args = try std.process.argsAlloc(allocator);
             defer std.process.argsFree(allocator, args);
 
-            try self.execute(args[1..]);
+            try self.execute(allocator, args[1..]);
         }
 
         pub fn parseGlobalOptions(self: *Self, context: *zcli.Context, args: []const []const u8) !zcli.GlobalOptionsResult {
@@ -1961,7 +1959,7 @@ test "pure command group behavior: always shows help without error" {
 
     // Test 1: Pure command group without --help should show help and succeed
     TestHelpPlugin.reset();
-    try app.execute(&.{"network"});
+    try app.execute(testing.allocator, &.{"network"});
 
     // Should have triggered CommandNotFound -> help showing -> error handled
     try testing.expect(TestHelpPlugin.help_shown);
@@ -1969,7 +1967,7 @@ test "pure command group behavior: always shows help without error" {
 
     // Test 2: Pure command group with --help should also show help and succeed
     TestHelpPlugin.reset();
-    try app.execute(&.{ "network", "--help" });
+    try app.execute(testing.allocator, &.{ "network", "--help" });
 
     // Should have triggered help showing (same behavior regardless of --help)
     try testing.expect(TestHelpPlugin.help_shown);
@@ -1981,7 +1979,7 @@ test "pure command group: subcommands execute normally" {
 
     // Subcommand should execute normally without help plugin intervention
     TestHelpPlugin.reset();
-    try app.execute(&.{ "network", "ls" });
+    try app.execute(testing.allocator, &.{ "network", "ls" });
     try testing.expect(!TestHelpPlugin.command_found_error); // Should not hit CommandNotFound
 }
 
@@ -1992,7 +1990,7 @@ test "error handling: plugin returns true prevents error propagation" {
     // This tests the fix - when a plugin handles CommandNotFound by returning true,
     // the registry should not propagate the error
     TestHelpPlugin.reset();
-    try app.execute(&.{"nonexistent"});
+    try app.execute(testing.allocator, &.{"nonexistent"});
 
     // Plugin should have handled the error
     try testing.expect(TestHelpPlugin.command_found_error);
