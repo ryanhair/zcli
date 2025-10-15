@@ -90,6 +90,7 @@ pub fn init(config: Config) type {
 
             // Detect platform
             const platform = try detectPlatform(allocator);
+            defer allocator.free(platform);
             const binary_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ context.app_name, platform });
             defer allocator.free(binary_name);
 
@@ -178,6 +179,8 @@ pub fn init(config: Config) type {
 
 /// Fetch the latest version from GitHub releases API filtered by CLI name prefix
 fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: []const u8) ![]const u8 {
+    std.debug.print("Checking for updates...\n", .{});
+
     // Fetch all releases and filter by tag prefix
     const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/releases", .{repo});
     defer allocator.free(url);
@@ -372,6 +375,8 @@ fn detectPlatform(allocator: std.mem.Allocator) ![]const u8 {
 
 /// Download binary from GitHub releases
 fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) ![]const u8 {
+    std.debug.print("Downloading binary... (this may take a while on slow connections)\n", .{});
+
     const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/{s}-v{s}/{s}", .{ repo, cli_name, version, binary_name });
     defer allocator.free(url);
 
@@ -429,6 +434,8 @@ fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
 
 /// Verify checksum of downloaded binary
 fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []const u8, version: []const u8, binary_path: []const u8, binary_name: []const u8) !void {
+    std.debug.print("Verifying checksum...\n", .{});
+
     // Download checksums.txt
     const checksums_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/{s}-v{s}/checksums.txt", .{ repo, cli_name, version });
     defer allocator.free(checksums_url);
@@ -464,6 +471,7 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
         return error.FailedToDownloadChecksums;
     }
 
+    // Read checksums file
     var transfer_buffer: [4096]u8 = undefined;
     var body_reader = response.reader(&transfer_buffer);
     const checksums_content = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_CHECKSUMS_SIZE));
