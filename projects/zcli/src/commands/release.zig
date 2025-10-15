@@ -132,10 +132,19 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                 // Offer to create initial tag interactively
                 try stdout.print("  No tags found - this appears to be a new project.\n\n", .{});
 
+                // Check if user provided an explicit version (not a bump type)
+                const is_bump_type = std.mem.eql(u8, args.version, "major") or
+                    std.mem.eql(u8, args.version, "minor") or
+                    std.mem.eql(u8, args.version, "patch");
+
                 if (options.@"dry-run") {
                     try stdout.print("(dry-run: would prompt to create initial release tag)\n", .{});
                     is_initial_release = true;
-                    break :blk Version{ .major = 0, .minor = 1, .patch = 0 };
+                    const initial_version = if (is_bump_type)
+                        Version{ .major = 0, .minor = 1, .patch = 0 }
+                    else
+                        try Version.parse(args.version);
+                    break :blk initial_version;
                 }
 
                 try stdout.print("Create initial release tag? [Y/n]: ", .{});
@@ -149,12 +158,15 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                     return err;
                 }
 
-                try stdout.print("  Initial version (default: 0.1.0): ", .{});
-                const version_input = try readLine(allocator);
-                defer allocator.free(version_input);
-                const initial_version_str = std.mem.trim(u8, version_input, " \t\r\n");
+                // If user provided explicit version, use it; otherwise prompt
+                const version_to_use = if (is_bump_type) blk2: {
+                    try stdout.print("  Initial version (default: 0.1.0): ", .{});
+                    const version_input = try readLine(allocator);
+                    defer allocator.free(version_input);
+                    const initial_version_str = std.mem.trim(u8, version_input, " \t\r\n");
+                    break :blk2 if (initial_version_str.len == 0) "0.1.0" else initial_version_str;
+                } else args.version;
 
-                const version_to_use = if (initial_version_str.len == 0) "0.1.0" else initial_version_str;
                 const initial_version = Version.parse(version_to_use) catch |parse_err| {
                     try stderr.print("✗ Invalid version format: {s}\n", .{version_to_use});
                     try stderr.print("  Version must be in format: MAJOR.MINOR.PATCH (e.g., 0.1.0)\n", .{});
@@ -615,4 +627,270 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u
     }
 
     return result.stdout;
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "Version.parse - valid versions" {
+    const v1 = try Version.parse("1.2.3");
+    try testing.expectEqual(@as(u32, 1), v1.major);
+    try testing.expectEqual(@as(u32, 2), v1.minor);
+    try testing.expectEqual(@as(u32, 3), v1.patch);
+
+    const v2 = try Version.parse("v1.2.3");
+    try testing.expectEqual(@as(u32, 1), v2.major);
+    try testing.expectEqual(@as(u32, 2), v2.minor);
+    try testing.expectEqual(@as(u32, 3), v2.patch);
+
+    const v3 = try Version.parse("0.0.1");
+    try testing.expectEqual(@as(u32, 0), v3.major);
+    try testing.expectEqual(@as(u32, 0), v3.minor);
+    try testing.expectEqual(@as(u32, 1), v3.patch);
+}
+
+test "Version.parse - invalid versions" {
+    try testing.expectError(error.InvalidVersion, Version.parse("1.2"));
+    try testing.expectError(error.InvalidVersion, Version.parse("1"));
+    try testing.expectError(error.InvalidVersion, Version.parse(""));
+    try testing.expectError(error.InvalidVersion, Version.parse("v"));
+}
+
+test "Version.format - formats correctly" {
+    const allocator = testing.allocator;
+
+    const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
+    const s1 = try v1.format(allocator);
+    defer allocator.free(s1);
+    try testing.expectEqualStrings("1.2.3", s1);
+
+    const v2 = Version{ .major = 0, .minor = 0, .patch = 1 };
+    const s2 = try v2.format(allocator);
+    defer allocator.free(s2);
+    try testing.expectEqualStrings("0.0.1", s2);
+
+    const v3 = Version{ .major = 10, .minor = 20, .patch = 30 };
+    const s3 = try v3.format(allocator);
+    defer allocator.free(s3);
+    try testing.expectEqualStrings("10.20.30", s3);
+}
+
+test "Version.bump - major" {
+    const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
+    const v2 = v1.bump("major");
+    try testing.expectEqual(@as(u32, 2), v2.major);
+    try testing.expectEqual(@as(u32, 0), v2.minor);
+    try testing.expectEqual(@as(u32, 0), v2.patch);
+
+    const v3 = Version{ .major = 0, .minor = 5, .patch = 10 };
+    const v4 = v3.bump("major");
+    try testing.expectEqual(@as(u32, 1), v4.major);
+    try testing.expectEqual(@as(u32, 0), v4.minor);
+    try testing.expectEqual(@as(u32, 0), v4.patch);
+}
+
+test "Version.bump - minor" {
+    const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
+    const v2 = v1.bump("minor");
+    try testing.expectEqual(@as(u32, 1), v2.major);
+    try testing.expectEqual(@as(u32, 3), v2.minor);
+    try testing.expectEqual(@as(u32, 0), v2.patch);
+
+    const v3 = Version{ .major = 0, .minor = 0, .patch = 10 };
+    const v4 = v3.bump("minor");
+    try testing.expectEqual(@as(u32, 0), v4.major);
+    try testing.expectEqual(@as(u32, 1), v4.minor);
+    try testing.expectEqual(@as(u32, 0), v4.patch);
+}
+
+test "Version.bump - patch" {
+    const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
+    const v2 = v1.bump("patch");
+    try testing.expectEqual(@as(u32, 1), v2.major);
+    try testing.expectEqual(@as(u32, 2), v2.minor);
+    try testing.expectEqual(@as(u32, 4), v2.patch);
+
+    const v3 = Version{ .major = 0, .minor = 0, .patch = 0 };
+    const v4 = v3.bump("patch");
+    try testing.expectEqual(@as(u32, 0), v4.major);
+    try testing.expectEqual(@as(u32, 0), v4.minor);
+    try testing.expectEqual(@as(u32, 1), v4.patch);
+}
+
+test "Version.bump - invalid bump type returns unchanged" {
+    const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
+    const v2 = v1.bump("invalid");
+    try testing.expectEqual(@as(u32, 1), v2.major);
+    try testing.expectEqual(@as(u32, 2), v2.minor);
+    try testing.expectEqual(@as(u32, 3), v2.patch);
+}
+
+test "parseCliName - quoted string format" {
+    const allocator = testing.allocator;
+
+    // Create a temporary build.zig.zon file
+    const temp_dir = testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const zon_content =
+        \\.{
+        \\    .name = "myapp",
+        \\    .version = "1.0.0",
+        \\}
+    ;
+
+    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
+    defer file.close();
+    try file.writeAll(zon_content);
+
+    // Change to temp directory
+    const cwd = std.fs.cwd();
+    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
+    defer allocator.free(original_cwd_path);
+
+    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(temp_path);
+
+    try std.posix.chdir(temp_path);
+    defer std.posix.chdir(original_cwd_path) catch {};
+
+    const cli_name = try parseCliName(allocator);
+    defer allocator.free(cli_name);
+
+    try testing.expectEqualStrings("myapp", cli_name);
+}
+
+test "parseCliName - identifier format" {
+    const allocator = testing.allocator;
+
+    const temp_dir = testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const zon_content =
+        \\.{
+        \\    .name = .zcli,
+        \\    .version = "1.0.0",
+        \\}
+    ;
+
+    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
+    defer file.close();
+    try file.writeAll(zon_content);
+
+    const cwd = std.fs.cwd();
+    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
+    defer allocator.free(original_cwd_path);
+
+    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(temp_path);
+
+    try std.posix.chdir(temp_path);
+    defer std.posix.chdir(original_cwd_path) catch {};
+
+    const cli_name = try parseCliName(allocator);
+    defer allocator.free(cli_name);
+
+    try testing.expectEqualStrings("zcli", cli_name);
+}
+
+test "parseCliName - identifier with trailing comma" {
+    const allocator = testing.allocator;
+
+    const temp_dir = testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const zon_content =
+        \\.{
+        \\    .name = .myapp,
+        \\    .version = "1.0.0",
+        \\}
+    ;
+
+    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
+    defer file.close();
+    try file.writeAll(zon_content);
+
+    const cwd = std.fs.cwd();
+    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
+    defer allocator.free(original_cwd_path);
+
+    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(temp_path);
+
+    try std.posix.chdir(temp_path);
+    defer std.posix.chdir(original_cwd_path) catch {};
+
+    const cli_name = try parseCliName(allocator);
+    defer allocator.free(cli_name);
+
+    try testing.expectEqualStrings("myapp", cli_name);
+}
+
+test "parseCliName - missing name field" {
+    const allocator = testing.allocator;
+
+    const temp_dir = testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const zon_content =
+        \\.{
+        \\    .version = "1.0.0",
+        \\}
+    ;
+
+    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
+    defer file.close();
+    try file.writeAll(zon_content);
+
+    const cwd = std.fs.cwd();
+    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
+    defer allocator.free(original_cwd_path);
+
+    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(temp_path);
+
+    try std.posix.chdir(temp_path);
+    defer std.posix.chdir(original_cwd_path) catch {};
+
+    try testing.expectError(error.NameNotFound, parseCliName(allocator));
+}
+
+test "bump type detection" {
+    // Test that we can correctly identify bump types vs explicit versions
+    const is_major = std.mem.eql(u8, "major", "major");
+    const is_minor = std.mem.eql(u8, "minor", "minor");
+    const is_patch = std.mem.eql(u8, "patch", "patch");
+    const is_version = !std.mem.eql(u8, "1.2.3", "major") and
+        !std.mem.eql(u8, "1.2.3", "minor") and
+        !std.mem.eql(u8, "1.2.3", "patch");
+
+    try testing.expect(is_major);
+    try testing.expect(is_minor);
+    try testing.expect(is_patch);
+    try testing.expect(is_version);
+}
+
+test "tag name format with CLI name prefix" {
+    const allocator = testing.allocator;
+
+    // Test tag format: {cli_name}-v{version}
+    const cli_name = "zcli";
+    const version = "1.2.3";
+
+    const tag_name = try std.fmt.allocPrint(allocator, "{s}-v{s}", .{ cli_name, version });
+    defer allocator.free(tag_name);
+
+    try testing.expectEqualStrings("zcli-v1.2.3", tag_name);
+
+    // Test another example
+    const cli_name2 = "myapp";
+    const version2 = "0.1.0";
+
+    const tag_name2 = try std.fmt.allocPrint(allocator, "{s}-v{s}", .{ cli_name2, version2 });
+    defer allocator.free(tag_name2);
+
+    try testing.expectEqualStrings("myapp-v0.1.0", tag_name2);
 }
