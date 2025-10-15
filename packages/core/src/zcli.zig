@@ -278,6 +278,10 @@ pub const IO = struct {
     pub fn stdin(self: *@This()) *std.Io.Reader {
         return &self.stdin_reader.interface;
     }
+
+    pub fn stdinReader(self: *@This()) *std.fs.File.Reader {
+        return &self.stdin_reader;
+    }
 };
 
 /// Environment abstraction for testing

@@ -1,6 +1,28 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
+/// Read a line from stdin with a local buffer
+fn readLine(allocator: std.mem.Allocator) ![]u8 {
+    const stdin_file = std.fs.File.stdin();
+
+    // Read up to 256 bytes or until newline
+    var line_buffer: [256]u8 = undefined;
+    var i: usize = 0;
+    while (i < line_buffer.len) {
+        var byte_buf: [1]u8 = undefined;
+        const bytes_read = stdin_file.read(&byte_buf) catch |err| {
+            if (err == error.EndOfStream) break;
+            return err;
+        };
+        if (bytes_read == 0) break; // EOF
+        if (byte_buf[0] == '\n') break;
+        line_buffer[i] = byte_buf[0];
+        i += 1;
+    }
+
+    return try allocator.dupe(u8, line_buffer[0..i]);
+}
+
 pub const meta = .{
     .description = "Create and manage project releases",
     .examples = &.{
@@ -90,23 +112,77 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();
 
-    // 1. Get current version from git tags
-    stdout.print("→ Detecting current version...\n", .{}) catch {};
-    const current_version = getCurrentVersion(allocator) catch |err| {
-        if (err == error.NoTags) {
-            try stderr.print("✗ No tags found. Cannot determine current version.\n", .{});
-            try stderr.print("  Create an initial tag first: git tag -a v0.1.0 -m \"Initial release\"\n", .{});
+    // 1. Parse CLI name from build.zig.zon
+    stdout.print("→ Reading build.zig.zon...\n", .{}) catch {};
+    const cli_name = try parseCliName(allocator);
+    defer allocator.free(cli_name);
+    stdout.print("  CLI name: {s}\n", .{cli_name}) catch {};
+
+    // 2. Get current version from git tags (or create initial tag)
+    stdout.print("\n→ Detecting current version...\n", .{}) catch {};
+
+    // Track if this is an initial release
+    var is_initial_release = false;
+
+    const current_version = blk: {
+        if (getCurrentVersion(allocator, cli_name)) |version| {
+            break :blk version;
+        } else |err| {
+            if (err == error.NoTags) {
+                // Offer to create initial tag interactively
+                try stdout.print("  No tags found - this appears to be a new project.\n\n", .{});
+
+                if (options.@"dry-run") {
+                    try stdout.print("(dry-run: would prompt to create initial release tag)\n", .{});
+                    is_initial_release = true;
+                    break :blk Version{ .major = 0, .minor = 1, .patch = 0 };
+                }
+
+                try stdout.print("Create initial release tag? [Y/n]: ", .{});
+                const response = try readLine(allocator);
+                defer allocator.free(response);
+                const trimmed = std.mem.trim(u8, response, " \t\r\n");
+
+                if (std.mem.eql(u8, trimmed, "n") or std.mem.eql(u8, trimmed, "N")) {
+                    try stderr.print("\nTo create manually:\n", .{});
+                    try stderr.print("  git tag -a {s}-v0.1.0 -m \"Initial release\"\n", .{cli_name});
+                    return err;
+                }
+
+                try stdout.print("  Initial version (default: 0.1.0): ", .{});
+                const version_input = try readLine(allocator);
+                defer allocator.free(version_input);
+                const initial_version_str = std.mem.trim(u8, version_input, " \t\r\n");
+
+                const version_to_use = if (initial_version_str.len == 0) "0.1.0" else initial_version_str;
+                const initial_version = Version.parse(version_to_use) catch |parse_err| {
+                    try stderr.print("✗ Invalid version format: {s}\n", .{version_to_use});
+                    try stderr.print("  Version must be in format: MAJOR.MINOR.PATCH (e.g., 0.1.0)\n", .{});
+                    return parse_err;
+                };
+
+                try stdout.print("\n  Creating initial tag {s}-v{s}...\n", .{ cli_name, version_to_use });
+                is_initial_release = true;
+                break :blk initial_version;
+            }
             return err;
         }
-        return err;
     };
 
     const current_version_str = try current_version.format(allocator);
     defer allocator.free(current_version_str);
-    stdout.print("  Current version: {s}\n", .{current_version_str}) catch {};
 
-    // 2. Calculate new version
+    // 3. Calculate new version
     const new_version = blk: {
+        // For initial releases, use the version as-is (no bumping needed)
+        if (is_initial_release) {
+            stdout.print("  Initial version: {s}\n\n", .{current_version_str}) catch {};
+            break :blk current_version;
+        }
+
+        // For subsequent releases, show current and calculate new
+        stdout.print("  Current version: {s}\n", .{current_version_str}) catch {};
+
         if (std.mem.eql(u8, args.version, "major") or
             std.mem.eql(u8, args.version, "minor") or
             std.mem.eql(u8, args.version, "patch"))
@@ -119,9 +195,12 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 
     const new_version_str = try new_version.format(allocator);
     defer allocator.free(new_version_str);
-    stdout.print("  New version: {s}\n\n", .{new_version_str}) catch {};
 
-    // 3. Safety checks
+    if (!is_initial_release) {
+        stdout.print("  New version: {s}\n\n", .{new_version_str}) catch {};
+    }
+
+    // 4. Safety checks
     if (!options.@"skip-checks") {
         stdout.print("→ Running safety checks...\n", .{}) catch {};
 
@@ -177,17 +256,19 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         try allocator.dupe(u8, msg)
     else if (options.@"dry-run")
         try allocator.dupe(u8, "(dry-run: would open editor for release notes)")
+    else if (is_initial_release)
+        try getInitialReleaseNotes(allocator, new_version_str)
     else
-        try getReleaseNotes(allocator, current_version_str, new_version_str);
+        try getReleaseNotes(allocator, cli_name, current_version_str, new_version_str);
     defer allocator.free(release_notes);
 
     stdout.print("\nRelease notes:\n{s}\n", .{release_notes}) catch {};
 
     // 5.5. Confirm release (unless using --message flag or dry-run)
     if (options.message == null and !options.@"dry-run") {
-        stdout.print("\nContinue with release v{s}? [Y/n]: ", .{new_version_str}) catch {};
-        var stdin = context.stdin();
-        const response = try stdin.takeDelimiterExclusive('\n');
+        stdout.print("\nContinue with release {s}-v{s}? [Y/n]: ", .{ cli_name, new_version_str }) catch {};
+        const response = try readLine(allocator);
+        defer allocator.free(response);
         const trimmed = std.mem.trim(u8, response, " \t\r\n");
 
         // Default to yes - only abort if explicitly "n" or "N"
@@ -216,7 +297,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     }
 
     // 7. Create annotated tag
-    const tag_name = try std.fmt.allocPrint(allocator, "v{s}", .{new_version_str});
+    const tag_name = try std.fmt.allocPrint(allocator, "{s}-v{s}", .{ cli_name, new_version_str });
     defer allocator.free(tag_name);
 
     stdout.print("\n→ Creating annotated tag {s}...\n", .{tag_name}) catch {};
@@ -273,9 +354,9 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                 if (std.mem.startsWith(u8, clean_url, "git@")) {
                     // SSH format: git@github.com:user/repo.git
                     const colon_pos = std.mem.indexOf(u8, clean_url, ":") orelse return;
-                    const path = clean_url[colon_pos + 1..];
+                    const path = clean_url[colon_pos + 1 ..];
                     const path_clean = if (std.mem.endsWith(u8, path, ".git"))
-                        path[0..path.len - 4]
+                        path[0 .. path.len - 4]
                     else
                         path;
                     try repo_url.appendSlice(allocator, "https://github.com/");
@@ -283,7 +364,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                 } else if (std.mem.startsWith(u8, clean_url, "https://")) {
                     // HTTPS format: https://github.com/user/repo.git
                     const path_clean = if (std.mem.endsWith(u8, clean_url, ".git"))
-                        clean_url[0..clean_url.len - 4]
+                        clean_url[0 .. clean_url.len - 4]
                     else
                         clean_url;
                     try repo_url.appendSlice(allocator, path_clean);
@@ -293,6 +374,51 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             }
         } else |_| {}
     }
+}
+
+/// Parse CLI name from build.zig.zon
+fn parseCliName(allocator: std.mem.Allocator) ![]const u8 {
+    const zon_path = "build.zig.zon";
+
+    const file = try std.fs.cwd().openFile(zon_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Find the .name line
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, ".name")) {
+            // Handle both ".name = .zcli" and ".name = "zcli""
+            if (std.mem.indexOf(u8, line, "=")) |eq_pos| {
+                const after_eq = std.mem.trim(u8, line[eq_pos + 1 ..], " \t");
+
+                // Check for quoted string format
+                if (std.mem.startsWith(u8, after_eq, "\"")) {
+                    const start_quote = 1;
+                    if (std.mem.indexOf(u8, after_eq[start_quote..], "\"")) |end_quote| {
+                        const name = after_eq[start_quote .. start_quote + end_quote];
+                        return try allocator.dupe(u8, name);
+                    }
+                }
+                // Check for identifier format (.name)
+                else if (std.mem.startsWith(u8, after_eq, ".")) {
+                    const name_start: usize = 1;
+                    var name_end: usize = name_start;
+                    while (name_end < after_eq.len) : (name_end += 1) {
+                        const c = after_eq[name_end];
+                        if (c == ',' or c == ' ' or c == '\t' or c == '\n') break;
+                    }
+                    const name = after_eq[name_start..name_end];
+                    return try allocator.dupe(u8, name);
+                }
+            }
+        }
+    }
+
+    return error.NameNotFound;
 }
 
 /// Update the version in build.zig.zon
@@ -332,23 +458,91 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, new_version: []const u8) 
     try out_file.writeAll(new_content.items);
 }
 
-fn getCurrentVersion(allocator: std.mem.Allocator) !Version {
-    const result = runCommand(allocator, &.{ "git", "describe", "--tags", "--abbrev=0" }) catch |err| {
+fn getCurrentVersion(allocator: std.mem.Allocator, cli_name: []const u8) !Version {
+    // Look for tags matching {cli_name}-v*
+    const tag_pattern = try std.fmt.allocPrint(allocator, "{s}-v*", .{cli_name});
+    defer allocator.free(tag_pattern);
+
+    const result = runCommand(allocator, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", tag_pattern }) catch |err| {
         if (err == error.CommandFailed) return error.NoTags;
         return err;
     };
     defer allocator.free(result);
 
     const tag = std.mem.trim(u8, result, "\n ");
-    return try Version.parse(tag);
+
+    // Strip the "{cli_name}-" prefix to get just the version
+    const prefix = try std.fmt.allocPrint(allocator, "{s}-", .{cli_name});
+    defer allocator.free(prefix);
+
+    const version_str = if (std.mem.startsWith(u8, tag, prefix))
+        tag[prefix.len..]
+    else
+        tag;
+
+    return try Version.parse(version_str);
 }
 
-fn getReleaseNotes(allocator: std.mem.Allocator, current_version: []const u8, new_version: []const u8) ![]const u8 {
+fn getInitialReleaseNotes(allocator: std.mem.Allocator, version: []const u8) ![]const u8 {
+    // Create temporary file with template for initial release
+    const tmp_dir = std.fs.getAppDataDir(allocator, "zcli") catch "/tmp";
+    defer allocator.free(tmp_dir);
+
+    var dir = try std.fs.cwd().makeOpenPath(tmp_dir, .{});
+    defer dir.close();
+
+    const tmp_file_path = try std.fmt.allocPrint(allocator, "{s}/RELEASE_NOTES.txt", .{tmp_dir});
+    defer allocator.free(tmp_file_path);
+
+    const template = try std.fmt.allocPrint(
+        allocator,
+        \\Release v{s}
+        \\
+        \\Initial release
+        \\
+        \\## Features
+        \\
+        \\<!-- Describe the main features of this initial release -->
+        \\
+        \\## Notes
+        \\
+        \\<!-- Add any additional notes here -->
+        \\
+        \\
+    ,
+        .{version},
+    );
+    defer allocator.free(template);
+
+    const file = try dir.createFile("RELEASE_NOTES.txt", .{});
+    defer file.close();
+    try file.writeAll(template);
+
+    // Open editor
+    const editor = std.process.getEnvVarOwned(allocator, "EDITOR") catch try allocator.dupe(u8, "vim");
+    defer allocator.free(editor);
+
+    var child = std.process.Child.init(&.{ editor, tmp_file_path }, allocator);
+    const term = try child.spawnAndWait();
+
+    if (term.Exited != 0) {
+        return error.EditorFailed;
+    }
+
+    // Read the edited file
+    const edited_file = try dir.openFile("RELEASE_NOTES.txt", .{});
+    defer edited_file.close();
+
+    const content = try edited_file.readToEndAlloc(allocator, 1024 * 1024);
+    return content;
+}
+
+fn getReleaseNotes(allocator: std.mem.Allocator, cli_name: []const u8, current_version: []const u8, new_version: []const u8) ![]const u8 {
     // Generate commit log since last tag
     const log_cmd = try std.fmt.allocPrint(
         allocator,
-        "git log v{s}..HEAD --oneline --pretty=format:\"- %s\"",
-        .{current_version},
+        "git log {s}-v{s}..HEAD --oneline --pretty=format:\"- %s\"",
+        .{ cli_name, current_version },
     );
     defer allocator.free(log_cmd);
 

@@ -60,7 +60,7 @@ pub fn init(config: Config) type {
 
             // Check for latest version
             const current_version = context.app_version;
-            const latest_version = try fetchLatestVersion(allocator, plugin_config.repo);
+            const latest_version = try fetchLatestVersion(allocator, plugin_config.repo, context.app_name);
             defer allocator.free(latest_version);
 
             if (options.check) {
@@ -90,13 +90,13 @@ pub fn init(config: Config) type {
 
             // Download binary
             try stdout.print("Downloading {s}...\n", .{binary_name});
-            const temp_path = try downloadBinary(allocator, plugin_config.repo, latest_version, binary_name);
+            const temp_path = try downloadBinary(allocator, plugin_config.repo, context.app_name, latest_version, binary_name);
             defer allocator.free(temp_path);
             defer std.fs.cwd().deleteFile(temp_path) catch {};
 
             // Verify checksum
             try stdout.print("Verifying checksum...\n", .{});
-            try verifyChecksum(allocator, plugin_config.repo, latest_version, temp_path, binary_name);
+            try verifyChecksum(allocator, plugin_config.repo, context.app_name, latest_version, temp_path, binary_name);
 
             // Make binary executable before testing
             const temp_file = try std.fs.cwd().openFile(temp_path, .{});
@@ -124,7 +124,7 @@ pub fn init(config: Config) type {
             const stderr = context.stderr();
 
             // Check for latest version (with timeout)
-            const latest_version = fetchLatestVersion(allocator, plugin_config.repo) catch |err| {
+            const latest_version = fetchLatestVersion(allocator, plugin_config.repo, context.app_name) catch |err| {
                 // Silently fail - don't interrupt the user's workflow
                 _ = err;
                 return;
@@ -171,9 +171,10 @@ pub fn init(config: Config) type {
 // Helper Functions
 // ============================================================================
 
-/// Fetch the latest version from GitHub releases API
-fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8) ![]const u8 {
-    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/releases/latest", .{repo});
+/// Fetch the latest version from GitHub releases API filtered by CLI name prefix
+fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: []const u8) ![]const u8 {
+    // Fetch all releases and filter by tag prefix
+    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/releases", .{repo});
     defer allocator.free(url);
 
     // Create HTTP client
@@ -202,20 +203,29 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8) ![]const u
     const body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(1024 * 1024)); // 1MB max
     defer allocator.free(body);
 
-    // Parse JSON to extract tag_name
+    // Parse JSON array of releases
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
 
-    const tag_name = parsed.value.object.get("tag_name") orelse return error.MissingTagName;
-    const version_str = tag_name.string;
+    const releases = parsed.value.array;
 
-    // Strip leading 'v' if present
-    const version = if (std.mem.startsWith(u8, version_str, "v"))
-        version_str[1..]
-    else
-        version_str;
+    // Expected tag prefix: "{cli_name}-v"
+    const tag_prefix = try std.fmt.allocPrint(allocator, "{s}-v", .{cli_name});
+    defer allocator.free(tag_prefix);
 
-    return try allocator.dupe(u8, version);
+    // Find first release matching our CLI name prefix
+    for (releases.items) |release| {
+        const tag_name = release.object.get("tag_name") orelse continue;
+        const tag_str = tag_name.string;
+
+        if (std.mem.startsWith(u8, tag_str, tag_prefix)) {
+            // Strip prefix to get version (e.g., "zcli-v1.0.0" -> "1.0.0")
+            const version = tag_str[tag_prefix.len..];
+            return try allocator.dupe(u8, version);
+        }
+    }
+
+    return error.NoMatchingRelease;
 }
 
 /// Compare two version strings (simple string comparison for now)
@@ -245,8 +255,8 @@ fn detectPlatform() ![]const u8 {
 }
 
 /// Download binary from GitHub releases
-fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, version: []const u8, binary_name: []const u8) ![]const u8 {
-    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/{s}", .{ repo, version, binary_name });
+fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) ![]const u8 {
+    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/{s}-v{s}/{s}", .{ repo, cli_name, version, binary_name });
     defer allocator.free(url);
 
     // Create temporary file
@@ -290,9 +300,9 @@ fn downloadBinary(allocator: std.mem.Allocator, repo: []const u8, version: []con
 }
 
 /// Verify checksum of downloaded binary
-fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, version: []const u8, binary_path: []const u8, binary_name: []const u8) !void {
+fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []const u8, version: []const u8, binary_path: []const u8, binary_name: []const u8) !void {
     // Download checksums.txt
-    const checksums_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/checksums.txt", .{ repo, version });
+    const checksums_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/{s}-v{s}/checksums.txt", .{ repo, cli_name, version });
     defer allocator.free(checksums_url);
 
     var client = std.http.Client{ .allocator = allocator };
