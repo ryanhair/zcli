@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - '*-v*'
 
 jobs:
   build:
@@ -37,10 +37,19 @@ jobs:
       - name: Build binary
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
-      - name: Get app name from build.zig
+      - name: Get app name from build.zig.zon
         id: appname
         run: |
-          APP_NAME=$(grep '\.name = ' build.zig | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          # Extract .name from build.zig.zon (handles both quoted strings and identifiers)
+          NAME_LINE=$(grep -m1 '\.name = ' build.zig.zon)
+          if [[ "$NAME_LINE" =~ \.name\ =\ \"([^\"]+)\" ]]; then
+            APP_NAME="${BASH_REMATCH[1]}"
+          elif [[ "$NAME_LINE" =~ \.name\ =\ \.([^,}\ ]+) ]]; then
+            APP_NAME="${BASH_REMATCH[1]}"
+          else
+            echo "Error: Could not parse .name from build.zig.zon"
+            exit 1
+          fi
           echo "name=$APP_NAME" >> $GITHUB_OUTPUT
 
       - name: Package binary
