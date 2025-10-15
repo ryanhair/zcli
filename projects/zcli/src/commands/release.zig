@@ -133,6 +133,9 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();
 
+    // 0. Validate this is a zcli-based project (not the zcli repo itself)
+    try validateZcliProject(allocator, stderr);
+
     // 1. Parse CLI name from build.zig.zon
     stdout.print("→ Reading build.zig.zon...\n", .{}) catch {};
     const cli_name = try parseCliName(allocator);
@@ -424,6 +427,53 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
                 stdout.print("  • View release: {s}/releases/tag/{s}\n", .{ repo_url.items, tag_name }) catch {};
             }
         } else |_| {}
+    }
+}
+
+/// Validate that this is a zcli-based CLI project (not the zcli framework itself)
+/// Checks that build.zig.zon has zcli as a dependency
+fn validateZcliProject(allocator: std.mem.Allocator, stderr: anytype) !void {
+    const zon_path = "build.zig.zon";
+
+    const file = std.fs.cwd().openFile(zon_path, .{}) catch |err| {
+        try stderr.print("✗ Error: Could not open {s}: {}\n", .{ zon_path, err });
+        try stderr.print("  Make sure you're running this command from a project root directory.\n", .{});
+        return err;
+    };
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(content);
+
+    // Check if this has zcli as a dependency (indicating it's a zcli-based project)
+    // Look for ".zcli = .{" pattern within the dependencies block
+    var has_zcli_dependency = false;
+
+    // Find the dependencies section
+    if (std.mem.indexOf(u8, content, ".dependencies")) |deps_start| {
+        // Find the closing brace for dependencies (rough heuristic)
+        const after_deps = content[deps_start..];
+
+        // Look for patterns like:
+        //   .zcli = .{ .path = ... }
+        //   .zcli = .{ .url = ... }
+        // within the dependencies section
+        if (std.mem.indexOf(u8, after_deps, ".zcli = .{")) |_| {
+            has_zcli_dependency = true;
+        }
+    }
+
+    if (!has_zcli_dependency) {
+        try stderr.print("✗ Error: This doesn't appear to be a zcli-based CLI project.\n", .{});
+        try stderr.print("\n", .{});
+        try stderr.print("  The 'release' command is for releasing zcli-based CLI applications.\n", .{});
+        try stderr.print("  It requires zcli as a dependency in build.zig.zon.\n", .{});
+        try stderr.print("\n", .{});
+        try stderr.print("  If you're working on the zcli framework itself, use the workflow:\n", .{});
+        try stderr.print("    cd projects/zcli\n", .{});
+        try stderr.print("    zcli release <version>\n", .{});
+        try stderr.print("\n", .{});
+        return error.NotAZcliProject;
     }
 }
 
