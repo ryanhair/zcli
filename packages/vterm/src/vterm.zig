@@ -1028,22 +1028,22 @@ pub const VTerm = struct {
             for (0..self.height) |row| {
                 // Get the row as a string
                 var line_buf: std.ArrayList(u8) = .empty;
-                defer line_buf.deinit(std.heap.page_allocator);
+                defer line_buf.deinit(self.allocator);
 
                 for (0..self.width) |col| {
                     const cell = self.getCell(@intCast(col), @intCast(row));
                     if (cell.char == 0) {
-                        line_buf.append(std.heap.page_allocator, ' ') catch break;
+                        line_buf.append(self.allocator, ' ') catch break;
                     } else if (cell.char < 128) {
-                        line_buf.append(std.heap.page_allocator, @intCast(cell.char)) catch break;
+                        line_buf.append(self.allocator, @intCast(cell.char)) catch break;
                     } else {
                         // UTF-8 character - for simplicity, skip in pattern matching
-                        line_buf.append(std.heap.page_allocator, '?') catch break;
+                        line_buf.append(self.allocator, '?') catch break;
                     }
                 }
 
-                const line = line_buf.toOwnedSlice(std.heap.page_allocator) catch continue;
-                defer std.heap.page_allocator.free(line);
+                const line = line_buf.toOwnedSlice(self.allocator) catch continue;
+                defer self.allocator.free(line);
 
                 if (std.mem.startsWith(u8, line, pat)) {
                     return true;
@@ -1059,22 +1059,22 @@ pub const VTerm = struct {
             for (0..self.height) |row| {
                 // Get the row as a string and trim trailing spaces
                 var line_buf: std.ArrayList(u8) = .empty;
-                defer line_buf.deinit(std.heap.page_allocator);
+                defer line_buf.deinit(self.allocator);
 
                 for (0..self.width) |col| {
                     const cell = self.getCell(@intCast(col), @intCast(row));
                     if (cell.char == 0) {
-                        line_buf.append(std.heap.page_allocator, ' ') catch break;
+                        line_buf.append(self.allocator, ' ') catch break;
                     } else if (cell.char < 128) {
-                        line_buf.append(std.heap.page_allocator, @intCast(cell.char)) catch break;
+                        line_buf.append(self.allocator, @intCast(cell.char)) catch break;
                     } else {
                         // UTF-8 character - for simplicity, skip in pattern matching
-                        line_buf.append(std.heap.page_allocator, '?') catch break;
+                        line_buf.append(self.allocator, '?') catch break;
                     }
                 }
 
-                const line = line_buf.toOwnedSlice(std.heap.page_allocator) catch continue;
-                defer std.heap.page_allocator.free(line);
+                const line = line_buf.toOwnedSlice(self.allocator) catch continue;
+                defer self.allocator.free(line);
 
                 // Trim trailing spaces
                 var trimmed = line;
@@ -1123,7 +1123,7 @@ pub const VTerm = struct {
 
     pub fn containsTextIgnoreCase(self: *VTerm, text: []const u8) bool {
         // For testing purposes, use a temporary allocator
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
@@ -1156,7 +1156,7 @@ pub const VTerm = struct {
     pub fn expectRegionEquals(self: *VTerm, x: u16, y: u16, width: u16, height: u16, expected: []const u8) !void {
         const testing = std.testing;
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 

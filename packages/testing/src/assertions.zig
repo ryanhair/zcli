@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const runner = @import("runner.zig");
+const testing = std.testing;
 
 /// Assert that the exit code matches expected value
 pub fn expectExitCode(result: runner.Result, expected: u8) !void {
@@ -62,8 +63,7 @@ pub fn expectEqualStrings(expected: []const u8, actual: []const u8) !void {
 }
 
 /// Assert that output is valid JSON
-pub fn expectValidJson(output: []const u8) !void {
-    const allocator = std.heap.page_allocator;
+pub fn expectValidJson(allocator: std.mem.Allocator, output: []const u8) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, output, .{}) catch |err| {
         if (!builtin.is_test) std.debug.print("\nExpected valid JSON but got error: {}\n\nOutput:\n{s}\n", .{ err, output });
         return error.InvalidJson;
@@ -93,10 +93,18 @@ test "expectContains" {
 
 test "expectValidJson" {
     try expectValidJson(
+        std.testing.allocator,
         \\{"name": "test", "value": 42}
+        ,
     );
 
-    try std.testing.expectError(error.InvalidJson, expectValidJson("not json"));
+    try std.testing.expectError(
+        error.InvalidJson,
+        expectValidJson(
+            std.testing.allocator,
+            "not json",
+        ),
+    );
 }
 
 test "expectStdoutEmpty" {
@@ -190,16 +198,16 @@ test "expectExitCode with various codes" {
 
 test "expectValidJson with complex structures" {
     // Test various JSON structures
-    try expectValidJson("null");
-    try expectValidJson("true");
-    try expectValidJson("false");
-    try expectValidJson("42");
-    try expectValidJson("\"string\"");
-    try expectValidJson("[]");
-    try expectValidJson("{}");
+    try expectValidJson(testing.allocator, "null");
+    try expectValidJson(testing.allocator, "true");
+    try expectValidJson(testing.allocator, "false");
+    try expectValidJson(testing.allocator, "42");
+    try expectValidJson(testing.allocator, "\"string\"");
+    try expectValidJson(testing.allocator, "[]");
+    try expectValidJson(testing.allocator, "{}");
 
     // Complex nested structure
-    try expectValidJson(
+    try expectValidJson(testing.allocator,
         \\{
         \\  "users": [
         \\    {
@@ -217,8 +225,20 @@ test "expectValidJson with complex structures" {
     );
 
     // Test invalid JSON variations
-    try std.testing.expectError(error.InvalidJson, expectValidJson("{"));
-    try std.testing.expectError(error.InvalidJson, expectValidJson("{\"key\": }"));
-    try std.testing.expectError(error.InvalidJson, expectValidJson("{\"key\": \"unclosed string}"));
-    try std.testing.expectError(error.InvalidJson, expectValidJson("[1, 2, 3,]"));
+    try std.testing.expectError(
+        error.InvalidJson,
+        expectValidJson(testing.allocator, "{"),
+    );
+    try std.testing.expectError(
+        error.InvalidJson,
+        expectValidJson(testing.allocator, "{\"key\": }"),
+    );
+    try std.testing.expectError(
+        error.InvalidJson,
+        expectValidJson(testing.allocator, "{\"key\": \"unclosed string}"),
+    );
+    try std.testing.expectError(
+        error.InvalidJson,
+        expectValidJson(testing.allocator, "[1, 2, 3,]"),
+    );
 }

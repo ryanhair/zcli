@@ -44,8 +44,8 @@ fn scanDirectory(
     // Prevent excessive nesting
     if (depth >= max_depth) {
         // Convert path array to string for logging
-        const path_string = if (current_path.len == 0) "" else std.mem.join(std.heap.page_allocator, "/", current_path) catch "unknown";
-        defer if (current_path.len > 0) std.heap.page_allocator.free(path_string);
+        const path_string = if (current_path.len == 0) "" else std.mem.join(allocator, "/", current_path) catch "unknown";
+        defer if (current_path.len > 0) allocator.free(path_string);
         logging.maxNestingDepthReached(max_depth, path_string);
         return;
     }

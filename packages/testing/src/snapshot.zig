@@ -10,6 +10,7 @@ pub const SnapshotOptions = struct {
 
 /// Unified snapshot testing function with configurable options
 pub fn expectSnapshot(
+    allocator: std.mem.Allocator,
     actual: []const u8,
     comptime location: std.builtin.SourceLocation,
     comptime snapshot_name: []const u8,
@@ -19,8 +20,6 @@ pub fn expectSnapshot(
     const test_file_path = location.file;
     const snapshot_dir = comptime getSnapshotDir(test_file_path);
     const snapshot_file = snapshot_dir ++ "/" ++ snapshot_name ++ ".txt";
-
-    const allocator = std.heap.page_allocator;
 
     // Process the actual content based on options
     var processed_actual: []const u8 = actual;
@@ -416,6 +415,7 @@ fn maskMemoryAddresses(allocator: std.mem.Allocator, text: []const u8, replaceme
 /// Helper for framework testing - allows testing specific snapshot error conditions
 /// by passing explicit expected data (for testing framework behavior, not CLI output)
 pub fn expectSnapshotWithData(
+    allocator: std.mem.Allocator,
     actual: []const u8,
     comptime location: std.builtin.SourceLocation,
     comptime snapshot_name: []const u8,
@@ -423,7 +423,7 @@ pub fn expectSnapshotWithData(
 ) !void {
     // If no expected data provided, use normal snapshot testing
     if (expected_data == null) {
-        return expectSnapshot(actual, location, snapshot_name, .{});
+        return expectSnapshot(allocator, actual, location, snapshot_name, .{});
     }
 
     const expected = expected_data.?;
