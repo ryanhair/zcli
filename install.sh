@@ -22,15 +22,15 @@ print_info() {
 }
 
 print_success() {
-    printf "${GREEN}✓${NC} %s\n" "$1" >&2
+    printf "${GREEN}  ✓${NC} %s\n" "$1" >&2
 }
 
 print_warning() {
-    printf "${YELLOW}!${NC} %s\n" "$1" >&2
+    printf "${YELLOW}  !${NC} %s\n" "$1" >&2
 }
 
 print_error() {
-    printf "${RED}✗${NC} %s\n" "$1" >&2
+    printf "${RED}  ✗${NC} %s\n" "$1" >&2
 }
 
 # Detect OS
