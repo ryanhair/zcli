@@ -194,22 +194,60 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, repo: []const u8, cli_name: 
     var response = try request.receiveHead(&redirect_buffer);
 
     if (response.head.status != .ok) {
+        // Include status in error for debugging
         return error.FailedToFetchVersion;
     }
 
     // Read response body
-    var transfer_buffer: [4096]u8 = undefined;
-    var body_reader = response.reader(&transfer_buffer);
-    const body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(1024 * 1024)); // 1MB max
+    const body = blk: {
+        // First read the raw response
+        var transfer_buffer: [4096]u8 = undefined;
+        var body_reader = response.reader(&transfer_buffer);
+        const raw_body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024)); // 10MB max
+        errdefer allocator.free(raw_body);
+
+        // Check if response is gzip compressed by checking magic bytes (0x1f 0x8b)
+        const is_gzipped = raw_body.len >= 2 and raw_body[0] == 0x1f and raw_body[1] == 0x8b;
+        if (is_gzipped) {
+            // Decompress gzip data
+            var reader: std.Io.Reader = .fixed(raw_body);
+
+            // Allocate decompression buffer (32KB window)
+            const decompress_buffer = try allocator.alloc(u8, std.compress.flate.max_window_len);
+            defer allocator.free(decompress_buffer);
+
+            var decompressor = std.compress.flate.Decompress.init(&reader, .gzip, decompress_buffer);
+
+            // Use allocating writer to collect decompressed data
+            var aw: std.Io.Writer.Allocating = .init(allocator);
+            defer aw.deinit();
+
+            _ = try decompressor.reader.streamRemaining(&aw.writer);
+            const decompressed = try allocator.dupe(u8, aw.written());
+
+            allocator.free(raw_body);
+            break :blk decompressed;
+        } else {
+            break :blk raw_body;
+        }
+    };
     defer allocator.free(body);
 
     // Parse JSON array of releases
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| {
+        // If JSON parsing fails, it might be an HTML error page (rate limit, etc)
+        return err;
+    };
     defer parsed.deinit();
+
+    // Check if response is an array (expected) vs object (error response)
+    if (parsed.value != .array) {
+        return error.UnexpectedResponse;
+    }
 
     const releases = parsed.value.array;
 
-    // Expected tag prefix: "{cli_name}-v"
+    // Expected tag format: "{cli_name}-v{version}"
     const tag_prefix = try std.fmt.allocPrint(allocator, "{s}-v", .{cli_name});
     defer allocator.free(tag_prefix);
 

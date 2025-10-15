@@ -53,7 +53,7 @@ pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
         \\on:
         \\  push:
         \\    tags:
-        \\      - 'v*'
+        \\      - '*-v*'
         \\
         \\jobs:
         \\  build:
@@ -80,17 +80,26 @@ pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
         \\        uses: actions/checkout@v4
         \\
         \\      - name: Setup Zig
-        \\        uses: goto-bus-stop/setup-zig@v2
+        \\        uses: mlugg/setup-zig@v2
         \\        with:
         \\          version: 0.15.1
         \\
         \\      - name: Build binary
         \\        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
         \\
-        \\      - name: Get app name from build.zig
+        \\      - name: Get app name from build.zig.zon
         \\        id: appname
         \\        run: |
-        \\          APP_NAME=$(grep '\.name = ' build.zig | head -1 | sed 's/.*"\(.*\)".*/\1/')
+        \\          # Extract .name from build.zig.zon (handles both quoted strings and identifiers)
+        \\          NAME_LINE=$(grep -m1 '\.name = ' build.zig.zon)
+        \\          if [[ "$NAME_LINE" =~ \.name\ =\ \"([^\"]+)\" ]]; then
+        \\            APP_NAME="${BASH_REMATCH[1]}"
+        \\          elif [[ "$NAME_LINE" =~ \.name\ =\ \.([^,}\ ]+) ]]; then
+        \\            APP_NAME="${BASH_REMATCH[1]}"
+        \\          else
+        \\            echo "Error: Could not parse .name from build.zig.zon"
+        \\            exit 1
+        \\          fi
         \\          echo "name=$APP_NAME" >> $GITHUB_OUTPUT
         \\
         \\      - name: Package binary
@@ -162,13 +171,12 @@ pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
     try stdout.print("     git add .github/workflows/release.yml\n", .{});
     try stdout.print("     git commit -m \"Add GitHub release workflow\"\n", .{});
     try stdout.print("     git push\n\n", .{});
-    try stdout.print("  2. Create your first release tag:\n", .{});
-    try stdout.print("     git tag -a v0.1.0 -m \"Initial release\"\n", .{});
-    try stdout.print("     git push origin v0.1.0\n\n", .{});
-    try stdout.print("  3. For subsequent releases, use the zcli release command:\n", .{});
+    try stdout.print("  2. Create and push your first release using the zcli release command:\n", .{});
+    try stdout.print("     zcli release 0.1.0   # Create initial release\n", .{});
+    try stdout.print("     # Or specify a bump type:\n", .{});
     try stdout.print("     zcli release patch   # 0.1.0 → 0.1.1\n", .{});
     try stdout.print("     zcli release minor   # 0.1.0 → 0.2.0\n", .{});
     try stdout.print("     zcli release major   # 0.1.0 → 1.0.0\n\n", .{});
-    try stdout.print("  4. Monitor builds at:\n", .{});
+    try stdout.print("  3. Monitor builds at:\n", .{});
     try stdout.print("     https://github.com/YOUR_USERNAME/YOUR_REPO/actions\n\n", .{});
 }
