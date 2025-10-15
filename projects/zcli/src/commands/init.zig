@@ -6,9 +6,10 @@ pub const meta = .{
     .examples = &.{
         "init my-app",
         "init my-app --description \"My awesome CLI\"",
+        "init . --description \"Initialize in current directory\"",
     },
     .args = .{
-        .name = "Name of the project (will be the executable name)",
+        .name = "Name of the project or '.' for current directory",
     },
     .options = .{
         .description = .{ .desc = "Description of your CLI application" },
@@ -30,25 +31,67 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();
 
-    const project_name = args.name;
+    const cwd = std.fs.cwd();
+
+    // Determine if we're using current directory or creating a new one
+    const use_current_dir = std.mem.eql(u8, args.name, ".");
+
+    // Get the project name
+    const project_name = if (use_current_dir) blk: {
+        // Get current directory name
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd_path = try cwd.realpath(".", &buf);
+
+        // Extract the directory name from the path
+        const last_slash = std.mem.lastIndexOfScalar(u8, cwd_path, std.fs.path.sep) orelse 0;
+        const dir_name = cwd_path[last_slash + 1 ..];
+
+        break :blk try allocator.dupe(u8, dir_name);
+    } else try allocator.dupe(u8, args.name);
+    defer allocator.free(project_name);
+
     const app_description = options.description orelse "A CLI application built with zcli";
     const app_version = options.version orelse "0.1.0";
 
-    // Check if directory already exists
-    const cwd = std.fs.cwd();
-    cwd.access(project_name, .{}) catch |err| switch (err) {
-        error.FileNotFound => {}, // Good, directory doesn't exist
-        else => {
-            try stderr.print("Error: Directory '{s}' already exists\n", .{project_name});
-            return err;
-        },
+    // Handle directory creation/validation
+    var project_dir = if (use_current_dir) blk: {
+        // Check if current directory is empty or contains only hidden files
+        var dir = try cwd.openDir(".", .{ .iterate = true });
+        var iterator = dir.iterate();
+
+        var has_visible_files = false;
+        while (try iterator.next()) |entry| {
+            // Ignore hidden files (starting with .)
+            if (entry.name[0] != '.') {
+                has_visible_files = true;
+                break;
+            }
+        }
+
+        if (has_visible_files) {
+            try stderr.print("Error: Current directory is not empty\n", .{});
+            try stderr.print("Tip: Only hidden files (starting with '.') are allowed\n", .{});
+            return error.DirectoryNotEmpty;
+        }
+
+        try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
+        break :blk try cwd.openDir(".", .{});
+    } else blk: {
+        // Check if directory already exists
+        cwd.access(args.name, .{}) catch |err| switch (err) {
+            error.FileNotFound => {}, // Good, directory doesn't exist
+            else => {
+                try stderr.print("Error: Directory '{s}' already exists\n", .{args.name});
+                return err;
+            },
+        };
+
+        try stdout.print("Creating new zcli project: {s}\n", .{project_name});
+
+        // Create project directory
+        try cwd.makeDir(args.name);
+        break :blk try cwd.openDir(args.name, .{});
     };
-
-    try stdout.print("Creating new zcli project: {s}\n", .{project_name});
-
-    // Create project directory
-    try cwd.makeDir(project_name);
-    var project_dir = try cwd.openDir(project_name, .{});
     defer project_dir.close();
 
     // Create src and src/commands directories
@@ -204,7 +247,9 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     // Success message
     try stdout.print("\n✓ Project '{s}' created successfully!\n\n", .{project_name});
     try stdout.print("Next steps:\n", .{});
-    try stdout.print("  cd {s}\n", .{project_name});
+    if (!use_current_dir) {
+        try stdout.print("  cd {s}\n", .{args.name});
+    }
     try stdout.print("  zig build\n", .{});
     try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
     try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
