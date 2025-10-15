@@ -70,6 +70,9 @@ pub fn generate(
     }
 
     for (commands) |cmd| {
+        // Skip hidden commands
+        if (cmd.hidden) continue;
+
         const depth = cmd.path.len;
         const entry = try depth_map.getOrPut(depth);
         if (!entry.found_existing) {
@@ -119,6 +122,9 @@ pub fn generate(
             }
 
             for (commands) |cmd| {
+                // Skip hidden commands
+                if (cmd.hidden) continue;
+
                 if (cmd.path.len != depth) continue;
 
                 // Build parent path string

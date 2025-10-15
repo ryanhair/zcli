@@ -12,9 +12,19 @@ pub fn onError(
     err: anyerror,
 ) !bool {
     if (err == error.CommandNotFound) {
-        // Get available commands directly from context
+        // Get available commands and filter out hidden ones
+        const all_command_info = context.getAvailableCommandInfo();
+        var visible_commands = std.ArrayList([]const []const u8){};
+        defer visible_commands.deinit(context.allocator);
+
+        for (all_command_info) |cmd_info| {
+            if (!cmd_info.hidden) {
+                try visible_commands.append(context.allocator, cmd_info.path);
+            }
+        }
+
         const attempted_command = if (context.command_path.len > 0) context.command_path[0] else "unknown";
-        try generateCommandNotFoundHelp(context, attempted_command, context.available_commands);
+        try generateCommandNotFoundHelp(context, attempted_command, visible_commands.items);
 
         // We've shown helpful suggestions, but let the error continue to propagate
         // This allows other plugins or the default handler to also respond if needed

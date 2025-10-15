@@ -30,6 +30,7 @@ pub const CommandInfo = struct {
     path: []const []const u8, // Array of command path components
     file_path: []const u8, // Filesystem path for module loading
     command_type: CommandType,
+    hidden: bool = false, // Whether this command should be hidden from help/completions
     subcommands: ?std.StringHashMap(CommandInfo),
 
     pub fn deinit(self: *CommandInfo, allocator: std.mem.Allocator) void {

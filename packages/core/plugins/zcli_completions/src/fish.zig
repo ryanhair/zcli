@@ -55,6 +55,9 @@ pub fn generate(
     defer parent_paths.deinit();
 
     for (commands) |cmd| {
+        // Skip hidden commands
+        if (cmd.hidden) continue;
+
         if (cmd.path.len == 1) {
             // Root level command
             const entry = try command_tree.getOrPut("");
@@ -100,6 +103,9 @@ pub fn generate(
             // Find description
             var desc: ?[]const u8 = null;
             for (commands) |cmd| {
+                // Skip hidden commands
+                if (cmd.hidden) continue;
+
                 if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], cmd_name)) {
                     desc = cmd.description;
                     break;
@@ -154,6 +160,9 @@ pub fn generate(
             // Find description
             var desc: ?[]const u8 = null;
             for (commands) |cmd| {
+                // Skip hidden commands
+                if (cmd.hidden) continue;
+
                 // Check if path matches
                 var matches = true;
                 var path_check = std.mem.splitScalar(u8, parent_path, ' ');

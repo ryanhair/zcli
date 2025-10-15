@@ -279,6 +279,61 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
         // Expose commands array for testing and introspection
         pub const commands = cmd_entries;
 
+        /// Metadata for a command that can be queried by plugins
+        pub const CommandMetadata = struct {
+            path: []const []const u8,
+            description: []const u8,
+            hidden: bool,
+        };
+
+        /// Get all commands with metadata (for use by plugins)
+        /// Returns a compile-time array of command metadata including hidden status
+        pub fn getAllCommands() []const CommandMetadata {
+            comptime {
+                var result: []const CommandMetadata = &.{};
+
+                // Add regular commands
+                for (cmd_entries) |cmd| {
+                    const hidden = if (@hasDecl(cmd.module, "meta") and @hasField(@TypeOf(cmd.module.meta), "hidden"))
+                        cmd.module.meta.hidden
+                    else
+                        false;
+
+                    const description = if (@hasDecl(cmd.module, "meta") and @hasField(@TypeOf(cmd.module.meta), "description"))
+                        cmd.module.meta.description
+                    else
+                        "";
+
+                    result = result ++ .{CommandMetadata{
+                        .path = cmd.path,
+                        .description = description,
+                        .hidden = hidden,
+                    }};
+                }
+
+                // Add plugin commands
+                for (plugin_command_entries) |plugin_cmd| {
+                    const hidden = if (@hasDecl(plugin_cmd.module, "meta") and @hasField(@TypeOf(plugin_cmd.module.meta), "hidden"))
+                        plugin_cmd.module.meta.hidden
+                    else
+                        false;
+
+                    const description = if (@hasDecl(plugin_cmd.module, "meta") and @hasField(@TypeOf(plugin_cmd.module.meta), "description"))
+                        plugin_cmd.module.meta.description
+                    else
+                        "";
+
+                    result = result ++ .{CommandMetadata{
+                        .path = plugin_cmd.path,
+                        .description = description,
+                        .hidden = hidden,
+                    }};
+                }
+
+                return result;
+            }
+        }
+
         // Collect all global options at compile time
         const global_options = blk: {
             var opts: []const plugin_types.GlobalOption = &.{};
@@ -390,6 +445,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
                     var description: ?[]const u8 = null;
                     var examples: ?[]const []const u8 = null;
+                    var hidden: bool = false;
 
                     if (@hasDecl(cmd.module, "meta")) {
                         const meta = cmd.module.meta;
@@ -398,6 +454,9 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         }
                         if (@hasField(@TypeOf(meta), "examples")) {
                             examples = meta.examples;
+                        }
+                        if (@hasField(@TypeOf(meta), "hidden")) {
+                            hidden = meta.hidden;
                         }
                     }
 
@@ -452,6 +511,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         .description = description,
                         .examples = examples,
                         .options = options,
+                        .hidden = hidden,
                     }};
                 }
 
@@ -461,6 +521,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
                     var description: ?[]const u8 = null;
                     var examples: ?[]const []const u8 = null;
+                    var hidden: bool = false;
 
                     if (@hasDecl(CommandModule, "meta")) {
                         const meta = CommandModule.meta;
@@ -469,6 +530,9 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         }
                         if (@hasField(@TypeOf(meta), "examples")) {
                             examples = meta.examples;
+                        }
+                        if (@hasField(@TypeOf(meta), "hidden")) {
+                            hidden = meta.hidden;
                         }
                     }
 
@@ -523,6 +587,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         .description = description,
                         .examples = examples,
                         .options = options,
+                        .hidden = hidden,
                     }};
                 }
 

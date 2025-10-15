@@ -85,6 +85,9 @@ pub fn onError(
 
                 // Check if this prefix has any subcommands
                 for (command_infos) |cmd_info| {
+                    // Skip hidden commands
+                    if (cmd_info.hidden) continue;
+
                     if (cmd_info.path.len > depth) {
                         // Check if the prefix matches
                         var matches = true;
@@ -295,6 +298,9 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
     defer command_map.deinit();
 
     for (command_infos) |cmd_info| {
+        // Skip hidden commands
+        if (cmd_info.hidden) continue;
+
         var should_process = false;
         var display_name: []const u8 = undefined;
         var is_exact_match = false;
@@ -512,6 +518,9 @@ fn showSubcommands(context: *zcli.Context, fmt: anytype) !void {
     var has_commands = false;
 
     for (command_infos) |cmd_info| {
+        // Skip hidden commands
+        if (cmd_info.hidden) continue;
+
         var should_display = false;
         var display_name: []const u8 = undefined;
 

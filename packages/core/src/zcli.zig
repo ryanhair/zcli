@@ -61,6 +61,7 @@ pub const CommandInfo = struct {
     description: ?[]const u8 = null,
     examples: ?[]const []const u8 = null,
     options: []const OptionInfo = &.{},
+    hidden: bool = false,
 };
 
 /// Field info that can be stored at runtime

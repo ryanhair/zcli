@@ -204,6 +204,9 @@ fn generateNestedCases(
                 // Find description
                 var desc: ?[]const u8 = null;
                 for (commands) |cmd| {
+                    // Skip hidden commands
+                    if (cmd.hidden) continue;
+
                     if (cmd.path.len < 2) continue;
                     // Check if path matches
                     var matches = true;
@@ -276,6 +279,9 @@ pub fn generate(
     // Build tree of commands (parent -> children)
     // We need to create entries for ALL levels, not just the immediate parent
     for (commands) |cmd| {
+        // Skip hidden commands
+        if (cmd.hidden) continue;
+
         if (cmd.path.len == 1) {
             // Root level command
             const entry = try command_tree.getOrPut("");
@@ -378,6 +384,9 @@ pub fn generate(
             // Find description for this command
             var desc: ?[]const u8 = null;
             for (commands) |cmd| {
+                // Skip hidden commands
+                if (cmd.hidden) continue;
+
                 if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], cmd_name)) {
                     desc = cmd.description;
                     break;
