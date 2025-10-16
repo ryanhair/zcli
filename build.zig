@@ -1,8 +1,15 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    _ = b.standardTargetOptions(.{});
-    _ = b.standardOptimizeOption(.{});
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Export the zcli module from core package for external projects
+    _ = b.addModule("zcli", .{
+        .root_source_file = b.path("packages/core/src/zcli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Define the project directories that have tests
     const ProjectInfo = struct {

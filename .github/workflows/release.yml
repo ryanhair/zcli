@@ -3,12 +3,15 @@ name: Release
 on:
   push:
     tags:
-      - "*-v*"
+      - "*-v*"  # CLI releases (e.g., zcli-v0.9.0)
+      - "v*"    # Library releases (e.g., v0.9.0)
 
 jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # Only build binaries for CLI releases (zcli-v*)
+    if: startsWith(github.ref, 'refs/tags/zcli-v')
     strategy:
       matrix:
         include:
@@ -66,6 +69,8 @@ jobs:
   release:
     name: Create Release
     needs: build
+    # Run for CLI releases (after build completes)
+    if: startsWith(github.ref, 'refs/tags/zcli-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,6 +101,78 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  library-release:
+    name: Create Library Release
+    # Run for library releases (v* tags)
+    if: startsWith(github.ref, 'refs/tags/v') && !startsWith(github.ref, 'refs/tags/zcli-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          echo "version=$TAG" >> $GITHUB_OUTPUT
+          echo "Library version: $TAG"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          # zcli Framework v${{ steps.version.outputs.version }}
+
+          This is the zcli framework library release. Use this version in your `build.zig.zon`:
+
+          ```zig
+          .dependencies = .{
+              .zcli = .{
+                  .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v${{ steps.version.outputs.version }}.tar.gz",
+                  .hash = "<hash-will-be-shown-by-zig-fetch>",
+              },
+          },
+          ```
+
+          ## Installation
+
+          Run `zig fetch --save <url>` to add this dependency to your project.
+
+          ## What's Included
+
+          - Core zcli framework
+          - Build utilities for command generation
+          - Built-in plugins (help, version, not-found, completions, github-upgrade)
+          - All supporting packages (vterm, markdown-fmt, etc.)
+
+          ## Getting Started
+
+          Use the zcli CLI tool to scaffold a new project:
+
+          ```bash
+          # Download the zcli CLI from the latest zcli-v* release
+          # Or build from source
+          zcli init my-app
+          cd my-app
+          zig build
+          ```
+
+          For the zcli CLI tool binaries, see the zcli-v* releases.
+          EOF
+
+      - name: Create Library Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: release-notes.md
+          name: zcli Framework v${{ steps.version.outputs.version }}
           draft: false
           prerelease: false
         env:
