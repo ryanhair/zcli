@@ -105,18 +105,18 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
 /// Add plugin modules to registry during generation
 pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
     // Create markdown_fmt module from zcli dependency's path
-    // (markdown_fmt is a dependency of zcli's build.zig.zon)
-    // For external deps, it's at packages/markdown_fmt; for local it's ../markdown_fmt
+    // zcli_dep points to the repo root (either local or from archive)
+    // markdown_fmt is always at packages/markdown_fmt
     const markdown_fmt_module = b.addModule("markdown_fmt_for_help", .{
-        .root_source_file = zcli_dep.path("../markdown_fmt/src/main.zig"),
+        .root_source_file = zcli_dep.path("packages/markdown_fmt/src/main.zig"),
     });
 
     for (plugins) |plugin_info| {
         if (plugin_info.is_local) {
             // import_name is like "src/plugins/zcli_help/plugin"
-            // zcli_dep.path() handles the resolution - for local builds it's relative to core,
-            // for external deps it's relative to the extracted archive root
-            const plugin_path = b.fmt("{s}.zig", .{plugin_info.import_name});
+            // zcli_dep points to the repo root (either local or from archive)
+            // Plugins are always at packages/core/src/plugins/...
+            const plugin_path = b.fmt("packages/core/{s}.zig", .{plugin_info.import_name});
             const plugin_module = b.addModule(plugin_info.import_name, .{
                 .root_source_file = zcli_dep.path(plugin_path),
             });

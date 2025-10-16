@@ -111,7 +111,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     // Generate build.zig.zon
     try stdout.print("  Creating build.zig.zon...\n", .{});
     // Use zcli package from GitHub archive
-    const zcli_version = "0.9.2";
+    const zcli_version = "0.9.3";
     const zon_content = try std.fmt.allocPrint(allocator,
         \\.{{
         \\    .name = .{s},
