@@ -26,19 +26,20 @@ pub fn build(b: *std.Build) void {
     // Generate command registry using the plugin-aware build system
     const zcli = @import("zcli");
 
-    const cmd_registry = zcli.generate(b, exe, zcli_module, .{
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",
         .plugins = &[_]zcli.PluginConfig{ .{
             .name = "zcli_help",
-            .path = "../../packages/core/plugins/zcli_help",
+            .path = "src/plugins/zcli_help",
         }, .{
             .name = "zcli_version",
-            .path = "../../packages/core/plugins/zcli_version",
+            .path = "src/plugins/zcli_version",
         }, .{
             .name = "zcli_not_found",
-            .path = "../../packages/core/plugins/zcli_not_found",
+            .path = "src/plugins/zcli_not_found",
         } },
         .app_name = "gitt",
+        .app_version = "0.1.0",
         .app_description = "A simple Git-like CLI demonstration built with zcli",
     });
 

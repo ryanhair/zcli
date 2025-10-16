@@ -30,8 +30,13 @@ pub fn build(b: *std.Build) void {
         .{ .name = "basic_example", .path = "examples/basic" },
         .{ .name = "advanced_example", .path = "examples/advanced" },
         .{ .name = "swapi_example", .path = "examples/swapi" },
+        .{ .name = "snapshots_example", .path = "examples/snapshots" },
         .{ .name = "ztheme_example", .path = "examples/ztheme" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
+    };
+
+    const cli_projects = [_]ProjectInfo{
+        .{ .name = "zcli", .path = "projects/zcli" },
     };
 
     // Create main test step that runs all tests
@@ -77,10 +82,32 @@ pub fn build(b: *std.Build) void {
         build_examples_step.dependOn(&example_build_run.step);
     }
 
+    // Create build step for CLI projects
+    const build_cli_step = b.step("build-cli", "Build all CLI tool projects");
+
+    for (cli_projects) |cli| {
+        // Create individual build step for this CLI
+        const cli_build_step = b.step(b.fmt("build-{s}", .{cli.name}), b.fmt("Build {s} CLI", .{cli.name}));
+
+        // Run the build for this CLI
+        const cli_build_run = b.addSystemCommand(&.{"zig"});
+        cli_build_run.addArgs(&.{"build"});
+        cli_build_run.setCwd(b.path(cli.path));
+
+        cli_build_step.dependOn(&cli_build_run.step);
+        build_cli_step.dependOn(&cli_build_run.step);
+    }
+
     // Create a comprehensive build step that builds and tests everything
     const build_all_step = b.step("build-all", "Build and test all subprojects");
     build_all_step.dependOn(test_step);
     build_all_step.dependOn(build_examples_step);
+    build_all_step.dependOn(build_cli_step);
+
+    // Make the default install step build everything important
+    const install_step = b.getInstallStep();
+    install_step.dependOn(build_cli_step);
+    install_step.dependOn(build_examples_step);
 }
 
 // Re-export build utilities from core package for external projects
