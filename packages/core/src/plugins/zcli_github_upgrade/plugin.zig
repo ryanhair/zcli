@@ -38,55 +38,84 @@ pub fn init(config: Config) type {
             /// The upgrade command module
             pub const upgrade = struct {
                 pub const meta = .{
-                    .description = "Upgrade to the latest version",
+                    .description = "Upgrade to a specific version or the latest version",
                     .examples = &.{
                         plugin_config.command_name,
+                        plugin_config.command_name ++ " 1.2.3",
                         plugin_config.command_name ++ " --check",
                     },
                 };
 
-                pub const Args = struct {};
+                pub const Args = struct {
+                    version: ?[]const u8 = null,
+                };
 
                 pub const Options = struct {
                     check: bool = false,
                     force: bool = false,
                 };
 
-                pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
-                    return executeUpgrade(options, context);
+                pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+                    return executeUpgrade(args, options, context);
                 }
             };
         };
 
         /// Execute the upgrade command
-        fn executeUpgrade(options: commands.upgrade.Options, context: *zcli.Context) !void {
+        fn executeUpgrade(args: commands.upgrade.Args, options: commands.upgrade.Options, context: *zcli.Context) !void {
             const allocator = context.allocator;
             var stdout = context.stdout();
 
-            // Check for latest version
+            // Determine target version (explicit or latest)
             const current_version = context.app_version;
-            const latest_version = try fetchLatestVersion(allocator, plugin_config.repo, context.app_name);
-            defer allocator.free(latest_version);
+            const target_version = if (args.version) |v|
+                try allocator.dupe(u8, v)
+            else
+                try fetchLatestVersion(allocator, plugin_config.repo, context.app_name);
+            defer allocator.free(target_version);
 
             if (options.check) {
-                if (isNewerVersion(current_version, latest_version)) {
-                    try stdout.print("New version available: {s} (current: {s})\n", .{ latest_version, current_version });
-                    std.process.exit(0);
+                if (args.version) |_| {
+                    // User specified a version, compare with current
+                    if (!std.mem.eql(u8, current_version, target_version)) {
+                        try stdout.print("Version {s} is available (current: {s})\n", .{ target_version, current_version });
+                        std.process.exit(0);
+                    } else {
+                        try stdout.print("You are already on version: {s}\n", .{current_version});
+                        std.process.exit(0);
+                    }
                 } else {
-                    try stdout.print("You are already on the latest version: {s}\n", .{current_version});
-                    std.process.exit(0);
+                    // Check latest version
+                    if (isNewerVersion(current_version, target_version)) {
+                        try stdout.print("New version available: {s} (current: {s})\n", .{ target_version, current_version });
+                        std.process.exit(0);
+                    } else {
+                        try stdout.print("You are already on the latest version: {s}\n", .{current_version});
+                        std.process.exit(0);
+                    }
                 }
             }
 
             // Perform upgrade
-            if (!isNewerVersion(current_version, latest_version)) {
-                if (!options.force) {
-                    try stdout.print("You are already on the latest version: {s}\n", .{current_version});
-                    return;
-                }
+            const is_downgrade = args.version != null and isNewerVersion(target_version, current_version);
+            const is_same_version = std.mem.eql(u8, current_version, target_version);
+            const needs_upgrade = args.version != null or isNewerVersion(current_version, target_version);
+
+            if (is_same_version and !options.force) {
+                try stdout.print("You are already on version: {s}\n", .{current_version});
+                return;
             }
 
-            try stdout.print("Upgrading from {s} to {s}...\n", .{ current_version, latest_version });
+            if (!needs_upgrade and !options.force) {
+                try stdout.print("You are already on the latest version: {s}\n", .{current_version});
+                return;
+            }
+
+            if (is_downgrade) {
+                try stdout.print("Downgrading from {s} to {s}...\n", .{ current_version, target_version });
+            } else {
+                try stdout.print("Upgrading from {s} to {s}...\n", .{ current_version, target_version });
+            }
 
             // Detect platform
             const platform = try detectPlatform(allocator);
@@ -96,13 +125,13 @@ pub fn init(config: Config) type {
 
             // Download binary
             try stdout.print("Downloading {s}...\n", .{binary_name});
-            const temp_path = try downloadBinary(allocator, plugin_config.repo, context.app_name, latest_version, binary_name);
+            const temp_path = try downloadBinary(allocator, plugin_config.repo, context.app_name, target_version, binary_name);
             defer allocator.free(temp_path);
             defer std.fs.cwd().deleteFile(temp_path) catch {};
 
             // Verify checksum
             try stdout.print("Verifying checksum...\n", .{});
-            try verifyChecksum(allocator, plugin_config.repo, context.app_name, latest_version, temp_path, binary_name);
+            try verifyChecksum(allocator, plugin_config.repo, context.app_name, target_version, temp_path, binary_name);
 
             // Make binary executable before testing
             const temp_file = try std.fs.cwd().openFile(temp_path, .{});
@@ -117,8 +146,9 @@ pub fn init(config: Config) type {
             try stdout.print("Installing new version...\n", .{});
             try replaceBinary(allocator, temp_path);
 
-            try stdout.print("✓ Successfully upgraded to {s}\n", .{latest_version});
-            try stdout.print("\nThe upgrade is complete. Run '{s} --version' to verify.\n", .{context.app_name});
+            const action = if (is_downgrade) "downgraded" else "upgraded";
+            try stdout.print("✓ Successfully {s} to {s}\n", .{ action, target_version });
+            try stdout.print("\nThe {s} is complete. Run '{s} --version' to verify.\n", .{ action, context.app_name });
         }
 
         /// Startup hook to check for updates if configured
