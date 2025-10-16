@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Create the markdown_fmt module
-    const markdown_fmt_mod = b.addModule("markdown-fmt", .{
+    const markdown_fmt_mod = b.addModule("markdown_fmt", .{
         .root_source_file = b.path("src/main.zig"),
     });
 
@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    demo.root_module.addImport("markdown-fmt", markdown_fmt_mod);
+    demo.root_module.addImport("markdown_fmt", markdown_fmt_mod);
 
     const demo_step = b.step("demo", "Run comprehensive markdown-fmt demo");
     const run_demo = b.addRunArtifact(demo);

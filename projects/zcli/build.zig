@@ -26,20 +26,20 @@ pub fn build(b: *std.Build) void {
     // Generate command registry using the plugin-aware build system
     const zcli = @import("zcli");
 
-    const cmd_registry = zcli.generate(b, exe, zcli_module, .{
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",
         .plugins = &.{ .{
             .name = "zcli_help",
-            .path = "../../packages/core/plugins/zcli_help",
+            .path = "plugins/zcli_help",
         }, .{
             .name = "zcli_version",
-            .path = "../../packages/core/plugins/zcli_version",
+            .path = "plugins/zcli_version",
         }, .{
             .name = "zcli_not_found",
-            .path = "../../packages/core/plugins/zcli_not_found",
+            .path = "plugins/zcli_not_found",
         }, .{
             .name = "zcli_github_upgrade",
-            .path = "../../packages/core/plugins/zcli_github_upgrade",
+            .path = "plugins/zcli_github_upgrade",
             .config = .{
                 .repo = "ryanhair/zcli",
                 .command_name = "upgrade",
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
             },
         }, .{
             .name = "zcli_completions",
-            .path = "../../packages/core/plugins/zcli_completions",
+            .path = "plugins/zcli_completions",
         } },
         .app_name = "zcli",
         .app_description = "Build beautiful CLIs with zcli - scaffold projects, add commands, and more",

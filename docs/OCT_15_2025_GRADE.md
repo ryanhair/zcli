@@ -1,4 +1,5 @@
 # zcli Framework Grade Against clig.dev Guidelines
+
 **Date**: October 15, 2025
 **Graded By**: Claude (Anthropic AI)
 **Framework Version**: 0.4.2
@@ -13,6 +14,7 @@
 The zcli framework demonstrates excellent adherence to modern CLI best practices, with particular strengths in help systems, error handling, and plugin architecture. Minor improvements needed in progress indicators and configuration management.
 
 ### Strengths:
+
 - ✅ Outstanding help system with context-aware assistance
 - ✅ Excellent error handling with Levenshtein-based suggestions
 - ✅ Type-safe argument parsing with compile-time validation
@@ -21,6 +23,7 @@ The zcli framework demonstrates excellent adherence to modern CLI best practices
 - ✅ Proper exit code handling
 
 ### Areas for Improvement:
+
 - ⚠️ Limited progress indicators for long-running operations
 - ⚠️ No built-in configuration file support
 - ⚠️ Missing XDG Base Directory compliance
@@ -36,6 +39,7 @@ The zcli framework demonstrates excellent adherence to modern CLI best practices
 **Grade: A+**
 
 #### Human-First Design
+
 - **✅ Excellent**: Framework prioritizes developer experience with intuitive APIs
 - **✅ Excellent**: Type-safe interfaces prevent common mistakes at compile time
 - **Evidence**: Command structs with `Args` and `Options` make intent clear
@@ -53,16 +57,19 @@ pub const Options = struct {
 ```
 
 #### Composability
+
 - **✅ Excellent**: Plugin system allows modular composition
 - **✅ Excellent**: Commands can be nested arbitrarily deep
 - **✅ Excellent**: Zero runtime overhead through comptime metaprogramming
 
 #### Consistency
+
 - **✅ Excellent**: Uniform command structure across all commands
 - **✅ Excellent**: Consistent error handling patterns
 - **✅ Excellent**: Standard option naming (`--help`, `--version`)
 
 #### Ease of Discovery
+
 - **✅ Excellent**: Build-time command discovery from file structure
 - **✅ Excellent**: Automatic help generation from types
 - **✅ Excellent**: Command suggestions on typos (Levenshtein distance)
@@ -78,6 +85,7 @@ pub const Options = struct {
 #### What zcli Does Well:
 
 **✅ Context-Aware Help** (zcli-help plugin)
+
 ```zig
 // Shows app-level help when no command specified
 // Shows command-specific help when command provided
@@ -93,11 +101,13 @@ pub fn preExecute(context: *zcli.Context, args: zcli.ParsedArgs) !?zcli.ParsedAr
 ```
 
 **✅ Command Group Help**
+
 - Automatically shows subcommands when group command is invoked
 - Lists available subcommands with descriptions
 - Shows inherited global options
 
 **✅ Metadata-Driven Examples**
+
 ```zig
 pub const meta = .{
     .description = "Initialize a new zcli project",
@@ -108,7 +118,8 @@ pub const meta = .{
 };
 ```
 
-**✅ Markdown Formatting** (via markdown-fmt package)
+**✅ Markdown Formatting** (via markdown_fmt package)
+
 - Help text supports markdown formatting
 - Renders cleanly in terminal with proper spacing
 - Supports code blocks, lists, emphasis
@@ -116,11 +127,13 @@ pub const meta = .{
 #### What Could Be Improved:
 
 **⚠️ No Support Contact in Default Help**
+
 - Should include: "Report bugs at: https://github.com/user/repo/issues"
 - Should include: "Documentation: https://docs.example.com"
 - **Recommendation**: Add these as optional fields in metadata
 
 **⚠️ No Web Documentation Links**
+
 - Help text doesn't link to online docs
 - **Recommendation**: Add `docs_url` to app config
 
@@ -135,6 +148,7 @@ pub const meta = .{
 #### Stdout vs Stderr
 
 **✅ Excellent Separation** (packages/core/src/zcli.zig)
+
 ```zig
 pub const Context = struct {
     // ...
@@ -149,6 +163,7 @@ pub const Context = struct {
 ```
 
 **✅ Proper Usage**:
+
 - Errors go to stderr (seen in upgrade plugin, help plugin)
 - Command output goes to stdout
 - Progress messages use stderr appropriately
@@ -156,6 +171,7 @@ pub const Context = struct {
 #### Progress Indicators
 
 **✅ Basic Progress Messages** (upgrade plugin)
+
 ```zig
 std.debug.print("Checking for updates...\n", .{});
 std.debug.print("Downloading binary... (this may take a while on slow connections)\n", .{});
@@ -163,6 +179,7 @@ std.debug.print("Verifying checksum...\n", .{});
 ```
 
 **⚠️ No Sophisticated Progress Bars**
+
 - No spinner or progress bar support
 - Long operations just show static message
 - **Recommendation**: Add progress bar library integration
@@ -170,6 +187,7 @@ std.debug.print("Verifying checksum...\n", .{});
 #### Color Support
 
 **⚠️ No Built-in Color Management**
+
 - Framework doesn't provide color utilities
 - No automatic color detection/disabling
 - Applications must handle color themselves
@@ -181,6 +199,7 @@ std.debug.print("Verifying checksum...\n", .{});
 #### Machine-Readable Output
 
 **⚠️ No Built-in JSON Output**
+
 - No `--json` flag support
 - No structured output utilities
 - **Recommendation**: Add optional JSON output mode
@@ -196,6 +215,7 @@ std.debug.print("Verifying checksum...\n", .{});
 #### Human-Readable Errors
 
 **✅ Excellent Rewriting** (packages/core/plugins/zcli-github-upgrade)
+
 ```zig
 if (response.head.status != .ok) {
     switch (response.head.status) {
@@ -213,6 +233,7 @@ if (response.head.status != .ok) {
 ```
 
 **✅ Excellent Context**:
+
 - Shows what went wrong
 - Shows what was expected
 - Suggests corrective action
@@ -220,6 +241,7 @@ if (response.head.status != .ok) {
 #### Command Suggestions
 
 **✅ Outstanding Levenshtein-Based Suggestions** (zcli-not-found plugin)
+
 ```zig
 // Uses Levenshtein distance to suggest similar commands
 const suggestions = error_handler.findSimilarCommands(subcommand, available_subcommands, self.allocator);
@@ -232,6 +254,7 @@ if (suggestions) |sug| {
 ```
 
 **Example Output**:
+
 ```
 Error: Unknown command 'upgarde'
 
@@ -244,6 +267,7 @@ Run 'zcli --help' to see available commands.
 #### Exit Codes
 
 **✅ Proper Exit Code Handling** (packages/core/src/errors.zig)
+
 ```zig
 pub fn getExitCode(err: anyerror) u8 {
     return switch (err) {
@@ -260,6 +284,7 @@ pub fn getExitCode(err: anyerror) u8 {
 #### Debug Information
 
 **⚠️ Limited Debug Mode**
+
 - No built-in `--debug` or `--verbose` flag convention
 - Stack traces available but not controlled
 - **Recommendation**: Add debug mode support to show:
@@ -278,6 +303,7 @@ pub fn getExitCode(err: anyerror) u8 {
 #### Type-Safe Parsing
 
 **✅ Excellent Type Safety** (packages/core/src/args.zig)
+
 ```zig
 pub const Args = struct {
     command: []const u8,
@@ -291,6 +317,7 @@ const parsed = try parseArgs(Args, args);
 ```
 
 **✅ Compile-Time Validation**:
+
 - Invalid types caught at compile time
 - Varargs support with proper const-correctness
 - Optional arguments with defaults
@@ -298,12 +325,14 @@ const parsed = try parseArgs(Args, args);
 #### Flag Conventions
 
 **✅ Follows Standard Conventions**:
+
 - `--help` / `-h` for help
 - `--version` / `-V` for version
 - Long form with double dash
 - Short form with single dash
 
 **✅ Clear Flag Definitions** (via plugins)
+
 ```zig
 pub const global_options = [_]zcli.GlobalOption{
     zcli.option("help", bool, .{
@@ -317,6 +346,7 @@ pub const global_options = [_]zcli.GlobalOption{
 #### Input Validation
 
 **✅ Excellent Validation** (recent improvements)
+
 ```zig
 // Input length checking
 const MAX_INPUT_LENGTH = 256;
@@ -332,6 +362,7 @@ fn readLine(allocator: std.mem.Allocator) ![]u8 {
 ```
 
 **✅ Security Limits**:
+
 ```zig
 const MAX_COMPRESSED_RESPONSE_SIZE = 10 * 1024 * 1024;   // 10MB
 const MAX_DECOMPRESSED_RESPONSE_SIZE = 20 * 1024 * 1024; // 20MB
@@ -341,11 +372,13 @@ const MAX_BINARY_SIZE = 100 * 1024 * 1024;               // 100MB
 #### Secrets Handling
 
 **✅ No Secrets in Flags**:
+
 - Framework doesn't encourage secrets in flags
 - Context system allows secure storage
 - Plugin system can implement secure secret handling
 
 **⚠️ No Built-in Secrets Management**
+
 - No `.env` file support built-in
 - No secure credential storage utilities
 - **Recommendation**: Add optional secrets plugin
@@ -361,6 +394,7 @@ const MAX_BINARY_SIZE = 100 * 1024 * 1024;               // 100MB
 #### Prompt Detection
 
 **✅ TTY Detection Available**:
+
 ```zig
 // Can check if stdin is a terminal
 const stdin_file = std.fs.File.stdin();
@@ -368,6 +402,7 @@ const stdin_file = std.fs.File.stdin();
 ```
 
 **⚠️ No Built-in Prompt Utilities**
+
 - No standard prompt() function
 - No yes/no confirmation helpers
 - Applications must implement themselves
@@ -375,6 +410,7 @@ const stdin_file = std.fs.File.stdin();
 #### Confirmation Prompts
 
 **⚠️ Not Implemented in Upgrade Plugin**
+
 ```zig
 // Current: No confirmation for destructive upgrade
 try replaceBinary(allocator, temp_path);
@@ -385,6 +421,7 @@ try replaceBinary(allocator, temp_path);
 ```
 
 **Recommendation**: Add interactive utilities:
+
 ```zig
 pub fn promptYesNo(context: *Context, prompt: []const u8) !bool;
 pub fn promptString(context: *Context, prompt: []const u8) ![]const u8;
@@ -394,6 +431,7 @@ pub fn promptPassword(context: *Context, prompt: []const u8) ![]const u8;
 #### Non-Interactive Mode
 
 **⚠️ No `--no-input` Convention**
+
 - No standard flag to disable prompts
 - Each command must implement independently
 - **Recommendation**: Add global `--no-input` / `--yes` flag
@@ -401,6 +439,7 @@ pub fn promptPassword(context: *Context, prompt: []const u8) ![]const u8;
 #### Escape Handling
 
 **✅ Ctrl+C Works**:
+
 - Programs can be interrupted normally
 - No special signal handling needed
 - Framework doesn't block signals
@@ -416,6 +455,7 @@ pub fn promptPassword(context: *Context, prompt: []const u8) ![]const u8;
 #### Consistency
 
 **✅ Perfect Consistency** (enforced by framework):
+
 ```zig
 // All commands follow same structure:
 pub const meta = .{ ... };
@@ -425,6 +465,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void { ... }
 ```
 
 **✅ Enforced at Compile Time**:
+
 - Commands that don't follow structure won't compile
 - Type system ensures consistency
 - No runtime surprises
@@ -432,6 +473,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void { ... }
 #### Naming Patterns
 
 **✅ Clear Conventions**:
+
 ```
 zcli init <name>              # verb-noun
 zcli add command <name>       # verb-noun-noun
@@ -439,6 +481,7 @@ zcli gh add workflow release  # namespace-verb-noun-noun
 ```
 
 **✅ No Ambiguity**:
+
 - Command paths map directly to file paths
 - No abbreviations allowed
 - Full command names required
@@ -448,6 +491,7 @@ zcli gh add workflow release  # namespace-verb-noun-noun
 **✅ Excellent Support** (three types):
 
 1. **Pure Groups** (no index.zig):
+
 ```
 commands/users/
   ├── list.zig
@@ -455,6 +499,7 @@ commands/users/
 ```
 
 2. **Metadata-Only Groups** (index.zig with meta only):
+
 ```zig
 pub const meta = .{
     .description = "Manage users in the system",
@@ -462,12 +507,14 @@ pub const meta = .{
 ```
 
 3. **Executable Groups** (index.zig with execute):
+
 ```zig
 pub const meta = .{ .description = "..." };
 pub fn execute(args: Args, options: Options, context: *Context) !void { ... }
 ```
 
 **✅ Automatic Help Generation**:
+
 - Shows subcommands automatically
 - Handles nested groups gracefully
 - Context-aware error messages
@@ -483,11 +530,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void { ... }
 #### Configuration File Support
 
 **❌ No Built-in Config Support**:
+
 - Framework doesn't provide config file utilities
 - No TOML/YAML/JSON parsing
 - Applications must implement themselves
 
 **❌ No XDG Compliance**:
+
 - No `~/.config/<app>/config` support
 - No standard config locations
 - **Major Gap** per clig.dev guidelines
@@ -495,6 +544,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void { ... }
 #### Configuration Precedence
 
 **⚠️ Not Standardized**:
+
 - No built-in precedence order:
   1. Flags ✅ (supported)
   2. Environment variables ⚠️ (basic support)
@@ -503,6 +553,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void { ... }
   5. System config ❌ (not provided)
 
 **Recommendation**: Add config system plugin:
+
 ```zig
 // Proposed API
 pub fn loadConfig(allocator: Allocator, app_name: []const u8) !Config {
@@ -518,6 +569,7 @@ pub fn loadConfig(allocator: Allocator, app_name: []const u8) !Config {
 #### Environment Variables
 
 **✅ Basic Support Available**:
+
 ```zig
 pub const Environment = struct {
     map: std.StringHashMap([]const u8),
@@ -529,6 +581,7 @@ pub const Environment = struct {
 ```
 
 **⚠️ No Standard Conventions**:
+
 - No `<APP>_CONFIG_DIR` pattern
 - No `.env` file loading
 - Applications handle ad-hoc
@@ -544,11 +597,13 @@ pub const Environment = struct {
 #### Access and Usage
 
 **✅ Environment Access Available**:
+
 ```zig
 const home = context.environment.get("HOME");
 ```
 
 **⚠️ No Standard Naming Convention**:
+
 - Framework doesn't enforce `APP_` prefix
 - No guidance on variable naming
 - Applications decide independently
@@ -556,6 +611,7 @@ const home = context.environment.get("HOME");
 #### `.env` File Support
 
 **❌ No Built-in `.env` Support**:
+
 - No automatic `.env` file loading
 - Must be implemented per-application
 - **Recommendation**: Add optional `.env` plugin
@@ -563,11 +619,13 @@ const home = context.environment.get("HOME");
 #### Secrets in Environment
 
 **✅ Good Guidance** (implied by design):
+
 - Context system allows secure storage
 - Environment is just one source
 - Plugin system can add secret management
 
 **⚠️ No Explicit Warnings**:
+
 - No documentation warning against secrets in env
 - No secure alternatives documented
 
@@ -582,11 +640,13 @@ const home = context.environment.get("HOME");
 #### Command Naming
 
 **✅ Excellent Conventions**:
+
 - Framework enforces lowercase
 - File names become command names
 - Clear, memorable patterns
 
 **✅ Examples from zcli Tool**:
+
 ```
 zcli init           # Short, clear
 zcli add command    # Verb + noun
@@ -595,9 +655,11 @@ zcli release        # Single noun
 ```
 
 **✅ Namespace Support**:
+
 ```
 zcli gh add workflow release
 ```
+
 - Clear ownership (gh = GitHub)
 - Logical grouping
 - No conflicts
@@ -605,11 +667,13 @@ zcli gh add workflow release
 #### Avoiding Generic Names
 
 **✅ Good Specificity**:
+
 - `zcli` (specific to Zig CLI)
 - Not `cli` or `tool` (too generic)
 - Namespace prefix prevents conflicts
 
 **⚠️ Some Internal Generics**:
+
 - `Context`, `Options`, `Args` are common
 - But scoped within zcli namespace
 - Acceptable for framework internals
@@ -625,17 +689,20 @@ zcli gh add workflow release
 #### Single Binary
 
 **✅ Excellent Support**:
+
 - Zig produces single static binaries
 - No runtime dependencies
 - Cross-compilation built-in
 
 **✅ Self-Upgrade Capability**:
+
 ```zig
 // zcli-github-upgrade plugin
 zcli upgrade  // Downloads and replaces binary
 ```
 
 **✅ Installation Methods**:
+
 ```bash
 # Install script provided
 curl -fsSL https://zcli.dev/install.sh | sh
@@ -649,6 +716,7 @@ mv zcli-aarch64-macos /usr/local/bin/zcli
 #### Uninstallation
 
 **⚠️ Basic but Manual**:
+
 ```bash
 # Currently just:
 rm /usr/local/bin/zcli
@@ -658,11 +726,13 @@ zcli uninstall  # Self-remove with cleanup
 ```
 
 **⚠️ No State Cleanup**:
+
 - Doesn't track config files
 - Doesn't remove cache directories
 - Manual cleanup required
 
 **Recommendation**: Add uninstall command:
+
 ```zig
 pub fn uninstall() !void {
     // Remove binary
@@ -675,6 +745,7 @@ pub fn uninstall() !void {
 #### Platform Support
 
 **✅ Cross-Platform**:
+
 - Linux (x86_64, aarch64)
 - macOS (x86_64, aarch64)
 - Windows (with caveats)
@@ -690,6 +761,7 @@ pub fn uninstall() !void {
 #### No Analytics by Default
 
 **✅ Perfect - Respects Privacy**:
+
 - Framework collects no data
 - No telemetry built-in
 - No phone-home behavior
@@ -697,6 +769,7 @@ pub fn uninstall() !void {
 #### If Analytics Needed
 
 **✅ Plugin System Allows Opt-In**:
+
 ```zig
 // Applications can add analytics plugin
 .registerPlugin(AnalyticsPlugin.init(.{
@@ -706,6 +779,7 @@ pub fn uninstall() !void {
 ```
 
 **✅ Transparent Design**:
+
 - Plugin source code visible
 - User can audit data collection
 - Can be disabled by removing plugin
@@ -721,6 +795,7 @@ pub fn uninstall() !void {
 #### Input Validation
 
 **✅ Excellent** (see Arguments section):
+
 - Type checking at compile time
 - Length limits enforced
 - Buffer overflow prevention
@@ -729,6 +804,7 @@ pub fn uninstall() !void {
 #### Error Recovery
 
 **✅ Good Practices**:
+
 ```zig
 // Atomic binary replacement with backup
 try std.fs.cwd().copyFile(exe_path, std.fs.cwd(), backup_path, .{});
@@ -736,6 +812,7 @@ try std.fs.cwd().rename(temp_path, exe_path);  // Atomic
 ```
 
 **✅ Cleanup on Error**:
+
 ```zig
 const temp_path = try downloadBinary(...);
 defer allocator.free(temp_path);
@@ -745,6 +822,7 @@ defer std.fs.cwd().deleteFile(temp_path) catch {};
 #### Timeouts
 
 **⚠️ No Timeout Support** (intentional decision):
+
 - Long operations can hang indefinitely
 - User must Ctrl+C manually
 - Design decision: "User can kill process"
@@ -755,11 +833,13 @@ defer std.fs.cwd().deleteFile(temp_path) catch {};
 #### Parallel Processing
 
 **⚠️ No Built-in Concurrency Safety**:
+
 - Framework is single-threaded
 - Commands run sequentially
 - No concurrent command execution guards
 
 **✅ Safe by Design**:
+
 - Single-threaded = no race conditions
 - Appropriate for CLI tools
 - Can add threading if needed
@@ -767,11 +847,13 @@ defer std.fs.cwd().deleteFile(temp_path) catch {};
 #### Crash Reports
 
 **❌ No Crash Reporter**:
+
 - Stack traces print to stderr
 - No automatic bug reporting
 - No crash log collection
 
 **Recommendation**: Add crash plugin:
+
 ```zig
 // On panic, save to ~/.cache/zcli/crashes/
 // Show: "Crash report saved to: ..."
@@ -784,21 +866,21 @@ defer std.fs.cwd().deleteFile(temp_path) catch {};
 
 ## Category Scoring Summary
 
-| Category | Score | Grade | Weight |
-|----------|-------|-------|--------|
-| Philosophy & Design | 20/20 | A+ | 10% |
-| Help Text | 18/20 | A | 10% |
-| Output & Formatting | 16/20 | B+ | 8% |
-| Error Handling | 19/20 | A+ | 10% |
-| Arguments and Flags | 18/20 | A | 10% |
-| Interactivity | 15/20 | B | 6% |
-| Subcommands | 20/20 | A+ | 10% |
-| Configuration | 12/20 | C | 8% |
-| Environment Variables | 14/20 | B- | 6% |
-| Naming | 18/20 | A | 5% |
-| Distribution | 17/20 | B+ | 7% |
-| Analytics & Telemetry | 20/20 | A+ | 5% |
-| Robustness | 17/20 | B+ | 5% |
+| Category              | Score | Grade | Weight |
+| --------------------- | ----- | ----- | ------ |
+| Philosophy & Design   | 20/20 | A+    | 10%    |
+| Help Text             | 18/20 | A     | 10%    |
+| Output & Formatting   | 16/20 | B+    | 8%     |
+| Error Handling        | 19/20 | A+    | 10%    |
+| Arguments and Flags   | 18/20 | A     | 10%    |
+| Interactivity         | 15/20 | B     | 6%     |
+| Subcommands           | 20/20 | A+    | 10%    |
+| Configuration         | 12/20 | C     | 8%     |
+| Environment Variables | 14/20 | B-    | 6%     |
+| Naming                | 18/20 | A     | 5%     |
+| Distribution          | 17/20 | B+    | 7%     |
+| Analytics & Telemetry | 20/20 | A+    | 5%     |
+| Robustness            | 17/20 | B+    | 5%     |
 
 **Weighted Total: 91.0/100**
 
@@ -809,12 +891,14 @@ defer std.fs.cwd().deleteFile(temp_path) catch {};
 ### High Priority (Gaps in Core Guidelines)
 
 1. **Add Configuration System** (XDG-compliant)
+
    - Follow `~/.config/<app>/` pattern
    - Support TOML/YAML/JSON
    - Implement precedence order
    - **Impact**: Major guideline compliance gap
 
 2. **Add Interactive Prompt Utilities**
+
    - `promptYesNo()`, `promptString()`, `promptPassword()`
    - Add `--no-input` / `--yes` global flag
    - TTY detection and graceful fallback
@@ -829,12 +913,14 @@ defer std.fs.cwd().deleteFile(temp_path) catch {};
 ### Medium Priority (Nice-to-Have Features)
 
 4. **Add Progress Indicators**
+
    - Spinner for indeterminate operations
    - Progress bar for downloads/long tasks
    - Integration with existing context system
    - **Impact**: UX improvement for long operations
 
 5. **Add Uninstall Command**
+
    - Self-removal capability
    - Clean up config/cache directories
    - Report what was removed
@@ -849,11 +935,13 @@ defer std.fs.cwd().deleteFile(temp_path) catch {};
 ### Low Priority (Polish & Enhancement)
 
 7. **Add `.env` File Support**
+
    - Optional plugin for environment loading
    - Secure secret handling
    - **Impact**: Developer convenience
 
 8. **Add JSON Output Mode**
+
    - `--json` flag for machine-readable output
    - Structured error messages
    - **Impact**: Automation and scripting
@@ -899,6 +987,7 @@ With these additions, zcli would score **~95/100** and be among the best CLI fra
 ## Appendix: Testing Methodology
 
 This grade was determined by:
+
 1. **Code Review**: Examination of 198+ Zig source files in the repository
 2. **Plugin Analysis**: Detailed review of all core plugins (help, not-found, upgrade, version, completions)
 3. **Documentation Review**: Analysis of CLAUDE.md, DESIGN.md, and inline documentation
@@ -907,6 +996,7 @@ This grade was determined by:
 6. **Guideline Mapping**: Line-by-line comparison with clig.dev guidelines
 
 **Grading Scale**:
+
 - A+ (95-100): Exceptional, exceeds guidelines
 - A (90-94): Excellent, fully compliant
 - B+ (85-89): Very good, minor gaps

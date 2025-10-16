@@ -103,16 +103,28 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
 }
 
 /// Add plugin modules to registry during generation
-pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
+pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
+    // Create markdown_fmt module from zcli dependency's path
+    // (markdown_fmt is a dependency of zcli in its build.zig.zon)
+    const markdown_fmt_module = b.addModule("markdown_fmt_for_help", .{
+        .root_source_file = zcli_dep.path("../markdown_fmt/src/main.zig"),
+    });
+
     for (plugins) |plugin_info| {
         if (plugin_info.is_local) {
+            // Plugin paths are like "src/plugins/zcli_help/plugin"
+            // We need to load them from the zcli dependency
+            const plugin_path = b.fmt("{s}.zig", .{plugin_info.import_name});
             const plugin_module = b.addModule(plugin_info.import_name, .{
-                .root_source_file = b.path(if (std.mem.endsWith(u8, plugin_info.import_name, "/plugin"))
-                    b.fmt("src/{s}.zig", .{plugin_info.import_name})
-                else
-                    b.fmt("src/{s}.zig", .{plugin_info.import_name})),
+                .root_source_file = zcli_dep.path(plugin_path),
             });
             plugin_module.addImport("zcli", zcli_module);
+
+            // Add markdown_fmt for help plugin
+            if (std.mem.indexOf(u8, plugin_info.name, "help") != null) {
+                plugin_module.addImport("markdown_fmt", markdown_fmt_module);
+            }
+
             registry_module.addImport(plugin_info.import_name, plugin_module);
         } else {
             if (plugin_info.dependency) |dep| {

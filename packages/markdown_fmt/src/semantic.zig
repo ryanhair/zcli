@@ -1,4 +1,4 @@
-//! Semantic color support for markdown-fmt
+//! Semantic color support for markdown_fmt
 //!
 //! Extends markdown parsing to support semantic tags like <error>, <success>, etc.
 //! Can integrate with external theme systems like ztheme for color palettes.

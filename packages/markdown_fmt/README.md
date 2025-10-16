@@ -1,9 +1,9 @@
-# markdown-fmt
+# markdown_fmt
 
 **Configure once. Use everywhere. Zero runtime overhead.**
 
 ```zig
-const md = @import("markdown-fmt");
+const md = @import("markdown_fmt");
 
 const fmt = md.formatter(stdout);
 try fmt.write("<error>**{s}**</error> failed at <path>{s}</path>", .{test_name, file});
@@ -25,6 +25,7 @@ Converts **full markdown** (headers, lists, code blocks, links, etc.) and semant
 ## Supported Markdown
 
 ### Inline Formatting
+
 - **Bold**: `**text**` → Bold text
 - **Italic**: `*text*` → Italic text
 - **Dim**: `~text~` → Dimmed text
@@ -34,6 +35,7 @@ Converts **full markdown** (headers, lists, code blocks, links, etc.) and semant
 - **Escape**: `\*not italic\*` → Literal asterisks
 
 ### Block Elements
+
 - **Headers**: `# H1` through `###### H6` → Colored, bold headers
 - **Code blocks**: ` ```lang\ncode\n``` ` → Bordered boxes with syntax labels
 - **Lists**: `- item` and `1. item` → Bulleted and numbered lists (with nesting!)
@@ -41,13 +43,14 @@ Converts **full markdown** (headers, lists, code blocks, links, etc.) and semant
 - **Horizontal rules**: `---`, `***`, `___` → Box drawing lines
 
 ### Format Specifiers
+
 All format specifiers are preserved: `{s}`, `{d}`, `{d:.2}`, `{x}`, etc.
 
 ## Quick Start
 
-```zig
+````zig
 const std = @import("std");
-const md = @import("markdown-fmt");
+const md = @import("markdown_fmt");
 
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
@@ -84,7 +87,7 @@ pub fn main() !void {
     // Semantic colors
     try fmt.write("<success>All tests passed!</success>\n", .{});
 }
-```
+````
 
 ## How It Works
 
@@ -120,6 +123,7 @@ try fmt.write("<error>Custom colors!</error>", .{});
 ```
 
 **Formatter Methods:**
+
 - `fmt.write(markdown, args)` - Write formatted output to the configured writer
 - `fmt.print(allocator, markdown, args)` - Return formatted string (allocates)
 
@@ -211,7 +215,7 @@ try fmt.write(
 
 ### Code Blocks
 
-```zig
+````zig
 try fmt.write(
     \\```zig
     \\const x = 42;
@@ -227,7 +231,7 @@ try fmt.write(
     \\```
     \\
 , .{});
-```
+````
 
 **Note:** Braces inside code blocks are escaped automatically, so `{` becomes `{{` to prevent format interpretation.
 
@@ -298,7 +302,7 @@ try fmt.write(
 
 ### CLI Help Text
 
-```zig
+````zig
 const fmt = md.formatter(stdout);
 
 try fmt.write(
@@ -326,17 +330,19 @@ try fmt.write(
     \\Visit [our docs](https://example.com) for more information
     \\
 , .{});
-```
+````
 
 ## Design Philosophy
 
 **Problem:** Existing markdown-to-ANSI libraries either:
+
 1. Parse markdown at runtime (slow, wastes CPU)
 2. Use complex templating systems
 3. Can't interpolate runtime values
 4. Support only basic inline formatting
 
 **Solution:**
+
 - Parse **full markdown** (blocks + inline) at **comptime** (zero runtime cost)
 - Preserve format specifiers for **runtime interpolation**
 - Use **pure string slicing** (no allocators needed at comptime)
@@ -350,6 +356,7 @@ zig build test      # Run all tests
 ```
 
 The demo showcases:
+
 - Headers (all 6 levels)
 - Lists (ordered, unordered, nested)
 - Code blocks with language labels
@@ -380,6 +387,7 @@ try fmt.write("<success>Custom colors!</success>", .{});
 ## Comparison to ztheme
 
 This package extracts the core markdown parsing from `ztheme` and redesigns it to:
+
 - Work at comptime without allocators (fixes pthread errors)
 - Support runtime interpolation
 - Support full markdown (blocks + inline)

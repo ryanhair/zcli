@@ -60,7 +60,7 @@ fn readVersionFromZon(b: *std.Build) []const u8 {
 // ============================================================================
 
 /// Build function with plugin support that accepts zcli module
-fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: BuildConfig) *std.Build.Module {
+fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, config: BuildConfig) *std.Build.Module {
     // Get target and optimize from executable
     const target = exe.root_module.resolved_target orelse b.graph.host;
     const optimize = exe.root_module.optimize orelse .Debug;
@@ -74,11 +74,11 @@ fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *s
     // 2. Combine with external plugins
     const all_plugins = plugin_system.combinePlugins(b, local_plugins, config.plugins orelse &.{});
 
-    // 3. Add plugin modules to executable
-    plugin_system.addPluginModules(b, exe, all_plugins);
+    // 3. Note: Plugin modules are now added directly in module_creation.addPluginModulesToRegistry
+    //    using zcli_dep.path() to ensure correct resolution
 
     // 4. Generate plugin-enhanced registry
-    const registry_module = generatePluginRegistry(b, target, optimize, zcli_module, config, all_plugins);
+    const registry_module = generatePluginRegistry(b, target, optimize, zcli_dep, zcli_module, config, all_plugins);
 
     return registry_module;
 }
@@ -88,6 +88,7 @@ fn generatePluginRegistry(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    zcli_dep: *std.Build.Dependency,
     zcli_module: *std.Build.Module,
     config: BuildConfig,
     plugins: []const types.PluginInfo,
@@ -147,13 +148,13 @@ fn generatePluginRegistry(
     module_creation.createDiscoveredModules(b, registry_module, zcli_module, discovered_commands, config.commands_dir);
 
     // Add plugin imports to registry module
-    module_creation.addPluginModulesToRegistry(b, registry_module, zcli_module, plugins);
+    module_creation.addPluginModulesToRegistry(b, registry_module, zcli_dep, zcli_module, plugins);
 
     return registry_module;
 }
 
 /// Build function for external plugins with explicit plugin configuration
-pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.Build.Module, config: anytype) *std.Build.Module {
+pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, config: anytype) *std.Build.Module {
     // Validate required fields
     if (!@hasField(@TypeOf(config), "commands_dir")) @compileError("config must have 'commands_dir' field");
     if (!@hasField(@TypeOf(config), "app_name")) @compileError("config must have 'app_name' field");
@@ -172,10 +173,9 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
         if (!@hasField(@TypeOf(plugin_config), "name")) @compileError("plugin config must have 'name' field");
         if (!@hasField(@TypeOf(plugin_config), "path")) @compileError("plugin config must have 'path' field");
 
-        // Create a dependency for each external plugin
-        const plugin_dep = b.dependency(plugin_config.name, .{});
-
-        const import_name = std.fmt.allocPrint(b.allocator, "plugins/{s}/plugin", .{plugin_config.name}) catch {
+        // Plugin path is relative to the zcli package, e.g. "plugins/zcli_help"
+        // Plugins are at src/plugins/xxx/plugin.zig in the zcli package
+        const plugin_import_path = std.fmt.allocPrint(b.allocator, "src/{s}/plugin", .{plugin_config.path}) catch {
             logging.buildError("Plugin System", "memory allocation", "Failed to allocate memory for plugin import name", "Out of memory while processing external plugin. Reduce number of plugins or increase available memory");
             std.debug.print("Plugin name: {s}\n", .{plugin_config.name});
             std.process.exit(1);
@@ -189,9 +189,9 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
 
         const plugin_info = types.PluginInfo{
             .name = plugin_config.name,
-            .import_name = import_name,
-            .is_local = false,
-            .dependency = plugin_dep,
+            .import_name = plugin_import_path,
+            .is_local = true, // Plugins are now local paths within the zcli package
+            .dependency = null, // No separate dependency needed
             .init = init_code,
         };
         plugins.append(b.allocator, plugin_info) catch {
@@ -211,7 +211,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
         .app_description = config.app_description,
     };
 
-    return buildWithPlugins(b, exe, zcli_module, build_config);
+    return buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);
 }
 
 /// Convert a comptime config struct to an init string

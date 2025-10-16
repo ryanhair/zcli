@@ -17,8 +17,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "vterm", .path = "packages/vterm" },
         .{ .name = "interactive", .path = "packages/interactive" },
         .{ .name = "markdown_fmt", .path = "packages/markdown_fmt" },
-        .{ .name = "zcli_help_plugin", .path = "packages/core/plugins/zcli_help" },
-        .{ .name = "zcli_not_found_plugin", .path = "packages/core/plugins/zcli_not_found" },
     };
 
     const example_projects = [_]ProjectInfo{
@@ -77,3 +75,9 @@ pub fn build(b: *std.Build) void {
     build_all_step.dependOn(test_step);
     build_all_step.dependOn(build_examples_step);
 }
+
+// Re-export build utilities from core package for external projects
+// When external projects do `const zcli = @import("zcli");` in their build.zig,
+// they're importing this root build.zig from the tarball/git archive.
+pub const generate = @import("packages/core/build.zig").generate;
+pub const PluginConfig = @import("packages/core/build.zig").PluginConfig;

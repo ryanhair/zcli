@@ -1,4 +1,4 @@
-// markdown-fmt: Unified API for terminal formatting
+// markdown_fmt: Unified API for terminal formatting
 //
 // ONE function handles markdown, semantic colors, and runtime interpolation:
 //   try mdfmt.write(stdout, "<error>**{s}**</error> at <path>{s}</path>", .{test, file});

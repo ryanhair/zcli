@@ -1,5 +1,5 @@
 const std = @import("std");
-const md = @import("markdown-fmt");
+const md = @import("markdown_fmt");
 
 pub fn main() !void {
     // Get stdout file
@@ -14,7 +14,7 @@ pub fn main() !void {
     var fmt = md.formatter(&stdout_writer.interface);
 
     try stdout_writer.interface.writeAll("\n╔═══════════════════════════════════════════════════════════╗\n");
-    try stdout_writer.interface.writeAll("║         markdown-fmt: Comprehensive Feature Demo          ║\n");
+    try stdout_writer.interface.writeAll("║         markdown_fmt: Comprehensive Feature Demo          ║\n");
     try stdout_writer.interface.writeAll("╚═══════════════════════════════════════════════════════════╝\n\n");
 
     // Runtime data for examples

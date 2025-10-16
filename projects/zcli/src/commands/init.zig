@@ -50,6 +50,16 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     } else try allocator.dupe(u8, args.name);
     defer allocator.free(project_name);
 
+    // Create a sanitized identifier-safe version (replace dashes with underscores)
+    const project_identifier = blk: {
+        var sanitized = try allocator.alloc(u8, project_name.len);
+        for (project_name, 0..) |c, i| {
+            sanitized[i] = if (c == '-') '_' else c;
+        }
+        break :blk sanitized;
+    };
+    defer allocator.free(project_identifier);
+
     const app_description = options.description orelse "A CLI application built with zcli";
     const app_version = options.version orelse "0.1.0";
 
@@ -100,14 +110,18 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 
     // Generate build.zig.zon
     try stdout.print("  Creating build.zig.zon...\n", .{});
+    // Use zcli package from GitHub archive
+    const zcli_version = "0.9.0";
     const zon_content = try std.fmt.allocPrint(allocator,
         \\.{{
         \\    .name = .{s},
         \\    .version = "{s}",
+        \\    .fingerprint = 0x0000000000000000,
         \\    .minimum_zig_version = "0.15.1",
         \\    .dependencies = .{{
         \\        .zcli = .{{
-        \\            .url = "https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz",
+        \\            .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz",
+        \\            .hash = "1220000000000000000000000000000000000000000000000000000000000000",
         \\        }},
         \\    }},
         \\    .paths = .{{
@@ -117,7 +131,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\    }},
         \\}}
         \\
-    , .{ project_name, app_version });
+    , .{ project_identifier, app_version, zcli_version });
     defer allocator.free(zon_content);
 
     var zon_file = try project_dir.createFile("build.zig.zon", .{});
@@ -143,23 +157,32 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\    // Create the executable
         \\    const exe = b.addExecutable(.{{
         \\        .name = "{s}",
-        \\        .root_source_file = b.path("src/main.zig"),
-        \\        .target = target,
-        \\        .optimize = optimize,
+        \\        .root_module = b.createModule(.{{
+        \\            .root_source_file = b.path("src/main.zig"),
+        \\            .target = target,
+        \\            .optimize = optimize,
+        \\        }}),
         \\    }});
         \\
         \\    exe.root_module.addImport("zcli", zcli_module);
         \\
         \\    // Generate command registry with built-in plugins
         \\    const zcli = @import("zcli");
-        \\    const cmd_registry = zcli.generate(b, exe, zcli_module, .{{
+        \\    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{{
         \\        .commands_dir = "src/commands",
-        \\        .plugins = &[_]zcli.PluginConfig{{
-        \\            .{{ .name = "zcli_help", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_help") }},
-        \\            .{{ .name = "zcli_version", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_version") }},
-        \\            .{{ .name = "zcli_not_found", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_not_found") }},
-        \\            .{{ .name = "zcli_completions", .path = zcli_dep.builder.pathFromRoot("packages/core/plugins/zcli_completions") }},
-        \\        }},
+        \\        .plugins = &.{{ .{{
+        \\            .name = "zcli_help",
+        \\            .path = "plugins/zcli_help",
+        \\        }}, .{{
+        \\            .name = "zcli_version",
+        \\            .path = "plugins/zcli_version",
+        \\        }}, .{{
+        \\            .name = "zcli_not_found",
+        \\            .path = "plugins/zcli_not_found",
+        \\        }}, .{{
+        \\            .name = "zcli_completions",
+        \\            .path = "plugins/zcli_completions",
+        \\        }} }},
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",
         \\        .app_description = "{s}",
@@ -192,7 +215,12 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\
         \\pub fn main() !void {
         \\    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        \\    defer _ = gpa.deinit();
+        \\    defer {
+        \\        const deinit_status = gpa.deinit();
+        \\        if (deinit_status == .leak) {
+        \\            std.log.err("Memory leak detected!", .{});
+        \\        }
+        \\    }
         \\
         \\    var app = registry.init();
         \\    app.run(gpa.allocator()) catch |err| switch (err) {
@@ -245,6 +273,67 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     var hello_file = try commands_dir.createFile("hello.zig", .{});
     defer hello_file.close();
     try hello_file.writeAll(hello_content);
+
+    // Fetch dependencies to populate hash and fingerprint
+    // We run this twice: first to get the correct fingerprint, then to update with the hash
+    try stdout.print("  Fetching dependencies (this may take a moment)...\n", .{});
+
+    // Construct the zcli URL
+    const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz", .{zcli_version});
+    defer allocator.free(zcli_url);
+
+    // First attempt will fail but give us the correct fingerprint
+    if (std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "zig", "fetch", "--save", zcli_url },
+        .cwd_dir = project_dir,
+    })) |first_result| {
+        defer allocator.free(first_result.stdout);
+        defer allocator.free(first_result.stderr);
+
+        // If it succeeded, great! If not, extract the fingerprint from the error message
+        if (first_result.term != .Exited or first_result.term.Exited != 0) {
+            // Look for "use this value: 0x..." in stderr
+            if (std.mem.indexOf(u8, first_result.stderr, "use this value: 0x")) |idx| {
+                const after_value = first_result.stderr[idx + 16 ..]; // Skip "use this value: "
+                var end: usize = 0;
+                while (end < after_value.len and end < 20) : (end += 1) {
+                    const c = after_value[end];
+                    if (!std.ascii.isHex(c) and c != 'x') break;
+                }
+                const fingerprint_str = after_value[0..end];
+
+                // Read the current build.zig.zon
+                const zon_file_read = try project_dir.openFile("build.zig.zon", .{});
+                defer zon_file_read.close();
+                const zon_current = try zon_file_read.readToEndAlloc(allocator, 10 * 1024 * 1024);
+                defer allocator.free(zon_current);
+
+                // Replace the fingerprint
+                const updated_zon = try std.mem.replaceOwned(u8, allocator, zon_current, "0x0000000000000000", fingerprint_str);
+                defer allocator.free(updated_zon);
+
+                // Write it back
+                const zon_file_write = try project_dir.createFile("build.zig.zon", .{});
+                defer zon_file_write.close();
+                try zon_file_write.writeAll(updated_zon);
+
+                // Try fetch again with correct fingerprint
+                if (std.process.Child.run(.{
+                    .allocator = allocator,
+                    .argv = &.{ "zig", "fetch", "--save", zcli_url },
+                    .cwd_dir = project_dir,
+                })) |second_result| {
+                    defer allocator.free(second_result.stdout);
+                    defer allocator.free(second_result.stderr);
+                } else |_| {
+                    // Ignore errors on second attempt - not critical
+                }
+            }
+        }
+    } else |_| {
+        // Silently ignore - not critical for project creation
+    }
 
     // Success message
     try stdout.print("\n✓ Project '{s}' created successfully!\n\n", .{project_name});

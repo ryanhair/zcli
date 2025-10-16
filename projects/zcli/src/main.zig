@@ -3,7 +3,12 @@ const registry = @import("command_registry");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) {
+            std.log.err("Memory leak detected!", .{});
+        }
+    }
     const allocator = gpa.allocator();
 
     var app = registry.init();

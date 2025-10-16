@@ -5,12 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 **zcli** is a Zig framework for building beautiful command-line interfaces with:
+
 - **Build-time command discovery**: Automatically scans directories and generates type-safe routing
 - **Plugin system**: Extensible architecture with lifecycle hooks and build-time configuration
 - **Type-safe argument parsing**: Compile-time validation of commands, args, and options
 - **Zero runtime overhead**: Everything resolved at compile time
 
 ### Key Principle
+
 zcli uses **comptime metaprogramming** extensively. Commands are discovered by scanning the filesystem at build time, while plugins are explicitly configured. This hybrid approach balances automation with control.
 
 ---
@@ -18,6 +20,7 @@ zcli uses **comptime metaprogramming** extensively. Commands are discovered by s
 ## Zig Standards
 
 - **Unused parameters**: Set to `_` directly in function declaration, not `_ = param`
+
   ```zig
   // Good
   pub fn execute(_: Args, options: Options, context: *Context) !void
@@ -31,6 +34,7 @@ zcli uses **comptime metaprogramming** extensively. Commands are discovered by s
 - **Tests**: Unit tests belong in the source file being tested. Integration/e2e tests can be separate.
 
 - **Type info access**: Use lowercase field names with `@"struct"` syntax:
+
   ```zig
   // Good
   switch (@typeInfo(T)) {
@@ -69,7 +73,7 @@ zcli/
 │   │       ├── zcli-help/
 │   │       ├── zcli-not-found/
 │   │       └── zcli-github-upgrade/
-│   └── markdown-fmt/              # Markdown formatting utility
+│   └── markdown_fmt/              # Markdown formatting utility
 └── projects/
     └── zcli/                      # The zcli meta-CLI tool itself
         ├── src/commands/          # Commands for scaffolding projects
@@ -94,9 +98,11 @@ zcli/
 The build system has two distinct phases that use different techniques:
 
 #### 1. Command Discovery (Dynamic - Filesystem Scanning)
+
 **Why**: Users organize commands in directories; we discover them automatically.
 
 **Process**:
+
 1. `discovery.zig` scans `commands_dir` at build time
 2. Finds `.zig` files and `index.zig` files
 3. Builds a tree structure of command paths
@@ -106,9 +112,11 @@ The build system has two distinct phases that use different techniques:
 **Key files**: `packages/core/src/build_utils/discovery.zig`, `code_generation.zig`
 
 #### 2. Plugin Registration (Static - Explicit Configuration)
+
 **Why**: Plugins are explicitly listed in `build.zig`, so we know them at comptime.
 
 **Process**:
+
 1. User provides plugin configs in `generate()` call
 2. `configToInitString()` introspects config structs at **comptime**
 3. Generates initialization calls as strings: `.init(.{ .repo = "user/repo" })`
@@ -125,6 +133,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
 ```
 
 **Parameters**:
+
 - `config: anytype` - Accepts any struct with required fields:
   - `commands_dir: []const u8`
   - `plugins: []const PluginConfigLike` (where each has `.name`, `.path`, optional `.config`)
@@ -135,6 +144,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
 **Returns**: A module containing the generated registry
 
 **Example usage**:
+
 ```zig
 const cmd_registry = zcli.generate(b, exe, zcli_module, .{
     .commands_dir = "src/commands",
@@ -163,6 +173,7 @@ const cmd_registry = zcli.generate(b, exe, zcli_module, .{
 Plugins can accept build-time configuration through the `.config` field:
 
 **In build.zig**:
+
 ```zig
 .plugins = &.{
     .{
@@ -177,6 +188,7 @@ Plugins can accept build-time configuration through the `.config` field:
 ```
 
 **In plugin code**:
+
 ```zig
 pub fn init(config: Config) type {
     return struct {
@@ -193,6 +205,7 @@ pub fn init(config: Config) type {
 ```
 
 **How it works**:
+
 1. `inline for` loop in `generate()` makes configs available at comptime
 2. `configToInitString()` introspects the config struct
 3. Generates code like: `const plugin = @import("plugin").init(.{.setting1 = "value", .setting2 = true});`
@@ -207,6 +220,7 @@ pub fn init(config: Config) type {
 ### Plugin Anatomy
 
 Plugins can provide:
+
 1. **Lifecycle hooks**: `preExecute`, `onError`, `onStartup`
 2. **Global options**: Available to all commands
 3. **Commands**: Regular commands like any other
@@ -273,6 +287,7 @@ pub fn handleGlobalOption(context: *zcli.Context, option_name: []const u8, value
 ### Example: Help Plugin
 
 See `packages/core/plugins/zcli-help/src/plugin.zig` for a complete example showing:
+
 - Global option (`--help`)
 - Hook usage (`preExecute`, `onError`)
 - Command group help
@@ -281,6 +296,7 @@ See `packages/core/plugins/zcli-help/src/plugin.zig` for a complete example show
 ### Example: Upgrade Plugin
 
 See `packages/core/plugins/zcli-github-upgrade/src/plugin.zig` for:
+
 - Build-time configuration via `init()`
 - Providing a command
 - Startup hook for version checking
@@ -294,6 +310,7 @@ See `packages/core/plugins/zcli-github-upgrade/src/plugin.zig` for:
 **Location**: `src/commands/mycommand.zig`
 
 **Structure**:
+
 ```zig
 const std = @import("std");
 const zcli = @import("zcli");
@@ -329,6 +346,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 ### Nested Commands
 
 **Directory structure**:
+
 ```
 src/commands/
 ├── users/
@@ -344,6 +362,7 @@ src/commands/
 zcli supports three types of command groups:
 
 #### 1. Pure Groups (No `index.zig`)
+
 Directories without `index.zig` are purely organizational. They don't execute and show no description in help.
 
 ```
@@ -356,6 +375,7 @@ src/commands/
 Running `myapp users` → Shows help listing `list` and `create` subcommands.
 
 #### 2. Metadata-Only Groups (`index.zig` with only `meta`)
+
 Optional groups can provide just metadata (description) without being executable:
 
 ```zig
@@ -366,6 +386,7 @@ pub const meta = .{
 ```
 
 **Behavior**:
+
 - Running `myapp users` → Shows help for subcommands (same as pure groups)
 - Running `myapp users --help` → Shows description and subcommands
 - Help listings show the description: `users          Manage users in the system`
@@ -374,6 +395,7 @@ pub const meta = .{
 **When to use**: Organize related commands with a clear description without adding executable behavior.
 
 #### 3. Executable Groups (`index.zig` with `execute`)
+
 Full command groups that can be executed directly:
 
 ```zig
@@ -392,6 +414,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 ```
 
 **Behavior**:
+
 - Running `myapp users` → Executes the `index.zig` command
 - Running `myapp users list` → Routes to the `list` subcommand
 
@@ -415,6 +438,7 @@ src/commands/
 ```
 
 **Resulting commands**:
+
 - `zcli init` - Initialize a new project
 - `zcli add` - Shows help with description "Add commands and plugins..."
 - `zcli add command <name>` - Create a new command
@@ -422,6 +446,7 @@ src/commands/
 - `zcli gh add workflow release` - Add GitHub release workflow
 
 **Why this structure**:
+
 - `add/` and `gh/` use metadata-only groups for clear help text without unnecessary execute functions
 - Deep nesting (`gh/add/workflow/`) uses pure groups for clean organization
 - Each level provides progressively more specific functionality
@@ -514,6 +539,7 @@ test "parseArgs basic types" {
 ### Integration Tests
 
 For cross-boundary tests, create dedicated test files:
+
 - `src/build_integration_test.zig` - Build system tests
 - `src/error_edge_cases_test.zig` - Error handling tests
 
@@ -524,6 +550,7 @@ For cross-boundary tests, create dedicated test files:
 ### Why String-based Code Generation for Commands?
 
 Commands are discovered by scanning directories. We can't know their types at comptime in `build.zig` because they don't exist until we read the filesystem. Therefore:
+
 1. Scan filesystem → collect file paths
 2. Generate import and registration code as **strings**
 3. Write to `.zig` file → compiler sees it as real code
@@ -531,6 +558,7 @@ Commands are discovered by scanning directories. We can't know their types at co
 ### Why Comptime Introspection for Plugins?
 
 Plugins are explicitly listed in the `generate()` call. We know them at comptime. Therefore:
+
 1. Accept `anytype` config
 2. Use `inline for` to iterate at comptime
 3. Introspect struct fields to generate init calls
@@ -539,6 +567,7 @@ Plugins are explicitly listed in the `generate()` call. We know them at comptime
 ### Why `anytype` for `generate()` Config?
 
 Flexibility. Users can:
+
 - Use anonymous structs: `.{ .commands_dir = "src/commands" }`
 - Add custom fields (validated via `@hasField()`)
 - Get compile errors for missing required fields
@@ -553,6 +582,7 @@ The distinction between **pure groups**, **metadata-only groups**, and **executa
 3. **Executable groups** (`index.zig` with `execute`): Full control when the parent command needs behavior.
 
 **Implementation**:
+
 - Commands without `execute` trigger `error.CommandNotFound` in the registry
 - The help plugin's `onError` hook intercepts this and shows group help
 - This allows metadata-only groups to behave identically to pure groups functionally, while providing richer help text
@@ -604,6 +634,7 @@ cd projects/zcli
 ```
 
 Or manually:
+
 1. Create `projects/zcli/src/commands/mycommand.zig`
 2. Implement `meta`, `Args`, `Options`, `execute`
 3. Rebuild - it's automatically discovered
@@ -611,6 +642,7 @@ Or manually:
 ### Extending the Build System
 
 **Caution**: The build system in `packages/core/src/build_utils/` is delicate. Key points:
+
 - `main.zig`: Entry point, orchestrates everything
 - `discovery.zig`: Filesystem scanning logic
 - `code_generation.zig`: Template generation
