@@ -111,7 +111,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
     // Generate build.zig.zon
     try stdout.print("  Creating build.zig.zon...\n", .{});
     // Use zcli package from GitHub archive
-    const zcli_version = "0.9.0";
+    const zcli_version = "0.9.2";
     const zon_content = try std.fmt.allocPrint(allocator,
         \\.{{
         \\    .name = .{s},
@@ -172,16 +172,16 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\        .commands_dir = "src/commands",
         \\        .plugins = &.{{ .{{
         \\            .name = "zcli_help",
-        \\            .path = "plugins/zcli_help",
+        \\            .path = "src/plugins/zcli_help",
         \\        }}, .{{
         \\            .name = "zcli_version",
-        \\            .path = "plugins/zcli_version",
+        \\            .path = "src/plugins/zcli_version",
         \\        }}, .{{
         \\            .name = "zcli_not_found",
-        \\            .path = "plugins/zcli_not_found",
+        \\            .path = "src/plugins/zcli_not_found",
         \\        }}, .{{
         \\            .name = "zcli_completions",
-        \\            .path = "plugins/zcli_completions",
+        \\            .path = "src/plugins/zcli_completions",
         \\        }} }},
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",

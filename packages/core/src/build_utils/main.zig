@@ -173,9 +173,9 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         if (!@hasField(@TypeOf(plugin_config), "name")) @compileError("plugin config must have 'name' field");
         if (!@hasField(@TypeOf(plugin_config), "path")) @compileError("plugin config must have 'path' field");
 
-        // Plugin path is relative to the zcli package, e.g. "plugins/zcli_help"
-        // Plugins are at src/plugins/xxx/plugin.zig in the zcli package
-        const plugin_import_path = std.fmt.allocPrint(b.allocator, "src/{s}/plugin", .{plugin_config.path}) catch {
+        // Plugin path is relative to the zcli package, e.g. "src/plugins/zcli_help"
+        // Just append "/plugin" to get the full import path
+        const plugin_import_path = std.fmt.allocPrint(b.allocator, "{s}/plugin", .{plugin_config.path}) catch {
             logging.buildError("Plugin System", "memory allocation", "Failed to allocate memory for plugin import name", "Out of memory while processing external plugin. Reduce number of plugins or increase available memory");
             std.debug.print("Plugin name: {s}\n", .{plugin_config.name});
             std.process.exit(1);
