@@ -137,6 +137,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_module: *std.B
 - `config: anytype` - Accepts any struct with required fields:
   - `commands_dir: []const u8`
   - `plugins: []const PluginConfigLike` (where each has `.name`, `.path`, optional `.config`)
+  - `shared_modules: ?[]const SharedModule` (optional - modules available to all commands)
   - `app_name: []const u8`
   - `app_version: []const u8`
   - `app_description: []const u8`
@@ -212,6 +213,122 @@ pub fn init(config: Config) type {
 4. This becomes part of the generated registry file
 
 **Supported config types**: Strings (`[]const u8`), bools, integers. Extend `configToInitString()` for other types.
+
+### Shared Modules
+
+**Purpose**: Share code (business logic, data structures, utilities) across multiple commands.
+
+**Problem solved**: Commands are compiled as isolated modules and by default can only import `std` and `zcli`. Shared modules allow commands to import project-specific code without duplication.
+
+**Usage**:
+
+```zig
+// build.zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const zcli_dep = b.dependency("zcli", .{ .target = target, .optimize = optimize });
+    const zcli_module = zcli_dep.module("zcli");
+
+    // Create shared modules
+    const lib_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const format_module = b.createModule(.{
+        .root_source_file = b.path("src/format.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    exe.root_module.addImport("zcli", zcli_module);
+    exe.root_module.addImport("lib", lib_module);
+    exe.root_module.addImport("format", format_module);
+
+    const zcli = @import("zcli");
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+        .commands_dir = "src/commands",
+        .plugins = &[_]zcli.PluginConfig{ /* ... */ },
+        .shared_modules = &[_]zcli.SharedModule{
+            .{ .name = "lib", .module = lib_module },
+            .{ .name = "format", .module = format_module },
+        },
+        .app_name = "myapp",
+        .app_version = "1.0.0",
+        .app_description = "My application",
+    });
+
+    exe.root_module.addImport("command_registry", cmd_registry);
+    b.installArtifact(exe);
+}
+```
+
+**In commands**:
+
+```zig
+// src/commands/summary.zig
+const std = @import("std");
+const zcli = @import("zcli");
+const lib = @import("lib");      // Shared module
+const format = @import("format"); // Shared module
+
+pub const meta = .{
+    .description = "Show summary statistics",
+};
+
+pub const Args = struct {};
+pub const Options = struct {};
+
+pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+    const stdout = context.stdout();
+
+    // Use shared module functions
+    const stats = try lib.calculateStats(context.allocator);
+    const output = try format.formatStats(stats);
+
+    try stdout.print("{s}\n", .{output});
+}
+```
+
+**Key points**:
+- Shared modules must be created with `b.createModule()` before passing to `generate()`
+- The same module should be added to both `exe.root_module` and `shared_modules` array
+- All commands will have access to all shared modules
+- Modules can have their own dependencies (transitive imports work)
+
+**When to use**:
+- Business logic shared across commands (data processing, calculations)
+- Data structures and type definitions
+- API clients or database interfaces
+- Utility functions and helpers
+- Parsers and formatters
+
+**Example project structure**:
+```
+src/
+├── main.zig                 # Entry point
+├── lib.zig                  # Business logic (shared module)
+├── format.zig               # Formatters (shared module)
+├── cache.zig                # Caching layer (shared module)
+└── commands/
+    ├── summary.zig          # Imports lib, format
+    ├── details.zig          # Imports lib, format
+    └── clear.zig            # Imports cache
+```
 
 ---
 

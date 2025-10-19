@@ -377,6 +377,118 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 }
 ```
 
+## Sharing Code Between Commands
+
+Commands are compiled as isolated modules and can only import `std` and `zcli` by default. To share business logic, utilities, or data structures across commands, use **shared modules**:
+
+### Step 1: Create Your Shared Module
+
+```zig
+// src/lib.zig
+const std = @import("std");
+
+pub fn validateEmail(email: []const u8) bool {
+    return std.mem.indexOf(u8, email, "@") != null;
+}
+
+pub const UserRole = enum {
+    admin,
+    user,
+    guest,
+};
+```
+
+### Step 2: Configure in build.zig
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const zcli_dep = b.dependency("zcli", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zcli_module = zcli_dep.module("zcli");
+
+    // Create your shared module
+    const lib_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    exe.root_module.addImport("zcli", zcli_module);
+    exe.root_module.addImport("lib", lib_module);  // For main.zig
+
+    const zcli = @import("zcli");
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+        .commands_dir = "src/commands",
+        .plugins = &[_]zcli.PluginConfig{ /* ... */ },
+        .shared_modules = &[_]zcli.SharedModule{
+            .{ .name = "lib", .module = lib_module },
+        },
+        .app_name = "myapp",
+        .app_version = "1.0.0",
+        .app_description = "My CLI application",
+    });
+
+    exe.root_module.addImport("command_registry", cmd_registry);
+    b.installArtifact(exe);
+}
+```
+
+### Step 3: Use in Commands
+
+```zig
+// src/commands/users/create.zig
+const std = @import("std");
+const zcli = @import("zcli");
+const lib = @import("lib");  // Your shared module!
+
+pub const meta = .{
+    .description = "Create a new user",
+};
+
+pub const Args = struct {
+    email: []const u8,
+};
+
+pub const Options = struct {
+    role: lib.UserRole = .user,
+};
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    if (!lib.validateEmail(args.email)) {
+        try context.stderr().print("Invalid email address\n", .{});
+        return error.InvalidEmail;
+    }
+
+    try context.stdout().print("Creating {s} user: {s}\n",
+        .{ @tagName(options.role), args.email });
+}
+```
+
+**Key Points:**
+
+- Shared modules use standard Zig module patterns (`b.createModule()` and `addImport()`)
+- Add them to both `exe.root_module` (for main.zig) and `shared_modules` array (for commands)
+- Import by name: `@import("lib")`, not relative paths
+- Shared modules can have their own dependencies
+
+See [SHARED_MODULES_GUIDE.md](SHARED_MODULES_GUIDE.md) for complete details.
+
 ## Plugin System
 
 zcli includes two essential plugins:

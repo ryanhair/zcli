@@ -115,3 +115,4 @@ pub fn build(b: *std.Build) void {
 // they're importing this root build.zig from the tarball/git archive.
 pub const generate = @import("packages/core/build.zig").generate;
 pub const PluginConfig = @import("packages/core/build.zig").PluginConfig;
+pub const SharedModule = @import("packages/core/build.zig").SharedModule;

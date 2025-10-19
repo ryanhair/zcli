@@ -184,5 +184,6 @@ pub fn build(b: *std.Build) void {
 // Re-export build utilities for both backwards compatibility and new plugin features
 pub const BuildConfig = types.BuildConfig;
 pub const PluginConfig = types.PluginConfig;
+pub const SharedModule = types.SharedModule;
 pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 pub const generate = main.generate;

@@ -81,11 +81,18 @@ pub const DiscoveredCommands = struct {
     }
 };
 
+/// Shared module that should be available to all commands
+pub const SharedModule = struct {
+    name: []const u8,
+    module: *std.Build.Module,
+};
+
 /// Enhanced build configuration for plugin support
 pub const BuildConfig = struct {
     commands_dir: []const u8,
     plugins_dir: ?[]const u8,
     plugins: ?[]const PluginInfo,
+    shared_modules: ?[]const SharedModule = null,
     app_name: []const u8,
     app_version: []const u8,
     app_description: []const u8,

@@ -10,7 +10,7 @@ const CommandInfo = types.CommandInfo;
 // ============================================================================
 
 /// Create modules for all discovered commands dynamically
-pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, commands: DiscoveredCommands, commands_dir: []const u8) void {
+pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, commands: DiscoveredCommands, commands_dir: []const u8, shared_modules: []const types.SharedModule) void {
     var it = commands.root.iterator();
     while (it.next()) |entry| {
         const cmd_name = entry.key_ptr.*;
@@ -25,10 +25,16 @@ pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module
                     .root_source_file = b.path(full_path),
                 });
                 cmd_module.addImport("zcli", zcli_module);
+
+                // Add shared modules
+                for (shared_modules) |shared_mod| {
+                    cmd_module.addImport(shared_mod.name, shared_mod.module);
+                }
+
                 registry_module.addImport(module_name, cmd_module);
             }
             // Create modules for subcommands
-            createGroupModules(b, registry_module, zcli_module, cmd_name, &cmd_info, commands_dir);
+            createGroupModules(b, registry_module, zcli_module, cmd_name, &cmd_info, commands_dir, shared_modules);
         } else {
             const module_name = if (std.mem.eql(u8, cmd_name, "test"))
                 "cmd_test"
@@ -40,13 +46,19 @@ pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module
                 .root_source_file = b.path(full_path),
             });
             cmd_module.addImport("zcli", zcli_module);
+
+            // Add shared modules
+            for (shared_modules) |shared_mod| {
+                cmd_module.addImport(shared_mod.name, shared_mod.module);
+            }
+
             registry_module.addImport(module_name, cmd_module);
         }
     }
 }
 
 /// Create modules for command groups recursively
-fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, _: []const u8, group_info: *const CommandInfo, commands_dir: []const u8) void {
+fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, _: []const u8, group_info: *const CommandInfo, commands_dir: []const u8, shared_modules: []const types.SharedModule) void {
     if (group_info.subcommands) |subcommands| {
         var it = subcommands.iterator();
         while (it.next()) |entry| {
@@ -71,13 +83,19 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
                     .root_source_file = b.path(full_path),
                 });
                 cmd_module.addImport("zcli", zcli_module);
+
+                // Add shared modules
+                for (shared_modules) |shared_mod| {
+                    cmd_module.addImport(shared_mod.name, shared_mod.module);
+                }
+
                 registry_module.addImport(module_name_with_index, cmd_module);
 
                 // Also recurse for its subcommands
-                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir);
+                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules);
             } else if (subcmd_info.command_type == .pure_group) {
                 // Pure groups have no module, just recurse
-                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir);
+                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules);
             } else {
                 // Generate module name from the full command path to handle nested directories
                 // This ensures unique module names even for deeply nested commands
@@ -96,6 +114,12 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
                     .root_source_file = b.path(full_path),
                 });
                 cmd_module.addImport("zcli", zcli_module);
+
+                // Add shared modules
+                for (shared_modules) |shared_mod| {
+                    cmd_module.addImport(shared_mod.name, shared_mod.module);
+                }
+
                 registry_module.addImport(module_name, cmd_module);
             }
         }
