@@ -62,6 +62,14 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
             new_plugins,
         ) {
             _ = self;
+
+            // Validate command metadata at compile time if meta is present
+            if (@hasDecl(Module, "meta")) {
+                const ArgsType = if (@hasDecl(Module, "Args")) Module.Args else struct {};
+                const OptionsType = if (@hasDecl(Module, "Options")) Module.Options else struct {};
+                zcli.validateMeta(Module.meta, ArgsType, OptionsType);
+            }
+
             return RegistryBuilder(
                 config,
                 commands ++ [_]CommandEntry{.{ .path = splitPath(path), .module = Module }},
@@ -127,6 +135,13 @@ fn discoverPluginCommands(comptime CommandsStruct: type, comptime path_prefix: [
 
         // Build the path for this command
         const current_path = path_prefix ++ .{decl.name};
+
+        // Validate command metadata at compile time if meta is present
+        if (@hasDecl(CommandType, "meta")) {
+            const ArgsType = if (@hasDecl(CommandType, "Args")) CommandType.Args else struct {};
+            const OptionsType = if (@hasDecl(CommandType, "Options")) CommandType.Options else struct {};
+            zcli.validateMeta(CommandType.meta, ArgsType, OptionsType);
+        }
 
         // Add this command/group to entries
         entries = entries ++ .{CommandEntry{
@@ -486,8 +501,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                     if (@hasField(@TypeOf(meta), "options")) {
                                         if (@hasField(@TypeOf(meta.options), field.name)) {
                                             const opt_meta = @field(meta.options, field.name);
-                                            if (@hasField(@TypeOf(opt_meta), "desc")) {
-                                                opt_desc = opt_meta.desc;
+                                            if (@hasField(@TypeOf(opt_meta), "description")) {
+                                                opt_desc = opt_meta.description;
                                             }
                                             if (@hasField(@TypeOf(opt_meta), "short")) {
                                                 opt_short = opt_meta.short;
@@ -562,8 +577,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                     if (@hasField(@TypeOf(meta), "options")) {
                                         if (@hasField(@TypeOf(meta.options), field.name)) {
                                             const opt_meta = @field(meta.options, field.name);
-                                            if (@hasField(@TypeOf(opt_meta), "desc")) {
-                                                opt_desc = opt_meta.desc;
+                                            if (@hasField(@TypeOf(opt_meta), "description")) {
+                                                opt_desc = opt_meta.description;
                                             }
                                             if (@hasField(@TypeOf(opt_meta), "short")) {
                                                 opt_short = opt_meta.short;
@@ -941,8 +956,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                                 if (@hasField(@TypeOf(field_meta), "short")) {
                                                     short = field_meta.short;
                                                 }
-                                                if (@hasField(@TypeOf(field_meta), "desc")) {
-                                                    description = field_meta.desc;
+                                                if (@hasField(@TypeOf(field_meta), "description")) {
+                                                    description = field_meta.description;
                                                 }
                                             }
                                         }
@@ -1159,8 +1174,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                                 if (@hasField(@TypeOf(field_meta), "short")) {
                                                     short = field_meta.short;
                                                 }
-                                                if (@hasField(@TypeOf(field_meta), "desc")) {
-                                                    description = field_meta.desc;
+                                                if (@hasField(@TypeOf(field_meta), "description")) {
+                                                    description = field_meta.description;
                                                 }
                                             }
                                         }

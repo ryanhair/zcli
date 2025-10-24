@@ -42,7 +42,7 @@ const zcli = @import("zcli");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    
+
     const exe = b.addExecutable(.{
         .name = "myapp",
         .root_source_file = .{ .path = "src/main.zig" },
@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const zcli_module = zcli_dep.module("zcli");
-    
+
     exe.root_module.addImport("zcli", zcli_module);
 
     // Build with plugins and command discovery
@@ -94,7 +94,7 @@ const cmd_version = @import("cmd_version");
 const users_list = @import("users_list");
 // ... more command imports
 
-// Plugin imports  
+// Plugin imports
 const zcli_help = @import("zcli_help");
 const zcli_not_found = @import("zcli_not_found");
 
@@ -138,8 +138,8 @@ pub const meta = .{
         .files = "Files to search in",
     },
     .options = .{
-        .limit = .{ .desc = "Maximum number of results" },
-        .format = .{ .desc = "Output format" },
+        .limit = .{ .description = "Maximum number of results" },
+        .format = .{ .description = "Output format" },
     }
 };
 
@@ -180,17 +180,17 @@ pub const Context = struct {
     io: IO,                           // stdout, stderr, stdin
     environment: Environment,         // env vars, working directory
     app_name: []const u8,
-    app_version: []const u8, 
+    app_version: []const u8,
     app_description: []const u8,
     command_path: ?[]const []const u8,  // Hierarchical command path
     available_commands: []const []const []const u8,
-    
+
     // Global options access (planned)
     globals: GlobalOptions,
-    
+
     // Type-safe extension system (planned)
     extensions: Extensions,
-    
+
     // Convenience methods
     pub fn stdout(self: *@This()) std.fs.File.Writer { ... }
     pub fn stderr(self: *@This()) std.fs.File.Writer { ... }
@@ -218,6 +218,7 @@ const cmd_registry = zcli.build(b, exe, zcli_module, .{
 **Framework-Provided Options:**
 
 Plugins can provide global options. For example, the zcli-help plugin provides:
+
 - `--help/-h`: Shows command help
 - `--version/-V`: Shows app version (if version plugin is included)
 
@@ -232,33 +233,35 @@ Global options and command-specific options can specify an environment variable 
 
 ```zig
 .global_options = .{
-    .api_key = .{ 
-        .env = "MYAPP_API_KEY", 
-        .type = []const u8, 
-        .help = "API key for service" 
+    .api_key = .{
+        .env = "MYAPP_API_KEY",
+        .type = []const u8,
+        .help = "API key for service"
     },
-    .timeout = .{ 
-        .env = "MYAPP_TIMEOUT", 
-        .type = u32, 
-        .default = 30, 
-        .help = "Request timeout in seconds" 
+    .timeout = .{
+        .env = "MYAPP_TIMEOUT",
+        .type = u32,
+        .default = 30,
+        .help = "Request timeout in seconds"
     },
-    .debug = .{ 
-        .env = "MYAPP_DEBUG", 
-        .short = 'd', 
-        .type = bool, 
-        .default = false, 
-        .help = "Enable debug mode" 
+    .debug = .{
+        .env = "MYAPP_DEBUG",
+        .short = 'd',
+        .type = bool,
+        .default = false,
+        .help = "Enable debug mode"
     },
 },
 ```
 
 **Precedence Order (highest to lowest):**
+
 1. **CLI argument**: `--api-key mykey` (highest priority)
 2. **Environment variable**: `MYAPP_API_KEY=envkey` (fallback if CLI arg not provided)
 3. **Default value**: `.default = "defaultkey"` (fallback if both above are missing)
 
 **Type Conversion:**
+
 - `bool`: Environment variables parsed as "true"/"false", "1"/"0", "yes"/"no" (case insensitive)
 - `string`: Used directly from environment
 - `integer/float`: Parsed from environment string
@@ -290,16 +293,16 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     if (context.globals.verbose) {
         try context.stdout().print("Verbose mode enabled\n", .{});
     }
-    
+
     // Optional globals use Zig's optional syntax
     if (context.globals.config) |config_path| {
         try loadConfig(config_path);
     }
-    
+
     // String globals are directly available
     const api_key = context.globals.api_key;
     try makeApiCall(api_key);
-    
+
     // Environment variable fallbacks work transparently
     const timeout = context.globals.timeout; // From CLI, env var, or default
 }
@@ -315,7 +318,7 @@ pub const Globals = struct {
     verbose: bool,           // .default = false
     config: ?[]const u8,     // Optional type, no default
     api_key: []const u8,     // From .env fallback or CLI
-    timeout: u32,            // .default = 30, .env = "MYAPP_TIMEOUT" 
+    timeout: u32,            // .default = 30, .env = "MYAPP_TIMEOUT"
     debug: bool,             // .default = false, .env = "MYAPP_DEBUG"
     no_color: bool,          // .default = false
 };

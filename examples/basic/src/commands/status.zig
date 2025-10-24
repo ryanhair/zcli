@@ -9,8 +9,8 @@ pub const meta = .{
         "status --porcelain",
     },
     .options = .{
-        .short = .{ .desc = "Give the output in the short-format", .short = 's' },
-        .porcelain = .{ .desc = "Give the output in an easy-to-parse format" },
+        .short = .{ .description = "Give the output in the short-format", .short = 's' },
+        .porcelain = .{ .description = "Give the output in an easy-to-parse format" },
     },
 };
 

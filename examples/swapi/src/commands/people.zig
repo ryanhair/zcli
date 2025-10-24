@@ -45,20 +45,17 @@ pub fn printJsonPretty(_: std.mem.Allocator, value: std.json.Value, writer: anyt
 }
 
 pub const meta = .{
-    .description = "Get information about Star Wars characters",
-    .long_description =
-    \\Retrieve information about Star Wars characters from the SWAPI database.
-    \\
-    \\Examples:
-    \\  swapi people          # List all people 
-    \\  swapi people 1        # Get Luke Skywalker
-    \\  swapi people 4        # Get Darth Vader
-    ,
+    .description = "Get information about Star Wars characters from the SWAPI database",
+    .examples = &.{
+        "people          # List all people",
+        "people 1        # Get Luke Skywalker",
+        "people 4        # Get Darth Vader",
+    },
     .args = .{
         .id = "Character ID (optional - omit to list all)",
     },
     .options = .{
-        .pretty = .{ .desc = "Pretty print JSON output", .short = 'p' },
+        .pretty = .{ .description = "Pretty print JSON output", .short = 'p' },
     },
 };
 

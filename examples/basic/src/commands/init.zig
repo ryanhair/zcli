@@ -12,7 +12,7 @@ pub const meta = .{
         .directory = "Directory to initialize (defaults to current directory)",
     },
     .options = .{
-        .bare = .{ .desc = "Create a bare repository" },
+        .bare = .{ .description = "Create a bare repository" },
     },
 };
 

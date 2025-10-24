@@ -13,8 +13,8 @@ pub const meta = .{
         .files = "Files to add to the index",
     },
     .options = .{
-        .all = .{ .desc = "Add all modified and new files" },
-        .patch = .{ .desc = "Interactively choose hunks to add" },
+        .all = .{ .description = "Add all modified and new files" },
+        .patch = .{ .description = "Interactively choose hunks to add" },
     },
 };
 

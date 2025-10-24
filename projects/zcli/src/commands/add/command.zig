@@ -12,7 +12,7 @@ pub const meta = .{
         .path = "Command path (e.g., 'deploy' or 'users/create')",
     },
     .options = .{
-        .description = .{ .desc = "Description of the command", .short = 'd' },
+        .description = .{ .description = "Description of the command", .short = 'd' },
     },
 };
 

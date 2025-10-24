@@ -1151,6 +1151,157 @@ pub fn App(comptime RegistryType: type, comptime RegistryModule: anytype) type {
     };
 }
 
+// ============================================================================
+// Metadata Validation - Compile-time validation for command metadata
+// ============================================================================
+
+/// Validate command metadata at compile time to catch typos and invalid fields.
+/// This function checks:
+/// - Top-level meta fields (description, examples, args, options, hidden)
+/// - Options metadata fields (description, short, name)
+/// - That option/arg meta field names match actual struct fields
+///
+/// Call this in the registry when processing commands to get compile-time errors
+/// for invalid metadata.
+pub fn validateMeta(
+    comptime meta: anytype,
+    comptime ArgsType: type,
+    comptime OptionsType: type,
+) void {
+    @setEvalBranchQuota(10000);
+
+    const MetaType = @TypeOf(meta);
+    const meta_info = @typeInfo(MetaType);
+
+    if (meta_info != .@"struct") {
+        @compileError("meta must be a struct");
+    }
+
+    // Valid top-level meta fields
+    const valid_top_level = .{ "description", "examples", "args", "options", "hidden" };
+
+    // Validate top-level fields
+    inline for (meta_info.@"struct".fields) |field| {
+        const is_valid = comptime blk: {
+            for (valid_top_level) |valid| {
+                if (std.mem.eql(u8, field.name, valid)) {
+                    break :blk true;
+                }
+            }
+            break :blk false;
+        };
+        if (!is_valid) {
+            @compileError("Unknown meta field: '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden");
+        }
+    }
+
+    // Validate 'options' metadata if present
+    if (@hasField(MetaType, "options")) {
+        const options_meta = meta.options;
+        const options_meta_info = @typeInfo(@TypeOf(options_meta));
+
+        if (options_meta_info != .@"struct") {
+            @compileError("meta.options must be a struct");
+        }
+
+        const options_fields = @typeInfo(OptionsType).@"struct".fields;
+
+        // Check each field in options metadata
+        inline for (options_meta_info.@"struct".fields) |field| {
+            // Verify this field exists in Options struct
+            var field_exists = false;
+            inline for (options_fields) |opt_field| {
+                if (std.mem.eql(u8, field.name, opt_field.name)) {
+                    field_exists = true;
+                    break;
+                }
+            }
+
+            if (!field_exists) {
+                @compileError("Option metadata field '" ++ field.name ++ "' does not exist in Options struct");
+            }
+
+            // Validate the metadata for this option
+            const option_meta = @field(options_meta, field.name);
+            const option_meta_info = @typeInfo(@TypeOf(option_meta));
+
+            if (option_meta_info == .@"struct") {
+                const valid_option_fields = .{ "description", "short", "name" };
+
+                inline for (option_meta_info.@"struct".fields) |opt_field| {
+                    const opt_is_valid = comptime blk: {
+                        for (valid_option_fields) |valid| {
+                            if (std.mem.eql(u8, opt_field.name, valid)) {
+                                break :blk true;
+                            }
+                        }
+                        break :blk false;
+                    };
+                    if (!opt_is_valid) {
+                        @compileError("Unknown option metadata field: '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name");
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate 'args' metadata if present
+    if (@hasField(MetaType, "args")) {
+        const args_meta = meta.args;
+        const args_meta_info = @typeInfo(@TypeOf(args_meta));
+
+        if (args_meta_info != .@"struct") {
+            @compileError("meta.args must be a struct");
+        }
+
+        const args_fields = @typeInfo(ArgsType).@"struct".fields;
+
+        // Check each field in args metadata
+        inline for (args_meta_info.@"struct".fields) |field| {
+            // Verify this field exists in Args struct
+            var field_exists = false;
+            inline for (args_fields) |arg_field| {
+                if (std.mem.eql(u8, field.name, arg_field.name)) {
+                    field_exists = true;
+                    break;
+                }
+            }
+
+            if (!field_exists) {
+                @compileError("Args metadata field '" ++ field.name ++ "' does not exist in Args struct");
+            }
+
+            // Args metadata should be simple strings (descriptions)
+            const arg_meta = @field(args_meta, field.name);
+            const arg_meta_type = @TypeOf(arg_meta);
+            const arg_meta_info = @typeInfo(arg_meta_type);
+
+            // Allow string literals (*const [N:0]u8) or string slices ([]const u8)
+            const is_valid_type = blk: {
+                if (arg_meta_info == .pointer) {
+                    const ptr_info = arg_meta_info.pointer;
+                    // Check for slice of u8: []const u8
+                    if (ptr_info.size == .slice and ptr_info.child == u8) {
+                        break :blk true;
+                    }
+                    // Check for pointer to array of u8: *const [N:0]u8 or *const [N]u8
+                    if (ptr_info.size == .one) {
+                        const child_info = @typeInfo(ptr_info.child);
+                        if (child_info == .array and child_info.array.child == u8) {
+                            break :blk true;
+                        }
+                    }
+                }
+                break :blk false;
+            };
+
+            if (!is_valid_type) {
+                @compileError("Args metadata for field '" ++ field.name ++ "' must be a string description");
+            }
+        }
+    }
+}
+
 // Tests
 test "App initialization" {
     const allocator = testing.allocator;

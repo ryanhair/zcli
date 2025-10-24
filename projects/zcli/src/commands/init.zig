@@ -12,8 +12,8 @@ pub const meta = .{
         .name = "Name of the project or '.' for current directory",
     },
     .options = .{
-        .description = .{ .desc = "Description of your CLI application" },
-        .version = .{ .desc = "Initial version number" },
+        .description = .{ .description = "Description of your CLI application" },
+        .version = .{ .description = "Initial version number" },
     },
 };
 

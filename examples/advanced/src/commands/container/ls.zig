@@ -11,14 +11,14 @@ pub const meta = .{
         "container ls --quiet",
     },
     .options = .{
-        .all = .{ .desc = "Show all containers (default shows just running)", .short = 'a' },
-        .filter = .{ .desc = "Filter output based on conditions provided" },
-        .format = .{ .desc = "Pretty-print containers using a Go template or table" },
-        .last = .{ .desc = "Show n last created containers (includes all states)", .short = 'n' },
-        .latest = .{ .desc = "Show the latest created container (includes all states)", .short = 'l' },
-        .no_trunc = .{ .desc = "Don't truncate output" },
-        .quiet = .{ .desc = "Only display container IDs", .short = 'q' },
-        .size = .{ .desc = "Display total file sizes", .short = 's' },
+        .all = .{ .description = "Show all containers (default shows just running)", .short = 'a' },
+        .filter = .{ .description = "Filter output based on conditions provided" },
+        .format = .{ .description = "Pretty-print containers using a Go template or table" },
+        .last = .{ .description = "Show n last created containers (includes all states)", .short = 'n' },
+        .latest = .{ .description = "Show the latest created container (includes all states)", .short = 'l' },
+        .no_trunc = .{ .description = "Don't truncate output" },
+        .quiet = .{ .description = "Only display container IDs", .short = 'q' },
+        .size = .{ .description = "Display total file sizes", .short = 's' },
     },
 };
 

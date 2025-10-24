@@ -10,9 +10,9 @@ pub const meta = .{
         "commit --all --message \"Update all files\"",
     },
     .options = .{
-        .message = .{ .desc = "Use the given message as the commit message", .short = 'm' },
-        .amend = .{ .desc = "Replace the tip of the current branch" },
-        .all = .{ .desc = "Automatically stage modified and deleted files", .short = 'a' },
+        .message = .{ .description = "Use the given message as the commit message", .short = 'm' },
+        .amend = .{ .description = "Replace the tip of the current branch" },
+        .all = .{ .description = "Automatically stage modified and deleted files", .short = 'a' },
     },
 };
 

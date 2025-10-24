@@ -255,8 +255,8 @@ pub const meta = .{
         .environment = "Target environment (production, staging, development)",
     },
     .options = .{
-        .replicas = .{ .desc = "Number of instances to deploy" },
-        .rollback = .{ .desc = "Rollback to previous version instead of deploying" },
+        .replicas = .{ .description = "Number of instances to deploy" },
+        .rollback = .{ .description = "Rollback to previous version instead of deploying" },
     },
 };
 
@@ -269,6 +269,14 @@ pub const Options = struct {
     rollback: bool = false,
 };
 ```
+
+**Compile-Time Validation**: zcli validates all metadata fields at compile time to catch typos and invalid configurations. If you misspell a field name or use an invalid option, you'll get a clear error message during compilation:
+
+```bash
+error: Unknown meta field: 'desc'. Valid fields are: description, examples, args, options, hidden
+```
+
+This ensures your CLI's help text and documentation are always correct.
 
 ### Complex Arguments
 

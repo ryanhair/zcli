@@ -460,6 +460,35 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 }
 ```
 
+### Metadata Validation
+
+zcli validates command metadata at compile time to catch typos and invalid configurations early. The `validateMeta()` function checks:
+
+- **Top-level meta fields**: Only `description`, `examples`, `args`, `options`, and `hidden` are allowed
+- **Option metadata fields**: Only `description`, `short`, and `name` are allowed
+- **Field name matching**: Metadata field names must match actual struct fields
+- **Type correctness**: Args metadata must be string descriptions
+
+**Example validation errors**:
+
+```bash
+# Typo in field name
+error: Unknown meta field: 'desc'. Valid fields are: description, examples, args, options, hidden
+
+# Option metadata for non-existent field
+error: Option metadata field 'verbos' does not exist in Options struct
+
+# Invalid option metadata field
+error: Unknown option metadata field: 'alias' in option 'verbose'. Valid fields are: description, short, name
+```
+
+**Implementation**: The validation happens automatically when commands are registered in the registry (both file-based commands and plugin commands). See `/Users/ryanhair/Projects/zcli/packages/core/src/zcli.zig:1158-1301` for the `validateMeta()` implementation.
+
+**Key technical details**:
+- Uses compile-time type introspection via `@typeInfo()` and `@hasField()`
+- Labeled blocks (`blk:`) ensure proper compile-time evaluation for string comparisons
+- Accepts both string literals (`*const [N:0]u8`) and string slices (`[]const u8`) for metadata
+
 ### Nested Commands
 
 **Directory structure**:

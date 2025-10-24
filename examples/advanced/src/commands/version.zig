@@ -8,7 +8,7 @@ pub const meta = .{
         "version --format json",
     },
     .options = .{
-        .format = .{ .desc = "Format the output using the given Go template", .short = 'f' },
+        .format = .{ .description = "Format the output using the given Go template", .short = 'f' },
     },
 };
 

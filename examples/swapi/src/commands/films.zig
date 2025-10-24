@@ -41,20 +41,17 @@ pub fn printJsonPretty(_: std.mem.Allocator, value: std.json.Value, writer: anyt
 }
 
 pub const meta = .{
-    .description = "Get information about Star Wars films",
-    .long_description =
-    \\Retrieve information about Star Wars films from the SWAPI database.
-    \\
-    \\Examples:
-    \\  swapi films           # List all films
-    \\  swapi films 1         # Get A New Hope
-    \\  swapi films 2         # Get The Empire Strikes Back
-    ,
+    .description = "Get information about Star Wars films from the SWAPI database",
+    .examples = &.{
+        "films           # List all films",
+        "films 1         # Get A New Hope",
+        "films 2         # Get The Empire Strikes Back",
+    },
     .args = .{
         .id = "Film ID (optional - omit to list all)",
     },
     .options = .{
-        .pretty = .{ .desc = "Pretty print JSON output", .short = 'p' },
+        .pretty = .{ .description = "Pretty print JSON output", .short = 'p' },
     },
 };
 

@@ -52,8 +52,6 @@ pub fn parseCommandLine(
     allocator: std.mem.Allocator,
     args: []const []const u8,
 ) ZcliError!CommandParseResult(ArgsType, OptionsType) {
-    _ = meta; // TODO: Use meta for option customization
-
     // First pass: separate options from positional arguments
     var option_args = std.ArrayList([]const u8){};
     defer option_args.deinit(allocator);
@@ -100,7 +98,7 @@ pub fn parseCommandLine(
                 if (option_chars.len == 1) {
                     // Single short option, might need value
                     const option_char = option_chars[0];
-                    if (needsValueShort(OptionsType, option_char) and i + 1 < args.len) {
+                    if (needsValueShort(OptionsType, meta, option_char) and i + 1 < args.len) {
                         i += 1;
                         if (i < args.len) {
                             option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
@@ -177,12 +175,34 @@ fn needsValue(comptime OptionsType: type, option_name: []const u8) bool {
 }
 
 /// Check if a short option needs a value
-fn needsValueShort(comptime OptionsType: type, option_char: u8) bool {
-    // This is a simplified version - in a full implementation, you'd check
-    // meta information for short option mappings
-    _ = OptionsType;
-    _ = option_char;
-    return false; // For now, assume short options are boolean
+fn needsValueShort(comptime OptionsType: type, comptime meta: anytype, option_char: u8) bool {
+    const type_info = @typeInfo(OptionsType);
+    if (type_info != .@"struct") return false;
+
+    inline for (type_info.@"struct".fields) |field| {
+        // Get the expected short option character for this field
+        const expected_char = comptime blk: {
+            // Check if meta provides a custom short option
+            if (@TypeOf(meta) != @TypeOf(null) and @hasField(@TypeOf(meta), "options")) {
+                const options_meta = meta.options;
+                if (@hasField(@TypeOf(options_meta), field.name)) {
+                    const field_meta = @field(options_meta, field.name);
+                    if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
+                        break :blk field_meta.short;
+                    }
+                }
+            }
+            // Fall back to first character of field name
+            break :blk if (field.name.len > 0) field.name[0] else 0;
+        };
+
+        if (expected_char == option_char) {
+            // Return true if the field is not a boolean (needs a value)
+            return field.type != bool;
+        }
+    }
+
+    return false;
 }
 
 /// Convert underscores to dashes for option names
@@ -494,6 +514,54 @@ test "e2e: array options mixed with other options" {
     try testing.expectEqual(@as(usize, 1), result.options.numbers.len);
     try testing.expectEqual(@as(i32, 42), result.options.numbers[0]);
     try testing.expect(result.options.verbose);
+}
+
+test "e2e: repeated array options with short codes" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const RepeatOptions = struct {
+        output: [][]const u8 = &.{},
+
+        pub const meta = .{
+            .options = .{
+                .output = .{ .short = 'o' },
+            },
+        };
+    };
+
+    // Test with long form (should work)
+    {
+        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, &.{ "--output", "file1.txt", "--output", "file2.txt", "--output", "file3.txt" });
+        defer result.deinit();
+
+        try testing.expectEqual(@as(usize, 3), result.options.output.len);
+        try testing.expectEqualStrings("file1.txt", result.options.output[0]);
+        try testing.expectEqualStrings("file2.txt", result.options.output[1]);
+        try testing.expectEqualStrings("file3.txt", result.options.output[2]);
+    }
+
+    // Test with short form (reported bug: doesn't work)
+    {
+        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, &.{ "-o", "file1.txt", "-o", "file2.txt", "-o", "file3.txt" });
+        defer result.deinit();
+
+        try testing.expectEqual(@as(usize, 3), result.options.output.len);
+        try testing.expectEqualStrings("file1.txt", result.options.output[0]);
+        try testing.expectEqualStrings("file2.txt", result.options.output[1]);
+        try testing.expectEqualStrings("file3.txt", result.options.output[2]);
+    }
+
+    // Test mixed long and short form
+    {
+        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, &.{ "-o", "file1.txt", "--output", "file2.txt", "-o", "file3.txt" });
+        defer result.deinit();
+
+        try testing.expectEqual(@as(usize, 3), result.options.output.len);
+        try testing.expectEqualStrings("file1.txt", result.options.output[0]);
+        try testing.expectEqualStrings("file2.txt", result.options.output[1]);
+        try testing.expectEqualStrings("file3.txt", result.options.output[2]);
+    }
 }
 
 test "e2e: git-like command" {
