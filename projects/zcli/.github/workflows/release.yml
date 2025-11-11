@@ -24,6 +24,12 @@ jobs:
           - os: macos-latest
             target: aarch64-macos
             zig_target: aarch64-macos
+          - os: windows-latest
+            target: x86_64-windows
+            zig_target: x86_64-windows
+          - os: windows-latest
+            target: aarch64-windows
+            zig_target: aarch64-windows
 
     steps:
       - name: Checkout code
@@ -39,6 +45,7 @@ jobs:
 
       - name: Get app name from build.zig.zon
         id: appname
+        shell: bash
         run: |
           # Extract .name from build.zig.zon (handles both quoted strings and identifiers)
           NAME_LINE=$(grep -m1 '\.name = ' build.zig.zon)
@@ -53,23 +60,31 @@ jobs:
           echo "name=$APP_NAME" >> $GITHUB_OUTPUT
 
       - name: Package binary
+        shell: bash
         run: |
           mkdir -p dist
-          cp zig-out/bin/${{ steps.appname.outputs.name }} dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}
-          chmod +x dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp zig-out/bin/${{ steps.appname.outputs.name }}.exe dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}.exe
+          else
+            cp zig-out/bin/${{ steps.appname.outputs.name }} dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}
+            chmod +x dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}
+          fi
 
       - name: Generate checksum
+        shell: bash
         run: |
           cd dist
-          shasum -a 256 ${{ steps.appname.outputs.name }}-${{ matrix.target }} > ${{ steps.appname.outputs.name }}-${{ matrix.target }}.sha256
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            shasum -a 256 ${{ steps.appname.outputs.name }}-${{ matrix.target }}.exe > ${{ steps.appname.outputs.name }}-${{ matrix.target }}.exe.sha256
+          else
+            shasum -a 256 ${{ steps.appname.outputs.name }}-${{ matrix.target }} > ${{ steps.appname.outputs.name }}-${{ matrix.target }}.sha256
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.appname.outputs.name }}-${{ matrix.target }}
-          path: |
-            dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}
-            dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}.sha256
+          path: dist/${{ steps.appname.outputs.name }}-${{ matrix.target }}*
 
   release:
     name: Create Release
@@ -88,12 +103,14 @@ jobs:
           path: dist
 
       - name: Flatten artifact structure
+        shell: bash
         run: |
           mkdir -p release
           find dist -type f \( -name '*-x86_64-*' -o -name '*-aarch64-*' \) -exec cp {} release/ \;
           ls -la release/
 
       - name: Create checksums file
+        shell: bash
         run: |
           cd release
           cat *.sha256 > checksums.txt

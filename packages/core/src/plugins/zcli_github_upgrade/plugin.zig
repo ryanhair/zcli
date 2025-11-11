@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zcli = @import("zcli");
 
 // Security limits for HTTP responses
@@ -133,10 +134,12 @@ pub fn init(config: Config) type {
             try stdout.print("Verifying checksum...\n", .{});
             try verifyChecksum(allocator, plugin_config.repo, context.app_name, target_version, temp_path, binary_name);
 
-            // Make binary executable before testing
-            const temp_file = try std.fs.cwd().openFile(temp_path, .{});
-            defer temp_file.close();
-            try temp_file.chmod(0o755);
+            // Make binary executable before testing (Unix only - Windows uses .exe extension)
+            if (builtin.os.tag != .windows) {
+                const temp_file = try std.fs.cwd().openFile(temp_path, .{});
+                defer temp_file.close();
+                try temp_file.chmod(0o755);
+            }
 
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
@@ -379,8 +382,6 @@ fn parseVersion(version_str: []const u8) !struct { major: u32, minor: u32, patch
 
 /// Detect current platform (OS and architecture)
 fn detectPlatform(allocator: std.mem.Allocator) ![]const u8 {
-    const builtin = @import("builtin");
-
     const os = switch (builtin.os.tag) {
         .linux => "linux",
         .macos => "macos",
@@ -609,10 +610,12 @@ fn replaceBinary(allocator: std.mem.Allocator, new_binary_path: []const u8) !voi
     try std.fs.cwd().copyFile(new_binary_path, std.fs.cwd(), temp_path, .{});
     errdefer std.fs.cwd().deleteFile(temp_path) catch {};
 
-    // Step 5: Make new binary executable
-    const temp_file = try std.fs.cwd().openFile(temp_path, .{});
-    defer temp_file.close();
-    try temp_file.chmod(0o755);
+    // Step 5: Make new binary executable (Unix only - Windows uses .exe extension)
+    if (builtin.os.tag != .windows) {
+        const temp_file = try std.fs.cwd().openFile(temp_path, .{});
+        defer temp_file.close();
+        try temp_file.chmod(0o755);
+    }
 
     // Step 6: Atomically rename new binary over old one
     // On Unix, rename() is atomic if source and dest are on the same filesystem
