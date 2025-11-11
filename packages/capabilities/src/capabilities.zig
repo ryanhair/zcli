@@ -170,14 +170,13 @@ pub fn detect(allocator: std.mem.Allocator) DetectionError!TerminalCapabilities 
 
 /// Detect terminal capabilities with specified timeout in milliseconds
 pub fn detectWithTimeout(allocator: std.mem.Allocator, timeout_ms: u32) DetectionError!TerminalCapabilities {
-    _ = allocator;
     _ = timeout_ms;
 
     // Start with basic detection using existing functions
     var caps = TerminalCapabilities{};
 
     // Detect color support
-    caps.color = detectColor(null) catch .none;
+    caps.color = detectColor(allocator, null) catch .none;
 
     // Detect terminal size
     caps.size = detectSize() catch .{ .width = 80, .height = 24 };
@@ -190,7 +189,8 @@ pub fn detectWithTimeout(allocator: std.mem.Allocator, timeout_ms: u32) Detectio
     }
 
     // Basic feature detection based on terminal type
-    if (std.posix.getenv("TERM")) |term| {
+    if (std.process.getEnvVarOwned(allocator, "TERM")) |term| {
+        defer allocator.free(term);
         if (std.mem.containsAtLeast(u8, term, 1, "xterm")) {
             caps.terminal_type = .xterm;
             caps.cursor_control = true;
@@ -203,31 +203,33 @@ pub fn detectWithTimeout(allocator: std.mem.Allocator, timeout_ms: u32) Detectio
             caps.terminal_type = .tmux;
             caps.cursor_control = true;
         }
-    }
+    } else |_| {}
 
     return caps;
 }
 
 /// Environment interface for dependency injection in tests
 pub const Environment = struct {
+    allocator: std.mem.Allocator,
     isatty_fn: *const fn () bool,
-    getenv_fn: *const fn ([]const u8) ?[]const u8,
+    getenv_fn: *const fn (std.mem.Allocator, []const u8) ?[]const u8,
 
-    pub fn init() Environment {
+    pub fn init(allocator: std.mem.Allocator) Environment {
         return .{
+            .allocator = allocator,
             .isatty_fn = isTty,
             .getenv_fn = getEnvVar,
         };
     }
 };
 
-fn getEnvVar(name: []const u8) ?[]const u8 {
-    return std.posix.getenv(name);
+fn getEnvVar(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    return std.process.getEnvVarOwned(allocator, name) catch null;
 }
 
 /// Detect specific capability quickly
-pub fn detectColor(env: ?Environment) DetectionError!ColorSupport {
-    const environment = env orelse Environment.init();
+pub fn detectColor(allocator: std.mem.Allocator, env: ?Environment) DetectionError!ColorSupport {
+    const environment = env orelse Environment.init(allocator);
 
     // First check if we're running in a TTY
     if (!environment.isatty_fn()) {
@@ -235,14 +237,16 @@ pub fn detectColor(env: ?Environment) DetectionError!ColorSupport {
     }
 
     // Check COLORTERM environment variable first (most reliable for truecolor)
-    if (environment.getenv_fn("COLORTERM")) |colorterm| {
+    if (environment.getenv_fn(environment.allocator, "COLORTERM")) |colorterm| {
+        defer environment.allocator.free(colorterm);
         if (std.mem.eql(u8, colorterm, "truecolor") or std.mem.eql(u8, colorterm, "24bit")) {
             return .truecolor;
         }
     }
 
     // Check TERM environment variable
-    if (environment.getenv_fn("TERM")) |term| {
+    if (environment.getenv_fn(environment.allocator, "TERM")) |term| {
+        defer environment.allocator.free(term);
         // Check for truecolor support
         if (std.mem.containsAtLeast(u8, term, 1, "truecolor") or
             std.mem.containsAtLeast(u8, term, 1, "24bit") or
@@ -373,32 +377,36 @@ fn mockTtyFalse() bool {
     return false;
 }
 
-fn mockGetenvXterm(name: []const u8) ?[]const u8 {
+fn mockGetenvXterm(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "TERM")) {
-        return "xterm-256color";
+        return allocator.dupe(u8, "xterm-256color") catch null;
     }
     return null;
 }
 
 test "color detection with TTY input" {
+    const allocator = std.testing.allocator;
     // Mock environment with TTY and xterm
     const mock_env = Environment{
+        .allocator = allocator,
         .isatty_fn = mockTtyTrue,
         .getenv_fn = mockGetenvXterm,
     };
 
-    const color_support = try detectColor(mock_env);
+    const color_support = try detectColor(allocator, mock_env);
     try std.testing.expect(color_support.supportsAnsi());
 }
 
 test "color detection with no TTY returns error" {
+    const allocator = std.testing.allocator;
     // Mock environment without TTY
     const mock_env = Environment{
+        .allocator = allocator,
         .isatty_fn = mockTtyFalse,
         .getenv_fn = mockGetenvXterm,
     };
 
-    const result = detectColor(mock_env);
+    const result = detectColor(allocator, mock_env);
     try std.testing.expectError(DetectionError.NotATty, result);
 }
 

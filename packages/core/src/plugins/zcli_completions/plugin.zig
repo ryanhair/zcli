@@ -45,7 +45,7 @@ pub const commands = struct {
                         return error.UnsupportedShell;
                     }
                 else
-                    detectShell() orelse {
+                    detectShell(allocator) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
                         try stderr.print("Please specify shell explicitly: completions generate <bash|zsh|fish>\n", .{});
                         return error.ShellNotDetected;
@@ -97,7 +97,7 @@ pub const commands = struct {
                         return error.UnsupportedShell;
                     }
                 else
-                    detectShell() orelse {
+                    detectShell(allocator) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
                         try stderr.print("Please specify shell explicitly: completions install <bash|zsh|fish>\n", .{});
                         return error.ShellNotDetected;
@@ -182,7 +182,7 @@ pub const commands = struct {
                         return error.UnsupportedShell;
                     }
                 else
-                    detectShell() orelse {
+                    detectShell(allocator) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
                         try stderr.print("Please specify shell explicitly: completions uninstall <bash|zsh|fish>\n", .{});
                         return error.ShellNotDetected;
@@ -229,8 +229,9 @@ fn getShellType(shell: []const u8) ?ShellType {
     return null;
 }
 
-fn detectShell() ?ShellType {
-    const shell_path = std.posix.getenv("SHELL") orelse return null;
+fn detectShell(allocator: std.mem.Allocator) ?ShellType {
+    const shell_path = std.process.getEnvVarOwned(allocator, "SHELL") catch return null;
+    defer allocator.free(shell_path);
 
     // Extract shell name from path (e.g., "/bin/bash" -> "bash")
     const shell_name = std.fs.path.basename(shell_path);
@@ -239,7 +240,8 @@ fn detectShell() ?ShellType {
 }
 
 fn getInstallPath(allocator: std.mem.Allocator, shell_type: ShellType, app_name: []const u8) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.HomeNotFound;
+    defer allocator.free(home);
 
     return switch (shell_type) {
         .bash => try std.fmt.allocPrint(

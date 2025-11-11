@@ -32,7 +32,7 @@ pub fn main() !void {
 
     // Quick color detection
     std.debug.print("\n--- Quick Color Detection ---\n", .{});
-    if (capabilities.detectColor(null)) |color| {
+    if (capabilities.detectColor(allocator, null)) |color| {
         std.debug.print("Color support: {s}\n", .{@tagName(color)});
         std.debug.print("  Supports ANSI colors: {}\n", .{color.supportsAnsi()});
         std.debug.print("  Supports 256 colors: {}\n", .{color.supports256()});

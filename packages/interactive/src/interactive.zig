@@ -1400,10 +1400,17 @@ test "PtyManager terminal settings" {
     const allocator = std.testing.allocator;
 
     // Skip PTY tests in environments where they're known to be problematic
-    if (builtin.os.tag == .windows or
-        std.posix.getenv("CI") != null or
-        std.posix.getenv("GITHUB_ACTIONS") != null)
-    {
+    const is_ci = blk: {
+        const ci = std.process.getEnvVarOwned(allocator, "CI") catch null;
+        if (ci) |val| allocator.free(val);
+        break :blk ci != null;
+    };
+    const is_github = blk: {
+        const gh = std.process.getEnvVarOwned(allocator, "GITHUB_ACTIONS") catch null;
+        if (gh) |val| allocator.free(val);
+        break :blk gh != null;
+    };
+    if (builtin.os.tag == .windows or is_ci or is_github) {
         return;
     }
 
