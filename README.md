@@ -497,6 +497,314 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 
 See [SHARED_MODULES_GUIDE.md](SHARED_MODULES_GUIDE.md) for complete details.
 
+## Per-Command C/C++ Dependencies
+
+Some commands need to integrate with C or C++ libraries (e.g., tree-sitter for parsing, SQLite for databases). Instead of linking all commands against every C library, zcli allows you to specify dependencies **per command or command group**.
+
+### Basic Example: SQLite for One Command
+
+```zig
+// build.zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const zcli_dep = b.dependency("zcli", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zcli_module = zcli_dep.module("zcli");
+
+    // Create a module for SQLite wrapper
+    const sqlite_module = b.createModule(.{
+        .root_source_file = b.path("src/db/sqlite.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    exe.root_module.addImport("zcli", zcli_module);
+
+    const zcli = @import("zcli");
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+        .commands_dir = "src/commands",
+
+        // Apply SQLite only to the 'database' command
+        .command_configs = &[_]zcli.CommandConfig{
+            .{
+                .command_path = &.{"database"},
+                .modules = &[_]zcli.CommandModule{
+                    .{
+                        .name = "sqlite",
+                        .module = sqlite_module,
+                        .config = .{
+                            .system_libs = &.{"sqlite3"},
+                            .link_libc = true,
+                        },
+                    },
+                },
+            },
+        },
+
+        .plugins = &[_]zcli.PluginConfig{ /* ... */ },
+        .app_name = "myapp",
+        .app_description = "My CLI application",
+    });
+
+    exe.root_module.addImport("command_registry", cmd_registry);
+    b.installArtifact(exe);
+}
+```
+
+Now only the `database` command has access to the `sqlite` module and SQLite library:
+
+```zig
+// src/commands/database.zig
+const std = @import("std");
+const zcli = @import("zcli");
+const sqlite = @import("sqlite");  // Available only to this command!
+
+pub const meta = .{
+    .description = "Database operations",
+};
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    var db = try sqlite.open(context.allocator, "app.db");
+    defer db.close();
+    // Use SQLite...
+}
+```
+
+### C/C++ Source Files Example
+
+For libraries like tree-sitter that need compilation:
+
+```zig
+// build.zig
+const parser_module = b.createModule(.{
+    .root_source_file = b.path("src/parser/tree_sitter.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+
+const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    .commands_dir = "src/commands",
+    .command_configs = &[_]zcli.CommandConfig{
+        .{
+            .command_path = &.{"analyze"},
+            .modules = &[_]zcli.CommandModule{
+                .{
+                    .name = "parser",
+                    .module = parser_module,
+                    .config = .{
+                        // C source files
+                        .c_sources = &.{
+                            "vendor/tree-sitter/lib/src/lib.c",
+                            "vendor/tree-sitter-javascript/src/parser.c",
+                        },
+                        .c_flags = &.{"-std=c11"},
+                        .include_paths = &.{"vendor/tree-sitter/lib/include"},
+                    },
+                },
+            },
+        },
+    },
+    .plugins = &[_]zcli.PluginConfig{ /* ... */ },
+    .app_name = "myapp",
+    .app_description = "My CLI application",
+});
+```
+
+### Configuration Inheritance
+
+Configurations automatically inherit from parent command paths. This is useful for command groups:
+
+```zig
+.command_configs = &[_]zcli.CommandConfig{
+    // All 'docker' subcommands inherit this config
+    .{
+        .command_path = &.{"docker"},
+        .modules = &[_]zcli.CommandModule{
+            .{
+                .name = "docker_lib",
+                .module = docker_module,
+                .config = .{
+                    .system_libs = &.{"docker"},
+                },
+            },
+        },
+    },
+
+    // 'docker build' overrides with additional modules
+    .{
+        .command_path = &.{"docker", "build"},
+        .modules = &[_]zcli.CommandModule{
+            .{
+                .name = "docker_lib",
+                .module = docker_module,
+                .config = .{
+                    .system_libs = &.{"docker"},
+                },
+            },
+            .{
+                .name = "buildkit",
+                .module = buildkit_module,
+                .config = .{
+                    .c_sources = &.{"vendor/buildkit/builder.c"},
+                },
+            },
+        },
+    },
+},
+```
+
+**Inheritance Rules:**
+
+- Exact command path matches take precedence
+- If no exact match, searches parent paths (e.g., `["docker", "build"]` → `["docker"]`)
+- Child configs completely override parent configs (no merging)
+
+### CommandModuleConfig Options
+
+All available configuration options:
+
+```zig
+pub const CommandModuleConfig = struct {
+    /// C source files to compile and link
+    c_sources: ?[]const []const u8 = null,
+
+    /// Flags to pass to the C compiler
+    c_flags: ?[]const []const u8 = null,
+
+    /// C++ source files to compile and link
+    cpp_sources: ?[]const []const u8 = null,
+
+    /// Flags to pass to the C++ compiler
+    cpp_flags: ?[]const []const u8 = null,
+
+    /// Additional include paths for C/C++ compilation
+    include_paths: ?[]const []const u8 = null,
+
+    /// System libraries to link against (e.g., "sqlite3", "curl")
+    system_libs: ?[]const []const u8 = null,
+
+    /// Link libc (auto-detected if c_sources or system_libs present)
+    link_libc: ?bool = null,
+
+    /// Link libc++ (auto-detected if cpp_sources present)
+    link_libcpp: ?bool = null,
+};
+```
+
+### Multiple Commands with Same Library
+
+If multiple unrelated commands need the same C library, specify each separately:
+
+```zig
+.command_configs = &[_]zcli.CommandConfig{
+    .{
+        .command_path = &.{"import"},
+        .modules = &[_]zcli.CommandModule{
+            .{ .name = "json", .module = json_module, .config = .{ .system_libs = &.{"jansson"} } },
+        },
+    },
+    .{
+        .command_path = &.{"export"},
+        .modules = &[_]zcli.CommandModule{
+            .{ .name = "json", .module = json_module, .config = .{ .system_libs = &.{"jansson"} } },
+        },
+    },
+},
+```
+
+**Note:** zcli prevents module name collisions with shared modules. If a module name appears in both `shared_modules` and `command_configs`, you'll get a compile-time error.
+
+### Real-World Example: CLI with Multiple C Dependencies
+
+```zig
+const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    .commands_dir = "src/commands",
+
+    .shared_modules = &[_]zcli.SharedModule{
+        .{ .name = "utils", .module = utils_module },
+        .{ .name = "config", .module = config_module },
+    },
+
+    .command_configs = &[_]zcli.CommandConfig{
+        // Code analysis with tree-sitter
+        .{
+            .command_path = &.{"analyze"},
+            .modules = &[_]zcli.CommandModule{
+                .{
+                    .name = "parser",
+                    .module = parser_module,
+                    .config = .{
+                        .c_sources = &.{
+                            "vendor/tree-sitter/lib/src/lib.c",
+                            "vendor/tree-sitter-zig/src/parser.c",
+                        },
+                        .include_paths = &.{"vendor/tree-sitter/lib/include"},
+                        .c_flags = &.{"-std=c11"},
+                    },
+                },
+            },
+        },
+
+        // Database operations with SQLite
+        .{
+            .command_path = &.{"db"},
+            .modules = &[_]zcli.CommandModule{
+                .{
+                    .name = "sqlite",
+                    .module = sqlite_module,
+                    .config = .{
+                        .system_libs = &.{"sqlite3"},
+                    },
+                },
+            },
+        },
+
+        // HTTP client with curl
+        .{
+            .command_path = &.{"fetch"},
+            .modules = &[_]zcli.CommandModule{
+                .{
+                    .name = "http",
+                    .module = http_module,
+                    .config = .{
+                        .system_libs = &.{"curl"},
+                    },
+                },
+            },
+        },
+    },
+
+    .plugins = &[_]zcli.PluginConfig{
+        .{ .name = "zcli-help", .path = "src/plugins/zcli_help" },
+        .{ .name = "zcli-not-found", .path = "src/plugins/zcli_not_found" },
+    },
+    .app_name = "myapp",
+    .app_description = "My multi-tool CLI",
+});
+```
+
+**Benefits:**
+
+- **Smaller binaries**: Commands only link what they need
+- **Faster compilation**: Isolated C dependencies don't trigger full rebuilds
+- **Clearer dependencies**: Each command's requirements are explicit
+- **Better organization**: Related C code stays with the commands that use it
+
 ## Plugin System
 
 zcli includes two essential plugins:

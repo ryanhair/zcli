@@ -1,5 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
+const command_config_lookup = @import("command_config_lookup.zig");
+const config_application = @import("config_application.zig");
 
 const PluginInfo = types.PluginInfo;
 const DiscoveredCommands = types.DiscoveredCommands;
@@ -9,8 +11,46 @@ const CommandInfo = types.CommandInfo;
 // MODULE CREATION - Build-time module creation and linking
 // ============================================================================
 
+/// Apply command-specific modules and configurations to a command module
+fn applyCommandSpecificModules(
+    b: *std.Build,
+    cmd_module: *std.Build.Module,
+    cmd_path: []const []const u8,
+    shared_modules: []const types.SharedModule,
+    command_configs: []const types.CommandConfig,
+) void {
+    // Look up command config (supports inheritance)
+    const cmd_config = command_config_lookup.findCommandConfig(cmd_path, command_configs) orelse return;
+
+    // Apply command-specific modules
+    for (cmd_config.modules) |module_config| {
+        // Check for name collision with shared modules
+        if (command_config_lookup.moduleNameExistsInShared(module_config.name, shared_modules)) {
+            std.log.err("Command-specific module '{s}' conflicts with shared module for command path", .{module_config.name});
+            std.log.err("Command path: {s}", .{cmd_path});
+            @panic("Module name conflict detected");
+        }
+
+        // Add module import
+        cmd_module.addImport(module_config.name, module_config.module);
+
+        // Apply configuration if present
+        if (module_config.config) |config| {
+            config_application.applyCommandModuleConfig(b, cmd_module, config);
+        }
+    }
+}
+
 /// Create modules for all discovered commands dynamically
-pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, commands: DiscoveredCommands, commands_dir: []const u8, shared_modules: []const types.SharedModule) void {
+pub fn createDiscoveredModules(
+    b: *std.Build,
+    registry_module: *std.Build.Module,
+    zcli_module: *std.Build.Module,
+    commands: DiscoveredCommands,
+    commands_dir: []const u8,
+    shared_modules: []const types.SharedModule,
+    command_configs: []const types.CommandConfig,
+) void {
     var it = commands.root.iterator();
     while (it.next()) |entry| {
         const cmd_name = entry.key_ptr.*;
@@ -31,10 +71,13 @@ pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module
                     cmd_module.addImport(shared_mod.name, shared_mod.module);
                 }
 
+                // Add command-specific modules
+                applyCommandSpecificModules(b, cmd_module, cmd_info.path, shared_modules, command_configs);
+
                 registry_module.addImport(module_name, cmd_module);
             }
             // Create modules for subcommands
-            createGroupModules(b, registry_module, zcli_module, cmd_name, &cmd_info, commands_dir, shared_modules);
+            createGroupModules(b, registry_module, zcli_module, cmd_name, &cmd_info, commands_dir, shared_modules, command_configs);
         } else {
             const module_name = if (std.mem.eql(u8, cmd_name, "test"))
                 "cmd_test"
@@ -52,13 +95,25 @@ pub fn createDiscoveredModules(b: *std.Build, registry_module: *std.Build.Module
                 cmd_module.addImport(shared_mod.name, shared_mod.module);
             }
 
+            // Add command-specific modules
+            applyCommandSpecificModules(b, cmd_module, cmd_info.path, shared_modules, command_configs);
+
             registry_module.addImport(module_name, cmd_module);
         }
     }
 }
 
 /// Create modules for command groups recursively
-fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_module: *std.Build.Module, _: []const u8, group_info: *const CommandInfo, commands_dir: []const u8, shared_modules: []const types.SharedModule) void {
+fn createGroupModules(
+    b: *std.Build,
+    registry_module: *std.Build.Module,
+    zcli_module: *std.Build.Module,
+    _: []const u8,
+    group_info: *const CommandInfo,
+    commands_dir: []const u8,
+    shared_modules: []const types.SharedModule,
+    command_configs: []const types.CommandConfig,
+) void {
     if (group_info.subcommands) |subcommands| {
         var it = subcommands.iterator();
         while (it.next()) |entry| {
@@ -89,13 +144,16 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
                     cmd_module.addImport(shared_mod.name, shared_mod.module);
                 }
 
+                // Add command-specific modules
+                applyCommandSpecificModules(b, cmd_module, subcmd_info.path, shared_modules, command_configs);
+
                 registry_module.addImport(module_name_with_index, cmd_module);
 
                 // Also recurse for its subcommands
-                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules);
+                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules, command_configs);
             } else if (subcmd_info.command_type == .pure_group) {
                 // Pure groups have no module, just recurse
-                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules);
+                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules, command_configs);
             } else {
                 // Generate module name from the full command path to handle nested directories
                 // This ensures unique module names even for deeply nested commands
@@ -119,6 +177,9 @@ fn createGroupModules(b: *std.Build, registry_module: *std.Build.Module, zcli_mo
                 for (shared_modules) |shared_mod| {
                     cmd_module.addImport(shared_mod.name, shared_mod.module);
                 }
+
+                // Add command-specific modules
+                applyCommandSpecificModules(b, cmd_module, subcmd_info.path, shared_modules, command_configs);
 
                 registry_module.addImport(module_name, cmd_module);
             }

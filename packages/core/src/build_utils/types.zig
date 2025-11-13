@@ -87,12 +87,61 @@ pub const SharedModule = struct {
     module: *std.Build.Module,
 };
 
+/// Configuration to apply to a command module for native dependencies
+pub const CommandModuleConfig = struct {
+    /// C source files needed by this module
+    c_sources: ?[]const []const u8 = null,
+
+    /// C compiler flags
+    c_flags: ?[]const []const u8 = null,
+
+    /// C++ source files needed by this module
+    cpp_sources: ?[]const []const u8 = null,
+
+    /// C++ compiler flags
+    cpp_flags: ?[]const []const u8 = null,
+
+    /// Include paths for C/C++ headers
+    include_paths: ?[]const []const u8 = null,
+
+    /// System libraries to link (e.g., "curl", "sqlite3")
+    system_libs: ?[]const []const u8 = null,
+
+    /// Whether to link libc (default: auto-detect based on c_sources/system_libs)
+    link_libc: ?bool = null,
+
+    /// Whether to link libc++ (default: auto-detect based on cpp_sources)
+    link_libcpp: ?bool = null,
+};
+
+/// Per-command module with optional build configuration
+pub const CommandModule = struct {
+    /// Module name for import in the command
+    name: []const u8,
+
+    /// The module itself
+    module: *std.Build.Module,
+
+    /// Optional build configuration to apply to the command module
+    config: ?CommandModuleConfig = null,
+};
+
+/// Configuration for a specific command with per-command modules
+pub const CommandConfig = struct {
+    /// Command path (e.g., &.{"container", "ls"} for "container ls" command)
+    command_path: []const []const u8,
+
+    /// Modules specific to this command with their configurations
+    modules: []const CommandModule = &.{},
+};
+
 /// Enhanced build configuration for plugin support
 pub const BuildConfig = struct {
     commands_dir: []const u8,
     plugins_dir: ?[]const u8,
     plugins: ?[]const PluginInfo,
     shared_modules: ?[]const SharedModule = null,
+    command_configs: ?[]const CommandConfig = null,
     app_name: []const u8,
     app_version: []const u8,
     app_description: []const u8,

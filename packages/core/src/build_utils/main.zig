@@ -146,7 +146,8 @@ fn generatePluginRegistry(
 
     // Create modules for all discovered command files dynamically
     const shared_modules = config.shared_modules orelse &.{};
-    module_creation.createDiscoveredModules(b, registry_module, zcli_module, discovered_commands, config.commands_dir, shared_modules);
+    const command_configs = config.command_configs orelse &.{};
+    module_creation.createDiscoveredModules(b, registry_module, zcli_module, discovered_commands, config.commands_dir, shared_modules, command_configs);
 
     // Add plugin imports to registry module
     module_creation.addPluginModulesToRegistry(b, registry_module, zcli_dep, zcli_module, plugins);
@@ -208,6 +209,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         .plugins_dir = null,
         .plugins = plugins.items,
         .shared_modules = if (@hasField(@TypeOf(config), "shared_modules")) config.shared_modules else null,
+        .command_configs = if (@hasField(@TypeOf(config), "command_configs")) config.command_configs else null,
         .app_name = config.app_name,
         .app_version = app_version,
         .app_description = config.app_description,
