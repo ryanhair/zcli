@@ -65,6 +65,12 @@ fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.
     const target = exe.root_module.resolved_target orelse b.graph.host;
     const optimize = exe.root_module.optimize orelse .Debug;
 
+    // Apply C/C++ dependencies FIRST, before any modules are created
+    // This ensures include paths are available when modules use @cImport
+    const config_application = @import("config_application.zig");
+    const command_configs = config.command_configs orelse &.{};
+    config_application.applyCommandConfigsToExecutable(b, exe, command_configs);
+
     // 1. Discover local plugins
     const local_plugins = if (config.plugins_dir) |dir|
         plugin_system.scanLocalPlugins(b, dir) catch &.{}
@@ -78,7 +84,7 @@ fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.
     //    using zcli_dep.path() to ensure correct resolution
 
     // 4. Generate plugin-enhanced registry
-    const registry_module = generatePluginRegistry(b, target, optimize, zcli_dep, zcli_module, config, all_plugins);
+    const registry_module = generatePluginRegistry(b, exe, target, optimize, zcli_dep, zcli_module, config, all_plugins);
 
     return registry_module;
 }
@@ -86,6 +92,7 @@ fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.
 /// Generate registry with plugin support
 fn generatePluginRegistry(
     b: *std.Build,
+    exe: *std.Build.Step.Compile,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     zcli_dep: *std.Build.Dependency,
@@ -93,6 +100,7 @@ fn generatePluginRegistry(
     config: BuildConfig,
     plugins: []const types.PluginInfo,
 ) *std.Build.Module {
+    _ = exe;
     _ = target; // Will be used for plugin compilation
     _ = optimize; // Will be used for plugin compilation
 

@@ -1,7 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
 const command_config_lookup = @import("command_config_lookup.zig");
-const config_application = @import("config_application.zig");
 
 const PluginInfo = types.PluginInfo;
 const DiscoveredCommands = types.DiscoveredCommands;
@@ -11,7 +10,7 @@ const CommandInfo = types.CommandInfo;
 // MODULE CREATION - Build-time module creation and linking
 // ============================================================================
 
-/// Apply command-specific modules and configurations to a command module
+/// Apply command-specific modules to a command module
 fn applyCommandSpecificModules(
     b: *std.Build,
     cmd_module: *std.Build.Module,
@@ -19,6 +18,7 @@ fn applyCommandSpecificModules(
     shared_modules: []const types.SharedModule,
     command_configs: []const types.CommandConfig,
 ) void {
+    _ = b;
     // Look up command config (supports inheritance)
     const cmd_config = command_config_lookup.findCommandConfig(cmd_path, command_configs) orelse return;
 
@@ -26,18 +26,13 @@ fn applyCommandSpecificModules(
     for (cmd_config.modules) |module_config| {
         // Check for name collision with shared modules
         if (command_config_lookup.moduleNameExistsInShared(module_config.name, shared_modules)) {
-            std.log.err("Command-specific module '{s}' conflicts with shared module for command path", .{module_config.name});
-            std.log.err("Command path: {s}", .{cmd_path});
+            std.log.err("Command-specific module '{s}' conflicts with shared module", .{module_config.name});
+            std.log.err("Command path components: {any}", .{cmd_path});
             @panic("Module name conflict detected");
         }
 
-        // Add module import
+        // Add module import (C dependencies are handled at the executable level)
         cmd_module.addImport(module_config.name, module_config.module);
-
-        // Apply configuration if present
-        if (module_config.config) |config| {
-            config_application.applyCommandModuleConfig(b, cmd_module, config);
-        }
     }
 }
 
@@ -190,18 +185,20 @@ fn createGroupModules(
 /// Add plugin modules to registry during generation
 pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
     // Create markdown_fmt module from zcli dependency's path
-    // zcli_dep points to the repo root (either local or from archive)
-    // markdown_fmt is always at packages/markdown_fmt
+    // When using .path dependency to packages/core, markdown_fmt is at ../markdown_fmt
+    // When using .url dependency to repo root, markdown_fmt is at packages/markdown_fmt
     const markdown_fmt_module = b.addModule("markdown_fmt_for_help", .{
-        .root_source_file = zcli_dep.path("packages/markdown_fmt/src/main.zig"),
+        .root_source_file = zcli_dep.path("../markdown_fmt/src/main.zig"),
     });
 
     for (plugins) |plugin_info| {
         if (plugin_info.is_local) {
             // import_name is like "src/plugins/zcli_help/plugin"
-            // zcli_dep points to the repo root (either local or from archive)
-            // Plugins are always at packages/core/src/plugins/...
-            const plugin_path = b.fmt("packages/core/{s}.zig", .{plugin_info.import_name});
+            // zcli_dep path handling:
+            // - If using .path dependency, it points directly to packages/core
+            // - If using .url dependency, it points to the repo root
+            // We'll try both paths for compatibility
+            const plugin_path = b.fmt("{s}.zig", .{plugin_info.import_name});
             const plugin_module = b.addModule(plugin_info.import_name, .{
                 .root_source_file = zcli_dep.path(plugin_path),
             });

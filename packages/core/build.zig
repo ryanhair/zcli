@@ -185,5 +185,8 @@ pub fn build(b: *std.Build) void {
 pub const BuildConfig = types.BuildConfig;
 pub const PluginConfig = types.PluginConfig;
 pub const SharedModule = types.SharedModule;
+pub const CommandConfig = types.CommandConfig;
+pub const CommandModule = types.CommandModule;
+pub const CommandModuleConfig = types.CommandModuleConfig;
 pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 pub const generate = main.generate;
