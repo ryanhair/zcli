@@ -269,9 +269,13 @@ pub fn generate(
     // Build command tree structure
     var command_tree = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
     defer {
-        var it = command_tree.valueIterator();
-        while (it.next()) |list| {
-            list.deinit(allocator);
+        var it = command_tree.iterator();
+        while (it.next()) |entry| {
+            // Don't free the empty string key (it's a string literal)
+            if (entry.key_ptr.len > 0) {
+                allocator.free(entry.key_ptr.*);
+            }
+            entry.value_ptr.deinit(allocator);
         }
         command_tree.deinit();
     }

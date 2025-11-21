@@ -185,10 +185,9 @@ fn createGroupModules(
 /// Add plugin modules to registry during generation
 pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
     // Create markdown_fmt module from zcli dependency's path
-    // When using .path dependency to packages/core, markdown_fmt is at ../markdown_fmt
-    // When using .url dependency to repo root, markdown_fmt is at packages/markdown_fmt
+    // The zcli dependency points to the repo root, so markdown_fmt is at packages/markdown_fmt
     const markdown_fmt_module = b.addModule("markdown_fmt_for_help", .{
-        .root_source_file = zcli_dep.path("../markdown_fmt/src/main.zig"),
+        .root_source_file = zcli_dep.path("packages/markdown_fmt/src/main.zig"),
     });
 
     for (plugins) |plugin_info| {

@@ -43,16 +43,26 @@ pub fn generate(
     // Build command tree to understand nesting
     var command_tree = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
     defer {
-        var it = command_tree.valueIterator();
-        while (it.next()) |list| {
-            list.deinit(allocator);
+        var it = command_tree.iterator();
+        while (it.next()) |entry| {
+            // Don't free the empty string key (it's a string literal)
+            if (entry.key_ptr.len > 0) {
+                allocator.free(entry.key_ptr.*);
+            }
+            entry.value_ptr.deinit(allocator);
         }
         command_tree.deinit();
     }
 
     // Track which paths are "parents" (have subcommands)
     var parent_paths = std.StringHashMap(void).init(allocator);
-    defer parent_paths.deinit();
+    defer {
+        var it = parent_paths.keyIterator();
+        while (it.next()) |key| {
+            allocator.free(key.*);
+        }
+        parent_paths.deinit();
+    }
 
     for (commands) |cmd| {
         // Skip hidden commands

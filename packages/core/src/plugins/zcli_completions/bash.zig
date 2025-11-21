@@ -114,9 +114,10 @@ pub fn generate(
             // Group commands by parent path
             var parent_map = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
             defer {
-                var it = parent_map.valueIterator();
-                while (it.next()) |list| {
-                    list.deinit(allocator);
+                var it = parent_map.iterator();
+                while (it.next()) |entry| {
+                    allocator.free(entry.key_ptr.*);
+                    entry.value_ptr.deinit(allocator);
                 }
                 parent_map.deinit();
             }
