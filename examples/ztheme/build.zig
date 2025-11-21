@@ -38,13 +38,13 @@ pub fn build(b: *std.Build) void {
         .commands_dir = "src/commands",
         .plugins = &[_]zcli.PluginConfig{ .{
             .name = "zcli_help",
-            .path = "src/plugins/zcli_help",
+            .path = "packages/core/src/plugins/zcli_help",
         }, .{
             .name = "zcli_version",
-            .path = "src/plugins/zcli_version",
+            .path = "packages/core/src/plugins/zcli_version",
         }, .{
             .name = "zcli_not_found",
-            .path = "src/plugins/zcli_not_found",
+            .path = "packages/core/src/plugins/zcli_not_found",
         } },
         .app_name = "ztheme-demo",
         .app_version = "0.1.0",

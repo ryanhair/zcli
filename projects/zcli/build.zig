@@ -30,16 +30,16 @@ pub fn build(b: *std.Build) void {
         .commands_dir = "src/commands",
         .plugins = &.{ .{
             .name = "zcli_help",
-            .path = "src/plugins/zcli_help",
+            .path = "packages/core/src/plugins/zcli_help",
         }, .{
             .name = "zcli_version",
-            .path = "src/plugins/zcli_version",
+            .path = "packages/core/src/plugins/zcli_version",
         }, .{
             .name = "zcli_not_found",
-            .path = "src/plugins/zcli_not_found",
+            .path = "packages/core/src/plugins/zcli_not_found",
         }, .{
             .name = "zcli_github_upgrade",
-            .path = "src/plugins/zcli_github_upgrade",
+            .path = "packages/core/src/plugins/zcli_github_upgrade",
             .config = .{
                 .repo = "ryanhair/zcli",
                 .command_name = "upgrade",
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
             },
         }, .{
             .name = "zcli_completions",
-            .path = "src/plugins/zcli_completions",
+            .path = "packages/core/src/plugins/zcli_completions",
         } },
         .app_name = "zcli",
         .app_description = "Build beautiful CLIs with zcli - scaffold projects, add commands, and more",
