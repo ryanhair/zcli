@@ -24,6 +24,62 @@ fn splitPath(comptime path: []const u8) []const []const u8 {
     }
 }
 
+/// Build an alias path by replacing the last component with the alias name
+fn buildAliasPath(comptime original_path: []const []const u8, comptime alias: []const u8) []const []const u8 {
+    comptime {
+        if (original_path.len == 0) return &[_][]const u8{alias};
+        if (original_path.len == 1) return &[_][]const u8{alias};
+        var result: []const []const u8 = &.{};
+        for (original_path[0 .. original_path.len - 1]) |component| {
+            result = result ++ &[_][]const u8{component};
+        }
+        result = result ++ &[_][]const u8{alias};
+        return result;
+    }
+}
+
+/// Check if two paths are equal at compile time
+fn pathsEqual(comptime path1: []const []const u8, comptime path2: []const []const u8) bool {
+    if (path1.len != path2.len) return false;
+    inline for (path1, path2) |a, b| {
+        if (!std.mem.eql(u8, a, b)) return false;
+    }
+    return true;
+}
+
+/// Compute command entries including aliases
+fn computeEntriesWithAliases(
+    comptime existing: []const CommandEntry,
+    comptime path: []const u8,
+    comptime Module: type,
+) []const CommandEntry {
+    comptime {
+        const path_components = splitPath(path);
+        var result: []const CommandEntry = existing ++ [_]CommandEntry{
+            .{ .path = path_components, .module = Module },
+        };
+
+        // Add alias entries if the module has aliases in meta
+        if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "aliases")) {
+            for (Module.meta.aliases) |alias| {
+                const alias_path = buildAliasPath(path_components, alias);
+
+                // Check for conflicts with existing entries
+                for (result) |entry| {
+                    if (pathsEqual(entry.path, alias_path)) {
+                        @compileError("Alias '" ++ alias ++ "' conflicts with existing command at path");
+                    }
+                }
+
+                result = result ++ [_]CommandEntry{
+                    .{ .path = alias_path, .module = Module },
+                };
+            }
+        }
+        return result;
+    }
+}
+
 /// Configuration for the application
 pub const Config = struct {
     app_name: []const u8,
@@ -58,7 +114,7 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
 
         pub fn register(comptime self: @This(), comptime path: []const u8, comptime Module: type) RegistryBuilder(
             config,
-            commands ++ [_]CommandEntry{.{ .path = splitPath(path), .module = Module }},
+            computeEntriesWithAliases(commands, path, Module),
             new_plugins,
         ) {
             _ = self;
@@ -72,7 +128,7 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
 
             return RegistryBuilder(
                 config,
-                commands ++ [_]CommandEntry{.{ .path = splitPath(path), .module = Module }},
+                computeEntriesWithAliases(commands, path, Module),
                 new_plugins,
             ).init();
         }
@@ -461,6 +517,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     var description: ?[]const u8 = null;
                     var examples: ?[]const []const u8 = null;
                     var hidden: bool = false;
+                    var aliases: []const []const u8 = &.{};
 
                     if (@hasDecl(cmd.module, "meta")) {
                         const meta = cmd.module.meta;
@@ -472,6 +529,9 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         }
                         if (@hasField(@TypeOf(meta), "hidden")) {
                             hidden = meta.hidden;
+                        }
+                        if (@hasField(@TypeOf(meta), "aliases")) {
+                            aliases = meta.aliases;
                         }
                     }
 
@@ -527,6 +587,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         .examples = examples,
                         .options = options,
                         .hidden = hidden,
+                        .aliases = aliases,
                     }};
                 }
 
@@ -537,6 +598,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     var description: ?[]const u8 = null;
                     var examples: ?[]const []const u8 = null;
                     var hidden: bool = false;
+                    var aliases: []const []const u8 = &.{};
 
                     if (@hasDecl(CommandModule, "meta")) {
                         const meta = CommandModule.meta;
@@ -548,6 +610,9 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         }
                         if (@hasField(@TypeOf(meta), "hidden")) {
                             hidden = meta.hidden;
+                        }
+                        if (@hasField(@TypeOf(meta), "aliases")) {
+                            aliases = meta.aliases;
                         }
                     }
 
@@ -603,6 +668,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         .examples = examples,
                         .options = options,
                         .hidden = hidden,
+                        .aliases = aliases,
                     }};
                 }
 
@@ -2075,4 +2141,106 @@ test "error handling: plugin returns true prevents error propagation" {
     // Plugin should have handled the error
     try testing.expect(TestHelpPlugin.command_found_error);
     try testing.expect(TestHelpPlugin.help_shown);
+}
+
+// ============================================================================
+// Alias Tests
+// ============================================================================
+
+test "buildAliasPath: top-level command" {
+    // Top-level command ["ls"] with alias "list" should produce ["list"]
+    const original_path = &[_][]const u8{"ls"};
+    const alias_path = comptime buildAliasPath(original_path, "list");
+
+    try testing.expectEqual(@as(usize, 1), alias_path.len);
+    try testing.expectEqualStrings("list", alias_path[0]);
+}
+
+test "buildAliasPath: nested command" {
+    // Nested command ["container", "ls"] with alias "list" should produce ["container", "list"]
+    const original_path = &[_][]const u8{ "container", "ls" };
+    const alias_path = comptime buildAliasPath(original_path, "list");
+
+    try testing.expectEqual(@as(usize, 2), alias_path.len);
+    try testing.expectEqualStrings("container", alias_path[0]);
+    try testing.expectEqualStrings("list", alias_path[1]);
+}
+
+test "buildAliasPath: deeply nested command" {
+    // Deeply nested command ["a", "b", "c"] with alias "d" should produce ["a", "b", "d"]
+    const original_path = &[_][]const u8{ "a", "b", "c" };
+    const alias_path = comptime buildAliasPath(original_path, "d");
+
+    try testing.expectEqual(@as(usize, 3), alias_path.len);
+    try testing.expectEqualStrings("a", alias_path[0]);
+    try testing.expectEqualStrings("b", alias_path[1]);
+    try testing.expectEqualStrings("d", alias_path[2]);
+}
+
+test "pathsEqual: equal paths" {
+    const path1 = &[_][]const u8{ "container", "ls" };
+    const path2 = &[_][]const u8{ "container", "ls" };
+    try testing.expect(pathsEqual(path1, path2));
+}
+
+test "pathsEqual: different lengths" {
+    const path1 = &[_][]const u8{ "container", "ls" };
+    const path2 = &[_][]const u8{"container"};
+    try testing.expect(!pathsEqual(path1, path2));
+}
+
+test "pathsEqual: different components" {
+    const path1 = &[_][]const u8{ "container", "ls" };
+    const path2 = &[_][]const u8{ "container", "list" };
+    try testing.expect(!pathsEqual(path1, path2));
+}
+
+test "pathsEqual: empty paths" {
+    const path1: []const []const u8 = &.{};
+    const path2: []const []const u8 = &.{};
+    try testing.expect(pathsEqual(path1, path2));
+}
+
+// Test command with aliases for registration tests
+const AliasTestCommand = struct {
+    pub const meta = .{
+        .description = "Test command with aliases",
+        .aliases = &.{ "alias1", "alias2" },
+    };
+    pub const Args = zcli.NoArgs;
+    pub const Options = zcli.NoOptions;
+    pub fn execute(_: Args, _: Options, _: *zcli.Context) !void {}
+};
+
+const NoAliasTestCommand = struct {
+    pub const meta = .{
+        .description = "Test command without aliases",
+    };
+    pub const Args = zcli.NoArgs;
+    pub const Options = zcli.NoOptions;
+    pub fn execute(_: Args, _: Options, _: *zcli.Context) !void {}
+};
+
+test "alias registration: creates multiple command entries" {
+    // Test that computeEntriesWithAliases creates entries for primary + aliases
+    const entries = comptime computeEntriesWithAliases(&.{}, "test", AliasTestCommand);
+
+    // Should have 3 entries: primary "test", alias "alias1", alias "alias2"
+    try testing.expectEqual(@as(usize, 3), entries.len);
+}
+
+test "alias registration: all entries point to same module" {
+    const entries = comptime computeEntriesWithAliases(&.{}, "test", AliasTestCommand);
+
+    // All entries should point to the same module
+    inline for (entries) |entry| {
+        try testing.expect(entry.module == AliasTestCommand);
+    }
+}
+
+test "alias registration: command without aliases creates single entry" {
+    const entries = comptime computeEntriesWithAliases(&.{}, "test", NoAliasTestCommand);
+
+    // Should have only 1 entry
+    try testing.expectEqual(@as(usize, 1), entries.len);
 }

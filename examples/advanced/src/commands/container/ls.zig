@@ -3,6 +3,7 @@ const zcli = @import("zcli");
 
 pub const meta = .{
     .description = "List containers",
+    .aliases = &.{ "list", "ps" },
     .examples = &.{
         "container ls",
         "container ls --all",
@@ -36,11 +37,6 @@ pub const Options = struct {
 };
 
 pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
-
-    // Debug: print filter array info
-    std.debug.print("DEBUG: filter array len = {d}\n", .{options.filter.len});
-    std.debug.print("DEBUG: filter array ptr = {any}\n", .{options.filter.ptr});
-
     // Sample container data
     const containers = [_]struct {
         id: []const u8,

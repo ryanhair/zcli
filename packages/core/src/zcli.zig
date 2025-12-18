@@ -62,6 +62,7 @@ pub const CommandInfo = struct {
     examples: ?[]const []const u8 = null,
     options: []const OptionInfo = &.{},
     hidden: bool = false,
+    aliases: []const []const u8 = &.{},
 };
 
 /// Field info that can be stored at runtime
@@ -1178,7 +1179,7 @@ pub fn validateMeta(
     }
 
     // Valid top-level meta fields
-    const valid_top_level = .{ "description", "examples", "args", "options", "hidden" };
+    const valid_top_level = .{ "description", "examples", "args", "options", "hidden", "aliases" };
 
     // Validate top-level fields
     inline for (meta_info.@"struct".fields) |field| {
@@ -1191,7 +1192,7 @@ pub fn validateMeta(
             break :blk false;
         };
         if (!is_valid) {
-            @compileError("Unknown meta field: '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden");
+            @compileError("Unknown meta field: '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden, aliases");
         }
     }
 

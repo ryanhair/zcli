@@ -16,6 +16,12 @@ const CommandInfo = struct {
     is_group: bool,
 };
 
+// Helper struct for command display info with aliases
+const CommandDisplayInfo = struct {
+    description: ?[]const u8,
+    aliases: []const []const u8,
+};
+
 /// Global options provided by this plugin
 pub const global_options = [_]zcli.GlobalOption{
     zcli.option("help", bool, .{ .short = 'h', .default = false, .description = "Show help message" }),
@@ -281,6 +287,14 @@ const CommandListType = union(enum) {
     subcommands_of: []const u8, // Show subcommands of a specific command
 };
 
+/// Check if a name is in the aliases list
+fn isAlias(name: []const u8, aliases: []const []const u8) bool {
+    for (aliases) |alias| {
+        if (std.mem.eql(u8, name, alias)) return true;
+    }
+    return false;
+}
+
 /// Show a list of commands (used by unified help function)
 fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListType) !void {
     if (list_type == .top_level) {
@@ -294,7 +308,8 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
     defer displayed_names.deinit(context.allocator);
 
     // First pass: collect unique command names and find the best description for each
-    var command_map = std.StringHashMap(?[]const u8).init(context.allocator);
+    // Use CommandDisplayInfo to also track aliases
+    var command_map = std.StringHashMap(CommandDisplayInfo).init(context.allocator);
     defer command_map.deinit();
 
     for (command_infos) |cmd_info| {
@@ -350,6 +365,10 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
         }
 
         if (should_process) {
+            // Skip alias entries - the display_name is in the aliases list
+            // This means this entry is an alias, not the primary command
+            if (isAlias(display_name, cmd_info.aliases)) continue;
+
             const existing = command_map.get(display_name);
 
             // Add or update the command in the map
@@ -358,14 +377,23 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
                 // First time seeing this command
                 // Only add description if it's an exact match
                 if (is_exact_match) {
-                    try command_map.put(display_name, cmd_info.description);
+                    try command_map.put(display_name, .{
+                        .description = cmd_info.description,
+                        .aliases = cmd_info.aliases,
+                    });
                 } else {
                     // Not an exact match, add with no description
-                    try command_map.put(display_name, null);
+                    try command_map.put(display_name, .{
+                        .description = null,
+                        .aliases = &.{},
+                    });
                 }
             } else if (is_exact_match and cmd_info.description != null) {
                 // We have an exact match with a description, prefer it over previous entries
-                try command_map.put(display_name, cmd_info.description);
+                try command_map.put(display_name, .{
+                    .description = cmd_info.description,
+                    .aliases = cmd_info.aliases,
+                });
             }
             // Otherwise keep existing entry
         }
@@ -375,15 +403,26 @@ fn showCommandList(context: *zcli.Context, fmt: anytype, list_type: CommandListT
     var it = command_map.iterator();
     while (it.next()) |entry| {
         const display_name = entry.key_ptr.*;
-        const description = entry.value_ptr.*;
+        const info = entry.value_ptr.*;
 
         // Skip help command for top-level (we'll add it manually)
         if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
 
         try displayed_names.append(context.allocator, display_name);
 
-        if (description) |desc| {
-            try fmt.write("    <command>{s:<16}</command> {s}\n", .{ display_name, desc });
+        if (info.description) |desc| {
+            if (info.aliases.len > 0) {
+                // Build alias string for interpolation
+                var alias_buf: std.ArrayList(u8) = .empty;
+                defer alias_buf.deinit(context.allocator);
+                for (info.aliases, 0..) |alias, i| {
+                    if (i > 0) try alias_buf.appendSlice(context.allocator, ", ");
+                    try alias_buf.appendSlice(context.allocator, alias);
+                }
+                try fmt.write("    <command>{s:<16}</command> {s} ~(aliases: {s})~\n", .{ display_name, desc, alias_buf.items });
+            } else {
+                try fmt.write("    <command>{s:<16}</command> {s}\n", .{ display_name, desc });
+            }
         } else {
             try fmt.write("    <command>{s:<16}</command>\n", .{display_name});
         }
@@ -792,4 +831,26 @@ test "help command execution" {
     try std.testing.expect(std.mem.indexOf(u8, captured_output, "USAGE:") != null);
     try std.testing.expect(std.mem.indexOf(u8, captured_output, "COMMANDS:") != null);
     try std.testing.expect(std.mem.indexOf(u8, captured_output, "GLOBAL OPTIONS:") != null);
+}
+
+// ============================================================================
+// Alias Helper Tests
+// ============================================================================
+
+test "isAlias: name in aliases list" {
+    const aliases = &[_][]const u8{ "list", "ps", "l" };
+    try std.testing.expect(isAlias("list", aliases));
+    try std.testing.expect(isAlias("ps", aliases));
+    try std.testing.expect(isAlias("l", aliases));
+}
+
+test "isAlias: name not in aliases list" {
+    const aliases = &[_][]const u8{ "list", "ps", "l" };
+    try std.testing.expect(!isAlias("ls", aliases));
+    try std.testing.expect(!isAlias("show", aliases));
+}
+
+test "isAlias: empty aliases list" {
+    const aliases: []const []const u8 = &.{};
+    try std.testing.expect(!isAlias("anything", aliases));
 }
