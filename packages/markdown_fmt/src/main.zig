@@ -153,6 +153,7 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Semant
     comptime {
         var result: []const u8 = "";
         var i: usize = 0;
+        var text_start: usize = 0; // Track start of text outside semantic tags
 
         while (i < markdown.len) {
             // Check for semantic tags: <role>content</role>
@@ -178,6 +179,12 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Semant
                         const content_end = std.mem.indexOf(u8, markdown[content_start..], closing_tag);
 
                         if (content_end) |ce| {
+                            // Parse any accumulated text before this semantic tag
+                            if (i > text_start) {
+                                const text_before = markdown[text_start..i];
+                                result = result ++ inline_parser.parseInline(text_before, palette);
+                            }
+
                             const content = markdown[content_start .. content_start + ce];
                             const color = palette.getColor(r);
                             const ansi_code = std.fmt.comptimePrint("\x1b[38;2;{d};{d};{d}m", .{ color.r, color.g, color.b });
@@ -186,16 +193,20 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Semant
                             const parsed_content = inline_parser.parseInline(content, palette);
                             result = result ++ ansi_code ++ parsed_content ++ ANSI_RESET;
                             i = content_start + ce + closing_tag.len;
+                            text_start = i; // Reset text_start after the tag
                             continue;
                         }
                     }
                 }
             }
 
-            // For inline text outside semantic tags, parse with inline parser
-            // Extract the character and continue
-            result = result ++ &[_]u8{markdown[i]};
             i += 1;
+        }
+
+        // Parse any remaining text after the last semantic tag
+        if (markdown.len > text_start) {
+            const remaining_text = markdown[text_start..];
+            result = result ++ inline_parser.parseInline(remaining_text, palette);
         }
 
         return result;
