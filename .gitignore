@@ -4,3 +4,4 @@ zig-out
 .vscode
 .claude/settings.local.json
 /website/zine
+/website/public
