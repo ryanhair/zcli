@@ -205,6 +205,54 @@ src/commands/
     └── set.zig        # myapp config set <key> <value>
 ```
 
+### Command Aliases
+
+Commands can have alternative names (aliases) that invoke the same functionality. This is useful for providing shorthand names or matching familiar patterns from other tools:
+
+```zig
+// src/commands/container/ls.zig
+const std = @import("std");
+const zcli = @import("zcli");
+
+pub const meta = .{
+    .description = "List containers",
+    .aliases = &.{ "list", "ps" },  // Alternative names for this command
+};
+
+pub const Args = zcli.NoArgs;
+pub const Options = struct {
+    all: bool = false,
+};
+
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+    // All three commands run this same code:
+    // - myapp container ls
+    // - myapp container list
+    // - myapp container ps
+    try context.stdout().print("Listing containers...\n", .{});
+}
+```
+
+```bash
+# All of these are equivalent:
+$ myapp container ls
+$ myapp container list
+$ myapp container ps
+```
+
+Aliases are displayed in help output:
+
+```bash
+$ myapp container --help
+COMMANDS:
+    ls                   List containers (aliases: list, ps)
+```
+
+**Key points:**
+- Aliases are alternative names within the same parent command
+- Alias conflicts with existing commands produce compile-time errors
+- Aliases appear in help text for discoverability
+
 **Example: `src/commands/users/create.zig`**
 
 ```zig
@@ -273,7 +321,7 @@ pub const Options = struct {
 **Compile-Time Validation**: zcli validates all metadata fields at compile time to catch typos and invalid configurations. If you misspell a field name or use an invalid option, you'll get a clear error message during compilation:
 
 ```bash
-error: Unknown meta field: 'desc'. Valid fields are: description, examples, args, options, hidden
+error: Unknown meta field: 'desc'. Valid fields are: description, examples, args, options, hidden, aliases
 ```
 
 This ensures your CLI's help text and documentation are always correct.
