@@ -1,6 +1,7 @@
 Site {
     .title = "zcli - Build beautiful CLIs in Zig",
-    .host_url = "https://zcli.dev",
+    .host_url = "https://ryanhair.github.io",
+    .url_path_prefix = "zcli",
     .content_dir_path = "content",
     .layouts_dir_path = "layouts",
     .assets_dir_path = "assets",

@@ -9,10 +9,10 @@
 <body>
     <header class="site-header">
         <nav class="nav-container">
-            <a href="/" class="logo">zcli</a>
+            <a href="$site.page('').link()" class="logo">zcli</a>
             <div class="nav-links">
-                <a href="/quickstart/">Quickstart</a>
-                <a href="/docs/">Documentation</a>
+                <a href="$site.page('quickstart').link()">Quickstart</a>
+                <a href="$site.page('docs').link()">Documentation</a>
                 <a href="https://github.com/ryanhair/zcli">GitHub</a>
             </div>
         </nav>

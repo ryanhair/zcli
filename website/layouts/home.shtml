@@ -7,8 +7,8 @@
         <h1>Build beautiful CLIs in Zig</h1>
         <p class="hero-subtitle">Zero boilerplate. Type-safe. Zero runtime overhead.</p>
         <div class="hero-cta">
-            <a href="/quickstart/" class="btn btn-primary">Get Started</a>
-            <a href="/docs/" class="btn btn-secondary">Documentation</a>
+            <a href="$site.page('quickstart').link()" class="btn btn-primary">Get Started</a>
+            <a href="$site.page('docs').link()" class="btn btn-secondary">Documentation</a>
         </div>
     </section>
 
