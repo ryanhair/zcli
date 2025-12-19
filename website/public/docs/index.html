@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="title">Documentation</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav-container">
+            <a href="/" class="logo">zcli</a>
+            <div class="nav-links">
+                <a href="/quickstart/">Quickstart</a>
+                <a href="/docs/">Documentation</a>
+                <a href="https://github.com/ryanhair/zcli">GitHub</a>
+            </div>
+        </nav>
+    </header>
+
+    <main id="main">
+    <div class="docs-container">
+        <aside class="docs-sidebar">
+            <nav class="docs-nav">
+                <div class="nav-section">
+                    <h4>Getting Started</h4>
+                    <ul>
+                        <li><a href="/quickstart/">Quickstart</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Core Concepts</h4>
+                    <ul>
+                        <li><a href="/docs/commands/">Commands</a></li>
+                        <li><a href="/docs/options/">Arguments &amp; Options</a></li>
+                        <li><a href="/docs/aliases/">Command Aliases</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Advanced</h4>
+                    <ul>
+                        <li><a href="/docs/plugins/">Plugin System</a></li>
+                        <li><a href="/docs/build-system/">Build System</a></li>
+                        <li><a href="/docs/shared-modules/">Shared Modules</a></li>
+                        <li><a href="/docs/c-dependencies/">C/C++ Dependencies</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Reference</h4>
+                    <ul>
+                        <li><a href="/docs/error-handling/">Error Handling</a></li>
+                    </ul>
+                </div>
+            </nav>
+        </aside>
+
+        <article class="docs-content">
+            <header class="docs-header">
+                <h1>Documentation</h1>
+            </header>
+            <div class="docs-body">
+                <p>Welcome to the zcli documentation. Here you’ll find everything you need to build powerful command-line interfaces in Zig.</p><h2>Core Concepts</h2><ul><li><strong><a href="/docs/commands/">Commands</a></strong> - How to structure and create commands</li><li><strong><a href="/docs/options/">Arguments & Options</a></strong> - Parsing positional arguments and flags</li><li><strong><a href="/docs/aliases/">Command Aliases</a></strong> - Alternative names for commands</li></ul><h2>Advanced Topics</h2><ul><li><strong><a href="/docs/plugins/">Plugin System</a></strong> - Extend zcli with plugins</li><li><strong><a href="/docs/build-system/">Build System</a></strong> - How build-time code generation works</li><li><strong><a href="/docs/shared-modules/">Shared Modules</a></strong> - Share code between commands</li><li><strong><a href="/docs/c-dependencies/">C/C++ Dependencies</a></strong> - Per-command native dependencies</li></ul><h2>Reference</h2><ul><li><strong><a href="/docs/error-handling/">Error Handling</a></strong> - Working with errors and diagnostics</li></ul><h2>How It Works</h2><p>zcli uses <strong>convention over configuration</strong>:</p><ol><li><strong>File structure = CLI structure</strong> - The directory layout in <code>src/commands/</code> directly maps to your CLI commands</li><li><strong>Types = validation</strong> - Your <code>Args</code> and <code>Options</code> structs define what inputs are valid</li><li><strong>Compile-time discovery</strong> - zcli scans your commands directory at build time and generates the routing code</li><li><strong>Zero runtime overhead</strong> - All command discovery and validation happens at compile time</li></ol><p>When you run <code>zig build</code>, zcli:</p><ol><li>Scans <code>src/commands/</code> for <code>.zig</code> files</li><li>Reads the <code>Args</code>, <code>Options</code>, and <code>meta</code> from each command</li><li>Generates a static registry that routes commands to the right <code>execute()</code> function</li><li>Generates type-safe parsing code for each command’s arguments and options</li></ol><p>There’s no runtime reflection, no dynamic dispatch—just static function calls.</p>
+            </div>
+        </article>
+    </div>
+</main>
+
+    <footer class="site-footer">
+        <p>Built with Zig. MIT License.</p>
+    </footer>
+</body>
+</html>

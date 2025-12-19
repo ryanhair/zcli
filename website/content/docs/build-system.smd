@@ -1,0 +1,146 @@
+---
+.title = "Build System",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+zcli achieves zero runtime overhead by discovering commands and plugins, then generating dispatch code at build time.
+
+## How It Works
+
+When you run `zig build`, zcli:
+
+1. **Command Discovery** - Scans `src/commands/` recursively
+2. **Plugin Integration** - Loads and validates plugins
+3. **Code Generation** - Generates type-safe routing code
+4. **Compilation** - Compiles everything into a single binary
+
+## Build Process Flow
+
+```
+1. Command Discovery
+   ├── Scan commands directory recursively
+   ├── Validate command names and structure
+   ├── Build command tree with metadata
+   └── Handle command groups and nesting
+
+2. Plugin Discovery & Integration
+   ├── Load external plugins from dependencies
+   ├── Register plugin lifecycle hooks
+   ├── Merge plugin commands with native commands
+   └── Validate plugin compatibility
+
+3. Registry Generation
+   ├── Generate execution wrapper functions
+   ├── Generate compile-time command registry
+   ├── Wire plugin lifecycle hooks
+   └── Output complete registry source code
+
+4. Compilation
+   ├── Compile generated registry as a module
+   ├── Link command modules with zcli
+   └── Produce final executable
+```
+
+## The generate() Function
+
+In your `build.zig`:
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const zcli_dep = b.dependency("zcli", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zcli_module = zcli_dep.module("zcli");
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    exe.root_module.addImport("zcli", zcli_module);
+
+    const zcli = @import("zcli");
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+        .commands_dir = "src/commands",
+        .plugins = &[_]zcli.PluginConfig{
+            .{ .name = "zcli-help", .path = "path/to/zcli-help" },
+            .{ .name = "zcli-not-found", .path = "path/to/zcli-not-found" },
+        },
+        .app_name = "myapp",
+        .app_version = "1.0.0",
+        .app_description = "My CLI application",
+    });
+
+    exe.root_module.addImport("command_registry", cmd_registry);
+    b.installArtifact(exe);
+}
+```
+
+## Configuration Options
+
+The `generate()` function accepts:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `commands_dir` | `[]const u8` | Path to commands directory |
+| `plugins` | `[]PluginConfig` | Plugin configurations |
+| `shared_modules` | `?[]SharedModule` | Modules available to all commands |
+| `command_configs` | `?[]CommandConfig` | Per-command configurations |
+| `app_name` | `[]const u8` | Application name |
+| `app_version` | `[]const u8` | Application version |
+| `app_description` | `[]const u8` | Application description |
+
+## Generated Code
+
+The build system generates a registry file (in `.zig-cache`) that contains:
+
+- Import statements for all discovered commands
+- Static dispatch tables for command routing
+- Wired plugin lifecycle hooks
+- Type-safe argument/option parsing
+
+To inspect the generated code for debugging:
+
+```bash
+ls .zig-cache/o/*/zcli_generated.zig
+```
+
+## Naming Conventions
+
+- **File names** map directly to command names
+- **Underscores** become hyphens (`user_list.zig` → `user-list`)
+- **index.zig** creates a command group
+- **Hidden directories** (starting with `.`) are skipped
+- **Maximum nesting**: 6 levels (configurable)
+
+## Troubleshooting
+
+### Command not showing up
+
+1. Check file is in `commands_dir`
+2. Ensure file has required exports (`Args`, `Options`, `execute`)
+3. Rebuild completely: `rm -rf .zig-cache zig-out && zig build`
+
+### Plugin command not working
+
+1. Plugin must export `pub const commands = struct { ... }`
+2. Each command must have an `execute()` function
+3. Check plugin path in `build.zig`
+
+### Compile errors in generated code
+
+1. Check `.zig-cache/o/*/zcli_generated.zig`
+2. Verify command module exports are correct
+3. Check for type mismatches in `Args`/`Options`

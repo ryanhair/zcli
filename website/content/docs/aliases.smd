@@ -1,0 +1,118 @@
+---
+.title = "Command Aliases",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+Commands can have alternative names (aliases) that invoke the same functionality. This is useful for providing shorthand names or matching familiar patterns from other tools.
+
+## Defining Aliases
+
+Add aliases to your command's `meta`:
+
+```zig
+// src/commands/container/ls.zig
+const std = @import("std");
+const zcli = @import("zcli");
+
+pub const meta = .{
+    .description = "List containers",
+    .aliases = &.{ "list", "ps" },  // Alternative names
+};
+
+pub const Args = zcli.NoArgs;
+pub const Options = struct {
+    all: bool = false,
+};
+
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+    // All three commands run this same code:
+    // - myapp container ls
+    // - myapp container list
+    // - myapp container ps
+    try context.stdout().print("Listing containers...\n", .{});
+}
+```
+
+## Usage
+
+All aliases invoke the same command:
+
+```bash
+# All of these are equivalent:
+$ myapp container ls
+$ myapp container list
+$ myapp container ps
+```
+
+## Help Display
+
+Aliases are shown in help output for discoverability:
+
+```bash
+$ myapp container --help
+COMMANDS:
+    ls                   List containers (aliases: list, ps)
+```
+
+## Key Points
+
+- **Scope**: Aliases are alternative names within the same parent command
+- **Conflicts**: Alias conflicts with existing commands produce compile-time errors
+- **Visibility**: Aliases appear in help text but don't create duplicate entries
+
+## Common Use Cases
+
+### Docker-style Shortcuts
+
+```zig
+// container/ls.zig
+pub const meta = .{
+    .description = "List containers",
+    .aliases = &.{ "list", "ps" },  // Match Docker conventions
+};
+```
+
+### Single-character Shortcuts
+
+```zig
+// status.zig
+pub const meta = .{
+    .description = "Show status",
+    .aliases = &.{ "s" },  // Quick access with 's'
+};
+```
+
+### Backwards Compatibility
+
+```zig
+// users/list.zig
+pub const meta = .{
+    .description = "List users",
+    .aliases = &.{ "ls", "show" },  // Support old command names
+};
+```
+
+## Compile-Time Safety
+
+Conflicting aliases are caught at compile time:
+
+```zig
+// src/commands/list.zig
+pub const meta = .{
+    .description = "List items",
+};
+
+// src/commands/ls.zig
+pub const meta = .{
+    .description = "List files",
+    .aliases = &.{ "list" },  // ERROR: conflicts with list.zig
+};
+```
+
+Results in:
+
+```
+error: Alias 'list' conflicts with existing command at path
+```

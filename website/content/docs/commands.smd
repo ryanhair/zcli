@@ -1,0 +1,159 @@
+---
+.title = "Commands",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+Commands are the building blocks of your CLI. Each command is a `.zig` file in your `src/commands/` directory.
+
+## Basic Command Structure
+
+Every command file exports these declarations:
+
+```zig
+const std = @import("std");
+const zcli = @import("zcli");
+
+pub const meta = .{
+    .description = "Command description",
+    .examples = &.{
+        "myapp command arg1",
+        "myapp command --flag value",
+    },
+};
+
+pub const Args = struct {
+    name: []const u8,
+};
+
+pub const Options = struct {
+    verbose: bool = false,
+};
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    try context.stdout().print("Hello {s}!\n", .{args.name});
+}
+```
+
+## File-based Routing
+
+Your file structure directly maps to CLI commands:
+
+```
+src/commands/
+├── hello.zig          # myapp hello <name>
+├── users/
+│   ├── list.zig       # myapp users list
+│   ├── create.zig     # myapp users create <email>
+│   └── delete.zig     # myapp users delete <id>
+└── config/
+    ├── get.zig        # myapp config get <key>
+    └── set.zig        # myapp config set <key> <value>
+```
+
+## Command Groups
+
+Organize related commands into groups using directories:
+
+### Pure Groups (No index.zig)
+
+Directories without `index.zig` are purely organizational:
+
+```
+src/commands/
+├── users/
+│   ├── list.zig    → "users list"
+│   └── create.zig  → "users create"
+```
+
+Running `myapp users` shows help listing `list` and `create` subcommands.
+
+### Metadata-Only Groups
+
+Add an `index.zig` with just `meta` for a description without executable behavior:
+
+```zig
+// src/commands/users/index.zig
+pub const meta = .{
+    .description = "Manage users in the system",
+};
+```
+
+Running `myapp users` shows help with the description.
+
+### Executable Groups
+
+Full command groups that can be executed directly:
+
+```zig
+// src/commands/users/index.zig
+pub const meta = .{
+    .description = "Manage users in the system",
+};
+
+pub const Args = struct {};
+pub const Options = struct { all: bool = false };
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    // Handles: myapp users
+}
+```
+
+## Rich Metadata
+
+Add descriptions, examples, and field-level documentation:
+
+```zig
+pub const meta = .{
+    .description = "Deploy your application",
+    .examples = &.{
+        "deploy production",
+        "deploy staging --rollback",
+        "deploy production --replicas 5",
+    },
+    .args = .{
+        .environment = "Target environment (production, staging, development)",
+    },
+    .options = .{
+        .replicas = .{ .description = "Number of instances to deploy" },
+        .rollback = .{ .description = "Rollback to previous version" },
+    },
+};
+```
+
+## Compile-Time Validation
+
+zcli validates all metadata fields at compile time:
+
+```bash
+error: Unknown meta field: 'desc'. Valid fields are: description, examples, args, options, hidden, aliases
+```
+
+This ensures your CLI's help text and documentation are always correct.
+
+## Working with Context
+
+The `context` parameter gives you access to I/O streams, environment, and more:
+
+```zig
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    // Memory allocation
+    const allocator = context.allocator;
+
+    // Output streams
+    try context.stdout().print("Success!\n", .{});
+    try context.stderr().print("Warning: ...\n", .{});
+
+    // Environment variables
+    const home = context.environment.get("HOME");
+
+    // App metadata
+    const app = context.app_name;
+    const version = context.app_version;
+
+    // Command path (for nested commands)
+    // For "myapp users create", command_path = ["users", "create"]
+    const path = context.command_path;
+}
+```

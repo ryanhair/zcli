@@ -1,0 +1,22 @@
+---
+.title = "zcli",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "home.shtml",
+---
+
+## Why zcli?
+
+zcli uses **convention over configuration**. Your file structure directly maps to your CLI commands:
+
+```
+src/commands/
+├── hello.zig        # → myapp hello <name>
+├── users/
+│   ├── list.zig     # → myapp users list
+│   └── create.zig   # → myapp users create <email>
+└── config/
+    └── set.zig      # → myapp config set <key> <value>
+```
+
+No routing code. No boilerplate. Just drop `.zig` files and build.

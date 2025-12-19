@@ -1,0 +1,189 @@
+---
+.title = "Shared Modules",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+Commands are compiled as isolated modules and can only import `std` and `zcli` by default. To share business logic, utilities, or data structures across commands, use **shared modules**.
+
+## Why Shared Modules?
+
+Without shared modules, each command is isolated. You can't import your own code:
+
+```zig
+// src/commands/users/create.zig
+const lib = @import("../../lib.zig");  // ERROR: Can't import outside module
+```
+
+Shared modules solve this by explicitly declaring what code commands can access.
+
+## Setup
+
+### Step 1: Create Your Shared Module
+
+```zig
+// src/lib.zig
+const std = @import("std");
+
+pub fn validateEmail(email: []const u8) bool {
+    return std.mem.indexOf(u8, email, "@") != null;
+}
+
+pub const UserRole = enum {
+    admin,
+    user,
+    guest,
+};
+```
+
+### Step 2: Configure in build.zig
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const zcli_dep = b.dependency("zcli", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zcli_module = zcli_dep.module("zcli");
+
+    // Create your shared module
+    const lib_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    exe.root_module.addImport("zcli", zcli_module);
+    exe.root_module.addImport("lib", lib_module);  // For main.zig
+
+    const zcli = @import("zcli");
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+        .commands_dir = "src/commands",
+        .plugins = &[_]zcli.PluginConfig{ /* ... */ },
+        .shared_modules = &[_]zcli.SharedModule{
+            .{ .name = "lib", .module = lib_module },
+        },
+        .app_name = "myapp",
+        .app_version = "1.0.0",
+        .app_description = "My application",
+    });
+
+    exe.root_module.addImport("command_registry", cmd_registry);
+    b.installArtifact(exe);
+}
+```
+
+### Step 3: Use in Commands
+
+```zig
+// src/commands/users/create.zig
+const std = @import("std");
+const zcli = @import("zcli");
+const lib = @import("lib");  // Your shared module!
+
+pub const meta = .{
+    .description = "Create a new user",
+};
+
+pub const Args = struct {
+    email: []const u8,
+};
+
+pub const Options = struct {
+    role: lib.UserRole = .user,
+};
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    if (!lib.validateEmail(args.email)) {
+        try context.stderr().print("Invalid email address\n", .{});
+        return error.InvalidEmail;
+    }
+
+    try context.stdout().print("Creating {s} user: {s}\n", .{
+        @tagName(options.role),
+        args.email,
+    });
+}
+```
+
+## Multiple Shared Modules
+
+You can define multiple shared modules:
+
+```zig
+.shared_modules = &[_]zcli.SharedModule{
+    .{ .name = "lib", .module = lib_module },
+    .{ .name = "db", .module = db_module },
+    .{ .name = "api", .module = api_module },
+},
+```
+
+Each becomes importable by name:
+
+```zig
+const lib = @import("lib");
+const db = @import("db");
+const api = @import("api");
+```
+
+## Module Dependencies
+
+Shared modules can have their own dependencies:
+
+```zig
+// Create a database module that depends on a connection module
+const conn_module = b.createModule(.{
+    .root_source_file = b.path("src/db/connection.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+
+const db_module = b.createModule(.{
+    .root_source_file = b.path("src/db/queries.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+db_module.addImport("connection", conn_module);
+
+// Commands only import "db", but get "connection" transitively
+.shared_modules = &[_]zcli.SharedModule{
+    .{ .name = "db", .module = db_module },
+},
+```
+
+## Project Structure Example
+
+```
+src/
+├── main.zig                 # Entry point
+├── lib.zig                  # Business logic (shared module)
+├── format.zig               # Formatters (shared module)
+├── cache.zig                # Caching layer (shared module)
+└── commands/
+    ├── summary.zig          # Imports lib, format
+    ├── details.zig          # Imports lib, format
+    └── clear.zig            # Imports cache
+```
+
+## Key Points
+
+- Shared modules must be created with `b.createModule()`
+- Add them to both `exe.root_module` (for main.zig) and `shared_modules` array (for commands)
+- Import by name: `@import("lib")`, not relative paths
+- All commands have access to all shared modules
+- Modules can have their own dependencies (transitive imports work)

@@ -1,0 +1,47 @@
+<extend template="base.shtml">
+
+<title id="title" :text="$site.title"></title>
+
+<main id="main">
+    <section class="hero">
+        <h1>Build beautiful CLIs in Zig</h1>
+        <p class="hero-subtitle">Zero boilerplate. Type-safe. Zero runtime overhead.</p>
+        <div class="hero-cta">
+            <a href="/quickstart/" class="btn btn-primary">Get Started</a>
+            <a href="/docs/" class="btn btn-secondary">Documentation</a>
+        </div>
+    </section>
+
+    <section class="features">
+        <div class="feature">
+            <h3>File-based Routing</h3>
+            <p>Your file structure IS your CLI structure. Drop .zig files in a directory and zcli generates the routing.</p>
+        </div>
+        <div class="feature">
+            <h3>Type-safe Parsing</h3>
+            <p>Arguments and options validated at compile time. Your Args and Options structs define what's valid.</p>
+        </div>
+        <div class="feature">
+            <h3>Zero Runtime Cost</h3>
+            <p>All command discovery and code generation happens at build time. No reflection, no dynamic dispatch.</p>
+        </div>
+        <div class="feature">
+            <h3>Plugin System</h3>
+            <p>Extensible architecture with lifecycle hooks, global options, and build-time configuration.</p>
+        </div>
+    </section>
+
+    <section class="install">
+        <h2>Quick Install</h2>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</code></pre>
+        <p>Then create your first CLI:</p>
+        <pre><code>zcli init myapp
+cd myapp
+zig build
+./zig-out/bin/myapp --help</code></pre>
+    </section>
+
+    <section class="content-section">
+        <ctx :html="$page.content()"></ctx>
+    </section>
+</main>

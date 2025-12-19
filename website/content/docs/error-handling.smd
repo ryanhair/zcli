@@ -1,0 +1,163 @@
+---
+.title = "Error Handling",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+zcli provides comprehensive error handling through structured error types and detailed diagnostic information.
+
+## Overview
+
+zcli uses **structured error types** where parsing functions return standard Zig error unions:
+
+- **Success**: The successfully parsed data
+- **Error**: A `ZcliError` with detailed diagnostic information
+
+## Core Error Types
+
+### ZcliError
+
+The main error union used throughout zcli:
+
+```zig
+pub const ZcliError = error{
+    // Argument parsing errors
+    ArgumentMissingRequired,
+    ArgumentInvalidValue,
+    ArgumentTooMany,
+
+    // Option parsing errors
+    OptionUnknown,
+    OptionMissingValue,
+    OptionInvalidValue,
+    OptionBooleanWithValue,
+    OptionDuplicate,
+
+    // System errors
+    OutOfMemory,
+
+    // Command routing errors
+    CommandNotFound,
+};
+```
+
+## Automatic Error Messages
+
+zcli generates helpful error messages automatically:
+
+```bash
+$ myapp deploy prod --replicas abc
+Error: Invalid value 'abc' for option '--replicas'
+Expected: unsigned integer
+
+$ myapp deploi production
+Error: Command 'deploi' not found
+
+Did you mean?
+    deploy
+
+$ myapp users create
+Error: Missing required argument 'email'
+Usage: myapp users create <email> [OPTIONS]
+```
+
+## Handling Errors in Commands
+
+Errors from your `execute()` function propagate to plugins' `onError` hooks:
+
+```zig
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    const file = std.fs.cwd().openFile(args.path, .{}) catch |err| {
+        try context.stderr().print("Failed to open {s}: {}\n", .{
+            args.path,
+            err,
+        });
+        return err;
+    };
+    defer file.close();
+
+    // Process file...
+}
+```
+
+## Plugin Error Handling
+
+Plugins can intercept and handle errors:
+
+```zig
+pub fn onError(context: *zcli.Context, err: anyerror) !bool {
+    if (err == error.FileNotFound) {
+        try context.stderr().print(
+            "File not found - did you mean to create it?\n",
+            .{},
+        );
+        return true;  // Error handled
+    }
+    return false;  // Let it propagate
+}
+```
+
+Return `true` to indicate the error was handled, `false` to let it propagate to other plugins or the default handler.
+
+## Diagnostic Information
+
+When errors occur, zcli provides detailed diagnostics:
+
+- **Field context**: Which argument or option caused the error
+- **Position information**: Where in the command line the error occurred
+- **Type expectations**: What was expected vs. what was provided
+- **Suggestions**: Smart suggestions for typos and similar names
+
+## Best Practices
+
+### 1. Use Descriptive Error Returns
+
+```zig
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    const config = loadConfig(args.config_path) catch |err| {
+        try context.stderr().print(
+            "Failed to load config from '{s}': {}\n",
+            .{ args.config_path, err },
+        );
+        return err;
+    };
+}
+```
+
+### 2. Provide Context in Error Messages
+
+```zig
+if (value > MAX_VALUE) {
+    try context.stderr().print(
+        "Value {d} exceeds maximum of {d}\n",
+        .{ value, MAX_VALUE },
+    );
+    return error.ValueTooLarge;
+}
+```
+
+### 3. Use the Allocator for Dynamic Messages
+
+```zig
+const msg = try std.fmt.allocPrint(
+    context.allocator,
+    "Could not find user '{s}' in database",
+    .{args.username},
+);
+defer context.allocator.free(msg);
+try context.stderr().print("{s}\n", .{msg});
+```
+
+## Exit Codes
+
+zcli uses standard exit codes:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Command not found |
+| 64 | Usage error (invalid arguments) |
+
+Commands can return custom errors that map to exit code 1 by default.

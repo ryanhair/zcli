@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="title">Command Aliases</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav-container">
+            <a href="/" class="logo">zcli</a>
+            <div class="nav-links">
+                <a href="/quickstart/">Quickstart</a>
+                <a href="/docs/">Documentation</a>
+                <a href="https://github.com/ryanhair/zcli">GitHub</a>
+            </div>
+        </nav>
+    </header>
+
+    <main id="main">
+    <div class="docs-container">
+        <aside class="docs-sidebar">
+            <nav class="docs-nav">
+                <div class="nav-section">
+                    <h4>Getting Started</h4>
+                    <ul>
+                        <li><a href="/quickstart/">Quickstart</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Core Concepts</h4>
+                    <ul>
+                        <li><a href="/docs/commands/">Commands</a></li>
+                        <li><a href="/docs/options/">Arguments &amp; Options</a></li>
+                        <li><a href="/docs/aliases/">Command Aliases</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Advanced</h4>
+                    <ul>
+                        <li><a href="/docs/plugins/">Plugin System</a></li>
+                        <li><a href="/docs/build-system/">Build System</a></li>
+                        <li><a href="/docs/shared-modules/">Shared Modules</a></li>
+                        <li><a href="/docs/c-dependencies/">C/C++ Dependencies</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Reference</h4>
+                    <ul>
+                        <li><a href="/docs/error-handling/">Error Handling</a></li>
+                    </ul>
+                </div>
+            </nav>
+        </aside>
+
+        <article class="docs-content">
+            <header class="docs-header">
+                <h1>Command Aliases</h1>
+            </header>
+            <div class="docs-body">
+                <p>Commands can have alternative names (aliases) that invoke the same functionality. This is useful for providing shorthand names or matching familiar patterns from other tools.</p><h2>Defining Aliases</h2><p>Add aliases to your command’s <code>meta</code>:</p><pre><code class="zig"><span class="comment_documentation comment spell">// src/commands/container/ls.zig</span>
+<span class="keyword">const</span> <span class="module constant variable_builtin type variable">std</span> <span class="operator">=</span> <span class="function_builtin keyword_import">@import</span><span class="punctuation_bracket">(</span><span class="string">&quot;std&quot;</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">;</span>
+<span class="keyword">const</span> <span class="module constant variable_builtin type variable">zcli</span> <span class="operator">=</span> <span class="function_builtin keyword_import">@import</span><span class="punctuation_bracket">(</span><span class="string">&quot;zcli&quot;</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">;</span>
+
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">meta</span> <span class="operator">=</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">description</span> <span class="operator">=</span> <span class="string">&quot;List containers&quot;</span><span class="punctuation_delimiter">,</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">aliases</span> <span class="operator">=</span> <span class="operator">&amp;</span><span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span> <span class="string">&quot;list&quot;</span><span class="punctuation_delimiter">,</span> <span class="string">&quot;ps&quot;</span> <span class="punctuation_bracket">}</span><span class="punctuation_delimiter">,</span>  <span class="comment_documentation comment spell">// Alternative names</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">Args</span> <span class="operator">=</span> <span class="constant variable_builtin type variable">zcli</span><span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">NoArgs</span><span class="punctuation_delimiter">;</span>
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">Options</span> <span class="operator">=</span> <span class="keyword_type">struct</span> <span class="punctuation_bracket">{</span>
+    <span class="constant variable_builtin type variable_member variable">all</span><span class="punctuation_delimiter">:</span> <span class="type_builtin">bool</span> <span class="operator">=</span> <span class="constant variable_builtin type variable">false</span><span class="punctuation_delimiter">,</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+
+<span class="keyword_modifier">pub</span> <span class="keyword_function">fn</span> <span class="constant variable_builtin type variable function">execute</span><span class="punctuation_bracket">(</span><span class="constant variable_builtin variable_parameter variable type">_</span><span class="punctuation_delimiter">:</span> <span class="constant variable_builtin type variable">Args</span><span class="punctuation_delimiter">,</span> <span class="constant variable_builtin variable_parameter variable type">options</span><span class="punctuation_delimiter">:</span> <span class="constant variable_builtin type variable">Options</span><span class="punctuation_delimiter">,</span> <span class="constant variable_builtin variable_parameter variable type">context</span><span class="punctuation_delimiter">:</span> <span class="operator">*</span><span class="constant variable_builtin type variable">zcli</span><span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">Context</span><span class="punctuation_bracket">)</span> <span class="operator">!</span><span class="type_builtin">void</span> <span class="punctuation_bracket">{</span>
+    <span class="comment_documentation comment spell">// All three commands run this same code:</span>
+    <span class="comment_documentation comment spell">// - myapp container ls</span>
+    <span class="comment_documentation comment spell">// - myapp container list</span>
+    <span class="comment_documentation comment spell">// - myapp container ps</span>
+    <span class="keyword_exception">try</span> <span class="constant variable_builtin type variable">context</span><span class="punctuation_delimiter">.</span><span class="type constant variable_builtin function_call variable_member variable">stdout</span><span class="punctuation_bracket">(</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">.</span><span class="type constant variable_builtin function_call variable_member variable">print</span><span class="punctuation_bracket">(</span><span class="string">&quot;Listing containers...</span><span class="string string_escape">\n</span><span class="string">&quot;</span><span class="punctuation_delimiter">,</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span><span class="punctuation_bracket">}</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">;</span>
+<span class="punctuation_bracket">}</span>
+</code></pre>
+<h2>Usage</h2><p>All aliases invoke the same command:</p><pre><code class="bash"><span class="comment"># All of these are equivalent:</span>
+<span class="constant operator function">$</span><span class="constant function"> </span><span class="constant property function">myapp</span> <span class="constant">container</span> <span class="constant">ls</span>
+<span class="constant operator function">$</span><span class="constant function"> </span><span class="constant property function">myapp</span> <span class="constant">container</span> <span class="constant">list</span>
+<span class="constant operator function">$</span><span class="constant function"> </span><span class="constant property function">myapp</span> <span class="constant">container</span> <span class="constant">ps</span>
+</code></pre>
+<h2>Help Display</h2><p>Aliases are shown in help output for discoverability:</p><pre><code class="bash"><span class="constant operator function">$</span><span class="constant function"> </span><span class="constant property function">myapp</span> <span class="constant">container</span> <span class="constant">--help</span>
+<span class="constant function">COMMANDS:</span>
+    <span class="constant function">ls</span>                   <span class="constant">List</span> <span class="constant">containers</span> (<span class="constant function">aliases:</span> <span class="constant">list,</span> <span class="constant">ps</span>)
+</code></pre>
+<h2>Key Points</h2><ul><li><strong>Scope</strong>: Aliases are alternative names within the same parent command</li><li><strong>Conflicts</strong>: Alias conflicts with existing commands produce compile-time errors</li><li><strong>Visibility</strong>: Aliases appear in help text but don’t create duplicate entries</li></ul><h2>Common Use Cases</h2><h3>Docker-style Shortcuts</h3><pre><code class="zig"><span class="comment_documentation comment spell">// container/ls.zig</span>
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">meta</span> <span class="operator">=</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">description</span> <span class="operator">=</span> <span class="string">&quot;List containers&quot;</span><span class="punctuation_delimiter">,</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">aliases</span> <span class="operator">=</span> <span class="operator">&amp;</span><span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span> <span class="string">&quot;list&quot;</span><span class="punctuation_delimiter">,</span> <span class="string">&quot;ps&quot;</span> <span class="punctuation_bracket">}</span><span class="punctuation_delimiter">,</span>  <span class="comment_documentation comment spell">// Match Docker conventions</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+</code></pre>
+<h3>Single-character Shortcuts</h3><pre><code class="zig"><span class="comment_documentation comment spell">// status.zig</span>
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">meta</span> <span class="operator">=</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">description</span> <span class="operator">=</span> <span class="string">&quot;Show status&quot;</span><span class="punctuation_delimiter">,</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">aliases</span> <span class="operator">=</span> <span class="operator">&amp;</span><span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span> <span class="string">&quot;s&quot;</span> <span class="punctuation_bracket">}</span><span class="punctuation_delimiter">,</span>  <span class="comment_documentation comment spell">// Quick access with &apos;s&apos;</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+</code></pre>
+<h3>Backwards Compatibility</h3><pre><code class="zig"><span class="comment_documentation comment spell">// users/list.zig</span>
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">meta</span> <span class="operator">=</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">description</span> <span class="operator">=</span> <span class="string">&quot;List users&quot;</span><span class="punctuation_delimiter">,</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">aliases</span> <span class="operator">=</span> <span class="operator">&amp;</span><span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span> <span class="string">&quot;ls&quot;</span><span class="punctuation_delimiter">,</span> <span class="string">&quot;show&quot;</span> <span class="punctuation_bracket">}</span><span class="punctuation_delimiter">,</span>  <span class="comment_documentation comment spell">// Support old command names</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+</code></pre>
+<h2>Compile-Time Safety</h2><p>Conflicting aliases are caught at compile time:</p><pre><code class="zig"><span class="comment_documentation comment spell">// src/commands/list.zig</span>
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">meta</span> <span class="operator">=</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">description</span> <span class="operator">=</span> <span class="string">&quot;List items&quot;</span><span class="punctuation_delimiter">,</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+
+<span class="comment_documentation comment spell">// src/commands/ls.zig</span>
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">meta</span> <span class="operator">=</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">description</span> <span class="operator">=</span> <span class="string">&quot;List files&quot;</span><span class="punctuation_delimiter">,</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">aliases</span> <span class="operator">=</span> <span class="operator">&amp;</span><span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span> <span class="string">&quot;list&quot;</span> <span class="punctuation_bracket">}</span><span class="punctuation_delimiter">,</span>  <span class="comment_documentation comment spell">// ERROR: conflicts with list.zig</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+</code></pre>
+<p>Results in:</p><pre><code>error: Alias &apos;list&apos; conflicts with existing command at path
+</code></pre>
+            </div>
+        </article>
+    </div>
+</main>
+
+    <footer class="site-footer">
+        <p>Built with Zig. MIT License.</p>
+    </footer>
+</body>
+</html>

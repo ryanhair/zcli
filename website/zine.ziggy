@@ -1,0 +1,7 @@
+Site {
+    .title = "zcli - Build beautiful CLIs in Zig",
+    .host_url = "https://zcli.dev",
+    .content_dir_path = "content",
+    .layouts_dir_path = "layouts",
+    .assets_dir_path = "assets",
+}

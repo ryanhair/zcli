@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="title">Quickstart</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav-container">
+            <a href="/" class="logo">zcli</a>
+            <div class="nav-links">
+                <a href="/quickstart/">Quickstart</a>
+                <a href="/docs/">Documentation</a>
+                <a href="https://github.com/ryanhair/zcli">GitHub</a>
+            </div>
+        </nav>
+    </header>
+
+    <main id="main">
+    <div class="docs-container">
+        <aside class="docs-sidebar">
+            <nav class="docs-nav">
+                <div class="nav-section">
+                    <h4>Getting Started</h4>
+                    <ul>
+                        <li><a href="/quickstart/">Quickstart</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Core Concepts</h4>
+                    <ul>
+                        <li><a href="/docs/commands/">Commands</a></li>
+                        <li><a href="/docs/options/">Arguments &amp; Options</a></li>
+                        <li><a href="/docs/aliases/">Command Aliases</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Advanced</h4>
+                    <ul>
+                        <li><a href="/docs/plugins/">Plugin System</a></li>
+                        <li><a href="/docs/build-system/">Build System</a></li>
+                        <li><a href="/docs/shared-modules/">Shared Modules</a></li>
+                        <li><a href="/docs/c-dependencies/">C/C++ Dependencies</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Reference</h4>
+                    <ul>
+                        <li><a href="/docs/error-handling/">Error Handling</a></li>
+                    </ul>
+                </div>
+            </nav>
+        </aside>
+
+        <article class="docs-content">
+            <header class="docs-header">
+                <h1>Quickstart</h1>
+            </header>
+            <div class="docs-body">
+                <p>Build a complete CLI in 30 seconds.</p><h2>Installation</h2><h3>Quick Install (Recommended)</h3><pre><code class="bash"><span class="constant function">curl</span> <span class="constant">-fsSL</span> <span class="constant">https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh</span> <span class="operator">|</span> <span class="constant function">sh</span>
+</code></pre>
+<p>This will download the appropriate binary for your platform and install it to <code>~/.local/bin</code>.</p><h3>Manual Download</h3><p>Download pre-built binaries from the <a href="https://github.com/ryanhair/zcli/releases" target="_blank">releases page</a>:</p><ol><li>Download the binary for your platform</li><li>Rename it to <code>zcli</code> and make it executable:<pre><code class="bash"><span class="constant function">chmod</span> <span class="constant">+x</span> <span class="constant">zcli</span>
+<span class="constant function">mv</span> <span class="constant">zcli</span> <span class="constant">~/.local/bin/zcli</span>
+</code></pre>
+</li><li>Ensure <code>~/.local/bin</code> is in your PATH</li></ol><h3>Build from Source</h3><pre><code class="bash"><span class="constant function">git</span> <span class="constant">clone</span> <span class="constant">https://github.com/ryanhair/zcli.git</span>
+<span class="constant function">cd</span> <span class="constant">zcli/projects/zcli</span>
+<span class="constant function">zig</span> <span class="constant">build</span> <span class="constant">-Doptimize=ReleaseFast</span>
+<span class="constant function">cp</span> <span class="constant">zig-out/bin/zcli</span> <span class="constant">~/.local/bin/</span>
+</code></pre>
+<p>Requires Zig 0.15.1 or later.</p><h2>Create Your First CLI</h2><h3>1. Initialize a new project</h3><pre><code class="bash"><span class="constant function">zcli</span> <span class="constant">init</span> <span class="constant">myapp</span>
+<span class="constant function">cd</span> <span class="constant">myapp</span>
+</code></pre>
+<p>This scaffolds a complete project with:</p><ul><li><code>build.zig</code> configured with zcli</li><li><code>src/main.zig</code> with the app entry point</li><li><code>src/commands/hello.zig</code> as an example command</li><li>Help and error handling plugins pre-configured</li></ul><h3>2. Build and run</h3><pre><code class="bash"><span class="constant operator function">$</span><span class="constant function"> </span><span class="constant property function">zig</span> <span class="constant">build</span>
+<span class="operator">$</span> <span class="constant function">./zig-out/bin/myapp</span> <span class="constant">hello</span> <span class="constant">World</span>
+<span class="constant function">Hello,</span> <span class="constant">World!</span>
+
+<span class="operator">$</span> <span class="constant function">./zig-out/bin/myapp</span> <span class="constant">hello</span> <span class="constant">Alice</span> <span class="constant">--loud</span>
+<span class="constant function">HELLO,</span> <span class="constant">Alice!</span>
+
+<span class="operator">$</span> <span class="constant function">./zig-out/bin/myapp</span> <span class="constant">--help</span>
+<span class="constant function">myapp</span> <span class="constant">v0.1.0</span>
+<span class="constant function">A</span> <span class="constant">CLI</span> <span class="constant">application</span> <span class="constant">built</span> <span class="constant">with</span> <span class="constant">zcli</span>
+
+<span class="constant function">USAGE:</span>
+    <span class="constant function">myapp</span> <span class="constant">[GLOBAL</span> <span class="constant">OPTIONS]</span> <span class="operator">&lt;</span>COMMAND<span class="operator">&gt;</span> [ARGS]
+
+<span class="constant function">COMMANDS:</span>
+    <span class="constant function">hello</span>            <span class="constant">Say</span> <span class="constant">hello</span> <span class="constant">to</span> <span class="constant">someone</span>
+
+<span class="constant function">GLOBAL</span> <span class="constant">OPTIONS:</span>
+    <span class="constant function">-h,</span> <span class="constant">--help</span>       <span class="constant">Show</span> <span class="constant">help</span> <span class="constant">information</span>
+    <span class="constant function">-V,</span> <span class="constant">--version</span>    <span class="constant">Show</span> <span class="constant">version</span> <span class="constant">information</span>
+</code></pre>
+<p><strong>That’s it!</strong> You have a working CLI with colored output, help text, and error handling.</p><h3>3. Add more commands</h3><pre><code class="bash"><span class="constant operator function">$</span><span class="constant function"> </span><span class="constant property function">zcli</span> <span class="constant">add</span> <span class="constant">command</span> <span class="constant">deploy</span> <span class="constant">--description</span> <span class="string constant">&quot;Deploy your app&quot;</span>
+<span class="constant function">Creating</span> <span class="constant">command:</span> <span class="constant">deploy</span>
+<span class="constant function">✓</span> <span class="constant">Created</span> <span class="constant">src/commands/deploy.zig</span>
+
+<span class="constant operator function">$</span><span class="constant function"> </span><span class="constant property function">zcli</span> <span class="constant">add</span> <span class="constant">command</span> <span class="constant">users/create</span> <span class="constant">--description</span> <span class="string constant">&quot;Create a new user&quot;</span>
+<span class="constant function">Creating</span> <span class="constant">command:</span> <span class="constant">users/create</span>
+<span class="constant function">✓</span> <span class="constant">Created</span> <span class="constant">src/commands/users/create.zig</span>
+</code></pre>
+<h3>4. Customize your commands</h3><p>Edit the generated command files to add your logic. Here’s what the example <code>hello.zig</code> looks like:</p><pre><code class="zig"><span class="keyword">const</span> <span class="module constant variable_builtin type variable">std</span> <span class="operator">=</span> <span class="function_builtin keyword_import">@import</span><span class="punctuation_bracket">(</span><span class="string">&quot;std&quot;</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">;</span>
+<span class="keyword">const</span> <span class="module constant variable_builtin type variable">zcli</span> <span class="operator">=</span> <span class="function_builtin keyword_import">@import</span><span class="punctuation_bracket">(</span><span class="string">&quot;zcli&quot;</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">;</span>
+
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">meta</span> <span class="operator">=</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">description</span> <span class="operator">=</span> <span class="string">&quot;Say hello to someone&quot;</span><span class="punctuation_delimiter">,</span>
+    <span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">examples</span> <span class="operator">=</span> <span class="operator">&amp;</span><span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span>
+        <span class="string">&quot;hello World&quot;</span><span class="punctuation_delimiter">,</span>
+        <span class="string">&quot;hello Alice --loud&quot;</span><span class="punctuation_delimiter">,</span>
+    <span class="punctuation_bracket">}</span><span class="punctuation_delimiter">,</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">Args</span> <span class="operator">=</span> <span class="keyword_type">struct</span> <span class="punctuation_bracket">{</span>
+    <span class="constant variable_builtin type variable_member variable">name</span><span class="punctuation_delimiter">:</span> <span class="punctuation_bracket">[</span><span class="punctuation_bracket">]</span><span class="keyword">const</span> <span class="type_builtin">u8</span><span class="punctuation_delimiter">,</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+
+<span class="keyword_modifier">pub</span> <span class="keyword">const</span> <span class="constant variable_builtin type variable">Options</span> <span class="operator">=</span> <span class="keyword_type">struct</span> <span class="punctuation_bracket">{</span>
+    <span class="constant variable_builtin type variable_member variable">loud</span><span class="punctuation_delimiter">:</span> <span class="type_builtin">bool</span> <span class="operator">=</span> <span class="constant variable_builtin type variable">false</span><span class="punctuation_delimiter">,</span>
+<span class="punctuation_bracket">}</span><span class="punctuation_delimiter">;</span>
+
+<span class="keyword_modifier">pub</span> <span class="keyword_function">fn</span> <span class="constant variable_builtin type variable function">execute</span><span class="punctuation_bracket">(</span><span class="constant variable_builtin variable_parameter variable type">args</span><span class="punctuation_delimiter">:</span> <span class="constant variable_builtin type variable">Args</span><span class="punctuation_delimiter">,</span> <span class="constant variable_builtin variable_parameter variable type">options</span><span class="punctuation_delimiter">:</span> <span class="constant variable_builtin type variable">Options</span><span class="punctuation_delimiter">,</span> <span class="constant variable_builtin variable_parameter variable type">context</span><span class="punctuation_delimiter">:</span> <span class="operator">*</span><span class="constant variable_builtin type variable">zcli</span><span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">Context</span><span class="punctuation_bracket">)</span> <span class="operator">!</span><span class="type_builtin">void</span> <span class="punctuation_bracket">{</span>
+    <span class="keyword">const</span> <span class="constant variable_builtin type variable">greeting</span> <span class="operator">=</span> <span class="keyword_conditional">if</span> <span class="punctuation_bracket">(</span><span class="constant variable_builtin type variable">options</span><span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">loud</span><span class="punctuation_bracket">)</span> <span class="string">&quot;HELLO&quot;</span> <span class="keyword_conditional">else</span> <span class="string">&quot;Hello&quot;</span><span class="punctuation_delimiter">;</span>
+    <span class="keyword_exception">try</span> <span class="constant variable_builtin type variable">context</span><span class="punctuation_delimiter">.</span><span class="type constant variable_builtin function_call variable_member variable">stdout</span><span class="punctuation_bracket">(</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">.</span><span class="type constant variable_builtin function_call variable_member variable">print</span><span class="punctuation_bracket">(</span><span class="string">&quot;{s}, {s}!</span><span class="string string_escape">\n</span><span class="string">&quot;</span><span class="punctuation_delimiter">,</span> <span class="punctuation_delimiter">.</span><span class="punctuation_bracket">{</span> <span class="constant variable_builtin type variable">greeting</span><span class="punctuation_delimiter">,</span> <span class="constant variable_builtin type variable">args</span><span class="punctuation_delimiter">.</span><span class="constant variable_builtin type variable_member variable">name</span> <span class="punctuation_bracket">}</span><span class="punctuation_bracket">)</span><span class="punctuation_delimiter">;</span>
+<span class="punctuation_bracket">}</span>
+</code></pre>
+<p>That’s all you need! zcli handles parsing, validation, and help text generation automatically.</p><h2>Next Steps</h2><ul><li>Learn about <a href="/docs/commands/">Commands</a> structure</li><li>Explore <a href="/docs/options/">Arguments & Options</a></li><li>Check out the <a href="/docs/plugins/">Plugin System</a></li></ul>
+            </div>
+        </article>
+    </div>
+</main>
+
+    <footer class="site-footer">
+        <p>Built with Zig. MIT License.</p>
+    </footer>
+</body>
+</html>

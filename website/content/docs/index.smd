@@ -1,0 +1,43 @@
+---
+.title = "Documentation",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+Welcome to the zcli documentation. Here you'll find everything you need to build powerful command-line interfaces in Zig.
+
+## Core Concepts
+
+- **[Commands](/docs/commands/)** - How to structure and create commands
+- **[Arguments & Options](/docs/options/)** - Parsing positional arguments and flags
+- **[Command Aliases](/docs/aliases/)** - Alternative names for commands
+
+## Advanced Topics
+
+- **[Plugin System](/docs/plugins/)** - Extend zcli with plugins
+- **[Build System](/docs/build-system/)** - How build-time code generation works
+- **[Shared Modules](/docs/shared-modules/)** - Share code between commands
+- **[C/C++ Dependencies](/docs/c-dependencies/)** - Per-command native dependencies
+
+## Reference
+
+- **[Error Handling](/docs/error-handling/)** - Working with errors and diagnostics
+
+## How It Works
+
+zcli uses **convention over configuration**:
+
+1. **File structure = CLI structure** - The directory layout in `src/commands/` directly maps to your CLI commands
+2. **Types = validation** - Your `Args` and `Options` structs define what inputs are valid
+3. **Compile-time discovery** - zcli scans your commands directory at build time and generates the routing code
+4. **Zero runtime overhead** - All command discovery and validation happens at compile time
+
+When you run `zig build`, zcli:
+
+1. Scans `src/commands/` for `.zig` files
+2. Reads the `Args`, `Options`, and `meta` from each command
+3. Generates a static registry that routes commands to the right `execute()` function
+4. Generates type-safe parsing code for each command's arguments and options
+
+There's no runtime reflection, no dynamic dispatch—just static function calls.

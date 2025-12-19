@@ -1,0 +1,152 @@
+---
+.title = "Arguments & Options",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+zcli provides type-safe argument and option parsing through your `Args` and `Options` structs.
+
+## Positional Arguments
+
+Define positional arguments with an `Args` struct:
+
+```zig
+pub const Args = struct {
+    source: []const u8,              // Required
+    destination: ?[]const u8,        // Optional
+    files: [][]const u8,             // Remaining args as array
+};
+
+// Usage: myapp copy source.txt dest.txt file1.txt file2.txt
+```
+
+### Argument Types
+
+- **Required**: Regular field type (`[]const u8`, `u32`, etc.)
+- **Optional**: Wrap with `?` (`?[]const u8`)
+- **Variadic**: Use slice type (`[][]const u8`) - must be last
+
+### Supported Types
+
+- Strings: `[]const u8`
+- Integers: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`
+- Floats: `f32`, `f64`
+- Booleans: `bool`
+
+## Options (Flags)
+
+Define options with an `Options` struct:
+
+```zig
+pub const Options = struct {
+    verbose: bool = false,
+    count: u32 = 1,
+    output: ?[]const u8 = null,
+};
+
+// Usage: myapp command --verbose --count 5 --output file.txt
+```
+
+All options must have default values.
+
+## Short Flags
+
+Add single-character shortcuts for options:
+
+```zig
+pub const Options = struct {
+    verbose: bool = false,
+    output: ?[]const u8 = null,
+};
+
+pub const meta = .{
+    .options = .{
+        .verbose = .{ .short = 'v' },
+        .output = .{ .short = 'o' },
+    },
+};
+
+// Usage: myapp process -v -o output.txt
+// Usage: myapp process -vo output.txt    (combined)
+```
+
+## Custom Option Names
+
+Override the automatic kebab-case naming:
+
+```zig
+pub const Options = struct {
+    output_file: []const u8,
+    max_connections: u32 = 10,
+};
+
+pub const meta = .{
+    .options = .{
+        .output_file = .{ .name = "output" },       // --output instead of --output-file
+        .max_connections = .{ .name = "max-conn" }, // --max-conn instead of --max-connections
+    },
+};
+```
+
+## Array Options
+
+Accumulate multiple values for an option:
+
+```zig
+pub const Options = struct {
+    include: [][]const u8 = &.{},    // Can specify --include multiple times
+    exclude: [][]const u8 = &.{},
+    verbose: bool = false,
+};
+
+// Usage: myapp process --include *.zig --include *.md --exclude test.zig
+```
+
+## Option Descriptions
+
+Document options with the metadata:
+
+```zig
+pub const meta = .{
+    .description = "Process files",
+    .options = .{
+        .verbose = .{
+            .short = 'v',
+            .description = "Enable verbose output"
+        },
+        .output = .{
+            .short = 'o',
+            .description = "Output file path"
+        },
+    },
+};
+```
+
+## Error Handling
+
+zcli provides rich, contextual error messages automatically:
+
+```bash
+$ myapp deploy prod --replicas abc
+Error: Invalid value 'abc' for option '--replicas'
+Expected: unsigned integer
+
+$ myapp deploi production
+Error: Command 'deploi' not found
+
+Did you mean?
+    deploy
+```
+
+## No Arguments
+
+Use `zcli.NoArgs` when a command takes no positional arguments:
+
+```zig
+pub const Args = zcli.NoArgs;
+
+pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+    // ...
+}
+```

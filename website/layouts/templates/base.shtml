@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="title"><super></title>
+    <link rel="stylesheet" href="$site.asset('styles.css').link()">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav-container">
+            <a href="/" class="logo">zcli</a>
+            <div class="nav-links">
+                <a href="/quickstart/">Quickstart</a>
+                <a href="/docs/">Documentation</a>
+                <a href="https://github.com/ryanhair/zcli">GitHub</a>
+            </div>
+        </nav>
+    </header>
+
+    <main id="main"><super></main>
+
+    <footer class="site-footer">
+        <p>Built with Zig. MIT License.</p>
+    </footer>
+</body>
+</html>

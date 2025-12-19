@@ -1,0 +1,199 @@
+---
+.title = "Plugin System",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+zcli has an extensible plugin system that allows you to add global options, lifecycle hooks, and commands to any CLI.
+
+## Built-in Plugins
+
+zcli includes two essential plugins by default:
+
+- **zcli-help** - Automatic help generation with colored output (`--help`, `-h`)
+- **zcli-not-found** - "Did you mean?" suggestions for typos
+
+## Plugin Capabilities
+
+Plugins can provide:
+
+1. **Lifecycle hooks** - Run code before/after commands or on errors
+2. **Global options** - Options available to all commands
+3. **Commands** - Add new commands to the CLI
+4. **Context extensions** - Add custom data to the context
+
+## Lifecycle Hooks
+
+### preExecute
+
+Called before every command execution:
+
+```zig
+pub fn preExecute(context: *zcli.Context, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+    // Return null to stop execution
+    // Return args to continue
+    if (someCondition) {
+        return null;  // Abort command
+    }
+    return args;
+}
+```
+
+### onError
+
+Called when an error occurs:
+
+```zig
+pub fn onError(context: *zcli.Context, err: anyerror) !bool {
+    // Return true if error was handled
+    // Return false to let it propagate
+    if (err == error.FileNotFound) {
+        try context.stderr().print("File not found\n", .{});
+        return true;  // Handled
+    }
+    return false;  // Not handled, propagate
+}
+```
+
+### onStartup
+
+Called once at startup:
+
+```zig
+pub fn onStartup(context: *zcli.Context) !void {
+    // Initialize plugin state
+}
+```
+
+## Global Options
+
+Plugins can add options available to all commands:
+
+```zig
+pub const global_options = [_]zcli.GlobalOption{
+    zcli.option("verbose", bool, .{ .short = 'v', .default = false }),
+};
+
+pub fn handleGlobalOption(
+    context: *zcli.Context,
+    option_name: []const u8,
+    value: anytype
+) !void {
+    if (std.mem.eql(u8, option_name, "verbose")) {
+        try context.setGlobalData("verbose", if (value) "true" else "false");
+    }
+}
+```
+
+## Plugin Commands
+
+Plugins export commands via a `commands` struct:
+
+```zig
+pub const commands = struct {
+    pub const upgrade = struct {
+        pub const meta = .{
+            .description = "Upgrade to the latest version",
+        };
+
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+            try context.stdout().print("Upgrading...\n", .{});
+        }
+    };
+};
+```
+
+## Build-time Configuration
+
+Plugins can accept configuration at build time:
+
+### In build.zig
+
+```zig
+const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    .commands_dir = "src/commands",
+    .plugins = &.{
+        .{
+            .name = "zcli-help",
+            .path = "path/to/zcli-help",
+        },
+        .{
+            .name = "zcli-github-upgrade",
+            .path = "path/to/zcli-github-upgrade",
+            .config = .{
+                .repo = "username/repo",
+                .command_name = "upgrade",
+            },
+        },
+    },
+    .app_name = "myapp",
+    .app_version = "1.0.0",
+    .app_description = "My CLI app",
+});
+```
+
+### In plugin code
+
+```zig
+pub fn init(config: Config) type {
+    return struct {
+        pub const commands = struct {
+            pub const upgrade = struct {
+                pub const meta = .{
+                    .description = "Upgrade to latest version",
+                };
+
+                pub fn execute(_: Args, _: Options, ctx: *zcli.Context) !void {
+                    // Use config.repo here
+                }
+            };
+        };
+    };
+}
+```
+
+## Creating a Plugin
+
+### Plugin Structure
+
+```
+my-plugin/
+├── build.zig
+├── build.zig.zon
+└── src/
+    └── plugin.zig
+```
+
+### plugin.zig
+
+```zig
+const std = @import("std");
+const zcli = @import("zcli");
+
+// Optional: Global options
+pub const global_options = [_]zcli.GlobalOption{
+    // ...
+};
+
+// Optional: Lifecycle hooks
+pub fn preExecute(context: *zcli.Context, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+    return args;
+}
+
+pub fn onError(context: *zcli.Context, err: anyerror) !bool {
+    return false;
+}
+
+pub fn onStartup(context: *zcli.Context) !void {
+    // ...
+}
+
+// Optional: Commands
+pub const commands = struct {
+    // ...
+};
+```

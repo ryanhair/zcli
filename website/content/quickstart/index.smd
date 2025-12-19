@@ -1,0 +1,133 @@
+---
+.title = "Quickstart",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+Build a complete CLI in 30 seconds.
+
+## Installation
+
+### Quick Install (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh
+```
+
+This will download the appropriate binary for your platform and install it to `~/.local/bin`.
+
+### Manual Download
+
+Download pre-built binaries from the [releases page](https://github.com/ryanhair/zcli/releases):
+
+1. Download the binary for your platform
+2. Rename it to `zcli` and make it executable:
+   ```bash
+   chmod +x zcli
+   mv zcli ~/.local/bin/zcli
+   ```
+3. Ensure `~/.local/bin` is in your PATH
+
+### Build from Source
+
+```bash
+git clone https://github.com/ryanhair/zcli.git
+cd zcli/projects/zcli
+zig build -Doptimize=ReleaseFast
+cp zig-out/bin/zcli ~/.local/bin/
+```
+
+Requires Zig 0.15.1 or later.
+
+## Create Your First CLI
+
+### 1. Initialize a new project
+
+```bash
+zcli init myapp
+cd myapp
+```
+
+This scaffolds a complete project with:
+- `build.zig` configured with zcli
+- `src/main.zig` with the app entry point
+- `src/commands/hello.zig` as an example command
+- Help and error handling plugins pre-configured
+
+### 2. Build and run
+
+```bash
+$ zig build
+$ ./zig-out/bin/myapp hello World
+Hello, World!
+
+$ ./zig-out/bin/myapp hello Alice --loud
+HELLO, Alice!
+
+$ ./zig-out/bin/myapp --help
+myapp v0.1.0
+A CLI application built with zcli
+
+USAGE:
+    myapp [GLOBAL OPTIONS] <COMMAND> [ARGS]
+
+COMMANDS:
+    hello            Say hello to someone
+
+GLOBAL OPTIONS:
+    -h, --help       Show help information
+    -V, --version    Show version information
+```
+
+**That's it!** You have a working CLI with colored output, help text, and error handling.
+
+### 3. Add more commands
+
+```bash
+$ zcli add command deploy --description "Deploy your app"
+Creating command: deploy
+✓ Created src/commands/deploy.zig
+
+$ zcli add command users/create --description "Create a new user"
+Creating command: users/create
+✓ Created src/commands/users/create.zig
+```
+
+### 4. Customize your commands
+
+Edit the generated command files to add your logic. Here's what the example `hello.zig` looks like:
+
+```zig
+const std = @import("std");
+const zcli = @import("zcli");
+
+pub const meta = .{
+    .description = "Say hello to someone",
+    .examples = &.{
+        "hello World",
+        "hello Alice --loud",
+    },
+};
+
+pub const Args = struct {
+    name: []const u8,
+};
+
+pub const Options = struct {
+    loud: bool = false,
+};
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    const greeting = if (options.loud) "HELLO" else "Hello";
+    try context.stdout().print("{s}, {s}!\n", .{ greeting, args.name });
+}
+```
+
+That's all you need! zcli handles parsing, validation, and help text generation automatically.
+
+## Next Steps
+
+- Learn about [Commands](/docs/commands/) structure
+- Explore [Arguments & Options](/docs/options/)
+- Check out the [Plugin System](/docs/plugins/)

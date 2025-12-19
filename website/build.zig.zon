@@ -1,0 +1,12 @@
+.{
+    .name = .zcli_website,
+    .version = "0.1.0",
+    .fingerprint = 0x1180ef3171166a59,
+    .dependencies = .{
+        .zine = .{
+            .url = "git+https://github.com/kristoff-it/zine?ref=v0.11.2#5a01fa5c9bad6a0c3055c523ee0ef848bb11c743",
+            .hash = "zine-0.11.2-ou6nINh3FgANNoH-3RUaEWOc3ax5zfWiL8a4lt4hDhpG",
+        },
+    },
+    .paths = .{"."},
+}

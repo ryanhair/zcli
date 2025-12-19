@@ -1,0 +1,50 @@
+<extend template="base.shtml">
+
+<title id="title" :text="$page.title"></title>
+
+<main id="main">
+    <div class="docs-container">
+        <aside class="docs-sidebar">
+            <nav class="docs-nav">
+                <div class="nav-section">
+                    <h4>Getting Started</h4>
+                    <ul>
+                        <li><a href="/quickstart/">Quickstart</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Core Concepts</h4>
+                    <ul>
+                        <li><a href="/docs/commands/">Commands</a></li>
+                        <li><a href="/docs/options/">Arguments &amp; Options</a></li>
+                        <li><a href="/docs/aliases/">Command Aliases</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Advanced</h4>
+                    <ul>
+                        <li><a href="/docs/plugins/">Plugin System</a></li>
+                        <li><a href="/docs/build-system/">Build System</a></li>
+                        <li><a href="/docs/shared-modules/">Shared Modules</a></li>
+                        <li><a href="/docs/c-dependencies/">C/C++ Dependencies</a></li>
+                    </ul>
+                </div>
+                <div class="nav-section">
+                    <h4>Reference</h4>
+                    <ul>
+                        <li><a href="/docs/error-handling/">Error Handling</a></li>
+                    </ul>
+                </div>
+            </nav>
+        </aside>
+
+        <article class="docs-content">
+            <header class="docs-header">
+                <h1 :text="$page.title"></h1>
+            </header>
+            <div class="docs-body">
+                <ctx :html="$page.content()"></ctx>
+            </div>
+        </article>
+    </div>
+</main>
