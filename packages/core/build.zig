@@ -6,12 +6,24 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Get dependencies
+    const ztheme_dep = b.dependency("ztheme", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const markdown_fmt_dep = b.dependency("markdown_fmt", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Main zcli module that will be exposed to users
-    _ = b.addModule("zcli", .{
+    const zcli_module = b.addModule("zcli", .{
         .root_source_file = b.path("src/zcli.zig"),
         .target = target,
         .optimize = optimize,
     });
+    zcli_module.addImport("ztheme", ztheme_dep.module("ztheme"));
+    zcli_module.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
 
     // Build utilities module for build.zig files
     _ = b.addModule("build_utils", .{
@@ -62,6 +74,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
+        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -77,6 +91,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
+        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -91,6 +107,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
+        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -105,6 +123,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
+        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -124,6 +144,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
+        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         const sequential_tests = b.addTest(.{
             .root_module = test_mod,
         });

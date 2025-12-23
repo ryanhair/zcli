@@ -4,12 +4,28 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Create ztheme module
+    const ztheme_module = b.addModule("ztheme", .{
+        .root_source_file = b.path("packages/ztheme/src/ztheme.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Create markdown_fmt module
+    const markdown_fmt_module = b.addModule("markdown_fmt", .{
+        .root_source_file = b.path("packages/markdown_fmt/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Export the zcli module from core package for external projects
-    _ = b.addModule("zcli", .{
+    const zcli_module = b.addModule("zcli", .{
         .root_source_file = b.path("packages/core/src/zcli.zig"),
         .target = target,
         .optimize = optimize,
     });
+    zcli_module.addImport("ztheme", ztheme_module);
+    zcli_module.addImport("markdown_fmt", markdown_fmt_module);
 
     // Define the project directories that have tests
     const ProjectInfo = struct {

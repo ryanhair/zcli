@@ -1,0 +1,277 @@
+---
+.title = "Styling & Theming",
+.date = @date("2025-01-01"),
+.author = "zcli Team",
+.layout = "docs.shtml",
+---
+
+zcli provides two powerful libraries for styling CLI output: **ztheme** for fine-grained color control and **markdown_fmt** for easy markdown-to-ANSI conversion.
+
+## Choosing the Right Library
+
+| Use Case | Library |
+|----------|---------|
+| Quick semantic output (`<success>`, `<error>`) | `markdown_fmt` |
+| Markdown formatting (**bold**, `code`) | `markdown_fmt` |
+| Fine-grained color control | `ztheme` |
+| RGB/hex colors | `ztheme` |
+| Capability detection | `ztheme` |
+
+Both libraries are exported through zcli:
+
+```zig
+const zcli = @import("zcli");
+const ztheme = zcli.ztheme;
+const mdfmt = zcli.markdown_fmt;
+```
+
+## markdown_fmt: Simple Semantic Output
+
+`markdown_fmt` converts markdown and semantic tags to ANSI escape codes at compile time. Perfect for quick, readable output formatting.
+
+### Basic Usage
+
+```zig
+const zcli = @import("zcli");
+const mdfmt = zcli.markdown_fmt;
+
+pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+    const stdout = context.stdout();
+
+    // Semantic tags with runtime values
+    try mdfmt.write(stdout, "<success>Deployed {d} services</success>\n", .{count});
+    try mdfmt.write(stdout, "<error>Failed to connect to {s}</error>\n", .{host});
+    try mdfmt.write(stdout, "<warning>Config file not found, using defaults</warning>\n", .{});
+
+    // Markdown formatting
+    try mdfmt.write(stdout, "**Bold** and *italic* text\n", .{});
+    try mdfmt.write(stdout, "Run `myapp deploy` to continue\n", .{});
+
+    // Mixed markdown and semantic tags
+    try mdfmt.write(stdout, "<info>**{d}** tests passed</info>\n", .{test_count});
+}
+```
+
+### Available Semantic Tags
+
+| Tag | Purpose | Color |
+|-----|---------|-------|
+| `<success>` | Successful operations | Green |
+| `<error>` | Errors and failures | Red |
+| `<warning>` | Warnings and cautions | Yellow |
+| `<info>` | Informational messages | Blue |
+| `<muted>` | Less important text | Gray |
+| `<command>` | CLI commands | Cyan |
+| `<flag>` | CLI flags and options | Magenta |
+| `<path>` | File paths | Cyan |
+| `<value>` | Values and arguments | Yellow |
+| `<code>` | Inline code | Dim |
+| `<primary>` | Primary accent | Turquoise |
+| `<secondary>` | Secondary accent | Orchid |
+
+### Markdown Support
+
+```zig
+// Text formatting
+try mdfmt.write(stdout, "**bold** *italic* ~dim~\n", .{});
+try mdfmt.write(stdout, "`inline code`\n", .{});
+
+// Headers
+try mdfmt.write(stdout,
+    \\# Heading 1
+    \\## Heading 2
+    \\### Heading 3
+, .{});
+
+// Lists
+try mdfmt.write(stdout,
+    \\- Item one
+    \\- Item two
+    \\  - Nested item
+, .{});
+
+// Block quotes
+try mdfmt.write(stdout, "> This is a quote\n", .{});
+```
+
+## ztheme: Fine-Grained Control
+
+`ztheme` provides a fluent API for precise control over colors and styles, with automatic terminal capability detection.
+
+### Basic Usage
+
+```zig
+const zcli = @import("zcli");
+const ztheme = zcli.ztheme;
+
+pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+    const stdout = context.stdout();
+
+    // Initialize theme context for capability detection
+    var theme_ctx = ztheme.Theme.init(context.allocator);
+
+    // Basic colors
+    try ztheme.theme("Error: ").red().bold().render(stdout, &theme_ctx);
+    try ztheme.theme("File not found\n").render(stdout, &theme_ctx);
+
+    // Semantic roles (adaptive colors)
+    try ztheme.theme("Success!").success().render(stdout, &theme_ctx);
+    try ztheme.theme("Warning!").warning().render(stdout, &theme_ctx);
+
+    // Background colors
+    try ztheme.theme(" PASS ").onGreen().white().bold().render(stdout, &theme_ctx);
+}
+```
+
+### Fluent API Methods
+
+**Basic Colors**: `.red()`, `.green()`, `.blue()`, `.yellow()`, `.cyan()`, `.magenta()`, `.white()`, `.black()`
+
+**Bright Colors**: `.brightRed()`, `.brightGreen()`, `.brightBlue()`, etc.
+
+**Background Colors**: `.onRed()`, `.onGreen()`, `.onBlue()`, etc.
+
+**Text Styles**: `.bold()`, `.dim()`, `.italic()`, `.underline()`, `.strikethrough()`, `.inverse()`
+
+**Semantic Roles**: `.success()`, `.err()`, `.warning()`, `.info()`, `.muted()`
+
+**Advanced Colors**:
+```zig
+// RGB colors (true color terminals)
+try ztheme.theme("Custom").rgb(255, 100, 50).render(stdout, &theme_ctx);
+
+// Hex colors (compile-time only)
+try ztheme.theme("Hex").hex("#ff6432").render(stdout, &theme_ctx);
+
+// 256-color palette
+try ztheme.theme("Indexed").color256(208).render(stdout, &theme_ctx);
+```
+
+### Capability Detection
+
+ztheme automatically detects terminal capabilities and degrades gracefully:
+
+```zig
+var theme_ctx = ztheme.Theme.init(context.allocator);
+
+// Check capabilities
+if (theme_ctx.supportsColor()) {
+    // Terminal supports at least basic colors
+}
+
+if (theme_ctx.supportsTrueColor()) {
+    // Terminal supports 24-bit RGB colors
+}
+
+if (theme_ctx.supports256Color()) {
+    // Terminal supports 256-color palette
+}
+
+// Get capability as string for debugging
+const cap = theme_ctx.capabilityString(); // "true color (24-bit)"
+```
+
+**Capability levels**:
+- `no_color`: No color support (respects `NO_COLOR` env var)
+- `ansi_16`: Basic 16 ANSI colors
+- `ansi_256`: 256-color palette
+- `true_color`: Full 24-bit RGB
+
+## Best Practices
+
+### 1. Prefer Semantic Over Explicit Colors
+
+```zig
+// Good - adapts to terminal capabilities
+try ztheme.theme("Error").err().render(stdout, &theme_ctx);
+try mdfmt.write(stdout, "<error>Error</error>\n", .{});
+
+// Less ideal - may not look good on all terminals
+try ztheme.theme("Error").red().render(stdout, &theme_ctx);
+```
+
+### 2. Create Theme Context Once
+
+```zig
+pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+    const stdout = context.stdout();
+
+    // Create once at the start of your command
+    var theme_ctx = ztheme.Theme.init(context.allocator);
+
+    // Reuse for all styled output
+    try ztheme.theme("Header").bold().render(stdout, &theme_ctx);
+    try ztheme.theme("Body").render(stdout, &theme_ctx);
+    try ztheme.theme("Footer").dim().render(stdout, &theme_ctx);
+}
+```
+
+### 3. Use markdown_fmt for Complex Output
+
+When you need to mix formatting with runtime values, `markdown_fmt` is more readable:
+
+```zig
+// Complex output with markdown_fmt
+try mdfmt.write(stdout,
+    "<success>**{d}** tests passed</success> in <muted>{d:.2}s</muted>\n",
+    .{ passed, elapsed }
+);
+
+// Same with ztheme requires more code
+try ztheme.theme(count_str).success().bold().render(stdout, &theme_ctx);
+try stdout.writeAll(" tests passed in ");
+try ztheme.theme(time_str).muted().render(stdout, &theme_ctx);
+```
+
+### 4. Handle Non-TTY Output
+
+Both libraries automatically handle non-TTY output, but you can check explicitly:
+
+```zig
+var theme_ctx = ztheme.Theme.init(context.allocator);
+
+if (theme_ctx.is_tty) {
+    // Interactive terminal - can use colors, spinners, etc.
+} else {
+    // Piped to file or another command - keep output simple
+}
+```
+
+## Example: Deployment Status
+
+```zig
+const zcli = @import("zcli");
+const ztheme = zcli.ztheme;
+const mdfmt = zcli.markdown_fmt;
+
+pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+    const stdout = context.stdout();
+    var theme_ctx = ztheme.Theme.init(context.allocator);
+
+    // Header with ztheme
+    try ztheme.theme("Deployment Status\n").bold().underline().render(stdout, &theme_ctx);
+    try stdout.writeAll("\n");
+
+    // Status items with markdown_fmt
+    try mdfmt.write(stdout, "<success>api-server</success>     running on <value>:8080</value>\n", .{});
+    try mdfmt.write(stdout, "<success>database</success>       running on <value>:5432</value>\n", .{});
+    try mdfmt.write(stdout, "<warning>cache</warning>          <muted>starting...</muted>\n", .{});
+    try mdfmt.write(stdout, "<error>worker</error>         failed: connection refused\n", .{});
+
+    // Footer
+    try stdout.writeAll("\n");
+    try mdfmt.write(stdout, "Run `<command>deploy restart worker</command>` to retry\n", .{});
+}
+```
+
+Output:
+```
+Deployment Status
+
+api-server     running on :8080
+database       running on :5432
+cache          starting...
+worker         failed: connection refused
+
+Run `deploy restart worker` to retry
+```

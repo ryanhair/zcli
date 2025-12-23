@@ -1,6 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
-const md = @import("markdown_fmt");
+const md = zcli.markdown_fmt;
 
 /// zcli-help Plugin
 ///

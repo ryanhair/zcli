@@ -8,6 +8,8 @@ pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 const type_utils = @import("type_utils.zig");
+pub const ztheme = @import("ztheme");
+pub const markdown_fmt = @import("markdown_fmt");
 const testing = std.testing;
 
 // Re-export error types

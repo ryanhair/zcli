@@ -27,6 +27,7 @@
                         <li><a href="$site.page('docs/build-system').link()">Build System</a></li>
                         <li><a href="$site.page('docs/shared-modules').link()">Shared Modules</a></li>
                         <li><a href="$site.page('docs/c-dependencies').link()">C/C++ Dependencies</a></li>
+                        <li><a href="$site.page('docs/styling').link()">Styling &amp; Theming</a></li>
                     </ul>
                 </div>
                 <div class="nav-section">
