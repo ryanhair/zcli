@@ -177,6 +177,8 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
     // Export app config constants and initialization function
     try writer.print(
         \\pub const Context = RegistryType.Context;
+        \\pub const command_info = RegistryType.command_info;
+        \\pub const global_options_info = RegistryType.global_options_info;
         \\pub const app_name = "{s}";
         \\pub const app_version = "{s}";
         \\pub const app_description = "{s}";

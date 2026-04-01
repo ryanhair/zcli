@@ -26,7 +26,7 @@ pub const Options = struct {
     version: ?[]const u8 = null,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
     var stderr = context.stderr();
@@ -260,7 +260,8 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\    loud: bool = false,
         \\};
         \\
-        \\pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+        \\pub fn execute(args: Args, options: Options, context: anytype) !void {
+        \\    comptime zcli.assertValidContext(@TypeOf(context));
         \\    const greeting = if (options.loud) "HELLO" else "Hello";
         \\    try context.stdout().print("{s}, {s}!\n", .{ greeting, args.name });
         \\}

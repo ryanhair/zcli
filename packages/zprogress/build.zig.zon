@@ -1,0 +1,14 @@
+.{
+    .name = .zprogress,
+    .version = "0.1.0",
+    .fingerprint = 0xc4a770caaff58339,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .ztheme = .{ .path = "../ztheme" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+    },
+}

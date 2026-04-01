@@ -24,7 +24,7 @@ pub const Options = struct {
     description: ?[]const u8 = null,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
     var stderr = context.stderr();
@@ -124,7 +124,8 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         \\    // verbose: bool = false,
         \\}};
         \\
-        \\pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {{
+        \\pub fn execute(args: Args, options: Options, context: anytype) !void {{
+        \\    comptime zcli.assertValidContext(@TypeOf(context));
         \\    _ = args;
         \\    _ = options;
         \\

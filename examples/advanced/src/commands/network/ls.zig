@@ -10,7 +10,7 @@ pub const Options = struct {
     filter: ?[]const u8 = null,
 };
 
-pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(_: Args, options: Options, context: anytype) !void {
     _ = options;
     try context.stdout().print("Listing networks...\n", .{});
 }

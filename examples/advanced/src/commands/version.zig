@@ -18,7 +18,7 @@ pub const Options = struct {
     format: ?[]const u8 = null,
 };
 
-pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(_: Args, options: Options, context: anytype) !void {
     if (options.format) |format| {
         if (std.mem.eql(u8, format, "json")) {
             try context.stdout().print(

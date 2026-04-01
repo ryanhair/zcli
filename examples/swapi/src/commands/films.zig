@@ -63,7 +63,7 @@ pub const Options = struct {
     pretty: bool = true,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     const stdout = context.stdout();
 

@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.15.1",
 
     .dependencies = .{
-        // No external dependencies - pure comptime string manipulation
+        .ztheme = .{ .path = "../ztheme" },
     },
 
     .paths = .{

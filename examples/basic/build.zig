@@ -45,6 +45,12 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("command_registry", cmd_registry);
 
+    // Generate documentation
+    zcli.generateDocs(b, cmd_registry, zcli_dep, zcli_module, .{
+        .format = "markdown",
+        .output_dir = "docs",
+    });
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

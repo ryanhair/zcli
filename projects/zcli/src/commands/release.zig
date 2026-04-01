@@ -128,7 +128,7 @@ const Version = struct {
     }
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
     var stderr = context.stderr();

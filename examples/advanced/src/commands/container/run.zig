@@ -51,7 +51,7 @@ pub const Options = struct {
     cpus: ?f32 = null,
 };
 
-pub fn execute(args: Args, options: Options, _: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, _: anytype) !void {
     // Show what would be executed
     std.log.info("Running container from image: {s}\n", .{args.image});
 

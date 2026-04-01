@@ -14,6 +14,7 @@ pub const SemanticRole = enum {
     flag, // Command flags and options (e.g., "--verbose")
     path, // File paths and directories
     value, // User input, config values
+    code, // Inline code snippets
     header, // Section headers, titles
     link, // URLs, clickable items
 
@@ -36,6 +37,7 @@ pub const SemanticRole = enum {
             .flag => .bright_magenta,
             .path => .cyan,
             .value => .bright_green,
+            .code => .bright_magenta,
             .header => .bright_white,
             .link => .bright_blue,
 

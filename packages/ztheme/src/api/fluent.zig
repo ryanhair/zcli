@@ -307,6 +307,11 @@ pub fn Themed(comptime T: type) type {
             return self.applySemantic(.value);
         }
 
+        /// Style for inline code snippets
+        pub fn code(self: Self) Self {
+            return self.applySemantic(.code);
+        }
+
         /// Style for section headers and titles
         pub fn header(self: Self) Self {
             return self.applySemantic(.header);

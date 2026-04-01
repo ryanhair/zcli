@@ -226,6 +226,54 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
     return buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);
 }
 
+/// Generate documentation from command metadata during the build.
+///
+/// Docs are generated automatically on every `zig build` and also
+/// available via `zig build docs`. Output goes to `output_dir`.
+///
+/// ```zig
+/// // Single format (default: markdown)
+/// zcli.generateDocs(b, cmd_registry, zcli_dep, zcli_module, .{});
+///
+/// // Multiple formats — each gets its own subdirectory
+/// zcli.generateDocs(b, cmd_registry, zcli_dep, zcli_module, .{
+///     .formats = &.{ "markdown", "man" },
+///     .output_dir = "docs",
+/// });
+/// ```
+pub fn generateDocs(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, comptime config: anytype) void {
+    const formats: []const []const u8 = if (@hasField(@TypeOf(config), "formats"))
+        config.formats
+    else if (@hasField(@TypeOf(config), "format"))
+        &.{config.format}
+    else
+        &.{"markdown"};
+    const output_dir = if (@hasField(@TypeOf(config), "output_dir")) config.output_dir else "docs";
+
+    const doc_exe = b.addExecutable(.{
+        .name = "zcli-doc-gen",
+        .root_module = b.createModule(.{
+            .root_source_file = zcli_dep.path("packages/core/src/doc_gen_main.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    doc_exe.root_module.addImport("command_registry", registry_module);
+    doc_exe.root_module.addImport("zcli", zcli_module);
+
+    const run = b.addRunArtifact(doc_exe);
+    run.addArg(output_dir);
+    inline for (formats) |fmt| {
+        run.addArg(fmt);
+    }
+
+    // Run on every `zig build`
+    b.getInstallStep().dependOn(&run.step);
+
+    // Also available as explicit `zig build docs`
+    const docs_step = b.step("docs", "Generate documentation");
+    docs_step.dependOn(&run.step);
+}
+
 /// Convert a comptime config struct to an init string
 fn configToInitString(allocator: std.mem.Allocator, comptime config: anytype) []const u8 {
     const T = @TypeOf(config);

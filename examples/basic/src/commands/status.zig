@@ -21,7 +21,7 @@ pub const Options = struct {
     porcelain: bool = false,
 };
 
-pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(_: Args, options: Options, context: anytype) !void {
     if (options.porcelain or options.short) {
         try context.stdout().print("M  main.zig\n", .{});
         try context.stdout().print("A  new-file.zig\n", .{});

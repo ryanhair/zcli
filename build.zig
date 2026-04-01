@@ -17,6 +17,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    markdown_fmt_module.addImport("ztheme", ztheme_module);
+
+    // Create zprogress module
+    const zprogress_module = b.addModule("zprogress", .{
+        .root_source_file = b.path("packages/zprogress/src/zprogress.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zprogress_module.addImport("ztheme", ztheme_module);
 
     // Export the zcli module from core package for external projects
     const zcli_module = b.addModule("zcli", .{
@@ -26,6 +35,7 @@ pub fn build(b: *std.Build) void {
     });
     zcli_module.addImport("ztheme", ztheme_module);
     zcli_module.addImport("markdown_fmt", markdown_fmt_module);
+    zcli_module.addImport("zprogress", zprogress_module);
 
     // Define the project directories that have tests
     const ProjectInfo = struct {
@@ -40,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "vterm", .path = "packages/vterm" },
         .{ .name = "interactive", .path = "packages/interactive" },
         .{ .name = "markdown_fmt", .path = "packages/markdown_fmt" },
+        .{ .name = "zprogress", .path = "packages/zprogress" },
     };
 
     const example_projects = [_]ProjectInfo{
@@ -48,6 +59,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "swapi_example", .path = "examples/swapi" },
         .{ .name = "snapshots_example", .path = "examples/snapshots" },
         .{ .name = "ztheme_example", .path = "examples/ztheme" },
+        .{ .name = "zprogress_example", .path = "examples/zprogress-demo" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 
@@ -130,5 +142,6 @@ pub fn build(b: *std.Build) void {
 // When external projects do `const zcli = @import("zcli");` in their build.zig,
 // they're importing this root build.zig from the tarball/git archive.
 pub const generate = @import("packages/core/build.zig").generate;
+pub const generateDocs = @import("packages/core/build.zig").generateDocs;
 pub const PluginConfig = @import("packages/core/build.zig").PluginConfig;
 pub const SharedModule = @import("packages/core/build.zig").SharedModule;

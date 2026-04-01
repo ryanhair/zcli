@@ -33,7 +33,7 @@ pub const Options = struct {
     } = null,
 };
 
-pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(_: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     const writer = context.stdout();
 

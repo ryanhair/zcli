@@ -12,7 +12,7 @@ pub const Args = struct {};
 
 pub const Options = struct {};
 
-pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+pub fn execute(_: Args, _: Options, context: anytype) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();
 

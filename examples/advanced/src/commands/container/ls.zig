@@ -36,7 +36,7 @@ pub const Options = struct {
     size: bool = false,
 };
 
-pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(_: Args, options: Options, context: anytype) !void {
     // Sample container data
     const containers = [_]struct {
         id: []const u8,
@@ -142,7 +142,7 @@ pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
     }
 }
 
-fn printContainer(container: anytype, options: Options, context: *zcli.Context) !void {
+fn printContainer(container: anytype, options: Options, context: anytype) !void {
     const id = if (options.no_trunc) container.id else container.id[0..@min(12, container.id.len)];
     const image = if (options.no_trunc) container.image else truncateString(container.image, 14);
     const command = if (options.no_trunc) container.command else truncateString(container.command, 24);

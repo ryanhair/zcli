@@ -8,16 +8,18 @@
 //   - Semantic: <success>, <error>, <warning>, <info>, <command>, <path>, etc.
 //   - Runtime: {s}, {d}, {d:.1}, and all std.fmt specifiers
 //   - Zero runtime overhead: all parsing at comptime
+//   - Terminal capability-aware: adapts to no_color, 16, 256, or true color
 //
 // Example:
 //   try mdfmt.write(stdout, "<success>**{d}** tests passed</success>", .{count});
 
 const std = @import("std");
 
-// Semantic color support
+// Semantic color support (types from ztheme)
 pub const semantic = @import("semantic.zig");
 pub const SemanticRole = semantic.SemanticRole;
 pub const SemanticPalette = semantic.SemanticPalette;
+pub const TerminalCapability = semantic.TerminalCapability;
 pub const parseWithSemantics = semantic.parseWithSemantics;
 
 // Block and inline parsers
@@ -35,23 +37,28 @@ const ANSI_RESET = "\x1b[0m";
 /// Handles: **bold**, *italic*, ~dim~, <error>, <success>, etc.
 /// Preserves format specifiers like {s}, {d} for runtime interpolation
 pub fn parse(comptime markdown: []const u8) []const u8 {
-    return parseWithPalette(markdown, SemanticPalette{});
+    return parseForCapability(markdown, SemanticPalette{}, .true_color);
 }
 
-/// Parse with custom color palette
-/// New implementation using block+inline parser
+/// Parse with custom color palette (defaults to true_color capability)
 pub fn parseWithPalette(comptime markdown: []const u8, comptime palette: SemanticPalette) []const u8 {
-    comptime {
-        @setEvalBranchQuota(10000); // Increase for complex markdown documents
+    return parseForCapability(markdown, palette, .true_color);
+}
 
-        // First, check if there are semantic tags - handle those with old parser
+/// Parse markdown for a specific terminal capability level
+/// This is the core parsing function that threads capability through the entire pipeline
+pub fn parseForCapability(comptime markdown: []const u8, comptime palette: SemanticPalette, comptime capability: TerminalCapability) []const u8 {
+    comptime {
+        @setEvalBranchQuota(100000); // High quota needed for CapabilityFormatter (4x comptime parsing)
+
+        // First, check if there are semantic tags - handle those with semantic parser
         if (containsSemanticTags(markdown)) {
-            return parseWithSemanticTags(markdown, palette);
+            return parseWithSemanticTags(markdown, palette, capability);
         }
 
         // Check if this is simple inline text (single line, no block elements)
         if (isSimpleInline(markdown)) {
-            return inline_parser.parseInline(markdown, palette);
+            return inline_parser.parseInline(markdown, palette, capability);
         }
 
         // Otherwise, use full markdown block parser
@@ -69,11 +76,11 @@ pub fn parseWithPalette(comptime markdown: []const u8, comptime palette: Semanti
                     }
                 },
                 .heading => {
-                    result = result ++ renderers.renderHeader(block.level, block.content, palette);
+                    result = result ++ renderers.renderHeader(block.level, block.content, palette, capability);
                     prev_was_blank = false;
                 },
                 .code_block => {
-                    result = result ++ renderers.renderCodeBlock(block.language, block.content, palette);
+                    result = result ++ renderers.renderCodeBlock(block.language, block.content, palette, capability);
                     prev_was_blank = false;
                 },
                 .horizontal_rule => {
@@ -81,19 +88,19 @@ pub fn parseWithPalette(comptime markdown: []const u8, comptime palette: Semanti
                     prev_was_blank = false;
                 },
                 .unordered_list_item => {
-                    result = result ++ renderers.renderUnorderedListItem(block.level, block.content, palette);
+                    result = result ++ renderers.renderUnorderedListItem(block.level, block.content, palette, capability);
                     prev_was_blank = false;
                 },
                 .ordered_list_item => {
-                    result = result ++ renderers.renderOrderedListItem(block.level, block.ordered_number, block.content, palette);
+                    result = result ++ renderers.renderOrderedListItem(block.level, block.ordered_number, block.content, palette, capability);
                     prev_was_blank = false;
                 },
                 .blockquote => {
-                    result = result ++ renderers.renderBlockquote(block.content, palette);
+                    result = result ++ renderers.renderBlockquote(block.content, palette, capability);
                     prev_was_blank = false;
                 },
                 .paragraph => {
-                    result = result ++ renderers.renderParagraph(block.content, palette);
+                    result = result ++ renderers.renderParagraph(block.content, palette, capability);
                     prev_was_blank = false;
                 },
             }
@@ -142,15 +149,18 @@ fn containsSemanticTags(comptime markdown: []const u8) bool {
             std.mem.indexOf(u8, markdown, "<path>") != null or
             std.mem.indexOf(u8, markdown, "<value>") != null or
             std.mem.indexOf(u8, markdown, "<code>") != null or
+            std.mem.indexOf(u8, markdown, "<header>") != null or
+            std.mem.indexOf(u8, markdown, "<link>") != null or
             std.mem.indexOf(u8, markdown, "<primary>") != null or
             std.mem.indexOf(u8, markdown, "<secondary>") != null or
             std.mem.indexOf(u8, markdown, "<accent>") != null;
     }
 }
 
-/// Parse markdown that contains semantic tags (old parser for backward compatibility)
-fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: SemanticPalette) []const u8 {
+/// Parse markdown that contains semantic tags
+fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: SemanticPalette, comptime capability: TerminalCapability) []const u8 {
     comptime {
+        const ANSI_RESET_CAP = if (capability == .no_color) "" else "\x1b[0m";
         var result: []const u8 = "";
         var i: usize = 0;
         var text_start: usize = 0; // Track start of text outside semantic tags
@@ -182,16 +192,18 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Semant
                             // Parse any accumulated text before this semantic tag
                             if (i > text_start) {
                                 const text_before = markdown[text_start..i];
-                                result = result ++ inline_parser.parseInline(text_before, palette);
+                                result = result ++ inline_parser.parseInline(text_before, palette, capability);
                             }
 
                             const content = markdown[content_start .. content_start + ce];
                             const color = palette.getColor(r);
-                            const ansi_code = std.fmt.comptimePrint("\x1b[38;2;{d};{d};{d}m", .{ color.r, color.g, color.b });
+                            const ansi_code = color.toAnsi(capability);
 
-                            // Parse inline markdown inside semantic tags
-                            const parsed_content = inline_parser.parseInline(content, palette);
-                            result = result ++ ansi_code ++ parsed_content ++ ANSI_RESET;
+                            // Parse inline markdown inside semantic tags, then
+                            // re-apply semantic color after any inline resets
+                            const raw_parsed = inline_parser.parseInline(content, palette, capability);
+                            const parsed_content = inline_parser.reapplyAfterResets(raw_parsed, ansi_code, ANSI_RESET_CAP);
+                            result = result ++ ansi_code ++ parsed_content ++ ANSI_RESET_CAP;
                             i = content_start + ce + closing_tag.len;
                             text_start = i; // Reset text_start after the tag
                             continue;
@@ -206,25 +218,25 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Semant
         // Parse any remaining text after the last semantic tag
         if (markdown.len > text_start) {
             const remaining_text = markdown[text_start..];
-            result = result ++ inline_parser.parseInline(remaining_text, palette);
+            result = result ++ inline_parser.parseInline(remaining_text, palette, capability);
         }
 
         return result;
     }
 }
 
-/// Create a formatter with default color palette
+/// Create a formatter with default color palette (true_color output)
 pub fn formatter(writer: anytype) Formatter(@TypeOf(writer), SemanticPalette{}) {
     return .{ .writer = writer };
 }
 
-/// Create a formatter with custom color palette
+/// Create a formatter with custom color palette (true_color output)
 pub fn formatterWithPalette(writer: anytype, comptime palette: SemanticPalette) Formatter(@TypeOf(writer), palette) {
     return .{ .writer = writer };
 }
 
-/// Formatter with writer and compile-time color palette
-/// This is the recommended API - create once, use many times
+/// Formatter with writer and compile-time color palette (always true_color)
+/// This is the simple API for when you don't need capability detection
 pub fn Formatter(comptime Writer: type, comptime palette: SemanticPalette) type {
     return struct {
         writer: Writer,
@@ -241,6 +253,47 @@ pub fn Formatter(comptime Writer: type, comptime palette: SemanticPalette) type 
         pub fn print(_: Self, allocator: std.mem.Allocator, comptime markdown: []const u8, args: anytype) ![]const u8 {
             const fmt_string = comptime parseWithPalette(markdown, palette);
             return std.fmt.allocPrint(allocator, fmt_string, args);
+        }
+    };
+}
+
+/// Create a capability-aware formatter that adapts output to terminal capabilities
+pub fn capabilityFormatter(writer: anytype, capability: TerminalCapability) CapabilityFormatter(@TypeOf(writer), SemanticPalette{}) {
+    return .{ .writer = writer, .capability = capability };
+}
+
+/// Create a capability-aware formatter with custom palette
+pub fn capabilityFormatterWithPalette(writer: anytype, capability: TerminalCapability, comptime palette: SemanticPalette) CapabilityFormatter(@TypeOf(writer), palette) {
+    return .{ .writer = writer, .capability = capability };
+}
+
+/// Capability-aware formatter that pre-compiles 4 versions of each markdown string
+/// at comptime and selects the appropriate one at runtime based on terminal capability.
+pub fn CapabilityFormatter(comptime Writer: type, comptime palette: SemanticPalette) type {
+    return struct {
+        writer: Writer,
+        capability: TerminalCapability,
+
+        const Self = @This();
+
+        /// Write formatted markdown to the writer, adapting to terminal capability
+        pub fn write(self: *Self, comptime markdown: []const u8, args: anytype) !void {
+            switch (self.capability) {
+                .no_color => try self.writer.print(comptime parseForCapability(markdown, palette, .no_color), args),
+                .ansi_16 => try self.writer.print(comptime parseForCapability(markdown, palette, .ansi_16), args),
+                .ansi_256 => try self.writer.print(comptime parseForCapability(markdown, palette, .ansi_256), args),
+                .true_color => try self.writer.print(comptime parseForCapability(markdown, palette, .true_color), args),
+            }
+        }
+
+        /// Format markdown and return allocated string
+        pub fn print(self: Self, allocator: std.mem.Allocator, comptime markdown: []const u8, args: anytype) ![]const u8 {
+            return switch (self.capability) {
+                .no_color => std.fmt.allocPrint(allocator, comptime parseForCapability(markdown, palette, .no_color), args),
+                .ansi_16 => std.fmt.allocPrint(allocator, comptime parseForCapability(markdown, palette, .ansi_16), args),
+                .ansi_256 => std.fmt.allocPrint(allocator, comptime parseForCapability(markdown, palette, .ansi_256), args),
+                .true_color => std.fmt.allocPrint(allocator, comptime parseForCapability(markdown, palette, .true_color), args),
+            };
         }
     };
 }
@@ -405,6 +458,43 @@ test "formatter print method" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "failed") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null);
+}
+
+test "capability formatter no color" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+
+    var fmt = capabilityFormatter(fbs.writer(), .no_color);
+    try fmt.write("<success>**{d}** tests passed</success>", .{42});
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null); // No ANSI codes
+}
+
+test "capability formatter ansi 16" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+
+    var fmt = capabilityFormatter(fbs.writer(), .ansi_16);
+    try fmt.write("<success>passed</success>", .{});
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null); // Has ANSI
+    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") == null); // No RGB
+}
+
+test "capability formatter true color" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+
+    var fmt = capabilityFormatter(fbs.writer(), .true_color);
+    try fmt.write("<success>passed</success>", .{});
+
+    const output = fbs.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, output, "passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") != null); // RGB codes
 }
 
 // Integration tests - complex markdown scenarios

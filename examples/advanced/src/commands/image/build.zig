@@ -48,7 +48,7 @@ pub const Options = struct {
     progress: enum { auto, plain, tty } = .auto,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: anytype) !void {
     if (!options.quiet) {
         try context.stdout().print("Building image from context: {s}\n", .{args.context});
 

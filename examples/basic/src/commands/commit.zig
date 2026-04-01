@@ -24,7 +24,7 @@ pub const Options = struct {
     all: bool = false,
 };
 
-pub fn execute(_: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(_: Args, options: Options, context: anytype) !void {
     if (options.all) {
         try context.stdout().print("Staging all modified and deleted files\n", .{});
     }

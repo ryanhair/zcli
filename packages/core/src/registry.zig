@@ -213,6 +213,199 @@ fn discoverPluginCommands(comptime CommandsStruct: type, comptime path_prefix: [
     return entries;
 }
 
+/// Extract the field name for a plugin's context data from its plugin_id.
+/// Plugins with ContextData MUST declare `pub const plugin_id = "unique_name";`
+fn pluginFieldName(comptime Plugin: type) [:0]const u8 {
+    comptime {
+        if (!@hasDecl(Plugin, "plugin_id")) {
+            @compileError("Plugins with ContextData must declare 'pub const plugin_id'. " ++
+                "Add: pub const plugin_id = \"my_plugin\";");
+        }
+
+        const id: []const u8 = Plugin.plugin_id;
+        var result: [256]u8 = undefined;
+        var result_idx: usize = 0;
+        for (id) |c| {
+            if (result_idx >= result.len - 1) break;
+            result[result_idx] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
+            result_idx += 1;
+        }
+        result[result_idx] = 0;
+        return result[0..result_idx :0];
+    }
+}
+
+/// Compute a struct type containing all plugin ContextData at compile time.
+/// Only includes fields for plugins that declare a ContextData type.
+fn ComputePluginDataType(comptime plugins: []const type) type {
+    comptime {
+        // Count plugins with ContextData
+        var field_count: usize = 0;
+        for (plugins) |Plugin| {
+            if (@hasDecl(Plugin, "ContextData")) {
+                field_count += 1;
+            }
+        }
+
+        if (field_count == 0) {
+            return struct {};
+        }
+
+        // Build fields array
+        var fields: [field_count]std.builtin.Type.StructField = undefined;
+        var idx: usize = 0;
+
+        for (plugins) |Plugin| {
+            if (@hasDecl(Plugin, "ContextData")) {
+                const DataType = Plugin.ContextData;
+                const default_val: DataType = .{};
+                const field_name = pluginFieldName(Plugin);
+
+                fields[idx] = .{
+                    .name = field_name,
+                    .type = DataType,
+                    .default_value_ptr = @ptrCast(&default_val),
+                    .is_comptime = false,
+                    .alignment = @alignOf(DataType),
+                };
+                idx += 1;
+            }
+        }
+
+        return @Type(.{
+            .@"struct" = .{
+                .fields = &fields,
+                .layout = .auto,
+                .decls = &.{},
+                .is_tuple = false,
+            },
+        });
+    }
+}
+
+/// Compute a Context type that includes type-safe plugin data.
+/// This replaces the static Context from zcli.zig with a computed version
+/// that has fields for each plugin's ContextData.
+fn ComputedContextType(comptime config: Config, comptime plugins: []const type) type {
+    const PluginDataType = ComputePluginDataType(plugins);
+
+    return struct {
+        allocator: std.mem.Allocator,
+        io: *zcli.IO,
+        environment: zcli.Environment,
+        theme: zcli.ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+
+        // App metadata from config
+        app_name: []const u8 = config.app_name,
+        app_version: []const u8 = config.app_version,
+        app_description: []const u8 = config.app_description,
+
+        // Command execution context
+        available_commands: []const []const []const u8 = &.{},
+        command_path: []const []const u8 = &.{},
+        command_path_allocated: bool = false,
+        command_meta: ?zcli.CommandMeta = null,
+        command_module_info: ?zcli.CommandModuleInfo = null,
+
+        // Plugin introspection
+        plugin_command_info: []const zcli.CommandInfo = &.{},
+        global_options: []const zcli.OptionInfo = &.{},
+
+        // Type-safe plugin data - each plugin's ContextData is a field
+        plugins: PluginDataType = .{},
+
+        const Self = @This();
+
+        /// Initialize a new Context with the provided IO.
+        pub fn init(allocator: std.mem.Allocator, io: *zcli.IO) Self {
+            return .{
+                .allocator = allocator,
+                .io = io,
+                .environment = zcli.Environment.init(allocator),
+                .theme = zcli.ztheme.Theme.init(allocator),
+            };
+        }
+
+        /// Clean up context resources
+        pub fn deinit(self: *Self) void {
+            // Free command_path only if it was allocated
+            if (self.command_path_allocated and self.command_path.len > 0) {
+                for (self.command_path) |component| {
+                    self.allocator.free(component);
+                }
+                self.allocator.free(self.command_path);
+            }
+
+            // Free allocated field info arrays
+            if (self.command_module_info) |info| {
+                if (info.args_fields.len > 0) {
+                    self.allocator.free(info.args_fields);
+                }
+                if (info.options_fields.len > 0) {
+                    self.allocator.free(info.options_fields);
+                }
+            }
+
+            // Call plugin deinit hooks if they exist
+            inline for (plugins) |Plugin| {
+                if (@hasDecl(Plugin, "ContextData") and @hasDecl(Plugin, "deinitContextData")) {
+                    const field_name = comptime pluginFieldName(Plugin);
+                    Plugin.deinitContextData(&@field(self.plugins, field_name), self.allocator);
+                }
+            }
+
+            self.environment.deinit();
+        }
+
+        // I/O convenience methods
+        pub fn stdout(self: *Self) *std.Io.Writer {
+            return self.io.stdout();
+        }
+
+        pub fn stderr(self: *Self) *std.Io.Writer {
+            return self.io.stderr();
+        }
+
+        pub fn stdin(self: *Self) *std.Io.Reader {
+            return self.io.stdin();
+        }
+
+        /// Get command description by path (for plugins)
+        pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
+            for (self.plugin_command_info) |cmd_info| {
+                if (command_path_query.len == cmd_info.path.len) {
+                    var matches = true;
+                    for (command_path_query, cmd_info.path) |provided_part, stored_part| {
+                        if (!std.mem.eql(u8, provided_part, stored_part)) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (matches) {
+                        return cmd_info.description;
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// Get all available command information (for plugins)
+        pub fn getAvailableCommandInfo(self: *Self) []const zcli.CommandInfo {
+            return self.plugin_command_info;
+        }
+
+        /// Get all global options (for completions)
+        pub fn getGlobalOptions(self: *Self) []const zcli.OptionInfo {
+            return self.global_options;
+        }
+
+        /// Exit the process with the given code
+        pub fn exit(_: *Self, code: u8) void {
+            std.process.exit(code);
+        }
+    };
+}
+
 /// Compiled registry with all command and plugin information
 fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const CommandEntry, comptime new_plugins: []const type) type {
     // Validate plugin conflicts at compile time
@@ -347,6 +540,9 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
     return struct {
         const Self = @This();
 
+        // Export the computed Context type for this registry
+        pub const Context = ComputedContextType(config, new_plugins);
+
         // Expose commands array for testing and introspection
         pub const commands = cmd_entries;
 
@@ -416,6 +612,20 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             break :blk opts;
         };
 
+        // Validate no duplicate global option names or short flags
+        comptime {
+            for (global_options, 0..) |opt_a, i| {
+                for (global_options[i + 1 ..]) |opt_b| {
+                    if (std.mem.eql(u8, opt_a.name, opt_b.name)) {
+                        @compileError("Duplicate global option name: --" ++ opt_a.name ++ ". Two plugins define the same global option.");
+                    }
+                    if (opt_a.short != null and opt_b.short != null and opt_a.short.? == opt_b.short.?) {
+                        @compileError("Duplicate global option short flag: -" ++ &[_]u8{opt_a.short.?} ++ " (used by both --" ++ opt_a.name ++ " and --" ++ opt_b.name ++ ")");
+                    }
+                }
+            }
+        }
+
         // Discover all plugin command entries (including nested)
         const plugin_command_entries = blk: {
             var entries: []const CommandEntry = &.{};
@@ -467,6 +677,112 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             break :blk result;
         };
 
+        // Command metadata for documentation, completions, and help.
+        // Built at comptime from all registered commands and plugins.
+        pub const command_info = buildCommandInfo();
+        pub const global_options_info = buildGlobalOptionsInfo();
+
+        fn buildGlobalOptionsInfo() []const zcli.OptionInfo {
+            var opts: []const zcli.OptionInfo = &.{};
+            for (global_options) |global_opt| {
+                opts = opts ++ .{zcli.OptionInfo{
+                    .name = global_opt.name,
+                    .short = global_opt.short,
+                    .description = global_opt.description,
+                    .takes_value = global_opt.type != bool,
+                }};
+            }
+            return opts;
+        }
+
+        fn buildCommandInfo() []const zcli.CommandInfo {
+            @setEvalBranchQuota(10000);
+            return buildCommandInfoFromEntries(cmd_entries) ++ buildCommandInfoFromEntries(plugin_command_entries);
+        }
+
+        fn buildCommandInfoFromEntries(entries: anytype) []const zcli.CommandInfo {
+            var cmd_info_list: []const zcli.CommandInfo = &.{};
+            for (entries) |cmd| {
+                // Skip root command
+                if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) continue;
+
+                var description: ?[]const u8 = null;
+                var examples: ?[]const []const u8 = null;
+                var hidden: bool = false;
+                var aliases: []const []const u8 = &.{};
+
+                if (@hasDecl(cmd.module, "meta")) {
+                    const meta = cmd.module.meta;
+                    if (@hasField(@TypeOf(meta), "description")) description = meta.description;
+                    if (@hasField(@TypeOf(meta), "examples")) examples = meta.examples;
+                    if (@hasField(@TypeOf(meta), "hidden")) hidden = meta.hidden;
+                    if (@hasField(@TypeOf(meta), "aliases")) aliases = meta.aliases;
+                }
+
+                // Introspect Options
+                var options: []const zcli.OptionInfo = &.{};
+                if (@hasDecl(cmd.module, "Options")) {
+                    const OptionsType = cmd.module.Options;
+                    const options_type_info = @typeInfo(OptionsType);
+                    if (options_type_info == .@"struct") {
+                        for (options_type_info.@"struct".fields) |field| {
+                            const base_type = if (@typeInfo(field.type) == .optional) @typeInfo(field.type).optional.child else field.type;
+                            var opt_desc: ?[]const u8 = null;
+                            var opt_short: ?u8 = null;
+                            if (@hasDecl(cmd.module, "meta")) {
+                                const meta = cmd.module.meta;
+                                if (@hasField(@TypeOf(meta), "options")) {
+                                    if (@hasField(@TypeOf(meta.options), field.name)) {
+                                        const opt_meta = @field(meta.options, field.name);
+                                        if (@hasField(@TypeOf(opt_meta), "description")) opt_desc = opt_meta.description;
+                                        if (@hasField(@TypeOf(opt_meta), "short")) opt_short = opt_meta.short;
+                                    }
+                                }
+                            }
+                            options = options ++ .{zcli.OptionInfo{ .name = field.name, .short = opt_short, .description = opt_desc, .takes_value = base_type != bool }};
+                        }
+                    }
+                }
+
+                // Introspect Args
+                var arg_infos: []const zcli.ArgInfo = &.{};
+                if (@hasDecl(cmd.module, "Args")) {
+                    const ArgsType = cmd.module.Args;
+                    const args_type_info = @typeInfo(ArgsType);
+                    if (args_type_info == .@"struct") {
+                        for (args_type_info.@"struct".fields) |field| {
+                            var arg_desc: ?[]const u8 = null;
+                            if (@hasDecl(cmd.module, "meta")) {
+                                const meta = cmd.module.meta;
+                                if (@hasField(@TypeOf(meta), "args")) {
+                                    if (@hasField(@TypeOf(meta.args), field.name)) {
+                                        arg_desc = @field(meta.args, field.name);
+                                    }
+                                }
+                            }
+                            const is_opt = @typeInfo(field.type) == .optional or field.default_value_ptr != null;
+                            const is_variadic = vblk: {
+                                const ft = @typeInfo(field.type);
+                                break :vblk ft == .pointer and ft.pointer.size == .slice and ft.pointer.child != u8;
+                            };
+                            arg_infos = arg_infos ++ .{zcli.ArgInfo{ .name = field.name, .description = arg_desc, .is_optional = is_opt, .is_variadic = is_variadic }};
+                        }
+                    }
+                }
+
+                cmd_info_list = cmd_info_list ++ .{zcli.CommandInfo{
+                    .path = cmd.path,
+                    .description = description,
+                    .examples = examples,
+                    .args = arg_infos,
+                    .options = options,
+                    .hidden = hidden,
+                    .aliases = aliases,
+                }};
+            }
+            return cmd_info_list;
+        }
+
         pub fn init() Self {
             return Self{};
         }
@@ -490,203 +806,20 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 break :blk cmd_list;
             };
 
-            // Convert global options to OptionInfo for completions
-            const global_options_list = comptime blk: {
-                var opts: []const zcli.OptionInfo = &.{};
-                for (global_options) |global_opt| {
-                    opts = opts ++ .{zcli.OptionInfo{
-                        .name = global_opt.name,
-                        .short = global_opt.short,
-                        .description = global_opt.description,
-                        .takes_value = global_opt.type != bool,
-                    }};
-                }
-                break :blk opts;
-            };
+            const global_options_list = global_options_info;
 
-            // Build command info for plugins at compile time
-            const plugin_command_info_list = comptime blk: {
-                var cmd_info_list: []const zcli.CommandInfo = &.{};
-                // Add regular commands with their metadata, but skip "root"
-                for (cmd_entries) |cmd| {
-                    // Skip root command from the visible commands list
-                    if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) {
-                        continue;
-                    }
-
-                    var description: ?[]const u8 = null;
-                    var examples: ?[]const []const u8 = null;
-                    var hidden: bool = false;
-                    var aliases: []const []const u8 = &.{};
-
-                    if (@hasDecl(cmd.module, "meta")) {
-                        const meta = cmd.module.meta;
-                        if (@hasField(@TypeOf(meta), "description")) {
-                            description = meta.description;
-                        }
-                        if (@hasField(@TypeOf(meta), "examples")) {
-                            examples = meta.examples;
-                        }
-                        if (@hasField(@TypeOf(meta), "hidden")) {
-                            hidden = meta.hidden;
-                        }
-                        if (@hasField(@TypeOf(meta), "aliases")) {
-                            aliases = meta.aliases;
-                        }
-                    }
-
-                    // Introspect Options struct to build option information
-                    var options: []const zcli.OptionInfo = &.{};
-                    if (@hasDecl(cmd.module, "Options")) {
-                        const OptionsType = cmd.module.Options;
-                        const options_info = @typeInfo(OptionsType);
-
-                        if (options_info == .@"struct") {
-                            const fields = options_info.@"struct".fields;
-                            for (fields) |field| {
-                                // Determine if this option takes a value (everything except bool)
-                                // Unwrap optional types first
-                                const base_type = if (@typeInfo(field.type) == .optional)
-                                    @typeInfo(field.type).optional.child
-                                else
-                                    field.type;
-                                const takes_value = base_type != bool;
-
-                                var opt_desc: ?[]const u8 = null;
-                                var opt_short: ?u8 = null;
-
-                                // Check meta.options for description and short flag
-                                if (@hasDecl(cmd.module, "meta")) {
-                                    const meta = cmd.module.meta;
-                                    if (@hasField(@TypeOf(meta), "options")) {
-                                        if (@hasField(@TypeOf(meta.options), field.name)) {
-                                            const opt_meta = @field(meta.options, field.name);
-                                            if (@hasField(@TypeOf(opt_meta), "description")) {
-                                                opt_desc = opt_meta.description;
-                                            }
-                                            if (@hasField(@TypeOf(opt_meta), "short")) {
-                                                opt_short = opt_meta.short;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                options = options ++ .{zcli.OptionInfo{
-                                    .name = field.name,
-                                    .short = opt_short,
-                                    .description = opt_desc,
-                                    .takes_value = takes_value,
-                                }};
-                            }
-                        }
-                    }
-
-                    cmd_info_list = cmd_info_list ++ .{zcli.CommandInfo{
-                        .path = cmd.path,
-                        .description = description,
-                        .examples = examples,
-                        .options = options,
-                        .hidden = hidden,
-                        .aliases = aliases,
-                    }};
-                }
-
-                // Add plugin commands with their metadata (including nested)
-                for (plugin_command_entries) |plugin_cmd| {
-                    const CommandModule = plugin_cmd.module;
-
-                    var description: ?[]const u8 = null;
-                    var examples: ?[]const []const u8 = null;
-                    var hidden: bool = false;
-                    var aliases: []const []const u8 = &.{};
-
-                    if (@hasDecl(CommandModule, "meta")) {
-                        const meta = CommandModule.meta;
-                        if (@hasField(@TypeOf(meta), "description")) {
-                            description = meta.description;
-                        }
-                        if (@hasField(@TypeOf(meta), "examples")) {
-                            examples = meta.examples;
-                        }
-                        if (@hasField(@TypeOf(meta), "hidden")) {
-                            hidden = meta.hidden;
-                        }
-                        if (@hasField(@TypeOf(meta), "aliases")) {
-                            aliases = meta.aliases;
-                        }
-                    }
-
-                    // Introspect Options struct to build option information
-                    var options: []const zcli.OptionInfo = &.{};
-                    if (@hasDecl(CommandModule, "Options")) {
-                        const OptionsType = CommandModule.Options;
-                        const options_info = @typeInfo(OptionsType);
-
-                        if (options_info == .@"struct") {
-                            const fields = options_info.@"struct".fields;
-                            for (fields) |field| {
-                                // Determine if this option takes a value (everything except bool)
-                                // Unwrap optional types first
-                                const base_type = if (@typeInfo(field.type) == .optional)
-                                    @typeInfo(field.type).optional.child
-                                else
-                                    field.type;
-                                const takes_value = base_type != bool;
-
-                                var opt_desc: ?[]const u8 = null;
-                                var opt_short: ?u8 = null;
-
-                                // Check meta.options for description and short flag
-                                if (@hasDecl(CommandModule, "meta")) {
-                                    const meta = CommandModule.meta;
-                                    if (@hasField(@TypeOf(meta), "options")) {
-                                        if (@hasField(@TypeOf(meta.options), field.name)) {
-                                            const opt_meta = @field(meta.options, field.name);
-                                            if (@hasField(@TypeOf(opt_meta), "description")) {
-                                                opt_desc = opt_meta.description;
-                                            }
-                                            if (@hasField(@TypeOf(opt_meta), "short")) {
-                                                opt_short = opt_meta.short;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                options = options ++ .{zcli.OptionInfo{
-                                    .name = field.name,
-                                    .short = opt_short,
-                                    .description = opt_desc,
-                                    .takes_value = takes_value,
-                                }};
-                            }
-                        }
-                    }
-
-                    cmd_info_list = cmd_info_list ++ .{zcli.CommandInfo{
-                        .path = plugin_cmd.path,
-                        .description = description,
-                        .examples = examples,
-                        .options = options,
-                        .hidden = hidden,
-                        .aliases = aliases,
-                    }};
-                }
-
-                break :blk cmd_info_list;
-            };
+            const plugin_command_info_list = command_info;
 
             // Create IO and finalize before passing to Context
             var io = zcli.IO.init();
             io.finalize();
 
-            var context = zcli.Context{
+            // Use the computed Context type which includes type-safe plugin data
+            var context = Context{
                 .allocator = allocator,
                 .io = &io,
                 .environment = zcli.Environment.init(allocator),
-                .plugin_extensions = zcli.ContextExtensions.init(allocator),
-                .app_name = config.app_name,
-                .app_version = config.app_version,
-                .app_description = config.app_description,
+                .theme = zcli.ztheme.Theme.init(allocator),
                 .available_commands = available_commands,
                 .command_path = &.{},
                 .plugin_command_info = plugin_command_info_list,
@@ -734,7 +867,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             try self.execute(allocator, args[1..]);
         }
 
-        pub fn parseGlobalOptions(self: *Self, context: *zcli.Context, args: []const []const u8) !zcli.GlobalOptionsResult {
+        pub fn parseGlobalOptions(self: *Self, context: *Context, args: []const []const u8) !zcli.GlobalOptionsResult {
             var consumed = std.ArrayList(usize){};
             var remaining = std.ArrayList([]const u8){};
             defer consumed.deinit(context.allocator);
@@ -832,7 +965,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             };
         }
 
-        fn executeCommand(_: *Self, context: *zcli.Context, args_input: []const []const u8) !void {
+        fn executeCommand(_: *Self, context: *Context, args_input: []const []const u8) !void {
             // Check if we should use the root command
             // Root command is executed when:
             // 1. No arguments provided, OR
@@ -1401,7 +1534,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             return plugin_command_entries;
         }
 
-        pub fn transformArgs(self: @This(), context: *zcli.Context, args: []const []const u8) !zcli.TransformResult {
+        pub fn transformArgs(self: @This(), context: anytype, args: []const []const u8) !zcli.TransformResult {
             _ = self;
             var transform_result = zcli.TransformResult{ .args = args };
             inline for (sorted_plugins) |Plugin| {
@@ -1828,7 +1961,7 @@ const RootCommand = struct {
     pub const Args = zcli.NoArgs;
     pub const Options = zcli.NoOptions;
 
-    pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+    pub fn execute(_: Args, _: Options, context: anytype) !void {
         try context.io.stdout.print("root executed\n", .{});
     }
 };
@@ -1845,7 +1978,7 @@ const NestedCommand = struct {
         force: bool = false,
     };
 
-    pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    pub fn execute(args: Args, options: Options, context: anytype) !void {
         try context.io.stdout.print("nested executed: name={s}, force={}\n", .{ args.name, options.force });
     }
 };
@@ -2058,7 +2191,7 @@ const NetworkLs = struct {
     };
     pub const Args = zcli.NoArgs;
     pub const Options = zcli.NoOptions;
-    pub fn execute(_: Args, _: Options, context: *zcli.Context) !void {
+    pub fn execute(_: Args, _: Options, context: anytype) !void {
         // Test command - no output needed
         _ = context;
     }
@@ -2075,7 +2208,7 @@ const TestHelpPlugin = struct {
         command_found_error = false;
     }
 
-    pub fn onError(context: *zcli.Context, err: anyerror) !bool {
+    pub fn onError(context: anytype, err: anyerror) !bool {
         _ = context;
         if (err == error.CommandNotFound) {
             command_found_error = true;

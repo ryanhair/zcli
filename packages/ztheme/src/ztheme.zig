@@ -27,6 +27,8 @@ pub const Style = @import("core/style.zig").Style;
 pub const SemanticRole = @import("adaptive/semantic.zig").SemanticRole;
 pub const getSemanticColor = @import("adaptive/palettes.zig").getSemanticColor;
 pub const getSemanticRGB = @import("adaptive/palettes.zig").getSemanticRGB;
+pub const RGB = @import("adaptive/palettes.zig").RGB;
+pub const SemanticPalette = @import("adaptive/palettes.zig").SemanticPalette;
 
 // Terminal detection and capability management
 pub const TerminalCapability = @import("detection/capability.zig").TerminalCapability;

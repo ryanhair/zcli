@@ -15,6 +15,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zprogress_dep = b.dependency("zprogress", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Main zcli module that will be exposed to users
     const zcli_module = b.addModule("zcli", .{
@@ -24,6 +28,7 @@ pub fn build(b: *std.Build) void {
     });
     zcli_module.addImport("ztheme", ztheme_dep.module("ztheme"));
     zcli_module.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+    zcli_module.addImport("zprogress", zprogress_dep.module("zprogress"));
 
     // Build utilities module for build.zig files
     _ = b.addModule("build_utils", .{
@@ -76,6 +81,7 @@ pub fn build(b: *std.Build) void {
         });
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -93,6 +99,7 @@ pub fn build(b: *std.Build) void {
         });
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -109,6 +116,7 @@ pub fn build(b: *std.Build) void {
         });
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -125,6 +133,7 @@ pub fn build(b: *std.Build) void {
         });
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -146,6 +155,7 @@ pub fn build(b: *std.Build) void {
         });
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         const sequential_tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -212,3 +222,4 @@ pub const CommandModule = types.CommandModule;
 pub const CommandModuleConfig = types.CommandModuleConfig;
 pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 pub const generate = main.generate;
+pub const generateDocs = main.generateDocs;

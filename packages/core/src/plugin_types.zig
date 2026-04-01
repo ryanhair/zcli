@@ -114,15 +114,6 @@ pub fn option(comptime name: []const u8, comptime T: type, comptime config: anyt
     };
 }
 
-/// Hook timing for plugin lifecycle events
-pub const HookTiming = enum {
-    pre_parse, // Before argument parsing
-    post_parse, // After parsing, before command execution
-    pre_execute, // Right before command execution
-    post_execute, // After command execution
-    on_error, // When an error occurs
-};
-
 /// Result of argument transformation
 pub const TransformResult = struct {
     args: []const []const u8,
@@ -232,109 +223,10 @@ pub fn PluginEntry(comptime T: type) type {
     };
 }
 
-// ============================================================================
-// Context Extensions for Plugin Support
-// ============================================================================
-
-/// Extensions to Context for plugin support
-pub const ContextExtensions = struct {
-    global_data: std.StringHashMap([]const u8),
-    verbosity: bool = false,
-
-    pub fn init(allocator: std.mem.Allocator) @This() {
-        return .{
-            .global_data = std.StringHashMap([]const u8).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *@This()) void {
-        self.global_data.deinit();
-    }
-
-    pub fn setVerbosity(self: *@This(), verbose: bool) void {
-        self.verbosity = verbose;
-    }
-
-    pub fn setGlobalData(self: *@This(), key: []const u8, value: []const u8) !void {
-        try self.global_data.put(key, value);
-    }
-
-    pub fn getGlobalData(self: *@This(), comptime T: type, key: []const u8) ?T {
-        const value = self.global_data.get(key) orelse return null;
-
-        // Simple type conversion - extend as needed
-        if (T == []const u8) {
-            return @as(T, value);
-        } else if (T == bool) {
-            return std.mem.eql(u8, value, "true");
-        } else if (T == u32) {
-            return std.fmt.parseInt(u32, value, 10) catch null;
-        }
-
-        return null;
-    }
-
-    pub fn setLogLevel(self: *@This(), level: []const u8) !void {
-        try self.setGlobalData("log-level", level);
-    }
-};
-
-// ============================================================================
-// Legacy Types (for compatibility during migration)
-// ============================================================================
-
 /// Standardized metadata structure for commands
 pub const Metadata = struct {
     description: ?[]const u8 = null,
     examples: ?[]const []const u8 = null,
-    options: ?OptionMetadata = null,
-    arguments: ?ArgumentMetadata = null,
-};
-
-/// Information about a single option
-pub const OptionInfo = struct {
-    name: []const u8,
-    type_name: []const u8,
-    has_default: bool,
-    default_value: ?[]const u8 = null,
-    description: ?[]const u8 = null,
-    short: ?u8 = null,
-};
-
-/// Metadata about command options/flags
-pub const OptionMetadata = struct {
-    options: []const OptionInfo = &.{},
-
-    pub fn getDescription(self: @This(), option_name: []const u8) ?[]const u8 {
-        for (self.options) |opt| {
-            if (std.mem.eql(u8, opt.name, option_name)) {
-                return opt.description;
-            }
-        }
-        return null;
-    }
-};
-
-/// Information about a single argument
-pub const ArgumentInfo = struct {
-    name: []const u8,
-    type_name: []const u8,
-    required: bool = true,
-    description: ?[]const u8 = null,
-};
-
-/// Metadata about command arguments
-pub const ArgumentMetadata = struct {
-    arguments: []const ArgumentInfo = &.{},
-
-    pub fn getDescription(self: @This(), arg_name: []const u8) ?[]const u8 {
-        for (self.arguments) |arg| {
-            if (std.mem.eql(u8, arg.name, arg_name)) {
-                return arg.description;
-            }
-        }
-        return null;
-    }
 };
 
 /// Result returned by plugin event handlers (legacy)
@@ -344,121 +236,13 @@ pub const PluginResult = struct {
     stop_execution: bool = false,
 };
 
-/// Generic plugin context that provides access to command information (legacy)
-pub const PluginContext = struct {
-    command_path: []const u8,
-    metadata: Metadata,
-};
-
-/// Event data for handleOption (legacy)
-pub const OptionEvent = struct {
-    option: []const u8,
-    plugin_context: PluginContext,
-};
-
-/// Event data for handleError (legacy)
-pub const ErrorEvent = struct {
-    err: anyerror,
-    command_path: []const []const u8,
-    available_commands: ?[]const []const []const u8 = null,
-};
-
-/// Event data for handlePreCommand (legacy)
-pub const PreCommandEvent = struct {
-    command_path: []const u8,
-    args: []const []const u8,
-    metadata: Metadata,
-};
-
-/// Event data for handlePostCommand (legacy)
-pub const PostCommandEvent = struct {
-    command_path: []const u8,
-    args: []const []const u8,
-    metadata: Metadata,
-    success: bool,
-};
-
-/// Convert command module meta to standardized Metadata (runtime version)
-pub fn convertToStandardMetadata(module_meta: anytype) Metadata {
-    var metadata = Metadata{};
-
-    const meta_type_info = @typeInfo(@TypeOf(module_meta));
-    if (meta_type_info == .@"struct") {
-        // Extract description
-        if (@hasField(@TypeOf(module_meta), "description")) {
-            metadata.description = module_meta.description;
-        }
-
-        // Extract usage
-        if (@hasField(@TypeOf(module_meta), "usage")) {
-            metadata.usage = module_meta.usage;
-        }
-
-        // Extract examples
-        if (@hasField(@TypeOf(module_meta), "examples")) {
-            metadata.examples = module_meta.examples;
-        }
-
-        // Extract options metadata
-        if (@hasField(@TypeOf(module_meta), "options")) {
-            const options_meta = module_meta.options;
-            if (@TypeOf(options_meta) == OptionMetadata) {
-                metadata.options = options_meta;
-            } else if (@typeInfo(@TypeOf(options_meta)) == .@"struct") {
-                // If it's a custom struct, try to extract option info
-                if (@hasField(@TypeOf(options_meta), "options")) {
-                    metadata.options = OptionMetadata{
-                        .options = options_meta.options,
-                    };
-                }
-            }
-        }
-
-        // Extract arguments metadata
-        if (@hasField(@TypeOf(module_meta), "arguments")) {
-            const args_meta = module_meta.arguments;
-            if (@TypeOf(args_meta) == ArgumentMetadata) {
-                metadata.arguments = args_meta;
-            } else if (@typeInfo(@TypeOf(args_meta)) == .@"struct") {
-                // If it's a custom struct, try to extract argument info
-                if (@hasField(@TypeOf(args_meta), "arguments")) {
-                    metadata.arguments = ArgumentMetadata{
-                        .arguments = args_meta.arguments,
-                    };
-                }
-            }
-        }
-    }
-
-    return metadata;
-}
-
-/// Extract metadata from a command module
-pub fn extractMetadataFromModule(comptime ModuleType: type) Metadata {
-    comptime {
-        // Use type info to check for meta declaration
-        const type_info = @typeInfo(ModuleType);
-        if (type_info == .@"struct") {
-            // Look for meta declaration in the struct
-            for (type_info.@"struct".decls) |decl| {
-                if (std.mem.eql(u8, decl.name, "meta")) {
-                    const meta = @field(ModuleType, decl.name);
-                    return convertToStandardMetadata(meta);
-                }
-            }
-        }
-
-        return Metadata{}; // Empty metadata if none found
-    }
-}
-
 // Test basic argument transformation
 test "basic argument transformation" {
     const allocator = testing.allocator;
 
     const TransformUppercasePlugin = struct {
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             var new_args = try context.allocator.alloc([]const u8, args.len);
@@ -503,7 +287,7 @@ test "transformation with argument consumption" {
 
     const TransformFilterPlugin = struct {
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             var filtered: std.ArrayList([]const u8) = .empty;
@@ -565,7 +349,7 @@ test "transformation chain with multiple plugins" {
     const TransformPlugin1 = struct {
         pub const priority = 100;
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             // Replace "alias" with "actual-command" - no allocation, just return modified view
@@ -585,7 +369,7 @@ test "transformation chain with multiple plugins" {
     const TransformPlugin2 = struct {
         pub const priority = 50;
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             // Add a prefix to all arguments and free the intermediate allocation if needed
@@ -640,7 +424,7 @@ test "stopping transformation pipeline" {
 
     const TransformStopPlugin = struct {
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             _ = context;
@@ -658,7 +442,7 @@ test "stopping transformation pipeline" {
         pub var was_called = false;
 
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             _ = context;
@@ -699,7 +483,7 @@ test "environment variable expansion transformation" {
 
     const TransformEnvPlugin = struct {
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             var new_args: std.ArrayList([]const u8) = .empty;
@@ -757,7 +541,7 @@ test "path expansion transformation" {
 
     const TransformPathPlugin = struct {
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             var new_args: std.ArrayList([]const u8) = .empty;
@@ -817,7 +601,7 @@ test "argument injection transformation" {
 
     const TransformInjectionPlugin = struct {
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             // If user runs "commit", inject -m if not present
@@ -882,7 +666,7 @@ test "transformation error handling" {
 
     const TransformErrorPlugin = struct {
         pub fn transformArgs(
-            context: *zcli.Context,
+            context: anytype,
             args: []const []const u8,
         ) !zcli.TransformResult {
             _ = context;

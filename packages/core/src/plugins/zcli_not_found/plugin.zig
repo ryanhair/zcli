@@ -8,7 +8,7 @@ const levenshtein = @import("levenshtein.zig");
 /// using Levenshtein distance algorithm to find similar commands.
 /// Error hook - handles command not found errors with suggestions
 pub fn onError(
-    context: *zcli.Context,
+    context: anytype,
     err: anyerror,
 ) !bool {
     if (err == error.CommandNotFound) {
@@ -23,7 +23,11 @@ pub fn onError(
             }
         }
 
-        const attempted_command = if (context.command_path.len > 0) context.command_path[0] else "unknown";
+        const attempted_command = if (context.command_path.len > 0)
+            try std.mem.join(context.allocator, " ", context.command_path)
+        else
+            try context.allocator.dupe(u8, "unknown");
+        defer context.allocator.free(attempted_command);
         try generateCommandNotFoundHelp(context, attempted_command, visible_commands.items);
 
         // We've shown helpful suggestions, but let the error continue to propagate
@@ -36,7 +40,7 @@ pub fn onError(
 
 /// Generate help text for command not found errors
 fn generateCommandNotFoundHelp(
-    context: *zcli.Context,
+    context: anytype,
     attempted_command: []const u8,
     available_commands: []const []const []const u8,
 ) !void {

@@ -23,12 +23,8 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("zcli", zcli_module);
 
-    // Import ztheme module from parent project
-    const ztheme_module = b.createModule(.{
-        .root_source_file = b.path("../../packages/ztheme/src/ztheme.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // Get ztheme module from zcli dependency (it's already exported there)
+    const ztheme_module = zcli_dep.module("ztheme");
     exe.root_module.addImport("ztheme", ztheme_module);
 
     // Generate command registry using the plugin-aware build system

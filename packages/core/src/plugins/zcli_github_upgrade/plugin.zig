@@ -56,14 +56,14 @@ pub fn init(config: Config) type {
                     force: bool = false,
                 };
 
-                pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+                pub fn execute(args: Args, options: Options, context: anytype) !void {
                     return executeUpgrade(args, options, context);
                 }
             };
         };
 
         /// Execute the upgrade command
-        fn executeUpgrade(args: commands.upgrade.Args, options: commands.upgrade.Options, context: *zcli.Context) !void {
+        fn executeUpgrade(args: commands.upgrade.Args, options: commands.upgrade.Options, context: anytype) !void {
             const allocator = context.allocator;
             var stdout = context.stdout();
 
@@ -155,7 +155,7 @@ pub fn init(config: Config) type {
         }
 
         /// Startup hook to check for updates if configured
-        pub fn onStartup(context: *zcli.Context) !void {
+        pub fn onStartup(context: anytype) !void {
             if (!plugin_config.inform_out_of_date) {
                 return;
             }

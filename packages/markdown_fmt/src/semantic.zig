@@ -1,153 +1,16 @@
 //! Semantic color support for markdown_fmt
 //!
-//! Extends markdown parsing to support semantic tags like <error>, <success>, etc.
-//! Can integrate with external theme systems like ztheme for color palettes.
+//! Types are imported from ztheme (the canonical source for semantic colors).
+//! This module provides markdown-specific parsing and multi-version compilation.
 
 const std = @import("std");
+const ztheme = @import("ztheme");
 
-/// Terminal capability levels for color output
-pub const TerminalCapability = enum {
-    no_color, // No ANSI codes at all
-    ansi_16, // Basic 16 ANSI colors
-    ansi_256, // 256-color palette
-    true_color, // 24-bit RGB
-};
-
-/// Semantic roles that can be used in markdown
-pub const SemanticRole = enum {
-    success,
-    err, // 'error' is reserved
-    warning,
-    info,
-    muted,
-    command,
-    flag,
-    path,
-    value,
-    code,
-    primary,
-    secondary,
-    accent,
-};
-
-/// RGB color for semantic roles
-pub const RGB = struct {
-    r: u8,
-    g: u8,
-    b: u8,
-
-    /// Convert to ANSI escape code for the given terminal capability
-    pub fn toAnsi(self: RGB, comptime capability: TerminalCapability) []const u8 {
-        return switch (capability) {
-            .no_color => "",
-            .ansi_16 => self.toAnsi16(),
-            .ansi_256 => self.toAnsi256(),
-            .true_color => self.toTrueColor(),
-        };
-    }
-
-    /// Convert to basic 16-color ANSI code (approximated)
-    fn toAnsi16(self: RGB) []const u8 {
-        comptime {
-            const ansi_code = approximateRgbToAnsi16(self.r, self.g, self.b);
-            return std.fmt.comptimePrint("\x1b[{d}m", .{30 + (ansi_code % 8)});
-        }
-    }
-
-    /// Convert to 256-color ANSI code (approximated)
-    fn toAnsi256(self: RGB) []const u8 {
-        comptime {
-            const color_idx = approximateRgbToAnsi256(self.r, self.g, self.b);
-            return std.fmt.comptimePrint("\x1b[38;5;{d}m", .{color_idx});
-        }
-    }
-
-    /// Convert to true color (24-bit RGB) ANSI code
-    fn toTrueColor(self: RGB) []const u8 {
-        comptime {
-            return std.fmt.comptimePrint("\x1b[38;2;{d};{d};{d}m", .{ self.r, self.g, self.b });
-        }
-    }
-};
-
-/// Approximate RGB color to nearest 16-color ANSI code
-fn approximateRgbToAnsi16(r: u8, g: u8, b: u8) u8 {
-    // Use simple brightness-based approximation
-    const brightness = (@as(u32, r) + @as(u32, g) + @as(u32, b)) / 3;
-    const is_bright = brightness > 128;
-
-    // Determine dominant color
-    const max_component = @max(@max(r, g), b);
-    const threshold: u8 = @intCast((@as(u16, max_component) * 60) / 100); // 60% of max
-
-    var color_idx: u8 = 0;
-    if (r >= threshold) color_idx |= 1; // Red bit
-    if (g >= threshold) color_idx |= 2; // Green bit
-    if (b >= threshold) color_idx |= 4; // Blue bit
-
-    // If grayscale, use black or white
-    const is_grayscale = (@max(@max(r, g), b) - @min(@min(r, g), b)) < 30;
-    if (is_grayscale) {
-        return if (brightness < 64) 0 else if (brightness > 192) 7 else 8;
-    }
-
-    return if (is_bright) color_idx + 8 else color_idx;
-}
-
-/// Approximate RGB color to nearest 256-color palette index
-fn approximateRgbToAnsi256(r: u8, g: u8, b: u8) u8 {
-    // Check if it's a grayscale color (r, g, b are similar)
-    const max_diff = @max(@max(r, g), b) - @min(@min(r, g), b);
-    if (max_diff < 8) {
-        // Grayscale ramp: colors 232-255
-        const gray_value = (@as(u16, r) + @as(u16, g) + @as(u16, b)) / 3;
-        if (gray_value < 8) return 16; // Black
-        if (gray_value > 247) return 231; // White
-        return 232 + @as(u8, @intCast((gray_value - 8) / 10));
-    }
-
-    // Map to 6x6x6 RGB cube (colors 16-231)
-    const r_idx = (@as(u16, r) * 5 + 127) / 255;
-    const g_idx = (@as(u16, g) * 5 + 127) / 255;
-    const b_idx = (@as(u16, b) * 5 + 127) / 255;
-
-    return 16 + (r_idx * 36) + (g_idx * 6) + b_idx;
-}
-
-/// Semantic color palette
-pub const SemanticPalette = struct {
-    success: RGB = RGB{ .r = 76, .g = 217, .b = 100 },
-    err: RGB = RGB{ .r = 255, .g = 105, .b = 97 },
-    warning: RGB = RGB{ .r = 255, .g = 206, .b = 84 },
-    info: RGB = RGB{ .r = 116, .g = 169, .b = 250 },
-    muted: RGB = RGB{ .r = 156, .g = 163, .b = 175 },
-    command: RGB = RGB{ .r = 64, .g = 224, .b = 208 },
-    flag: RGB = RGB{ .r = 218, .g = 112, .b = 214 },
-    path: RGB = RGB{ .r = 100, .g = 221, .b = 221 },
-    value: RGB = RGB{ .r = 124, .g = 252, .b = 0 },
-    code: RGB = RGB{ .r = 168, .g = 136, .b = 248 },
-    primary: RGB = RGB{ .r = 255, .g = 255, .b = 255 },
-    secondary: RGB = RGB{ .r = 189, .g = 189, .b = 189 },
-    accent: RGB = RGB{ .r = 0, .g = 255, .b = 255 },
-
-    pub fn getColor(self: SemanticPalette, role: SemanticRole) RGB {
-        return switch (role) {
-            .success => self.success,
-            .err => self.err,
-            .warning => self.warning,
-            .info => self.info,
-            .muted => self.muted,
-            .command => self.command,
-            .flag => self.flag,
-            .path => self.path,
-            .value => self.value,
-            .code => self.code,
-            .primary => self.primary,
-            .secondary => self.secondary,
-            .accent => self.accent,
-        };
-    }
-};
+// Re-export canonical types from ztheme
+pub const TerminalCapability = ztheme.TerminalCapability;
+pub const SemanticRole = ztheme.SemanticRole;
+pub const RGB = ztheme.RGB;
+pub const SemanticPalette = ztheme.SemanticPalette;
 
 /// Parse markdown with semantic color support for a specific terminal capability
 /// Supports: <error>text</error>, <success>text</success>, etc.
@@ -188,8 +51,10 @@ pub fn parseWithSemantics(comptime markdown: []const u8, comptime palette: Seman
                             const color = palette.getColor(r);
                             const ansi_code = color.toAnsi(capability);
 
-                            // Parse markdown inside the semantic tag
-                            const parsed_content = parseMarkdownOnly(content, capability);
+                            // Parse markdown inside the semantic tag, then
+                            // re-apply semantic color after any inline resets
+                            const raw_parsed = parseMarkdownOnly(content, capability);
+                            const parsed_content = reapplyAfterResets(raw_parsed, ansi_code, ANSI_RESET);
                             result = result ++ ansi_code ++ parsed_content ++ ANSI_RESET;
                             i = content_start + ce + closing_tag.len;
                             continue;
@@ -201,6 +66,31 @@ pub fn parseWithSemantics(comptime markdown: []const u8, comptime palette: Seman
             // Regular character
             result = result ++ &[_]u8{markdown[i]};
             i += 1;
+        }
+
+        return result;
+    }
+}
+
+/// Re-apply formatting after reset codes to maintain outer formatting in nested contexts
+fn reapplyAfterResets(comptime content: []const u8, comptime format_code: []const u8, comptime ansi_reset: []const u8) []const u8 {
+    comptime {
+        if (ansi_reset.len == 0) return content;
+
+        var result: []const u8 = "";
+        var i: usize = 0;
+
+        while (i < content.len) {
+            if (i + ansi_reset.len <= content.len and std.mem.eql(u8, content[i .. i + ansi_reset.len], ansi_reset)) {
+                result = result ++ ansi_reset;
+                if (i + ansi_reset.len < content.len) {
+                    result = result ++ format_code;
+                }
+                i += ansi_reset.len;
+            } else {
+                result = result ++ &[_]u8{content[i]};
+                i += 1;
+            }
         }
 
         return result;
@@ -359,6 +249,10 @@ pub fn parseSemanticRole(comptime tag: []const u8) ?SemanticRole {
         .value
     else if (std.mem.eql(u8, tag, "code"))
         .code
+    else if (std.mem.eql(u8, tag, "header"))
+        .header
+    else if (std.mem.eql(u8, tag, "link"))
+        .link
     else if (std.mem.eql(u8, tag, "primary"))
         .primary
     else if (std.mem.eql(u8, tag, "secondary"))
@@ -376,6 +270,12 @@ test "semantic role parsing" {
 
     const error_role = parseSemanticRole("error");
     try std.testing.expect(error_role == .err);
+
+    const header_role = parseSemanticRole("header");
+    try std.testing.expect(header_role == .header);
+
+    const link_role = parseSemanticRole("link");
+    try std.testing.expect(link_role == .link);
 
     const invalid = parseSemanticRole("invalid");
     try std.testing.expect(invalid == null);

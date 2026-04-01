@@ -24,7 +24,7 @@ pub const Options = struct {
     bare: bool = false,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: anytype) !void {
     const dir = args.directory orelse ".";
     const repo_type = if (options.bare) "bare repository" else "repository";
 

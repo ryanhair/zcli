@@ -27,7 +27,7 @@ pub const Options = struct {
     patch: bool = false,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: anytype) !void {
     if (options.all) {
         try context.stdout().print("Adding all modified and new files to the index\n", .{});
         return;

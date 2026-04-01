@@ -32,7 +32,7 @@ pub const commands = struct {
 
             pub const Options = struct {};
 
-            pub fn execute(args: Args, _: Options, context: *zcli.Context) !void {
+            pub fn execute(args: Args, _: Options, context: anytype) !void {
                 const allocator = context.allocator;
                 var stdout = context.stdout();
                 var stderr = context.stderr();
@@ -84,7 +84,7 @@ pub const commands = struct {
 
             pub const Options = struct {};
 
-            pub fn execute(args: Args, _: Options, context: *zcli.Context) !void {
+            pub fn execute(args: Args, _: Options, context: anytype) !void {
                 const allocator = context.allocator;
                 var stdout = context.stdout();
                 var stderr = context.stderr();
@@ -169,7 +169,7 @@ pub const commands = struct {
 
             pub const Options = struct {};
 
-            pub fn execute(args: Args, _: Options, context: *zcli.Context) !void {
+            pub fn execute(args: Args, _: Options, context: anytype) !void {
                 const allocator = context.allocator;
                 var stdout = context.stdout();
                 var stderr = context.stderr();
@@ -262,7 +262,7 @@ fn getInstallPath(allocator: std.mem.Allocator, shell_type: ShellType, app_name:
     };
 }
 
-fn printEnableInstructions(shell_type: ShellType, context: *zcli.Context) !void {
+fn printEnableInstructions(shell_type: ShellType, context: anytype) !void {
     var stdout = context.stdout();
 
     switch (shell_type) {
@@ -296,7 +296,7 @@ fn printEnableInstructions(shell_type: ShellType, context: *zcli.Context) !void 
     }
 }
 
-fn printDisableInstructions(shell_type: ShellType, context: *zcli.Context) !void {
+fn printDisableInstructions(shell_type: ShellType, context: anytype) !void {
     var stdout = context.stdout();
 
     switch (shell_type) {

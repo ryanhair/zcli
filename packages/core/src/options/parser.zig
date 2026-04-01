@@ -177,6 +177,33 @@ pub fn parseOptionsWithMeta(
         }
     }
 
+    // Apply environment variable values (precedence: CLI > env > default)
+    // Check metadata for .env field and look up environment variables
+    inline for (struct_info.fields) |field| {
+        comptime var has_env = false;
+        comptime var env_name: []const u8 = "";
+
+        // Check if meta is not null (meta type is not @TypeOf(null))
+        if (comptime @TypeOf(meta) != @TypeOf(null)) {
+            if (comptime @hasField(@TypeOf(meta), "options")) {
+                if (comptime @hasField(@TypeOf(meta.options), field.name)) {
+                    const field_meta = @field(meta.options, field.name);
+                    if (comptime @hasField(@TypeOf(field_meta), "env")) {
+                        has_env = true;
+                        env_name = field_meta.env;
+                    }
+                }
+            }
+        }
+
+        if (comptime has_env) {
+            if (std.posix.getenv(env_name)) |env_value| {
+                // Parse environment variable value based on field type
+                _ = applyEnvValue(field.type, &@field(result, field.name), env_value);
+            }
+        }
+    }
+
     // Parse options, converting any errors to structured errors
     var arg_index: usize = 0;
     var option_counts = std.StringHashMap(u32).init(allocator);
@@ -275,6 +302,75 @@ fn convertShortOptionError(err: anyerror) ZcliError {
         error.OutOfMemory => ZcliError.SystemOutOfMemory,
         else => ZcliError.OptionInvalidValue,
     };
+}
+
+/// Apply an environment variable value to an option field.
+/// Returns true if value was applied, false if parsing failed.
+/// This is a comptime function that handles different field types.
+fn applyEnvValue(comptime T: type, target: *T, env_value: []const u8) bool {
+    // Handle boolean type
+    if (T == bool) {
+        // Common boolean env var values
+        if (std.mem.eql(u8, env_value, "1") or
+            std.mem.eql(u8, env_value, "true") or
+            std.mem.eql(u8, env_value, "TRUE") or
+            std.mem.eql(u8, env_value, "yes") or
+            std.mem.eql(u8, env_value, "YES"))
+        {
+            target.* = true;
+            return true;
+        } else if (std.mem.eql(u8, env_value, "0") or
+            std.mem.eql(u8, env_value, "false") or
+            std.mem.eql(u8, env_value, "FALSE") or
+            std.mem.eql(u8, env_value, "no") or
+            std.mem.eql(u8, env_value, "NO"))
+        {
+            target.* = false;
+            return true;
+        }
+        return false;
+    }
+
+    // Handle string type
+    if (T == []const u8) {
+        target.* = env_value;
+        return true;
+    }
+
+    // Handle optional types
+    const type_info = @typeInfo(T);
+    if (type_info == .optional) {
+        const child_type = type_info.optional.child;
+        var child_value: child_type = undefined;
+        if (applyEnvValue(child_type, &child_value, env_value)) {
+            target.* = child_value;
+            return true;
+        }
+        return false;
+    }
+
+    // Handle integer types
+    if (type_info == .int) {
+        if (std.fmt.parseInt(T, env_value, 10)) |parsed| {
+            target.* = parsed;
+            return true;
+        } else |_| {
+            return false;
+        }
+    }
+
+    // Handle float types
+    if (type_info == .float) {
+        if (std.fmt.parseFloat(T, env_value)) |parsed| {
+            target.* = parsed;
+            return true;
+        } else |_| {
+            return false;
+        }
+    }
+
+    // Unsupported type
+    return false;
 }
 
 /// Parse a long option with metadata support (--option or --option=value)
@@ -1312,4 +1408,89 @@ test "parseOptions default values - some options provided" {
     try std.testing.expectEqualStrings("stdout", result.options.output); // Should use default
     try std.testing.expectEqual(@as(u32, 100), result.options.count); // Should use provided value
     try std.testing.expectEqual(@as(usize, 0), result.options.files.len); // Should be empty
+}
+
+// ============================================================================
+// Environment Variable Binding Tests
+// ============================================================================
+
+test "applyEnvValue boolean true values" {
+    var target: bool = false;
+
+    try std.testing.expect(applyEnvValue(bool, &target, "1"));
+    try std.testing.expect(target == true);
+
+    target = false;
+    try std.testing.expect(applyEnvValue(bool, &target, "true"));
+    try std.testing.expect(target == true);
+
+    target = false;
+    try std.testing.expect(applyEnvValue(bool, &target, "TRUE"));
+    try std.testing.expect(target == true);
+
+    target = false;
+    try std.testing.expect(applyEnvValue(bool, &target, "yes"));
+    try std.testing.expect(target == true);
+}
+
+test "applyEnvValue boolean false values" {
+    var target: bool = true;
+
+    try std.testing.expect(applyEnvValue(bool, &target, "0"));
+    try std.testing.expect(target == false);
+
+    target = true;
+    try std.testing.expect(applyEnvValue(bool, &target, "false"));
+    try std.testing.expect(target == false);
+
+    target = true;
+    try std.testing.expect(applyEnvValue(bool, &target, "FALSE"));
+    try std.testing.expect(target == false);
+
+    target = true;
+    try std.testing.expect(applyEnvValue(bool, &target, "no"));
+    try std.testing.expect(target == false);
+}
+
+test "applyEnvValue string" {
+    var target: []const u8 = "";
+
+    try std.testing.expect(applyEnvValue([]const u8, &target, "hello world"));
+    try std.testing.expectEqualStrings("hello world", target);
+}
+
+test "applyEnvValue integer" {
+    var target: i32 = 0;
+
+    try std.testing.expect(applyEnvValue(i32, &target, "42"));
+    try std.testing.expect(target == 42);
+
+    try std.testing.expect(applyEnvValue(i32, &target, "-10"));
+    try std.testing.expect(target == -10);
+}
+
+test "applyEnvValue unsigned integer" {
+    var target: u32 = 0;
+
+    try std.testing.expect(applyEnvValue(u32, &target, "100"));
+    try std.testing.expect(target == 100);
+
+    // Invalid value should return false
+    try std.testing.expect(!applyEnvValue(u32, &target, "-5"));
+}
+
+test "applyEnvValue optional string" {
+    var target: ?[]const u8 = null;
+
+    try std.testing.expect(applyEnvValue(?[]const u8, &target, "test"));
+    try std.testing.expect(target != null);
+    try std.testing.expectEqualStrings("test", target.?);
+}
+
+test "applyEnvValue optional integer" {
+    var target: ?i32 = null;
+
+    try std.testing.expect(applyEnvValue(?i32, &target, "123"));
+    try std.testing.expect(target != null);
+    try std.testing.expect(target.? == 123);
 }

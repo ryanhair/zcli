@@ -10,6 +10,8 @@ const diagnostic_errors = @import("diagnostic_errors.zig");
 const type_utils = @import("type_utils.zig");
 pub const ztheme = @import("ztheme");
 pub const markdown_fmt = @import("markdown_fmt");
+pub const zprogress = @import("zprogress");
+pub const test_utils = @import("test_utils.zig");
 const testing = std.testing;
 
 // Re-export error types
@@ -18,12 +20,7 @@ pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 
 // Re-export plugin types for user convenience
 pub const Metadata = plugin_types.Metadata;
-pub const PluginContext = plugin_types.PluginContext;
 pub const PluginResult = plugin_types.PluginResult;
-pub const OptionEvent = plugin_types.OptionEvent;
-pub const ErrorEvent = plugin_types.ErrorEvent;
-pub const PreCommandEvent = plugin_types.PreCommandEvent;
-pub const PostCommandEvent = plugin_types.PostCommandEvent;
 
 // Re-export new plugin system types
 pub const GlobalOption = plugin_types.GlobalOption;
@@ -31,7 +28,6 @@ pub const TransformResult = plugin_types.TransformResult;
 pub const ParsedArgs = plugin_types.ParsedArgs;
 pub const GlobalOptionsResult = plugin_types.GlobalOptionsResult;
 pub const PluginEntry = plugin_types.PluginEntry;
-pub const ContextExtensions = plugin_types.ContextExtensions;
 pub const option = plugin_types.option;
 
 // Re-export standard empty types
@@ -57,11 +53,20 @@ pub const OptionInfo = struct {
     takes_value: bool = false,
 };
 
-/// Command information for introspection and completions
+/// Argument information for introspection and documentation
+pub const ArgInfo = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    is_optional: bool = false,
+    is_variadic: bool = false,
+};
+
+/// Command information for introspection, completions, and documentation
 pub const CommandInfo = struct {
     path: []const []const u8,
     description: ?[]const u8 = null,
     examples: ?[]const []const u8 = null,
+    args: []const ArgInfo = &.{},
     options: []const OptionInfo = &.{},
     hidden: bool = false,
     aliases: []const []const u8 = &.{},
@@ -87,11 +92,14 @@ pub const CommandModuleInfo = struct {
 };
 
 /// Execution context provided to commands and plugins
+/// Base Context type definition.
+/// Note: The actual Context type used at runtime is computed by the Registry
+/// based on registered plugins. This struct defines the common interface.
+/// Use the Context exported from your command_registry module instead.
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    io: *IO, // Pointer to avoid copying issues with self-referential pointers
+    io: *IO,
     environment: Environment,
-    plugin_extensions: ContextExtensions,
 
     // Core zcli command execution context
     app_name: []const u8 = "app",
@@ -99,7 +107,7 @@ pub const Context = struct {
     app_description: []const u8 = "",
     available_commands: []const []const []const u8 = &.{},
     command_path: []const []const u8 = &.{},
-    command_path_allocated: bool = false, // Track if command_path was allocated
+    command_path_allocated: bool = false,
     command_meta: ?CommandMeta = null,
     command_module_info: ?CommandModuleInfo = null,
 
@@ -107,34 +115,23 @@ pub const Context = struct {
     plugin_command_info: []const CommandInfo = &.{},
     global_options: []const OptionInfo = &.{},
 
+    const Self = @This();
+
     /// Initialize a new Context with the provided IO.
-    /// The IO struct is stored by pointer to avoid copying issues with
-    /// self-referential pointers in File.Writer.interface.
-    ///
-    /// Example usage:
-    /// ```zig
-    /// var io = zcli.IO.init();
-    /// io.finalize();
-    /// var context = zcli.Context.init(allocator, &io);
-    /// defer context.deinit();
-    /// ```
-    pub fn init(allocator: std.mem.Allocator, io: *IO) @This() {
+    pub fn init(allocator: std.mem.Allocator, io: *IO) Self {
         return .{
             .allocator = allocator,
             .io = io,
             .environment = Environment.init(allocator),
-            .plugin_extensions = ContextExtensions.init(allocator),
         };
     }
 
-    pub fn deinit(self: *@This()) void {
+    pub fn deinit(self: *Self) void {
         // Free command_path only if it was allocated
         if (self.command_path_allocated and self.command_path.len > 0) {
-            // Free individual string components first
             for (self.command_path) |component| {
                 self.allocator.free(component);
             }
-            // Then free the array itself
             self.allocator.free(self.command_path);
         }
 
@@ -148,79 +145,33 @@ pub const Context = struct {
             }
         }
 
-        self.plugin_extensions.deinit();
         self.environment.deinit();
     }
 
     // Convenience methods for I/O
-    pub fn stdout(self: *@This()) *std.Io.Writer {
+    pub fn stdout(self: *Self) *std.Io.Writer {
         return self.io.stdout();
     }
 
-    pub fn stderr(self: *@This()) *std.Io.Writer {
+    pub fn stderr(self: *Self) *std.Io.Writer {
         return self.io.stderr();
     }
 
-    pub fn stdin(self: *@This()) *std.Io.Reader {
+    pub fn stdin(self: *Self) *std.Io.Reader {
         return self.io.stdin();
     }
 
-    // Convenience methods for plugin support
-    pub fn setVerbosity(self: *@This(), verbose: bool) void {
-        self.plugin_extensions.setVerbosity(verbose);
-    }
-
-    pub fn setGlobalData(self: *@This(), key: []const u8, value: []const u8) !void {
-        try self.plugin_extensions.setGlobalData(key, value);
-    }
-
-    pub fn getGlobalData(self: *@This(), comptime T: type, key: []const u8) ?T {
-        return self.plugin_extensions.getGlobalData(T, key);
-    }
-
-    pub fn setLogLevel(self: *@This(), level: []const u8) !void {
-        try self.plugin_extensions.setLogLevel(level);
-    }
-
-    // Convenience method for accessing global options registered by plugins
-    pub fn getGlobalOption(self: *@This(), comptime T: type, key: []const u8) ?T {
-        return self.plugin_extensions.getGlobalData(T, key);
-    }
-
-    pub fn exit(self: *@This(), code: u8) void {
-        _ = self;
+    pub fn exit(_: *Self, code: u8) void {
         std.process.exit(code);
-    }
-
-    pub fn setData(self: *@This(), key: []const u8, value: anytype) !void {
-        const value_str = switch (@TypeOf(value)) {
-            bool => if (value) "true" else "false",
-            []const u8 => value,
-            else => {
-                // For other types, convert to string
-                const str = try std.fmt.allocPrint(self.allocator, "{any}", .{value});
-                return self.setGlobalData(key, str);
-            },
-        };
-        try self.setGlobalData(key, value_str);
-    }
-
-    pub fn getData(self: *@This(), comptime T: type, key: []const u8) T {
-        return self.getGlobalData(T, key) orelse switch (T) {
-            bool => false,
-            u32 => 0,
-            []const u8 => "",
-            else => @panic("Unsupported type for getData"),
-        };
     }
 
     /// Get command description by path (for plugins)
     /// Returns null if command not found or has no description
-    pub fn getCommandDescription(self: *@This(), command_path: []const []const u8) ?[]const u8 {
+    pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
         for (self.plugin_command_info) |cmd_info| {
-            if (command_path.len == cmd_info.path.len) {
+            if (command_path_query.len == cmd_info.path.len) {
                 var matches = true;
-                for (command_path, cmd_info.path) |provided_part, stored_part| {
+                for (command_path_query, cmd_info.path) |provided_part, stored_part| {
                     if (!std.mem.eql(u8, provided_part, stored_part)) {
                         matches = false;
                         break;
@@ -235,15 +186,165 @@ pub const Context = struct {
     }
 
     /// Get all available command information (for plugins)
-    pub fn getAvailableCommandInfo(self: *@This()) []const CommandInfo {
+    pub fn getAvailableCommandInfo(self: *Self) []const CommandInfo {
         return self.plugin_command_info;
     }
 
     /// Get all global options (for completions)
-    pub fn getGlobalOptions(self: *@This()) []const OptionInfo {
+    pub fn getGlobalOptions(self: *Self) []const OptionInfo {
         return self.global_options;
     }
 };
+
+/// Create a test context type with plugin data support.
+/// Use this when testing code that accesses `context.plugins.{plugin_id}`.
+///
+/// ```zig
+/// const TestCtx = zcli.TestContext(&.{ MyPlugin });
+/// var io = zcli.IO.init();
+/// io.finalize();
+/// var ctx = TestCtx.init(testing.allocator, &io);
+/// defer ctx.deinit();
+/// ctx.plugins.my_plugin.some_field = true;
+/// ```
+pub fn TestContext(comptime test_plugins: []const type) type {
+    // Build the plugins struct type from the provided plugins
+    const PluginsType = comptime blk: {
+        var field_count: usize = 0;
+        for (test_plugins) |Plugin| {
+            if (@hasDecl(Plugin, "ContextData")) {
+                field_count += 1;
+            }
+        }
+
+        if (field_count == 0) {
+            break :blk struct {};
+        }
+
+        var fields: [field_count]std.builtin.Type.StructField = undefined;
+        var idx: usize = 0;
+
+        for (test_plugins) |Plugin| {
+            if (@hasDecl(Plugin, "ContextData")) {
+                if (!@hasDecl(Plugin, "plugin_id")) {
+                    @compileError("Plugins with ContextData must declare 'pub const plugin_id'.");
+                }
+
+                const DataType = Plugin.ContextData;
+                const default_val: DataType = .{};
+
+                // Sanitize plugin_id to valid identifier
+                const id: []const u8 = Plugin.plugin_id;
+                var name_buf: [256]u8 = undefined;
+                var name_len: usize = 0;
+                for (id) |c| {
+                    if (name_len >= name_buf.len - 1) break;
+                    name_buf[name_len] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
+                    name_len += 1;
+                }
+                name_buf[name_len] = 0;
+
+                fields[idx] = .{
+                    .name = name_buf[0..name_len :0],
+                    .type = DataType,
+                    .default_value_ptr = @ptrCast(&default_val),
+                    .is_comptime = false,
+                    .alignment = @alignOf(DataType),
+                };
+                idx += 1;
+            }
+        }
+
+        break :blk @Type(.{
+            .@"struct" = .{
+                .fields = &fields,
+                .layout = .auto,
+                .decls = &.{},
+                .is_tuple = false,
+            },
+        });
+    };
+
+    return struct {
+        allocator: std.mem.Allocator,
+        io: *IO,
+        environment: Environment,
+        theme: ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+
+        app_name: []const u8 = "test-app",
+        app_version: []const u8 = "0.0.0",
+        app_description: []const u8 = "",
+        available_commands: []const []const []const u8 = &.{},
+        command_path: []const []const u8 = &.{},
+        command_path_allocated: bool = false,
+        command_meta: ?CommandMeta = null,
+        command_module_info: ?CommandModuleInfo = null,
+        plugin_command_info: []const CommandInfo = &.{},
+        global_options: []const OptionInfo = &.{},
+
+        plugins: PluginsType = .{},
+
+        const Self = @This();
+
+        pub fn init(allocator: std.mem.Allocator, io: *IO) Self {
+            return .{
+                .allocator = allocator,
+                .io = io,
+                .environment = Environment.init(allocator),
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.command_path_allocated and self.command_path.len > 0) {
+                for (self.command_path) |component| {
+                    self.allocator.free(component);
+                }
+                self.allocator.free(self.command_path);
+            }
+            if (self.command_module_info) |info| {
+                if (info.args_fields.len > 0) self.allocator.free(info.args_fields);
+                if (info.options_fields.len > 0) self.allocator.free(info.options_fields);
+            }
+            self.environment.deinit();
+        }
+
+        pub fn stdout(self: *Self) *std.Io.Writer {
+            return self.io.stdout();
+        }
+
+        pub fn stderr(self: *Self) *std.Io.Writer {
+            return self.io.stderr();
+        }
+
+        pub fn stdin(self: *Self) *std.Io.Reader {
+            return self.io.stdin();
+        }
+
+        pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
+            for (self.plugin_command_info) |cmd_info| {
+                if (command_path_query.len == cmd_info.path.len) {
+                    var matches = true;
+                    for (command_path_query, cmd_info.path) |provided_part, stored_part| {
+                        if (!std.mem.eql(u8, provided_part, stored_part)) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (matches) return cmd_info.description;
+                }
+            }
+            return null;
+        }
+
+        pub fn getAvailableCommandInfo(self: *Self) []const CommandInfo {
+            return self.plugin_command_info;
+        }
+
+        pub fn getGlobalOptions(self: *Self) []const OptionInfo {
+            return self.global_options;
+        }
+    };
+}
 
 /// I/O abstraction for testing
 pub const IO = struct {
@@ -318,6 +419,10 @@ pub const Registry = registry.Registry;
 pub const Config = registry.Config;
 
 // ============================================================================
+// CONTEXT VALIDATION
+// ============================================================================
+
+// ============================================================================
 // PUBLIC API - Core functionality for end users
 // ============================================================================
 
@@ -336,39 +441,6 @@ pub const Config = registry.Config;
 /// 📖 See command_parser.zig for detailed documentation and examples.
 pub const parseCommandLine = command_parser.parseCommandLine;
 pub const CommandParseResult = command_parser.CommandParseResult;
-
-// ============================================================================
-// LEGACY API - For testing and internal use only
-// ============================================================================
-// NOTE: These are kept for specialized testing and internal implementation.
-// All user code should use `parseCommandLine` above for best results.
-
-/// @deprecated Use `parseCommandLine` for production code
-pub const parseArgs = args_parser.parseArgs;
-
-/// @deprecated Use `parseCommandLine` for production code
-pub const parseOptions = options_parser.parseOptions;
-
-/// @deprecated Use `parseCommandLine` for production code
-pub const parseOptionsWithMeta = options_parser.parseOptionsWithMeta;
-
-/// @deprecated Use `parseCommandLine` for production code
-pub const parseOptionsAndArgs = options_parser.parseOptionsAndArgs;
-
-/// @deprecated Use `parseCommandLine` for production code
-pub const cleanupOptions = options_parser.cleanupOptions;
-
-// Advanced error handling (for custom error handling)
-pub const CLIErrors = struct {
-    pub const handleCommandNotFound = error_handler.handleCommandNotFound;
-    pub const handleSubcommandNotFound = error_handler.handleSubcommandNotFound;
-    pub const handleMissingArgument = error_handler.handleMissingArgument;
-    pub const handleTooManyArguments = error_handler.handleTooManyArguments;
-    pub const handleUnknownOption = error_handler.handleUnknownOption;
-    pub const handleInvalidOptionValue = error_handler.handleInvalidOptionValue;
-    pub const handleMissingOptionValue = error_handler.handleMissingOptionValue;
-    pub const getExitCode = error_handler.getExitCode;
-};
 
 // ============================================================================
 // PLUGIN PIPELINE API - Base types for plugin transformers
@@ -1229,7 +1301,7 @@ pub fn validateMeta(
             const option_meta_info = @typeInfo(@TypeOf(option_meta));
 
             if (option_meta_info == .@"struct") {
-                const valid_option_fields = .{ "description", "short", "name" };
+                const valid_option_fields = .{ "description", "short", "name", "env" };
 
                 inline for (option_meta_info.@"struct".fields) |opt_field| {
                     const opt_is_valid = comptime blk: {
@@ -1241,7 +1313,7 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError("Unknown option metadata field: '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name");
+                        @compileError("Unknown option metadata field: '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env");
                     }
                 }
             }
@@ -1418,6 +1490,49 @@ test "Context creation" {
     _ = context.stdin();
 }
 
+test "TestContext with plugins" {
+    const allocator = testing.allocator;
+
+    const MockPlugin = struct {
+        pub const plugin_id = "mock";
+        pub const ContextData = struct {
+            value: bool = false,
+            count: u32 = 0,
+        };
+    };
+
+    const Ctx = TestContext(&.{MockPlugin});
+    var io = IO.init();
+    io.finalize();
+
+    var ctx = Ctx.init(allocator, &io);
+    defer ctx.deinit();
+
+    // Verify plugin data is accessible and mutable
+    try testing.expectEqual(false, ctx.plugins.mock.value);
+    try testing.expectEqual(@as(u32, 0), ctx.plugins.mock.count);
+
+    ctx.plugins.mock.value = true;
+    ctx.plugins.mock.count = 42;
+
+    try testing.expectEqual(true, ctx.plugins.mock.value);
+    try testing.expectEqual(@as(u32, 42), ctx.plugins.mock.count);
+}
+
+test "TestContext without plugins" {
+    const allocator = testing.allocator;
+
+    const Ctx = TestContext(&.{});
+    var io = IO.init();
+    io.finalize();
+
+    var ctx = Ctx.init(allocator, &io);
+    defer ctx.deinit();
+
+    _ = ctx.stdout();
+    _ = ctx.stderr();
+}
+
 // Include tests from all imported modules
 test {
     testing.refAllDecls(@This());
@@ -1433,48 +1548,17 @@ test "global options with different types" {
         };
 
         pub fn handleGlobalOption(
-            context: *Context,
-            option_name: []const u8,
-            value: anytype,
-        ) !void {
-            if (std.mem.eql(u8, option_name, "verbose")) {
-                const bool_val = if (@TypeOf(value) == bool) value else false;
-                try context.setGlobalData("bool_value", if (bool_val) "true" else "false");
-            } else if (std.mem.eql(u8, option_name, "count")) {
-                const int_val = switch (@TypeOf(value)) {
-                    u32 => value,
-                    comptime_int => @as(u32, value),
-                    else => @as(u32, 0),
-                };
-                var buffer: [32]u8 = undefined;
-                const str_val = try std.fmt.bufPrint(&buffer, "{d}", .{int_val});
-                try context.setGlobalData("int_value", str_val);
-            } else if (std.mem.eql(u8, option_name, "output")) {
-                const string_val = if (@TypeOf(value) == []const u8) value else "";
-                try context.setGlobalData("string_value", string_val);
-            }
-        }
-
-        fn getBoolValue(context: *Context) bool {
-            const val = context.getGlobalData([]const u8, "bool_value") orelse "false";
-            return std.mem.eql(u8, val, "true");
-        }
-
-        fn getIntValue(context: *Context) u32 {
-            const val = context.getGlobalData([]const u8, "int_value") orelse "0";
-            return std.fmt.parseInt(u32, val, 10) catch 0;
-        }
-
-        fn getStringValue(context: *Context) []const u8 {
-            return context.getGlobalData([]const u8, "string_value") orelse "";
-        }
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+        ) !void {}
     };
 
     const TestCommand = struct {
         pub const Args = NoArgs;
         pub const Options = NoOptions;
 
-        pub fn execute(args: Args, options: Options, context: *Context) !void {
+        pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -1510,27 +1594,17 @@ test "global options short flags" {
         };
 
         pub fn handleGlobalOption(
-            context: *Context,
-            option_name: []const u8,
-            value: anytype,
-        ) !void {
-            if (std.mem.eql(u8, option_name, "verbose") and (@TypeOf(value) == bool and value)) {
-                const current = context.getGlobalData([]const u8, "v_count") orelse "0";
-                const count = (std.fmt.parseInt(u32, current, 10) catch 0) + 1;
-                var buffer: [32]u8 = undefined;
-                const new_count = try std.fmt.bufPrint(&buffer, "{d}", .{count});
-                try context.setGlobalData("v_count", new_count);
-            } else if (std.mem.eql(u8, option_name, "quiet") and (@TypeOf(value) == bool and value)) {
-                try context.setGlobalData("quiet", "true");
-            }
-        }
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+        ) !void {}
     };
 
     const TestCommand = struct {
         pub const Args = NoArgs;
         pub const Options = NoOptions;
 
-        pub fn execute(args: Args, options: Options, context: *Context) !void {
+        pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -1567,18 +1641,10 @@ test "commands inherit global options" {
         };
 
         pub fn handleGlobalOption(
-            context: *Context,
-            option_name: []const u8,
-            value: anytype,
-        ) !void {
-            if (std.mem.eql(u8, option_name, "config")) {
-                const config_val = if (@TypeOf(value) == []const u8) value else "";
-                try context.setGlobalData("config_path", config_val);
-            } else if (std.mem.eql(u8, option_name, "debug")) {
-                const debug_val = if (@TypeOf(value) == bool) value else false;
-                try context.setGlobalData("debug_mode", if (debug_val) "true" else "false");
-            }
-        }
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+        ) !void {}
     };
 
     const TestCommand = struct {
@@ -1587,7 +1653,7 @@ test "commands inherit global options" {
             local: bool = false,
         };
 
-        pub fn execute(args: Args, options: Options, context: *Context) !void {
+        pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -1625,7 +1691,7 @@ test "global option defaults" {
         };
 
         pub fn handleGlobalOption(
-            context: *Context,
+            context: anytype,
             option_name: []const u8,
             value: anytype,
         ) !void {
@@ -1640,7 +1706,7 @@ test "global option defaults" {
         pub const Args = NoArgs;
         pub const Options = NoOptions;
 
-        pub fn execute(args: Args, options: Options, context: *Context) !void {
+        pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -1676,14 +1742,10 @@ test "multiple plugins with global options" {
         };
 
         pub fn handleGlobalOption(
-            context: *Context,
-            option_name: []const u8,
-            value: anytype,
-        ) !void {
-            if (std.mem.eql(u8, option_name, "plugin1-opt") and (@TypeOf(value) == bool and value)) {
-                try context.setGlobalData("plugin1_called", "true");
-            }
-        }
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+        ) !void {}
     };
 
     const GlobalMultiPlugin2 = struct {
@@ -1692,21 +1754,17 @@ test "multiple plugins with global options" {
         };
 
         pub fn handleGlobalOption(
-            context: *Context,
-            option_name: []const u8,
-            value: anytype,
-        ) !void {
-            if (std.mem.eql(u8, option_name, "plugin2-opt") and (@TypeOf(value) == bool and value)) {
-                try context.setGlobalData("plugin2_called", "true");
-            }
-        }
+            _: anytype,
+            _: []const u8,
+            _: anytype,
+        ) !void {}
     };
 
     const TestCommand = struct {
         pub const Args = NoArgs;
         pub const Options = NoOptions;
 
-        pub fn execute(args: Args, options: Options, context: *Context) !void {
+        pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -1743,7 +1801,7 @@ test "global options consumed before command" {
         };
 
         pub fn handleGlobalOption(
-            context: *Context,
+            context: anytype,
             option_name: []const u8,
             value: anytype,
         ) !void {
@@ -1761,7 +1819,7 @@ test "global options consumed before command" {
             local: bool = false,
         };
 
-        pub fn execute(args: Args, options: Options, context: *Context) !void {
+        pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = context;
             _ = args.arg1;
             _ = options.local;
