@@ -5,4 +5,8 @@ zig-out
 .claude/settings.local.json
 /website/zine
 /website/public
-docs/
+**/CLAUDE.md
+docs/internal/
+**/docs/html/
+**/docs/markdown/
+**/docs/man/

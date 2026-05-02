@@ -1,1 +1,0 @@
-- We need to validate shortcodes at comptime, making sure that all shortcodes are unique across plugins and command options.

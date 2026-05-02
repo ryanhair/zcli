@@ -113,22 +113,18 @@ fn applyFromJsonScoped(comptime OptionsType: type, options: *OptionsType, conten
     // Apply global values (top-level keys that match option fields)
     applyJsonObject(OptionsType, options, obj);
 
-    // Apply command-scoped values (nested object matching command path)
-    // For path ["sprint", "create"], check "sprint create" then "sprint"
+    // Apply command-scoped values by traversing nested objects matching command path
+    // e.g., {"sprint": {"create": {"verbose": true}}} for path ["sprint", "create"]
     if (cmd_path.len > 0) {
-        // Try full command path: "sprint create"
-        const full_cmd = std.mem.join(allocator, " ", cmd_path) catch return;
-        defer allocator.free(full_cmd);
-        if (obj.get(full_cmd)) |cmd_val| {
-            if (cmd_val == .object) applyJsonObject(OptionsType, options, cmd_val.object);
-        }
-
-        // Also try just the leaf command name
-        if (cmd_path.len > 1) {
-            const leaf = cmd_path[cmd_path.len - 1];
-            if (obj.get(leaf)) |cmd_val| {
-                if (cmd_val == .object) applyJsonObject(OptionsType, options, cmd_val.object);
-            }
+        var current = obj;
+        for (cmd_path) |segment| {
+            if (current.get(segment)) |val| {
+                if (val == .object) {
+                    current = val.object;
+                } else break;
+            } else break;
+        } else {
+            applyJsonObject(OptionsType, options, current);
         }
     }
 }
@@ -179,21 +175,19 @@ fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, conten
     // Apply global values (top-level keys that match option fields)
     applyTomlTable(OptionsType, options, table);
 
-    // Apply command-scoped values from [command] table sections
+    // Apply command-scoped values by traversing nested tables matching command path
+    // e.g., [sprint.create] in TOML → table["sprint"]["create"]
     if (cmd_path.len > 0) {
-        // Try full command path: "sprint create"
-        const full_cmd = std.mem.join(allocator, " ", cmd_path) catch return;
-        defer allocator.free(full_cmd);
-        if (table.get(full_cmd)) |cmd_val| {
-            if (cmd_val == .table) applyTomlTable(OptionsType, options, cmd_val.table.*);
-        }
-
-        // Also try just the leaf command name
-        if (cmd_path.len > 1) {
-            const leaf = cmd_path[cmd_path.len - 1];
-            if (table.get(leaf)) |cmd_val| {
-                if (cmd_val == .table) applyTomlTable(OptionsType, options, cmd_val.table.*);
-            }
+        var current = table;
+        for (cmd_path) |segment| {
+            if (current.get(segment)) |val| {
+                if (val == .table) {
+                    current = val.table.*;
+                } else break;
+            } else break;
+        } else {
+            // Successfully traversed all segments — current is the command's table
+            applyTomlTable(OptionsType, options, current);
         }
     }
 }
@@ -256,20 +250,18 @@ fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, conten
     // Apply global values (top-level scalar keys that match option fields)
     applyYamlMap(OptionsType, options, map);
 
-    // Apply command-scoped values (nested map matching command path)
+    // Apply command-scoped values by traversing nested maps matching command path
+    // e.g., sprint: create: verbose: true → map["sprint"]["create"]
     if (cmd_path.len > 0) {
-        // Try full command path: "sprint create"
-        const full_cmd = std.mem.join(arena_alloc, " ", cmd_path) catch return;
-        if (map.get(full_cmd)) |cmd_val| {
-            if (cmd_val == .map) applyYamlMap(OptionsType, options, cmd_val.map);
-        }
-
-        // Also try just the leaf command name
-        if (cmd_path.len > 1) {
-            const leaf = cmd_path[cmd_path.len - 1];
-            if (map.get(leaf)) |cmd_val| {
-                if (cmd_val == .map) applyYamlMap(OptionsType, options, cmd_val.map);
-            }
+        var current = map;
+        for (cmd_path) |segment| {
+            if (current.get(segment)) |val| {
+                if (val == .map) {
+                    current = val.map;
+                } else break;
+            } else break;
+        } else {
+            applyYamlMap(OptionsType, options, current);
         }
     }
 }
@@ -608,8 +600,8 @@ test "applyFromJsonScoped: nested command path" {
     };
 
     const allocator = std.testing.allocator;
-    // Full path "sprint create" as key
-    const content = "{\"sprint create\": {\"verbose\": true}}";
+    // Nested path: {"sprint": {"create": {"verbose": true}}}
+    const content = "{\"sprint\": {\"create\": {\"verbose\": true}}}";
     var data = ContextData{};
     var opts = Opts{};
     const cmd_path = [_][]const u8{ "sprint", "create" };
