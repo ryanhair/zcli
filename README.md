@@ -2,6 +2,19 @@
 
 A batteries-included framework for building command-line interfaces in Zig. Drop `.zig` files in a directory and get a fully-featured CLI — help text, completions, error suggestions, interactive prompts, progress bars, and documentation — all generated at compile time with zero runtime overhead.
 
+## Features
+
+- Create files in `commands/` folder to add commands. Create folders to add subcommands.
+- Define arguments and options as Zig structs — type-safe parsing at compile time.
+- Auto-generated `--help`, `--version`, shell completions, and "did you mean?" suggestions.
+- Transparent config file loading from JSON, TOML, or YAML with per-command scoping.
+- Interactive prompts — text, confirm, select, multi-select, password, search, number, editor.
+- Progress indicators — spinners (9 styles) and progress bars with ETA.
+- Theming with semantic colors that adapt to terminal capabilities.
+- Documentation generation — markdown, man pages, and HTML from command metadata.
+- Plugin system with lifecycle hooks, global options, and build-time configuration.
+- Zero runtime overhead — commands discovered at build time, all routing resolved at comptime.
+
 ```zig
 // src/commands/deploy.zig
 const zcli = @import("zcli");
@@ -176,7 +189,7 @@ pub const meta = .{ .description = "Manage users" };
 
 ## Plugins
 
-zcli ships with six plugins. Add them in `build.zig`:
+zcli ships with seven plugins. Add them in `build.zig`:
 
 | Plugin | Provides | Default? |
 |--------|----------|----------|
@@ -184,6 +197,7 @@ zcli ships with six plugins. Add them in `build.zig`:
 | **zcli_version** | `--version` / `-V` | Yes |
 | **zcli_not_found** | "Did you mean?" suggestions for typos | Yes |
 | **zcli_completions** | `completions generate/install/uninstall` for bash, zsh, fish | Optional |
+| **zcli_config** | Transparent config file loading (JSON, TOML, YAML) | Optional |
 | **zcli_output** | `--output` flag (json, table, plain) | Optional |
 | **zcli_github_upgrade** | `upgrade` command via GitHub releases | Optional |
 
@@ -219,6 +233,47 @@ pub fn onError(context: anytype, err: anyerror) !bool {
     // Handle errors. Return true if handled.
     return false;
 }
+```
+
+### Config file plugin
+
+The `zcli_config` plugin transparently loads option defaults from a config file. Supports JSON, TOML, and YAML — no changes to command code required.
+
+```zig
+// In build.zig plugins:
+.{ .name = "zcli_config", .path = "packages/core/src/plugins/zcli_config" },
+```
+
+Config file discovery (by extension priority):
+1. `--config <path>` flag
+2. `./{app_name}.config.json` / `.toml` / `.yaml` / `.yml`
+3. `$XDG_CONFIG_HOME/{app_name}/config.json` / `.toml` / `.yaml` / `.yml`
+
+Values cascade: **CLI flags > command config > global config > struct defaults**.
+
+```json
+// .myapp.config.json
+{
+  "output": "json",         // global — applies to all commands
+  "list": {                 // scoped — applies only to "list" command
+    "all": true
+  }
+}
+```
+
+```toml
+# .myapp.config.toml
+output = "json"
+
+[list]
+all = true
+```
+
+```yaml
+# .myapp.config.yaml
+output: json
+list:
+  all: true
 ```
 
 ---
@@ -427,6 +482,7 @@ The [showcase](examples/showcase/) is a fully functional task tracker CLI that d
 - **Progress indicators** — spinners and progress bars
 - **Colored output** — status badges, themed formatting
 - **JSON persistence** — read/write tasks to disk
+- **Config file** — per-command defaults via `.tasks.config.json`
 - **Shell completions**, **doc generation**, **help**, and **error suggestions**
 
 ```bash

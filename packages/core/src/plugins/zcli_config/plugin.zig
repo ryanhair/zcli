@@ -167,32 +167,157 @@ fn applyJsonObject(comptime OptionsType: type, options: *OptionsType, obj: std.j
 }
 
 fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, cmd_path: []const []const u8) void {
-    _ = cmd_path; // TODO: TOML scoped config via [command] tables
     const toml = zcli.toml;
-    var parser = toml.Parser(OptionsType).init(allocator);
+
+    // Parse as untyped Table to support both global keys and [command] sections
+    var parser = toml.Parser(toml.Table).init(allocator);
     defer parser.deinit();
     var result = parser.parseString(content) catch return;
     defer result.deinit();
-    applyNonDefaults(OptionsType, options, result.value);
+    const table = result.value;
+
+    // Apply global values (top-level keys that match option fields)
+    applyTomlTable(OptionsType, options, table);
+
+    // Apply command-scoped values from [command] table sections
+    if (cmd_path.len > 0) {
+        // Try full command path: "sprint create"
+        const full_cmd = std.mem.join(allocator, " ", cmd_path) catch return;
+        defer allocator.free(full_cmd);
+        if (table.get(full_cmd)) |cmd_val| {
+            if (cmd_val == .table) applyTomlTable(OptionsType, options, cmd_val.table.*);
+        }
+
+        // Also try just the leaf command name
+        if (cmd_path.len > 1) {
+            const leaf = cmd_path[cmd_path.len - 1];
+            if (table.get(leaf)) |cmd_val| {
+                if (cmd_val == .table) applyTomlTable(OptionsType, options, cmd_val.table.*);
+            }
+        }
+    }
+}
+
+fn applyTomlTable(comptime OptionsType: type, options: *OptionsType, table: std.StringHashMap(zcli.toml.Value)) void {
+    const info = @typeInfo(OptionsType);
+    if (info != .@"struct") return;
+
+    inline for (info.@"struct".fields) |field| {
+        if (table.get(field.name)) |value| {
+            const should_apply = if (field.default_value_ptr) |default_ptr| blk: {
+                const default: *const field.type = @ptrCast(@alignCast(default_ptr));
+                const dest_val = @field(options, field.name);
+                break :blk std.meta.eql(dest_val, default.*);
+            } else true;
+
+            if (should_apply) {
+                if (field.type == bool) {
+                    if (value == .boolean) @field(options, field.name) = value.boolean;
+                } else if (field.type == []const u8) {
+                    if (value == .string) @field(options, field.name) = value.string;
+                } else if (field.type == u32 or field.type == i32 or field.type == u64 or field.type == i64) {
+                    if (value == .integer) @field(options, field.name) = @intCast(value.integer);
+                } else if (field.type == ?[]const u8) {
+                    if (value == .string) @field(options, field.name) = value.string;
+                } else if (field.type == ?u32 or field.type == ?i32 or field.type == ?u64 or field.type == ?i64) {
+                    if (value == .integer) @field(options, field.name) = @intCast(value.integer);
+                } else if (field.type == ?bool) {
+                    if (value == .boolean) @field(options, field.name) = value.boolean;
+                }
+            }
+        }
+    }
 }
 
 fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, data: *ContextData, cmd_path: []const []const u8) void {
-    _ = cmd_path; // TODO: YAML scoped config via nested keys
     const yaml = zcli.yaml;
-    var doc: yaml.Yaml = .{ .source = content };
-    doc.load(allocator) catch return;
-    defer doc.deinit(allocator);
 
-    // Use a persistent arena for string allocations that must outlive this function
+    // Use a persistent arena for all YAML allocations so string values stay alive
     const arena = allocator.create(std.heap.ArenaAllocator) catch return;
     arena.* = .init(allocator);
-    const parsed = doc.parse(arena.allocator(), OptionsType) catch {
+    const arena_alloc = arena.allocator();
+
+    var doc: yaml.Yaml = .{ .source = content };
+    doc.load(arena_alloc) catch {
         arena.deinit();
         allocator.destroy(arena);
         return;
     };
+    // doc memory lives in the arena — no separate deinit needed
+
     data._parse_arena = arena;
-    applyNonDefaults(OptionsType, options, parsed);
+
+    if (doc.docs.items.len == 0) return;
+
+    const root = doc.docs.items[0];
+    if (root != .map) return;
+    const map = root.map;
+
+    // Apply global values (top-level scalar keys that match option fields)
+    applyYamlMap(OptionsType, options, map);
+
+    // Apply command-scoped values (nested map matching command path)
+    if (cmd_path.len > 0) {
+        // Try full command path: "sprint create"
+        const full_cmd = std.mem.join(arena_alloc, " ", cmd_path) catch return;
+        if (map.get(full_cmd)) |cmd_val| {
+            if (cmd_val == .map) applyYamlMap(OptionsType, options, cmd_val.map);
+        }
+
+        // Also try just the leaf command name
+        if (cmd_path.len > 1) {
+            const leaf = cmd_path[cmd_path.len - 1];
+            if (map.get(leaf)) |cmd_val| {
+                if (cmd_val == .map) applyYamlMap(OptionsType, options, cmd_val.map);
+            }
+        }
+    }
+}
+
+fn applyYamlMap(comptime OptionsType: type, options: *OptionsType, map: zcli.yaml.Yaml.Map) void {
+    const info = @typeInfo(OptionsType);
+    if (info != .@"struct") return;
+
+    inline for (info.@"struct".fields) |field| {
+        if (map.get(field.name)) |value| {
+            const should_apply = if (field.default_value_ptr) |default_ptr| blk: {
+                const default: *const field.type = @ptrCast(@alignCast(default_ptr));
+                const dest_val = @field(options, field.name);
+                break :blk std.meta.eql(dest_val, default.*);
+            } else true;
+
+            if (should_apply) {
+                if (field.type == bool or field.type == ?bool) {
+                    // YAML untyped parse stores booleans as scalars
+                    if (value == .scalar) {
+                        if (yamlParseBool(value.scalar)) |b| {
+                            @field(options, field.name) = b;
+                        }
+                    }
+                } else if (field.type == []const u8 or field.type == ?[]const u8) {
+                    if (value == .scalar) @field(options, field.name) = value.scalar;
+                } else if (field.type == u32 or field.type == i32 or field.type == u64 or field.type == i64) {
+                    if (value == .scalar) {
+                        if (std.fmt.parseInt(@TypeOf(@field(options, field.name)), value.scalar, 10)) |v| {
+                            @field(options, field.name) = v;
+                        } else |_| {}
+                    }
+                } else if (field.type == ?u32 or field.type == ?i32 or field.type == ?u64 or field.type == ?i64) {
+                    if (value == .scalar) {
+                        if (std.fmt.parseInt(std.meta.Child(field.type), value.scalar, 10)) |v| {
+                            @field(options, field.name) = v;
+                        } else |_| {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn yamlParseBool(raw: []const u8) ?bool {
+    if (std.mem.eql(u8, raw, "true") or std.mem.eql(u8, raw, "True") or std.mem.eql(u8, raw, "yes") or std.mem.eql(u8, raw, "on")) return true;
+    if (std.mem.eql(u8, raw, "false") or std.mem.eql(u8, raw, "False") or std.mem.eql(u8, raw, "no") or std.mem.eql(u8, raw, "off")) return false;
+    return null;
 }
 
 /// Copy fields from source to dest where source differs from compile-time defaults.
