@@ -966,6 +966,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
         }
 
         fn executeCommand(_: *Self, context: *Context, args_input: []const []const u8) !void {
+            @setEvalBranchQuota(10000);
             // Check if we should use the root command
             // Root command is executed when:
             // 1. No arguments provided, OR
@@ -1209,8 +1210,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         // Execute the command
                         var success = true;
                         if (@hasDecl(cmd.module, "execute")) {
-                            // Use unified parser for mixed arguments and options
-                            const full_args = parsed_args.positional;
+                            const cli_args = parsed_args.positional;
 
                             const ArgsType = if (@hasDecl(cmd.module, "Args")) cmd.module.Args else struct {};
                             const OptionsType = if (@hasDecl(cmd.module, "Options")) cmd.module.Options else struct {};
@@ -1218,22 +1218,26 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
                             // Before parsing, check if this command expects no arguments
                             // but we have arguments that look like subcommands (not options).
-                            // This usually means the user was trying to specify a subcommand that doesn't exist.
                             const args_fields = std.meta.fields(ArgsType);
                             if (args_fields.len == 0 and remaining_args.len > 0) {
-                                // Check if the first remaining arg looks like a subcommand (doesn't start with -)
                                 if (!std.mem.startsWith(u8, remaining_args[0], "-")) {
-                                    // Command expects no arguments, but we have what looks like a subcommand
-                                    // This looks like a command not found rather than too many arguments
                                     return error.CommandNotFound;
                                 }
                             }
 
-                            const parse_result = try command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, full_args);
+                            const parse_result = try command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, cli_args);
                             defer parse_result.deinit();
 
                             const args_instance = parse_result.args;
-                            const options_instance = parse_result.options;
+                            var options_instance = parse_result.options;
+
+                            // Apply config defaults: config overrides struct defaults,
+                            // but CLI args (already parsed) take precedence
+                            inline for (sorted_plugins) |Plugin| {
+                                if (@hasDecl(Plugin, "applyConfigDefaults")) {
+                                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance);
+                                }
+                            }
 
                             cmd.module.execute(args_instance, options_instance, context) catch |err| {
                                 success = false;
@@ -1465,7 +1469,14 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         defer parse_result.deinit();
 
                         const cmd_args = parse_result.args;
-                        const cmd_options = parse_result.options;
+                        var cmd_options = parse_result.options;
+
+                        // Apply config defaults for plugin commands
+                        inline for (sorted_plugins) |ConfigPlugin| {
+                            if (@hasDecl(ConfigPlugin, "applyConfigDefaults")) {
+                                ConfigPlugin.applyConfigDefaults(context, OptionsType, &cmd_options);
+                            }
+                        }
 
                         CommandModule.execute(cmd_args, cmd_options, context) catch |err| {
                             success = false;

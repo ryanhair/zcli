@@ -213,10 +213,40 @@ pub fn generate(
         try writer.writeAll("\n");
     }
 
-    // Add command-specific options if we have them
-    // For now, we'll just add global options since extracting per-command options
-    // would require more complex introspection
-    // TODO: Add per-command option completions
+    // Per-command option completions
+    for (commands) |cmd| {
+        if (cmd.hidden or cmd.options.len == 0) continue;
+
+        // Build the condition: all path parts must be present as subcommands
+        // e.g. for ["completions", "generate"]: __fish_seen_subcommand_from completions; and __fish_seen_subcommand_from generate
+        try writer.print("# Options for: {s}", .{app_name});
+        for (cmd.path) |part| {
+            try writer.print(" {s}", .{part});
+        }
+        try writer.writeAll("\n");
+
+        for (cmd.options) |opt| {
+            try writer.print("complete -c {s}", .{app_name});
+
+            // Condition: must have seen all parent subcommands
+            for (cmd.path) |part| {
+                try writer.print(" -n '__fish_seen_subcommand_from {s}'", .{part});
+            }
+
+            try writer.print(" -l {s}", .{opt.name});
+            if (opt.short) |short| {
+                try writer.print(" -s {c}", .{short});
+            }
+            if (opt.description) |desc| {
+                try writer.print(" -d '{s}'", .{desc});
+            }
+            if (opt.takes_value) {
+                try writer.writeAll(" -r"); // requires argument
+            }
+            try writer.writeAll("\n");
+        }
+        try writer.writeAll("\n");
+    }
 
     return buf.toOwnedSlice(allocator);
 }

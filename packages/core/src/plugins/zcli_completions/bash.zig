@@ -33,12 +33,13 @@ pub fn generate(
     try writer.writeAll("        fi\n");
     try writer.writeAll("    done\n\n");
 
-    // Handle option completion
+    // Handle option completion - match current command path to get per-command options
     try writer.writeAll("    # If current word starts with -, complete options\n");
     try writer.writeAll("    if [[ \"$cur\" == -* ]]; then\n");
+    try writer.writeAll("        local cmd_str=\"${cmd_path[*]}\"\n");
     try writer.writeAll("        local opts=\"");
 
-    // Add global options
+    // Global options are always available
     for (global_options) |opt| {
         try writer.print("--{s} ", .{opt.name});
         if (opt.short) |short| {
@@ -47,6 +48,30 @@ pub fn generate(
     }
 
     try writer.writeAll("\"\n");
+
+    // Per-command options based on matched command path
+    try writer.writeAll("        case \"$cmd_str\" in\n");
+    for (commands) |cmd| {
+        if (cmd.hidden or cmd.options.len == 0) continue;
+        // Build the command path string for matching
+        try writer.writeAll("            \"");
+        for (cmd.path, 0..) |part, idx| {
+            if (idx > 0) try writer.writeByte(' ');
+            try writer.writeAll(part);
+        }
+        try writer.writeAll("\")\n");
+        try writer.writeAll("                opts=\"$opts ");
+        for (cmd.options) |opt| {
+            try writer.print("--{s} ", .{opt.name});
+            if (opt.short) |short| {
+                try writer.print("-{c} ", .{short});
+            }
+        }
+        try writer.writeAll("\"\n");
+        try writer.writeAll("                ;;\n");
+    }
+    try writer.writeAll("        esac\n");
+
     try writer.writeAll("        COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n");
     try writer.writeAll("        return 0\n");
     try writer.writeAll("    fi\n\n");

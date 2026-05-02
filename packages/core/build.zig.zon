@@ -39,6 +39,9 @@
         .markdown_fmt = .{ .path = "../markdown_fmt" },
         .ztheme = .{ .path = "../ztheme" },
         .zprogress = .{ .path = "../zprogress" },
+        .zinput = .{ .path = "../zinput" },
+        .terminal = .{ .path = "../terminal" },
+        .vterm = .{ .path = "../vterm" },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding
@@ -68,6 +71,14 @@
         //    // actually used.
         //    .lazy = false,
         //},
+        .yaml = .{
+            .url = "https://github.com/kubkon/zig-yaml/archive/refs/tags/0.2.0.tar.gz",
+            .hash = "zig_yaml-0.2.0-C1161pmrAgC_rL9WzjvgNg7HnmyAMwHsG3Sre0F4haPI",
+        },
+        .toml = .{
+            .url = "https://github.com/sam701/zig-toml/archive/refs/heads/main.tar.gz",
+            .hash = "toml-0.3.0-bV14Be6EAQDr0fkyURz4jYFyTAMPcwlNN0FEPVjDnXTR",
+        },
     },
 
     // Specifies the set of files and directories that are included in this package.

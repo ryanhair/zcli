@@ -19,6 +19,13 @@ pub fn build(b: *std.Build) void {
     });
     markdown_fmt_module.addImport("ztheme", ztheme_module);
 
+    // Create terminal module
+    const terminal_module = b.addModule("terminal", .{
+        .root_source_file = b.path("packages/terminal/src/terminal.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create zprogress module
     const zprogress_module = b.addModule("zprogress", .{
         .root_source_file = b.path("packages/zprogress/src/zprogress.zig"),
@@ -26,6 +33,27 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     zprogress_module.addImport("ztheme", ztheme_module);
+    zprogress_module.addImport("terminal", terminal_module);
+
+    // Create zinput module
+    const zinput_module = b.addModule("zinput", .{
+        .root_source_file = b.path("packages/zinput/src/zinput.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zinput_module.addImport("terminal", terminal_module);
+    zinput_module.addImport("ztheme", ztheme_module);
+
+    // Create vterm module
+    const vterm_module = b.addModule("vterm", .{
+        .root_source_file = b.path("packages/vterm/src/vterm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Third-party parser modules
+    const yaml_dep = b.dependency("yaml", .{ .target = target, .optimize = optimize });
+    const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
 
     // Export the zcli module from core package for external projects
     const zcli_module = b.addModule("zcli", .{
@@ -36,6 +64,10 @@ pub fn build(b: *std.Build) void {
     zcli_module.addImport("ztheme", ztheme_module);
     zcli_module.addImport("markdown_fmt", markdown_fmt_module);
     zcli_module.addImport("zprogress", zprogress_module);
+    zcli_module.addImport("zinput", zinput_module);
+    zcli_module.addImport("vterm", vterm_module);
+    zcli_module.addImport("yaml", yaml_dep.module("yaml"));
+    zcli_module.addImport("toml", toml_dep.module("toml"));
 
     // Define the project directories that have tests
     const ProjectInfo = struct {
@@ -45,21 +77,17 @@ pub fn build(b: *std.Build) void {
 
     const test_projects = [_]ProjectInfo{
         .{ .name = "core", .path = "packages/core" },
-        .{ .name = "capabilities", .path = "packages/capabilities" },
         .{ .name = "testing", .path = "packages/testing" },
         .{ .name = "vterm", .path = "packages/vterm" },
         .{ .name = "interactive", .path = "packages/interactive" },
         .{ .name = "markdown_fmt", .path = "packages/markdown_fmt" },
         .{ .name = "zprogress", .path = "packages/zprogress" },
+        .{ .name = "terminal", .path = "packages/terminal" },
+        .{ .name = "zinput", .path = "packages/zinput" },
     };
 
     const example_projects = [_]ProjectInfo{
-        .{ .name = "basic_example", .path = "examples/basic" },
-        .{ .name = "advanced_example", .path = "examples/advanced" },
-        .{ .name = "swapi_example", .path = "examples/swapi" },
-        .{ .name = "snapshots_example", .path = "examples/snapshots" },
-        .{ .name = "ztheme_example", .path = "examples/ztheme" },
-        .{ .name = "zprogress_example", .path = "examples/zprogress-demo" },
+        .{ .name = "showcase", .path = "examples/showcase" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 

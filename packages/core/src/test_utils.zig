@@ -1,32 +1,44 @@
 //! In-process command testing utilities for zcli.
 //!
 //! Runs a command's execute() function directly without spawning a subprocess,
-//! capturing stdout and stderr output for assertions.
+//! capturing stdout and stderr output for assertions. Includes a virtual
+//! terminal (VTerm) for testing colors, formatting, and cursor positioning.
 //!
 //! ```zig
 //! const test_utils = zcli.test_utils;
 //!
 //! test "add command" {
-//!     const result = try test_utils.runCommand(AddCommand, .{
+//!     var result = try test_utils.runCommand(AddCommand, &.{}, .{
 //!         .args = .{ .name = "widget" },
 //!         .options = .{ .verbose = true },
 //!     });
 //!     defer result.deinit();
 //!
+//!     // Assert on raw text
 //!     try std.testing.expectEqualStrings("Added widget\n", result.stdout);
-//!     try std.testing.expect(result.stderr.len == 0);
+//!
+//!     // Assert on rendered terminal output (colors, formatting)
+//!     try std.testing.expect(result.term.containsText("Added widget"));
 //! }
 //! ```
 
 const std = @import("std");
 const zcli = @import("zcli.zig");
+const vterm = @import("vterm");
 
 /// Result of running a command in-process.
 pub const CommandResult = struct {
+    /// Raw stdout text including ANSI escape sequences.
     stdout: []const u8,
+    /// Raw stderr text including ANSI escape sequences.
     stderr: []const u8,
+    /// Whether execute() returned without error.
     success: bool,
+    /// The error if execute() failed.
     err: ?anyerror = null,
+    /// Virtual terminal with stdout rendered — use for asserting on
+    /// colors, text positioning, bold/italic, and formatted output.
+    term: vterm.VTerm,
     allocator: std.mem.Allocator,
 
     // Internal state for cleanup
@@ -35,6 +47,7 @@ pub const CommandResult = struct {
     _tmp_dir: std.testing.TmpDir,
 
     pub fn deinit(self: *CommandResult) void {
+        self.term.deinit();
         self.allocator.free(self.stdout);
         self.allocator.free(self.stderr);
         self._stdout_file.close();
@@ -102,12 +115,19 @@ pub fn runCommand(
 
     try stderr_file.seekTo(0);
     const stderr_content = try stderr_file.readToEndAlloc(allocator, 1024 * 1024);
+    errdefer allocator.free(stderr_content);
+
+    // Feed stdout through virtual terminal for rich assertions
+    var term = try vterm.VTerm.init(allocator, 80, 24);
+    errdefer term.deinit();
+    term.write(stdout_content);
 
     return .{
         .stdout = stdout_content,
         .stderr = stderr_content,
         .success = success,
         .err = err,
+        .term = term,
         .allocator = allocator,
         ._stdout_file = stdout_file,
         ._stderr_file = stderr_file,
@@ -216,9 +236,44 @@ test "runCommand with plugin data" {
         }
     };
 
-    // Default: plugin data starts with defaults
     var result = try runCommand(TestCommand, &.{MockPlugin}, .{});
     defer result.deinit();
 
     try std.testing.expectEqualStrings("disabled\n", result.stdout);
+}
+
+test "runCommand vterm contains text" {
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: anytype) !void {
+            try context.stdout().writeAll("Hello World\n");
+        }
+    };
+
+    var result = try runCommand(TestCommand, &.{}, .{});
+    defer result.deinit();
+
+    try std.testing.expect(result.term.containsText("Hello World"));
+    try std.testing.expect(!result.term.containsText("Goodbye"));
+}
+
+test "runCommand vterm detects ANSI formatting" {
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: anytype) !void {
+            try context.stdout().writeAll("\x1b[1mBold text\x1b[0m\n");
+        }
+    };
+
+    var result = try runCommand(TestCommand, &.{}, .{});
+    defer result.deinit();
+
+    // VTerm parses ANSI — text is there without escape codes
+    try std.testing.expect(result.term.containsText("Bold text"));
+    // The cell at the start of "Bold text" should have bold attribute
+    try std.testing.expect(result.term.hasAttribute(0, 0, .bold));
 }

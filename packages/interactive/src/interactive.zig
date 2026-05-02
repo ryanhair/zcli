@@ -2,71 +2,41 @@ const std = @import("std");
 const builtin = @import("builtin");
 const os = std.os;
 const posix = std.posix;
-const capabilities = @import("capabilities");
+const terminal = @import("terminal");
 
 /// Interactive testing support for CLIs that require user input
 /// Addresses the #1 developer pain point in CLI testing
 
-// External C functions for PTY and process control
-extern "c" fn setsid() c_int;
-extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
-extern "c" fn grantpt(fd: c_int) c_int;
-extern "c" fn unlockpt(fd: c_int) c_int;
-extern "c" fn ptsname(fd: c_int) ?[*:0]const u8;
+// Shared types and C bindings from terminal package
+const Termios = terminal.Termios;
+const Winsize = terminal.Winsize;
+const tcgetattr = terminal.tcgetattr;
+const tcsetattr = terminal.tcsetattr;
+const cfmakeraw = terminal.cfmakeraw;
+const ioctl = terminal.ioctl;
+const TCSAFLUSH = terminal.TCSAFLUSH;
+const TIOCGWINSZ = terminal.TIOCGWINSZ;
 
-// Cross-platform termios structure
-const Termios = switch (builtin.os.tag) {
-    .linux => std.os.linux.termios,
-    .macos => extern struct {
-        c_iflag: c_uint,
-        c_oflag: c_uint,
-        c_cflag: c_uint,
-        c_lflag: c_uint,
-        c_cc: [20]u8,
-        c_ispeed: c_uint,
-        c_ospeed: c_uint,
-    },
-    else => std.os.linux.termios,
-};
-
-// Terminal control functions
-extern "c" fn tcgetattr(fd: c_int, termios_p: *Termios) c_int;
-extern "c" fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) c_int;
-extern "c" fn cfmakeraw(termios_p: *Termios) void;
-
-// Signal handling
-extern "c" fn kill(pid: std.os.linux.pid_t, sig: c_int) c_int;
-extern "c" fn sigaction(sig: c_int, act: ?*const std.os.linux.Sigaction, oldact: ?*std.os.linux.Sigaction) c_int;
-
-// Process group management
-extern "c" fn setpgid(pid: std.os.linux.pid_t, pgid: std.os.linux.pid_t) c_int;
-extern "c" fn getpgid(pid: std.os.linux.pid_t) std.os.linux.pid_t;
-
-// Terminal control constants
+// Constants not in terminal package
 const TCSANOW = 0;
 const TCSADRAIN = 1;
-const TCSAFLUSH = 2;
-
-// Window size structure
-const Winsize = extern struct {
-    ws_row: u16,
-    ws_col: u16,
-    ws_xpixel: u16,
-    ws_ypixel: u16,
-};
-
-// IOCTL constants for window size
-const TIOCGWINSZ = switch (builtin.os.tag) {
-    .linux => 0x5413,
-    .macos => 0x40087468,
-    else => 0x5413,
-};
-
-const TIOCSWINSZ = switch (builtin.os.tag) {
+const TIOCSWINSZ: c_ulong = switch (builtin.os.tag) {
     .linux => 0x5414,
     .macos => 0x80087467,
     else => 0x5414,
 };
+
+// PTY-specific C functions
+extern "c" fn setsid() c_int;
+extern "c" fn grantpt(fd: c_int) c_int;
+extern "c" fn unlockpt(fd: c_int) c_int;
+extern "c" fn ptsname(fd: c_int) ?[*:0]const u8;
+
+// Signal/process C functions
+extern "c" fn kill(pid: std.os.linux.pid_t, sig: c_int) c_int;
+extern "c" fn sigaction(sig: c_int, act: ?*const std.os.linux.Sigaction, oldact: ?*std.os.linux.Sigaction) c_int;
+extern "c" fn setpgid(pid: std.os.linux.pid_t, pgid: std.os.linux.pid_t) c_int;
+extern "c" fn getpgid(pid: std.os.linux.pid_t) std.os.linux.pid_t;
 
 /// Terminal capability detection results
 pub const TerminalCapabilities = struct {
@@ -217,24 +187,19 @@ pub const PtyManager = struct {
         }
 
         // Cross-platform echo flag handling
-        const echo_flag: c_uint = switch (builtin.os.tag) {
-            .linux => std.os.linux.ECHO,
-            .macos => 0x00000008, // ECHO value on macOS
-            else => 0x00000008,
-        };
-
-        if (enabled) {
-            switch (builtin.os.tag) {
-                .linux => termios.lflag |= echo_flag,
-                .macos => termios.c_lflag |= echo_flag,
-                else => termios.lflag |= echo_flag,
-            }
-        } else {
-            switch (builtin.os.tag) {
-                .linux => termios.lflag &= ~echo_flag,
-                .macos => termios.c_lflag &= ~echo_flag,
-                else => termios.lflag &= ~echo_flag,
-            }
+        switch (builtin.os.tag) {
+            .linux => {
+                const echo_flag = std.os.linux.ECHO;
+                if (enabled) termios.lflag |= echo_flag else termios.lflag &= ~echo_flag;
+            },
+            .macos => {
+                const echo_flag: c_ulong = 0x00000008;
+                if (enabled) termios.c_lflag |= echo_flag else termios.c_lflag &= ~echo_flag;
+            },
+            else => {
+                const echo_flag: c_ulong = 0x00000008;
+                if (enabled) termios.lflag |= echo_flag else termios.lflag &= ~echo_flag;
+            },
         }
 
         if (tcsetattr(self.master_fd, TCSAFLUSH, &termios) != 0) {
@@ -252,24 +217,21 @@ pub const PtyManager = struct {
         }
 
         // Cross-platform canonical flag handling
-        const icanon_flag: c_uint = switch (builtin.os.tag) {
-            .linux => std.os.linux.ICANON,
-            .macos => 0x00000100, // ICANON value on macOS
-            else => 0x00000100,
-        };
-
-        if (enabled) {
-            switch (builtin.os.tag) {
-                .linux => termios.lflag |= icanon_flag,
-                .macos => termios.c_lflag |= icanon_flag,
-                else => termios.lflag |= icanon_flag,
-            }
-        } else {
-            switch (builtin.os.tag) {
-                .linux => termios.lflag &= ~icanon_flag,
-                .macos => termios.c_lflag &= ~icanon_flag,
-                else => termios.lflag &= ~icanon_flag,
-            }
+        switch (builtin.os.tag) {
+            .linux => {
+                const icanon_flag = std.os.linux.ICANON;
+                if (enabled) termios.lflag |= icanon_flag else termios.lflag &= ~icanon_flag;
+            },
+            .macos => {
+                const icanon_flag: c_ulong = 0x00000100;
+                if (enabled) termios.c_lflag |= icanon_flag else termios.c_lflag &= ~icanon_flag;
+            },
+            else => {
+                const icanon_flag: c_ulong = 0x00000100;
+                if (enabled) termios.lflag |= icanon_flag else termios.lflag &= ~icanon_flag;
+            },
+        }
+        if (!enabled) {
             // Set minimum characters and timeout for non-canonical mode
             switch (builtin.os.tag) {
                 .linux => {

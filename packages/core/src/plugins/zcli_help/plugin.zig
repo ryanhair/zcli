@@ -255,9 +255,37 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
 
     // Show global options (for app and root help)
     if (help_type == .app or help_type == .root) {
-        try fmt.write("\n**GLOBAL OPTIONS:**\n", .{});
-        try fmt.write("    <flag>-h</flag>, <flag>--help</flag>{s:<6} Show help information\n", .{""});
-        try fmt.write("    <flag>-V</flag>, <flag>--version</flag>{s:<3} Show version information\n", .{""});
+        const global_opts = context.getGlobalOptions();
+        if (global_opts.len > 0) {
+            try fmt.write("\n**GLOBAL OPTIONS:**\n", .{});
+            for (global_opts) |opt| {
+                if (opt.short) |short| {
+                    try fmt.write("    <flag>-{c}</flag>, <flag>--{s}</flag>", .{ short, opt.name });
+                    // Pad to align descriptions
+                    const used = 8 + opt.name.len; // "-x, --name"
+                    if (used < NAME_COLUMN_WIDTH) {
+                        var i: usize = 0;
+                        while (i < NAME_COLUMN_WIDTH - used) : (i += 1) {
+                            try writer.writeByte(' ');
+                        }
+                    } else {
+                        try writer.writeByte(' ');
+                    }
+                } else {
+                    try fmt.write("    <flag>--{s}</flag>", .{opt.name});
+                    const used = 4 + opt.name.len;
+                    if (used < NAME_COLUMN_WIDTH) {
+                        var i: usize = 0;
+                        while (i < NAME_COLUMN_WIDTH - used) : (i += 1) {
+                            try writer.writeByte(' ');
+                        }
+                    } else {
+                        try writer.writeByte(' ');
+                    }
+                }
+                try writer.print(" {s}\n", .{opt.description orelse ""});
+            }
+        }
     }
 
     // Show examples if available

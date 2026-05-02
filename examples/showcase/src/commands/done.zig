@@ -1,0 +1,30 @@
+const std = @import("std");
+const zcli = @import("zcli");
+const store = @import("store");
+
+pub const meta = .{
+    .description = "Mark a task as complete",
+    .examples = &.{"done 1"},
+    .args = .{ .id = "Task ID" },
+};
+
+pub const Args = struct { id: u32 };
+pub const Options = struct {};
+
+pub fn execute(args: Args, _: Options, context: anytype) !void {
+    const allocator = context.allocator;
+    var parsed = try store.load(allocator);
+    defer parsed.deinit();
+    const data = parsed.value;
+
+    for (data.tasks) |*task| {
+        if (task.id == args.id) {
+            task.status = .done;
+            try store.save(allocator, data);
+            try context.stdout().print("\x1b[32m✔\x1b[0m Task #{d} marked as done: {s}\n", .{ task.id, task.title });
+            return;
+        }
+    }
+
+    try context.stderr().print("Error: Task #{d} not found\n", .{args.id});
+}

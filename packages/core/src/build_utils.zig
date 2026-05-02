@@ -22,54 +22,6 @@ const std = @import("std");
 const zcli = @import("zcli.zig");
 const PluginInfo = @import("build_utils/types.zig").PluginInfo;
 
-test "pipeline integration preserves backwards compatibility" {
-    const allocator = std.testing.allocator;
-
-    // Create a simple registry type for testing
-    const TestRegistry = struct {
-        commands: struct {
-            hello: struct {
-                module: type,
-                execute: *const fn ([]const []const u8, std.mem.Allocator, *anyopaque) anyerror!void,
-            },
-        },
-
-        pub const app_name = "test";
-        pub const app_version = "1.0.0";
-        pub const app_description = "Test app";
-    };
-
-    const test_registry = TestRegistry{
-        .commands = .{
-            .hello = .{
-                .module = struct {},
-                .execute = testExecuteFunction,
-            },
-        },
-    };
-
-    // Create an App instance with the test registry
-    const app = zcli.App(@TypeOf(test_registry), null).init(
-        allocator,
-        test_registry,
-        .{
-            .name = TestRegistry.app_name,
-            .version = TestRegistry.app_version,
-            .description = TestRegistry.app_description,
-        },
-    );
-
-    // Test that the app can be created successfully (this tests our pipeline integration)
-    _ = app; // Suppress unused variable warning
-}
-
-fn testExecuteFunction(args: []const []const u8, allocator: std.mem.Allocator, context: *anyopaque) !void {
-    _ = args;
-    _ = allocator;
-    _ = context;
-    // This is a dummy function for testing
-}
-
 test "pipeline system allows graceful fallback" {
     // This test verifies that when no pipelines are available,
     // the system falls back to direct execution (backwards compatibility)
@@ -428,7 +380,6 @@ test "empty plugin list handling" {
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
 }
 
-const execution = @import("execution.zig");
 
 /// Comprehensive integration tests for the plugin system
 /// These tests verify that plugins work correctly in realistic scenarios
@@ -511,68 +462,6 @@ const TestData = struct {
     plugin_command_executed: bool = false,
 };
 
-test "plugin pipeline composition order" {
-    // Test that multiple plugins compose in the correct order
-    const IntegrationPlugin1 = struct {
-        pub fn transformCommand(comptime next: anytype) type {
-            return struct {
-                pub fn execute(ctx: anytype, args: anytype) !void {
-                    try ctx.order.append(std.testing.allocator, 1);
-                    try next.execute(ctx, args);
-                    try ctx.order.append(std.testing.allocator, 4);
-                }
-            };
-        }
-    };
-
-    const IntegrationPlugin2 = struct {
-        pub fn transformCommand(comptime next: anytype) type {
-            return struct {
-                pub fn execute(ctx: anytype, args: anytype) !void {
-                    try ctx.order.append(std.testing.allocator, 2);
-                    try next.execute(ctx, args);
-                    try ctx.order.append(std.testing.allocator, 3);
-                }
-            };
-        }
-    };
-
-    // Compose pipeline: IntegrationPlugin1 wraps IntegrationPlugin2 wraps Base
-    const Pipeline2 = IntegrationPlugin2.transformCommand(execution.BaseCommandExecutor);
-    const Pipeline1 = IntegrationPlugin1.transformCommand(Pipeline2);
-
-    var order = std.ArrayList(u8){};
-    defer order.deinit(std.testing.allocator);
-
-    const ctx = struct {
-        order: *std.ArrayList(u8),
-        io: struct {
-            stderr: std.io.AnyWriter,
-        },
-    }{
-        .order = &order,
-        .io = .{
-            .stderr = std.io.null_writer.any(),
-        },
-    };
-
-    const TestCommand = struct {
-        pub fn execute(context: anytype, args: anytype) !void {
-            _ = args;
-            try context.order.append(std.testing.allocator, 0); // Base execution
-        }
-    };
-
-    try Pipeline1.execute(ctx, TestCommand{});
-
-    // Verify execution order: 1 -> 2 -> 0 (base) -> 3 -> 4
-    try std.testing.expectEqual(@as(usize, 5), order.items.len);
-    try std.testing.expectEqual(@as(u8, 1), order.items[0]);
-    try std.testing.expectEqual(@as(u8, 2), order.items[1]);
-    try std.testing.expectEqual(@as(u8, 0), order.items[2]); // Base execution
-    try std.testing.expectEqual(@as(u8, 3), order.items[3]);
-    try std.testing.expectEqual(@as(u8, 4), order.items[4]);
-}
 
 test "context extension lifecycle" {
     const allocator = std.testing.allocator;

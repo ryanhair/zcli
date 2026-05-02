@@ -4,8 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Get capabilities dependency
-    const capabilities = b.dependency("capabilities", .{
+    // Get dependencies
+    const terminal_dep = b.dependency("terminal", .{
         .target = target,
         .optimize = optimize,
     });
@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    interactive_mod.addImport("capabilities", capabilities.module("capabilities"));
+    interactive_mod.addImport("terminal", terminal_dep.module("terminal"));
 
     // Tests for the interactive framework
     const test_mod = b.addModule("test-interactive", .{
@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    test_mod.addImport("capabilities", capabilities.module("capabilities"));
+    test_mod.addImport("terminal", terminal_dep.module("terminal"));
     const lib_tests = b.addTest(.{
         .root_module = test_mod,
     });

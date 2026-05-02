@@ -223,19 +223,6 @@ pub fn PluginEntry(comptime T: type) type {
     };
 }
 
-/// Standardized metadata structure for commands
-pub const Metadata = struct {
-    description: ?[]const u8 = null,
-    examples: ?[]const []const u8 = null,
-};
-
-/// Result returned by plugin event handlers (legacy)
-pub const PluginResult = struct {
-    handled: bool,
-    output: ?[]const u8 = null,
-    stop_execution: bool = false,
-};
-
 // Test basic argument transformation
 test "basic argument transformation" {
     const allocator = testing.allocator;

@@ -5,6 +5,7 @@
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .ztheme = .{ .path = "../ztheme" },
+        .terminal = .{ .path = "../terminal" },
     },
     .paths = .{
         "build.zig",

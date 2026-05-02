@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const os = std.os;
 const posix = std.posix;
-const capabilities = @import("capabilities");
 
 /// Interactive testing support for CLIs that require user input
 /// Addresses the #1 developer pain point in CLI testing

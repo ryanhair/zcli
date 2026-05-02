@@ -1,0 +1,14 @@
+.{
+    .name = .showcase,
+    .version = "0.1.0",
+    .fingerprint = 0x14b88cd024b0b887,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .zcli = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

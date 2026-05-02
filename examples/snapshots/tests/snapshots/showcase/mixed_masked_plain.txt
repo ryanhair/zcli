@@ -1,3 +1,0 @@
-[INFO] Session [UUID] started
-[WARN] Memory usage at [MEMORY_ADDR]: high
-[SUCCESS] Operation completed at [TIMESTAMP]

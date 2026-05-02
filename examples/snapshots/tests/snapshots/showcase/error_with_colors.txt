@@ -1,3 +1,0 @@
-[31mError:[0m Unknown command
-
-Run 'snapshot-demo help' for usage information.

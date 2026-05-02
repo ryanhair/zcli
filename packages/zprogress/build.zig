@@ -10,6 +10,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const ztheme_module = ztheme_dep.module("ztheme");
+    const terminal_dep = b.dependency("terminal", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const terminal_module = terminal_dep.module("terminal");
 
     // Main zprogress module
     const zprogress_mod = b.addModule("zprogress", .{
@@ -18,6 +23,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     zprogress_mod.addImport("ztheme", ztheme_module);
+    zprogress_mod.addImport("terminal", terminal_module);
 
     // Tests
     const test_step = b.step("test", "Run unit tests");
@@ -28,6 +34,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_mod.addImport("ztheme", ztheme_module);
+    test_mod.addImport("terminal", terminal_module);
 
     const tests = b.addTest(.{
         .root_module = test_mod,

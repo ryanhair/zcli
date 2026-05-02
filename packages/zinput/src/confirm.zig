@@ -1,0 +1,176 @@
+//! Yes/no confirmation prompt.
+
+const std = @import("std");
+const terminal = @import("terminal");
+const zinput = @import("zinput.zig");
+
+pub const ConfirmConfig = struct {
+    message: []const u8,
+    default: bool = true,
+    prefix: []const u8 = "? ",
+};
+
+/// Prompt for yes/no confirmation. Returns bool.
+pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !bool {
+    const is_tty = terminal.isStdinTty();
+
+    const hint = if (config.default) "(Y/n)" else "(y/N)";
+    try writer.print("{s}{s} {s} ", .{ config.prefix, config.message, hint });
+
+    if (!is_tty) {
+        const first = terminal.key.readByteFn(reader) catch return config.default;
+        // Read rest of line
+        while (true) {
+            const b = terminal.key.readByteFn(reader) catch break;
+            if (b == '\n') break;
+        }
+        try writer.writeAll("\n");
+        return switch (first) {
+            'y', 'Y' => true,
+            'n', 'N' => false,
+            else => config.default,
+        };
+    }
+
+    // TTY: single keypress
+    zinput.flushWriter(writer);
+    const raw = terminal.enableRawMode(std.fs.File.stdin().handle) catch return config.default;
+    defer {
+        raw.disable();
+        zinput.flushWriter(writer);
+    }
+
+    while (true) {
+        const k = try terminal.readKey(reader);
+        switch (k) {
+            .enter => {
+                try writer.print("{s}\r\n", .{if (config.default) "yes" else "no"});
+                return config.default;
+            },
+            .char => |c| {
+                switch (c) {
+                    'y', 'Y' => {
+                        try writer.writeAll("yes\r\n");
+                        return true;
+                    },
+                    'n', 'N' => {
+                        try writer.writeAll("no\r\n");
+                        return false;
+                    },
+                    else => {},
+                }
+            },
+            .ctrl => |c| {
+                if (c == 'c') {
+                    try writer.writeAll("\r\n");
+                    return error.UserAborted;
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn parseYesNo(input: []const u8, default: bool) bool {
+    if (input.len == 0) return default;
+    return switch (input[0]) {
+        'y', 'Y' => true,
+        'n', 'N' => false,
+        else => default,
+    };
+}
+
+test "non-TTY: y input returns true" {
+    var input = "y\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Continue?",
+        .default = false,
+    });
+    try std.testing.expect(result == true);
+}
+
+test "non-TTY: n input returns false" {
+    var input = "n\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Continue?",
+        .default = true,
+    });
+    try std.testing.expect(result == false);
+}
+
+test "non-TTY: empty input uses default true" {
+    var input = "\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Continue?",
+        .default = true,
+    });
+    try std.testing.expect(result == true);
+}
+
+test "non-TTY: empty input uses default false" {
+    var input = "\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Continue?",
+        .default = false,
+    });
+    try std.testing.expect(result == false);
+}
+
+test "non-TTY: EOF uses default" {
+    var input = "".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Continue?",
+        .default = true,
+    });
+    try std.testing.expect(result == true);
+}
+
+test "prompt shows Y/n when default is true" {
+    var input = "\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    _ = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Ok?",
+        .default = true,
+    });
+
+    const written = writer_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, written, "(Y/n)") != null);
+}
+
+test "prompt shows y/N when default is false" {
+    var input = "\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    _ = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Ok?",
+        .default = false,
+    });
+
+    const written = writer_stream.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, written, "(y/N)") != null);
+}

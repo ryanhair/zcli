@@ -19,6 +19,22 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zinput_dep = b.dependency("zinput", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const vterm_dep = b.dependency("vterm", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const yaml_dep = b.dependency("yaml", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const toml_dep = b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Main zcli module that will be exposed to users
     const zcli_module = b.addModule("zcli", .{
@@ -29,6 +45,10 @@ pub fn build(b: *std.Build) void {
     zcli_module.addImport("ztheme", ztheme_dep.module("ztheme"));
     zcli_module.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
     zcli_module.addImport("zprogress", zprogress_dep.module("zprogress"));
+    zcli_module.addImport("zinput", zinput_dep.module("zinput"));
+    zcli_module.addImport("vterm", vterm_dep.module("vterm"));
+    zcli_module.addImport("yaml", yaml_dep.module("yaml"));
+    zcli_module.addImport("toml", toml_dep.module("toml"));
 
     // Build utilities module for build.zig files
     _ = b.addModule("build_utils", .{
@@ -82,6 +102,10 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
+        test_mod.addImport("zinput", zinput_dep.module("zinput"));
+        test_mod.addImport("vterm", vterm_dep.module("vterm"));
+        test_mod.addImport("yaml", yaml_dep.module("yaml"));
+        test_mod.addImport("toml", toml_dep.module("toml"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -100,6 +124,10 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
+        test_mod.addImport("zinput", zinput_dep.module("zinput"));
+        test_mod.addImport("vterm", vterm_dep.module("vterm"));
+        test_mod.addImport("yaml", yaml_dep.module("yaml"));
+        test_mod.addImport("toml", toml_dep.module("toml"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -117,6 +145,10 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
+        test_mod.addImport("zinput", zinput_dep.module("zinput"));
+        test_mod.addImport("vterm", vterm_dep.module("vterm"));
+        test_mod.addImport("yaml", yaml_dep.module("yaml"));
+        test_mod.addImport("toml", toml_dep.module("toml"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -134,6 +166,10 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
+        test_mod.addImport("zinput", zinput_dep.module("zinput"));
+        test_mod.addImport("vterm", vterm_dep.module("vterm"));
+        test_mod.addImport("yaml", yaml_dep.module("yaml"));
+        test_mod.addImport("toml", toml_dep.module("toml"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -156,6 +192,10 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
+        test_mod.addImport("zinput", zinput_dep.module("zinput"));
+        test_mod.addImport("vterm", vterm_dep.module("vterm"));
+        test_mod.addImport("yaml", yaml_dep.module("yaml"));
+        test_mod.addImport("toml", toml_dep.module("toml"));
         const sequential_tests = b.addTest(.{
             .root_module = test_mod,
         });

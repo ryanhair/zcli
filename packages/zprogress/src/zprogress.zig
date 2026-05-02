@@ -23,6 +23,7 @@
 
 const std = @import("std");
 const ztheme = @import("ztheme");
+const terminal = @import("terminal");
 
 /// Spinner animation styles
 pub const SpinnerStyle = enum {
@@ -61,12 +62,20 @@ pub const SpinnerStyle = enum {
     }
 };
 
-/// Result symbols for spinner completion
+/// Result symbols for spinner completion. Adapts to terminal unicode support.
 pub const ResultSymbol = struct {
-    pub const success = "✔";
-    pub const failure = "✖";
-    pub const warning = "⚠";
-    pub const info = "ℹ";
+    pub fn success() []const u8 {
+        return terminal.symbols.success(terminal.unicodeSupported());
+    }
+    pub fn failure() []const u8 {
+        return terminal.symbols.failure(terminal.unicodeSupported());
+    }
+    pub fn warning() []const u8 {
+        return terminal.symbols.warning(terminal.unicodeSupported());
+    }
+    pub fn info() []const u8 {
+        return terminal.symbols.info(terminal.unicodeSupported());
+    }
 };
 
 /// Spinner configuration
@@ -144,22 +153,22 @@ pub fn Spinner(comptime WriterType: type) type {
 
         /// Stop the spinner with a success message
         pub fn succeed(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.success, .green, message);
+            self.finishWithColor(ResultSymbol.success(), .green, message);
         }
 
         /// Stop the spinner with a failure message
         pub fn fail(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.failure, .red, message);
+            self.finishWithColor(ResultSymbol.failure(), .red, message);
         }
 
         /// Stop the spinner with a warning message
         pub fn warn(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.warning, .yellow, message);
+            self.finishWithColor(ResultSymbol.warning(), .yellow, message);
         }
 
         /// Stop the spinner with an info message
         pub fn info(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.info, .blue, message);
+            self.finishWithColor(ResultSymbol.info(), .blue, message);
         }
 
         /// Stop the spinner without a result symbol

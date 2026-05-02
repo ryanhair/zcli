@@ -87,12 +87,50 @@ test "command respects output mode" {
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `.stdout` | `[]const u8` | Captured standard output |
-| `.stderr` | `[]const u8` | Captured standard error |
+| `.stdout` | `[]const u8` | Captured standard output (raw, with ANSI codes) |
+| `.stderr` | `[]const u8` | Captured standard error (raw, with ANSI codes) |
 | `.success` | `bool` | `true` if `execute()` returned without error |
 | `.err` | `?anyerror` | The error if `execute()` failed |
+| `.term` | `vterm.VTerm` | Virtual terminal with stdout rendered — for testing colors, formatting, and positioning |
 
 Always call `result.deinit()` when done (use `defer`).
+
+### Testing terminal output with VTerm
+
+The `result.term` field is a virtual terminal that has processed all ANSI escape sequences from stdout. Use it to verify colors, bold/italic formatting, cursor positioning, and rendered text — things you can't check from raw string output.
+
+```zig
+test "status shows green checkmark" {
+    var result = try test_utils.runCommand(StatusCommand, &.{}, .{});
+    defer result.deinit();
+
+    // Check rendered text (ANSI codes stripped)
+    try std.testing.expect(result.term.containsText("All checks passed"));
+
+    // Check text is bold
+    try std.testing.expect(result.term.hasAttribute(0, 0, .bold));
+
+    // Check text color is green
+    const color = result.term.getTextColor(0, 0);
+    try std.testing.expect(color == .green);
+}
+```
+
+**Available VTerm assertions:**
+
+| Method | Description |
+|--------|-------------|
+| `term.containsText("text")` | Text appears anywhere on screen |
+| `term.containsTextIgnoreCase("text")` | Case-insensitive search |
+| `term.containsPattern("he*o")` | Wildcard pattern matching |
+| `term.hasAttribute(x, y, .bold)` | Cell has text attribute (bold, italic, underline) |
+| `term.getTextColor(x, y)` | Get foreground color at position |
+| `term.getBackgroundColor(x, y)` | Get background color at position |
+| `term.cursorAt(x, y)` | Cursor is at position |
+| `term.getLine(allocator, y)` | Get rendered text of a line |
+| `term.getAllText(allocator)` | Get all rendered text |
+| `term.containsTextInRegion("text", x, y, w, h)` | Text in specific region |
+| `term.expectRegionEquals(x, y, w, h, "expected")` | Region matches exactly |
 
 ### When to use unit tests
 
@@ -100,6 +138,7 @@ Always call `result.deinit()` when done (use `defer`).
 - Testing error handling and validation
 - Testing conditional logic based on args/options
 - Testing plugin data interactions
+- Testing colors and ANSI formatting with VTerm
 - Fast iteration during development
 
 ### Limitations
