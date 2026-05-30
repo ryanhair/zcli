@@ -3,7 +3,7 @@ const zcli = @import("zcli");
 
 /// Escape special characters in descriptions for zsh completion
 fn escapeDescription(allocator: std.mem.Allocator, desc: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     for (desc) |c| {
@@ -49,7 +49,7 @@ fn generateOptionsForCommand(
     indent: []const u8,
 ) !void {
     // Find the command with this path
-    var target_path = std.ArrayList([]const u8){};
+    var target_path = std.ArrayList([]const u8).empty;
     defer target_path.deinit(allocator);
 
     var path_iter = std.mem.splitScalar(u8, command_path_str, ' ');
@@ -80,7 +80,7 @@ fn generateOptionsForCommand(
     if (found_options) |options| {
         if (options.len > 0) {
             // Set curcontext for this specific command
-            var context_name = std.ArrayList(u8){};
+            var context_name = std.ArrayList(u8).empty;
             defer context_name.deinit(allocator);
 
             var context_iter = std.mem.splitScalar(u8, command_path_str, ' ');
@@ -154,7 +154,7 @@ fn generateNestedCases(
             // Check if any subcommands have children (for determining if we need nested recursion)
             var has_nested_children = false;
             for (subcommands.items) |subcmd| {
-                var child_path = std.ArrayList(u8){};
+                var child_path = std.ArrayList(u8).empty;
                 defer child_path.deinit(allocator);
                 try child_path.appendSlice(allocator, current_path);
                 try child_path.append(allocator, ' ');
@@ -174,7 +174,7 @@ fn generateNestedCases(
 
             // Process ALL subcommands
             for (subcommands.items) |subcmd| {
-                var child_path = std.ArrayList(u8){};
+                var child_path = std.ArrayList(u8).empty;
                 defer child_path.deinit(allocator);
                 try child_path.appendSlice(allocator, current_path);
                 try child_path.append(allocator, ' ');
@@ -251,9 +251,9 @@ pub fn generate(
     commands: []const zcli.CommandInfo,
     global_options: []const zcli.OptionInfo,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8){};
-    errdefer buf.deinit(allocator);
-    const writer = buf.writer(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
 
     // Header
     try writer.print("#compdef {s}\n", .{app_name});
@@ -290,14 +290,14 @@ pub fn generate(
             // Root level command
             const entry = try command_tree.getOrPut("");
             if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList([]const u8){};
+                entry.value_ptr.* = std.ArrayList([]const u8).empty;
             }
             try entry.value_ptr.append(allocator, cmd.path[0]);
         } else {
             // Nested command - create entries for each level
             for (1..cmd.path.len) |depth| {
                 // Build parent path for this depth
-                var parent_path = std.ArrayList(u8){};
+                var parent_path = std.ArrayList(u8).empty;
                 defer parent_path.deinit(allocator);
                 for (cmd.path[0..depth], 0..) |part, idx| {
                     if (idx > 0) try parent_path.append(allocator, ' ');
@@ -307,7 +307,7 @@ pub fn generate(
                 const parent_key = try allocator.dupe(u8, parent_path.items);
                 const entry = try command_tree.getOrPut(parent_key);
                 if (!entry.found_existing) {
-                    entry.value_ptr.* = std.ArrayList([]const u8){};
+                    entry.value_ptr.* = std.ArrayList([]const u8).empty;
                 } else {
                     allocator.free(parent_key);
                 }
@@ -464,5 +464,5 @@ pub fn generate(
     // Call the function
     try writer.print("_{s} \"$@\"\n", .{app_name});
 
-    return buf.toOwnedSlice(allocator);
+    var al = aw.toArrayList(); return al.toOwnedSlice(allocator);
 }

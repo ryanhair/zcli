@@ -59,7 +59,7 @@ fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
 
 fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.fs.File.stdin().handle) catch {
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         return config.default orelse error.InvalidNumber;
     };
     defer {

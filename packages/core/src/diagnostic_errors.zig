@@ -174,13 +174,15 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name });
 
             if (ctx.suggestions.len > 0) {
-                var full_msg = std.ArrayList(u8){};
+                var full_msg = std.ArrayList(u8).empty;
                 defer full_msg.deinit(allocator);
                 try full_msg.appendSlice(allocator, base_msg);
                 allocator.free(base_msg);
                 try full_msg.appendSlice(allocator, "\nDid you mean:\n");
                 for (ctx.suggestions) |suggestion| {
-                    try full_msg.writer(allocator).print("  --{s}\n", .{suggestion});
+                    const line = try std.fmt.allocPrint(allocator, "  --{s}\n", .{suggestion});
+                    defer allocator.free(line);
+                    try full_msg.appendSlice(allocator, line);
                 }
                 break :blk try full_msg.toOwnedSlice(allocator);
             } else {
@@ -195,13 +197,15 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown command '{s}'", .{ctx.attempted_command});
 
             if (ctx.suggestions.len > 0) {
-                var full_msg = std.ArrayList(u8){};
+                var full_msg = std.ArrayList(u8).empty;
                 defer full_msg.deinit(allocator);
                 try full_msg.appendSlice(allocator, base_msg);
                 allocator.free(base_msg);
                 try full_msg.appendSlice(allocator, "\nDid you mean:\n");
                 for (ctx.suggestions) |suggestion| {
-                    try full_msg.writer(allocator).print("  {s}\n", .{suggestion});
+                    const line = try std.fmt.allocPrint(allocator, "  {s}\n", .{suggestion});
+                    defer allocator.free(line);
+                    try full_msg.appendSlice(allocator, line);
                 }
                 break :blk try full_msg.toOwnedSlice(allocator);
             } else {

@@ -40,21 +40,19 @@ pub const Key = union(enum) {
 /// Read a single byte from a reader.
 /// Supports std.Io.Reader (pointer with readSliceAll) and GenericReader (value with readByte).
 pub fn readByteFn(reader: anytype) !u8 {
-    // Pointer types (like *std.Io.Reader) — use readSliceAll
-    const info = @typeInfo(@TypeOf(reader));
+    const T = @TypeOf(reader);
+    const info = @typeInfo(T);
     if (info == .pointer) {
         const Child = info.pointer.child;
+        if (@hasDecl(Child, "takeByte")) return try reader.takeByte();
         if (@hasDecl(Child, "readSliceAll")) {
             var buf: [1]u8 = undefined;
             try reader.readSliceAll(&buf);
             return buf[0];
         }
     }
-    // Value types (like GenericReader) — use readByte
-    if (@hasDecl(@TypeOf(reader), "readByte")) {
-        return try reader.readByte();
-    }
-    // Last resort
+    if (@hasDecl(T, "takeByte")) return try reader.takeByte();
+    if (@hasDecl(T, "readByte")) return try reader.readByte();
     var buf: [1]u8 = undefined;
     const n = try reader.read(&buf);
     if (n == 0) return error.EndOfStream;
@@ -134,56 +132,56 @@ test "Key char format" {
 
 test "readKey parses enter" {
     var buf = "\r".*;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expect(k == .enter);
 }
 
 test "readKey parses tab" {
     var buf = "\t".*;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expect(k == .tab);
 }
 
 test "readKey parses backspace" {
     var buf = [_]u8{127};
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expect(k == .backspace);
 }
 
 test "readKey parses printable char" {
     var buf = "a".*;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expect(k.char == 'a');
 }
 
 test "readKey parses arrow up" {
     var buf = "\x1b[A".*;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expect(k == .up);
 }
 
 test "readKey parses arrow down" {
     var buf = "\x1b[B".*;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expect(k == .down);
 }
 
 test "readKey parses ctrl+c" {
     var buf = [_]u8{3};
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expectEqual(Key{ .ctrl = 'c' }, k);
 }
 
 test "readKey parses delete" {
     var buf = "\x1b[3~".*;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const k = try readKey(fbs.reader());
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
     try std.testing.expect(k == .delete);
 }

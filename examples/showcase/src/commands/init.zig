@@ -14,13 +14,11 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: anytype) !void {
     const allocator = context.allocator;
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const writer = &stdout_writer.interface;
-    var stdin_reader = std.fs.File.stdin().reader(&.{});
-    const reader = &stdin_reader.interface;
+        const writer = context.stdout();
+        const reader = context.stdin();
 
     // Check if already initialized
-    if (std.fs.cwd().access("tasks.json", .{})) |_| {
+    if (std.Io.Dir.cwd().access(context.io.io, "tasks.json", .{})) |_| {
         try writer.writeAll("\r\n  Project already initialized in this directory.\r\n  Run 'tasks list' to see your tasks.\r\n\r\n");
         return;
     } else |_| {}
@@ -65,7 +63,7 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         data.next_id = 4;
     }
 
-    try store.save(allocator, data);
+    try store.save(allocator, context.io.io, data);
 
     try writer.writeAll("\r\n  ");
     try ztheme.theme("✔ Project initialized!").success().render(writer, &context.theme);

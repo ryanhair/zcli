@@ -62,7 +62,7 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
 
 /// Find commands similar to the input using edit distance
 pub fn findSimilarCommands(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator) ![][]const u8 {
-    var suggestions = std.ArrayList([]const u8){};
+    var suggestions = std.ArrayList([]const u8).empty;
     defer suggestions.deinit(allocator);
 
     for (candidates) |candidate| {
@@ -79,7 +79,7 @@ pub fn findSimilarCommands(input: []const u8, candidates: []const []const u8, al
 
 /// Find similar commands with configurable threshold and max suggestions
 pub fn findSimilarCommandsWithConfig(input: []const u8, candidates: []const []const u8, allocator: std.mem.Allocator, max_distance: usize, max_suggestions: usize) ![][]const u8 {
-    var suggestions_with_distance = std.ArrayList(struct { command: []const u8, distance: usize }){};
+    var suggestions_with_distance = std.ArrayList(struct { command: []const u8, distance: usize }).empty;
     defer suggestions_with_distance.deinit(allocator);
 
     for (candidates) |candidate| {
@@ -99,7 +99,7 @@ pub fn findSimilarCommandsWithConfig(input: []const u8, candidates: []const []co
     }.lessThan);
 
     // Extract just the command names, limited to max_suggestions
-    var result = std.ArrayList([]const u8){};
+    var result = std.ArrayList([]const u8).empty;
     defer result.deinit(allocator);
 
     const limit = @min(max_suggestions, suggestions_with_distance.items.len);

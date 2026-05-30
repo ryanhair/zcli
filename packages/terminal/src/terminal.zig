@@ -125,16 +125,17 @@ pub fn getWindowSize(fd: posix.fd_t) !Winsize {
 // TTY detection
 // ============================================================================
 
-pub fn isTty(fd: posix.fd_t) bool {
-    return posix.isatty(fd);
+pub fn isTty(fd: std.posix.fd_t) bool {
+    // Direct syscall — isatty is a simple ioctl check
+    return std.posix.system.isatty(fd) != 0;
 }
 
 pub fn isStdinTty() bool {
-    return isTty(std.fs.File.stdin().handle);
+    return isTty(std.Io.File.stdin().handle);
 }
 
 pub fn isStdoutTty() bool {
-    return isTty(std.fs.File.stdout().handle);
+    return isTty(std.Io.File.stdout().handle);
 }
 
 // ============================================================================
@@ -144,11 +145,11 @@ pub fn isStdoutTty() bool {
 /// Check if the terminal likely supports Unicode (UTF-8).
 /// Checks LC_ALL, LC_CTYPE, and LANG environment variables for UTF-8 indicators.
 /// Most modern terminals support UTF-8, but some remote/embedded environments don't.
-pub fn unicodeSupported() bool {
+pub fn unicodeSupported(environ: *const std.process.Environ.Map) bool {
     // Check locale environment variables for UTF-8
     const vars = [_][]const u8{ "LC_ALL", "LC_CTYPE", "LANG" };
     for (vars) |name| {
-        if (std.posix.getenv(name)) |val| {
+        if (environ.get(name)) |val| {
             if (containsUtf8(val)) return true;
             // If explicitly set to a non-UTF-8 locale, respect that
             if (val.len > 0 and !std.mem.eql(u8, val, "C") and !std.mem.eql(u8, val, "POSIX")) {
@@ -260,7 +261,8 @@ test "TTY detection runs" {
 }
 
 test "unicode detection runs" {
-    _ = unicodeSupported();
+    const env = std.process.Environ.Map.init(std.testing.allocator);
+    _ = unicodeSupported(&env);
 }
 
 test "containsUtf8" {

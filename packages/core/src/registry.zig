@@ -251,35 +251,25 @@ fn ComputePluginDataType(comptime plugins: []const type) type {
             return struct {};
         }
 
-        // Build fields array
-        var fields: [field_count]std.builtin.Type.StructField = undefined;
+        // Build field arrays for @Struct
+        var field_names: [field_count][]const u8 = undefined;
+        var field_types: [field_count]type = undefined;
+        var field_attrs: [field_count]std.builtin.Type.StructField.Attributes = undefined;
         var idx: usize = 0;
 
         for (plugins) |Plugin| {
             if (@hasDecl(Plugin, "ContextData")) {
                 const DataType = Plugin.ContextData;
                 const default_val: DataType = .{};
-                const field_name = pluginFieldName(Plugin);
 
-                fields[idx] = .{
-                    .name = field_name,
-                    .type = DataType,
-                    .default_value_ptr = @ptrCast(&default_val),
-                    .is_comptime = false,
-                    .alignment = @alignOf(DataType),
-                };
+                field_names[idx] = pluginFieldName(Plugin);
+                field_types[idx] = DataType;
+                field_attrs[idx] = .{ .default_value_ptr = @ptrCast(&default_val) };
                 idx += 1;
             }
         }
 
-        return @Type(.{
-            .@"struct" = .{
-                .fields = &fields,
-                .layout = .auto,
-                .decls = &.{},
-                .is_tuple = false,
-            },
-        });
+        return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
     }
 }
 
@@ -292,7 +282,7 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
     return struct {
         allocator: std.mem.Allocator,
         io: *zcli.IO,
-        environment: zcli.Environment,
+        environ: *const std.process.Environ.Map,
         theme: zcli.ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
 
         // App metadata from config
@@ -316,13 +306,13 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
 
         const Self = @This();
 
-        /// Initialize a new Context with the provided IO.
-        pub fn init(allocator: std.mem.Allocator, io: *zcli.IO) Self {
+        /// Initialize a new Context with the provided IO and environment.
+        pub fn init(allocator: std.mem.Allocator, io_struct: *zcli.IO, env: *const std.process.Environ.Map) Self {
             return .{
                 .allocator = allocator,
-                .io = io,
-                .environment = zcli.Environment.init(allocator),
-                .theme = zcli.ztheme.Theme.init(allocator),
+                .io = io_struct,
+                .environ = env,
+                                .theme = zcli.ztheme.Theme.init(env, io_struct.io),
             };
         }
 
@@ -354,7 +344,7 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
                 }
             }
 
-            self.environment.deinit();
+            
         }
 
         // I/O convenience methods
@@ -787,7 +777,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             return Self{};
         }
 
-        pub fn execute(self: *Self, allocator: std.mem.Allocator, args: []const []const u8) !void {
+        pub fn execute(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
@@ -811,15 +801,16 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             const plugin_command_info_list = command_info;
 
             // Create IO and finalize before passing to Context
-            var io = zcli.IO.init();
-            io.finalize();
+            var zcli_io = zcli.IO.init(io);
+            zcli_io.finalize();
+            defer zcli_io.flush();
 
             // Use the computed Context type which includes type-safe plugin data
             var context = Context{
                 .allocator = allocator,
-                .io = &io,
-                .environment = zcli.Environment.init(allocator),
-                .theme = zcli.ztheme.Theme.init(allocator),
+                .io = &zcli_io,
+                .environ = environ,
+                                .theme = zcli.ztheme.Theme.init(environ, io),
                 .available_commands = available_commands,
                 .command_path = &.{},
                 .plugin_command_info = plugin_command_info_list,
@@ -859,17 +850,14 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             try self.executeCommand(&context, current_args);
         }
 
-        /// Convenient run method that handles process args automatically
-        pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
-            const args = try std.process.argsAlloc(allocator);
-            defer std.process.argsFree(allocator, args);
-
-            try self.execute(allocator, args[1..]);
+        /// Convenient run method that handles process args, io, and environment
+        pub fn run(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
+            try self.execute(allocator, io, environ, if (args.len > 0) args[1..] else args);
         }
 
         pub fn parseGlobalOptions(self: *Self, context: *Context, args: []const []const u8) !zcli.GlobalOptionsResult {
-            var consumed = std.ArrayList(usize){};
-            var remaining = std.ArrayList([]const u8){};
+            var consumed = std.ArrayList(usize).empty;
+            var remaining = std.ArrayList([]const u8).empty;
             defer consumed.deinit(context.allocator);
             defer remaining.deinit(context.allocator);
 
@@ -1121,7 +1109,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             const ArgsType = cmd.module.Args;
                             const args_type_info = @typeInfo(ArgsType);
                             if (args_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo){};
+                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
                                 inline for (args_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
                                     try field_list.append(context.allocator, zcli.FieldInfo{
@@ -1138,7 +1126,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             const OptionsType = cmd.module.Options;
                             const options_type_info = @typeInfo(OptionsType);
                             if (options_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo){};
+                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
                                 inline for (options_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
 
@@ -1341,7 +1329,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         if (@hasDecl(CommandModule, "Args")) {
                             const args_type_info = @typeInfo(ArgsType);
                             if (args_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo){};
+                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
                                 inline for (args_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
                                     try field_list.append(context.allocator, zcli.FieldInfo{
@@ -1360,7 +1348,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         if (@hasDecl(CommandModule, "Options")) {
                             const options_type_info = @typeInfo(OptionsType);
                             if (options_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo){};
+                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
                                 inline for (options_type_info.@"struct".fields) |field| {
                                     const field_type_info = @typeInfo(field.type);
 
@@ -2246,10 +2234,11 @@ fn createPureCommandTestRegistry() type {
 test "pure command group behavior: always shows help without error" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     // Test 1: Pure command group without --help should show help and succeed
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, &.{"network"});
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"network"});
 
     // Should have triggered CommandNotFound -> help showing -> error handled
     try testing.expect(TestHelpPlugin.help_shown);
@@ -2257,7 +2246,7 @@ test "pure command group behavior: always shows help without error" {
 
     // Test 2: Pure command group with --help should also show help and succeed
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, &.{ "network", "--help" });
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "network", "--help" });
 
     // Should have triggered help showing (same behavior regardless of --help)
     try testing.expect(TestHelpPlugin.help_shown);
@@ -2266,21 +2255,23 @@ test "pure command group behavior: always shows help without error" {
 test "pure command group: subcommands execute normally" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     // Subcommand should execute normally without help plugin intervention
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, &.{ "network", "ls" });
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "network", "ls" });
     try testing.expect(!TestHelpPlugin.command_found_error); // Should not hit CommandNotFound
 }
 
 test "error handling: plugin returns true prevents error propagation" {
     const TestApp = createPureCommandTestRegistry();
     var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     // This tests the fix - when a plugin handles CommandNotFound by returning true,
     // the registry should not propagate the error
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, &.{"nonexistent"});
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"nonexistent"});
 
     // Plugin should have handled the error
     try testing.expect(TestHelpPlugin.command_found_error);

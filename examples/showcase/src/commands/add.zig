@@ -29,7 +29,7 @@ pub const Options = struct {
 
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator);
+    var parsed = try store.load(allocator, context.io.io);
     defer parsed.deinit();
     var data = parsed.value;
 
@@ -45,10 +45,8 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         priority = store.priorityFromString(options.priority) orelse .medium;
     } else {
         // Interactive mode
-        var stdout_writer = std.fs.File.stdout().writer(&.{});
-        const writer = &stdout_writer.interface;
-        var stdin_reader = std.fs.File.stdin().reader(&.{});
-        const reader = &stdin_reader.interface;
+                const writer = context.stdout();
+                const reader = context.stdin();
 
         title_owned = try zinput.text(writer, reader, allocator, .{
             .message = "Task title:",
@@ -84,14 +82,14 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     };
 
     // Append task
-    var tasks_list = std.ArrayList(store.Task){};
+    var tasks_list = std.ArrayList(store.Task).empty;
     defer tasks_list.deinit(allocator);
     try tasks_list.appendSlice(allocator, data.tasks);
     try tasks_list.append(allocator, new_task);
 
     data.tasks = tasks_list.items;
     data.next_id += 1;
-    try store.save(allocator, data);
+    try store.save(allocator, context.io.io, data);
 
     try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Added task #{d}: {s}\n", .{ new_task.id, title });

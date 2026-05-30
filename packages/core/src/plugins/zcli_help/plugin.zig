@@ -527,9 +527,9 @@ fn showCommandHelp(context: anytype, command: []const u8) !void {
 /// Generate usage string based on command structure
 fn generateUsage(context: anytype) ![]const u8 {
     // Build a markdown-formatted usage string using the formatter
-    var buf = std.ArrayList(u8){};
-    errdefer buf.deinit(context.allocator);
-    const buf_writer = buf.writer(context.allocator);
+    var aw: std.Io.Writer.Allocating = .init(context.allocator);
+    errdefer aw.deinit();
+    const buf_writer = &aw.writer;
     var fmt = md.capabilityFormatter(buf_writer, context.theme.getCapability());
 
     // Start with app name and command path
@@ -584,7 +584,8 @@ fn generateUsage(context: anytype) ![]const u8 {
         }
     }
 
-    return try buf.toOwnedSlice(context.allocator);
+    var al = aw.toArrayList();
+    return try al.toOwnedSlice(context.allocator);
 }
 
 /// Show available subcommands for the current command
@@ -664,9 +665,9 @@ fn showSubcommands(context: anytype, fmt: anytype) !void {
 fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u8 {
     if (!module_info.has_args or module_info.args_fields.len == 0) return null;
 
-    var buffer: std.ArrayList(u8) = .empty;
-    errdefer buffer.deinit(context.allocator);
-    var writer = buffer.writer(context.allocator);
+    var aw: std.Io.Writer.Allocating = .init(context.allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
 
     var first = true;
     for (module_info.args_fields) |field_info| {
@@ -700,7 +701,8 @@ fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: anytype) !?
         }
     }
 
-    return try buffer.toOwnedSlice(context.allocator);
+    var al = aw.toArrayList();
+    return try al.toOwnedSlice(context.allocator);
 }
 
 /// Generate args help text from command module info
@@ -708,9 +710,9 @@ fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: anytype) !?
 fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u8 {
     if (!module_info.has_args or module_info.args_fields.len == 0) return null;
 
-    var buffer: std.ArrayList(u8) = .empty;
-    errdefer buffer.deinit(context.allocator);
-    const buf_writer = buffer.writer(context.allocator);
+    var aw: std.Io.Writer.Allocating = .init(context.allocator);
+    errdefer aw.deinit();
+    const buf_writer = &aw.writer;
     var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.getCapability());
 
     // Generate basic help from field names
@@ -718,7 +720,8 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u
         try buf_fmt.write("    <value>{s:<16}</value> {s}\n", .{ field_info.name, field_info.name });
     }
 
-    return try buffer.toOwnedSlice(context.allocator);
+    var al = aw.toArrayList();
+    return try al.toOwnedSlice(context.allocator);
 }
 
 /// Generate options help text from command module info
@@ -726,9 +729,9 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u
 fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u8 {
     if (!module_info.has_options or module_info.options_fields.len == 0) return null;
 
-    var buffer: std.ArrayList(u8) = .empty;
-    errdefer buffer.deinit(context.allocator);
-    const buf_writer = buffer.writer(context.allocator);
+    var aw: std.Io.Writer.Allocating = .init(context.allocator);
+    errdefer aw.deinit();
+    const buf_writer = &aw.writer;
     var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.getCapability());
 
     // Generate help from field info with metadata
@@ -770,7 +773,8 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
         }
     }
 
-    return try buffer.toOwnedSlice(context.allocator);
+    var al = aw.toArrayList();
+    return try al.toOwnedSlice(context.allocator);
 }
 
 test {

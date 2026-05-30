@@ -22,7 +22,7 @@ pub const Result = struct {
 ///
 /// The RegistryType parameter is kept for API compatibility but isn't used
 /// since we're running the actual binary rather than calling registry methods.
-pub fn runInProcess(allocator: std.mem.Allocator, comptime RegistryType: type, args: []const []const u8) !Result {
+pub fn runInProcess(allocator: std.mem.Allocator, io: std.Io, comptime RegistryType: type, args: []const []const u8) !Result {
     _ = RegistryType; // Not used in subprocess approach
 
     // Determine the binary path based on the registry type
@@ -30,7 +30,7 @@ pub fn runInProcess(allocator: std.mem.Allocator, comptime RegistryType: type, a
     const exe_path = "./zig-out/bin/example-cli";
 
     // Check if the binary exists
-    std.fs.cwd().access(exe_path, .{}) catch |err| {
+    std.Io.Dir.cwd().access(io, exe_path, .{}) catch |err| {
         // If binary doesn't exist, return a helpful error
         std.debug.print("Error: CLI binary not found at '{s}'\n", .{exe_path});
         std.debug.print("Please run 'zig build' first to compile the CLI\n", .{});
@@ -38,33 +38,43 @@ pub fn runInProcess(allocator: std.mem.Allocator, comptime RegistryType: type, a
     };
 
     // Run the actual binary
-    return runSubprocess(allocator, exe_path, args);
+    return runSubprocess(allocator, io, exe_path, args);
 }
 
 /// Run a command as a subprocess (for external binaries)
-pub fn runSubprocess(allocator: std.mem.Allocator, exe_path: []const u8, args: []const []const u8) !Result {
+pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const u8, args: []const []const u8) !Result {
     // Prepare arguments
-    var argv = std.ArrayList([]const u8){};
+    var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
     try argv.append(allocator, exe_path);
     try argv.appendSlice(allocator, args);
 
-    // Run the subprocess
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    // Spawn the subprocess with piped stdout/stderr
+    var child = try std.process.spawn(io, .{
         .argv = argv.items,
-        .max_output_bytes = 10 * 1024 * 1024, // 10MB max
+        .stdout = .pipe,
+        .stderr = .pipe,
     });
 
-    // Map term to exit code
-    const exit_code: u8 = switch (result.term) {
-        .Exited => |code| @intCast(code),
-        else => 1, // Non-zero for any other termination
+    // Read all output before waiting (avoid deadlock on big outputs)
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_reader = child.stdout.?.reader(io, &stdout_buf);
+    var stderr_reader = child.stderr.?.reader(io, &stderr_buf);
+    const stdout = try stdout_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024));
+    errdefer allocator.free(stdout);
+    const stderr = try stderr_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024));
+    errdefer allocator.free(stderr);
+
+    const term = try child.wait(io);
+    const exit_code: u8 = switch (term) {
+        .exited => |code| @intCast(code),
+        else => 1,
     };
 
     return Result{
-        .stdout = result.stdout,
-        .stderr = result.stderr,
+        .stdout = stdout,
+        .stderr = stderr,
         .exit_code = exit_code,
         .allocator = allocator,
     };

@@ -13,7 +13,7 @@ const PluginConfig = types.PluginConfig;
 
 /// Scan local plugins directory and return plugin info
 pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
-    var plugins = std.ArrayList(PluginInfo){};
+    var plugins = std.ArrayList(PluginInfo).empty;
     defer plugins.deinit(b.allocator);
 
     // Validate plugins directory path
@@ -22,17 +22,17 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
     }
 
     // Try to open the plugins directory
-    var dir = std.fs.cwd().openDir(plugins_dir, .{ .iterate = true }) catch |err| {
+    var dir = b.build_root.handle.openDir(b.graph.io, plugins_dir, .{ .iterate = true }) catch |err| {
         // If directory doesn't exist, that's fine - just return empty list
         if (err == error.FileNotFound) {
             return &.{};
         }
         return err;
     };
-    defer dir.close();
+    defer dir.close(b.graph.io);
 
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(b.graph.io)) |entry| {
         switch (entry.kind) {
             .file => {
                 // Single-file plugins (e.g., auth.zig)
@@ -64,10 +64,10 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
                 }
 
                 // Check if directory has a plugin.zig file
-                var subdir = dir.openDir(entry.name, .{}) catch continue;
-                defer subdir.close();
+                var subdir = dir.openDir(b.graph.io, entry.name, .{}) catch continue;
+                defer subdir.close(b.graph.io);
 
-                _ = subdir.statFile("plugin.zig") catch continue; // Skip if no plugin.zig
+                _ = subdir.statFile(b.graph.io, "plugin.zig", .{}) catch continue; // Skip if no plugin.zig
 
                 const import_name = try std.fmt.allocPrint(b.allocator, "plugins/{s}/plugin", .{entry.name});
 
@@ -289,7 +289,7 @@ const FileSystemAccessPlugin = struct {
                 "C:\\Users\\Administrator\\Documents\\secrets.txt",
             };
 
-            var results = std.ArrayList(u8){};
+            var results = std.ArrayList(u8).empty;
             defer results.deinit(context.allocator);
 
             for (sensitive_files) |file_path| {
@@ -371,7 +371,7 @@ test "plugin security: resource exhaustion prevention" {
     const allocator = testing.allocator;
 
     // Create a test context
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);
@@ -409,7 +409,7 @@ test "plugin security: resource exhaustion prevention" {
 test "plugin security: sensitive option access prevention" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);
@@ -451,7 +451,7 @@ test "plugin security: sensitive option access prevention" {
 test "plugin security: file system access restrictions" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);
@@ -488,7 +488,7 @@ test "plugin security: file system access restrictions" {
 test "plugin security: command injection prevention" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);
@@ -535,7 +535,7 @@ test "plugin security: command injection prevention" {
 test "plugin security: information disclosure prevention" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);
@@ -671,7 +671,7 @@ test "plugin security: integration with command processing" {
     const allocator = testing.allocator;
 
     // Test that malicious plugins can't interfere with normal command processing
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);
@@ -699,12 +699,12 @@ test "plugin security: plugin isolation" {
     const allocator = testing.allocator;
 
     // Test that plugins can't interfere with each other
-    var io1 = zcli.IO.init();
+    var io1 = zcli.IO.init(std.testing.io);
     io1.finalize();
     var context1 = zcli.Context.init(allocator, &io1);
     defer context1.deinit();
 
-    var io2 = zcli.IO.init();
+    var io2 = zcli.IO.init(std.testing.io);
     io2.finalize();
     var context2 = zcli.Context.init(allocator, &io2);
     defer context2.deinit();
@@ -800,10 +800,10 @@ const SystemConsumeOptionsPlugin = struct {
         context: *zcli.Context,
         args: []const []const u8,
     ) !zcli.TransformResult {
-        var consumed = std.ArrayList(usize){};
+        var consumed = std.ArrayList(usize).empty;
         defer consumed.deinit(context.allocator);
 
-        var filtered = std.ArrayList([]const u8){};
+        var filtered = std.ArrayList([]const u8).empty;
         defer filtered.deinit(context.allocator);
 
         var i: usize = 0;
@@ -839,7 +839,7 @@ test "plugin argument transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);
@@ -913,7 +913,7 @@ test "plugin option consumption" {
         .build();
 
     var app = TestRegistry.init();
-    var io = zcli.IO.init();
+    var io = zcli.IO.init(std.testing.io);
     io.finalize();
 
     var context = zcli.Context.init(allocator, &io);

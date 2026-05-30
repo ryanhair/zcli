@@ -8,9 +8,9 @@ pub fn generate(
     commands: []const zcli.CommandInfo,
     global_options: []const zcli.OptionInfo,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8){};
-    errdefer buf.deinit(allocator);
-    const writer = buf.writer(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
 
     // Header
     try writer.print("# fish completion for {s}\n", .{app_name});
@@ -72,13 +72,13 @@ pub fn generate(
             // Root level command
             const entry = try command_tree.getOrPut("");
             if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList([]const u8){};
+                entry.value_ptr.* = std.ArrayList([]const u8).empty;
             }
             try entry.value_ptr.append(allocator, cmd.path[0]);
         } else {
             // Nested command - mark parents
             for (0..cmd.path.len - 1) |i| {
-                var parent_path = std.ArrayList(u8){};
+                var parent_path = std.ArrayList(u8).empty;
                 defer parent_path.deinit(allocator);
                 for (cmd.path[0 .. i + 1], 0..) |part, idx| {
                     if (idx > 0) try parent_path.append(allocator, ' ');
@@ -89,7 +89,7 @@ pub fn generate(
             }
 
             // Add to command tree
-            var parent_path = std.ArrayList(u8){};
+            var parent_path = std.ArrayList(u8).empty;
             defer parent_path.deinit(allocator);
             for (cmd.path[0 .. cmd.path.len - 1], 0..) |part, idx| {
                 if (idx > 0) try parent_path.append(allocator, ' ');
@@ -99,7 +99,7 @@ pub fn generate(
             const parent_key = try allocator.dupe(u8, parent_path.items);
             const entry = try command_tree.getOrPut(parent_key);
             if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList([]const u8){};
+                entry.value_ptr.* = std.ArrayList([]const u8).empty;
             } else {
                 allocator.free(parent_key);
             }
@@ -141,7 +141,7 @@ pub fn generate(
         const subcommands = entry.value_ptr.*;
 
         // Build condition: __fish_seen_subcommand_from parent1 parent2 ...
-        var condition = std.ArrayList(u8){};
+        var condition = std.ArrayList(u8).empty;
         defer condition.deinit(allocator);
         try condition.appendSlice(allocator, "__fish_seen_subcommand_from");
 
@@ -155,7 +155,7 @@ pub fn generate(
         // Check that we haven't seen any of the subcommands yet
         var has_deeper = false;
         for (subcommands.items) |subcmd_name| {
-            var full_path = std.ArrayList(u8){};
+            var full_path = std.ArrayList(u8).empty;
             defer full_path.deinit(allocator);
             try full_path.appendSlice(allocator, parent_path);
             try full_path.append(allocator, ' ');
@@ -193,7 +193,7 @@ pub fn generate(
             try writer.print("complete -c {s} -f -n \"{s}\"", .{ app_name, condition.items });
 
             // If this subcommand itself has subcommands, add condition to not show it after it's been used
-            var full_subcmd_path = std.ArrayList(u8){};
+            var full_subcmd_path = std.ArrayList(u8).empty;
             defer full_subcmd_path.deinit(allocator);
             try full_subcmd_path.appendSlice(allocator, parent_path);
             try full_subcmd_path.append(allocator, ' ');
@@ -248,5 +248,5 @@ pub fn generate(
         try writer.writeAll("\n");
     }
 
-    return buf.toOwnedSlice(allocator);
+    var al = aw.toArrayList(); return al.toOwnedSlice(allocator);
 }

@@ -1,8 +1,13 @@
 zig-out
 .zig-cache
+zig-pkg
+**/zig-pkg/
 .DS_Store
 .vscode
 .claude/settings.local.json
+.claude/skills/
+test_io
+examples/showcase/tasks.json
 /website/zine
 /website/public
 **/CLAUDE.md

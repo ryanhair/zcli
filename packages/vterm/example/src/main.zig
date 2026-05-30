@@ -2,80 +2,60 @@ const std = @import("std");
 
 const VERSION = "1.0.0";
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len < 2) {
-        try printUsage();
+        try printUsage(io);
         return;
     }
 
     const cmd = args[1];
 
     if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
-        try printHelp();
+        try printHelp(io);
     } else if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v")) {
-        try printVersion();
+        try printVersion(io);
     } else if (std.mem.eql(u8, cmd, "list")) {
-        try handleList(args[2..]);
+        try handleList(io, args[2..]);
     } else if (std.mem.eql(u8, cmd, "status")) {
-        try printStatus();
+        try printStatus(io);
     } else {
-        try printError(cmd);
+        try printError(io, cmd);
     }
 }
 
-fn printUsage() !void {
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    try stdout_writer.interface.writeAll("Usage: demo-cli <command> [options]\n");
-    try stdout_writer.interface.writeAll("Try 'demo-cli help' for more information.\n");
+fn printUsage(io: std.Io) !void {
+    try std.Io.File.stdout().writeStreamingAll(io, "Usage: demo-cli <command> [options]\n");
+    try std.Io.File.stdout().writeStreamingAll(io, "Try 'demo-cli help' for more information.\n");
 }
 
-fn printHelp() !void {
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const stdout = &stdout_writer.interface;
-
-    // Print colored header with ANSI codes
-    try stdout.print("\x1b[1;34mDemo CLI Tool v{s}\x1b[0m\n", .{VERSION});
-    try stdout.print("\x1b[90m{s:=<60}\x1b[0m\n", .{""});
-    try stdout.print("\n", .{});
-
-    try stdout.print("\x1b[1mUSAGE:\x1b[0m\n", .{});
-    try stdout.print("  demo-cli <command> [options]\n", .{});
-    try stdout.print("\n", .{});
-
-    try stdout.print("\x1b[1mCOMMANDS:\x1b[0m\n", .{});
-    try stdout.print("  \x1b[32mhelp\x1b[0m       Show this help message\n", .{});
-    try stdout.print("  \x1b[32mversion\x1b[0m    Show version information\n", .{});
-    try stdout.print("  \x1b[32mlist\x1b[0m       List items (use -v for verbose)\n", .{});
-    try stdout.print("  \x1b[32mstatus\x1b[0m     Show current status\n", .{});
-    try stdout.print("\n", .{});
-
-    try stdout.print("\x1b[1mOPTIONS:\x1b[0m\n", .{});
-    try stdout.print("  \x1b[33m-h, --help\x1b[0m     Show help for a command\n", .{});
-    try stdout.print("  \x1b[33m-v, --verbose\x1b[0m  Enable verbose output\n", .{});
-    try stdout.print("\n", .{});
-
-    try stdout.print("\x1b[1mEXAMPLES:\x1b[0m\n", .{});
-    try stdout.print("  demo-cli list\n", .{});
-    try stdout.print("  demo-cli list -v\n", .{});
-    try stdout.print("  demo-cli status\n", .{});
+fn printHelp(io: std.Io) !void {
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(io, "\x1b[1;34mDemo CLI Tool v" ++ VERSION ++ "\x1b[0m\n");
+    try stdout.writeStreamingAll(io, "\n");
+    try stdout.writeStreamingAll(io, "\x1b[1mUSAGE:\x1b[0m\n");
+    try stdout.writeStreamingAll(io, "  demo-cli <command> [options]\n");
+    try stdout.writeStreamingAll(io, "\n");
+    try stdout.writeStreamingAll(io, "\x1b[1mCOMMANDS:\x1b[0m\n");
+    try stdout.writeStreamingAll(io, "  \x1b[32mhelp\x1b[0m       Show this help message\n");
+    try stdout.writeStreamingAll(io, "  \x1b[32mversion\x1b[0m    Show version information\n");
+    try stdout.writeStreamingAll(io, "  \x1b[32mlist\x1b[0m       List items (use -v for verbose)\n");
+    try stdout.writeStreamingAll(io, "  \x1b[32mstatus\x1b[0m     Show current status\n");
+    try stdout.writeStreamingAll(io, "\n");
+    try stdout.writeStreamingAll(io, "\x1b[1mOPTIONS:\x1b[0m\n");
+    try stdout.writeStreamingAll(io, "  \x1b[33m-h, --help\x1b[0m     Show help for a command\n");
+    try stdout.writeStreamingAll(io, "  \x1b[33m-v, --verbose\x1b[0m  Enable verbose output\n");
 }
 
-fn printVersion() !void {
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const stdout = &stdout_writer.interface;
-    try stdout.print("demo-cli version {s}\n", .{VERSION});
-    try stdout.print("Built with Zig\n", .{});
+fn printVersion(io: std.Io) !void {
+    try std.Io.File.stdout().writeStreamingAll(io, "demo-cli version " ++ VERSION ++ "\n");
+    try std.Io.File.stdout().writeStreamingAll(io, "Built with Zig\n");
 }
 
-fn handleList(args: [][:0]u8) !void {
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const stdout = &stdout_writer.interface;
+fn handleList(io: std.Io, args: []const [:0]const u8) !void {
+    const stdout = std.Io.File.stdout();
 
     var verbose = false;
     for (args) |arg| {
@@ -84,48 +64,40 @@ fn handleList(args: [][:0]u8) !void {
         }
     }
 
-    try stdout.print("\x1b[1mListing items:\x1b[0m\n", .{});
+    try stdout.writeStreamingAll(io, "\x1b[1mListing items:\x1b[0m\n");
 
-    // Simulate listing some items
     const items = [_][]const u8{ "config.json", "data.txt", "README.md" };
 
     for (items, 0..) |item, i| {
+        _ = i;
         if (verbose) {
-            try stdout.print("  [{d}] \x1b[36m{s}\x1b[0m (file)\n", .{ i + 1, item });
+            try stdout.writeStreamingAll(io, "  ");
+            try stdout.writeStreamingAll(io, item);
+            try stdout.writeStreamingAll(io, " (file)\n");
         } else {
-            try stdout.print("  {s}\n", .{item});
+            try stdout.writeStreamingAll(io, "  ");
+            try stdout.writeStreamingAll(io, item);
+            try stdout.writeStreamingAll(io, "\n");
         }
     }
 
-    try stdout.print("\n", .{});
-    try stdout.print("Total: {d} items\n", .{items.len});
+    try stdout.writeStreamingAll(io, "\nTotal: 3 items\n");
 }
 
-fn printStatus() !void {
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const stdout = &stdout_writer.interface;
-
-    // Clear screen and move cursor home
-    try stdout.print("\x1b[2J\x1b[H", .{});
-
-    // Print status with colors and formatting
-    try stdout.print("\x1b[1;35m[STATUS REPORT]\x1b[0m\n", .{});
-    try stdout.print("\n", .{});
-
-    try stdout.print("System: \x1b[32m● Online\x1b[0m\n", .{});
-    try stdout.print("Database: \x1b[32m● Connected\x1b[0m\n", .{});
-    try stdout.print("API: \x1b[33m● Warning\x1b[0m (high latency)\n", .{});
-    try stdout.print("Cache: \x1b[31m● Error\x1b[0m (needs restart)\n", .{});
-
-    // Move cursor to specific position
-    try stdout.print("\x1b[6;1H", .{});
-    try stdout.print("\n", .{});
-    try stdout.print("Last updated: just now\n", .{});
+fn printStatus(io: std.Io) !void {
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(io, "\x1b[1;35m[STATUS REPORT]\x1b[0m\n\n");
+    try stdout.writeStreamingAll(io, "System: \x1b[32m● Online\x1b[0m\n");
+    try stdout.writeStreamingAll(io, "Database: \x1b[32m● Connected\x1b[0m\n");
+    try stdout.writeStreamingAll(io, "API: \x1b[33m● Warning\x1b[0m (high latency)\n");
+    try stdout.writeStreamingAll(io, "Cache: \x1b[31m● Error\x1b[0m (needs restart)\n");
+    try stdout.writeStreamingAll(io, "\nLast updated: just now\n");
 }
 
-fn printError(cmd: [:0]u8) !void {
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const stdout = &stdout_writer.interface;
-    try stdout.print("\x1b[31mError:\x1b[0m Unknown command '{s}'\n", .{cmd});
-    try stdout.print("Try 'demo-cli help' for a list of available commands.\n", .{});
+fn printError(io: std.Io, cmd: [:0]const u8) !void {
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(io, "\x1b[31mError:\x1b[0m Unknown command '");
+    try stdout.writeStreamingAll(io, cmd);
+    try stdout.writeStreamingAll(io, "'\n");
+    try stdout.writeStreamingAll(io, "Try 'demo-cli help' for a list of available commands.\n");
 }

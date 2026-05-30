@@ -58,7 +58,7 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
     const data = &context.plugins.zcli_config;
 
     var path_allocated = false;
-    const path = findConfigFile(allocator, context.app_name, data.custom_path, &path_allocated) orelse return args;
+    const path = findConfigFile(allocator, context.io.io, context.environ, context.app_name, data.custom_path, &path_allocated) orelse return args;
 
     const format = detectFormat(path) orelse {
         // Unrecognized extension — warn and skip
@@ -68,7 +68,7 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
         return args;
     };
 
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch {
+    const content = std.Io.Dir.cwd().readFileAlloc(context.io.io, path, allocator, .limited(1024 * 1024)) catch {
         if (path_allocated) allocator.free(path);
         return args;
     };
@@ -162,148 +162,18 @@ fn applyJsonObject(comptime OptionsType: type, options: *OptionsType, obj: std.j
     }
 }
 
-fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, cmd_path: []const []const u8) void {
-    const toml = zcli.toml;
-
-    // Parse as untyped Table to support both global keys and [command] sections
-    var parser = toml.Parser(toml.Table).init(allocator);
-    defer parser.deinit();
-    var result = parser.parseString(content) catch return;
-    defer result.deinit();
-    const table = result.value;
-
-    // Apply global values (top-level keys that match option fields)
-    applyTomlTable(OptionsType, options, table);
-
-    // Apply command-scoped values by traversing nested tables matching command path
-    // e.g., [sprint.create] in TOML → table["sprint"]["create"]
-    if (cmd_path.len > 0) {
-        var current = table;
-        for (cmd_path) |segment| {
-            if (current.get(segment)) |val| {
-                if (val == .table) {
-                    current = val.table.*;
-                } else break;
-            } else break;
-        } else {
-            // Successfully traversed all segments — current is the command's table
-            applyTomlTable(OptionsType, options, current);
-        }
-    }
+fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, _: []const []const u8) void {
+    // Parse TOML directly into the options struct type using serde
+    const serde = zcli.serde;
+    const parsed = serde.toml.fromSlice(OptionsType, allocator, content) catch return;
+    applyNonDefaults(OptionsType, options, parsed);
 }
 
-fn applyTomlTable(comptime OptionsType: type, options: *OptionsType, table: std.StringHashMap(zcli.toml.Value)) void {
-    const info = @typeInfo(OptionsType);
-    if (info != .@"struct") return;
-
-    inline for (info.@"struct".fields) |field| {
-        if (table.get(field.name)) |value| {
-            const should_apply = if (field.default_value_ptr) |default_ptr| blk: {
-                const default: *const field.type = @ptrCast(@alignCast(default_ptr));
-                const dest_val = @field(options, field.name);
-                break :blk std.meta.eql(dest_val, default.*);
-            } else true;
-
-            if (should_apply) {
-                if (field.type == bool) {
-                    if (value == .boolean) @field(options, field.name) = value.boolean;
-                } else if (field.type == []const u8) {
-                    if (value == .string) @field(options, field.name) = value.string;
-                } else if (field.type == u32 or field.type == i32 or field.type == u64 or field.type == i64) {
-                    if (value == .integer) @field(options, field.name) = @intCast(value.integer);
-                } else if (field.type == ?[]const u8) {
-                    if (value == .string) @field(options, field.name) = value.string;
-                } else if (field.type == ?u32 or field.type == ?i32 or field.type == ?u64 or field.type == ?i64) {
-                    if (value == .integer) @field(options, field.name) = @intCast(value.integer);
-                } else if (field.type == ?bool) {
-                    if (value == .boolean) @field(options, field.name) = value.boolean;
-                }
-            }
-        }
-    }
-}
-
-fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, data: *ContextData, cmd_path: []const []const u8) void {
-    const yaml = zcli.yaml;
-
-    // Use a persistent arena for all YAML allocations so string values stay alive
-    const arena = allocator.create(std.heap.ArenaAllocator) catch return;
-    arena.* = .init(allocator);
-    const arena_alloc = arena.allocator();
-
-    var doc: yaml.Yaml = .{ .source = content };
-    doc.load(arena_alloc) catch {
-        arena.deinit();
-        allocator.destroy(arena);
-        return;
-    };
-    // doc memory lives in the arena — no separate deinit needed
-
-    data._parse_arena = arena;
-
-    if (doc.docs.items.len == 0) return;
-
-    const root = doc.docs.items[0];
-    if (root != .map) return;
-    const map = root.map;
-
-    // Apply global values (top-level scalar keys that match option fields)
-    applyYamlMap(OptionsType, options, map);
-
-    // Apply command-scoped values by traversing nested maps matching command path
-    // e.g., sprint: create: verbose: true → map["sprint"]["create"]
-    if (cmd_path.len > 0) {
-        var current = map;
-        for (cmd_path) |segment| {
-            if (current.get(segment)) |val| {
-                if (val == .map) {
-                    current = val.map;
-                } else break;
-            } else break;
-        } else {
-            applyYamlMap(OptionsType, options, current);
-        }
-    }
-}
-
-fn applyYamlMap(comptime OptionsType: type, options: *OptionsType, map: zcli.yaml.Yaml.Map) void {
-    const info = @typeInfo(OptionsType);
-    if (info != .@"struct") return;
-
-    inline for (info.@"struct".fields) |field| {
-        if (map.get(field.name)) |value| {
-            const should_apply = if (field.default_value_ptr) |default_ptr| blk: {
-                const default: *const field.type = @ptrCast(@alignCast(default_ptr));
-                const dest_val = @field(options, field.name);
-                break :blk std.meta.eql(dest_val, default.*);
-            } else true;
-
-            if (should_apply) {
-                if (field.type == bool or field.type == ?bool) {
-                    // YAML untyped parse stores booleans as scalars
-                    if (value == .scalar) {
-                        if (yamlParseBool(value.scalar)) |b| {
-                            @field(options, field.name) = b;
-                        }
-                    }
-                } else if (field.type == []const u8 or field.type == ?[]const u8) {
-                    if (value == .scalar) @field(options, field.name) = value.scalar;
-                } else if (field.type == u32 or field.type == i32 or field.type == u64 or field.type == i64) {
-                    if (value == .scalar) {
-                        if (std.fmt.parseInt(@TypeOf(@field(options, field.name)), value.scalar, 10)) |v| {
-                            @field(options, field.name) = v;
-                        } else |_| {}
-                    }
-                } else if (field.type == ?u32 or field.type == ?i32 or field.type == ?u64 or field.type == ?i64) {
-                    if (value == .scalar) {
-                        if (std.fmt.parseInt(std.meta.Child(field.type), value.scalar, 10)) |v| {
-                            @field(options, field.name) = v;
-                        } else |_| {}
-                    }
-                }
-            }
-        }
-    }
+fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, _: *ContextData, _: []const []const u8) void {
+    // Parse YAML directly into the options struct type using serde
+    const serde = zcli.serde;
+    const parsed = serde.yaml.fromSlice(OptionsType, allocator, content) catch return;
+    applyNonDefaults(OptionsType, options, parsed);
 }
 
 fn yamlParseBool(raw: []const u8) ?bool {
@@ -342,12 +212,13 @@ fn detectFormat(path: []const u8) ?Format {
     return null;
 }
 
-fn findConfigFile(allocator: std.mem.Allocator, app_name: []const u8, custom_path: ?[]const u8, allocated: *bool) ?[]const u8 {
+fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, app_name: []const u8, custom_path: ?[]const u8, allocated: *bool) ?[]const u8 {
     allocated.* = false;
+    const cwd = std.Io.Dir.cwd();
 
     if (custom_path) |p| {
         if (p.len > 0) {
-            std.fs.cwd().access(p, .{}) catch return null;
+            cwd.access(io, p, .{}) catch return null;
             return p;
         }
     }
@@ -356,7 +227,7 @@ fn findConfigFile(allocator: std.mem.Allocator, app_name: []const u8, custom_pat
     const extensions = [_][]const u8{ ".json", ".toml", ".yaml", ".yml" };
     for (extensions) |ext| {
         const local_name = std.fmt.allocPrint(allocator, ".{s}.config{s}", .{ app_name, ext }) catch continue;
-        if (std.fs.cwd().access(local_name, .{})) |_| {
+        if (cwd.access(io, local_name, .{})) |_| {
             allocated.* = true;
             return local_name;
         } else |_| {
@@ -365,8 +236,8 @@ fn findConfigFile(allocator: std.mem.Allocator, app_name: []const u8, custom_pat
     }
 
     // User-level: $XDG_CONFIG_HOME/{app_name}/config.{ext}
-    const home = std.posix.getenv("HOME") orelse return null;
-    const xdg_env = std.posix.getenv("XDG_CONFIG_HOME");
+    const home = environ.get("HOME") orelse return null;
+    const xdg_env = environ.get("XDG_CONFIG_HOME");
     const xdg_fallback = if (xdg_env == null)
         std.fmt.allocPrint(allocator, "{s}/.config", .{home}) catch return null
     else
@@ -376,7 +247,7 @@ fn findConfigFile(allocator: std.mem.Allocator, app_name: []const u8, custom_pat
 
     for (extensions) |ext| {
         const user_path = std.fmt.allocPrint(allocator, "{s}/{s}/config{s}", .{ xdg_base, app_name, ext }) catch continue;
-        if (std.fs.cwd().access(user_path, .{})) |_| {
+        if (cwd.access(io, user_path, .{})) |_| {
             allocated.* = true;
             return user_path;
         } else |_| {

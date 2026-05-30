@@ -224,7 +224,7 @@ pub fn runBenchmarks(allocator: std.mem.Allocator) !void {
     });
 
     const iterations = 10000;
-    var results = std.ArrayList(BenchmarkResult){};
+    var results = std.ArrayList(BenchmarkResult).empty;
     defer results.deinit(allocator);
 
     // Run benchmarks

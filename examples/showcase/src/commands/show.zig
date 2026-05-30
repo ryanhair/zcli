@@ -14,7 +14,7 @@ pub const Options = struct {};
 
 pub fn execute(args: Args, _: Options, context: anytype) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator);
+    var parsed = try store.load(allocator, context.io.io);
     defer parsed.deinit();
 
     const task = store.findById(parsed.value.tasks, args.id) orelse {

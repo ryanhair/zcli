@@ -31,10 +31,8 @@ const priorities = [_][]const u8{ "low", "medium", "high", "critical" };
 
 pub fn execute(_: Args, _: Options, context: anytype) !void {
     const allocator = context.allocator;
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const writer = &stdout_writer.interface;
-    var stdin_reader = std.fs.File.stdin().reader(&.{});
-    const reader = &stdin_reader.interface;
+        const writer = context.stdout();
+        const reader = context.stdin();
 
     // Load the current config so prompts can show existing values as defaults.
     // Keep `parsed` alive until after we write, so its strings stay valid.

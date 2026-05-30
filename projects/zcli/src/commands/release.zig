@@ -6,37 +6,29 @@ const MAX_INPUT_LENGTH = 256;
 
 /// Read a line from stdin with validation and proper error handling
 /// Returns error.InputTooLong if input exceeds MAX_INPUT_LENGTH
-fn readLine(allocator: std.mem.Allocator) ![]u8 {
-    const stdin_file = std.fs.File.stdin();
+fn readLine(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    var read_buf: [4096]u8 = undefined;
+    var reader = std.Io.File.stdin().reader(io, &read_buf);
+    const r = &reader.interface;
 
     var line_buffer: [MAX_INPUT_LENGTH]u8 = undefined;
     var i: usize = 0;
 
     while (i < line_buffer.len) {
-        var byte_buf: [1]u8 = undefined;
-        const bytes_read = stdin_file.read(&byte_buf) catch |err| {
-            if (err == error.EndOfStream) break;
-            return err;
-        };
-        if (bytes_read == 0) break; // EOF
+        const byte = r.takeByte() catch break;
 
-        const byte = byte_buf[0];
-
-        // Handle line endings
         if (byte == '\n') break;
-        if (byte == '\r') continue; // Handle CRLF, skip CR
+        if (byte == '\r') continue;
 
         line_buffer[i] = byte;
         i += 1;
     }
 
-    // Check if we hit the buffer limit without finding newline
     if (i == line_buffer.len) {
         // Drain remaining input until newline
-        var discard: [1]u8 = undefined;
         while (true) {
-            const bytes_read = stdin_file.read(&discard) catch break;
-            if (bytes_read == 0 or discard[0] == '\n') break;
+            const byte = r.takeByte() catch break;
+            if (byte == '\n') break;
         }
         return error.InputTooLong;
     }
@@ -133,12 +125,13 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();
 
+    const io = context.io.io;
     // 0. Validate this is a zcli-based project (not the zcli repo itself)
-    try validateZcliProject(allocator, stderr);
+    try validateZcliProject(allocator, io, stderr);
 
     // 1. Parse CLI name from build.zig.zon
     stdout.print("→ Reading build.zig.zon...\n", .{}) catch {};
-    const cli_name = try parseCliName(allocator);
+    const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
     stdout.print("  CLI name: {s}\n", .{cli_name}) catch {};
 
@@ -149,7 +142,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     var is_initial_release = false;
 
     const current_version = blk: {
-        if (getCurrentVersion(allocator, cli_name)) |version| {
+        if (getCurrentVersion(allocator, io, cli_name)) |version| {
             break :blk version;
         } else |err| {
             if (err == error.NoTags) {
@@ -172,7 +165,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                 }
 
                 try stdout.print("Create initial release tag? [Y/n]: ", .{});
-                const response = readLine(allocator) catch |read_err| {
+                const response = readLine(allocator, io) catch |read_err| {
                     if (read_err == error.InputTooLong) {
                         try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
                         return error.InputTooLong;
@@ -191,7 +184,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                 // If user provided explicit version, use it; otherwise prompt
                 const version_to_use = if (is_bump_type) blk2: {
                     try stdout.print("  Initial version (default: 0.1.0): ", .{});
-                    const version_input = readLine(allocator) catch |read_err| {
+                    const version_input = readLine(allocator, io) catch |read_err| {
                         if (read_err == error.InputTooLong) {
                             try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
                             return error.InputTooLong;
@@ -253,7 +246,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         stdout.print("→ Running safety checks...\n", .{}) catch {};
 
         // Check working tree is clean
-        const status_result = try runCommand(allocator, &.{ "git", "status", "--porcelain" });
+        const status_result = try runCommand(allocator, io, &.{ "git", "status", "--porcelain" });
         defer allocator.free(status_result);
 
         if (status_result.len > 0) {
@@ -263,7 +256,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         stdout.print("  ✓ Working tree is clean\n", .{}) catch {};
 
         // Check current branch
-        const branch_result = try runCommand(allocator, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
+        const branch_result = try runCommand(allocator, io, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
         defer allocator.free(branch_result);
 
         const current_branch = std.mem.trim(u8, branch_result, "\n ");
@@ -280,20 +273,10 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         if (options.@"dry-run") {
             stdout.print("  (dry-run: would run 'zig build test')\n", .{}) catch {};
         } else {
-            const test_result = std.process.Child.run(.{
-                .allocator = allocator,
-                .argv = &.{ "zig", "build", "test" },
-            }) catch |err| {
+            _ = runCommand(allocator, io, &.{ "zig", "build", "test" }) catch |err| {
                 try stderr.print("✗ Tests failed: {}\n", .{err});
                 return error.TestsFailed;
             };
-            defer allocator.free(test_result.stdout);
-            defer allocator.free(test_result.stderr);
-
-            if (test_result.term.Exited != 0) {
-                try stderr.print("✗ Tests failed\n{s}\n", .{test_result.stderr});
-                return error.TestsFailed;
-            }
             stdout.print("  ✓ All tests passed\n", .{}) catch {};
         }
     }
@@ -305,9 +288,9 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     else if (options.@"dry-run")
         try allocator.dupe(u8, "(dry-run: would open editor for release notes)")
     else if (is_initial_release)
-        try getInitialReleaseNotes(allocator, new_version_str)
+        try getInitialReleaseNotes(allocator, io, context.environ, new_version_str)
     else
-        try getReleaseNotes(allocator, cli_name, current_version_str, new_version_str);
+        try getReleaseNotes(allocator, io, context.environ, cli_name, current_version_str, new_version_str);
     defer allocator.free(release_notes);
 
     stdout.print("\nRelease notes:\n{s}\n", .{release_notes}) catch {};
@@ -315,7 +298,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     // 5.5. Confirm release (unless using --message flag or dry-run)
     if (options.message == null and !options.@"dry-run") {
         stdout.print("\nContinue with release {s}-v{s}? [Y/n]: ", .{ cli_name, new_version_str }) catch {};
-        const response = readLine(allocator) catch |read_err| {
+        const response = readLine(allocator, io) catch |read_err| {
             if (read_err == error.InputTooLong) {
                 try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
                 return error.InputTooLong;
@@ -337,7 +320,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     if (options.@"dry-run") {
         stdout.print("  (dry-run: would update build.zig.zon)\n", .{}) catch {};
     } else {
-        try updateBuildZonVersion(allocator, new_version_str);
+        try updateBuildZonVersion(allocator, io, new_version_str);
         stdout.print("  ✓ build.zig.zon updated\n", .{}) catch {};
 
         // Commit the version bump
@@ -345,8 +328,8 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         const commit_msg = try std.fmt.allocPrint(allocator, "Bump version to {s}", .{new_version_str});
         defer allocator.free(commit_msg);
 
-        _ = try runCommand(allocator, &.{ "git", "add", "build.zig.zon" });
-        _ = try runCommand(allocator, &.{ "git", "commit", "-m", commit_msg });
+        _ = try runCommand(allocator, io, &.{ "git", "add", "build.zig.zon" });
+        _ = try runCommand(allocator, io, &.{ "git", "commit", "-m", commit_msg });
         stdout.print("  ✓ Changes committed\n", .{}) catch {};
     }
 
@@ -358,7 +341,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     if (options.@"dry-run") {
         stdout.print("  (dry-run: would create tag)\n", .{}) catch {};
     } else {
-        var tag_cmd = std.ArrayList([]const u8){};
+        var tag_cmd = std.ArrayList([]const u8).empty;
         defer tag_cmd.deinit(allocator);
 
         try tag_cmd.append(allocator, "git");
@@ -369,7 +352,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         try tag_cmd.append(allocator, "-m");
         try tag_cmd.append(allocator, release_notes);
 
-        _ = try runCommand(allocator, tag_cmd.items);
+        _ = try runCommand(allocator, io, tag_cmd.items);
         stdout.print("  ✓ Tag created\n", .{}) catch {};
     }
 
@@ -380,9 +363,9 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
             stdout.print("  (dry-run: would push commit and tag)\n", .{}) catch {};
         } else {
             // Push the commit first
-            _ = try runCommand(allocator, &.{ "git", "push" });
+            _ = try runCommand(allocator, io, &.{ "git", "push" });
             // Then push the tag
-            _ = try runCommand(allocator, &.{ "git", "push", "origin", tag_name });
+            _ = try runCommand(allocator, io, &.{ "git", "push", "origin", tag_name });
             stdout.print("  ✓ Commit and tag pushed successfully\n", .{}) catch {};
         }
     }
@@ -397,12 +380,12 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         stdout.print("  • GitHub Actions will build release binaries\n", .{}) catch {};
 
         // Try to get repo URL
-        if (runCommand(allocator, &.{ "git", "config", "--get", "remote.origin.url" })) |url| {
+        if (runCommand(allocator, io, &.{ "git", "config", "--get", "remote.origin.url" })) |url| {
             defer allocator.free(url);
             const clean_url = std.mem.trim(u8, url, "\n ");
             // Convert git@github.com:user/repo.git to https://github.com/user/repo
             if (std.mem.indexOf(u8, clean_url, "github.com")) |_| {
-                var repo_url = std.ArrayList(u8){};
+                var repo_url = std.ArrayList(u8).empty;
                 defer repo_url.deinit(allocator);
 
                 if (std.mem.startsWith(u8, clean_url, "git@")) {
@@ -432,17 +415,17 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 
 /// Validate that this is a zcli-based CLI project (not the zcli framework itself)
 /// Checks that build.zig.zon has zcli as a dependency
-fn validateZcliProject(allocator: std.mem.Allocator, stderr: anytype) !void {
+fn validateZcliProject(allocator: std.mem.Allocator, io: std.Io, stderr: anytype) !void {
     const zon_path = "build.zig.zon";
 
-    const file = std.fs.cwd().openFile(zon_path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, zon_path, .{}) catch |err| {
         try stderr.print("✗ Error: Could not open {s}: {}\n", .{ zon_path, err });
         try stderr.print("  Make sure you're running this command from a project root directory.\n", .{});
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
     // Check if this has zcli as a dependency (indicating it's a zcli-based project)
@@ -478,17 +461,17 @@ fn validateZcliProject(allocator: std.mem.Allocator, stderr: anytype) !void {
 }
 
 /// Parse CLI name from build.zig.zon
-fn parseCliName(allocator: std.mem.Allocator) ![]const u8 {
+fn parseCliName(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     const zon_path = "build.zig.zon";
 
-    const file = std.fs.cwd().openFile(zon_path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, zon_path, .{}) catch |err| {
         std.debug.print("Error: Could not open {s}: {}\n", .{ zon_path, err });
         std.debug.print("Make sure you're running this command from the project root directory.\n", .{});
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
     // Find the .name line
@@ -529,18 +512,18 @@ fn parseCliName(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 /// Update the version in build.zig.zon
-fn updateBuildZonVersion(allocator: std.mem.Allocator, new_version: []const u8) !void {
+fn updateBuildZonVersion(allocator: std.mem.Allocator, io: std.Io, new_version: []const u8) !void {
     const zon_path = "build.zig.zon";
 
     // Read current file
-    const file = try std.fs.cwd().openFile(zon_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, zon_path, .{});
+    defer file.close(io);
 
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
     // Find and replace the version line
-    var new_content = std.ArrayList(u8){};
+    var new_content = std.ArrayList(u8).empty;
     defer new_content.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -552,7 +535,7 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, new_version: []const u8) 
                 while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
                 break :blk line[0..i];
             };
-            try new_content.writer(allocator).print("{s}.version = \"{s}\",\n", .{ indent, new_version });
+            { const s = try std.fmt.allocPrint(allocator, "{s}.version = \"{s}\",\n", .{ indent, new_version }); defer allocator.free(s); try new_content.appendSlice(allocator, s); }
         } else {
             try new_content.appendSlice(allocator, line);
             try new_content.append(allocator, '\n');
@@ -560,17 +543,17 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, new_version: []const u8) 
     }
 
     // Write back to file
-    const out_file = try std.fs.cwd().createFile(zon_path, .{});
-    defer out_file.close();
-    try out_file.writeAll(new_content.items);
+    const out_file = try std.Io.Dir.cwd().createFile(io, zon_path, .{});
+    defer out_file.close(io);
+    try out_file.writeStreamingAll(io, new_content.items);
 }
 
-fn getCurrentVersion(allocator: std.mem.Allocator, cli_name: []const u8) !Version {
+fn getCurrentVersion(allocator: std.mem.Allocator, io: std.Io, cli_name: []const u8) !Version {
     // Look for tags matching {cli_name}-v*
     const tag_pattern = try std.fmt.allocPrint(allocator, "{s}-v*", .{cli_name});
     defer allocator.free(tag_pattern);
 
-    const result = runCommand(allocator, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", tag_pattern }) catch |err| {
+    const result = runCommand(allocator, io, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", tag_pattern }) catch |err| {
         if (err == error.CommandFailed) return error.NoTags;
         return err;
     };
@@ -590,13 +573,14 @@ fn getCurrentVersion(allocator: std.mem.Allocator, cli_name: []const u8) !Versio
     return try Version.parse(version_str);
 }
 
-fn getInitialReleaseNotes(allocator: std.mem.Allocator, version: []const u8) ![]const u8 {
+fn getInitialReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map, version: []const u8) ![]const u8 {
     // Create temporary file with template for initial release
-    const tmp_dir = std.fs.getAppDataDir(allocator, "zcli") catch "/tmp";
-    defer allocator.free(tmp_dir);
+    const tmp_dir = "/tmp/zcli";
 
-    var dir = try std.fs.cwd().makeOpenPath(tmp_dir, .{});
-    defer dir.close();
+    const cwd_dir = std.Io.Dir.cwd();
+    cwd_dir.createDirPath(io, tmp_dir) catch {};
+    var dir = try cwd_dir.openDir(io, tmp_dir, .{});
+    defer dir.close(io);
 
     const tmp_file_path = try std.fmt.allocPrint(allocator, "{s}/RELEASE_NOTES.txt", .{tmp_dir});
     defer allocator.free(tmp_file_path);
@@ -621,33 +605,30 @@ fn getInitialReleaseNotes(allocator: std.mem.Allocator, version: []const u8) ![]
     );
     defer allocator.free(template);
 
-    const file = try dir.createFile("RELEASE_NOTES.txt", .{});
-    defer file.close();
-    try file.writeAll(template);
+    const file = try dir.createFile(io, "RELEASE_NOTES.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, template);
 
-    // Open editor
-    const editor = std.process.getEnvVarOwned(allocator, "EDITOR") catch try allocator.dupe(u8, "vim");
-    defer allocator.free(editor);
-
-    var child = std.process.Child.init(&.{ editor, tmp_file_path }, allocator);
-    const term = try child.spawnAndWait();
-
-    if (term.Exited != 0) {
+    // Spawn editor
+    const editor_env = if (environ) |env| env.get("VISUAL") orelse env.get("EDITOR") orelse "vim" else "vim";
+    var editor_child = try std.process.spawn(io, .{
+        .argv = &.{ editor_env, "RELEASE_NOTES.txt" },
+        .cwd = .{ .dir = dir },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const editor_term = try editor_child.wait(io);
+    if (editor_term != .exited or editor_term.exited != 0) {
         std.debug.print("Error: Editor exited with non-zero status\n", .{});
-        std.debug.print("Editor command: {s}\n", .{editor});
-        std.debug.print("You can set your preferred editor with: export EDITOR=nano\n", .{});
         return error.EditorFailed;
     }
 
-    // Read the edited file
-    const edited_file = try dir.openFile("RELEASE_NOTES.txt", .{});
-    defer edited_file.close();
-
-    const content = try edited_file.readToEndAlloc(allocator, 1024 * 1024);
+    const content = try dir.readFileAlloc(io, "RELEASE_NOTES.txt", allocator, .limited(1024 * 1024));
     return content;
 }
 
-fn getReleaseNotes(allocator: std.mem.Allocator, cli_name: []const u8, current_version: []const u8, new_version: []const u8) ![]const u8 {
+fn getReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map, cli_name: []const u8, current_version: []const u8, new_version: []const u8) ![]const u8 {
     // Generate commit log since last tag
     const log_cmd = try std.fmt.allocPrint(
         allocator,
@@ -656,16 +637,17 @@ fn getReleaseNotes(allocator: std.mem.Allocator, cli_name: []const u8, current_v
     );
     defer allocator.free(log_cmd);
 
-    const commits = runCommand(allocator, &.{ "sh", "-c", log_cmd }) catch
+    const commits = runCommand(allocator, io, &.{ "sh", "-c", log_cmd }) catch
         try allocator.dupe(u8, "");
     defer allocator.free(commits);
 
     // Create temporary file with template
-    const tmp_dir = std.fs.getAppDataDir(allocator, "zcli") catch "/tmp";
-    defer allocator.free(tmp_dir);
+    const tmp_dir = "/tmp/zcli";
 
-    var dir = try std.fs.cwd().makeOpenPath(tmp_dir, .{});
-    defer dir.close();
+    const cwd_dir = std.Io.Dir.cwd();
+    cwd_dir.createDirPath(io, tmp_dir) catch {};
+    var dir = try cwd_dir.openDir(io, tmp_dir, .{});
+    defer dir.close(io);
 
     const tmp_file_path = try std.fmt.allocPrint(allocator, "{s}/RELEASE_NOTES.txt", .{tmp_dir});
     defer allocator.free(tmp_file_path);
@@ -688,46 +670,49 @@ fn getReleaseNotes(allocator: std.mem.Allocator, cli_name: []const u8, current_v
     );
     defer allocator.free(template);
 
-    const file = try dir.createFile("RELEASE_NOTES.txt", .{});
-    defer file.close();
-    try file.writeAll(template);
+    const file = try dir.createFile(io, "RELEASE_NOTES.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, template);
 
-    // Open editor
-    const editor = std.process.getEnvVarOwned(allocator, "EDITOR") catch try allocator.dupe(u8, "vim");
-    defer allocator.free(editor);
-
-    var child = std.process.Child.init(&.{ editor, tmp_file_path }, allocator);
-    // Don't redirect stdin/stdout/stderr - let the editor have terminal control
-    const term = try child.spawnAndWait();
-
-    if (term.Exited != 0) {
+    const editor_env = if (environ) |env| env.get("VISUAL") orelse env.get("EDITOR") orelse "vim" else "vim";
+    var editor_child = try std.process.spawn(io, .{
+        .argv = &.{ editor_env, "RELEASE_NOTES.txt" },
+        .cwd = .{ .dir = dir },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const editor_term = try editor_child.wait(io);
+    if (editor_term != .exited or editor_term.exited != 0) {
         std.debug.print("Error: Editor exited with non-zero status\n", .{});
-        std.debug.print("Editor command: {s}\n", .{editor});
-        std.debug.print("You can set your preferred editor with: export EDITOR=nano\n", .{});
         return error.EditorFailed;
     }
 
-    // Read the edited file
-    const edited_file = try dir.openFile("RELEASE_NOTES.txt", .{});
-    defer edited_file.close();
-
-    const content = try edited_file.readToEndAlloc(allocator, 1024 * 1024);
+    const content = try dir.readFileAlloc(io, "RELEASE_NOTES.txt", allocator, .limited(1024 * 1024));
     return content;
 }
 
-fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+fn runCommand(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]const u8 {
+    var child = try std.process.spawn(io, .{
         .argv = argv,
+        .stdout = .pipe,
+        .stderr = .pipe,
     });
-    defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
-        allocator.free(result.stdout);
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    var stdout_reader = child.stdout.?.reader(io, &stdout_buf);
+    var stderr_reader = child.stderr.?.reader(io, &stderr_buf);
+    const stdout_data = stdout_reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch return error.CommandFailed;
+    _ = stderr_reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch {};
+
+    const term = try child.wait(io);
+    if (term != .exited or term.exited != 0) {
+        allocator.free(stdout_data);
         return error.CommandFailed;
     }
 
-    return result.stdout;
+    return stdout_data;
 }
 
 // ============================================================================
@@ -831,6 +816,7 @@ test "Version.bump - invalid bump type returns unchanged" {
 
 test "parseCliName - quoted string format" {
     const allocator = testing.allocator;
+    const io = std.testing.io;
 
     // Create a temporary build.zig.zon file
     const temp_dir = testing.tmpDir(.{});
@@ -843,12 +829,12 @@ test "parseCliName - quoted string format" {
         \\}
     ;
 
-    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
-    defer file.close();
-    try file.writeAll(zon_content);
+    var file = try temp_dir.dir.createFile(io, "build.zig.zon", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, zon_content);
 
     // Change to temp directory
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
     const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
     defer allocator.free(original_cwd_path);
 
@@ -858,7 +844,7 @@ test "parseCliName - quoted string format" {
     try std.posix.chdir(temp_path);
     defer std.posix.chdir(original_cwd_path) catch {};
 
-    const cli_name = try parseCliName(allocator);
+    const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
 
     try testing.expectEqualStrings("myapp", cli_name);
@@ -866,6 +852,7 @@ test "parseCliName - quoted string format" {
 
 test "parseCliName - identifier format" {
     const allocator = testing.allocator;
+    const io = std.testing.io;
 
     const temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
@@ -877,11 +864,11 @@ test "parseCliName - identifier format" {
         \\}
     ;
 
-    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
-    defer file.close();
-    try file.writeAll(zon_content);
+    var file = try temp_dir.dir.createFile(io, "build.zig.zon", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
     const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
     defer allocator.free(original_cwd_path);
 
@@ -891,7 +878,7 @@ test "parseCliName - identifier format" {
     try std.posix.chdir(temp_path);
     defer std.posix.chdir(original_cwd_path) catch {};
 
-    const cli_name = try parseCliName(allocator);
+    const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
 
     try testing.expectEqualStrings("zcli", cli_name);
@@ -899,6 +886,7 @@ test "parseCliName - identifier format" {
 
 test "parseCliName - identifier with trailing comma" {
     const allocator = testing.allocator;
+    const io = std.testing.io;
 
     const temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
@@ -910,11 +898,11 @@ test "parseCliName - identifier with trailing comma" {
         \\}
     ;
 
-    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
-    defer file.close();
-    try file.writeAll(zon_content);
+    var file = try temp_dir.dir.createFile(io, "build.zig.zon", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
     const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
     defer allocator.free(original_cwd_path);
 
@@ -924,7 +912,7 @@ test "parseCliName - identifier with trailing comma" {
     try std.posix.chdir(temp_path);
     defer std.posix.chdir(original_cwd_path) catch {};
 
-    const cli_name = try parseCliName(allocator);
+    const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
 
     try testing.expectEqualStrings("myapp", cli_name);
@@ -932,6 +920,7 @@ test "parseCliName - identifier with trailing comma" {
 
 test "parseCliName - missing name field" {
     const allocator = testing.allocator;
+    const io = std.testing.io;
 
     const temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
@@ -942,11 +931,11 @@ test "parseCliName - missing name field" {
         \\}
     ;
 
-    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
-    defer file.close();
-    try file.writeAll(zon_content);
+    var file = try temp_dir.dir.createFile(io, "build.zig.zon", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
     const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
     defer allocator.free(original_cwd_path);
 
@@ -956,7 +945,7 @@ test "parseCliName - missing name field" {
     try std.posix.chdir(temp_path);
     defer std.posix.chdir(original_cwd_path) catch {};
 
-    try testing.expectError(error.NameNotFound, parseCliName(allocator));
+    try testing.expectError(error.NameNotFound, parseCliName(allocator, io));
 }
 
 test "bump type detection" {
@@ -1070,6 +1059,7 @@ test "Version.format - handles leading zeros correctly" {
 
 test "parseCliName - whitespace handling" {
     const allocator = testing.allocator;
+    const io = std.testing.io;
 
     const temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
@@ -1082,11 +1072,11 @@ test "parseCliName - whitespace handling" {
         \\}
     ;
 
-    var file = try temp_dir.dir.createFile("build.zig.zon", .{});
-    defer file.close();
-    try file.writeAll(zon_content);
+    var file = try temp_dir.dir.createFile(io, "build.zig.zon", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
     const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
     defer allocator.free(original_cwd_path);
 
@@ -1096,7 +1086,7 @@ test "parseCliName - whitespace handling" {
     try std.posix.chdir(temp_path);
     defer std.posix.chdir(original_cwd_path) catch {};
 
-    const cli_name = try parseCliName(allocator);
+    const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
 
     try testing.expectEqualStrings("myapp", cli_name);

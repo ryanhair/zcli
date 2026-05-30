@@ -14,7 +14,7 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: anytype) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator);
+    var parsed = try store.load(allocator, context.io.io);
     defer parsed.deinit();
     var data = parsed.value;
 
@@ -23,10 +23,8 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         return;
     }
 
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const writer = &stdout_writer.interface;
-    var stdin_reader = std.fs.File.stdin().reader(&.{});
-    const reader = &stdin_reader.interface;
+        const writer = context.stdout();
+        const reader = context.stdin();
 
     const idx = try zinput.select(writer, reader, .{
         .message = "Close which sprint?",
@@ -35,13 +33,13 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
 
     const name = data.sprints[idx];
 
-    var remaining = std.ArrayList([]const u8){};
+    var remaining = std.ArrayList([]const u8).empty;
     defer remaining.deinit(allocator);
     for (data.sprints, 0..) |s, i| {
         if (i != idx) try remaining.append(allocator, s);
     }
     data.sprints = remaining.items;
-    try store.save(allocator, data);
+    try store.save(allocator, context.io.io, data);
 
     try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Closed sprint: {s}\n", .{name});

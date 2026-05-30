@@ -53,9 +53,9 @@ pub fn parseCommandLine(
     args: []const []const u8,
 ) ZcliError!CommandParseResult(ArgsType, OptionsType) {
     // First pass: separate options from positional arguments
-    var option_args = std.ArrayList([]const u8){};
+    var option_args = std.ArrayList([]const u8).empty;
     defer option_args.deinit(allocator);
-    var positional_args = std.ArrayList([]const u8){};
+    var positional_args = std.ArrayList([]const u8).empty;
     defer positional_args.deinit(allocator);
 
     var i: usize = 0;

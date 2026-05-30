@@ -41,7 +41,7 @@ pub fn applyCommandConfigsToExecutable(
                     for (paths) |path| {
                         const result = added_includes.getOrPut(path) catch unreachable;
                         if (!result.found_existing) {
-                            exe.addIncludePath(b.path(path));
+                            exe.root_module.addIncludePath(b.path(path));
                         }
                     }
                 }
@@ -52,7 +52,7 @@ pub fn applyCommandConfigsToExecutable(
                     for (sources) |source| {
                         const result = added_c_sources.getOrPut(source) catch unreachable;
                         if (!result.found_existing) {
-                            exe.addCSourceFile(.{
+                            exe.root_module.addCSourceFile(.{
                                 .file = b.path(source),
                                 .flags = flags,
                             });
@@ -66,7 +66,7 @@ pub fn applyCommandConfigsToExecutable(
                     for (sources) |source| {
                         const result = added_cpp_sources.getOrPut(source) catch unreachable;
                         if (!result.found_existing) {
-                            exe.addCSourceFile(.{
+                            exe.root_module.addCSourceFile(.{
                                 .file = b.path(source),
                                 .flags = flags,
                             });
@@ -79,7 +79,7 @@ pub fn applyCommandConfigsToExecutable(
                     for (libs) |lib| {
                         const result = added_sys_libs.getOrPut(lib) catch unreachable;
                         if (!result.found_existing) {
-                            exe.linkSystemLibrary(lib);
+                            exe.root_module.linkSystemLibrary(lib, .{});
                         }
                     }
                 }
@@ -89,9 +89,9 @@ pub fn applyCommandConfigsToExecutable(
 
     // Apply library linking at the end
     if (needs_libc) {
-        exe.linkLibC();
+        exe.root_module.link_libc = true;
     }
     if (needs_libcpp) {
-        exe.linkLibCpp();
+        exe.root_module.link_libcpp = true;
     }
 }

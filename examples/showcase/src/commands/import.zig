@@ -17,7 +17,7 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
     const allocator = context.allocator;
 
     // Read import file
-    const content = std.fs.cwd().readFileAlloc(allocator, args.file, 1024 * 1024) catch {
+    const content = std.Io.Dir.cwd().readFileAlloc(context.io.io, args.file, allocator, .limited(1024 * 1024)) catch {
         try context.stderr().print("Error: Could not read file '{s}'\n", .{args.file});
         return;
     };
@@ -32,17 +32,17 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
     defer imported.deinit();
 
     // Load existing data
-    var parsed = try store.load(allocator);
+    var parsed = try store.load(allocator, context.io.io);
     defer parsed.deinit();
     var data = parsed.value;
 
     // Import with progress bar
-    var bar = zprogress.progressBar(.{
+    var bar = zprogress.progressBar(context.io.io, .{
         .total = imported.value.tasks.len,
         .show_eta = true,
     });
 
-    var tasks_list = std.ArrayList(store.Task){};
+    var tasks_list = std.ArrayList(store.Task).empty;
     defer tasks_list.deinit(allocator);
     try tasks_list.appendSlice(allocator, data.tasks);
 
@@ -52,12 +52,12 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
         data.next_id += 1;
         try tasks_list.append(allocator, new_task);
         bar.update(i + 1, null);
-        std.Thread.sleep(50 * std.time.ns_per_ms); // Simulate processing
+        context.io.io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .awake) catch {}; // Simulate processing
     }
     bar.finish();
 
     data.tasks = tasks_list.items;
-    try store.save(allocator, data);
+    try store.save(allocator, context.io.io, data);
 
     try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Imported {d} tasks from {s}\n", .{ imported.value.tasks.len, args.file });

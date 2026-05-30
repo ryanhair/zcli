@@ -2,15 +2,11 @@
     .name = .zcli,
     .version = "0.17.0",
     .fingerprint = 0x927117ca001313d0,
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .yaml = .{
-            .url = "https://github.com/kubkon/zig-yaml/archive/refs/tags/0.2.0.tar.gz",
-            .hash = "zig_yaml-0.2.0-C1161pmrAgC_rL9WzjvgNg7HnmyAMwHsG3Sre0F4haPI",
-        },
-        .toml = .{
-            .url = "https://github.com/sam701/zig-toml/archive/refs/heads/main.tar.gz",
-            .hash = "toml-0.3.0-bV14Be6EAQDr0fkyURz4jYFyTAMPcwlNN0FEPVjDnXTR",
+        .serde = .{
+            .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.3.tar.gz",
+            .hash = "serde-1.0.1-1DszT9VLCwAjuQh0WSq-dIfZ-6Gq8edODuhwF9gfsxld",
         },
     },
     .paths = .{

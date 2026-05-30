@@ -228,11 +228,11 @@ test "handleCommandNotFound" {
     const commands = [_][]const u8{ "list", "search", "create" };
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
-    try handleCommandNotFound(stream.writer(), "serach", &commands, "myapp", std.testing.allocator);
+    try handleCommandNotFound(&stream, "serach", &commands, "myapp", std.testing.allocator);
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown command 'serach'") != null);
     // Suggestion tests moved to zcli-suggestions plugin
 }
@@ -241,11 +241,11 @@ test "handleSubcommandNotFound" {
     const subcommands = [_][]const u8{ "add", "remove", "list" };
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
-    try handleSubcommandNotFound(stream.writer(), "users", "lst", &subcommands, "myapp", std.testing.allocator);
+    try handleSubcommandNotFound(&stream, "users", "lst", &subcommands, "myapp", std.testing.allocator);
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown subcommand 'lst' for 'users'") != null);
     // Suggestion tests moved to zcli-suggestions plugin
     try std.testing.expect(std.mem.indexOf(u8, output, "myapp users --help") != null);
@@ -253,24 +253,24 @@ test "handleSubcommandNotFound" {
 
 test "handleMissingArgument" {
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
     const command_path = [_][]const u8{ "users", "create" };
-    try handleMissingArgument(stream.writer(), &command_path, "username", 0, "myapp");
+    try handleMissingArgument(&stream, &command_path, "username", 0, "myapp");
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Missing required argument 'username' (argument 1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "myapp users create <username>") != null);
 }
 
 test "handleTooManyArguments" {
     var buffer: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
     const command_path = [_][]const u8{"status"};
-    try handleTooManyArguments(stream.writer(), &command_path, 0, 2, "myapp");
+    try handleTooManyArguments(&stream, &command_path, 0, 2, "myapp");
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Too many arguments provided. Expected 0, got 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "myapp status --help") != null);
 }
@@ -279,37 +279,37 @@ test "handleUnknownOption" {
     const available_options = [_][]const u8{ "verbose", "output", "format" };
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
     const allocator = std.testing.allocator;
 
     const command_path = [_][]const u8{"convert"};
-    try handleUnknownOption(stream.writer(), "--outpt", &available_options, &command_path, "myapp", allocator);
+    try handleUnknownOption(&stream, "--outpt", &available_options, &command_path, "myapp", allocator);
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown option '--outpt'") != null);
     // Suggestion tests moved to zcli-suggestions plugin
 }
 
 test "handleInvalidOptionValue" {
     var buffer: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
     const command_path = [_][]const u8{ "server", "start" };
-    try handleInvalidOptionValue(stream.writer(), "port", "abc", "integer", &command_path, "myapp");
+    try handleInvalidOptionValue(&stream, "port", "abc", "integer", &command_path, "myapp");
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Invalid value 'abc' for option '--port'") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Expected: integer") != null);
 }
 
 test "handleMissingOptionValue" {
     var buffer: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
     const command_path = [_][]const u8{"build"};
-    try handleMissingOptionValue(stream.writer(), "output", &command_path, "myapp");
+    try handleMissingOptionValue(&stream, "output", &command_path, "myapp");
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Option '--output' requires a value") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "myapp build --help") != null);
 }
@@ -377,14 +377,14 @@ test "findSimilarCommands edge cases" {
 test "error handler formatting" {
     // Test that error messages don't exceed reasonable lengths
     var buffer: [4096]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
     const very_long_command = "very-long-command-name-that-might-wrap";
     const commands = [_][]const u8{very_long_command};
 
-    try handleCommandNotFound(stream.writer(), "test", &commands, "myapp", std.testing.allocator);
+    try handleCommandNotFound(&stream, "test", &commands, "myapp", std.testing.allocator);
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(output.len < 1000); // Reasonable message length
     try std.testing.expect(std.mem.indexOf(u8, output, very_long_command) != null);
 }
@@ -402,11 +402,11 @@ test "error handler with very long command names" {
     const available_commands = [_][]const u8{ "list", "search", "create", "delete" };
 
     var buffer: [2048]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
-    try handleCommandNotFound(stream.writer(), long_cmd, &available_commands, "myapp", allocator);
+    try handleCommandNotFound(&stream, long_cmd, &available_commands, "myapp", allocator);
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown command") != null);
     try std.testing.expect(output.len < buffer.len); // Should not overflow
 }
@@ -417,11 +417,11 @@ test "error handler with empty command lists" {
     const no_commands = [_][]const u8{};
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    var stream: std.Io.Writer = .fixed(&buffer);
 
-    try handleCommandNotFound(stream.writer(), "missing", &no_commands, "myapp", allocator);
+    try handleCommandNotFound(&stream, "missing", &no_commands, "myapp", allocator);
 
-    const output = stream.getWritten();
+    const output = stream.buffer[0..stream.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "Unknown command 'missing'") != null);
     // The actual error handler might not include "No commands available" text
     // so let's just check that it handles empty command lists without crashing

@@ -34,7 +34,7 @@ pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !bool {
 
     // TTY: single keypress
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.fs.File.stdin().handle) catch return config.default;
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return config.default;
     defer {
         raw.disable();
         zinput.flushWriter(writer);
@@ -82,11 +82,11 @@ fn parseYesNo(input: []const u8, default: bool) bool {
 
 test "non-TTY: y input returns true" {
     var input = "y\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try confirm(&output_writer, &input_reader, .{
         .message = "Continue?",
         .default = false,
     });
@@ -95,11 +95,11 @@ test "non-TTY: y input returns true" {
 
 test "non-TTY: n input returns false" {
     var input = "n\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try confirm(&output_writer, &input_reader, .{
         .message = "Continue?",
         .default = true,
     });
@@ -108,11 +108,11 @@ test "non-TTY: n input returns false" {
 
 test "non-TTY: empty input uses default true" {
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try confirm(&output_writer, &input_reader, .{
         .message = "Continue?",
         .default = true,
     });
@@ -121,11 +121,11 @@ test "non-TTY: empty input uses default true" {
 
 test "non-TTY: empty input uses default false" {
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try confirm(&output_writer, &input_reader, .{
         .message = "Continue?",
         .default = false,
     });
@@ -134,11 +134,11 @@ test "non-TTY: empty input uses default false" {
 
 test "non-TTY: EOF uses default" {
     var input = "".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try confirm(&output_writer, &input_reader, .{
         .message = "Continue?",
         .default = true,
     });
@@ -147,30 +147,30 @@ test "non-TTY: EOF uses default" {
 
 test "prompt shows Y/n when default is true" {
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    _ = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+    _ = try confirm(&output_writer, &input_reader, .{
         .message = "Ok?",
         .default = true,
     });
 
-    const written = writer_stream.getWritten();
+    const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "(Y/n)") != null);
 }
 
 test "prompt shows y/N when default is false" {
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    _ = try confirm(writer_stream.writer(), reader_stream.reader(), .{
+    _ = try confirm(&output_writer, &input_reader, .{
         .message = "Ok?",
         .default = false,
     });
 
-    const written = writer_stream.getWritten();
+    const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "(y/N)") != null);
 }

@@ -5,12 +5,10 @@ pub const std_options: std.Options = .{
     .log_level = .warn,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-
+pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     var app = registry.init();
-    app.run(gpa.allocator()) catch |err| switch (err) {
+    app.run(init.gpa, init.io, init.environ_map, args) catch |err| switch (err) {
         error.CommandNotFound => std.process.exit(1),
         else => return err,
     };

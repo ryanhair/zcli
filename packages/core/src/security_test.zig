@@ -262,7 +262,8 @@ test "security: resource exhaustion - memory limits" {
 test "security: resource exhaustion - processing time limits" {
     const allocator = testing.allocator;
 
-    var timer = try std.time.Timer.start();
+    const io = std.testing.io;
+    const start = std.Io.Timestamp.now(io, .awake);
 
     // Test that suggestion algorithm has reasonable performance
     const command_count = 50; // Reasonable test size
@@ -275,11 +276,10 @@ test "security: resource exhaustion - processing time limits" {
             // Acceptable - ran out of memory during suggestion generation
             return;
         },
-        else => return err,
     };
     defer allocator.free(suggestions); // Free the suggestions memory
 
-    const elapsed = timer.read();
+    const elapsed = start.untilNow(io, .awake).nanoseconds;
 
     // Should complete within reasonable time (1 second for testing)
     try testing.expect(elapsed < 1000 * std.time.ns_per_ms);

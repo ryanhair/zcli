@@ -33,7 +33,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     const description = options.description orelse "TODO: Add description";
 
     // Parse the command path
-    var path_parts = std.ArrayList([]const u8){};
+    var path_parts = std.ArrayList([]const u8).empty;
     defer path_parts.deinit(allocator);
 
     var iter = std.mem.splitScalar(u8, command_path, '/');
@@ -49,21 +49,22 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     }
 
     // Verify we're in a zcli project (check for src/commands directory)
-    const cwd = std.fs.cwd();
-    cwd.access("src/commands", .{}) catch {
+    const io = context.io.io;
+    const cwd = std.Io.Dir.cwd();
+    cwd.access(io, "src/commands", .{}) catch {
         try stderr.print("Error: Not in a zcli project directory\n", .{});
         try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
         return error.NotInZcliProject;
     };
 
     // Build the file path
-    var file_path = std.ArrayList(u8){};
+    var file_path = std.ArrayList(u8).empty;
     defer file_path.deinit(allocator);
 
     try file_path.appendSlice(allocator, "src/commands");
 
     // Create intermediate directories if needed
-    var current_path = std.ArrayList(u8){};
+    var current_path = std.ArrayList(u8).empty;
     defer current_path.deinit(allocator);
     try current_path.appendSlice(allocator, "src/commands");
 
@@ -76,7 +77,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
             try current_path.appendSlice(allocator, dir);
 
             // Create directory if it doesn't exist
-            cwd.makeDir(current_path.items) catch |err| switch (err) {
+            cwd.createDir(io, current_path.items, .default_dir) catch |err| switch (err) {
                 error.PathAlreadyExists => {}, // OK
                 else => return err,
             };
@@ -90,7 +91,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     try file_path.appendSlice(allocator, ".zig");
 
     // Check if file already exists
-    cwd.access(file_path.items, .{}) catch |err| switch (err) {
+    cwd.access(io, file_path.items, .{}) catch |err| switch (err) {
         error.FileNotFound => {}, // Good, file doesn't exist
         else => {
             try stderr.print("Error: Command already exists: {s}\n", .{file_path.items});
@@ -137,9 +138,9 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     , .{ description, command_path });
     defer allocator.free(command_content);
 
-    var command_file = try cwd.createFile(file_path.items, .{});
-    defer command_file.close();
-    try command_file.writeAll(command_content);
+    var command_file = try cwd.createFile(io, file_path.items, .{});
+    defer command_file.close(io);
+    try command_file.writeStreamingAll(io, command_content);
 
     try stdout.print("✓ Created {s}\n\n", .{file_path.items});
     try stdout.print("Next steps:\n", .{});

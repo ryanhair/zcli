@@ -45,7 +45,7 @@ pub const commands = struct {
                         return error.UnsupportedShell;
                     }
                 else
-                    detectShell(allocator) orelse {
+                    detectShell(allocator, context.environ) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
                         try stderr.print("Please specify shell explicitly: completions generate <bash|zsh|fish>\n", .{});
                         return error.ShellNotDetected;
@@ -97,7 +97,7 @@ pub const commands = struct {
                         return error.UnsupportedShell;
                     }
                 else
-                    detectShell(allocator) orelse {
+                    detectShell(allocator, context.environ) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
                         try stderr.print("Please specify shell explicitly: completions install <bash|zsh|fish>\n", .{});
                         return error.ShellNotDetected;
@@ -116,7 +116,7 @@ pub const commands = struct {
                 defer allocator.free(script);
 
                 // Determine installation path
-                const install_path = try getInstallPath(allocator, shell_type, context.app_name);
+                const install_path = try getInstallPath(allocator, context.environ, shell_type, context.app_name);
                 defer allocator.free(install_path);
 
                 // Create parent directory if it doesn't exist
@@ -125,19 +125,19 @@ pub const commands = struct {
                     return error.InvalidPath;
                 };
 
-                std.fs.cwd().makePath(dir_path) catch |err| {
+                std.Io.Dir.cwd().createDirPath(context.io.io, dir_path) catch |err| {
                     try stderr.print("Error: failed to create directory '{s}': {}\n", .{ dir_path, err });
                     return err;
                 };
 
                 // Write completion script
-                const file = std.fs.cwd().createFile(install_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().createFile(context.io.io, install_path, .{}) catch |err| {
                     try stderr.print("Error: failed to write to '{s}': {}\n", .{ install_path, err });
                     return err;
                 };
-                defer file.close();
+                defer file.close(context.io.io);
 
-                try file.writeAll(script);
+                try file.writeStreamingAll(context.io.io, script);
 
                 const shell_name = switch (shell_type) {
                     .bash => "bash",
@@ -182,18 +182,18 @@ pub const commands = struct {
                         return error.UnsupportedShell;
                     }
                 else
-                    detectShell(allocator) orelse {
+                    detectShell(allocator, context.environ) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
                         try stderr.print("Please specify shell explicitly: completions uninstall <bash|zsh|fish>\n", .{});
                         return error.ShellNotDetected;
                     };
 
                 // Determine installation path
-                const install_path = try getInstallPath(allocator, shell_type, context.app_name);
+                const install_path = try getInstallPath(allocator, context.environ, shell_type, context.app_name);
                 defer allocator.free(install_path);
 
                 // Remove completion script
-                std.fs.cwd().deleteFile(install_path) catch |err| {
+                std.Io.Dir.cwd().deleteFile(context.io.io, install_path) catch |err| {
                     if (err == error.FileNotFound) {
                         try stdout.print("Completions not installed at {s}\n", .{install_path});
                         return;
@@ -229,20 +229,18 @@ fn getShellType(shell: []const u8) ?ShellType {
     return null;
 }
 
-fn detectShell(allocator: std.mem.Allocator) ?ShellType {
-    const shell_path = std.process.getEnvVarOwned(allocator, "SHELL") catch return null;
-    defer allocator.free(shell_path);
-
+fn detectShell(_: std.mem.Allocator, environ: *const std.process.Environ.Map) ?ShellType {
+    const shell_path = environ.get("SHELL") orelse return null;
+    
     // Extract shell name from path (e.g., "/bin/bash" -> "bash")
     const shell_name = std.fs.path.basename(shell_path);
 
     return getShellType(shell_name);
 }
 
-fn getInstallPath(allocator: std.mem.Allocator, shell_type: ShellType, app_name: []const u8) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return error.HomeNotFound;
-    defer allocator.free(home);
-
+fn getInstallPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map, shell_type: ShellType, app_name: []const u8) ![]const u8 {
+    const home = environ.get("HOME") orelse return error.HomeNotFound;
+    
     return switch (shell_type) {
         .bash => try std.fmt.allocPrint(
             allocator,

@@ -8,6 +8,7 @@ pub const SelectConfig = struct {
     message: []const u8,
     choices: []const []const u8,
     prefix: []const u8 = "? ",
+    unicode: bool = true,
 };
 
 /// Prompt to select one item from a list. Returns the index of the selected item.
@@ -32,7 +33,7 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
 
     // TTY: interactive selection
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.fs.File.stdin().handle) catch return 0;
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
     try writer.writeAll(terminal.ansi.hide_cursor);
     defer {
         writer.writeAll(terminal.ansi.show_cursor) catch {};
@@ -43,7 +44,7 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
     var cursor: usize = 0;
 
     // Initial render
-    try renderSelectList(writer, config.choices, cursor);
+    try renderSelectList(writer, config.choices, cursor, config.unicode);
 
     while (true) {
         const k = try terminal.readKey(reader);
@@ -51,12 +52,12 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
             .up => {
                 if (cursor > 0) cursor -= 1;
                 try eraseList(writer, config.choices.len);
-                try renderSelectList(writer, config.choices, cursor);
+                try renderSelectList(writer, config.choices, cursor, config.unicode);
             },
             .down => {
                 if (cursor < config.choices.len - 1) cursor += 1;
                 try eraseList(writer, config.choices.len);
-                try renderSelectList(writer, config.choices, cursor);
+                try renderSelectList(writer, config.choices, cursor, config.unicode);
             },
             .enter => {
                 try eraseList(writer, config.choices.len);
@@ -74,8 +75,8 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
     }
 }
 
-fn renderSelectList(writer: anytype, choices: []const []const u8, cursor: usize) !void {
-    const marker = terminal.symbols.select_cursor(terminal.unicodeSupported());
+fn renderSelectList(writer: anytype, choices: []const []const u8, cursor: usize, unicode: bool) !void {
+    const marker = terminal.symbols.select_cursor(unicode);
     for (choices, 0..) |choice, i| {
         if (i == cursor) {
             try writer.print("  \x1b[36m{s} {s}\x1b[0m\r\n", .{ marker, choice });
@@ -93,7 +94,7 @@ fn eraseList(writer: anytype, count: usize) !void {
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
         const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);
@@ -113,11 +114,11 @@ test "SelectConfig" {
 
 test "non-TTY: selects by number" {
     var input = "2\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try select(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try select(&output_writer, &input_reader, .{
         .message = "Pick:",
         .choices = &.{ "alpha", "beta", "gamma" },
     });
@@ -127,11 +128,11 @@ test "non-TTY: selects by number" {
 
 test "non-TTY: invalid number returns 0" {
     var input = "999\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try select(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try select(&output_writer, &input_reader, .{
         .message = "Pick:",
         .choices = &.{ "a", "b" },
     });
@@ -141,16 +142,16 @@ test "non-TTY: invalid number returns 0" {
 
 test "non-TTY: shows numbered choices" {
     var input = "1\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    _ = try select(writer_stream.writer(), reader_stream.reader(), .{
+    _ = try select(&output_writer, &input_reader, .{
         .message = "Pick:",
         .choices = &.{ "first", "second" },
     });
 
-    const written = writer_stream.getWritten();
+    const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "first") != null);

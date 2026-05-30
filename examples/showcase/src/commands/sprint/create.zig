@@ -17,27 +17,25 @@ pub const Options = struct {};
 
 pub fn execute(args: Args, _: Options, context: anytype) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator);
+    var parsed = try store.load(allocator, context.io.io);
     defer parsed.deinit();
     var data = parsed.value;
 
     const name = if (args.name) |n| n else blk: {
-        var stdout_writer = std.fs.File.stdout().writer(&.{});
-        const writer = &stdout_writer.interface;
-        var stdin_reader = std.fs.File.stdin().reader(&.{});
-        const reader = &stdin_reader.interface;
+                const writer = context.stdout();
+                const reader = context.stdin();
         break :blk try zinput.text(writer, reader, allocator, .{
             .message = "Sprint name:",
             .default = try std.fmt.allocPrint(allocator, "Sprint {d}", .{data.sprints.len + 1}),
         });
     };
 
-    var sprints = std.ArrayList([]const u8){};
+    var sprints = std.ArrayList([]const u8).empty;
     defer sprints.deinit(allocator);
     try sprints.appendSlice(allocator, data.sprints);
     try sprints.append(allocator, name);
     data.sprints = sprints.items;
-    try store.save(allocator, data);
+    try store.save(allocator, context.io.io, data);
 
     try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Created sprint: {s}\n", .{name});

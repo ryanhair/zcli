@@ -31,16 +31,18 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
 
     // Determine if we're using current directory or creating a new one
     const use_current_dir = std.mem.eql(u8, args.name, ".");
 
     // Get the project name
+    const io = context.io.io;
     const project_name = if (use_current_dir) blk: {
         // Get current directory name
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd_path = try cwd.realpath(".", &buf);
+        var buf: [4096]u8 = undefined;
+        const len = std.process.currentPath(io, &buf) catch break :blk try allocator.dupe(u8, "my-project");
+        const cwd_path = buf[0..len];
 
         // Extract the directory name from the path
         const last_slash = std.mem.lastIndexOfScalar(u8, cwd_path, std.fs.path.sep) orelse 0;
@@ -66,11 +68,11 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     // Handle directory creation/validation
     var project_dir = if (use_current_dir) blk: {
         // Check if current directory is empty or contains only hidden files
-        var dir = try cwd.openDir(".", .{ .iterate = true });
+        var dir = try cwd.openDir(io, ".", .{ .iterate = true });
         var iterator = dir.iterate();
 
         var has_visible_files = false;
-        while (try iterator.next()) |entry| {
+        while (try iterator.next(io)) |entry| {
             // Ignore hidden files (starting with .)
             if (entry.name[0] != '.') {
                 has_visible_files = true;
@@ -85,10 +87,10 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         }
 
         try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
-        break :blk try cwd.openDir(".", .{});
+        break :blk try cwd.openDir(io, ".", .{});
     } else blk: {
         // Check if directory already exists
-        cwd.access(args.name, .{}) catch |err| switch (err) {
+        cwd.access(io, args.name, .{}) catch |err| switch (err) {
             error.FileNotFound => {}, // Good, directory doesn't exist
             else => {
                 try stderr.print("Error: Directory '{s}' already exists\n", .{args.name});
@@ -99,14 +101,14 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         try stdout.print("Creating new zcli project: {s}\n", .{project_name});
 
         // Create project directory
-        try cwd.makeDir(args.name);
-        break :blk try cwd.openDir(args.name, .{});
+        try cwd.createDir(io, args.name, .default_dir);
+        break :blk try cwd.openDir(io, args.name, .{});
     };
-    defer project_dir.close();
+    defer project_dir.close(io);
 
     // Create src and src/commands directories
-    try project_dir.makeDir("src");
-    try project_dir.makeDir("src/commands");
+    try project_dir.createDir(io, "src", .default_dir);
+    try project_dir.createDir(io, "src/commands", .default_dir);
 
     // Generate build.zig.zon
     try stdout.print("  Creating build.zig.zon...\n", .{});
@@ -134,9 +136,9 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     , .{ project_identifier, app_version, zcli_version });
     defer allocator.free(zon_content);
 
-    var zon_file = try project_dir.createFile("build.zig.zon", .{});
-    defer zon_file.close();
-    try zon_file.writeAll(zon_content);
+    var zon_file = try project_dir.createFile(io, "build.zig.zon", .{});
+    defer zon_file.close(io);
+    try zon_file.writeStreamingAll(io, zon_content);
 
     // Generate build.zig
     try stdout.print("  Creating build.zig...\n", .{});
@@ -203,9 +205,9 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     , .{ project_name, project_name, app_version, app_description });
     defer allocator.free(build_content);
 
-    var build_file = try project_dir.createFile("build.zig", .{});
-    defer build_file.close();
-    try build_file.writeAll(build_content);
+    var build_file = try project_dir.createFile(io, "build.zig", .{});
+    defer build_file.close(io);
+    try build_file.writeStreamingAll(io, build_content);
 
     // Generate src/main.zig
     try stdout.print("  Creating src/main.zig...\n", .{});
@@ -231,12 +233,12 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         \\
     ;
 
-    var src_dir = try project_dir.openDir("src", .{});
-    defer src_dir.close();
+    var src_dir = try project_dir.openDir(io, "src", .{});
+    defer src_dir.close(io);
 
-    var main_file = try src_dir.createFile("main.zig", .{});
-    defer main_file.close();
-    try main_file.writeAll(main_content);
+    var main_file = try src_dir.createFile(io, "main.zig", .{});
+    defer main_file.close(io);
+    try main_file.writeStreamingAll(io, main_content);
 
     // Generate example command: src/commands/hello.zig
     try stdout.print("  Creating example command (hello)...\n", .{});
@@ -268,72 +270,29 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         \\
     ;
 
-    var commands_dir = try src_dir.openDir("commands", .{});
-    defer commands_dir.close();
+    var commands_dir = try src_dir.openDir(io, "commands", .{});
+    defer commands_dir.close(io);
 
-    var hello_file = try commands_dir.createFile("hello.zig", .{});
-    defer hello_file.close();
-    try hello_file.writeAll(hello_content);
+    var hello_file = try commands_dir.createFile(io, "hello.zig", .{});
+    defer hello_file.close(io);
+    try hello_file.writeStreamingAll(io, hello_content);
 
-    // Fetch dependencies to populate hash and fingerprint
-    // We run this twice: first to get the correct fingerprint, then to update with the hash
-    try stdout.print("  Fetching dependencies (this may take a moment)...\n", .{});
+    // Fetch zcli dependency
+    fetch_deps: {
+        try stdout.print("  Fetching dependencies (this may take a moment)...\n", .{});
+        const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz", .{zcli_version});
+        defer allocator.free(zcli_url);
 
-    // Construct the zcli URL
-    const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz", .{zcli_version});
-    defer allocator.free(zcli_url);
-
-    // First attempt will fail but give us the correct fingerprint
-    if (std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "zig", "fetch", "--save", zcli_url },
-        .cwd_dir = project_dir,
-    })) |first_result| {
-        defer allocator.free(first_result.stdout);
-        defer allocator.free(first_result.stderr);
-
-        // If it succeeded, great! If not, extract the fingerprint from the error message
-        if (first_result.term != .Exited or first_result.term.Exited != 0) {
-            // Look for "use this value: 0x..." in stderr
-            if (std.mem.indexOf(u8, first_result.stderr, "use this value: 0x")) |idx| {
-                const after_value = first_result.stderr[idx + 16 ..]; // Skip "use this value: "
-                var end: usize = 0;
-                while (end < after_value.len and end < 20) : (end += 1) {
-                    const c = after_value[end];
-                    if (!std.ascii.isHex(c) and c != 'x') break;
-                }
-                const fingerprint_str = after_value[0..end];
-
-                // Read the current build.zig.zon
-                const zon_file_read = try project_dir.openFile("build.zig.zon", .{});
-                defer zon_file_read.close();
-                const zon_current = try zon_file_read.readToEndAlloc(allocator, 10 * 1024 * 1024);
-                defer allocator.free(zon_current);
-
-                // Replace the fingerprint
-                const updated_zon = try std.mem.replaceOwned(u8, allocator, zon_current, "0x0000000000000000", fingerprint_str);
-                defer allocator.free(updated_zon);
-
-                // Write it back
-                const zon_file_write = try project_dir.createFile("build.zig.zon", .{});
-                defer zon_file_write.close();
-                try zon_file_write.writeAll(updated_zon);
-
-                // Try fetch again with correct fingerprint
-                if (std.process.Child.run(.{
-                    .allocator = allocator,
-                    .argv = &.{ "zig", "fetch", "--save", zcli_url },
-                    .cwd_dir = project_dir,
-                })) |second_result| {
-                    defer allocator.free(second_result.stdout);
-                    defer allocator.free(second_result.stderr);
-                } else |_| {
-                    // Ignore errors on second attempt - not critical
-                }
-            }
-        }
-    } else |_| {
-        // Silently ignore - not critical for project creation
+        var fetch_child = std.process.spawn(io, .{
+            .argv = &.{ "zig", "fetch", "--save", zcli_url },
+            .cwd = .{ .dir = project_dir },
+            .stdout = .pipe,
+            .stderr = .pipe,
+        }) catch {
+            stdout.print("  Note: Run 'zig fetch --save {s}' to add the dependency\n", .{zcli_url}) catch {};
+            break :fetch_deps;
+        };
+        _ = fetch_child.wait(io) catch {};
     }
 
     // Success message

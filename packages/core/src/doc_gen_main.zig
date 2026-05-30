@@ -10,13 +10,11 @@ const CommandInfo = zcli.CommandInfo;
 const OptionInfo = zcli.OptionInfo;
 const ArgInfo = zcli.ArgInfo;
 
-pub fn main() !void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     const output_dir = if (args.len > 1) args[1] else "docs";
     // Remaining args are formats to generate (default: markdown)
@@ -32,17 +30,14 @@ pub fn main() !void {
             try allocator.dupe(u8, output_dir);
         defer allocator.free(dir);
 
-        std.fs.cwd().makePath(dir) catch |err| {
-            std.debug.print("Failed to create output directory '{s}': {}\n", .{ dir, err });
-            return err;
-        };
+        // Note: directory creation is handled by the build system step
 
         if (std.mem.eql(u8, format, "man")) {
-            try writeManPages(allocator, dir, commands, global_opts);
+            try writeManPages(allocator, io, dir, commands, global_opts);
         } else if (std.mem.eql(u8, format, "html")) {
-            try writeHtml(allocator, dir, commands, global_opts);
+            try writeHtml(allocator, io, dir, commands, global_opts);
         } else {
-            try writeMarkdown(allocator, dir, commands, global_opts);
+            try writeMarkdown(allocator, io, dir, commands, global_opts);
         }
 
         std.debug.print("Generated {s} docs in {s}/\n", .{ format, dir });
@@ -53,13 +48,13 @@ pub fn main() !void {
 // Markdown
 // ============================================================================
 
-fn writeMarkdown(allocator: std.mem.Allocator, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
+fn writeMarkdown(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
     // Index
     const index_path = try std.fmt.allocPrint(allocator, "{s}/README.md", .{output_dir});
     defer allocator.free(index_path);
-    var index_file = try std.fs.cwd().createFile(index_path, .{});
-    defer index_file.close();
-    var ifw = index_file.writer(&.{});
+    var index_file = try std.Io.Dir.cwd().createFile(io, index_path, .{});
+    defer index_file.close(io);
+    var ifw = index_file.writer(io, &.{});
     const iw = &ifw.interface;
 
     try iw.print("# {s}\n\n", .{registry.app_name});
@@ -91,11 +86,11 @@ fn writeMarkdown(allocator: std.mem.Allocator, output_dir: []const u8, commands:
     // Individual command pages
     for (commands) |cmd| {
         if (cmd.hidden) continue;
-        try writeCommandMarkdown(allocator, output_dir, cmd);
+        try writeCommandMarkdown(allocator, io, output_dir, cmd);
     }
 }
 
-fn writeCommandMarkdown(allocator: std.mem.Allocator, output_dir: []const u8, cmd: CommandInfo) !void {
+fn writeCommandMarkdown(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, cmd: CommandInfo) !void {
     const cmd_name = try std.mem.join(allocator, " ", cmd.path);
     defer allocator.free(cmd_name);
     const file_name = try std.mem.join(allocator, "/", cmd.path);
@@ -105,12 +100,12 @@ fn writeCommandMarkdown(allocator: std.mem.Allocator, output_dir: []const u8, cm
 
     // Create parent directories for nested commands
     if (std.mem.lastIndexOfScalar(u8, file_path, '/')) |last_slash| {
-        std.fs.cwd().makePath(file_path[0..last_slash]) catch {};
+        std.Io.Dir.cwd().createDirPath(io, file_path[0..last_slash]) catch {};
     }
 
-    var file = try std.fs.cwd().createFile(file_path, .{});
-    defer file.close();
-    var fw = file.writer(&.{});
+    var file = try std.Io.Dir.cwd().createFile(io, file_path, .{});
+    defer file.close(io);
+    var fw = file.writer(io, &.{});
     const w = &fw.interface;
 
     try w.print("# {s} {s}\n\n", .{ registry.app_name, cmd_name });
@@ -172,14 +167,14 @@ fn writeCommandMarkdown(allocator: std.mem.Allocator, output_dir: []const u8, cm
 // Man pages
 // ============================================================================
 
-fn writeManPages(allocator: std.mem.Allocator, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
+fn writeManPages(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
     for (commands) |cmd| {
         if (cmd.hidden) continue;
-        try writeCommandManPage(allocator, output_dir, cmd, global_opts);
+        try writeCommandManPage(allocator, io, output_dir, cmd, global_opts);
     }
 }
 
-fn writeCommandManPage(allocator: std.mem.Allocator, output_dir: []const u8, cmd: CommandInfo, global_opts: []const OptionInfo) !void {
+fn writeCommandManPage(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, cmd: CommandInfo, global_opts: []const OptionInfo) !void {
     const cmd_name = try std.mem.join(allocator, " ", cmd.path);
     defer allocator.free(cmd_name);
     const man_name = try std.mem.join(allocator, "-", cmd.path);
@@ -187,9 +182,9 @@ fn writeCommandManPage(allocator: std.mem.Allocator, output_dir: []const u8, cmd
     const file_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{s}.1", .{ output_dir, registry.app_name, man_name });
     defer allocator.free(file_path);
 
-    var file = try std.fs.cwd().createFile(file_path, .{});
-    defer file.close();
-    var fw = file.writer(&.{});
+    var file = try std.Io.Dir.cwd().createFile(io, file_path, .{});
+    defer file.close(io);
+    var fw = file.writer(io, &.{});
     const w = &fw.interface;
 
     const app_upper = try std.ascii.allocUpperString(allocator, registry.app_name);
@@ -287,13 +282,13 @@ const html_style =
     \\ul { padding-left: 1.5rem; margin-bottom: 1rem; }
 ;
 
-fn writeHtml(allocator: std.mem.Allocator, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
+fn writeHtml(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
     // Index page
     const index_path = try std.fmt.allocPrint(allocator, "{s}/index.html", .{output_dir});
     defer allocator.free(index_path);
-    var index_file = try std.fs.cwd().createFile(index_path, .{});
-    defer index_file.close();
-    var ifw = index_file.writer(&.{});
+    var index_file = try std.Io.Dir.cwd().createFile(io, index_path, .{});
+    defer index_file.close(io);
+    var ifw = index_file.writer(io, &.{});
     const iw = &ifw.interface;
 
     try htmlHead(iw, registry.app_name);
@@ -332,11 +327,11 @@ fn writeHtml(allocator: std.mem.Allocator, output_dir: []const u8, commands: []c
     // Individual command pages
     for (commands) |cmd| {
         if (cmd.hidden) continue;
-        try writeCommandHtml(allocator, output_dir, cmd, commands);
+        try writeCommandHtml(allocator, io, output_dir, cmd, commands);
     }
 }
 
-fn writeCommandHtml(allocator: std.mem.Allocator, output_dir: []const u8, cmd: CommandInfo, all_commands: []const CommandInfo) !void {
+fn writeCommandHtml(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, cmd: CommandInfo, all_commands: []const CommandInfo) !void {
     const cmd_name = try std.mem.join(allocator, " ", cmd.path);
     defer allocator.free(cmd_name);
     const file_name = try std.mem.join(allocator, "/", cmd.path);
@@ -345,12 +340,12 @@ fn writeCommandHtml(allocator: std.mem.Allocator, output_dir: []const u8, cmd: C
     defer allocator.free(file_path);
 
     if (std.mem.lastIndexOfScalar(u8, file_path, '/')) |last_slash| {
-        std.fs.cwd().makePath(file_path[0..last_slash]) catch {};
+        std.Io.Dir.cwd().createDirPath(io, file_path[0..last_slash]) catch {};
     }
 
-    var file = try std.fs.cwd().createFile(file_path, .{});
-    defer file.close();
-    var fw = file.writer(&.{});
+    var file = try std.Io.Dir.cwd().createFile(io, file_path, .{});
+    defer file.close(io);
+    var fw = file.writer(io, &.{});
     const w = &fw.interface;
 
     const title = try std.fmt.allocPrint(allocator, "{s} {s}", .{ registry.app_name, cmd_name });

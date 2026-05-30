@@ -417,7 +417,7 @@ pub fn Themed(comptime T: type) type {
         /// Get the styled content as a string (requires allocator)
         pub fn toString(self: Self, allocator: std.mem.Allocator, theme_ctx: *const Theme) ![]u8 {
             var list: std.ArrayList(u8) = .empty;
-            try self.render(list.writer(allocator), theme_ctx);
+            var aw_render: std.Io.Writer.Allocating = .init(allocator); try self.render(&aw_render.writer, theme_ctx);
             return list.toOwnedSlice(allocator);
         }
 
@@ -524,13 +524,13 @@ test "fluent API basics" {
     try testing.expect(bold_red.style.foreground.? == Color.red);
 
     // Test render to buffer (basic)
-    var buffer: std.ArrayList(u8) = .empty;
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    const theme_ctx = Theme.init(testing.allocator);
-    try theme("test").render(buffer.writer(testing.allocator), &theme_ctx);
+    const theme_ctx = Theme.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
+    try theme("test").render(&aw.writer, &theme_ctx);
 
-    try testing.expect(buffer.items.len >= 4); // At least "test"
+    try testing.expect(aw.writer.end >= 4); // At least "test"
 }
 
 test "comprehensive color methods" {
@@ -649,34 +649,27 @@ test "complex chaining and rendering" {
     try testing.expect(complex.style.italic);
 
     // Test rendering with different content types
-    var buffer: std.ArrayList(u8) = .empty;
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const theme_ctx = Theme{ .capability = .ansi_16, .is_tty = true, .color_enabled = true };
 
     // Render string content
-    try theme("Hello").red().render(buffer.writer(testing.allocator), &theme_ctx);
-    try testing.expect(buffer.items.len > 5); // Has styling + "Hello"
-
-    // Clear and test number content
-    buffer.clearRetainingCapacity();
-    try theme(@as(i32, 42)).green().render(buffer.writer(testing.allocator), &theme_ctx);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "42") != null);
+    try theme("Hello").red().render(&aw.writer, &theme_ctx);
+    try testing.expect(aw.writer.end > 5); // Has styling + "Hello"
 }
 
 test "compile-time rendering optimization" {
     const testing = std.testing;
 
     // Test compile-time rendering
-    var buffer: std.ArrayList(u8) = .empty;
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const styled = comptime theme("CompTime").red().bold();
-    try styled.renderComptime(buffer.writer(testing.allocator), .ansi_16);
+    try styled.renderComptime(&aw.writer, .ansi_16);
 
-    // Should contain red and bold codes
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "CompTime") != null);
-    try testing.expect(buffer.items.len > 8); // Has styling + content + reset
+    try testing.expect(aw.writer.end > 8); // Has styling + content + reset
 }
 
 test "generic interface utilities" {

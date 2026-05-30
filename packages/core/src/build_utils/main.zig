@@ -17,17 +17,9 @@ const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 
 /// Read version from the project's build.zig.zon file
 fn readVersionFromZon(b: *std.Build) []const u8 {
-    const zon_path = b.pathFromRoot("build.zig.zon");
-
-    // Read the file
-    const zon_file = std.fs.cwd().openFile(zon_path, .{}) catch |err| {
-        logging.logBuildWarning("Could not read build.zig.zon at '{s}', using default version 0.0.0: {any}", .{ zon_path, err });
-        return "0.0.0";
-    };
-    defer zon_file.close();
-
-    const content = zon_file.readToEndAlloc(b.allocator, 1024 * 1024) catch |err| {
-        logging.logBuildWarning("Could not read build.zig.zon at '{s}', using default version 0.0.0: {any}", .{ zon_path, err });
+    // Read the file from build root
+    const content = b.build_root.handle.readFileAlloc(b.graph.io, "build.zig.zon", b.allocator, .limited(1024 * 1024)) catch |err| {
+        logging.logBuildWarning("Could not read build.zig.zon, using default version 0.0.0: {any}", .{err});
         return "0.0.0";
     };
     // Don't defer free - we're returning a slice of this content
@@ -51,7 +43,7 @@ fn readVersionFromZon(b: *std.Build) []const u8 {
     }
 
     b.allocator.free(content);
-    logging.logBuildWarning("Could not parse version from build.zig.zon at '{s}', using default version 0.0.0", .{zon_path});
+    logging.logBuildWarning("Could not parse version from build.zig.zon, using default version 0.0.0", .{});
     return "0.0.0";
 }
 
@@ -105,7 +97,7 @@ fn generatePluginRegistry(
     _ = optimize; // Will be used for plugin compilation
 
     // Discover all commands at build time (same as before)
-    var discovered_commands = command_discovery.discoverCommands(b.allocator, config.commands_dir) catch |err| {
+    var discovered_commands = command_discovery.discoverCommands(b, config.commands_dir) catch |err| {
         // Same error handling as before
         switch (err) {
             error.InvalidPath => {
@@ -134,6 +126,9 @@ fn generatePluginRegistry(
         switch (err) {
             error.OutOfMemory => {
                 logging.registryGenerationOutOfMemory();
+            },
+            else => {
+                logging.logBuildWarning("Registry generation failed: {any}", .{err});
             },
         }
         std.process.exit(1);
@@ -175,7 +170,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
     const app_version = readVersionFromZon(b);
 
     // Convert plugin configs to PluginInfo array
-    var plugins = std.ArrayList(types.PluginInfo){};
+    var plugins = std.ArrayList(types.PluginInfo).empty;
     defer plugins.deinit(b.allocator);
 
     inline for (config.plugins) |plugin_config| {
@@ -284,15 +279,16 @@ fn configToInitString(allocator: std.mem.Allocator, comptime config: anytype) []
         else => @compileError("Plugin config must be a struct, got: " ++ @typeName(T)),
     };
 
-    var result = std.ArrayList(u8){};
-    const writer = result.writer(allocator);
+    var result = std.ArrayList(u8).empty;
 
-    writer.writeAll(".init(.{") catch unreachable;
+    result.appendSlice(allocator, ".init(.{") catch unreachable;
 
     inline for (fields, 0..) |field, i| {
-        if (i > 0) writer.writeAll(", ") catch unreachable;
+        if (i > 0) result.appendSlice(allocator, ", ") catch unreachable;
 
-        writer.print(".{s} = ", .{field.name}) catch unreachable;
+        const prefix = std.fmt.allocPrint(allocator, ".{s} = ", .{field.name}) catch unreachable;
+        result.appendSlice(allocator, prefix) catch unreachable;
+        allocator.free(prefix);
 
         const value = @field(config, field.name);
         switch (@typeInfo(field.type)) {
@@ -306,16 +302,22 @@ fn configToInitString(allocator: std.mem.Allocator, comptime config: anytype) []
                 };
 
                 if (is_string) {
-                    writer.print("\"{s}\"", .{value}) catch unreachable;
+                    const s = std.fmt.allocPrint(allocator, "\"{s}\"", .{value}) catch unreachable;
+                    result.appendSlice(allocator, s) catch unreachable;
+                    allocator.free(s);
                 } else {
                     @compileError("Unsupported pointer type in plugin config: " ++ @typeName(field.type));
                 }
             },
             .bool => {
-                writer.print("{}", .{value}) catch unreachable;
+                const s = std.fmt.allocPrint(allocator, "{}", .{value}) catch unreachable;
+                result.appendSlice(allocator, s) catch unreachable;
+                allocator.free(s);
             },
             .int, .comptime_int => {
-                writer.print("{d}", .{value}) catch unreachable;
+                const s = std.fmt.allocPrint(allocator, "{d}", .{value}) catch unreachable;
+                result.appendSlice(allocator, s) catch unreachable;
+                allocator.free(s);
             },
             else => {
                 @compileError("Unsupported type in plugin config: " ++ @typeName(field.type));
@@ -323,7 +325,7 @@ fn configToInitString(allocator: std.mem.Allocator, comptime config: anytype) []
         }
     }
 
-    writer.writeAll("})") catch unreachable;
+    result.appendSlice(allocator, "})") catch unreachable;
 
     return result.toOwnedSlice(allocator) catch unreachable;
 }
@@ -343,7 +345,7 @@ const PluginTestHelper = struct {
     fn init(allocator: std.mem.Allocator) PluginTestHelper {
         return .{
             .allocator = allocator,
-            .plugins = std.ArrayList(types.PluginInfo){},
+            .plugins = std.ArrayList(types.PluginInfo).empty,
         };
     }
 

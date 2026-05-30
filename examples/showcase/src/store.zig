@@ -80,12 +80,11 @@ pub const LoadResult = struct {
     }
 };
 
-pub fn load(allocator: std.mem.Allocator) !LoadResult {
-    const file = std.fs.cwd().openFile(FILENAME, .{}) catch {
+pub fn load(allocator: std.mem.Allocator, io: std.Io) !LoadResult {
+    const cwd = std.Io.Dir.cwd();
+    const content = cwd.readFileAlloc(io, FILENAME, allocator, .limited(1024 * 1024)) catch {
         return .{ .value = .{}, ._parsed = null };
     };
-    defer file.close();
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(content);
     if (content.len == 0) return .{ .value = .{}, ._parsed = null };
     const parsed = std.json.parseFromSlice(ProjectData, allocator, content, .{
@@ -94,11 +93,14 @@ pub fn load(allocator: std.mem.Allocator) !LoadResult {
     return .{ .value = parsed.value, ._parsed = parsed };
 }
 
-pub fn save(_: std.mem.Allocator, data: ProjectData) !void {
-    const file = try std.fs.cwd().createFile(FILENAME, .{});
-    defer file.close();
-    var fw = file.writer(&.{});
+pub fn save(_: std.mem.Allocator, io: std.Io, data: ProjectData) !void {
+    const cwd = std.Io.Dir.cwd();
+    const file = try cwd.createFile(io, FILENAME, .{});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var fw = file.writer(io, &buf);
     try fw.interface.print("{f}", .{std.json.fmt(data, .{ .whitespace = .indent_2 })});
+    try fw.interface.flush();
 }
 
 pub fn findById(tasks: []const Task, id: u32) ?*const Task {

@@ -13,6 +13,30 @@ extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
 extern "c" fn ptsname(fd: c_int) ?[*:0]const u8;
 
+// Helper: create a pipe — replaces removed posix.pipe in 0.16
+fn makePipe() error{PipeFailed}![2]posix.fd_t {
+    var fds: [2]posix.fd_t = undefined;
+    if (posix.system.pipe(&fds) == 0) return fds;
+    return error.PipeFailed;
+}
+
+// Helper: close a file descriptor — replaces removed posix.close in 0.16
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
+// Helper: check if fd is a TTY — replaces removed posix.isatty in 0.16
+fn isFdTty(fd: posix.fd_t) bool {
+    return std.c.isatty(fd) != 0;
+}
+
+// Helper: get env var (returns slice into C string memory) — replaces removed
+// std.process.getEnvVarOwned in 0.16. Caller does not own the result.
+fn getEnv(name: [*:0]const u8) ?[]const u8 {
+    const val = std.c.getenv(name) orelse return null;
+    return std.mem.span(val);
+}
+
 // Cross-platform termios structure
 const Termios = switch (builtin.os.tag) {
     .linux => std.os.linux.termios,
@@ -103,7 +127,7 @@ pub const PtyManager = struct {
                 const pty_result = createPty(allocator) catch |err| {
                     std.log.warn("Failed to create PTY: {any}, falling back to pipes", .{err});
                     // Fallback to pipes
-                    const pipe_fds = try posix.pipe();
+                    const pipe_fds = try makePipe();
                     self.master_fd = pipe_fds[1];
                     self.slave_fd = pipe_fds[0];
                     return self;
@@ -115,7 +139,7 @@ pub const PtyManager = struct {
             },
             .windows => {
                 // Windows doesn't have standard PTY support, use pipes
-                const pipe_fds = try posix.pipe();
+                const pipe_fds = try makePipe();
                 self.master_fd = pipe_fds[1];
                 self.slave_fd = pipe_fds[0];
             },
@@ -129,11 +153,11 @@ pub const PtyManager = struct {
 
     pub fn deinit(self: *Self) void {
         if (self.master_fd != -1) {
-            posix.close(self.master_fd);
+            closeFd(self.master_fd);
             self.master_fd = -1;
         }
         if (self.slave_fd != -1) {
-            posix.close(self.slave_fd);
+            closeFd(self.slave_fd);
             self.slave_fd = -1;
         }
         if (self.slave_name) |name| {
@@ -142,12 +166,12 @@ pub const PtyManager = struct {
         }
     }
 
-    pub fn getMasterFile(self: Self) std.fs.File {
-        return std.fs.File{ .handle = self.master_fd };
+    pub fn getMasterFile(self: Self) std.Io.File {
+        return std.Io.File{ .handle = self.master_fd };
     }
 
-    pub fn getSlaveFile(self: Self) std.fs.File {
-        return std.fs.File{ .handle = self.slave_fd };
+    pub fn getSlaveFile(self: Self) std.Io.File {
+        return std.Io.File{ .handle = self.slave_fd };
     }
 
     /// Save current terminal settings with enhanced error handling
@@ -323,15 +347,15 @@ pub const PtyManager = struct {
         if (child_pid <= 0) return error.InvalidPid;
 
         const sig_num: c_int = switch (signal) {
-            .SIGINT => std.os.linux.SIG.INT,
-            .SIGTERM => std.os.linux.SIG.TERM,
-            .SIGTSTP => std.os.linux.SIG.TSTP,
-            .SIGWINCH => std.os.linux.SIG.WINCH,
-            .SIGUSR1 => std.os.linux.SIG.USR1,
-            .SIGUSR2 => std.os.linux.SIG.USR2,
-            .SIGHUP => std.os.linux.SIG.HUP,
-            .SIGQUIT => std.os.linux.SIG.QUIT,
-            .SIGCONT => std.os.linux.SIG.CONT,
+            .SIGINT => @intFromEnum(std.os.linux.SIG.INT),
+            .SIGTERM => @intFromEnum(std.os.linux.SIG.TERM),
+            .SIGTSTP => @intFromEnum(std.os.linux.SIG.TSTP),
+            .SIGWINCH => @intFromEnum(std.os.linux.SIG.WINCH),
+            .SIGUSR1 => @intFromEnum(std.os.linux.SIG.USR1),
+            .SIGUSR2 => @intFromEnum(std.os.linux.SIG.USR2),
+            .SIGHUP => @intFromEnum(std.os.linux.SIG.HUP),
+            .SIGQUIT => @intFromEnum(std.os.linux.SIG.QUIT),
+            .SIGCONT => @intFromEnum(std.os.linux.SIG.CONT),
         };
 
         if (kill(child_pid, sig_num) != 0) {
@@ -476,14 +500,14 @@ fn createRealPty(allocator: std.mem.Allocator) !PtyResult {
     };
 
     // Open master PTY
-    const master_fd = posix.open(master_path, .{
+    const master_fd = posix.openat(posix.AT.FDCWD, master_path, .{
         .ACCMODE = .RDWR,
         .NOCTTY = true,
     }, 0) catch |err| {
         std.log.warn("Failed to open {s}: {any}", .{ master_path, err });
         return err;
     };
-    errdefer posix.close(master_fd);
+    errdefer closeFd(master_fd);
 
     // Grant access to the slave PTY
     if (grantpt(master_fd) != 0) {
@@ -504,7 +528,7 @@ fn createRealPty(allocator: std.mem.Allocator) !PtyResult {
     };
     const slave_name = try allocator.dupe(u8, std.mem.span(slave_cstr));
     errdefer allocator.free(slave_name);
-    const slave_fd = posix.open(slave_name, .{
+    const slave_fd = posix.openat(posix.AT.FDCWD, slave_name, .{
         .ACCMODE = .RDWR,
         .NOCTTY = true,
     }, 0) catch |err| {
@@ -523,7 +547,7 @@ fn createRealPty(allocator: std.mem.Allocator) !PtyResult {
 
 /// Fallback PTY creation using pipes
 fn createPtyFallback(allocator: std.mem.Allocator) !PtyResult {
-    const pipe_fds = try posix.pipe();
+    const pipe_fds = try makePipe();
     const slave_name = try allocator.dupe(u8, "/dev/pts/fake");
 
     std.log.info("PTY creation using pipe fallback", .{});
@@ -598,7 +622,7 @@ fn spawnWithPtyForkExec(
         child.id = @intCast(pid);
 
         // Close the slave FD in the parent (child owns it now)
-        posix.close(pty.slave_fd);
+        closeFd(pty.slave_fd);
         pty.slave_fd = -1;
 
         // Set child streams to None since we're using PTY
@@ -641,11 +665,11 @@ fn childPtySetup(pty: *PtyManager, c_args: []?[*:0]const u8, config: Interactive
 
     // Close the slave FD (we have it as 0,1,2 now)
     if (pty.slave_fd > 2) {
-        posix.close(pty.slave_fd);
+        closeFd(pty.slave_fd);
     }
 
     // Close the master FD (parent owns this)
-    posix.close(pty.master_fd);
+    closeFd(pty.master_fd);
 
     // Execute the command
     const err = std.posix.execvpeZ(c_args[0].?, @ptrCast(c_args.ptr), @ptrCast(std.c.environ));
@@ -831,7 +855,7 @@ pub const InteractiveConfig = struct {
     /// Working directory for the command
     cwd: ?[]const u8 = null,
     /// Environment variables to set
-    env: ?std.process.EnvMap = null,
+    env: ?std.process.Environ.Map = null,
     /// Whether to allocate a pseudo-terminal (TTY)
     allocate_pty: bool = true,
     /// Buffer size for output capture
@@ -960,7 +984,7 @@ pub const InteractiveError = error{
     NotOpenForReading,
     SocketNotConnected,
     Canceled,
-} || std.mem.Allocator.Error || std.process.Child.SpawnError;
+} || std.mem.Allocator.Error || std.process.SpawnError;
 
 /// Run an interactive test script against a command
 pub fn runInteractive(
@@ -1232,7 +1256,7 @@ pub fn runInteractive(
 /// Wait for specific output to appear, with timeout
 fn waitForOutput(
     allocator: std.mem.Allocator,
-    stdout: std.fs.File,
+    stdout: std.Io.File,
     expected: []const u8,
     timeout_ms: u32,
     exact_match: bool,
@@ -1287,7 +1311,7 @@ fn waitForOutput(
 /// Send input to the process
 fn sendInput(
     allocator: std.mem.Allocator,
-    stdin: std.fs.File,
+    stdin: std.Io.File,
     input: []const u8,
     input_type: InputType,
     input_buffer: *std.ArrayList(u8),
@@ -1323,7 +1347,7 @@ fn sendInput(
 
 /// Drain any remaining output from stdout
 fn drainOutput(
-    stdout: std.fs.File,
+    stdout: std.Io.File,
     output_buffer: *std.ArrayList(u8),
     timeout_ms: u32,
     allocator: std.mem.Allocator,
@@ -1399,22 +1423,14 @@ test "PtyManager terminal settings" {
     const allocator = std.testing.allocator;
 
     // Skip PTY tests in environments where they're known to be problematic
-    const is_ci = blk: {
-        const ci = std.process.getEnvVarOwned(allocator, "CI") catch null;
-        if (ci) |val| allocator.free(val);
-        break :blk ci != null;
-    };
-    const is_github = blk: {
-        const gh = std.process.getEnvVarOwned(allocator, "GITHUB_ACTIONS") catch null;
-        if (gh) |val| allocator.free(val);
-        break :blk gh != null;
-    };
+    const is_ci = getEnv("CI") != null;
+    const is_github = getEnv("GITHUB_ACTIONS") != null;
     if (builtin.os.tag == .windows or is_ci or is_github) {
         return;
     }
 
     // Check if we have a controlling terminal
-    if (!std.posix.isatty(std.fs.File.stdin().handle)) {
+    if (!isFdTty(std.Io.File.stdin().handle)) {
         // No controlling terminal, PTY operations may not work properly
         return;
     }
@@ -1582,8 +1598,8 @@ test "createPtyFallback functionality" {
         return;
     };
     defer {
-        posix.close(result.master);
-        posix.close(result.slave);
+        closeFd(result.master);
+        closeFd(result.slave);
         allocator.free(result.slave_name);
     }
 

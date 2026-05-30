@@ -8,6 +8,7 @@ pub const SearchConfig = struct {
     message: []const u8,
     choices: []const []const u8,
     prefix: []const u8 = "? ",
+    unicode: bool = true,
 };
 
 /// Prompt with search filtering. Returns the index of the selected item in the original choices array.
@@ -32,7 +33,7 @@ pub fn search(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
     // TTY: interactive search
     try writer.print("{s}{s}\r\n", .{ config.prefix, config.message });
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.fs.File.stdin().handle) catch return 0;
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
     try writer.writeAll(terminal.ansi.hide_cursor);
     defer {
         writer.writeAll(terminal.ansi.show_cursor) catch {};
@@ -40,7 +41,7 @@ pub fn search(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
         zinput.flushWriter(writer);
     }
 
-    var query = std.ArrayList(u8){};
+    var query = std.ArrayList(u8).empty;
     defer query.deinit(allocator);
 
     // Build initial index mapping (all items)
@@ -104,7 +105,7 @@ pub fn search(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
 
 /// Build array of indices into choices that match the query (case-insensitive substring).
 fn buildFiltered(allocator: std.mem.Allocator, choices: []const []const u8, query: []const u8) ![]usize {
-    var result = std.ArrayList(usize){};
+    var result = std.ArrayList(usize).empty;
     errdefer result.deinit(allocator);
 
     for (choices, 0..) |choice, i| {
@@ -147,7 +148,7 @@ fn renderSearch(writer: anytype, config: SearchConfig, query: []const u8, filter
     const max_visible: usize = 7;
     const visible_count = @min(filtered.len, max_visible);
 
-    const marker = terminal.symbols.select_cursor(terminal.unicodeSupported());
+    const marker = terminal.symbols.select_cursor(config.unicode);
 
     if (filtered.len == 0) {
         try writer.writeAll("  \x1b[2mno matches\x1b[0m\r\n");
@@ -178,7 +179,7 @@ fn eraseRendered(writer: anytype, lines: usize) !void {
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
         const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);

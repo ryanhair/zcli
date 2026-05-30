@@ -12,8 +12,7 @@ pub const markdown_fmt = @import("markdown_fmt");
 pub const zprogress = @import("zprogress");
 pub const zinput = @import("zinput");
 pub const vterm = @import("vterm");
-pub const yaml = @import("yaml");
-pub const toml = @import("toml");
+pub const serde = @import("serde");
 pub const test_utils = @import("test_utils.zig");
 const testing = std.testing;
 
@@ -100,7 +99,6 @@ pub const CommandModuleInfo = struct {
 pub const Context = struct {
     allocator: std.mem.Allocator,
     io: *IO,
-    environment: Environment,
 
     // Core zcli command execution context
     app_name: []const u8 = "app",
@@ -123,7 +121,6 @@ pub const Context = struct {
         return .{
             .allocator = allocator,
             .io = io,
-            .environment = Environment.init(allocator),
         };
     }
 
@@ -146,7 +143,7 @@ pub const Context = struct {
             }
         }
 
-        self.environment.deinit();
+        // No-op — environ is owned by process.Init
     }
 
     // Convenience methods for I/O
@@ -202,7 +199,7 @@ pub const Context = struct {
 ///
 /// ```zig
 /// const TestCtx = zcli.TestContext(&.{ MyPlugin });
-/// var io = zcli.IO.init();
+/// var io = zcli.IO.init(std.testing.io);
 /// io.finalize();
 /// var ctx = TestCtx.init(testing.allocator, &io);
 /// defer ctx.deinit();
@@ -222,7 +219,9 @@ pub fn TestContext(comptime test_plugins: []const type) type {
             break :blk struct {};
         }
 
-        var fields: [field_count]std.builtin.Type.StructField = undefined;
+        var field_names: [field_count][]const u8 = undefined;
+        var field_types: [field_count]type = undefined;
+        var field_attrs: [field_count]std.builtin.Type.StructField.Attributes = undefined;
         var idx: usize = 0;
 
         for (test_plugins) |Plugin| {
@@ -243,33 +242,20 @@ pub fn TestContext(comptime test_plugins: []const type) type {
                     name_buf[name_len] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
                     name_len += 1;
                 }
-                name_buf[name_len] = 0;
 
-                fields[idx] = .{
-                    .name = name_buf[0..name_len :0],
-                    .type = DataType,
-                    .default_value_ptr = @ptrCast(&default_val),
-                    .is_comptime = false,
-                    .alignment = @alignOf(DataType),
-                };
+                field_names[idx] = name_buf[0..name_len];
+                field_types[idx] = DataType;
+                field_attrs[idx] = .{ .default_value_ptr = @ptrCast(&default_val) };
                 idx += 1;
             }
         }
 
-        break :blk @Type(.{
-            .@"struct" = .{
-                .fields = &fields,
-                .layout = .auto,
-                .decls = &.{},
-                .is_tuple = false,
-            },
-        });
+        break :blk @Struct(.auto, null, &field_names, &field_types, &field_attrs);
     };
 
     return struct {
         allocator: std.mem.Allocator,
         io: *IO,
-        environment: Environment,
         theme: ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
 
         app_name: []const u8 = "test-app",
@@ -291,7 +277,6 @@ pub fn TestContext(comptime test_plugins: []const type) type {
             return .{
                 .allocator = allocator,
                 .io = io,
-                .environment = Environment.init(allocator),
             };
         }
 
@@ -306,7 +291,7 @@ pub fn TestContext(comptime test_plugins: []const type) type {
                 if (info.args_fields.len > 0) self.allocator.free(info.args_fields);
                 if (info.options_fields.len > 0) self.allocator.free(info.options_fields);
             }
-            self.environment.deinit();
+            // No-op — environ is owned by process.Init
         }
 
         pub fn stdout(self: *Self) *std.Io.Writer {
@@ -347,79 +332,58 @@ pub fn TestContext(comptime test_plugins: []const type) type {
     };
 }
 
-/// I/O abstraction for testing
+/// I/O abstraction for the framework
 pub const IO = struct {
-    stdout_writer: std.fs.File.Writer = undefined,
-    stderr_writer: std.fs.File.Writer = undefined,
-    stdin_reader: std.fs.File.Reader = undefined,
+    io: std.Io,
+    stdout_writer: std.Io.File.Writer = undefined,
+    stderr_writer: std.Io.File.Writer = undefined,
+    stdin_reader: std.Io.File.Reader = undefined,
+    stdout_buf: [4096]u8 = undefined,
+    stderr_buf: [4096]u8 = undefined,
+    stdin_buf: [4096]u8 = undefined,
 
-    /// Initialize the IO struct with default (uninitialized) values.
-    /// IMPORTANT: You must call finalize() after the struct is in its final location
-    /// to properly initialize the writers. This is necessary because File.Writer
-    /// contains self-referential pointers that become invalid when the struct is copied.
-    pub fn init() @This() {
-        return .{};
+    // Optional overrides for testing
+    stdout_override: ?*std.Io.Writer = null,
+    stderr_override: ?*std.Io.Writer = null,
+
+    pub fn init(io: std.Io) @This() {
+        return .{ .io = io };
     }
 
-    /// Finalize the IO struct by creating writers in-place.
-    /// This MUST be called after the IO struct is in its final memory location
-    /// (i.e., after it's been assigned to Context.io).
-    ///
-    /// This prevents the issue where copying the struct invalidates the
-    /// self-referential pointers in File.Writer.interface.
+    /// Finalize the IO struct by creating writers/readers in-place.
+    /// Must be called after the struct is in its final memory location.
     pub fn finalize(self: *@This()) void {
-        self.stdout_writer = std.fs.File.stdout().writer(&.{});
-        self.stderr_writer = std.fs.File.stderr().writer(&.{});
-        self.stdin_reader = std.fs.File.stdin().reader(&.{});
+        self.stdout_writer = std.Io.File.stdout().writer(self.io, &self.stdout_buf);
+        self.stderr_writer = std.Io.File.stderr().writer(self.io, &self.stderr_buf);
+        self.stdin_reader = std.Io.File.stdin().reader(self.io, &self.stdin_buf);
     }
 
     pub fn stdout(self: *@This()) *std.Io.Writer {
-        return &self.stdout_writer.interface;
+        return self.stdout_override orelse &self.stdout_writer.interface;
     }
 
     pub fn stderr(self: *@This()) *std.Io.Writer {
-        return &self.stderr_writer.interface;
+        return self.stderr_override orelse &self.stderr_writer.interface;
     }
 
     pub fn stdin(self: *@This()) *std.Io.Reader {
         return &self.stdin_reader.interface;
     }
 
-    pub fn stdinReader(self: *@This()) *std.fs.File.Reader {
+    pub fn stdinReader(self: *@This()) *std.Io.File.Reader {
         return &self.stdin_reader;
     }
-};
 
-/// Environment variable access.
-/// Reads from the process environment. Can be overridden for testing.
-pub const Environment = struct {
-    allocator: std.mem.Allocator,
-    overrides: std.StringHashMap([]const u8),
-
-    pub fn init(allocator: std.mem.Allocator) @This() {
-        return .{
-            .allocator = allocator,
-            .overrides = std.StringHashMap([]const u8).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *@This()) void {
-        self.overrides.deinit();
-    }
-
-    /// Get an environment variable. Checks overrides first, then process environment.
-    pub fn get(self: *@This(), key: []const u8) ?[]const u8 {
-        // Check overrides first (for testing)
-        if (self.overrides.get(key)) |val| return val;
-        // Fall back to real environment
-        return std.posix.getenv(key);
-    }
-
-    /// Set an override (useful for testing).
-    pub fn put(self: *@This(), key: []const u8, value: []const u8) !void {
-        try self.overrides.put(key, value);
+    /// Flush stdout and stderr writers. Must be called before exit
+    /// to ensure buffered output reaches the terminal.
+    pub fn flush(self: *@This()) void {
+        self.stdout().flush() catch {};
+        self.stderr().flush() catch {};
     }
 };
+
+/// Environ.Map re-export for convenience.
+pub const EnvironMap = std.process.Environ.Map;
 
 // Re-export registry types for user convenience
 pub const Registry = registry.Registry;
@@ -605,7 +569,7 @@ test "Context creation" {
     const allocator = testing.allocator;
 
     // Just verify the Context struct can be created
-    var io = IO.init();
+    var io = IO.init(std.testing.io);
     io.finalize();
 
     var context = Context.init(allocator, &io);
@@ -629,7 +593,7 @@ test "TestContext with plugins" {
     };
 
     const Ctx = TestContext(&.{MockPlugin});
-    var io = IO.init();
+    var io = IO.init(std.testing.io);
     io.finalize();
 
     var ctx = Ctx.init(allocator, &io);
@@ -650,7 +614,7 @@ test "TestContext without plugins" {
     const allocator = testing.allocator;
 
     const Ctx = TestContext(&.{});
-    var io = IO.init();
+    var io = IO.init(std.testing.io);
     io.finalize();
 
     var ctx = Ctx.init(allocator, &io);
@@ -706,7 +670,7 @@ test "global options with different types" {
 
     // Test parsing and handling of different option types
     const args = [_][]const u8{ "--verbose", "--count", "42", "--output", "file.txt", "global-test" };
-    try app.execute(testing.allocator, &args);
+    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
 
     // Note: Since execute() creates its own context, we can't easily verify the option values.
     // The test passes if it completes without hanging, confirming static state conflicts are resolved.
@@ -751,7 +715,7 @@ test "global options short flags" {
 
     // Test short flags
     const args = [_][]const u8{ "-v", "-q", "global-test" };
-    try app.execute(testing.allocator, &args);
+    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
 
     // Note: Since execute() creates its own context, we can't verify the option values.
     // The test passes if it completes without hanging.
@@ -801,7 +765,7 @@ test "commands inherit global options" {
 
     // Test that command sees global options
     const args = [_][]const u8{ "--config", "/custom/path", "--debug", "global-test", "--local" };
-    try app.execute(testing.allocator, &args);
+    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
 
     // Note: Since execute() creates its own context, we can't verify the global option values.
     // The test passes if it completes without hanging.
@@ -854,7 +818,7 @@ test "global option defaults" {
 
     // Execute without providing the options (should use defaults)
     const args = [_][]const u8{"global-test"};
-    try app.execute(testing.allocator, &args);
+    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
 
     // Note: Test passes if it completes without hanging (defaults would be handled internally).
 }
@@ -912,7 +876,7 @@ test "multiple plugins with global options" {
 
     // Test that both plugins' options work
     const args = [_][]const u8{ "--plugin1-opt", "--plugin2-opt", "global-test" };
-    try app.execute(testing.allocator, &args);
+    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
 
     // Note: Since execute() creates its own context, we can't verify the called states.
     // The test passes if it completes without hanging.
@@ -967,7 +931,7 @@ test "global options consumed before command" {
 
     // Global options should be consumed and not passed to command
     const args = [_][]const u8{ "--global", "global-test", "myarg", "--local" };
-    try app.execute(testing.allocator, &args);
+    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
 
     // Note: Since execute() creates its own context, we can't verify the argument processing.
     // The test passes if it completes without hanging, confirming global options are handled.

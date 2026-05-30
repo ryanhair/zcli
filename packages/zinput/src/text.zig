@@ -39,7 +39,7 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
 
     // TTY: raw mode character-by-character input
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.fs.File.stdin().handle) catch {
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         // Fallback if raw mode fails
         try writer.writeAll("\n");
         return try allocator.dupe(u8, config.default orelse "");
@@ -49,7 +49,7 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
         zinput.flushWriter(writer);
     }
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     while (true) {
@@ -85,7 +85,7 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
 
 /// Read a line from a reader byte by byte until newline.
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
         const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);
@@ -104,11 +104,11 @@ test "TextConfig defaults" {
 test "text: non-TTY reads user input" {
     const allocator = std.testing.allocator;
     var input = "hello world\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(writer_stream.writer(), reader_stream.reader(), allocator, .{
+    const result = try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
     });
     defer allocator.free(result);
@@ -119,11 +119,11 @@ test "text: non-TTY reads user input" {
 test "text: non-TTY uses default on empty input" {
     const allocator = std.testing.allocator;
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(writer_stream.writer(), reader_stream.reader(), allocator, .{
+    const result = try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
         .default = "world",
     });
@@ -135,11 +135,11 @@ test "text: non-TTY uses default on empty input" {
 test "text: non-TTY uses default on EOF" {
     const allocator = std.testing.allocator;
     var input = "".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(writer_stream.writer(), reader_stream.reader(), allocator, .{
+    const result = try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
         .default = "fallback",
     });
@@ -151,17 +151,17 @@ test "text: non-TTY uses default on EOF" {
 test "text: prompt message appears in output" {
     const allocator = std.testing.allocator;
     var input = "test\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(writer_stream.writer(), reader_stream.reader(), allocator, .{
+    const result = try text(&output_writer, &input_reader, allocator, .{
         .message = "Enter name:",
         .default = "foo",
     });
     defer allocator.free(result);
 
-    const written = writer_stream.getWritten();
+    const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "Enter name:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "(foo)") != null);
 }

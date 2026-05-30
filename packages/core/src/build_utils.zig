@@ -46,7 +46,7 @@ const PluginTestHelper = struct {
     fn init(allocator: std.mem.Allocator) PluginTestHelper {
         return .{
             .allocator = allocator,
-            .plugins = std.ArrayList(PluginInfo){},
+            .plugins = std.ArrayList(PluginInfo).empty,
         };
     }
 
@@ -513,7 +513,7 @@ test "error pipeline with multiple transformers" {
     const Pipeline2 = IntegrationPlugin2.transformError(TestBaseHandler);
     const Pipeline1 = IntegrationPlugin1.transformError(Pipeline2);
 
-    var messages = std.ArrayList([]const u8){};
+    var messages = std.ArrayList([]const u8).empty;
     defer messages.deinit(allocator);
 
     const ctx = struct {
@@ -635,7 +635,7 @@ test "generated code structure validation" {
     const allocator = std.testing.allocator;
 
     // Create test plugin info
-    var plugins = std.ArrayList(PluginInfo){};
+    var plugins = std.ArrayList(PluginInfo).empty;
     defer plugins.deinit(allocator);
 
     try plugins.append(allocator, .{
@@ -715,12 +715,12 @@ test "memory management in pipelines" {
     const ctx = struct {
         allocator: std.mem.Allocator,
         io: struct {
-            stderr: std.io.AnyWriter,
+            stderr: std.Io.Writer,
         },
     }{
         .allocator = allocator,
         .io = .{
-            .stderr = std.io.null_writer.any(),
+            .stderr = std.Io.Writer{ .buffer = &.{}, .vtable = &.{ .drain = undefined, .flush = undefined, .rebase = undefined } },
         },
     };
 
@@ -753,11 +753,11 @@ test "plugin error propagation" {
 
     const ctx = struct {
         io: struct {
-            stderr: std.io.AnyWriter,
+            stderr: std.Io.Writer,
         },
     }{
         .io = .{
-            .stderr = std.io.null_writer.any(),
+            .stderr = std.Io.Writer{ .buffer = &.{}, .vtable = &.{ .drain = undefined, .flush = undefined, .rebase = undefined } },
         },
     };
 

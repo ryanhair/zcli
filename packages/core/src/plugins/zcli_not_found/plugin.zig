@@ -14,7 +14,7 @@ pub fn onError(
     if (err == error.CommandNotFound) {
         // Get available commands and filter out hidden ones
         const all_command_info = context.getAvailableCommandInfo();
-        var visible_commands = std.ArrayList([]const []const u8){};
+        var visible_commands = std.ArrayList([]const []const u8).empty;
         defer visible_commands.deinit(context.allocator);
 
         for (all_command_info) |cmd_info| {
@@ -57,7 +57,7 @@ fn generateCommandNotFoundHelp(
     }
 
     // Convert hierarchical commands to flat strings for suggestion processing
-    var flat_commands = std.ArrayList([]const u8){};
+    var flat_commands = std.ArrayList([]const u8).empty;
     defer {
         for (flat_commands.items) |cmd| {
             context.allocator.free(cmd);

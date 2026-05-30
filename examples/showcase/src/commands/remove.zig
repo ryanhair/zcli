@@ -16,7 +16,7 @@ pub const Options = struct {};
 
 pub fn execute(args: Args, _: Options, context: anytype) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator);
+    var parsed = try store.load(allocator, context.io.io);
     defer parsed.deinit();
     var data = parsed.value;
 
@@ -25,10 +25,8 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
         return;
     };
 
-    var stdout_writer = std.fs.File.stdout().writer(&.{});
-    const writer = &stdout_writer.interface;
-    var stdin_reader = std.fs.File.stdin().reader(&.{});
-    const reader = &stdin_reader.interface;
+        const writer = context.stdout();
+        const reader = context.stdin();
 
     const msg = try std.fmt.allocPrint(allocator, "Remove task #{d}: {s}?", .{ task.id, task.title });
     defer allocator.free(msg);
@@ -44,13 +42,13 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
     }
 
     // Filter out the task
-    var remaining = std.ArrayList(store.Task){};
+    var remaining = std.ArrayList(store.Task).empty;
     defer remaining.deinit(allocator);
     for (data.tasks) |t| {
         if (t.id != args.id) try remaining.append(allocator, t);
     }
     data.tasks = remaining.items;
-    try store.save(allocator, data);
+    try store.save(allocator, context.io.io, data);
 
     try ztheme.theme("✖").err().render(context.stdout(), &context.theme);
     try context.stdout().print(" Removed task #{d}\n", .{args.id});

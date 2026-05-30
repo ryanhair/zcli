@@ -29,17 +29,17 @@ pub const ArrayListUnion = union(enum) {
 /// Uses comptime to eliminate repetition and ensure type safety
 pub fn createArrayListUnion(comptime ElementType: type) ArrayListUnion {
     return switch (ElementType) {
-        []const u8 => .{ .strings = std.ArrayList([]const u8){} },
-        i32 => .{ .i32s = std.ArrayList(i32){} },
-        u32 => .{ .u32s = std.ArrayList(u32){} },
-        i16 => .{ .i16s = std.ArrayList(i16){} },
-        u16 => .{ .u16s = std.ArrayList(u16){} },
-        i8 => .{ .i8s = std.ArrayList(i8){} },
-        u8 => .{ .u8s = std.ArrayList(u8){} },
-        i64 => .{ .i64s = std.ArrayList(i64){} },
-        u64 => .{ .u64s = std.ArrayList(u64){} },
-        f32 => .{ .f32s = std.ArrayList(f32){} },
-        f64 => .{ .f64s = std.ArrayList(f64){} },
+        []const u8 => .{ .strings = std.ArrayList([]const u8).empty },
+        i32 => .{ .i32s = std.ArrayList(i32).empty },
+        u32 => .{ .u32s = std.ArrayList(u32).empty },
+        i16 => .{ .i16s = std.ArrayList(i16).empty },
+        u16 => .{ .u16s = std.ArrayList(u16).empty },
+        i8 => .{ .i8s = std.ArrayList(i8).empty },
+        u8 => .{ .u8s = std.ArrayList(u8).empty },
+        i64 => .{ .i64s = std.ArrayList(i64).empty },
+        u64 => .{ .u64s = std.ArrayList(u64).empty },
+        f32 => .{ .f32s = std.ArrayList(f32).empty },
+        f64 => .{ .f64s = std.ArrayList(f64).empty },
         else => @compileError("Unsupported array element type: " ++ @typeName(ElementType)),
     };
 }

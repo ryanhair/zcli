@@ -394,12 +394,12 @@ test "parse markdown inside semantic tags" {
 
 test "write with semantic tags and runtime values" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const writer = fbs.writer();
+    var writer: std.Io.Writer = .fixed(&buf);
+    
 
-    try write(writer, "<success>Processed **{d}** items</success>", .{42});
+    try write(&writer, "<success>Processed **{d}** items</success>", .{42});
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "42") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") != null); // Semantic color
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[1m") != null); // Bold
@@ -407,12 +407,12 @@ test "write with semantic tags and runtime values" {
 
 test "formatter basic usage" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = formatter(fbs.writer());
+    var fmt = formatter(&writer);
     try fmt.write("Build **{s}** in *{d}s*", .{ "completed", 12 });
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "completed") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "12") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[1m") != null); // Bold
@@ -420,12 +420,12 @@ test "formatter basic usage" {
 
 test "formatter with semantic tags" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = formatter(fbs.writer());
+    var fmt = formatter(&writer);
     try fmt.write("<success>**{d}** tests passed</success>", .{42});
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "42") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") != null); // Semantic color
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[1m") != null); // Bold
@@ -433,16 +433,16 @@ test "formatter with semantic tags" {
 
 test "formatter with custom palette" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
     const custom_palette = SemanticPalette{
         .success = .{ .r = 255, .g = 0, .b = 0 }, // Red instead of green
     };
 
-    var fmt = formatterWithPalette(fbs.writer(), custom_palette);
+    var fmt = formatterWithPalette(&writer, custom_palette);
     try fmt.write("<success>Custom color</success>", .{});
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     // Should contain custom red color (255, 0, 0)
     try std.testing.expect(std.mem.indexOf(u8, output, "255;0;0") != null);
 }
@@ -450,9 +450,9 @@ test "formatter with custom palette" {
 test "formatter print method" {
     const allocator = std.testing.allocator;
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    const fmt = formatter(fbs.writer());
+    const fmt = formatter(&writer);
     const result = try fmt.print(allocator, "<error>**{s}**</error>", .{"failed"});
     defer allocator.free(result);
 
@@ -462,24 +462,24 @@ test "formatter print method" {
 
 test "capability formatter no color" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = capabilityFormatter(fbs.writer(), .no_color);
+    var fmt = capabilityFormatter(&writer, .no_color);
     try fmt.write("<success>**{d}** tests passed</success>", .{42});
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "42") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null); // No ANSI codes
 }
 
 test "capability formatter ansi 16" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = capabilityFormatter(fbs.writer(), .ansi_16);
+    var fmt = capabilityFormatter(&writer, .ansi_16);
     try fmt.write("<success>passed</success>", .{});
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "passed") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null); // Has ANSI
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") == null); // No RGB
@@ -487,12 +487,12 @@ test "capability formatter ansi 16" {
 
 test "capability formatter true color" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = capabilityFormatter(fbs.writer(), .true_color);
+    var fmt = capabilityFormatter(&writer, .true_color);
     try fmt.write("<success>passed</success>", .{});
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "passed") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") != null); // RGB codes
 }
@@ -756,9 +756,9 @@ test "runtime interpolation in complex document" {
 
 test "formatter with complex document" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = formatter(fbs.writer());
+    var fmt = formatter(&writer);
 
     const markdown =
         \\# Status: **{s}**
@@ -775,7 +775,7 @@ test "formatter with complex document" {
 
     try fmt.write(markdown, .{ "OK", 1000, 5 });
 
-    const output = fbs.getWritten();
+    const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "OK") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "1000") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "5") != null);

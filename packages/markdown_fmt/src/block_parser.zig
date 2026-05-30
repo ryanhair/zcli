@@ -64,7 +64,7 @@ pub fn parseBlocks(comptime markdown: []const u8) []const Block {
 
             // Check for heading (# through ######)
             if (detectHeading(line)) |heading_level| {
-                const content = std.mem.trimLeft(u8, line[heading_level..], " ");
+                const content = std.mem.trimStart(u8, line[heading_level..], " ");
                 blocks = blocks ++ &[_]Block{.{
                     .type = .heading,
                     .content = content,
@@ -114,7 +114,7 @@ pub fn parseBlocks(comptime markdown: []const u8) []const Block {
 
             // Check for blockquote (> text)
             if (std.mem.startsWith(u8, line, ">")) {
-                const content = std.mem.trimLeft(u8, line[1..], " ");
+                const content = std.mem.trimStart(u8, line[1..], " ");
                 blocks = blocks ++ &[_]Block{.{
                     .type = .blockquote,
                     .content = content,
@@ -125,7 +125,7 @@ pub fn parseBlocks(comptime markdown: []const u8) []const Block {
             // Check for unordered list (-, *, +)
             if (line.len >= 2 and (line[0] == '-' or line[0] == '*' or line[0] == '+') and line[1] == ' ') {
                 const nesting = countLeadingSpaces(line) / 2;
-                const content = std.mem.trimLeft(u8, line[2..], " ");
+                const content = std.mem.trimStart(u8, line[2..], " ");
                 blocks = blocks ++ &[_]Block{.{
                     .type = .unordered_list_item,
                     .content = content,

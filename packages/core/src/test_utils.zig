@@ -41,18 +41,10 @@ pub const CommandResult = struct {
     term: vterm.VTerm,
     allocator: std.mem.Allocator,
 
-    // Internal state for cleanup
-    _stdout_file: std.fs.File,
-    _stderr_file: std.fs.File,
-    _tmp_dir: std.testing.TmpDir,
-
     pub fn deinit(self: *CommandResult) void {
         self.term.deinit();
         self.allocator.free(self.stdout);
         self.allocator.free(self.stderr);
-        self._stdout_file.close();
-        self._stderr_file.close();
-        self._tmp_dir.cleanup();
     }
 };
 
@@ -71,28 +63,22 @@ pub fn runCommand(
 ) !CommandResult {
     const allocator = config.allocator;
 
-    // Create temp files for capturing output
-    var tmp_dir = std.testing.tmpDir(.{});
-    errdefer tmp_dir.cleanup();
+    // Capture output using allocating writers
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer stderr_aw.deinit();
 
-    var stdout_file = try tmp_dir.dir.createFile("stdout", .{ .read = true });
-    errdefer stdout_file.close();
-    var stderr_file = try tmp_dir.dir.createFile("stderr", .{ .read = true });
-    errdefer stderr_file.close();
-
-    // Create IO with temp file writers
-    var io = zcli.IO{
-        .stdout_writer = stdout_file.writer(&.{}),
-        .stderr_writer = stderr_file.writer(&.{}),
-        .stdin_reader = std.fs.File.stdin().reader(&.{}),
-    };
+    // Create IO with overrides for capturing
+    var io = zcli.IO.init(std.testing.io);
+    io.stdout_override = &stdout_aw.writer;
+    io.stderr_override = &stderr_aw.writer;
 
     // Create context with plugins
     const Ctx = zcli.TestContext(plugins);
     var context = Ctx{
         .allocator = allocator,
         .io = &io,
-        .environment = zcli.Environment.init(allocator),
     };
     defer context.deinit();
 
@@ -104,17 +90,12 @@ pub fn runCommand(
         err = e;
     };
 
-    // Flush writers
-    io.stdout().flush() catch {};
-    io.stderr().flush() catch {};
-
-    // Read captured output
-    try stdout_file.seekTo(0);
-    const stdout_content = try stdout_file.readToEndAlloc(allocator, 1024 * 1024);
+    // Get captured output
+    var stdout_al = stdout_aw.toArrayList();
+    const stdout_content = try stdout_al.toOwnedSlice(allocator);
     errdefer allocator.free(stdout_content);
-
-    try stderr_file.seekTo(0);
-    const stderr_content = try stderr_file.readToEndAlloc(allocator, 1024 * 1024);
+    var stderr_al = stderr_aw.toArrayList();
+    const stderr_content = try stderr_al.toOwnedSlice(allocator);
     errdefer allocator.free(stderr_content);
 
     // Feed stdout through virtual terminal for rich assertions
@@ -129,9 +110,6 @@ pub fn runCommand(
         .err = err,
         .term = term,
         .allocator = allocator,
-        ._stdout_file = stdout_file,
-        ._stderr_file = stderr_file,
-        ._tmp_dir = tmp_dir,
     };
 }
 

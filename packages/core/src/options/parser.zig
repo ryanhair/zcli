@@ -1284,9 +1284,9 @@ pub fn parseOptionsAndArgs(
     args: []const []const u8,
 ) ZcliError!ParseOptionsAndArgsResult(OptionsType) {
     // Lists to collect options and remaining args
-    var option_args = std.ArrayList([]const u8){};
+    var option_args = std.ArrayList([]const u8).empty;
     defer option_args.deinit(allocator);
-    var remaining_args = std.ArrayList([]const u8){};
+    var remaining_args = std.ArrayList([]const u8).empty;
     defer remaining_args.deinit(allocator);
 
     var i: usize = 0;

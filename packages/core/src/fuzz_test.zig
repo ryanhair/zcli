@@ -240,8 +240,8 @@ pub const FuzzTesting = struct {
     }
 
     /// Performance stress testing with random inputs
-    pub fn fuzzPerformanceStress(random: std.Random, allocator: std.mem.Allocator) !void {
-        var timer = try std.time.Timer.start();
+    pub fn fuzzPerformanceStress(random: std.Random, allocator: std.mem.Allocator, io: std.Io) !void {
+        var start = std.Io.Timestamp.now(io, .awake);
 
         // Test many small parses
         const small_iterations = 10000;
@@ -253,10 +253,10 @@ pub const FuzzTesting = struct {
             _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
         }
 
-        const small_time = timer.read();
+        const small_time = start.untilNow(io, .awake).nanoseconds;
 
         // Test few large parses
-        timer.reset();
+        start = std.Io.Timestamp.now(io, .awake);
         const large_iterations = 10;
         for (0..large_iterations) |_| {
             const arg = try generateRandomString(random, allocator, 1000);
@@ -266,7 +266,7 @@ pub const FuzzTesting = struct {
             _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
         }
 
-        const large_time = timer.read();
+        const large_time = start.untilNow(io, .awake).nanoseconds;
 
         std.log.info("Performance: {} small parses in {} ns, {} large parses in {} ns", .{
             small_iterations,
@@ -323,7 +323,7 @@ test "fuzz: performance stress testing" {
     const random = prng.random();
     const allocator = testing.allocator;
 
-    try FuzzTesting.fuzzPerformanceStress(random, allocator);
+    try FuzzTesting.fuzzPerformanceStress(random, allocator, std.testing.io);
 }
 
 // ============================================================================

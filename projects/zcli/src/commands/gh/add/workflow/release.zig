@@ -17,26 +17,27 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
     var stderr = context.stderr();
 
     // Verify we're in a zcli project
-    const cwd = std.fs.cwd();
-    cwd.access("src/commands", .{}) catch {
+    const cwd = std.Io.Dir.cwd();
+    const io = context.io.io;
+    cwd.access(io, "src/commands", .{}) catch {
         try stderr.print("Error: Not in a zcli project directory\n", .{});
         try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
         return error.NotInZcliProject;
     };
 
     // Create .github/workflows directory
-    cwd.makeDir(".github") catch |err| switch (err) {
+    cwd.createDir(io, ".github", .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
-    cwd.makeDir(".github/workflows") catch |err| switch (err) {
+    cwd.createDir(io, ".github/workflows", .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
     // Check if workflow already exists
-    cwd.access(".github/workflows/release.yml", .{}) catch |err| switch (err) {
+    cwd.access(io, ".github/workflows/release.yml", .{}) catch |err| switch (err) {
         error.FileNotFound => {}, // Good
         else => {
             try stderr.print("Error: .github/workflows/release.yml already exists\n", .{});
@@ -161,9 +162,9 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         \\
     ;
 
-    var workflow_file = try cwd.createFile(".github/workflows/release.yml", .{});
-    defer workflow_file.close();
-    try workflow_file.writeAll(workflow_content);
+    var workflow_file = try cwd.createFile(io, ".github/workflows/release.yml", .{});
+    defer workflow_file.close(io);
+    try workflow_file.writeStreamingAll(io, workflow_content);
 
     try stdout.print("✓ Created .github/workflows/release.yml\n\n", .{});
     try stdout.print("Next steps:\n", .{});

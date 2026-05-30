@@ -8,9 +8,9 @@ pub fn generate(
     commands: []const zcli.CommandInfo,
     global_options: []const zcli.OptionInfo,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8){};
-    errdefer buf.deinit(allocator);
-    const writer = buf.writer(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
 
     // Header comment
     try writer.print("# bash completion for {s}\n", .{app_name});
@@ -101,7 +101,7 @@ pub fn generate(
         const depth = cmd.path.len;
         const entry = try depth_map.getOrPut(depth);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList([]const u8){};
+            entry.value_ptr.* = std.ArrayList([]const u8).empty;
         }
 
         // Get the command name at this level
@@ -110,7 +110,7 @@ pub fn generate(
     }
 
     // Sort depths for consistent output
-    var depths = std.ArrayList(usize){};
+    var depths = std.ArrayList(usize).empty;
     defer depths.deinit(allocator);
     var depth_it = depth_map.keyIterator();
     while (depth_it.next()) |depth| {
@@ -154,7 +154,7 @@ pub fn generate(
                 if (cmd.path.len != depth) continue;
 
                 // Build parent path string
-                var parent_path = std.ArrayList(u8){};
+                var parent_path = std.ArrayList(u8).empty;
                 defer parent_path.deinit(allocator);
                 for (cmd.path[0 .. depth - 1], 0..) |part, idx| {
                     if (idx > 0) try parent_path.append(allocator, ' ');
@@ -164,7 +164,7 @@ pub fn generate(
                 const parent_key = try allocator.dupe(u8, parent_path.items);
                 const entry = try parent_map.getOrPut(parent_key);
                 if (!entry.found_existing) {
-                    entry.value_ptr.* = std.ArrayList([]const u8){};
+                    entry.value_ptr.* = std.ArrayList([]const u8).empty;
                 } else {
                     allocator.free(parent_key);
                 }
@@ -201,5 +201,5 @@ pub fn generate(
     // Register completion
     try writer.print("complete -F _{s}_completions {s}\n", .{ app_name, app_name });
 
-    return buf.toOwnedSlice(allocator);
+    var al = aw.toArrayList(); return al.toOwnedSlice(allocator);
 }

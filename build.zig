@@ -51,9 +51,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Third-party parser modules
-    const yaml_dep = b.dependency("yaml", .{ .target = target, .optimize = optimize });
-    const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
+    // Third-party serialization module
+    const serde_dep = b.dependency("serde", .{ .target = target, .optimize = optimize });
 
     // Export the zcli module from core package for external projects
     const zcli_module = b.addModule("zcli", .{
@@ -66,8 +65,7 @@ pub fn build(b: *std.Build) void {
     zcli_module.addImport("zprogress", zprogress_module);
     zcli_module.addImport("zinput", zinput_module);
     zcli_module.addImport("vterm", vterm_module);
-    zcli_module.addImport("yaml", yaml_dep.module("yaml"));
-    zcli_module.addImport("toml", toml_dep.module("toml"));
+    zcli_module.addImport("serde", serde_dep.module("serde"));
 
     // Define the project directories that have tests
     const ProjectInfo = struct {
@@ -79,7 +77,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "core", .path = "packages/core" },
         .{ .name = "testing", .path = "packages/testing" },
         .{ .name = "vterm", .path = "packages/vterm" },
-        .{ .name = "interactive", .path = "packages/interactive" },
         .{ .name = "markdown_fmt", .path = "packages/markdown_fmt" },
         .{ .name = "zprogress", .path = "packages/zprogress" },
         .{ .name = "terminal", .path = "packages/terminal" },

@@ -52,17 +52,17 @@ test "semantic methods support chaining" {
 // Test that semantic colors produce output
 test "semantic methods produce colored output" {
     const allocator = testing.allocator;
-    var theme_ctx = Theme.initWithCapability(.ansi_16);
+    var theme_ctx = Theme.initWithCapability(.ansi_16, std.testing.io);
     theme_ctx.color_enabled = true;
 
     // Test success (should use green-ish color)
     {
         const success_text = theme("OK").success();
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        try success_text.render(buf.writer(allocator), &theme_ctx);
+        var buf_aw: std.Io.Writer.Allocating = .init(allocator);
+        defer buf_aw.deinit();
+        try success_text.render(&buf_aw.writer, &theme_ctx);
 
-        const output = buf.items;
+        const output = buf_aw.writer.buffer[0..buf_aw.writer.end];
         // Should contain ANSI escape codes
         try testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
         // Should contain the text
@@ -74,11 +74,11 @@ test "semantic methods produce colored output" {
     // Test error (should use red-ish color)
     {
         const error_text = theme("FAIL").err(); // 'error' is reserved
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        try error_text.render(buf.writer(allocator), &theme_ctx);
+        var buf_aw: std.Io.Writer.Allocating = .init(allocator);
+        defer buf_aw.deinit();
+        try error_text.render(&buf_aw.writer, &theme_ctx);
 
-        const output = buf.items;
+        const output = buf_aw.writer.buffer[0..buf_aw.writer.end];
         try testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
         try testing.expect(std.mem.indexOf(u8, output, "FAIL") != null);
         try testing.expect(std.mem.indexOf(u8, output, "\x1b[0m") != null);
@@ -88,15 +88,15 @@ test "semantic methods produce colored output" {
 // Test that semantic colors respect color disabled
 test "semantic methods respect color disabled" {
     const allocator = testing.allocator;
-    var theme_ctx = Theme.initWithCapability(.no_color);
+    var theme_ctx = Theme.initWithCapability(.no_color, std.testing.io);
 
     const success_text = theme("OK").success();
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-    try success_text.render(buf.writer(allocator), &theme_ctx);
+    var buf_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer buf_aw.deinit();
+    try success_text.render(&buf_aw.writer, &theme_ctx);
 
     // Should only contain the text, no escape codes
-    try testing.expectEqualStrings("OK", buf.items);
+    try testing.expectEqualStrings("OK", buf_aw.writer.buffer[0..buf_aw.writer.end]);
 }
 
 // Test compile-time semantic usage
@@ -107,9 +107,9 @@ test "semantic methods work at compile-time" {
     // Compile-time rendering with buffer
     const success_str = comptime blk: {
         var buf: [256]u8 = undefined;
-        var stream = std.io.fixedBufferStream(&buf);
-        success_comptime.renderComptime(stream.writer(), .ansi_16) catch unreachable;
-        const written = stream.getWritten();
+        var stream: std.Io.Writer = .fixed(&buf);
+        success_comptime.renderComptime(&stream, .ansi_16) catch unreachable;
+        const written = stream.buffer[0..stream.end];
         var result: [written.len]u8 = undefined;
         @memcpy(&result, written);
         break :blk result;
@@ -117,9 +117,9 @@ test "semantic methods work at compile-time" {
 
     const error_str = comptime blk: {
         var buf: [256]u8 = undefined;
-        var stream = std.io.fixedBufferStream(&buf);
-        error_comptime.renderComptime(stream.writer(), .ansi_16) catch unreachable;
-        const written = stream.getWritten();
+        var stream: std.Io.Writer = .fixed(&buf);
+        error_comptime.renderComptime(&stream, .ansi_16) catch unreachable;
+        const written = stream.buffer[0..stream.end];
         var result: [written.len]u8 = undefined;
         @memcpy(&result, written);
         break :blk result;

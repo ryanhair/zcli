@@ -6,8 +6,8 @@ const ztheme = @import("ztheme.zig");
 
 test "full integration: theme creation to rendering" {
     // Test complete flow from theme creation to rendered output
-    var buffer = std.ArrayList(u8){};
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     // Force a color-capable theme for testing (override TTY detection)
     const theme_ctx = ztheme.Theme{
@@ -23,23 +23,23 @@ test "full integration: theme creation to rendering" {
         .bold()
         .underline();
 
-    try complex_string.render(buffer.writer(testing.allocator), &theme_ctx);
+    try complex_string.render(&aw.writer, &theme_ctx);
 
     // Debug: check what we actually got
-    // std.debug.print("Buffer contents: '{s}' (len={})\n", .{ buffer.items, buffer.items.len });
+    // std.debug.print("Buffer contents: '{s}' (len={})\n", .{ aw.writer.buffer[0..aw.writer.end], aw.writer.buffer[0..aw.writer.end].len });
     // std.debug.print("Theme capability: {s}\n", .{theme_ctx.capabilityString()});
 
     // Should contain the actual text
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Critical Error!") != null);
+    try testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "Critical Error!") != null);
 
     // Should be longer than just the text (due to styling)
-    try testing.expect(buffer.items.len > 15);
+    try testing.expect(aw.writer.buffer[0..aw.writer.end].len > 15);
 }
 
 test "cross-capability rendering consistency" {
     // Test that different capabilities produce consistent results
-    var buffer = std.ArrayList(u8){};
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const styled_text = ztheme.theme("Hello World").green().bold();
 
@@ -47,53 +47,53 @@ test "cross-capability rendering consistency" {
     const capabilities = [_]ztheme.TerminalCapability{ .no_color, .ansi_16, .ansi_256, .true_color };
 
     for (capabilities) |cap| {
-        buffer.clearRetainingCapacity();
+        aw.writer.end = 0;
         const theme_ctx = ztheme.Theme{
             .capability = cap,
             .is_tty = true,
             .color_enabled = cap != .no_color,
         };
 
-        try styled_text.render(buffer.writer(testing.allocator), &theme_ctx);
+        try styled_text.render(&aw.writer, &theme_ctx);
 
         // All should contain the content
-        try testing.expect(std.mem.indexOf(u8, buffer.items, "Hello World") != null);
+        try testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "Hello World") != null);
 
         // No-color should have minimal length
         if (cap == .no_color) {
-            try testing.expect(buffer.items.len == 11); // Just "Hello World"
+            try testing.expect(aw.writer.buffer[0..aw.writer.end].len == 11); // Just "Hello World"
         } else {
-            try testing.expect(buffer.items.len > 11); // Has escape sequences
+            try testing.expect(aw.writer.buffer[0..aw.writer.end].len > 11); // Has escape sequences
         }
     }
 }
 
 test "memory safety with different content types" {
     // Test that themed wrapper works safely with various Zig types
-    const theme_ctx = ztheme.Theme.init(testing.allocator);
-    var buffer = std.ArrayList(u8){};
-    defer buffer.deinit(testing.allocator);
+    const theme_ctx = ztheme.Theme.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     // Test with integer
     const int_themed = ztheme.theme(@as(i32, -42)).red();
-    try int_themed.render(buffer.writer(testing.allocator), &theme_ctx);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "-42") != null or
-        std.mem.indexOf(u8, buffer.items, "42") != null);
+    try int_themed.render(&aw.writer, &theme_ctx);
+    try testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "-42") != null or
+        std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "42") != null);
 
-    buffer.clearRetainingCapacity();
+    aw.writer.end = 0;
 
     // Test with float
     const float_themed = ztheme.theme(@as(f32, 3.14)).blue();
-    try float_themed.render(buffer.writer(testing.allocator), &theme_ctx);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "3.14") != null or
-        std.mem.indexOf(u8, buffer.items, "3") != null);
+    try float_themed.render(&aw.writer, &theme_ctx);
+    try testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "3.14") != null or
+        std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "3") != null);
 
-    buffer.clearRetainingCapacity();
+    aw.writer.end = 0;
 
     // Test with boolean
     const bool_themed = ztheme.theme(true).green();
-    try bool_themed.render(buffer.writer(testing.allocator), &theme_ctx);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "true") != null);
+    try bool_themed.render(&aw.writer, &theme_ctx);
+    try testing.expect(std.mem.indexOf(u8, aw.writer.buffer[0..aw.writer.end], "true") != null);
 }
 
 test "style composition and interaction" {
@@ -115,11 +115,11 @@ test "style composition and interaction" {
 
 test "compile-time vs runtime equivalence" {
     // Test that compile-time and runtime paths produce equivalent results
-    var comptime_buffer = std.ArrayList(u8){};
-    defer comptime_buffer.deinit(testing.allocator);
+    var ct_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer ct_aw.deinit();
 
-    var runtime_buffer = std.ArrayList(u8){};
-    defer runtime_buffer.deinit(testing.allocator);
+    var rt_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer rt_aw.deinit();
 
     const styled = comptime ztheme.theme("CompTime Test").red().bold();
     const theme_ctx = ztheme.Theme{
@@ -129,14 +129,14 @@ test "compile-time vs runtime equivalence" {
     };
 
     // Compile-time rendering
-    try styled.renderComptime(comptime_buffer.writer(testing.allocator), .ansi_16);
+    try styled.renderComptime(&ct_aw.writer, .ansi_16);
 
     // Runtime rendering
-    try styled.render(runtime_buffer.writer(testing.allocator), &theme_ctx);
+    try styled.render(&rt_aw.writer, &theme_ctx);
 
-    // Both should contain the content (exact sequences may differ due to implementation)
-    try testing.expect(std.mem.indexOf(u8, comptime_buffer.items, "CompTime Test") != null);
-    try testing.expect(std.mem.indexOf(u8, runtime_buffer.items, "CompTime Test") != null);
+    // Both should contain the content
+    try testing.expect(std.mem.indexOf(u8, ct_aw.writer.buffer[0..ct_aw.writer.end], "CompTime Test") != null);
+    try testing.expect(std.mem.indexOf(u8, rt_aw.writer.buffer[0..rt_aw.writer.end], "CompTime Test") != null);
 }
 
 test "error handling and edge cases" {
@@ -144,7 +144,7 @@ test "error handling and edge cases" {
 
     // Test toString with empty content
     const empty_themed = ztheme.theme("");
-    const theme_ctx = ztheme.Theme.init(testing.allocator);
+    const theme_ctx = ztheme.Theme.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
     const result = try empty_themed.toString(testing_allocator, &theme_ctx);
     defer testing_allocator.free(result);
 
@@ -168,15 +168,15 @@ test "error handling and edge cases" {
 
 test "platform detection integration" {
     // Test that platform-specific detection functions work in integration
-    const windows_cap = ztheme.TerminalCapability.detectWindows(testing.allocator);
-    const unix_cap = ztheme.TerminalCapability.detectUnix(testing.allocator);
-    const generic_cap = ztheme.TerminalCapability.detectGeneric(testing.allocator);
+    const windows_cap = ztheme.TerminalCapability.detectWindows(&(std.process.Environ.Map.init(testing.allocator)));
+    const unix_cap = ztheme.TerminalCapability.detectUnix(&(std.process.Environ.Map.init(testing.allocator)));
+    const generic_cap = ztheme.TerminalCapability.detectGeneric(&(std.process.Environ.Map.init(testing.allocator)));
 
     // All should be valid capabilities
     const valid_caps = [_]ztheme.TerminalCapability{ windows_cap, unix_cap, generic_cap };
 
     for (valid_caps) |cap| {
-        const theme_ctx = ztheme.Theme.initWithCapability(cap);
+        const theme_ctx = ztheme.Theme.initWithCapability(cap, std.testing.io);
 
         // Each should produce consistent behavior
         try testing.expect(@TypeOf(theme_ctx.supportsColor()) == bool);

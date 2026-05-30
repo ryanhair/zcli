@@ -9,6 +9,7 @@ pub const MultiSelectConfig = struct {
     choices: []const []const u8,
     defaults: ?[]const bool = null,
     prefix: []const u8 = "? ",
+    unicode: bool = true,
 };
 
 /// Prompt to select multiple items. Returns owned slice of selected indices.
@@ -32,7 +33,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
         if (line.len == 0) return collectDefaults(allocator, config);
 
         // Parse comma-separated numbers
-        var result = std.ArrayList(usize){};
+        var result = std.ArrayList(usize).empty;
         var iter = std.mem.splitScalar(u8, line, ',');
         while (iter.next()) |part| {
             const num_str = std.mem.trim(u8, part, " ");
@@ -46,7 +47,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
 
     // TTY: interactive multi-select
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.fs.File.stdin().handle) catch {
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         return collectDefaults(allocator, config);
     };
     try writer.writeAll(terminal.ansi.hide_cursor);
@@ -68,7 +69,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
 
     var cursor: usize = 0;
 
-    try renderMultiSelectList(writer, config.choices, selected, cursor);
+    try renderMultiSelectList(writer, config.choices, selected, cursor, config.unicode);
 
     while (true) {
         const k = try terminal.readKey(reader);
@@ -76,18 +77,18 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
             .up => {
                 if (cursor > 0) cursor -= 1;
                 try eraseList(writer, config.choices.len);
-                try renderMultiSelectList(writer, config.choices, selected, cursor);
+                try renderMultiSelectList(writer, config.choices, selected, cursor, config.unicode);
             },
             .down => {
                 if (cursor < config.choices.len - 1) cursor += 1;
                 try eraseList(writer, config.choices.len);
-                try renderMultiSelectList(writer, config.choices, selected, cursor);
+                try renderMultiSelectList(writer, config.choices, selected, cursor, config.unicode);
             },
             .char => |c| {
                 if (c == ' ') {
                     selected[cursor] = !selected[cursor];
                     try eraseList(writer, config.choices.len);
-                    try renderMultiSelectList(writer, config.choices, selected, cursor);
+                    try renderMultiSelectList(writer, config.choices, selected, cursor, config.unicode);
                 }
             },
             .enter => {
@@ -105,7 +106,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
                 try writer.writeAll("\x1b[0m\r\n");
 
                 // Collect selected indices
-                var result = std.ArrayList(usize){};
+                var result = std.ArrayList(usize).empty;
                 for (0..config.choices.len) |i| {
                     if (selected[i]) try result.append(allocator, i);
                 }
@@ -123,7 +124,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
         const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);
@@ -133,8 +134,7 @@ fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
     return try buf.toOwnedSlice(allocator);
 }
 
-fn renderMultiSelectList(writer: anytype, choices: []const []const u8, selected: []const bool, cursor: usize) !void {
-    const unicode = terminal.unicodeSupported();
+fn renderMultiSelectList(writer: anytype, choices: []const []const u8, selected: []const bool, cursor: usize, unicode: bool) !void {
     const sel_sym = terminal.symbols.selected(unicode);
     const unsel_sym = terminal.symbols.unselected(unicode);
     const cursor_sym = terminal.symbols.select_cursor(unicode);
@@ -155,7 +155,7 @@ fn eraseList(writer: anytype, count: usize) !void {
 }
 
 fn collectDefaults(allocator: std.mem.Allocator, config: MultiSelectConfig) ![]usize {
-    var result = std.ArrayList(usize){};
+    var result = std.ArrayList(usize).empty;
     if (config.defaults) |d| {
         for (0..@min(d.len, config.choices.len)) |i| {
             if (d[i]) try result.append(allocator, i);
@@ -172,11 +172,11 @@ test "MultiSelectConfig defaults" {
 test "non-TTY: selects by comma-separated numbers" {
     const allocator = std.testing.allocator;
     var input = "1,3\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try multiSelect(writer_stream.writer(), reader_stream.reader(), allocator, .{
+    const result = try multiSelect(&output_writer, &input_reader, allocator, .{
         .message = "Pick:",
         .choices = &.{ "a", "b", "c" },
     });
@@ -190,11 +190,11 @@ test "non-TTY: selects by comma-separated numbers" {
 test "non-TTY: empty input returns defaults" {
     const allocator = std.testing.allocator;
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try multiSelect(writer_stream.writer(), reader_stream.reader(), allocator, .{
+    const result = try multiSelect(&output_writer, &input_reader, allocator, .{
         .message = "Pick:",
         .choices = &.{ "a", "b", "c" },
         .defaults = &.{ true, false, true },
@@ -209,11 +209,11 @@ test "non-TTY: empty input returns defaults" {
 test "non-TTY: no defaults returns empty" {
     const allocator = std.testing.allocator;
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try multiSelect(writer_stream.writer(), reader_stream.reader(), allocator, .{
+    const result = try multiSelect(&output_writer, &input_reader, allocator, .{
         .message = "Pick:",
         .choices = &.{ "a", "b" },
     });

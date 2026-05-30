@@ -11,7 +11,10 @@ const DiscoveredCommands = types.DiscoveredCommands;
 // ============================================================================
 
 /// Build-time command discovery - scans filesystem directly
-pub fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) !DiscoveredCommands {
+pub fn discoverCommands(b: *std.Build, commands_dir: []const u8) !DiscoveredCommands {
+    const allocator = b.allocator;
+    const io = b.graph.io;
+
     // Security check: prevent directory traversal
     if (std.mem.indexOf(u8, commands_dir, "..") != null) {
         return error.InvalidPath;
@@ -21,13 +24,13 @@ pub fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) 
     errdefer commands.deinit();
 
     // Try to open the commands directory
-    var dir = std.fs.cwd().openDir(commands_dir, .{ .iterate = true }) catch |err| {
+    var dir = b.build_root.handle.openDir(io, commands_dir, .{ .iterate = true }) catch |err| {
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     const max_depth = 6; // Reasonable maximum nesting depth
-    try scanDirectory(allocator, dir, &commands.root, &.{}, 0, max_depth);
+    try scanDirectory(allocator, io, dir, &commands.root, &.{}, 0, max_depth);
 
     return commands;
 }
@@ -35,7 +38,8 @@ pub fn discoverCommands(allocator: std.mem.Allocator, commands_dir: []const u8) 
 /// Recursively scan a directory for commands
 fn scanDirectory(
     allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
+    io: std.Io,
+    dir: std.Io.Dir,
     commands: *std.StringHashMap(CommandInfo),
     current_path: []const []const u8, // Array of path components
     depth: u32,
@@ -51,7 +55,7 @@ fn scanDirectory(
     }
     var iterator = dir.iterate();
 
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(io)) |entry| {
         switch (entry.kind) {
             .file => {
                 if (std.mem.endsWith(u8, entry.name, ".zig")) {
@@ -69,7 +73,7 @@ fn scanDirectory(
                     }
 
                     // Build command path as array of components
-                    var path_list = std.ArrayList([]const u8){};
+                    var path_list = std.ArrayList([]const u8).empty;
                     defer path_list.deinit(allocator);
 
                     // Add current path components
@@ -80,7 +84,7 @@ fn scanDirectory(
                     try path_list.append(allocator, try allocator.dupe(u8, name_without_ext));
 
                     // Build filesystem path
-                    var fs_path_list = std.ArrayList([]const u8){};
+                    var fs_path_list = std.ArrayList([]const u8).empty;
                     defer fs_path_list.deinit(allocator);
                     for (current_path) |component| {
                         try fs_path_list.append(allocator, component);
@@ -110,17 +114,17 @@ fn scanDirectory(
                 }
 
                 // Open subdirectory
-                var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch {
+                var subdir = dir.openDir(io, entry.name, .{ .iterate = true }) catch {
                     logging.invalidCommandName(entry.name, "cannot access directory");
                     continue;
                 };
-                defer subdir.close();
+                defer subdir.close(io);
 
                 // Create subcommand map
                 var subcommands = std.StringHashMap(CommandInfo).init(allocator);
 
                 // Build new path as array of components
-                var new_path_list = std.ArrayList([]const u8){};
+                var new_path_list = std.ArrayList([]const u8).empty;
                 defer new_path_list.deinit(allocator);
 
                 // Add current path components
@@ -133,14 +137,14 @@ fn scanDirectory(
                 const new_path = try new_path_list.toOwnedSlice(allocator);
 
                 // Recursively scan subdirectory
-                try scanDirectory(allocator, subdir, &subcommands, new_path, depth + 1, max_depth);
+                try scanDirectory(allocator, io, subdir, &subcommands, new_path, depth + 1, max_depth);
 
-                const has_index = hasIndexFile(subdir);
+                const has_index = hasIndexFile(io, subdir);
 
                 // Only create group if it has subcommands or an index file
                 if (subcommands.count() > 0 or has_index) {
                     // Build filesystem path for group - point to index.zig if it exists
-                    var group_fs_path_list = std.ArrayList([]const u8){};
+                    var group_fs_path_list = std.ArrayList([]const u8).empty;
                     defer group_fs_path_list.deinit(allocator);
                     for (current_path) |component| {
                         try group_fs_path_list.append(allocator, component);
@@ -179,8 +183,8 @@ fn scanDirectory(
 }
 
 /// Check if directory has an index.zig file
-fn hasIndexFile(dir: std.fs.Dir) bool {
-    _ = dir.statFile("index.zig") catch return false;
+fn hasIndexFile(io: std.Io, dir: std.Io.Dir) bool {
+    _ = dir.statFile(io, "index.zig", .{}) catch return false;
     return true;
 }
 

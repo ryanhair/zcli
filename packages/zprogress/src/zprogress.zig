@@ -64,17 +64,17 @@ pub const SpinnerStyle = enum {
 
 /// Result symbols for spinner completion. Adapts to terminal unicode support.
 pub const ResultSymbol = struct {
-    pub fn success() []const u8 {
-        return terminal.symbols.success(terminal.unicodeSupported());
+    pub fn success(unicode: bool) []const u8 {
+        return terminal.symbols.success(unicode);
     }
-    pub fn failure() []const u8 {
-        return terminal.symbols.failure(terminal.unicodeSupported());
+    pub fn failure(unicode: bool) []const u8 {
+        return terminal.symbols.failure(unicode);
     }
-    pub fn warning() []const u8 {
-        return terminal.symbols.warning(terminal.unicodeSupported());
+    pub fn warning(unicode: bool) []const u8 {
+        return terminal.symbols.warning(unicode);
     }
-    pub fn info() []const u8 {
-        return terminal.symbols.info(terminal.unicodeSupported());
+    pub fn info(unicode: bool) []const u8 {
+        return terminal.symbols.info(unicode);
     }
 };
 
@@ -89,6 +89,8 @@ pub const SpinnerConfig = struct {
     prefix: []const u8 = "",
     /// Suffix after message
     suffix: []const u8 = "",
+    /// Whether terminal supports unicode
+    unicode: bool = true,
 };
 
 /// Spinner for indeterminate progress
@@ -97,6 +99,7 @@ pub fn Spinner(comptime WriterType: type) type {
         const Self = @This();
 
         writer: WriterType,
+        io: std.Io,
         config: SpinnerConfig,
         message: []const u8,
         frame_index: usize,
@@ -105,9 +108,10 @@ pub fn Spinner(comptime WriterType: type) type {
         last_update: i64,
 
         /// Initialize a new spinner
-        pub fn init(writer: WriterType, config: SpinnerConfig) Self {
+        pub fn init(writer: WriterType, io: std.Io, config: SpinnerConfig) Self {
             return .{
                 .writer = writer,
+                .io = io,
                 .config = config,
                 .message = "",
                 .frame_index = 0,
@@ -122,7 +126,7 @@ pub fn Spinner(comptime WriterType: type) type {
             self.message = message;
             self.active = true;
             self.frame_index = 0;
-            self.last_update = std.time.milliTimestamp();
+            self.last_update = @intCast(@divTrunc(std.Io.Clock.Timestamp.now(self.io, .awake).raw.nanoseconds, std.time.ns_per_ms));
 
             if (self.is_tty and self.config.hide_cursor) {
                 self.writeAll("\x1b[?25l"); // Hide cursor
@@ -140,7 +144,7 @@ pub fn Spinner(comptime WriterType: type) type {
         pub fn tick(self: *Self) void {
             if (!self.active) return;
 
-            const now = std.time.milliTimestamp();
+            const now: i64 = @intCast(@divTrunc(std.Io.Clock.Timestamp.now(self.io, .awake).raw.nanoseconds, std.time.ns_per_ms));
             const interval_val: i64 = @intCast(self.config.style.interval());
 
             if (now - self.last_update >= interval_val) {
@@ -153,22 +157,22 @@ pub fn Spinner(comptime WriterType: type) type {
 
         /// Stop the spinner with a success message
         pub fn succeed(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.success(), .green, message);
+            self.finishWithColor(ResultSymbol.success(self.config.unicode), .green, message);
         }
 
         /// Stop the spinner with a failure message
         pub fn fail(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.failure(), .red, message);
+            self.finishWithColor(ResultSymbol.failure(self.config.unicode), .red, message);
         }
 
         /// Stop the spinner with a warning message
         pub fn warn(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.warning(), .yellow, message);
+            self.finishWithColor(ResultSymbol.warning(self.config.unicode), .yellow, message);
         }
 
         /// Stop the spinner with an info message
         pub fn info(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.info(), .blue, message);
+            self.finishWithColor(ResultSymbol.info(self.config.unicode), .blue, message);
         }
 
         /// Stop the spinner without a result symbol
@@ -321,19 +325,25 @@ pub fn ProgressBar(comptime WriterType: type) type {
         const Self = @This();
 
         writer: WriterType,
+        io: std.Io,
         config: ProgressBarConfig,
         current: usize,
         start_time: i64,
         is_tty: bool,
         message: []const u8,
 
+        fn nowMs(self: *Self) i64 {
+            return @intCast(@divTrunc(std.Io.Clock.Timestamp.now(self.io, .awake).raw.nanoseconds, std.time.ns_per_ms));
+        }
+
         /// Initialize a new progress bar
-        pub fn init(writer: WriterType, config: ProgressBarConfig) Self {
+        pub fn init(writer: WriterType, io: std.Io, config: ProgressBarConfig) Self {
             return .{
                 .writer = writer,
+                .io = io,
                 .config = config,
                 .current = 0,
-                .start_time = std.time.milliTimestamp(),
+                .start_time = @intCast(@divTrunc(std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds, std.time.ns_per_ms)),
                 .is_tty = detectTTY(),
                 .message = "",
             };
@@ -436,7 +446,7 @@ pub fn ProgressBar(comptime WriterType: type) type {
 
             // ETA
             if (self.config.show_eta and self.current > 0) {
-                const elapsed = std.time.milliTimestamp() - self.start_time;
+                const elapsed = self.nowMs() - self.start_time;
                 if (elapsed > 0 and self.current < self.config.total) {
                     const remaining = self.config.total - self.current;
                     const ms_per_item: i64 = @divTrunc(elapsed, @as(i64, @intCast(self.current)));
@@ -452,7 +462,7 @@ pub fn ProgressBar(comptime WriterType: type) type {
 
             // Elapsed
             if (self.config.show_elapsed) {
-                const elapsed_ms = std.time.milliTimestamp() - self.start_time;
+                const elapsed_ms = self.nowMs() - self.start_time;
                 const elapsed_secs: u64 = @intCast(@divTrunc(elapsed_ms, 1000));
 
                 var elapsed_buf: [16]u8 = undefined;
@@ -464,7 +474,7 @@ pub fn ProgressBar(comptime WriterType: type) type {
 
             // Rate
             if (self.config.show_rate and self.current > 0) {
-                const elapsed_ms = std.time.milliTimestamp() - self.start_time;
+                const elapsed_ms = self.nowMs() - self.start_time;
                 if (elapsed_ms > 0) {
                     const rate: f64 = @as(f64, @floatFromInt(self.current)) / (@as(f64, @floatFromInt(elapsed_ms)) / 1000.0);
 
@@ -504,30 +514,31 @@ fn formatDuration(secs: u64, buf: []u8) []const u8 {
 
 /// Detect if stdout is a TTY
 fn detectTTY() bool {
-    return std.fs.File.stdout().isTty();
+    // Use direct handle check without io
+    return terminal.isStdoutTty();
 }
 
 // Thread-local buffer for stdout writer
-threadlocal var stdout_buffer: [0]u8 = .{};
-threadlocal var stdout_writer_storage: std.fs.File.Writer = undefined;
+threadlocal var stdout_buffer: [4096]u8 = undefined;
+threadlocal var stdout_writer_storage: std.Io.File.Writer = undefined;
 threadlocal var stdout_initialized: bool = false;
 
-fn getStdoutWriter() *std.Io.Writer {
+fn getStdoutWriter(io: std.Io) *std.Io.Writer {
     if (!stdout_initialized) {
-        stdout_writer_storage = std.fs.File.stdout().writer(&stdout_buffer);
+        stdout_writer_storage = std.Io.File.stdout().writer(io, &stdout_buffer);
         stdout_initialized = true;
     }
     return &stdout_writer_storage.interface;
 }
 
 /// Create a spinner with the default writer (stdout)
-pub fn spinner(config: SpinnerConfig) Spinner(*std.Io.Writer) {
-    return Spinner(*std.Io.Writer).init(getStdoutWriter(), config);
+pub fn spinner(io: std.Io, config: SpinnerConfig) Spinner(*std.Io.Writer) {
+    return Spinner(*std.Io.Writer).init(getStdoutWriter(io), io, config);
 }
 
 /// Create a progress bar with the default writer (stdout)
-pub fn progressBar(config: ProgressBarConfig) ProgressBar(*std.Io.Writer) {
-    return ProgressBar(*std.Io.Writer).init(getStdoutWriter(), config);
+pub fn progressBar(io: std.Io, config: ProgressBarConfig) ProgressBar(*std.Io.Writer) {
+    return ProgressBar(*std.Io.Writer).init(getStdoutWriter(io), io, config);
 }
 
 // ============================================================================
@@ -558,18 +569,18 @@ test "format duration" {
 
 test "spinner initialization" {
     var output: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&output);
+    var writer: std.Io.Writer = .fixed(&output);
 
-    const s = Spinner(@TypeOf(fbs.writer())).init(fbs.writer(), .{});
+    const s = Spinner(@TypeOf(&writer)).init(&writer, std.testing.io, .{});
     try std.testing.expect(!s.active);
     try std.testing.expectEqual(@as(usize, 0), s.frame_index);
 }
 
 test "progress bar initialization" {
     var output: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&output);
+    var writer: std.Io.Writer = .fixed(&output);
 
-    const bar = ProgressBar(@TypeOf(fbs.writer())).init(fbs.writer(), .{
+    const bar = ProgressBar(@TypeOf(&writer)).init(&writer, std.testing.io, .{
         .total = 100,
         .width = 20,
     });
@@ -579,9 +590,9 @@ test "progress bar initialization" {
 
 test "progress bar update" {
     var output: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&output);
+    var writer: std.Io.Writer = .fixed(&output);
 
-    var bar = ProgressBar(@TypeOf(fbs.writer())).init(fbs.writer(), .{
+    var bar = ProgressBar(@TypeOf(&writer)).init(&writer, std.testing.io, .{
         .total = 100,
         .width = 10,
         .show_eta = false,
@@ -596,9 +607,9 @@ test "progress bar update" {
 
 test "progress bar increment" {
     var output: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&output);
+    var writer: std.Io.Writer = .fixed(&output);
 
-    var bar = ProgressBar(@TypeOf(fbs.writer())).init(fbs.writer(), .{
+    var bar = ProgressBar(@TypeOf(&writer)).init(&writer, std.testing.io, .{
         .total = 100,
         .width = 10,
         .show_eta = false,
@@ -614,9 +625,9 @@ test "progress bar increment" {
 
 test "progress bar does not exceed total" {
     var output: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&output);
+    var writer: std.Io.Writer = .fixed(&output);
 
-    var bar = ProgressBar(@TypeOf(fbs.writer())).init(fbs.writer(), .{
+    var bar = ProgressBar(@TypeOf(&writer)).init(&writer, std.testing.io, .{
         .total = 100,
         .show_eta = false,
     });

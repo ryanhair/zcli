@@ -117,7 +117,7 @@ fn createGroupModules(
 
             if (subcmd_info.command_type == .optional_group) {
                 // Create module for nested optional group
-                var module_name_parts = std.ArrayList([]const u8){};
+                var module_name_parts = std.ArrayList([]const u8).empty;
                 defer module_name_parts.deinit(b.allocator);
 
                 for (subcmd_info.path) |part| {
@@ -152,7 +152,7 @@ fn createGroupModules(
             } else {
                 // Generate module name from the full command path to handle nested directories
                 // This ensures unique module names even for deeply nested commands
-                var module_name_parts = std.ArrayList([]const u8){};
+                var module_name_parts = std.ArrayList([]const u8).empty;
                 defer module_name_parts.deinit(b.allocator);
 
                 for (subcmd_info.path) |part| {
