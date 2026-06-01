@@ -11,9 +11,7 @@ pub const ztheme = @import("ztheme");
 pub const markdown_fmt = @import("markdown_fmt");
 pub const zprogress = @import("zprogress");
 pub const zinput = @import("zinput");
-pub const vterm = @import("vterm");
 pub const serde = @import("serde");
-pub const test_utils = @import("test_utils.zig");
 const testing = std.testing;
 
 // Re-export error types

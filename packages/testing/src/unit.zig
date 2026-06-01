@@ -5,10 +5,10 @@
 //! terminal (VTerm) for testing colors, formatting, and cursor positioning.
 //!
 //! ```zig
-//! const test_utils = zcli.test_utils;
+//! const testing = @import("testing");
 //!
 //! test "add command" {
-//!     var result = try test_utils.runCommand(AddCommand, &.{}, .{
+//!     var result = try testing.runCommand(AddCommand, &.{}, .{
 //!         .args = .{ .name = "widget" },
 //!         .options = .{ .verbose = true },
 //!     });
@@ -23,7 +23,7 @@
 //! ```
 
 const std = @import("std");
-const zcli = @import("zcli.zig");
+const zcli = @import("zcli");
 const vterm = @import("vterm");
 
 /// Result of running a command in-process.

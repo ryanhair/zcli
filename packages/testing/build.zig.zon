@@ -4,7 +4,10 @@
     .fingerprint = 0xe8f35a06e212c7ff,
     .minimum_zig_version = "0.15.1",
 
-    .dependencies = .{},
+    .dependencies = .{
+        .zcli_core = .{ .path = "../core" },
+        .vterm = .{ .path = "../vterm" },
+    },
 
     .paths = .{
         "build.zig",

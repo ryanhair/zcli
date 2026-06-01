@@ -413,10 +413,10 @@ zcli provides three tiers of testing. See [docs/TESTING.md](docs/TESTING.md) for
 Test commands directly without compiling a binary:
 
 ```zig
-const test_utils = zcli.test_utils;
+const testing = @import("zcli-testing");
 
 test "deploy command" {
-    var result = try test_utils.runCommand(DeployCommand, &.{}, .{
+    var result = try testing.runCommand(DeployCommand, &.{}, .{
         .args = .{ .service = "api" },
         .options = .{ .env = "staging" },
     });

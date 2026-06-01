@@ -2,8 +2,8 @@
 //!
 //! Provides three tiers of CLI testing:
 //!
-//! - **Unit testing** (`zcli.test_utils`): In-process command execution — test a single
-//!   command's logic without compiling a binary. Lives in core, not here.
+//! - **Unit testing** (`testing.unit` / `testing.runCommand`): In-process command execution —
+//!   test a single command's logic without compiling a binary.
 //!
 //! - **Integration testing** (`runner`, `assertions`, `snapshot`): Subprocess execution —
 //!   compile your CLI, run it with args, assert on stdout/stderr/exit code. Snapshot
@@ -34,6 +34,14 @@
 //! ```
 
 const std = @import("std");
+
+// ============================================================================
+// Unit Testing — in-process command execution (no subprocess, no binary)
+// ============================================================================
+
+pub const unit = @import("unit.zig");
+pub const runCommand = unit.runCommand;
+pub const CommandResult = unit.CommandResult;
 
 // ============================================================================
 // Integration Testing — subprocess-based CLI testing

@@ -16,20 +16,33 @@ Test a single command's `execute()` function without compiling or spawning a bin
 
 ### Setup
 
-Unit testing uses `zcli.test_utils` which is built into the core framework. No extra dependencies needed.
+Unit testing lives in the `zcli-testing` package (alongside the integration and E2E tiers). Add it as a dependency — same setup as the [Integration Testing](#integration-testing) tier below:
+
+```zig
+// build.zig.zon
+.dependencies = .{
+    .zcli = .{ .path = "path/to/zcli" },
+    .@"zcli-testing" = .{ .path = "path/to/zcli/packages/testing" },
+},
+```
+
+```zig
+// build.zig
+const testing_dep = b.dependency("zcli-testing", .{});
+test_module.addImport("zcli-testing", testing_dep.module("testing"));
+```
 
 ### Writing tests
 
 ```zig
 const std = @import("std");
-const zcli = @import("zcli");
-const test_utils = zcli.test_utils;
+const testing = @import("zcli-testing");
 
 // Import the command you want to test
 const add = @import("commands/add.zig");
 
 test "add command prints confirmation" {
-    var result = try test_utils.runCommand(add, &.{}, .{
+    var result = try testing.runCommand(add, &.{}, .{
         .args = .{ .name = "widget" },
         .options = .{ .verbose = false },
     });
@@ -41,7 +54,7 @@ test "add command prints confirmation" {
 }
 
 test "add command fails on empty name" {
-    var result = try test_utils.runCommand(add, &.{}, .{
+    var result = try testing.runCommand(add, &.{}, .{
         .args = .{ .name = "" },
         .options = .{},
     });
@@ -60,7 +73,7 @@ If your command accesses plugin data through `context.plugins`, pass the plugins
 const zcli_output = @import("zcli_output");
 
 test "command respects output mode" {
-    var result = try test_utils.runCommand(list, &.{zcli_output}, .{
+    var result = try testing.runCommand(list, &.{zcli_output}, .{
         .args = .{},
         .options = .{},
     });
@@ -73,7 +86,7 @@ test "command respects output mode" {
 
 ### API reference
 
-**`test_utils.runCommand(Command, plugins, config)`**
+**`testing.runCommand(Command, plugins, config)`**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -101,7 +114,7 @@ The `result.term` field is a virtual terminal that has processed all ANSI escape
 
 ```zig
 test "status shows green checkmark" {
-    var result = try test_utils.runCommand(StatusCommand, &.{}, .{});
+    var result = try testing.runCommand(StatusCommand, &.{}, .{});
     defer result.deinit();
 
     // Check rendered text (ANSI codes stripped)

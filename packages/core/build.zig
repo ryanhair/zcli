@@ -23,10 +23,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const vterm_dep = b.dependency("vterm", .{
-        .target = target,
-        .optimize = optimize,
-    });
     const serde_dep = b.dependency("serde", .{
         .target = target,
         .optimize = optimize,
@@ -42,7 +38,6 @@ pub fn build(b: *std.Build) void {
     zcli_module.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
     zcli_module.addImport("zprogress", zprogress_dep.module("zprogress"));
     zcli_module.addImport("zinput", zinput_dep.module("zinput"));
-    zcli_module.addImport("vterm", vterm_dep.module("vterm"));
     zcli_module.addImport("serde", serde_dep.module("serde"));
 
     // Build utilities module for build.zig files
@@ -98,7 +93,6 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("vterm", vterm_dep.module("vterm"));
                 test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
@@ -119,7 +113,6 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("vterm", vterm_dep.module("vterm"));
                 test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
@@ -139,7 +132,6 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("vterm", vterm_dep.module("vterm"));
                 test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
@@ -159,7 +151,6 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("vterm", vterm_dep.module("vterm"));
                 test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
@@ -212,7 +203,6 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("vterm", vterm_dep.module("vterm"));
                 test_mod.addImport("serde", serde_dep.module("serde"));
         const sequential_tests = b.addTest(.{
             .root_module = test_mod,

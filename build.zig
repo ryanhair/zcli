@@ -44,13 +44,6 @@ pub fn build(b: *std.Build) void {
     zinput_module.addImport("terminal", terminal_module);
     zinput_module.addImport("ztheme", ztheme_module);
 
-    // Create vterm module
-    const vterm_module = b.addModule("vterm", .{
-        .root_source_file = b.path("packages/vterm/src/vterm.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     // Third-party serialization module
     const serde_dep = b.dependency("serde", .{ .target = target, .optimize = optimize });
 
@@ -64,7 +57,6 @@ pub fn build(b: *std.Build) void {
     zcli_module.addImport("markdown_fmt", markdown_fmt_module);
     zcli_module.addImport("zprogress", zprogress_module);
     zcli_module.addImport("zinput", zinput_module);
-    zcli_module.addImport("vterm", vterm_module);
     zcli_module.addImport("serde", serde_dep.module("serde"));
 
     // Define the project directories that have tests
