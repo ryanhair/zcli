@@ -60,15 +60,15 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("zcli", zcli_module);
 
     // Build with plugins and command discovery
-    const cmd_registry = zcli.build(b, exe, zcli_module, .{
+    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",  // Optional, defaults to "src/commands"
         .app_name = "myapp",
         .app_description = "My CLI application",
         // Note: Version is automatically read from build.zig.zon
         .plugins = &.{
-            .{ .name = "zcli-help", .path = "path/to/help/plugin" },
-            .{ .name = "zcli-version", .path = "path/to/version/plugin" },
-            .{ .name = "zcli-not-found", .path = "path/to/suggestions/plugin" },
+            .{ .name = "zcli_help", .path = "path/to/help/plugin" },
+            .{ .name = "zcli_version", .path = "path/to/version/plugin" },
+            .{ .name = "zcli_not_found", .path = "path/to/suggestions/plugin" },
         },
         .global_options = .{
             .verbose = .{ .short = 'v', .type = bool, .default = false, .help = "Enable verbose output" },
@@ -200,11 +200,11 @@ pub const Context = struct {
 
 ## 4. Global Options
 
-Global options are defined when calling `zcli.build()` in your build.zig. These options are available to all commands and can be accessed through the context:
+Global options are defined when calling `zcli.generate()` in your build.zig. These options are available to all commands and can be accessed through the context:
 
 ```zig
 // In build.zig
-const cmd_registry = zcli.build(b, exe, zcli_module, .{
+const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .global_options = .{
         .verbose = .{ .short = 'v', .type = bool, .default = false, .help = "Enable verbose output" },
         .config = .{ .short = 'c', .type = ?[]const u8, .help = "Config file path" },
@@ -217,7 +217,7 @@ const cmd_registry = zcli.build(b, exe, zcli_module, .{
 
 **Framework-Provided Options:**
 
-Plugins can provide global options. For example, the zcli-help plugin provides:
+Plugins can provide global options. For example, the zcli_help plugin provides:
 
 - `--help/-h`: Shows command help
 - `--version/-V`: Shows app version (if version plugin is included)
@@ -706,10 +706,10 @@ pub const commands = struct {
 Plugins are registered in build.zig and processed in order:
 
 ```zig
-const cmd_registry = zcli.build(b, exe, zcli_module, .{
+const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .plugins = &.{
-        .{ .name = "zcli-help", .path = "path/to/plugin" },      // First priority
-        .{ .name = "zcli-not-found", .path = "path/to/plugin" }, // Second priority
+        .{ .name = "zcli_help", .path = "path/to/plugin" },      // First priority
+        .{ .name = "zcli_not_found", .path = "path/to/plugin" }, // Second priority
     },
     // ... other config
 });
@@ -726,8 +726,8 @@ const cmd_registry = zcli.build(b, exe, zcli_module, .{
 
 **Built-in Plugins:**
 
-- **zcli-help**: Provides `--help` flag and help command
-- **zcli-not-found**: Provides command suggestions using edit distance
+- **zcli_help**: Provides `--help` flag and help command
+- **zcli_not_found**: Provides command suggestions using edit distance
 
 ## 12. Advanced Features
 

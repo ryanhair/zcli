@@ -43,7 +43,7 @@ zcli achieves zero-cost dispatch by discovering commands and plugins, then gener
 Plugins use a lifecycle hook system with struct-based commands:
 
 ```zig
-// Example plugin: zcli-help/src/plugin.zig
+// Example plugin: zcli_help/plugin.zig
 const std = @import("std");
 const zcli = @import("zcli");
 
@@ -145,12 +145,12 @@ Plugins are integrated in `build.zig`:
 ```zig
 const zcli_build = @import("zcli");
 
-const cmd_registry = zcli_build.buildWithExternalPlugins(b, exe, zcli_module, .{
+const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .commands_dir = "src/commands",
     .plugins = &[_]zcli_build.PluginConfig{
-        .{ .name = "zcli-help", .path = "../../plugins/zcli-help" },
-        .{ .name = "zcli-version", .path = "../../plugins/zcli-version" },
-        .{ .name = "zcli-not-found", .path = "../../plugins/zcli-not-found" },
+        .{ .name = "zcli_help", .path = "packages/core/src/plugins/zcli_help" },
+        .{ .name = "zcli_version", .path = "packages/core/src/plugins/zcli_version" },
+        .{ .name = "zcli_not_found", .path = "packages/core/src/plugins/zcli_not_found" },
     },
     .app_name = "myapp",
     .app_description = "My CLI application",
@@ -372,7 +372,7 @@ Plugins can be distributed as:
 
 ## Built-in Plugins
 
-### zcli-help Plugin
+### zcli_help Plugin
 
 Provides comprehensive help system:
 - Registers `--help` global option
@@ -380,7 +380,7 @@ Provides comprehensive help system:
 - Intercepts help requests in `preExecute` hook
 - Shows command-specific and application help
 
-### zcli-not-found Plugin  
+### zcli_not_found Plugin  
 
 Provides intelligent command suggestions:
 - Implements `onError` hook for `CommandNotFound` errors
