@@ -29,3 +29,19 @@ this file tracks things intentionally postponed with the context to pick them up
 - **Trigger to revisit:** Maintenance burden of multi-format config bites, or HTML doc-gen
   starts pulling zcli toward static-site-generator concerns.
 - **Effort:** S–M (per item).
+
+### Split the unit-testing tier out of the `testing` package
+- **What:** The `testing` package was zero-dependency until the 2026-06-01 unit-tier move
+  (commit `703fd69`). It now depends on `core` + `vterm` (and transitively on serde and core's
+  whole sibling tree) solely because the **unit tier** (`testing.unit` / `runCommand`) needs
+  `zcli.IO`/`TestContext` + vterm. The **integration** and **E2E** tiers need none of that.
+  Consider splitting the unit tier into its own sub-module/package so consumers who only write
+  subprocess/PTY tests don't pull the entire framework + a remote serde dep into their test build.
+- **Why deferred:** Acceptable trade-off for putting the unit tier in its natural home; not worth
+  the extra package/module split pre-adoption. Flagged in the 2026-06-01 five-axis code review as
+  the one "Important" architectural item.
+- **Trigger to revisit:** A user complains about the testing package's dependency footprint, or
+  integration/E2E-only consumers report unwanted transitive deps (esp. the remote serde fetch).
+- **Effort:** S–M (module split within `packages/testing`, or a new `zcli-testing-unit` package).
+- **Context:** `packages/testing/build.zig.zon` (the new `zcli_core` + `vterm` deps);
+  `packages/testing/src/unit.zig` is the only tier needing core.
