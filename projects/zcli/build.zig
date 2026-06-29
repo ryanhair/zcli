@@ -87,4 +87,19 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    // Command modules with their own unit tests (only need the zcli module).
+    const command_test_files = [_][]const u8{
+        "src/commands/tree.zig",
+    };
+    for (command_test_files) |path| {
+        const mod = b.addModule(b.fmt("test-{s}", .{path}), .{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("zcli", zcli_module);
+        const cmd_tests = b.addTest(.{ .root_module = mod });
+        test_step.dependOn(&b.addRunArtifact(cmd_tests).step);
+    }
 }
