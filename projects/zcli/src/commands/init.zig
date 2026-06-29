@@ -215,17 +215,10 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         \\const std = @import("std");
         \\const registry = @import("command_registry");
         \\
-        \\pub fn main() !void {
-        \\    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        \\    defer {
-        \\        const deinit_status = gpa.deinit();
-        \\        if (deinit_status == .leak) {
-        \\            std.log.err("Memory leak detected!", .{});
-        \\        }
-        \\    }
-        \\
+        \\pub fn main(init: std.process.Init) !void {
+        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
         \\    var app = registry.init();
-        \\    app.run(gpa.allocator()) catch |err| switch (err) {
+        \\    app.run(init.gpa, init.io, init.environ_map, args) catch |err| switch (err) {
         \\        error.CommandNotFound => std.process.exit(1),
         \\        else => return err,
         \\    };
