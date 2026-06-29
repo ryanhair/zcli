@@ -36,7 +36,7 @@ zcli add command deploy --args "environment target" --option "replicas:int"
 
 **Impact:** Eliminates "what's the boilerplate again?" problem.
 
-### Structure Visualization (`zcli tree`)
+### ✅ Structure Visualization (`zcli tree`)
 
 ```bash
 zcli tree
@@ -53,6 +53,11 @@ zcli tree
 zcli tree --show-options
 # Includes arguments and options in the tree
 ```
+
+Discovers commands straight from `src/commands/` (no build required), mirroring
+the framework's own discovery rules, and parses each file's `meta`/`Args`/`Options`
+with `std.zig.Ast`. Output is themed via `ztheme` and degrades to plain text when
+piped.
 
 **Impact:** Visual representation helps maintain mental model as projects grow.
 
