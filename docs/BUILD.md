@@ -47,6 +47,16 @@ Plugins use a lifecycle hook system with struct-based commands:
 const std = @import("std");
 const zcli = @import("zcli");
 
+// Unique id — names this plugin's field in `context.plugins.<plugin_id>`.
+pub const plugin_id = "zcli_help";
+
+// Type-safe per-run state, stored at `context.plugins.zcli_help`. There are no
+// string keys or runtime lookups: the generated Context has one typed field per
+// plugin that declares a ContextData struct (must be default-constructible).
+pub const ContextData = struct {
+    help_requested: bool = false,
+};
+
 // Global options the plugin provides
 pub const global_options = [_]zcli.GlobalOption{
     zcli.option("help", bool, .{ 
@@ -56,40 +66,42 @@ pub const global_options = [_]zcli.GlobalOption{
     }),
 };
 
-// Handle global options
+// Handle global options. `context` is `anytype`: a plugin is compiled
+// independently of the app that hosts it, so it can't name the app's
+// generated Context type.
 pub fn handleGlobalOption(
-    context: *zcli.Context,
+    context: anytype,
     option_name: []const u8,
     value: anytype,
 ) !void {
-    if (std.mem.eql(u8, option_name, "help") and value) {
-        try context.setGlobalData("help_requested", "true");
+    if (std.mem.eql(u8, option_name, "help")) {
+        const enabled = if (@TypeOf(value) == bool) value else false;
+        if (enabled) context.plugins.zcli_help.help_requested = true;
     }
 }
 
-// Lifecycle hooks
+// Lifecycle hook: runs right before the command. Return null to stop execution.
 pub fn preExecute(
-    context: *zcli.Context,
-    command_path: []const u8,
+    context: anytype,
     args: zcli.ParsedArgs,
 ) !?zcli.ParsedArgs {
-    const help_requested = context.getGlobalData([]const u8, "help_requested") orelse "false";
-    if (std.mem.eql(u8, help_requested, "true")) {
-        try showCommandHelp(context, command_path);
+    if (context.plugins.zcli_help.help_requested) {
+        try showHelp(context, context.command_path);
         return null; // Stop execution
     }
     return args; // Continue execution
 }
 
+// Lifecycle hook: handle an error. Return true if handled (suppresses it).
 pub fn onError(
-    context: *zcli.Context,
+    context: anytype,
     err: anyerror,
-    command_path: []const u8,
-) !void {
+) !bool {
     if (err == error.CommandNotFound) {
-        // Show suggestions
-        try showSuggestions(context, command_path);
+        try showSuggestions(context, context.command_path);
+        return true; // Error handled, don't let it propagate
     }
+    return false;
 }
 
 // Commands provided by the plugin
@@ -103,7 +115,7 @@ pub const commands = struct {
             .description = "Show help for commands",
         };
         
-        pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+        pub fn execute(args: Args, options: Options, context: anytype) !void {
             if (args.command) |cmd| {
                 try showCommandHelp(context, cmd);
             } else {
@@ -113,18 +125,12 @@ pub const commands = struct {
     };
 };
 
-// Optional context extension
-pub const ContextExtension = struct {
-    show_examples: bool = true,
-    
-    pub fn init(allocator: std.mem.Allocator) !@This() {
-        return .{ .show_examples = true };
-    }
-    
-    pub fn deinit(self: *@This()) void {
-        _ = self;
-    }
-};
+// Optional cleanup hook for ContextData, called from Context.deinit().
+// Only needed when ContextData owns resources (allocations, handles, etc.).
+pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
+    _ = data;
+    _ = allocator;
+}
 ```
 
 ### Plugin Lifecycle Hooks
@@ -213,7 +219,9 @@ pub const registry = CompiledRegistry(config, commands, plugins).init();
 
 // Plugin hooks are wired into execution flow
 pub fn execute(self: *Self, args: []const []const u8) !void {
-    var context = zcli.Context.init(allocator);
+    // Context is the per-app computed type; each plugin's ContextData is
+    // default-initialized under `context.plugins.<plugin_id>`.
+    var context = Context.init(allocator, io, environ);
     defer context.deinit();
     
     // 1. Run preParse hooks
@@ -260,25 +268,35 @@ inline for (plugins) |Plugin| {
 }
 ```
 
-### 3. Context Extensions
+### 3. Type-Safe Context Data
 
-Plugin context extensions are automatically managed:
+Each plugin's `ContextData` becomes a typed field on the generated `Context`,
+nested under `plugins` and named by the plugin's `plugin_id`. The field type and
+name are computed at compile time (see `ComputedContextType` in
+`packages/core/src/registry.zig`) — there is no `StringHashMap` or runtime key
+lookup, so access is fully typed:
 
 ```zig
-// Generated context with plugin extensions
+// Generated context (conceptually):
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    io: zcli.IO,
-    environment: zcli.Environment,
-    plugin_extensions: ContextExtensions,
-    
-    // Plugin extensions are initialized automatically
-    zcli_help: if (@hasDecl(zcli_help_plugin, "ContextExtension")) 
-        zcli_help_plugin.ContextExtension 
-    else 
-        struct {},
+    io: *zcli.IO,
+    // ... app metadata, command path, etc. ...
+
+    // One field per plugin that declares ContextData, named by plugin_id:
+    plugins: struct {
+        zcli_help: zcli_help.ContextData = .{},
+        // ... other plugins ...
+    } = .{},
 };
+
+// Access from any hook or command:
+if (context.plugins.zcli_help.help_requested) { ... }
 ```
+
+Each `ContextData` must be default-constructible; the generated `Context`
+initializes every plugin's field to `.{}`. If a plugin declares
+`deinitContextData`, it is called from `Context.deinit()` for cleanup.
 
 ## Runtime Behavior
 
@@ -309,7 +327,7 @@ No plugin loading occurs at runtime:
 - All plugins are known at compile time
 - Plugin hooks are statically wired
 - Command routing includes plugin commands
-- Context extensions are pre-allocated
+- Plugin context data is part of the computed Context, initialized inline
 
 ### 3. Type Safety
 
@@ -335,22 +353,25 @@ The plugin system maintains full type safety:
 
 2. **Implement Plugin Interface**:
    ```zig
-   // Lifecycle hooks (optional)
-   pub fn preParse(context: *zcli.Context, args: []const []const u8) ![]const []const u8
-   pub fn postParse(context: *zcli.Context, command_path: []const u8, parsed_args: zcli.ParsedArgs) !?zcli.ParsedArgs  
-   pub fn preExecute(context: *zcli.Context, command_path: []const u8, args: zcli.ParsedArgs) !?zcli.ParsedArgs
-   pub fn postExecute(context: *zcli.Context, command_path: []const u8, success: bool) !void
-   pub fn onError(context: *zcli.Context, err: anyerror, command_path: []const u8) !void
-   
+   // Lifecycle hooks (optional). `context` is `anytype` — plugins are compiled
+   // independently of the host app, so they can't name its Context type.
+   pub fn preParse(context: anytype, args: []const []const u8) ![]const []const u8
+   pub fn postParse(context: anytype, parsed_args: zcli.ParsedArgs) !?zcli.ParsedArgs
+   pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs
+   pub fn postExecute(context: anytype, success: bool) !void
+   pub fn onError(context: anytype, err: anyerror) !bool
+
    // Global options (optional)
    pub const global_options = [_]zcli.GlobalOption{ ... };
-   pub fn handleGlobalOption(context: *zcli.Context, option_name: []const u8, value: anytype) !void
-   
+   pub fn handleGlobalOption(context: anytype, option_name: []const u8, value: anytype) !void
+
    // Commands (optional)
    pub const commands = struct { ... };
-   
-   // Context extension (optional)
-   pub const ContextExtension = struct { ... };
+
+   // Type-safe context data (optional)
+   pub const plugin_id = "my_plugin";
+   pub const ContextData = struct { ... };
+   pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void { ... }
    ```
 
 3. **Configure Build System**:
@@ -406,14 +427,16 @@ The build system validates:
 
 ### 3. Context Data Sharing
 
-Plugins can share data through context:
+Plugins expose state through their own `ContextData`, accessed by `plugin_id`.
+Because every plugin's data is a typed field on the shared `Context`, one plugin
+(or a command) can read another's state directly — no string keys, no casts:
 
 ```zig
-// Store data
-try context.setGlobalData("key", "value");
+// Store data (e.g. in handleGlobalOption / preExecute)
+context.plugins.my_plugin.enabled = true;
 
-// Retrieve data  
-const value = context.getGlobalData([]const u8, "key") orelse "default";
+// Retrieve data (from any other hook or command)
+const enabled = context.plugins.my_plugin.enabled;
 ```
 
 ## Performance Characteristics
