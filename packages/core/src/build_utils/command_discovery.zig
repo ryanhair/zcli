@@ -2,37 +2,45 @@ const std = @import("std");
 const logging = @import("../logging.zig");
 const types = @import("types.zig");
 
-const CommandInfo = types.CommandInfo;
-const CommandType = types.CommandType;
-const DiscoveredCommands = types.DiscoveredCommands;
+// Re-exported so runtime consumers (e.g. the `zcli tree` tool) can name the
+// types returned by discovery without reaching into build_utils/types.
+pub const CommandInfo = types.CommandInfo;
+pub const CommandType = types.CommandType;
+pub const DiscoveredCommands = types.DiscoveredCommands;
+
+/// Reasonable maximum nesting depth.
+const default_max_depth = 6;
 
 // ============================================================================
 // COMMAND DISCOVERY - Filesystem scanning and command structure analysis
 // ============================================================================
 
-/// Build-time command discovery - scans filesystem directly
-pub fn discoverCommands(b: *std.Build, commands_dir: []const u8) !DiscoveredCommands {
-    const allocator = b.allocator;
-    const io = b.graph.io;
+/// Discover commands by scanning an already-open directory. This is the shared
+/// core used by both the build (via discoverCommands) and runtime tooling such
+/// as `zcli tree`, so the two never drift. `dir` must be opened with iteration.
+pub fn discoverInDir(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !DiscoveredCommands {
+    var commands = DiscoveredCommands.init(allocator);
+    errdefer commands.deinit();
 
+    try scanDirectory(allocator, io, dir, &commands.root, &.{}, 0, default_max_depth);
+
+    return commands;
+}
+
+/// Build-time command discovery - opens commands_dir under the build root and scans it.
+pub fn discoverCommands(b: *std.Build, commands_dir: []const u8) !DiscoveredCommands {
     // Security check: prevent directory traversal
     if (std.mem.indexOf(u8, commands_dir, "..") != null) {
         return error.InvalidPath;
     }
 
-    var commands = DiscoveredCommands.init(allocator);
-    errdefer commands.deinit();
-
-    // Try to open the commands directory
+    const io = b.graph.io;
     var dir = b.build_root.handle.openDir(io, commands_dir, .{ .iterate = true }) catch |err| {
         return err;
     };
     defer dir.close(io);
 
-    const max_depth = 6; // Reasonable maximum nesting depth
-    try scanDirectory(allocator, io, dir, &commands.root, &.{}, 0, max_depth);
-
-    return commands;
+    return discoverInDir(b.allocator, io, dir);
 }
 
 /// Recursively scan a directory for commands

@@ -54,9 +54,10 @@ zcli tree --show-options
 # Includes arguments and options in the tree
 ```
 
-Discovers commands straight from `src/commands/` (no build required), mirroring
-the framework's own discovery rules, and parses each file's `meta`/`Args`/`Options`
-with `std.zig.Ast`. Output is themed via `ztheme` and degrades to plain text when
+Discovers commands straight from `src/commands/` (no build required) by reusing
+the framework's own discovery (`zcli.command_discovery`, the same scan the build
+runs), then enriches each command with its `meta`/`Args`/`Options` parsed via
+`std.zig.Ast`. Output is themed via `ztheme` and degrades to plain text when
 piped.
 
 **Impact:** Visual representation helps maintain mental model as projects grow.

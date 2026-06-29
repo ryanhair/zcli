@@ -4,6 +4,13 @@ const zcli = @import("zcli");
 const ztheme = zcli.ztheme;
 const Theme = ztheme.Theme;
 
+// The framework's own command discovery — the same scan the build runs to
+// generate the registry. Reusing it keeps the tree in lockstep with what the
+// build actually wires up, with no rules duplicated here.
+const command_discovery = zcli.command_discovery;
+const CommandType = command_discovery.CommandType;
+const CommandInfo = command_discovery.CommandInfo;
+
 pub const meta = .{
     .description = "Show the command tree discovered from src/commands",
     .examples = &.{
@@ -23,30 +30,36 @@ pub const Options = struct {
 
 /// Maximum bytes read from any single command source file.
 const max_source_bytes = 1024 * 1024;
-/// Maximum directory nesting, matching the framework's build-time discovery.
-const max_depth = 6;
 
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     _ = args;
 
+    const io = context.io.io;
     const commands_dir = "src/commands";
 
-    var dir = std.fs.cwd().openDir(commands_dir, .{ .iterate = true }) catch |err| switch (err) {
+    // One handle, used both to scan (discovery) and to read each command's
+    // source (metadata). Must be iterable for the discovery walk.
+    var dir = std.Io.Dir.cwd().openDir(io, commands_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
-            try context.stderr().print("No '{s}' directory found. Run this from a zcli project root.\n", .{commands_dir});
+            const stderr = context.stderr();
+            try stderr.print("No '{s}' directory found. Run this from a zcli project root.\n", .{commands_dir});
+            try stderr.flush(); // process.exit won't flush the buffered writer
             context.exit(1);
             return;
         },
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io);
 
     // Everything the tree allocates lives in this arena and is freed at once.
     var arena_state = std.heap.ArenaAllocator.init(context.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const children = try buildChildren(arena, dir, 0);
+    // Structure comes from the framework's discovery; descriptions/options are
+    // layered on by parsing each file's source (see metadata extraction below).
+    var discovered = try command_discovery.discoverInDir(arena, io, dir);
+    const children = try nodesFromMap(arena, io, dir, &discovered.root);
 
     const stdout = context.stdout();
     const theme = &context.theme;
@@ -62,8 +75,6 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 // Tree model
 // ============================================================================
 
-const Kind = enum { leaf, pure_group, optional_group };
-
 const Field = struct {
     name: []const u8,
     type_str: []const u8,
@@ -71,75 +82,53 @@ const Field = struct {
     optional: bool,
 };
 
+/// A display node: the framework's discovered structure enriched with the
+/// metadata we parse from source (description, args, options).
 const Node = struct {
     name: []const u8,
-    kind: Kind,
+    command_type: CommandType,
     description: ?[]const u8 = null,
     args: []const Field = &.{},
     options: []const Field = &.{},
     children: []const Node = &.{},
 
     fn isGroup(self: Node) bool {
-        return self.kind != .leaf;
+        return self.command_type != .leaf;
     }
 };
 
 // ============================================================================
-// Discovery — mirrors packages/core/src/build_utils/command_discovery.zig
+// Structure -> display nodes (discovery is the framework's; we only enrich)
 // ============================================================================
 
-/// Scan a commands directory and return its child nodes, sorted by name.
-fn buildChildren(arena: std.mem.Allocator, dir: std.fs.Dir, depth: u32) ![]const Node {
-    if (depth >= max_depth) return &.{};
+/// Turn a discovered command map into sorted display nodes, parsing each
+/// command's source for its description/args/options along the way.
+fn nodesFromMap(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    map: *const std.StringHashMap(CommandInfo),
+) ![]const Node {
+    var nodes = std.ArrayList(Node).empty;
 
-    var nodes = std.ArrayList(Node){};
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        const info = entry.value_ptr.*;
+        // For groups, file_path points at index.zig when present (otherwise a
+        // directory, which simply yields no metadata).
+        const parsed = parseFile(arena, io, dir, info.file_path);
 
-    var it = dir.iterate();
-    while (try it.next()) |entry| {
-        switch (entry.kind) {
-            .file => {
-                if (!std.mem.endsWith(u8, entry.name, ".zig")) continue;
-                const name = entry.name[0 .. entry.name.len - 4];
-                if (std.mem.eql(u8, name, "index")) continue; // group landing, not a command
-                if (!isValidCommandName(name)) continue;
-
-                const parsed = parseFile(arena, dir, entry.name);
-                try nodes.append(arena, .{
-                    .name = try arena.dupe(u8, name),
-                    .kind = .leaf,
-                    .description = parsed.description,
-                    .args = parsed.args,
-                    .options = parsed.options,
-                });
-            },
-            .directory => {
-                if (entry.name[0] == '.') continue;
-                if (!isValidCommandName(entry.name)) continue;
-
-                var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
-                defer subdir.close();
-
-                const children = try buildChildren(arena, subdir, depth + 1);
-                const has_index = hasIndexFile(subdir);
-
-                // A directory is only a command group if it has subcommands or an index.
-                if (children.len == 0 and !has_index) continue;
-
-                // The group's own description comes from its index.zig, if present.
-                const description = if (has_index)
-                    parseFile(arena, subdir, "index.zig").description
-                else
-                    null;
-
-                try nodes.append(arena, .{
-                    .name = try arena.dupe(u8, entry.name),
-                    .kind = if (has_index) .optional_group else .pure_group,
-                    .description = description,
-                    .children = children,
-                });
-            },
-            else => continue,
+        var node = Node{
+            .name = info.name,
+            .command_type = info.command_type,
+            .description = parsed.description,
+            .args = parsed.args,
+            .options = parsed.options,
+        };
+        if (info.subcommands) |*subcommands| {
+            node.children = try nodesFromMap(arena, io, dir, subcommands);
         }
+        try nodes.append(arena, node);
     }
 
     std.mem.sort(Node, nodes.items, {}, lessByName);
@@ -148,24 +137,6 @@ fn buildChildren(arena: std.mem.Allocator, dir: std.fs.Dir, depth: u32) ![]const
 
 fn lessByName(_: void, a: Node, b: Node) bool {
     return std.mem.lessThan(u8, a.name, b.name);
-}
-
-fn hasIndexFile(dir: std.fs.Dir) bool {
-    _ = dir.statFile("index.zig") catch return false;
-    return true;
-}
-
-/// Naming rules from the framework's discovery (security + identifier shape).
-fn isValidCommandName(name: []const u8) bool {
-    if (name.len == 0) return false;
-    if (std.mem.indexOf(u8, name, "..") != null) return false;
-    if (std.mem.indexOfAny(u8, name, "/\\\x00") != null) return false;
-
-    if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
-    for (name[1..]) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return false;
-    }
-    return true;
 }
 
 // ============================================================================
@@ -180,10 +151,8 @@ const ParsedMeta = struct {
 
 /// Read and parse a command file. Files that can't be read or parsed degrade
 /// to empty metadata so the command still appears in the tree.
-fn parseFile(arena: std.mem.Allocator, dir: std.fs.Dir, sub_path: []const u8) ParsedMeta {
-    var file = dir.openFile(sub_path, .{}) catch return .{};
-    defer file.close();
-    const raw = file.readToEndAlloc(arena, max_source_bytes) catch return .{};
+fn parseFile(arena: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, sub_path: []const u8) ParsedMeta {
+    const raw = dir.readFileAlloc(io, sub_path, arena, .limited(max_source_bytes)) catch return .{};
     const source = arena.dupeZ(u8, raw) catch return .{};
     return parseMeta(arena, source) catch .{};
 }
@@ -234,7 +203,7 @@ fn extractFields(arena: std.mem.Allocator, ast: *std.zig.Ast, init: std.zig.Ast.
     const container = ast.fullContainerDecl(&buf, init) orelse return &.{};
     const tags = ast.nodes.items(.tag);
 
-    var fields = std.ArrayList(Field){};
+    var fields = std.ArrayList(Field).empty;
     for (container.ast.members) |member| {
         const field = ast.fullContainerField(member) orelse continue;
         const type_node = field.ast.type_expr.unwrap() orelse continue;
@@ -314,7 +283,7 @@ fn renderNodes(
 
         const child_prefix = try std.fmt.allocPrint(arena, "{s}{s}", .{ prefix, if (last) "    " else "│   " });
 
-        if (show_options and node.kind == .leaf) {
+        if (show_options and node.command_type == .leaf) {
             try renderSignature(arena, writer, theme, node, child_prefix);
         }
         try renderNodes(arena, writer, theme, node.children, child_prefix, show_options);
@@ -378,7 +347,7 @@ fn toFlagName(arena: std.mem.Allocator, field: []const u8) ![]const u8 {
 const testing = std.testing;
 
 fn renderToString(arena: std.mem.Allocator, nodes: []const Node, show_options: bool) ![]const u8 {
-    const theme = Theme.initWithCapability(.no_color);
+    const theme = Theme.initWithCapability(.no_color, std.testing.io);
     var aw: std.Io.Writer.Allocating = .init(arena);
     try renderNodes(arena, &aw.writer, &theme, nodes, "", show_options);
     return aw.written();
@@ -446,13 +415,13 @@ test "renderNodes draws a sorted, annotated tree" {
     const nodes = [_]Node{
         .{
             .name = "config",
-            .kind = .pure_group,
+            .command_type = .pure_group,
             .children = &.{
-                .{ .name = "get", .kind = .leaf },
-                .{ .name = "set", .kind = .leaf },
+                .{ .name = "get", .command_type = .leaf },
+                .{ .name = "set", .command_type = .leaf },
             },
         },
-        .{ .name = "deploy", .kind = .leaf, .description = "Deploy the app" },
+        .{ .name = "deploy", .command_type = .leaf, .description = "Deploy the app" },
     };
 
     const out = try renderToString(arena, &nodes, false);
@@ -472,7 +441,7 @@ test "renderNodes with show_options lists args and options" {
     const nodes = [_]Node{
         .{
             .name = "add",
-            .kind = .leaf,
+            .command_type = .leaf,
             .args = &.{.{ .name = "title", .type_str = "[]const u8", .optional = false }},
             .options = &.{
                 .{ .name = "loud", .type_str = "bool", .optional = true },
@@ -489,63 +458,59 @@ test "renderNodes with show_options lists args and options" {
     try testing.expectEqualStrings(expected, out);
 }
 
-test "buildChildren discovers leaves and groups like the framework" {
+test "nodesFromMap sorts, maps kinds, and enriches with metadata" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    const io = std.testing.io;
 
-    var tmp = testing.tmpDir(.{});
+    // Source files the enrichment step reads for descriptions/options.
+    var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-
-    // A leaf with a description.
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(io, .{
         .sub_path = "deploy.zig",
         .data = "pub const meta = .{ .description = \"Ship it\" };",
     });
-    // index.zig at this level is a group landing, not a command -> skipped.
-    try tmp.dir.writeFile(.{ .sub_path = "index.zig", .data = "pub const meta = .{};" });
-    // A pure group (no index) with two subcommands.
-    try tmp.dir.makeDir("users");
-    try tmp.dir.writeFile(.{ .sub_path = "users/create.zig", .data = "pub const meta = .{};" });
-    try tmp.dir.writeFile(.{ .sub_path = "users/list.zig", .data = "pub const meta = .{};" });
-    // An optional group: only an index.zig, no subcommands.
-    try tmp.dir.makeDir("config");
-    try tmp.dir.writeFile(.{
-        .sub_path = "config/index.zig",
-        .data = "pub const meta = .{ .description = \"Settings\" };",
+    try tmp.dir.createDir(io, "users", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "users/list.zig", .data = "pub const meta = .{};" });
+
+    // A discovery result as produced by the framework's discoverInDir.
+    var users_sub = std.StringHashMap(CommandInfo).init(arena);
+    try users_sub.put("list", .{
+        .name = "list",
+        .path = &.{ "users", "list" },
+        .file_path = "users/list.zig",
+        .command_type = .leaf,
+        .subcommands = null,
     });
-    // An empty directory is not a command at all -> skipped.
-    try tmp.dir.makeDir("scratch");
+    var root = std.StringHashMap(CommandInfo).init(arena);
+    try root.put("users", .{
+        .name = "users",
+        .path = &.{"users"},
+        .file_path = "users", // pure group: a directory, yields no metadata
+        .command_type = .pure_group,
+        .subcommands = users_sub,
+    });
+    try root.put("deploy", .{
+        .name = "deploy",
+        .path = &.{"deploy"},
+        .file_path = "deploy.zig",
+        .command_type = .leaf,
+        .subcommands = null,
+    });
 
-    var dir = try tmp.dir.openDir(".", .{ .iterate = true });
-    defer dir.close();
-    const nodes = try buildChildren(arena, dir, 0);
+    const nodes = try nodesFromMap(arena, io, tmp.dir, &root);
 
-    // Sorted: config, deploy, users (scratch and index.zig excluded).
-    try testing.expectEqual(@as(usize, 3), nodes.len);
+    // Sorted by name: deploy, users.
+    try testing.expectEqual(@as(usize, 2), nodes.len);
 
-    try testing.expectEqualStrings("config", nodes[0].name);
-    try testing.expectEqual(Kind.optional_group, nodes[0].kind);
-    try testing.expectEqualStrings("Settings", nodes[0].description.?);
-    try testing.expectEqual(@as(usize, 0), nodes[0].children.len);
+    try testing.expectEqualStrings("deploy", nodes[0].name);
+    try testing.expectEqual(CommandType.leaf, nodes[0].command_type);
+    try testing.expectEqualStrings("Ship it", nodes[0].description.?);
 
-    try testing.expectEqualStrings("deploy", nodes[1].name);
-    try testing.expectEqual(Kind.leaf, nodes[1].kind);
-    try testing.expectEqualStrings("Ship it", nodes[1].description.?);
-
-    try testing.expectEqualStrings("users", nodes[2].name);
-    try testing.expectEqual(Kind.pure_group, nodes[2].kind);
-    try testing.expectEqual(@as(usize, 2), nodes[2].children.len);
-    try testing.expectEqualStrings("create", nodes[2].children[0].name);
-    try testing.expectEqualStrings("list", nodes[2].children[1].name);
-}
-
-test "isValidCommandName matches the framework rules" {
-    try testing.expect(isValidCommandName("deploy"));
-    try testing.expect(isValidCommandName("user_list"));
-    try testing.expect(isValidCommandName("get-data"));
-    try testing.expect(!isValidCommandName(""));
-    try testing.expect(!isValidCommandName("123cmd"));
-    try testing.expect(!isValidCommandName("../etc"));
-    try testing.expect(!isValidCommandName("a/b"));
+    try testing.expectEqualStrings("users", nodes[1].name);
+    try testing.expectEqual(CommandType.pure_group, nodes[1].command_type);
+    try testing.expect(nodes[1].description == null);
+    try testing.expectEqual(@as(usize, 1), nodes[1].children.len);
+    try testing.expectEqualStrings("list", nodes[1].children[0].name);
 }
