@@ -319,28 +319,54 @@ test "pipeline: postParse can rewrite the args the command receives" {
 }
 
 // ---------------------------------------------------------------------------
-// 8. onError on a command failure: observed, but not suppressible
+// 8. onError on a command failure is symmetric with the CommandNotFound path:
+//    returning true suppresses the error; returning false lets it propagate.
 // ---------------------------------------------------------------------------
 
-const ObserveErrPlugin = struct {
+const SuppressErrPlugin = struct {
     var seen: ?anyerror = null;
+    var post_success: ?bool = null;
     pub fn onError(_: anytype, err: anyerror) !bool {
         seen = err;
-        return true; // claims to handle it...
+        return true; // handle it -> suppressed
+    }
+    pub fn postExecute(_: anytype, success: bool) !void {
+        post_success = success;
     }
 };
 
-test "pipeline: onError observes a command failure but cannot suppress it" {
+test "pipeline: onError returning true suppresses a command-execution error" {
     const App = zcli.Registry.init(test_config)
         .register("fail", Fail)
-        .registerPlugin(ObserveErrPlugin)
+        .registerPlugin(SuppressErrPlugin)
         .build();
 
-    ObserveErrPlugin.seen = null;
-    // A command-execution error always propagates, even when onError returns
-    // true — onError on this path is observe-only (unlike CommandNotFound).
+    SuppressErrPlugin.seen = null;
+    SuppressErrPlugin.post_success = null;
+    // Handled -> the error does NOT propagate (symmetric with CommandNotFound).
+    try run(App, &.{"fail"});
+    try testing.expectEqual(@as(?anyerror, error.Boom), SuppressErrPlugin.seen);
+    // ...and execution falls through to postExecute, told the command failed.
+    try testing.expectEqual(@as(?bool, false), SuppressErrPlugin.post_success);
+}
+
+const PassThroughErrPlugin = struct {
+    var seen: ?anyerror = null;
+    pub fn onError(_: anytype, err: anyerror) !bool {
+        seen = err;
+        return false; // observe only -> error still propagates
+    }
+};
+
+test "pipeline: onError returning false lets a command error propagate" {
+    const App = zcli.Registry.init(test_config)
+        .register("fail", Fail)
+        .registerPlugin(PassThroughErrPlugin)
+        .build();
+
+    PassThroughErrPlugin.seen = null;
     try testing.expectError(error.Boom, run(App, &.{"fail"}));
-    try testing.expectEqual(@as(?anyerror, error.Boom), ObserveErrPlugin.seen);
+    try testing.expectEqual(@as(?anyerror, error.Boom), PassThroughErrPlugin.seen);
 }
 
 // ---------------------------------------------------------------------------

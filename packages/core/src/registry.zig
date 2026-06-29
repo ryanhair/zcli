@@ -1230,15 +1230,21 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             cmd.module.execute(args_instance, options_instance, context) catch |err| {
                                 success = false;
 
-                                // Run error hooks
+                                // Run error hooks. If a plugin handles the error
+                                // (returns true) it is suppressed — symmetric with
+                                // the CommandNotFound path — and execution falls
+                                // through to postExecute with success = false.
+                                var error_handled = false;
                                 inline for (sorted_plugins) |Plugin| {
                                     if (@hasDecl(Plugin, "onError")) {
-                                        const handled = try Plugin.onError(context, err);
-                                        if (handled) break;
+                                        if (try Plugin.onError(context, err)) {
+                                            error_handled = true;
+                                            break;
+                                        }
                                     }
                                 }
 
-                                return err;
+                                if (!error_handled) return err;
                             };
                         } else {
                             // Command group without execute function (metadata-only)
@@ -1468,14 +1474,19 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
                         CommandModule.execute(cmd_args, cmd_options, context) catch |err| {
                             success = false;
-                            // Run onError hooks
+                            // Run onError hooks. A handled error (returns true) is
+                            // suppressed and falls through to postExecute with
+                            // success = false; otherwise it propagates.
+                            var error_handled = false;
                             inline for (sorted_plugins) |HookPlugin| {
                                 if (@hasDecl(HookPlugin, "onError")) {
-                                    const handled = try HookPlugin.onError(context, err);
-                                    if (handled) break;
+                                    if (try HookPlugin.onError(context, err)) {
+                                        error_handled = true;
+                                        break;
+                                    }
                                 }
                             }
-                            return err;
+                            if (!error_handled) return err;
                         };
 
                         // Run postExecute hooks
