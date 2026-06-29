@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const Context = @import("command_registry").Context;
 
 pub const meta = .{
     .description = "Initialize a new zcli project",
@@ -26,7 +27,7 @@ pub const Options = struct {
     version: ?[]const u8 = null,
 };
 
-pub fn execute(args: Args, options: Options, context: anytype) !void {
+pub fn execute(args: Args, options: Options, context: *Context) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
     var stderr = context.stderr();
@@ -231,6 +232,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     const hello_content =
         \\const std = @import("std");
         \\const zcli = @import("zcli");
+        \\const Context = @import("command_registry").Context;
         \\
         \\pub const meta = .{
         \\    .description = "Say hello to someone",
@@ -248,8 +250,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         \\    loud: bool = false,
         \\};
         \\
-        \\pub fn execute(args: Args, options: Options, context: anytype) !void {
-        \\    comptime zcli.assertValidContext(@TypeOf(context));
+        \\pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    const greeting = if (options.loud) "HELLO" else "Hello";
         \\    try context.stdout().print("{s}, {s}!\n", .{ greeting, args.name });
         \\}

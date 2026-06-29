@@ -124,6 +124,10 @@ The framework uses comptime introspection on this registry to:
 Each command file exports a standardized structure:
 
 ```zig
+// Optional: name the app's generated context type for editor hints.
+// Omit this and use `context: anytype` for a reusable, app-agnostic command.
+const Context = @import("command_registry").Context;
+
 pub const meta = .{
     .description = "Search for users by name",
     .usage = "search <query> [files...] [--limit <n>]",
@@ -156,10 +160,11 @@ pub const Options = struct {
     verbose: bool = false,
 };
 
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+pub fn execute(args: Args, options: Options, context: *Context) !void {
     // Command implementation
     // Access: args.query, args.files, options.limit, etc.
-    // Context provides: allocator, io (stdout/stderr/stdin), environment, and more
+    // Context provides: allocator, io (stdout/stderr/stdin), environment,
+    //   plugins.<plugin_id> (type-safe plugin data), and more
 }
 ```
 
@@ -684,19 +689,20 @@ pub const global_options = [_]zcli.GlobalOption{
     zcli.option("verbose", bool, .{ .short = 'v', .default = false, .description = "Verbose output" }),
 };
 
-// Lifecycle hooks (all optional)
-pub fn handleGlobalOption(context: *zcli.Context, name: []const u8, value: anytype) !void { }
-pub fn preExecute(context: *zcli.Context, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
-pub fn postExecute(context: *zcli.Context, result: anytype) !void { }
-pub fn onError(context: *zcli.Context, err: anyerror) !bool { }
+// Lifecycle hooks (all optional). Plugins are compiled independently of the
+// host app, so hooks take `context: anytype` rather than a named Context type.
+pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !void { }
+pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
+pub fn postExecute(context: anytype, result: anytype) !void { }
+pub fn onError(context: anytype, err: anyerror) !bool { }
 
-// Plugin can provide commands
+// Plugin can provide commands (also app-agnostic, so `context: anytype`)
 pub const commands = struct {
     pub const help = struct {
         pub const Args = struct { command: ?[]const u8 = null };
         pub const Options = struct {};
         pub const meta = .{ .description = "Show help for commands" };
-        pub fn execute(args: Args, options: Options, context: *zcli.Context) !void { }
+        pub fn execute(args: Args, options: Options, context: anytype) !void { }
     };
 };
 ```
@@ -768,8 +774,8 @@ pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void 
     if (data.database) |db| db.close(allocator);
 }
 
-// Access in any hook or command (context is `anytype`):
-pub fn execute(args: Args, options: Options, context: anytype) !void {
+// Access in any hook or command:
+pub fn execute(args: Args, options: Options, context: *Context) !void {
     if (context.plugins.my_plugin.database) |db| {
         // Use db — fully typed, no casts, no lookups
     }
@@ -779,6 +785,34 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 `ContextData` structs must be default-constructible; the generated `Context`
 initializes each plugin's field to `.{}`. See `ComputedContextType` in
 `packages/core/src/registry.zig`.
+
+**Typing the `context` parameter:**
+
+The `Context` type is computed per-app from your `config` + plugin set, so each
+app has its own concrete type. A command can name it in two ways — both receive
+the same value (a `*Context`, passed by the dispatcher):
+
+```zig
+// Option A — concrete type (recommended for app-local commands).
+// Full autocomplete, go-to-definition, and errors at the definition site.
+const Context = @import("command_registry").Context;
+
+pub fn execute(args: Args, options: Options, context: *Context) !void { ... }
+```
+
+```zig
+// Option B — generic (for reusable/library commands and plugin hooks).
+// Portable across any app, but no editor hints on `context`.
+pub fn execute(args: Args, options: Options, context: anytype) !void { ... }
+```
+
+Naming the concrete type does **not** create an import cycle: `command_registry`
+imports the command modules, but `Context` depends only on `config` + plugins —
+never on the commands — so the back-reference resolves cleanly. The build wires
+`command_registry` as an available import for every command module (see
+`createDiscoveredModules` in `packages/core/src/build_utils/module_creation.zig`).
+Plugin hooks stay `anytype` because a plugin is compiled independently of the
+app that hosts it.
 
 ## 13. Developer Experience
 

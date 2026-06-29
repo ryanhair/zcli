@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const Context = @import("command_registry").Context;
 const zprogress = zcli.zprogress;
 
 pub const meta = .{
@@ -10,7 +11,7 @@ pub const meta = .{
 pub const Args = struct {};
 pub const Options = struct {};
 
-pub fn execute(_: Args, _: Options, context: anytype) !void {
+pub fn execute(_: Args, _: Options, context: *Context) !void {
     const io = context.io.io;
     var spinner = zprogress.spinner(io, .{ .style = .dots });
     spinner.start("Connecting to server...");

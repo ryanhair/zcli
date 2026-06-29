@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const Context = @import("command_registry").Context;
 const store = @import("store");
 const zinput = zcli.zinput;
 const ztheme = zcli.ztheme;
@@ -12,7 +13,7 @@ pub const meta = .{
 pub const Args = struct {};
 pub const Options = struct {};
 
-pub fn execute(_: Args, _: Options, context: anytype) !void {
+pub fn execute(_: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
     var parsed = try store.load(allocator, context.io.io);
     defer parsed.deinit();
