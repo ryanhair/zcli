@@ -30,7 +30,8 @@ pub fn main(init: std.process.Init) !void {
             try allocator.dupe(u8, output_dir);
         defer allocator.free(dir);
 
-        // Note: directory creation is handled by the build system step
+        // Ensure the output directory exists before writing into it.
+        try std.Io.Dir.cwd().createDirPath(io, dir);
 
         if (std.mem.eql(u8, format, "man")) {
             try writeManPages(allocator, io, dir, commands, global_opts);
