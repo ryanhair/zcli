@@ -729,99 +729,6 @@ test "plugin security: plugin isolation" {
     try testing.expect(result2 == null);
 }
 
-// Test plugin with global options
-const SystemVerbosePlugin = struct {
-    pub const global_options = [_]zcli.GlobalOption{
-        zcli.option("verbose", bool, .{ .short = 'v', .default = false, .description = "Enable verbose output" }),
-        zcli.option("log-level", []const u8, .{ .default = "info", .description = "Set log level (debug, info, warn, error)" }),
-    };
-
-    pub fn handleGlobalOption(
-        context: *zcli.Context,
-        option_name: []const u8,
-        value: anytype,
-    ) !void {
-        if (std.mem.eql(u8, option_name, "verbose")) {
-            const verbose = if (@TypeOf(value) == bool) value else false;
-            context.setVerbosity(verbose);
-        } else if (std.mem.eql(u8, option_name, "log-level")) {
-            const log_level = if (@TypeOf(value) == []const u8) value else "info";
-            try context.setLogLevel(log_level);
-        }
-    }
-};
-
-// Test plugin with lifecycle hooks (using context state instead of static vars)
-const SystemLifecyclePlugin = struct {
-    // No more static state!
-
-    pub fn setHookState(context: *zcli.Context, hook_name: []const u8, called: bool) !void {
-        const value = if (called) "true" else "false";
-        try context.setGlobalData(hook_name, value);
-    }
-
-    pub fn getHookState(context: *zcli.Context, hook_name: []const u8) bool {
-        return context.getGlobalData(bool, hook_name) orelse false;
-    }
-
-    pub fn preParse(
-        context: *zcli.Context,
-        args: []const []const u8,
-    ) ![]const []const u8 {
-        try setHookState(context, "pre_parse_called", true);
-        return args;
-    }
-
-    pub fn postParse(
-        context: *zcli.Context,
-        command_path: []const u8,
-        parsed_args: zcli.ParsedArgs,
-    ) !?zcli.ParsedArgs {
-        _ = command_path;
-        try setHookState(context, "post_parse_called", true);
-        return parsed_args;
-    }
-
-    pub fn preExecute(
-        context: *zcli.Context,
-        command_path: []const u8,
-        args: zcli.ParsedArgs,
-    ) !?zcli.ParsedArgs {
-        _ = command_path;
-        try setHookState(context, "pre_execute_called", true);
-        return args;
-    }
-
-    pub fn postExecute(
-        context: *zcli.Context,
-        command_path: []const u8,
-        success: bool,
-    ) !void {
-        _ = command_path;
-        _ = success;
-        try setHookState(context, "post_execute_called", true);
-    }
-
-    pub fn onError(
-        context: *zcli.Context,
-        err: anyerror,
-        command_path: []const u8,
-    ) !void {
-        _ = command_path;
-        // Handle the error appropriately
-        switch (err) {
-            error.TestError => {
-                // Expected test error, just mark as called
-                try setHookState(context, "on_error_called", true);
-            },
-            else => {
-                // Unexpected error, mark as called and continue
-                try setHookState(context, "on_error_called", true);
-            },
-        }
-    }
-};
-
 // Test plugin with argument transformation
 const SystemAliasPlugin = struct {
     pub const aliases = .{
@@ -918,72 +825,6 @@ const SystemConsumeOptionsPlugin = struct {
         };
     }
 };
-
-// Test for global options registration and handling
-test "plugin global options registration" {
-    const allocator = testing.allocator;
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(SystemVerbosePlugin)
-        .build();
-
-    var app = TestRegistry.init();
-    var io = zcli.IO.init();
-    io.finalize();
-
-    var context = zcli.Context.init(allocator, &io);
-    defer context.deinit();
-
-    // Test handling of global options
-    const args = [_][]const u8{ "--verbose", "command", "arg" };
-    const result = try app.parseGlobalOptions(&context, &args);
-    defer context.allocator.free(result.consumed);
-    defer context.allocator.free(result.remaining);
-
-    try testing.expect(result.consumed.len == 1);
-    try testing.expect(result.consumed[0] == 0);
-    try testing.expect(result.remaining.len == 2);
-    try testing.expectEqualStrings(result.remaining[0], "command");
-    try testing.expectEqualStrings(result.remaining[1], "arg");
-}
-
-// Test for lifecycle hooks execution order
-test "plugin lifecycle hooks execution order" {
-    // No longer need to reset static state
-
-    const TestCommand = struct {
-        pub const Args = zcli.NoArgs;
-        pub const Options = zcli.NoOptions;
-
-        pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-            _ = args;
-            _ = options;
-            _ = context;
-        }
-    };
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .register("system-test", TestCommand)
-        .registerPlugin(SystemLifecyclePlugin)
-        .build();
-
-    var app = TestRegistry.init();
-
-    const args = [_][]const u8{"system-test"};
-    try app.execute(&args);
-
-    // NOTE: Since execute() creates its own context internally, we can't easily verify
-    // hook states. For now, the test passes if it completes without hanging.
-    // The elimination of static state prevents race conditions between tests.
-}
 
 // Test for argument transformation
 test "plugin argument transformation" {
@@ -1090,47 +931,6 @@ test "plugin option consumption" {
     try testing.expect(result.consumed_indices.len == 2); // --config and its value
 }
 
-// Test for multiple plugins interaction
-test "multiple plugins interaction" {
-    const allocator = testing.allocator;
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(SystemVerbosePlugin)
-        .registerPlugin(SystemAliasPlugin)
-        .registerPlugin(SystemLifecyclePlugin)
-        .build();
-
-    var app = TestRegistry.init();
-    var io = zcli.IO.init();
-    io.finalize();
-
-    var context = zcli.Context.init(allocator, &io);
-    defer context.deinit();
-
-    // No longer need to reset static state
-
-    // Test that multiple plugins can work together
-    const args = [_][]const u8{ "--verbose", "co", "main" };
-
-    // First, global options should be extracted
-    const global_result = try app.parseGlobalOptions(&context, &args);
-    defer context.allocator.free(global_result.consumed);
-    defer context.allocator.free(global_result.remaining);
-    try testing.expect(global_result.consumed.len == 1);
-
-    // Then, aliases should be transformed
-    const transform_result = try app.transformArgs(&context, global_result.remaining);
-    defer if (transform_result.args.ptr != global_result.remaining.ptr) context.allocator.free(transform_result.args);
-    try testing.expectEqualStrings(transform_result.args[0], "checkout");
-
-    // Note: Lifecycle hooks are only called during full execute() flow,
-    // not when calling individual methods like parseGlobalOptions/transformArgs
-}
-
 // Test for plugin priority and ordering
 test "plugin execution priority" {
     // This test verifies plugins are sorted by priority during compilation
@@ -1191,19 +991,15 @@ test "plugin error handling" {
         .app_description = "Test application",
     })
         .register("error", ErrorCommand)
-        .registerPlugin(SystemLifecyclePlugin)
         .build();
 
     var app = TestRegistry.init();
-
-    // No longer need to reset static state
 
     const args = [_][]const u8{"error"};
     const result = app.execute(&args);
 
     // Should return error
     try testing.expectError(error.TestError, result);
-    // NOTE: Can't easily verify onError hook was called since execute() creates its own context
 }
 
 // NOTE: Command override prevention and global option conflict detection

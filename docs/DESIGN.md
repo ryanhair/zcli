@@ -746,25 +746,39 @@ const cmd_registry = zcli.build(b, exe, zcli_module, .{
 - Optional REPL for command exploration
 - Tab completion using comptime-generated data
 
-**Type-Safe Context Extensions (Planned):**
+**Type-Safe Context Extensions:**
 
-Replace the current StringHashMap with a strongly-typed extension system:
+Plugins attach their own state to the context with full compile-time type
+safety — there is no `StringHashMap` or runtime key lookup. A plugin declares a
+`plugin_id` and a `ContextData` struct; the generated `Context` contains one
+field per plugin, named by `plugin_id`, and accessed as
+`context.plugins.<plugin_id>`:
 
 ```zig
-// Define extension types at compile time
-const Extensions = struct {
+// In the plugin:
+pub const plugin_id = "my_plugin";
+
+pub const ContextData = struct {
     database: ?*Database = null,
-    logger: Logger,
-    config: Config,
+    verbose: bool = false,
 };
 
-// Access in commands with full type safety
-pub fn execute(args: Args, options: Options, context: *Context) !void {
-    if (context.extensions.database) |db| {
-        // Use database
+// Optional cleanup hook, called from Context.deinit():
+pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
+    if (data.database) |db| db.close(allocator);
+}
+
+// Access in any hook or command (context is `anytype`):
+pub fn execute(args: Args, options: Options, context: anytype) !void {
+    if (context.plugins.my_plugin.database) |db| {
+        // Use db — fully typed, no casts, no lookups
     }
 }
 ```
+
+`ContextData` structs must be default-constructible; the generated `Context`
+initializes each plugin's field to `.{}`. See `ComputedContextType` in
+`packages/core/src/registry.zig`.
 
 ## 13. Developer Experience
 
