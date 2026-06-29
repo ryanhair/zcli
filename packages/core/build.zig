@@ -61,14 +61,12 @@ pub fn build(b: *std.Build) void {
         "src/build_utils.zig", // Standalone utility (has its own tests)
     };
 
-    // Plugin test files
-    const plugin_test_files = [_][]const u8{
-        "src/plugin_global_options_test.zig",
-        "src/plugin_system_test.zig",
-        "src/plugin_integration_test.zig",
-        "src/plugin_test.zig",
-        "src/plugin_transformation_test.zig",
-    };
+    // NOTE: A previous `plugin_test_files` list referenced five src/plugin_*_test.zig
+    // files that were dropped in the monorepo refactor (commit 0aa79f7) and never
+    // re-added. They targeted a since-replaced plugin/context API, so they were
+    // removed rather than restored as-is. Plugin behavior is exercised by the
+    // feature-plugin tests below and the inline tests in registry.zig/zcli.zig;
+    // the pipeline-level coverage is being rebuilt in plugin_pipeline_test.zig.
 
     // Integration and edge case tests
     const integration_test_files = [_][]const u8{
@@ -100,25 +98,6 @@ pub fn build(b: *std.Build) void {
         const run_tests = b.addRunArtifact(tests);
         test_core_step.dependOn(&run_tests.step);
         test_step.dependOn(&run_tests.step);
-    }
-
-    // Plugin tests - deadlock issue resolved by using stderr for output
-    for (plugin_test_files) |test_file| {
-        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
-            .root_source_file = b.path(test_file),
-            .target = target,
-            .optimize = optimize,
-        });
-        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
-        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
-        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
-        test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
-        const tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        const run_tests = b.addRunArtifact(tests);
-        test_plugins_step.dependOn(&run_tests.step);
     }
 
     // Add integration tests (parallel execution)
@@ -188,7 +167,7 @@ pub fn build(b: *std.Build) void {
 
     // Sequential test execution (separate from parallel execution above)
     // This creates a completely separate dependency chain for sequential execution
-    const all_test_files = core_test_files ++ plugin_test_files ++ integration_test_files ++ security_test_files;
+    const all_test_files = core_test_files ++ integration_test_files ++ security_test_files;
     var previous_step: ?*std.Build.Step = null;
 
     for (all_test_files) |test_file| {
