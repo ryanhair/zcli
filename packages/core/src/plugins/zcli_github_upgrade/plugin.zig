@@ -517,7 +517,7 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cl
     };
 
     // Calculate actual checksum of the downloaded binary
-    const actual_checksum = try sha256FileHex(io, binary_path);
+    const actual_checksum = try sha256FileHex(io, std.Io.Dir.cwd(), binary_path);
 
     // Compare checksums
     if (!std.mem.eql(u8, expected_checksum, &actual_checksum)) {
@@ -545,9 +545,9 @@ fn parseExpectedChecksum(content: []const u8, binary_name: []const u8) ?[]const 
     return null;
 }
 
-/// Compute the lowercase hex SHA-256 digest of the file at `path`.
-fn sha256FileHex(io: std.Io, path: []const u8) ![64]u8 {
-    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+/// Compute the lowercase hex SHA-256 digest of `sub_path` within `dir`.
+fn sha256FileHex(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) ![64]u8 {
+    const file = try dir.openFile(io, sub_path, .{});
     defer file.close(io);
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
@@ -842,13 +842,11 @@ test "sha256FileHex - matches known digest" {
 
     // Write an empty file and hash it through the real file-reading path.
     {
-        const f = try tmp.dir.createFile("empty.bin", .{});
-        f.close();
+        const f = try tmp.dir.createFile(std.testing.io, "empty.bin", .{});
+        f.close(std.testing.io);
     }
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "empty.bin");
-    defer std.testing.allocator.free(path);
 
-    const digest = try sha256FileHex(path);
+    const digest = try sha256FileHex(std.testing.io, tmp.dir, "empty.bin");
     try std.testing.expectEqualStrings(empty_digest, &digest);
 }
 
@@ -858,12 +856,9 @@ test "sha256FileHex - hashes file contents" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "data.bin", .data = "abc" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "data.bin", .data = "abc" });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "data.bin");
-    defer std.testing.allocator.free(path);
-
-    const digest = try sha256FileHex(path);
+    const digest = try sha256FileHex(std.testing.io, tmp.dir, "data.bin");
     try std.testing.expectEqualStrings(abc_digest, &digest);
 }
 
@@ -872,17 +867,14 @@ test "checksum verification - end-to-end parse + hash + compare" {
     // checksums.txt body, hash the local binary, and confirm they match/mismatch.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "myapp-x86_64-linux", .data = "abc" });
-
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "myapp-x86_64-linux");
-    defer std.testing.allocator.free(path);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "myapp-x86_64-linux", .data = "abc" });
 
     const abc_digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const good = try std.fmt.allocPrint(std.testing.allocator, "{s}  myapp-x86_64-linux\n", .{abc_digest});
     defer std.testing.allocator.free(good);
 
     const expected = parseExpectedChecksum(good, "myapp-x86_64-linux").?;
-    const actual = try sha256FileHex(path);
+    const actual = try sha256FileHex(std.testing.io, tmp.dir, "myapp-x86_64-linux");
     try std.testing.expect(std.mem.eql(u8, expected, &actual));
 
     // A tampered binary must NOT match the recorded checksum.

@@ -144,11 +144,11 @@ test "NumberConfig defaults" {
 
 test "non-TTY: parses a typed number" {
     var input = "42\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var reader_stream: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var writer_stream: std.Io.Writer = .fixed(&output);
 
-    const result = try number(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try number(&writer_stream, &reader_stream, .{
         .message = "Count:",
     });
     try std.testing.expectEqual(@as(i64, 42), result);
@@ -159,11 +159,11 @@ test "non-TTY: multi-digit value survives the readLine buffer boundary" {
     // the digits could be clobbered before parseInt ran. A longer value makes
     // that corruption observable if it ever returns.
     var input = "1234567\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var reader_stream: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var writer_stream: std.Io.Writer = .fixed(&output);
 
-    const result = try number(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try number(&writer_stream, &reader_stream, .{
         .message = "Value:",
     });
     try std.testing.expectEqual(@as(i64, 1234567), result);
@@ -171,11 +171,11 @@ test "non-TTY: multi-digit value survives the readLine buffer boundary" {
 
 test "non-TTY: empty input falls back to the default" {
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var reader_stream: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var writer_stream: std.Io.Writer = .fixed(&output);
 
-    const result = try number(writer_stream.writer(), reader_stream.reader(), .{
+    const result = try number(&writer_stream, &reader_stream, .{
         .message = "Port:",
         .default = 3000,
     });
@@ -184,22 +184,22 @@ test "non-TTY: empty input falls back to the default" {
 
 test "non-TTY: empty input with no default errors" {
     var input = "\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var reader_stream: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var writer_stream: std.Io.Writer = .fixed(&output);
 
-    try std.testing.expectError(error.InvalidNumber, number(writer_stream.writer(), reader_stream.reader(), .{
+    try std.testing.expectError(error.InvalidNumber, number(&writer_stream, &reader_stream, .{
         .message = "Port:",
     }));
 }
 
 test "non-TTY: non-numeric input errors" {
     var input = "abc\n".*;
-    var reader_stream = std.io.fixedBufferStream(&input);
+    var reader_stream: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
-    var writer_stream = std.io.fixedBufferStream(&output);
+    var writer_stream: std.Io.Writer = .fixed(&output);
 
-    try std.testing.expectError(error.InvalidNumber, number(writer_stream.writer(), reader_stream.reader(), .{
+    try std.testing.expectError(error.InvalidNumber, number(&writer_stream, &reader_stream, .{
         .message = "Count:",
     }));
 }

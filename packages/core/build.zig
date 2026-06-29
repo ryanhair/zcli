@@ -177,9 +177,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("vterm", vterm_dep.module("vterm"));
-        test_mod.addImport("yaml", yaml_dep.module("yaml"));
-        test_mod.addImport("toml", toml_dep.module("toml"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });

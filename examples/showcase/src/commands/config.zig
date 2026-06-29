@@ -39,7 +39,8 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
     var parsed: ?std.json.Parsed(Config) = null;
     defer if (parsed) |p| p.deinit();
     var current = Config{};
-    if (std.fs.cwd().readFileAlloc(allocator, CONFIG_FILE, 1024 * 1024)) |content| {
+    const cwd = std.Io.Dir.cwd();
+    if (cwd.readFileAlloc(context.io.io, CONFIG_FILE, allocator, .limited(1024 * 1024))) |content| {
         defer allocator.free(content);
         if (std.json.parseFromSlice(Config, allocator, content, .{
             .allocate = .alloc_always,
@@ -77,10 +78,12 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         .list = .{ .all = show_done },
     };
 
-    const file = try std.fs.cwd().createFile(CONFIG_FILE, .{});
-    defer file.close();
-    var file_writer = file.writer(&.{});
+    const file = try cwd.createFile(context.io.io, CONFIG_FILE, .{});
+    defer file.close(context.io.io);
+    var buf: [4096]u8 = undefined;
+    var file_writer = file.writer(context.io.io, &buf);
     try file_writer.interface.print("{f}", .{std.json.fmt(new_config, .{ .whitespace = .indent_2 })});
+    try file_writer.interface.flush();
 
     try writer.writeAll("\r\n  ");
     try ztheme.theme("✔ Saved to ").success().render(writer, &context.theme);
