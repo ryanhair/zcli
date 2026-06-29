@@ -172,19 +172,12 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         \\    const zcli = @import("zcli");
         \\    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{{
         \\        .commands_dir = "src/commands",
-        \\        .plugins = &.{{ .{{
-        \\            .name = "zcli_help",
-        \\            .path = "src/plugins/zcli_help",
-        \\        }}, .{{
-        \\            .name = "zcli_version",
-        \\            .path = "src/plugins/zcli_version",
-        \\        }}, .{{
-        \\            .name = "zcli_not_found",
-        \\            .path = "src/plugins/zcli_not_found",
-        \\        }}, .{{
-        \\            .name = "zcli_completions",
-        \\            .path = "src/plugins/zcli_completions",
-        \\        }} }},
+        \\        .plugins = &.{{
+        \\            zcli.builtin(.help, .{{}}),
+        \\            zcli.builtin(.version, .{{}}),
+        \\            zcli.builtin(.not_found, .{{}}),
+        \\            zcli.builtin(.completions, .{{}}),
+        \\        }},
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",
         \\        .app_description = "{s}",

@@ -186,8 +186,11 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
             std.process.exit(1);
         };
 
-        // Check if plugin has config and generate init code
-        const init_code = if (@hasField(@TypeOf(plugin_config), "config"))
+        // Check if plugin has a non-empty config and generate init code.
+        // An empty config (e.g. `builtin(.help, .{})`) means no `.init(...)` call.
+        const has_config = @hasField(@TypeOf(plugin_config), "config") and
+            @typeInfo(@TypeOf(plugin_config.config)).@"struct".fields.len > 0;
+        const init_code = if (has_config)
             configToInitString(b.allocator, plugin_config.config)
         else
             null;
