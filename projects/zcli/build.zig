@@ -11,6 +11,14 @@ pub fn build(b: *std.Build) void {
     });
     const zcli_module = zcli_dep.module("zcli");
 
+    // Native filesystem watcher, used by the `dev` command. Exposed to command
+    // modules via shared_modules below (only `dev` references it).
+    const nightwatch_dep = b.dependency("nightwatch", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const nightwatch_module = nightwatch_dep.module("nightwatch");
+
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "zcli",
@@ -51,6 +59,9 @@ pub fn build(b: *std.Build) void {
         } },
         .app_name = "zcli",
         .app_description = "Build beautiful CLIs with zcli - scaffold projects, add commands, and more",
+        .shared_modules = &[_]zcli.SharedModule{
+            .{ .name = "nightwatch", .module = nightwatch_module },
+        },
     });
 
     exe.root_module.addImport("command_registry", cmd_registry);
@@ -88,9 +99,10 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
-    // Command modules with their own unit tests (only need the zcli module).
+    // Command modules with their own unit tests.
     const command_test_files = [_][]const u8{
         "src/commands/tree.zig",
+        "src/commands/dev.zig",
     };
     for (command_test_files) |path| {
         const mod = b.addModule(b.fmt("test-{s}", .{path}), .{
@@ -99,6 +111,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         mod.addImport("zcli", zcli_module);
+        mod.addImport("nightwatch", nightwatch_module);
         const cmd_tests = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(cmd_tests).step);
     }

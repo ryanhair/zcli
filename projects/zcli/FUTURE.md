@@ -62,17 +62,22 @@ piped.
 
 **Impact:** Visual representation helps maintain mental model as projects grow.
 
-### Live Development (`zcli dev`)
+### ✅ Live Development (`zcli dev`)
 
 ```bash
 zcli dev
 # Watches src/ for changes, rebuilds automatically
 # Shows build errors in real-time
-# Runs your CLI automatically after successful build
 
 zcli dev -- users create alice@example.com
 # Auto-rebuild + run specific command on changes
 ```
+
+Uses native filesystem events (the `nightwatch` dependency: kqueue/FSEvents/
+inotify/ReadDirectoryChangesW) rather than polling. A background watcher thread
+signals the main loop, which debounces and runs `zig build` (or `zig build run --
+<command>` when a command is given), streaming zig's own output. Watches `src/`
+only — watching the project root would self-trigger on build artifacts.
 
 **Impact:** Makes iteration instant. No more manual zig build → run → repeat cycle.
 
