@@ -773,36 +773,6 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
     return try buffer.toOwnedSlice(context.allocator);
 }
 
-// Context extension - optional configuration for the help plugin
-pub const ContextExtension = struct {
-    show_examples: bool = true,
-    show_tips: bool = true,
-    color_output: bool = true,
-    max_width: usize = 80,
-    // Store command metadata for help generation
-    command_metadata: std.StringHashMap(CommandMetadata),
-
-    pub fn init(allocator: std.mem.Allocator) !@This() {
-        return .{
-            .show_examples = true,
-            .show_tips = true,
-            .color_output = std.io.tty.detectConfig(std.fs.File.stderr()) != .no_color,
-            .max_width = 80,
-            .command_metadata = std.StringHashMap(CommandMetadata).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *@This()) void {
-        self.command_metadata.deinit();
-    }
-};
-
-/// Metadata about a command for help generation
-const CommandMetadata = struct {
-    description: ?[]const u8 = null,
-    examples: ?[]const []const u8 = null,
-};
-
 test {
     std.testing.refAllDecls(@This());
 }

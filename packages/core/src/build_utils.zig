@@ -420,22 +420,11 @@ const IntegrationMockPlugin = struct {
         };
     }
 
-    // Context extension
-    pub const ContextExtension = struct {
-        initialized: bool,
-        value: i32,
-
-        pub fn init(allocator: std.mem.Allocator) !@This() {
-            _ = allocator;
-            return .{
-                .initialized = true,
-                .value = 42,
-            };
-        }
-
-        pub fn deinit(self: *@This()) void {
-            self.initialized = false;
-        }
+    // Type-safe context data (default-constructed by the generated Context)
+    pub const plugin_id = "integration_mock";
+    pub const ContextData = struct {
+        initialized: bool = true,
+        value: i32 = 42,
     };
 
     // Plugin commands
@@ -463,17 +452,12 @@ const TestData = struct {
 };
 
 
-test "context extension lifecycle" {
-    const allocator = std.testing.allocator;
-
-    // Test initialization
-    var ext = try IntegrationMockPlugin.ContextExtension.init(allocator);
-    try std.testing.expect(ext.initialized == true);
-    try std.testing.expectEqual(@as(i32, 42), ext.value);
-
-    // Test deinit
-    ext.deinit();
-    try std.testing.expect(ext.initialized == false);
+test "context data defaults" {
+    // ContextData is a plain, default-constructible struct. The generated
+    // Context stores one per plugin and exposes it as `context.plugins.<plugin_id>`.
+    const data = IntegrationMockPlugin.ContextData{};
+    try std.testing.expect(data.initialized == true);
+    try std.testing.expectEqual(@as(i32, 42), data.value);
 }
 
 test "plugin command discovery simulation" {
@@ -633,13 +617,9 @@ test "plugin with partial features" {
             };
         }
 
-        pub const ContextExtension = struct {
-            data: []const u8,
-
-            pub fn init(allocator: std.mem.Allocator) !@This() {
-                _ = allocator;
-                return .{ .data = "partial" };
-            }
+        pub const plugin_id = "integration_partial";
+        pub const ContextData = struct {
+            data: []const u8 = "partial",
         };
         // No error transformer, no help transformer, no commands
     };
@@ -647,7 +627,7 @@ test "plugin with partial features" {
     try std.testing.expect(@hasDecl(IntegrationPartialPlugin, "transformCommand"));
     try std.testing.expect(!@hasDecl(IntegrationPartialPlugin, "transformError"));
     try std.testing.expect(!@hasDecl(IntegrationPartialPlugin, "transformHelp"));
-    try std.testing.expect(@hasDecl(IntegrationPartialPlugin, "ContextExtension"));
+    try std.testing.expect(@hasDecl(IntegrationPartialPlugin, "ContextData"));
     try std.testing.expect(!@hasDecl(IntegrationPartialPlugin, "commands"));
 }
 

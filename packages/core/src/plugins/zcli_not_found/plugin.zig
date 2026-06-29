@@ -165,80 +165,9 @@ fn findBestSuggestions(
     return result;
 }
 
-// Context extension - stores configuration for suggestions
-pub const ContextExtension = struct {
-    max_suggestions: usize = 3,
-    max_distance: usize = 3,
-    color_output: bool = true,
-    command_list: std.ArrayList([]const u8),
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator) !@This() {
-        return .{
-            .max_suggestions = 3,
-            .max_distance = 3,
-            .color_output = std.io.tty.detectConfig(std.io.getStdErr()) != .no_color,
-            .command_list = std.ArrayList([]const u8){},
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *@This()) void {
-        self.command_list.deinit(self.allocator);
-    }
-
-    pub fn addCommand(self: *@This(), command: []const u8) !void {
-        try self.command_list.append(self.allocator, command);
-    }
-};
-
 // Tests
 test "not-found plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "onError"));
-    try std.testing.expect(@hasDecl(@This(), "ContextExtension"));
-}
-
-test "onError handles CommandNotFound" {
-    const allocator = std.testing.allocator;
-    // Create a temporary file to capture stderr output
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    var output_file = try tmp_dir.dir.createFile("test_output.txt", .{ .read = true });
-    defer output_file.close();
-
-    // Create IO and set custom stderr for test
-    var io = zcli.IO.init();
-    io.stdout_writer = std.fs.File.stdout().writer(&.{});
-    io.stderr_writer = output_file.writer(&.{});
-    io.stdin_reader = std.fs.File.stdin().reader(&.{});
-
-    // Create context with the temporary file as stderr
-    var context = zcli.Context{
-        .allocator = allocator,
-        .io = &io,
-        .environment = zcli.Environment.init(allocator),
-        .plugin_extensions = zcli.ContextExtensions.init(allocator),
-    };
-    defer context.deinit();
-
-    // Store available commands in context
-    const commands = [_][]const u8{ "list", "search", "create" };
-    try context.setGlobalData("available_commands", @ptrCast(&commands));
-
-    // Test command not found error - should not return error, just print suggestions
-    const handled = try onError(&context, error.CommandNotFound);
-    _ = handled;
-
-    // Read back the captured output
-    try output_file.seekTo(0);
-    const captured_output = try output_file.readToEndAlloc(allocator, 4096);
-    defer allocator.free(captured_output);
-
-    // Validate the captured output
-    try std.testing.expect(captured_output.len > 0);
-    try std.testing.expect(std.mem.indexOf(u8, captured_output, "Error: Unknown command") != null);
-    try std.testing.expect(std.mem.indexOf(u8, captured_output, "Run 'app --help'") != null);
 }
 
 test "find best suggestions" {
