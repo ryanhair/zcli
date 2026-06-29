@@ -60,6 +60,10 @@ pub fn createDiscoveredModules(
                     .root_source_file = b.path(full_path),
                 });
                 cmd_module.addImport("zcli", zcli_module);
+                // Let commands optionally name the generated Context type via
+                // `@import("command_registry").Context`. The back-reference is
+                // safe: Context depends only on config + plugins, not commands.
+                cmd_module.addImport("command_registry", registry_module);
 
                 // Add shared modules
                 for (shared_modules) |shared_mod| {
@@ -84,6 +88,7 @@ pub fn createDiscoveredModules(
                 .root_source_file = b.path(full_path),
             });
             cmd_module.addImport("zcli", zcli_module);
+            cmd_module.addImport("command_registry", registry_module);
 
             // Add shared modules
             for (shared_modules) |shared_mod| {
@@ -133,6 +138,7 @@ fn createGroupModules(
                     .root_source_file = b.path(full_path),
                 });
                 cmd_module.addImport("zcli", zcli_module);
+                cmd_module.addImport("command_registry", registry_module);
 
                 // Add shared modules
                 for (shared_modules) |shared_mod| {
@@ -167,6 +173,7 @@ fn createGroupModules(
                     .root_source_file = b.path(full_path),
                 });
                 cmd_module.addImport("zcli", zcli_module);
+                cmd_module.addImport("command_registry", registry_module);
 
                 // Add shared modules
                 for (shared_modules) |shared_mod| {

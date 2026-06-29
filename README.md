@@ -148,6 +148,8 @@ Every command has up to four exports:
 
 ```zig
 const zcli = @import("zcli");
+// Name your app's generated context type for full editor autocomplete on `context`.
+const Context = @import("command_registry").Context;
 
 pub const meta = .{
     .description = "Add files to the index",
@@ -170,10 +172,25 @@ pub const Options = struct {
     verbose: ?bool = null,              // optional flag
 };
 
-pub fn execute(args: Args, options: Options, context: anytype) !void {
-    // context.stdout(), context.stderr(), context.allocator, context.theme, etc.
+pub fn execute(args: Args, options: Options, context: *Context) !void {
+    // context.stdout(), context.stderr(), context.allocator, context.theme,
+    // context.plugins.<plugin_id>, etc. — all typed and autocompletable.
 }
 ```
+
+#### Typing `context`
+
+`Context` is generated per-app from your config and plugin set, so it carries a
+typed field for every plugin's data (`context.plugins.<plugin_id>`). You can type
+the parameter two ways:
+
+- **`context: *Context`** (above) — import `@import("command_registry").Context`.
+  Best for app-local commands: full autocomplete, go-to-definition, and errors at
+  the definition site. There's no import cycle — `Context` depends only on your
+  config and plugins, not on the command files.
+- **`context: anytype`** — portable across apps with no editor hints. Use this for
+  reusable/library commands and inside plugin hooks (a plugin is compiled
+  independently of the app that hosts it).
 
 ### Command groups
 
