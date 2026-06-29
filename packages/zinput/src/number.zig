@@ -49,9 +49,8 @@ pub fn number(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
 }
 
 fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
-    const line = readLine(reader) catch {
-        return config.default orelse error.InvalidNumber;
-    };
+    var buf: [32]u8 = undefined;
+    const line = readLine(reader, &buf);
     if (line.len == 0) {
         return config.default orelse error.InvalidNumber;
     }
@@ -117,8 +116,11 @@ fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     }
 }
 
-fn readLine(reader: anytype) ![]const u8 {
-    var buf: [32]u8 = undefined;
+/// Read a line (sans trailing newline) into the caller-owned `buf`, returning
+/// the filled slice. The slice borrows `buf`, so it stays valid as long as the
+/// caller's buffer does — never return a slice into a local buffer from here.
+/// Stops at '\n', on read error/EOF, or when `buf` is full.
+fn readLine(reader: anytype, buf: []u8) []const u8 {
     var len: usize = 0;
     while (len < buf.len) {
         const byte = terminal.key.readByteFn(reader) catch break;
@@ -138,4 +140,66 @@ test "NumberConfig defaults" {
     try std.testing.expect(cfg.default == null);
     try std.testing.expect(cfg.min == null);
     try std.testing.expect(cfg.max == null);
+}
+
+test "non-TTY: parses a typed number" {
+    var input = "42\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try number(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Count:",
+    });
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "non-TTY: multi-digit value survives the readLine buffer boundary" {
+    // Regression: readLine used to return a slice into its own stack frame, so
+    // the digits could be clobbered before parseInt ran. A longer value makes
+    // that corruption observable if it ever returns.
+    var input = "1234567\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try number(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Value:",
+    });
+    try std.testing.expectEqual(@as(i64, 1234567), result);
+}
+
+test "non-TTY: empty input falls back to the default" {
+    var input = "\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    const result = try number(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Port:",
+        .default = 3000,
+    });
+    try std.testing.expectEqual(@as(i64, 3000), result);
+}
+
+test "non-TTY: empty input with no default errors" {
+    var input = "\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    try std.testing.expectError(error.InvalidNumber, number(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Port:",
+    }));
+}
+
+test "non-TTY: non-numeric input errors" {
+    var input = "abc\n".*;
+    var reader_stream = std.io.fixedBufferStream(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream = std.io.fixedBufferStream(&output);
+
+    try std.testing.expectError(error.InvalidNumber, number(writer_stream.writer(), reader_stream.reader(), .{
+        .message = "Count:",
+    }));
 }
