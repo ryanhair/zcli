@@ -157,6 +157,54 @@ pub const PluginConfig = struct {
     init: ?[]const u8 = null,
 };
 
+/// Built-in plugins that ship with zcli. Enable one with `builtin(.help, .{})`
+/// instead of spelling out its name and path by hand.
+pub const Builtin = enum {
+    help,
+    version,
+    not_found,
+    completions,
+    config,
+    output,
+    github_upgrade,
+
+    /// Registration name, e.g. `zcli_help`.
+    pub fn pluginName(comptime self: Builtin) []const u8 {
+        return "zcli_" ++ @tagName(self);
+    }
+
+    /// Path to the plugin's source within the zcli package.
+    pub fn pluginPath(comptime self: Builtin) []const u8 {
+        return "packages/core/src/plugins/zcli_" ++ @tagName(self);
+    }
+};
+
+fn BuiltinPlugin(comptime Config: type) type {
+    return struct {
+        name: []const u8,
+        path: []const u8,
+        config: Config,
+    };
+}
+
+/// Register a built-in plugin in a `generate()` plugins list. Pass `.{}` as the
+/// config for plugins that take none:
+///
+/// ```zig
+/// .plugins = &.{
+///     zcli.builtin(.help, .{}),
+///     zcli.builtin(.github_upgrade, .{ .repo = "user/repo", .command_name = "upgrade" }),
+///     .{ .name = "my_plugin", .path = "src/plugins/my_plugin" }, // handrolled
+/// },
+/// ```
+pub fn builtin(comptime tag: Builtin, comptime config: anytype) BuiltinPlugin(@TypeOf(config)) {
+    return .{
+        .name = tag.pluginName(),
+        .path = tag.pluginPath(),
+        .config = config,
+    };
+}
+
 /// External plugin build configuration
 pub const ExternalPluginBuildConfig = struct {
     commands_dir: []const u8,

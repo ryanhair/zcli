@@ -161,4 +161,6 @@ pub fn build(b: *std.Build) void {
 pub const generate = @import("packages/core/build.zig").generate;
 pub const generateDocs = @import("packages/core/build.zig").generateDocs;
 pub const PluginConfig = @import("packages/core/build.zig").PluginConfig;
+pub const Builtin = @import("packages/core/build.zig").Builtin;
+pub const builtin = @import("packages/core/build.zig").builtin;
 pub const SharedModule = @import("packages/core/build.zig").SharedModule;

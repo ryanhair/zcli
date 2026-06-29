@@ -31,13 +31,13 @@ pub fn build(b: *std.Build) void {
 
     const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",
-        .plugins = &[_]zcli.PluginConfig{
-            .{ .name = "zcli_help", .path = "packages/core/src/plugins/zcli_help" },
-            .{ .name = "zcli_version", .path = "packages/core/src/plugins/zcli_version" },
-            .{ .name = "zcli_not_found", .path = "packages/core/src/plugins/zcli_not_found" },
-            .{ .name = "zcli_completions", .path = "packages/core/src/plugins/zcli_completions" },
-            .{ .name = "zcli_output", .path = "packages/core/src/plugins/zcli_output" },
-            .{ .name = "zcli_config", .path = "packages/core/src/plugins/zcli_config" },
+        .plugins = &.{
+            zcli.builtin(.help, .{}),
+            zcli.builtin(.version, .{}),
+            zcli.builtin(.not_found, .{}),
+            zcli.builtin(.completions, .{}),
+            zcli.builtin(.output, .{}),
+            zcli.builtin(.config, .{}),
         },
         .shared_modules = &[_]zcli.SharedModule{
             .{ .name = "store", .module = store_module },
