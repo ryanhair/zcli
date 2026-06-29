@@ -144,6 +144,7 @@ pub fn build(b: *std.Build) void {
     const feature_plugin_test_files = [_][]const u8{
         "src/plugin_completions_test.zig",
         "src/plugin_github_upgrade_test.zig",
+        "src/plugin_pipeline_test.zig",
     };
     for (feature_plugin_test_files) |test_file| {
         const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
