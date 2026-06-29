@@ -8,6 +8,21 @@ const MAX_DECOMPRESSED_RESPONSE_SIZE = 20 * 1024 * 1024; // 20MB decompressed
 const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB for binary downloads
 const MAX_CHECKSUMS_SIZE = 1024 * 1024; // 1MB for checksums file
 
+// Base URLs for GitHub. Kept as named constants so URL construction is a pure,
+// testable step and so a test/mirror host could be substituted in one place.
+const github_api_base = "https://api.github.com";
+const github_download_base = "https://github.com";
+
+/// Build the releases-list API URL: `{base}/repos/{repo}/releases`.
+fn buildReleasesUrl(allocator: std.mem.Allocator, base: []const u8, repo: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/repos/{s}/releases", .{ base, repo });
+}
+
+/// Build a release-asset download URL. Releases are tagged `{cli_name}-v{version}`.
+fn buildDownloadUrl(allocator: std.mem.Allocator, base: []const u8, repo: []const u8, cli_name: []const u8, version: []const u8, asset_name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}/releases/download/{s}-v{s}/{s}", .{ base, repo, cli_name, version, asset_name });
+}
+
 /// zcli-github-upgrade Plugin
 ///
 /// Provides self-upgrade functionality for CLI applications that release via GitHub.
@@ -216,7 +231,7 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, repo: []const u8
     std.debug.print("Checking for updates...\n", .{});
 
     // Fetch all releases and filter by tag prefix
-    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/releases", .{repo});
+    const url = try buildReleasesUrl(allocator, github_api_base, repo);
     defer allocator.free(url);
 
     // Create HTTP client
@@ -261,82 +276,81 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, repo: []const u8
         return error.FailedToFetchVersion;
     }
 
-    // Read response body
-    const body = blk: {
-        // First read the raw response
-        var transfer_buffer: [4096]u8 = undefined;
-        var body_reader = response.reader(&transfer_buffer);
-        const raw_body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_COMPRESSED_RESPONSE_SIZE));
-        errdefer allocator.free(raw_body);
+    // Read the raw response body (may be gzip-compressed).
+    var transfer_buffer: [4096]u8 = undefined;
+    var body_reader = response.reader(&transfer_buffer);
+    const raw_body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_COMPRESSED_RESPONSE_SIZE));
+    defer allocator.free(raw_body);
 
-        // Check if response is gzip compressed by checking magic bytes (0x1f 0x8b)
-        const is_gzipped = raw_body.len >= 2 and raw_body[0] == 0x1f and raw_body[1] == 0x8b;
-        if (is_gzipped) {
-            // Decompress gzip data with size limit to prevent gzip bombs
-            var reader: std.Io.Reader = .fixed(raw_body);
-
-            // Allocate decompression buffer (32KB window)
-            const decompress_buffer = try allocator.alloc(u8, std.compress.flate.max_window_len);
-            defer allocator.free(decompress_buffer);
-
-            var decompressor = std.compress.flate.Decompress.init(&reader, .gzip, decompress_buffer);
-
-            // Use allocating writer to collect decompressed data with size limit
-            var aw: std.Io.Writer.Allocating = .init(allocator);
-            defer aw.deinit();
-
-            const bytes_written = try decompressor.reader.streamRemaining(&aw.writer);
-
-            // Check decompressed size to prevent gzip bombs
-            if (bytes_written > MAX_DECOMPRESSED_RESPONSE_SIZE) {
-                std.debug.print("Error: Decompressed response ({d} bytes) exceeds maximum size ({d} bytes)\n", .{ bytes_written, MAX_DECOMPRESSED_RESPONSE_SIZE });
-                std.debug.print("This might indicate a malformed or malicious response.\n", .{});
-                return error.DecompressedDataTooLarge;
-            }
-
-            const decompressed = try allocator.dupe(u8, aw.written());
-
-            allocator.free(raw_body);
-            break :blk decompressed;
-        } else {
-            break :blk raw_body;
-        }
-    };
+    const body = try decodeResponseBody(allocator, raw_body);
     defer allocator.free(body);
 
-    // Parse JSON array of releases
+    return selectVersion(allocator, body, cli_name);
+}
+
+/// Decode a (possibly gzip-compressed) HTTP response body into a freshly
+/// allocated buffer the caller owns. Plain bodies are duplicated; gzip bodies
+/// (magic bytes 0x1f 0x8b) are inflated with a hard cap to defeat gzip bombs.
+fn decodeResponseBody(allocator: std.mem.Allocator, raw_body: []const u8) ![]u8 {
+    const is_gzipped = raw_body.len >= 2 and raw_body[0] == 0x1f and raw_body[1] == 0x8b;
+    if (!is_gzipped) return allocator.dupe(u8, raw_body);
+
+    var reader: std.Io.Reader = .fixed(raw_body);
+
+    // Allocate decompression buffer (32KB window)
+    const decompress_buffer = try allocator.alloc(u8, std.compress.flate.max_window_len);
+    defer allocator.free(decompress_buffer);
+
+    var decompressor = std.compress.flate.Decompress.init(&reader, .gzip, decompress_buffer);
+
+    // Collect decompressed data, enforcing a size limit to prevent gzip bombs.
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+
+    const bytes_written = try decompressor.reader.streamRemaining(&aw.writer);
+    if (bytes_written > MAX_DECOMPRESSED_RESPONSE_SIZE) {
+        std.debug.print("Error: Decompressed response ({d} bytes) exceeds maximum size ({d} bytes)\n", .{ bytes_written, MAX_DECOMPRESSED_RESPONSE_SIZE });
+        std.debug.print("This might indicate a malformed or malicious response.\n", .{});
+        return error.DecompressedDataTooLarge;
+    }
+
+    return allocator.dupe(u8, aw.written());
+}
+
+/// Pick the version for `cli_name` from a GitHub releases JSON array body.
+/// Releases are tagged `{cli_name}-v{version}`; the first tag matching that
+/// prefix wins and its `{version}` suffix is returned (caller owns it).
+/// Returns `error.UnexpectedResponse` if the body isn't a JSON array (e.g. an
+/// error object) and `error.NoMatchingRelease` if nothing matches the prefix.
+fn selectVersion(allocator: std.mem.Allocator, body: []const u8, cli_name: []const u8) ![]const u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| {
         // If JSON parsing fails, it might be an HTML error page (rate limit, etc)
         return err;
     };
     defer parsed.deinit();
 
-    // Check if response is an array (expected) vs object (error response)
+    // An array is expected; an object usually means a GitHub error response.
     if (parsed.value != .array) {
         std.debug.print("Error: Expected JSON array of releases, got: {s}\n", .{@tagName(parsed.value)});
-        std.debug.print("Repository: {s}\n", .{repo});
         return error.UnexpectedResponse;
     }
 
-    const releases = parsed.value.array;
-
-    // Expected tag format: "{cli_name}-v{version}"
     const tag_prefix = try std.fmt.allocPrint(allocator, "{s}-v", .{cli_name});
     defer allocator.free(tag_prefix);
 
-    // Find first release matching our CLI name prefix
-    for (releases.items) |release| {
+    for (parsed.value.array.items) |release| {
+        if (release != .object) continue;
         const tag_name = release.object.get("tag_name") orelse continue;
+        if (tag_name != .string) continue;
         const tag_str = tag_name.string;
 
         if (std.mem.startsWith(u8, tag_str, tag_prefix)) {
             // Strip prefix to get version (e.g., "zcli-v1.0.0" -> "1.0.0")
-            const version = tag_str[tag_prefix.len..];
-            return try allocator.dupe(u8, version);
+            return try allocator.dupe(u8, tag_str[tag_prefix.len..]);
         }
     }
 
-    std.debug.print("Error: No releases found with tag prefix '{s}' in repository: {s}\n", .{ tag_prefix, repo });
+    std.debug.print("Error: No releases found with tag prefix '{s}'\n", .{tag_prefix});
     std.debug.print("Expected tag format: {s}<version> (e.g., {s}1.0.0)\n", .{ tag_prefix, tag_prefix });
     return error.NoMatchingRelease;
 }
@@ -409,7 +423,7 @@ fn detectPlatform(allocator: std.mem.Allocator) ![]const u8 {
 fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) ![]const u8 {
     std.debug.print("Downloading binary... (this may take a while on slow connections)\n", .{});
 
-    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/{s}-v{s}/{s}", .{ repo, cli_name, version, binary_name });
+    const url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, binary_name);
     defer allocator.free(url);
 
     // Create temporary file
@@ -468,8 +482,8 @@ fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cl
 fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cli_name: []const u8, version: []const u8, binary_path: []const u8, binary_name: []const u8) !void {
     std.debug.print("Verifying checksum...\n", .{});
 
-    // Download checksums.txt
-    const checksums_url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/{s}-v{s}/checksums.txt", .{ repo, cli_name, version });
+    // Download checksums.txt (published as a release asset alongside the binaries)
+    const checksums_url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, "checksums.txt");
     defer allocator.free(checksums_url);
 
     var client = std.http.Client{ .allocator = allocator, .io = io };
@@ -575,52 +589,56 @@ fn testBinary(allocator: std.mem.Allocator, path: []const u8) !void {
     defer if (!std.fs.path.isAbsolute(path)) allocator.free(exe_path);
 }
 
-/// Replace current binary with new one atomically with backup
-/// This function:
-/// 1. Creates a backup of the current binary
-/// 2. Copies the new binary to a temporary location
-/// 3. Atomically renames the new binary over the old one
-/// 4. Cleans up the backup on success
+/// Replace the running executable with the new binary, atomically and with a
+/// backup. Resolves the current executable's path and delegates the actual
+/// swap to `replaceBinaryAt`, which is the testable core.
 fn replaceBinary(allocator: std.mem.Allocator, io: std.Io, new_binary_path: []const u8) !void {
-    // Get current executable path
     var exe_path_buf: [4096]u8 = undefined;
     const exe_len = try std.process.executablePath(io, &exe_path_buf);
     const exe_path = exe_path_buf[0..exe_len];
 
     std.debug.print("Replacing binary at: {s}\n", .{exe_path});
 
-    // Step 1: Create backup path
-    const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{exe_path});
-    defer allocator.free(backup_path);
+    try replaceBinaryAt(allocator, io, std.Io.Dir.cwd(), new_binary_path, exe_path);
+}
 
-    // Step 2: Create backup of current binary
-    std.Io.Dir.cwd().copyFile(exe_path, std.Io.Dir.cwd(), backup_path, io, .{}) catch |err| {
-        // Warn but continue - backup is nice-to-have, not required
+/// Atomically replace `target_path` (within `dir`) with the binary at
+/// `new_binary_path` (also within `dir`), keeping the old binary safe at every
+/// step:
+/// 1. Back up the current target to `{target}.backup` (best-effort).
+/// 2. Copy the new binary to `{target}.new`, mark it executable.
+/// 3. Atomically rename `{target}.new` over the target (atomic on Unix when on
+///    the same filesystem — a crash mid-swap leaves the original intact).
+/// 4. Remove the backup on success.
+///
+/// Split from `replaceBinary` so the swap can be exercised against temp files
+/// instead of the live executable.
+fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, new_binary_path: []const u8, target_path: []const u8) !void {
+    // Step 1+2: Back up the current binary (best-effort — nice-to-have).
+    const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{target_path});
+    defer allocator.free(backup_path);
+    dir.copyFile(target_path, dir, backup_path, io, .{}) catch |err| {
         std.debug.print("Warning: Failed to create backup: {}\n", .{err});
     };
 
-    // Step 3: Create temporary path for new binary (in same directory as target)
-    const temp_path = try std.fmt.allocPrint(allocator, "{s}.new", .{exe_path});
+    // Step 3: Copy the new binary alongside the target.
+    const temp_path = try std.fmt.allocPrint(allocator, "{s}.new", .{target_path});
     defer allocator.free(temp_path);
+    try dir.copyFile(new_binary_path, dir, temp_path, io, .{});
+    errdefer dir.deleteFile(io, temp_path) catch {};
 
-    // Step 4: Copy new binary to temporary location
-    try std.Io.Dir.cwd().copyFile(new_binary_path, std.Io.Dir.cwd(), temp_path, io, .{});
-    errdefer std.Io.Dir.cwd().deleteFile(io, temp_path) catch {};
-
-    // Step 5: Make new binary executable (Unix only - Windows uses .exe extension)
+    // Step 4: Make it executable (Unix only - Windows uses .exe extension).
     if (builtin.os.tag != .windows) {
-        const temp_file = try std.Io.Dir.cwd().openFile(io, temp_path, .{});
+        const temp_file = try dir.openFile(io, temp_path, .{});
         defer temp_file.close(io);
         try temp_file.setPermissions(io, .executable_file);
     }
 
-    // Step 6: Atomically rename new binary over old one
-    // On Unix, rename() is atomic if source and dest are on the same filesystem
-    try std.Io.Dir.cwd().rename(temp_path, std.Io.Dir.cwd(), exe_path, io);
+    // Step 5: Atomically swap the new binary over the old one.
+    try dir.rename(temp_path, dir, target_path, io);
 
-    // Step 7: Clean up backup on success
-    std.Io.Dir.cwd().deleteFile(io, backup_path) catch |err| {
-        // Log but don't fail - backup can stay around
+    // Step 6: Clean up the backup on success (kept on error for recovery).
+    dir.deleteFile(io, backup_path) catch |err| {
         std.debug.print("Note: Backup kept at {s} (cleanup error: {})\n", .{ backup_path, err });
     };
 }
@@ -881,4 +899,178 @@ test "checksum verification - end-to-end parse + hash + compare" {
     const bad = "0000000000000000000000000000000000000000000000000000000000000000  myapp-x86_64-linux\n";
     const bad_expected = parseExpectedChecksum(bad, "myapp-x86_64-linux").?;
     try std.testing.expect(!std.mem.eql(u8, bad_expected, &actual));
+}
+
+// ----------------------------------------------------------------------------
+// URL construction
+// ----------------------------------------------------------------------------
+
+test "buildReleasesUrl - exact GitHub API URL" {
+    const a = std.testing.allocator;
+    const url = try buildReleasesUrl(a, github_api_base, "owner/repo");
+    defer a.free(url);
+    try std.testing.expectEqualStrings("https://api.github.com/repos/owner/repo/releases", url);
+}
+
+test "buildDownloadUrl - binary and checksums asset URLs use the {cli}-v{ver} tag" {
+    const a = std.testing.allocator;
+
+    const bin = try buildDownloadUrl(a, github_download_base, "owner/repo", "myapp", "1.2.3", "myapp-x86_64-linux");
+    defer a.free(bin);
+    try std.testing.expectEqualStrings(
+        "https://github.com/owner/repo/releases/download/myapp-v1.2.3/myapp-x86_64-linux",
+        bin,
+    );
+
+    const sums = try buildDownloadUrl(a, github_download_base, "owner/repo", "myapp", "1.2.3", "checksums.txt");
+    defer a.free(sums);
+    try std.testing.expectEqualStrings(
+        "https://github.com/owner/repo/releases/download/myapp-v1.2.3/checksums.txt",
+        sums,
+    );
+}
+
+// ----------------------------------------------------------------------------
+// Response body decoding (gzip)
+// ----------------------------------------------------------------------------
+
+// gzip of: [{"tag_name":"myapp-v1.2.3","name":"r"},{"tag_name":"other-v9.9.9"}]
+// Produced with Python's gzip (mtime=0) for determinism; only the magic bytes
+// and DEFLATE payload matter to the decoder.
+const gzipped_releases = [_]u8{
+    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x8b, 0xae,
+    0x56, 0x2a, 0x49, 0x4c, 0x8f, 0xcf, 0x4b, 0xcc, 0x4d, 0x55, 0xb2, 0x52,
+    0xca, 0xad, 0x4c, 0x2c, 0x28, 0xd0, 0x2d, 0x33, 0xd4, 0x33, 0xd2, 0x33,
+    0x56, 0xd2, 0x51, 0x82, 0x8a, 0x16, 0x29, 0xd5, 0xea, 0xa0, 0x28, 0xcb,
+    0x2f, 0xc9, 0x48, 0x2d, 0xd2, 0x2d, 0xb3, 0xd4, 0x03, 0x42, 0xa5, 0xda,
+    0x58, 0x00, 0xc9, 0xa3, 0xea, 0xaa, 0x44, 0x00, 0x00, 0x00,
+};
+const decoded_releases_json = "[{\"tag_name\":\"myapp-v1.2.3\",\"name\":\"r\"},{\"tag_name\":\"other-v9.9.9\"}]";
+
+test "decodeResponseBody - passes plain bodies through unchanged" {
+    const a = std.testing.allocator;
+    const body = try decodeResponseBody(a, "not compressed at all");
+    defer a.free(body);
+    try std.testing.expectEqualStrings("not compressed at all", body);
+}
+
+test "decodeResponseBody - empty body is not mistaken for gzip" {
+    const a = std.testing.allocator;
+    const body = try decodeResponseBody(a, "");
+    defer a.free(body);
+    try std.testing.expectEqual(@as(usize, 0), body.len);
+}
+
+test "decodeResponseBody - inflates a gzip-compressed body" {
+    const a = std.testing.allocator;
+    const body = try decodeResponseBody(a, &gzipped_releases);
+    defer a.free(body);
+    try std.testing.expectEqualStrings(decoded_releases_json, body);
+}
+
+// ----------------------------------------------------------------------------
+// Release selection from the releases JSON
+// ----------------------------------------------------------------------------
+
+test "selectVersion - returns the version for the matching cli prefix" {
+    const a = std.testing.allocator;
+    const v = try selectVersion(a, "[{\"tag_name\":\"myapp-v1.2.3\"}]", "myapp");
+    defer a.free(v);
+    try std.testing.expectEqualStrings("1.2.3", v);
+}
+
+test "selectVersion - returns the FIRST matching release, ignoring other apps" {
+    const a = std.testing.allocator;
+    const body = "[{\"tag_name\":\"other-v9.9.9\"},{\"tag_name\":\"myapp-v2.0.0\"},{\"tag_name\":\"myapp-v1.0.0\"}]";
+    const v = try selectVersion(a, body, "myapp");
+    defer a.free(v);
+    // Order is preserved as published; selection does not sort by semver.
+    try std.testing.expectEqualStrings("2.0.0", v);
+}
+
+test "selectVersion - object (error) response is rejected" {
+    const a = std.testing.allocator;
+    // GitHub returns an object like {"message":"Not Found"} for errors.
+    try std.testing.expectError(error.UnexpectedResponse, selectVersion(a, "{\"message\":\"Not Found\"}", "myapp"));
+}
+
+test "selectVersion - no matching prefix and empty array both error" {
+    const a = std.testing.allocator;
+    try std.testing.expectError(error.NoMatchingRelease, selectVersion(a, "[{\"tag_name\":\"other-v1.0.0\"}]", "myapp"));
+    try std.testing.expectError(error.NoMatchingRelease, selectVersion(a, "[]", "myapp"));
+}
+
+test "selectVersion - skips malformed entries instead of crashing" {
+    const a = std.testing.allocator;
+    // Non-object entries, a numeric tag_name, and a missing tag are all skipped.
+    const body = "[1, \"x\", {\"tag_name\":123}, {\"no_tag\":true}, {\"tag_name\":\"myapp-v3.1.4\"}]";
+    const v = try selectVersion(a, body, "myapp");
+    defer a.free(v);
+    try std.testing.expectEqualStrings("3.1.4", v);
+}
+
+test "selectVersion - non-JSON body (e.g. an HTML error page) is an error" {
+    const a = std.testing.allocator;
+    if (selectVersion(a, "<html>rate limited</html>", "myapp")) |v| {
+        a.free(v);
+        try std.testing.expect(false); // must not succeed
+    } else |_| {}
+}
+
+test "fetch decode+select - gzip body flows into version selection" {
+    // Mirrors fetchLatestVersion's post-HTTP path: decode the (gzip) body, then
+    // pick the version — without touching the network.
+    const a = std.testing.allocator;
+    const body = try decodeResponseBody(a, &gzipped_releases);
+    defer a.free(body);
+    const v = try selectVersion(a, body, "myapp");
+    defer a.free(v);
+    try std.testing.expectEqualStrings("1.2.3", v);
+}
+
+// ----------------------------------------------------------------------------
+// Atomic binary replacement
+// ----------------------------------------------------------------------------
+
+test "replaceBinaryAt - swaps in the new binary and removes the backup" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "current", .data = "OLD-BINARY" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "downloaded", .data = "NEW-BINARY-CONTENT" });
+
+    try replaceBinaryAt(a, io, tmp.dir, "downloaded", "current");
+
+    // The target now holds the new contents.
+    const got = try tmp.dir.readFileAlloc(io, "current", a, .limited(1024));
+    defer a.free(got);
+    try std.testing.expectEqualStrings("NEW-BINARY-CONTENT", got);
+
+    // Backup and temp artifacts are cleaned up on success.
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "current.backup", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "current.new", .{}));
+
+    // The downloaded source file is left intact (the caller owns its cleanup).
+    const src = try tmp.dir.readFileAlloc(io, "downloaded", a, .limited(1024));
+    defer a.free(src);
+    try std.testing.expectEqualStrings("NEW-BINARY-CONTENT", src);
+}
+
+test "replaceBinaryAt - a missing new binary leaves the target untouched" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "current", .data = "ORIGINAL" });
+
+    // Copying a nonexistent new binary must fail...
+    try std.testing.expectError(error.FileNotFound, replaceBinaryAt(a, io, tmp.dir, "does-not-exist", "current"));
+
+    // ...and the original target must survive unharmed (never renamed over).
+    const got = try tmp.dir.readFileAlloc(io, "current", a, .limited(1024));
+    defer a.free(got);
+    try std.testing.expectEqualStrings("ORIGINAL", got);
 }
