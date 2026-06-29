@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zinput = zcli.zinput;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Close a sprint",
@@ -42,5 +43,6 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
     data.sprints = remaining.items;
     try store.save(allocator, data);
 
-    try context.stdout().print("\x1b[32m✔\x1b[0m Closed sprint: {s}\n", .{name});
+    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try context.stdout().print(" Closed sprint: {s}\n", .{name});
 }

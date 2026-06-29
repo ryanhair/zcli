@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zprogress = zcli.zprogress;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Import tasks from a JSON file",
@@ -58,5 +59,6 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
     data.tasks = tasks_list.items;
     try store.save(allocator, data);
 
-    try context.stdout().print("\x1b[32m✔\x1b[0m Imported {d} tasks from {s}\n", .{ imported.value.tasks.len, args.file });
+    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try context.stdout().print(" Imported {d} tasks from {s}\n", .{ imported.value.tasks.len, args.file });
 }

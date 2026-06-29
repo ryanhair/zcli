@@ -1,4 +1,5 @@
 const std = @import("std");
+const ztheme = @import("ztheme");
 
 pub const Status = enum {
     todo,
@@ -13,11 +14,13 @@ pub const Status = enum {
         };
     }
 
-    pub fn color(self: Status) []const u8 {
+    /// Wrap `text` in this status's semantic color. Render with
+    /// `.render(writer, &context.theme)` so it adapts to terminal capability.
+    pub fn themed(self: Status, text: []const u8) ztheme.Themed([]const u8) {
         return switch (self) {
-            .todo => "\x1b[37m",
-            .in_progress => "\x1b[33m",
-            .done => "\x1b[32m",
+            .todo => ztheme.theme(text).muted(),
+            .in_progress => ztheme.theme(text).warning(),
+            .done => ztheme.theme(text).success(),
         };
     }
 };
@@ -37,12 +40,13 @@ pub const Priority = enum {
         };
     }
 
-    pub fn badge(self: Priority) []const u8 {
+    /// Wrap `text` in this priority's semantic color (medium is left unstyled).
+    pub fn themed(self: Priority, text: []const u8) ztheme.Themed([]const u8) {
         return switch (self) {
-            .low => "\x1b[2mlow\x1b[0m",
-            .medium => "medium",
-            .high => "\x1b[33mhigh\x1b[0m",
-            .critical => "\x1b[31mcritical\x1b[0m",
+            .low => ztheme.theme(text).muted(),
+            .medium => ztheme.theme(text),
+            .high => ztheme.theme(text).warning(),
+            .critical => ztheme.theme(text).err(),
         };
     }
 };

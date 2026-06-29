@@ -510,26 +510,44 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
     defer allocator.free(checksums_content);
 
     // Find the checksum for our binary
-    var lines = std.mem.splitScalar(u8, checksums_content, '\n');
-    var expected_checksum: ?[]const u8 = null;
-    while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, binary_name)) |_| {
-            var parts = std.mem.splitScalar(u8, line, ' ');
-            if (parts.next()) |checksum| {
-                expected_checksum = checksum;
-                break;
-            }
-        }
-    }
-
-    if (expected_checksum == null) {
+    const expected_checksum = parseExpectedChecksum(checksums_content, binary_name) orelse {
         std.debug.print("Error: Checksum not found for binary: {s}\n", .{binary_name});
         std.debug.print("The checksums.txt file may be incomplete or corrupted.\n", .{});
         return error.ChecksumNotFound;
-    }
+    };
 
-    // Calculate actual checksum
-    const file = try std.fs.cwd().openFile(binary_path, .{});
+    // Calculate actual checksum of the downloaded binary
+    const actual_checksum = try sha256FileHex(binary_path);
+
+    // Compare checksums
+    if (!std.mem.eql(u8, expected_checksum, &actual_checksum)) {
+        std.debug.print("Error: Checksum mismatch for binary: {s}\n", .{binary_name});
+        std.debug.print("Expected: {s}\n", .{expected_checksum});
+        std.debug.print("Actual:   {s}\n", .{&actual_checksum});
+        std.debug.print("The downloaded binary may be corrupted or tampered with.\n", .{});
+        return error.ChecksumMismatch;
+    }
+}
+
+/// Find the expected checksum for `binary_name` in a `checksums.txt` body.
+/// Each line is formatted `<sha256-hex>  <filename>`; the first line whose
+/// filename contains `binary_name` wins. Returns the hex digest borrowed from
+/// `content`, or null if no matching entry exists.
+fn parseExpectedChecksum(content: []const u8, binary_name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, binary_name) == null) continue;
+        var parts = std.mem.splitScalar(u8, line, ' ');
+        if (parts.next()) |checksum| {
+            if (checksum.len > 0) return checksum;
+        }
+    }
+    return null;
+}
+
+/// Compute the lowercase hex SHA-256 digest of the file at `path`.
+fn sha256FileHex(path: []const u8) ![64]u8 {
+    const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
@@ -542,18 +560,7 @@ fn verifyChecksum(allocator: std.mem.Allocator, repo: []const u8, cli_name: []co
 
     var hash_bytes: [32]u8 = undefined;
     hasher.final(&hash_bytes);
-
-    // Convert to hex string
-    const actual_checksum = std.fmt.bytesToHex(&hash_bytes, .lower);
-
-    // Compare checksums
-    if (!std.mem.eql(u8, expected_checksum.?, &actual_checksum)) {
-        std.debug.print("Error: Checksum mismatch for binary: {s}\n", .{binary_name});
-        std.debug.print("Expected: {s}\n", .{expected_checksum.?});
-        std.debug.print("Actual:   {s}\n", .{&actual_checksum});
-        std.debug.print("The downloaded binary may be corrupted or tampered with.\n", .{});
-        return error.ChecksumMismatch;
-    }
+    return std.fmt.bytesToHex(&hash_bytes, .lower);
 }
 
 /// Test that the new binary works
@@ -741,10 +748,12 @@ test "rate limiting - handles HTTP 429 responses" {
 
 test "parseVersion - edge cases with whitespace" {
     // Version strings with leading/trailing whitespace should fail
-    // (caller should trim before passing to parseVersion)
-    try std.testing.expectError(error.InvalidVersion, parseVersion(" 1.2.3"));
-    try std.testing.expectError(error.InvalidVersion, parseVersion("1.2.3 "));
-    try std.testing.expectError(error.InvalidVersion, parseVersion(" 1.2.3 "));
+    // (caller should trim before passing to parseVersion). The whitespace makes
+    // the numeric parse fail, so the error is InvalidCharacter — same as any
+    // other non-numeric component.
+    try std.testing.expectError(error.InvalidCharacter, parseVersion(" 1.2.3"));
+    try std.testing.expectError(error.InvalidCharacter, parseVersion("1.2.3 "));
+    try std.testing.expectError(error.InvalidCharacter, parseVersion(" 1.2.3 "));
 }
 
 test "parseVersion - zero versions" {
@@ -807,4 +816,87 @@ test "detectPlatform - allocator handling" {
         }
     }
     try std.testing.expect(found);
+}
+
+test "parseExpectedChecksum - finds matching binary" {
+    const content =
+        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  myapp-x86_64-linux\n" ++
+        "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222  myapp-aarch64-macos\n";
+
+    const linux = parseExpectedChecksum(content, "myapp-x86_64-linux").?;
+    try std.testing.expectEqualStrings("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111", linux);
+
+    const macos = parseExpectedChecksum(content, "myapp-aarch64-macos").?;
+    try std.testing.expectEqualStrings("bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222", macos);
+}
+
+test "parseExpectedChecksum - missing binary returns null" {
+    const content = "abc123  myapp-x86_64-linux\n";
+    try std.testing.expectEqual(@as(?[]const u8, null), parseExpectedChecksum(content, "myapp-windows"));
+    try std.testing.expectEqual(@as(?[]const u8, null), parseExpectedChecksum("", "myapp-x86_64-linux"));
+}
+
+test "parseExpectedChecksum - tolerates trailing newline and no final newline" {
+    const with_nl = "deadbeef  bin\n";
+    const without_nl = "deadbeef  bin";
+    try std.testing.expectEqualStrings("deadbeef", parseExpectedChecksum(with_nl, "bin").?);
+    try std.testing.expectEqualStrings("deadbeef", parseExpectedChecksum(without_nl, "bin").?);
+}
+
+test "sha256FileHex - matches known digest" {
+    // SHA-256 of the empty input is a well-known constant.
+    const empty_digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Write an empty file and hash it through the real file-reading path.
+    {
+        const f = try tmp.dir.createFile("empty.bin", .{});
+        f.close();
+    }
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "empty.bin");
+    defer std.testing.allocator.free(path);
+
+    const digest = try sha256FileHex(path);
+    try std.testing.expectEqualStrings(empty_digest, &digest);
+}
+
+test "sha256FileHex - hashes file contents" {
+    // SHA-256 of "abc".
+    const abc_digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "data.bin", .data = "abc" });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "data.bin");
+    defer std.testing.allocator.free(path);
+
+    const digest = try sha256FileHex(path);
+    try std.testing.expectEqualStrings(abc_digest, &digest);
+}
+
+test "checksum verification - end-to-end parse + hash + compare" {
+    // Simulate the pure half of verifyChecksum: parse the expected digest from a
+    // checksums.txt body, hash the local binary, and confirm they match/mismatch.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "myapp-x86_64-linux", .data = "abc" });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "myapp-x86_64-linux");
+    defer std.testing.allocator.free(path);
+
+    const abc_digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const good = try std.fmt.allocPrint(std.testing.allocator, "{s}  myapp-x86_64-linux\n", .{abc_digest});
+    defer std.testing.allocator.free(good);
+
+    const expected = parseExpectedChecksum(good, "myapp-x86_64-linux").?;
+    const actual = try sha256FileHex(path);
+    try std.testing.expect(std.mem.eql(u8, expected, &actual));
+
+    // A tampered binary must NOT match the recorded checksum.
+    const bad = "0000000000000000000000000000000000000000000000000000000000000000  myapp-x86_64-linux\n";
+    const bad_expected = parseExpectedChecksum(bad, "myapp-x86_64-linux").?;
+    try std.testing.expect(!std.mem.eql(u8, bad_expected, &actual));
 }

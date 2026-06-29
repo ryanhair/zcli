@@ -178,6 +178,34 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    // Feature-plugin tests that import plugin source directly and therefore need
+    // the "zcli" module. These run as part of the default `test` step.
+    const feature_plugin_test_files = [_][]const u8{
+        "src/plugin_completions_test.zig",
+        "src/plugin_github_upgrade_test.zig",
+    };
+    for (feature_plugin_test_files) |test_file| {
+        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
+            .root_source_file = b.path(test_file),
+            .target = target,
+            .optimize = optimize,
+        });
+        test_mod.addImport("zcli", zcli_module);
+        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
+        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
+        test_mod.addImport("zinput", zinput_dep.module("zinput"));
+        test_mod.addImport("vterm", vterm_dep.module("vterm"));
+        test_mod.addImport("yaml", yaml_dep.module("yaml"));
+        test_mod.addImport("toml", toml_dep.module("toml"));
+        const tests = b.addTest(.{
+            .root_module = test_mod,
+        });
+        const run_tests = b.addRunArtifact(tests);
+        test_plugins_step.dependOn(&run_tests.step);
+        test_step.dependOn(&run_tests.step);
+    }
+
     // Sequential test execution (separate from parallel execution above)
     // This creates a completely separate dependency chain for sequential execution
     const all_test_files = core_test_files ++ plugin_test_files ++ integration_test_files ++ security_test_files;

@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zinput = zcli.zinput;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Search tasks by title",
@@ -43,6 +44,14 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
 
     const task = data.tasks[idx];
     const w = context.stdout();
-    try w.print("\n  \x1b[1mTask #{d}\x1b[0m — {s}\n", .{ task.id, task.title });
-    try w.print("  Status: {s}{s}\x1b[0m  Priority: {s}\n\n", .{ task.status.color(), task.status.label(), task.priority.badge() });
+    const theme = &context.theme;
+    var head_buf: [32]u8 = undefined;
+    const head = try std.fmt.bufPrint(&head_buf, "Task #{d}", .{task.id});
+    try w.writeAll("\n  ");
+    try ztheme.theme(head).bold().render(w, theme);
+    try w.print(" — {s}\n  Status: ", .{task.title});
+    try task.status.themed(task.status.label()).render(w, theme);
+    try w.writeAll("  Priority: ");
+    try task.priority.themed(task.priority.label()).render(w, theme);
+    try w.writeAll("\n\n");
 }

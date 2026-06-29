@@ -1,6 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Mark a task as complete",
@@ -21,7 +22,8 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
         if (task.id == args.id) {
             task.status = .done;
             try store.save(allocator, data);
-            try context.stdout().print("\x1b[32m✔\x1b[0m Task #{d} marked as done: {s}\n", .{ task.id, task.title });
+            try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+            try context.stdout().print(" Task #{d} marked as done: {s}\n", .{ task.id, task.title });
             return;
         }
     }

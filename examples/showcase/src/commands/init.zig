@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zinput = zcli.zinput;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Initialize a new task tracker project",
@@ -24,7 +25,9 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         return;
     } else |_| {}
 
-    try writer.writeAll("\r\n  \x1b[1mProject Setup\x1b[0m\r\n\r\n");
+    try writer.writeAll("\r\n  ");
+    try ztheme.theme("Project Setup").bold().render(writer, &context.theme);
+    try writer.writeAll("\r\n\r\n");
 
     const name = try zinput.text(writer, reader, allocator, .{
         .message = "Project name:",
@@ -64,5 +67,7 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
 
     try store.save(allocator, data);
 
-    try writer.writeAll("\r\n  \x1b[32m✔ Project initialized!\x1b[0m\r\n\r\n");
+    try writer.writeAll("\r\n  ");
+    try ztheme.theme("✔ Project initialized!").success().render(writer, &context.theme);
+    try writer.writeAll("\r\n\r\n");
 }

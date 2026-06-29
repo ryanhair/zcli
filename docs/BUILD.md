@@ -4,7 +4,7 @@ This document explains how zcli's build-time code generation works, covering com
 
 ## Overview
 
-zcli achieves zero runtime overhead by discovering commands and plugins, then generating dispatch code at build time. This eliminates the need for reflection, dynamic imports, or runtime file system scanning while providing a powerful plugin architecture.
+zcli achieves zero-cost dispatch by discovering commands and plugins, then generating routing code at build time. This eliminates the need for reflection, dynamic imports, or runtime file system scanning while providing a powerful plugin architecture. (Argument parsing for the matched command still runs at invocation, type-checked via comptime introspection.)
 
 ## Build Process Flow
 
@@ -443,4 +443,4 @@ const value = context.getGlobalData([]const u8, "key") orelse "default";
    - Check memory management
    - Verify type compatibility
 
-This plugin-aware build system ensures zcli applications can be extended with powerful, type-safe plugins while maintaining zero runtime overhead.
+This plugin-aware build system ensures zcli applications can be extended with powerful, type-safe plugins while maintaining zero-cost dispatch.
