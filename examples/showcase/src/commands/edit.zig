@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zinput = zcli.zinput;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Edit a task description in your editor",
@@ -39,7 +40,8 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
 
             task.description = content;
             try store.save(allocator, data);
-            try context.stdout().print("\x1b[32m✔\x1b[0m Updated task #{d}\n", .{task.id});
+            try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+            try context.stdout().print(" Updated task #{d}\n", .{task.id});
             return;
         }
     }

@@ -2,7 +2,7 @@
 
 ## Core Concept
 
-A Zig CLI framework that uses comptime introspection to automatically discover and wire commands based on folder structure, eliminating runtime overhead and providing type-safe command handling. The framework supports a plugin architecture for extensibility while maintaining zero runtime cost through compile-time code generation.
+A Zig CLI framework that uses comptime introspection to automatically discover and wire commands based on folder structure, eliminating dispatch overhead and providing type-safe command handling. The framework supports a plugin architecture for extensibility while keeping command discovery and routing entirely at compile time through code generation. (Argument parsing itself runs at invocation, type-checked via comptime introspection.)
 
 ## 1. Folder Structure & Command Mapping
 
@@ -768,11 +768,11 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 ## 13. Developer Experience
 
-**Zero Runtime Overhead:**
+**Zero-Cost Dispatch:**
 
 - All discovery and wiring happens at compile time
-- Final binary has direct function calls
-- No reflection or dynamic dispatch
+- Final binary has direct function calls — no reflection, no runtime filesystem scan
+- No dynamic dispatch (argument parsing still runs at invocation)
 
 **Type Safety:**
 
@@ -786,4 +786,4 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 - Mock context for isolated testing
 - Integration test helpers
 
-This design leverages Zig's unique comptime capabilities to create a framework that's both developer-friendly (automatic discovery, type safety) and extremely efficient (zero runtime overhead, static dispatch).
+This design leverages Zig's unique comptime capabilities to create a framework that's both developer-friendly (automatic discovery, type safety) and extremely efficient (zero-cost static dispatch, no reflection).

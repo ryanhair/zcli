@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zinput = zcli.zinput;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Create a new sprint",
@@ -38,5 +39,6 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
     data.sprints = sprints.items;
     try store.save(allocator, data);
 
-    try context.stdout().print("\x1b[32m✔\x1b[0m Created sprint: {s}\n", .{name});
+    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try context.stdout().print(" Created sprint: {s}\n", .{name});
 }

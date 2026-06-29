@@ -1,6 +1,6 @@
 # zcli
 
-A batteries-included framework for building command-line interfaces in Zig. Drop `.zig` files in a directory and get a fully-featured CLI — help text, completions, error suggestions, interactive prompts, progress bars, and documentation — all generated at compile time with zero runtime overhead.
+A batteries-included framework for building command-line interfaces in Zig. Drop `.zig` files in a directory and get a fully-featured CLI — help text, completions, error suggestions, interactive prompts, progress bars, and documentation — with command discovery and routing wired up at compile time for zero-cost dispatch.
 
 ## Features
 
@@ -13,7 +13,7 @@ A batteries-included framework for building command-line interfaces in Zig. Drop
 - Theming with semantic colors that adapt to terminal capabilities.
 - Documentation generation — markdown, man pages, and HTML from command metadata.
 - Plugin system with lifecycle hooks, global options, and build-time configuration.
-- Zero runtime overhead — commands discovered at build time, all routing resolved at comptime.
+- Zero-cost dispatch — commands are discovered and routing is generated at build time (no reflection or runtime filesystem scanning). Argument parsing is type-checked via comptime introspection and runs at invocation.
 
 ```zig
 // src/commands/deploy.zig

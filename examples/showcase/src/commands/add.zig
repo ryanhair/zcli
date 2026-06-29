@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zinput = zcli.zinput;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Add a new task",
@@ -92,5 +93,6 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     data.next_id += 1;
     try store.save(allocator, data);
 
-    try context.stdout().print("\x1b[32m✔\x1b[0m Added task #{d}: {s}\n", .{ new_task.id, title });
+    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try context.stdout().print(" Added task #{d}: {s}\n", .{ new_task.id, title });
 }

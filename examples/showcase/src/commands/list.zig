@@ -1,5 +1,7 @@
 const std = @import("std");
+const zcli = @import("zcli");
 const store = @import("store");
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "List all tasks",
@@ -31,10 +33,16 @@ pub fn execute(_: Args, options: Options, context: anytype) !void {
 
     const status_filter: ?store.Status = if (options.status) |s| store.statusFromString(s) else null;
 
-    try context.stdout().writeAll("\n");
-    try context.stdout().print("  \x1b[1m{s}\x1b[0m\n\n", .{data.name});
-    try context.stdout().writeAll("  \x1b[2mID   Status        Priority  Title\x1b[0m\n");
-    try context.stdout().writeAll("  \x1b[2m───  ────────────  ────────  ─────────────────────────\x1b[0m\n");
+    const w = context.stdout();
+    const theme = &context.theme;
+
+    try w.writeAll("\n  ");
+    try ztheme.theme(data.name).bold().render(w, theme);
+    try w.writeAll("\n\n  ");
+    try ztheme.theme("ID   Status        Priority  Title").dim().render(w, theme);
+    try w.writeAll("\n  ");
+    try ztheme.theme("───  ────────────  ────────  ─────────────────────────").dim().render(w, theme);
+    try w.writeAll("\n");
 
     var shown: usize = 0;
     for (data.tasks) |task| {
@@ -44,29 +52,28 @@ pub fn execute(_: Args, options: Options, context: anytype) !void {
             continue;
         }
 
-        // Use plain labels with fixed widths, apply color around them
-        const pri_color: []const u8 = switch (task.priority) {
-            .low => "\x1b[2m",
-            .medium => "",
-            .high => "\x1b[33m",
-            .critical => "\x1b[31m",
-        };
-        const pri_reset: []const u8 = if (pri_color.len > 0) "\x1b[0m" else "";
-        try context.stdout().print("  {s}{d:<3}\x1b[0m  {s}{s:<12}\x1b[0m  {s}{s:<8}{s}  {s}\n", .{
-            task.status.color(),
-            task.id,
-            task.status.color(),
-            task.status.label(),
-            pri_color,
-            task.priority.label(),
-            pri_reset,
-            task.title,
-        });
+        // Pad each cell to a fixed width, then apply the semantic color.
+        var id_buf: [16]u8 = undefined;
+        var status_buf: [16]u8 = undefined;
+        var pri_buf: [16]u8 = undefined;
+        const id_cell = try std.fmt.bufPrint(&id_buf, "{d:<3}", .{task.id});
+        const status_cell = try std.fmt.bufPrint(&status_buf, "{s:<12}", .{task.status.label()});
+        const pri_cell = try std.fmt.bufPrint(&pri_buf, "{s:<8}", .{task.priority.label()});
+
+        try w.writeAll("  ");
+        try task.status.themed(id_cell).render(w, theme);
+        try w.writeAll("  ");
+        try task.status.themed(status_cell).render(w, theme);
+        try w.writeAll("  ");
+        try task.priority.themed(pri_cell).render(w, theme);
+        try w.print("  {s}\n", .{task.title});
         shown += 1;
     }
 
     if (shown == 0) {
-        try context.stdout().writeAll("  \x1b[2mNo matching tasks.\x1b[0m\n");
+        try w.writeAll("  ");
+        try ztheme.theme("No matching tasks.").dim().render(w, theme);
+        try w.writeAll("\n");
     }
-    try context.stdout().writeAll("\n");
+    try w.writeAll("\n");
 }

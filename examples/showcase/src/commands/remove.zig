@@ -2,6 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
 const zinput = zcli.zinput;
+const ztheme = zcli.ztheme;
 
 pub const meta = .{
     .description = "Remove a task",
@@ -51,5 +52,6 @@ pub fn execute(args: Args, _: Options, context: anytype) !void {
     data.tasks = remaining.items;
     try store.save(allocator, data);
 
-    try context.stdout().print("\x1b[31m✖\x1b[0m Removed task #{d}\n", .{args.id});
+    try ztheme.theme("✖").err().render(context.stdout(), &context.theme);
+    try context.stdout().print(" Removed task #{d}\n", .{args.id});
 }

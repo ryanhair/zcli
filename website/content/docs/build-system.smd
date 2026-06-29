@@ -5,7 +5,7 @@
 .layout = "docs.shtml",
 ---
 
-zcli achieves zero runtime overhead by discovering commands and plugins, then generating dispatch code at build time.
+zcli achieves zero-cost dispatch by discovering commands and plugins, then generating routing code at build time. (Argument parsing for the matched command still runs at invocation.)
 
 ## How It Works
 
