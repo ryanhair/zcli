@@ -12,6 +12,12 @@ pub const markdown_fmt = @import("markdown_fmt");
 pub const zprogress = @import("zprogress");
 pub const zinput = @import("zinput");
 pub const serde = @import("serde");
+
+/// Filesystem command discovery — the same scan the build system runs to
+/// generate the registry. Exposed so tools can determine a project's command
+/// tree without building it (e.g. the `zcli tree` command).
+pub const command_discovery = @import("build_utils/command_discovery.zig");
+
 const testing = std.testing;
 
 // Re-export error types
