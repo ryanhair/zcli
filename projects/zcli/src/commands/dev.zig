@@ -32,15 +32,16 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 
     const io = context.io.io;
     const gpa = context.allocator;
-    const out = context.stdout();
+    // Status/framing goes to stderr so it never competes with a redirected
+    // stdout (e.g. `zcli dev > log`) or the build child's inherited stdout.
+    const status = context.stderr();
     const theme = &context.theme;
 
     // Confirm we're in a project before arming the watcher.
     var probe = std.Io.Dir.cwd().openDir(io, "src", .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            const errw = context.stderr();
-            try errw.writeAll("No 'src' directory found. Run this from a zcli project root.\n");
-            try errw.flush();
+            try status.writeAll("No 'src' directory found. Run this from a zcli project root.\n");
+            try status.flush();
             context.exit(1);
             return;
         },
@@ -60,22 +61,25 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     defer watcher.deinit();
     try watcher.watch(src_abs);
 
-    try paint(out, theme, "zcli dev", .header);
-    try out.writeAll(" — watching src/ (Ctrl-C to stop)\n");
-    try out.flush();
+    try paint(status, theme, "zcli dev", .header);
+    try status.writeAll(" — watching src/ (Ctrl-C to stop)\n");
+    try status.flush();
 
     var cycle_arena = std.heap.ArenaAllocator.init(gpa);
     defer cycle_arena.deinit();
 
+    // The app started by `-- <command>`, if any. Killed and restarted each cycle.
+    var app_child: ?std.process.Child = null;
+
     // Build once up front, then rebuild on every change.
-    runCycle(io, &cycle_arena, out, theme, args.command);
+    runCycle(io, &cycle_arena, status, theme, args.command, &app_child);
     while (true) {
         state.waitDirty();
         nap(io, debounce_ms); // let the burst settle
         state.clear(); // coalesce events that arrived during the settle window
-        try paint(out, theme, "\n• change detected", .dim);
-        try out.writeByte('\n');
-        runCycle(io, &cycle_arena, out, theme, args.command);
+        try paint(status, theme, "\n• change detected", .dim);
+        try status.writeByte('\n');
+        runCycle(io, &cycle_arena, status, theme, args.command, &app_child);
     }
 }
 
@@ -151,55 +155,116 @@ fn onRename(h: *nightwatch.Default.Handler, src: []const u8, dst: []const u8, ob
 fn runCycle(
     io: std.Io,
     cycle_arena: *std.heap.ArenaAllocator,
-    out: *std.Io.Writer,
+    status: *std.Io.Writer,
     theme: *const Theme,
     command: []const []const u8,
+    app_child: *?std.process.Child,
 ) void {
     _ = cycle_arena.reset(.retain_capacity);
-    doCycle(io, cycle_arena.allocator(), out, theme, command) catch |err| {
+    doCycle(io, cycle_arena.allocator(), status, theme, command, app_child) catch |err| {
         // Never let a transient failure tear down the watcher.
-        out.print("dev: {s}\n", .{@errorName(err)}) catch {};
-        out.flush() catch {};
+        status.print("dev: {s}\n", .{@errorName(err)}) catch {};
+        status.flush() catch {};
     };
 }
 
 fn doCycle(
     io: std.Io,
     arena: std.mem.Allocator,
-    out: *std.Io.Writer,
+    status: *std.Io.Writer,
     theme: *const Theme,
     command: []const []const u8,
+    app_child: *?std.process.Child,
 ) !void {
-    try paint(out, theme, "▸ rebuilding…", .info);
-    try out.writeByte('\n');
-    try out.flush(); // child inherits the real stdout fd — flush ours first so order is right
+    // Stop the previous run before rebuilding (restart-on-change). kill() blocks
+    // until the child is reaped and is idempotent.
+    if (app_child.*) |*child| {
+        child.kill(io);
+        app_child.* = null;
+    }
 
-    const argv = try buildArgv(arena, command);
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
+    try paint(status, theme, "▸ rebuilding…", .info);
+    try status.writeByte('\n');
+    try status.flush(); // child inherits the real fds — flush ours first so order is right
+
+    if (!try build(io, status, theme)) return; // build failed → don't run
+
+    if (command.len > 0) {
+        app_child.* = try startApp(io, arena, status, theme, command);
+    }
+}
+
+/// Run `zig build` (blocking), reporting success. Returns false on failure.
+fn build(io: std.Io, status: *std.Io.Writer, theme: *const Theme) !bool {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "zig", "build" },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| switch (err) {
+        error.FileNotFound => {
+            try paint(status, theme, "✗ could not launch `zig` — is it on your PATH?", .err);
+            try status.writeByte('\n');
+            try status.flush();
+            return false;
+        },
+        else => return err,
+    };
+    const term = try child.wait(io);
+    const ok = term == .exited and term.exited == 0;
+    try paint(status, theme, if (ok) "✓ build succeeded" else "✗ build failed", if (ok) .ok else .err);
+    try status.writeByte('\n');
+    try status.flush();
+    return ok;
+}
+
+/// Spawn the freshly built binary (non-blocking) so it can be killed and
+/// restarted on the next change. Returns null if no executable was produced.
+fn startApp(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    status: *std.Io.Writer,
+    theme: *const Theme,
+    command: []const []const u8,
+) !?std.process.Child {
+    const binary = (try findBinary(io, arena)) orelse {
+        try paint(status, theme, "  (no executable in zig-out/bin to run)", .dim);
+        try status.writeByte('\n');
+        try status.flush();
+        return null;
+    };
+
+    try paint(status, theme, "▸ running ", .info);
+    try status.writeAll(binary);
+    try status.writeByte('\n');
+    try status.flush();
+
+    return try std.process.spawn(io, .{
+        .argv = try appArgv(arena, binary, command),
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
     });
-    const term = try child.wait(io);
-
-    if (term == .exited and term.exited == 0) {
-        try paint(out, theme, "✓ build succeeded", .ok);
-    } else {
-        try paint(out, theme, "✗ build failed", .err);
-    }
-    try out.writeByte('\n');
-    try out.flush();
 }
 
-/// `zig build` (no command) or `zig build run -- <command>`.
-fn buildArgv(arena: std.mem.Allocator, command: []const []const u8) ![]const []const u8 {
-    var list = std.ArrayList([]const u8).empty;
-    try list.appendSlice(arena, &.{ "zig", "build" });
-    if (command.len > 0) {
-        try list.appendSlice(arena, &.{ "run", "--" });
-        try list.appendSlice(arena, command);
+/// The first executable in zig-out/bin (a project produces one), or null.
+fn findBinary(io: std.Io, arena: std.mem.Allocator) !?[]const u8 {
+    var dir = std.Io.Dir.cwd().openDir(io, "zig-out/bin", .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .file) {
+            return try std.fmt.allocPrint(arena, "zig-out{c}bin{c}{s}", .{ std.fs.path.sep, std.fs.path.sep, entry.name });
+        }
     }
+    return null;
+}
+
+/// `<binary> <command...>`.
+fn appArgv(arena: std.mem.Allocator, binary: []const u8, command: []const []const u8) ![]const []const u8 {
+    var list = std.ArrayList([]const u8).empty;
+    try list.append(arena, binary);
+    try list.appendSlice(arena, command);
     return list.items;
 }
 
@@ -230,26 +295,23 @@ fn paint(out: *std.Io.Writer, theme: *const Theme, text: []const u8, role: Role)
 
 const testing = std.testing;
 
-test "buildArgv: no command builds only" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const argv = try buildArgv(arena_state.allocator(), &.{});
-    try testing.expectEqual(@as(usize, 2), argv.len);
-    try testing.expectEqualStrings("zig", argv[0]);
-    try testing.expectEqualStrings("build", argv[1]);
-}
-
-test "buildArgv: with command builds and runs" {
+test "appArgv prepends the binary to the command" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const cmd = [_][]const u8{ "users", "create", "alice" };
-    const argv = try buildArgv(arena_state.allocator(), &cmd);
-    try testing.expectEqual(@as(usize, 7), argv.len);
-    try testing.expectEqualStrings("build", argv[1]);
-    try testing.expectEqualStrings("run", argv[2]);
-    try testing.expectEqualStrings("--", argv[3]);
-    try testing.expectEqualStrings("users", argv[4]);
-    try testing.expectEqualStrings("alice", argv[6]);
+    const argv = try appArgv(arena_state.allocator(), "zig-out/bin/app", &cmd);
+    try testing.expectEqual(@as(usize, 4), argv.len);
+    try testing.expectEqualStrings("zig-out/bin/app", argv[0]);
+    try testing.expectEqualStrings("users", argv[1]);
+    try testing.expectEqualStrings("alice", argv[3]);
+}
+
+test "appArgv with no command is just the binary" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const argv = try appArgv(arena_state.allocator(), "zig-out/bin/app", &.{});
+    try testing.expectEqual(@as(usize, 1), argv.len);
+    try testing.expectEqualStrings("zig-out/bin/app", argv[0]);
 }
 
 test "WatchState coalesces and consumes the dirty signal" {
