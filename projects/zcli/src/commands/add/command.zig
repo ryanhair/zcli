@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const Context = @import("command_registry").Context;
 
 pub const meta = .{
     .description = "Add a new command to your zcli project",
@@ -24,7 +25,7 @@ pub const Options = struct {
     description: ?[]const u8 = null,
 };
 
-pub fn execute(args: Args, options: Options, context: anytype) !void {
+pub fn execute(args: Args, options: Options, context: *Context) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
     var stderr = context.stderr();
@@ -105,6 +106,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     const command_content = try std.fmt.allocPrint(allocator,
         \\const std = @import("std");
         \\const zcli = @import("zcli");
+        \\const Context = @import("command_registry").Context;
         \\
         \\pub const meta = .{{
         \\    .description = "{s}",
@@ -125,8 +127,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         \\    // verbose: bool = false,
         \\}};
         \\
-        \\pub fn execute(args: Args, options: Options, context: anytype) !void {{
-        \\    comptime zcli.assertValidContext(@TypeOf(context));
+        \\pub fn execute(args: Args, options: Options, context: *Context) !void {{
         \\    _ = args;
         \\    _ = options;
         \\
