@@ -6,6 +6,27 @@ on:
     branches: [main]
 
 jobs:
+  test:
+    name: unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # Runs the test suites for every package (packages/*) on both Linux and
+      # macOS — the terminal stack is now libc-free, so this guards portability.
+      - name: Run tests
+        run: zig build test
+
   e2e:
     name: zcli end-to-end tests
     runs-on: ubuntu-latest
