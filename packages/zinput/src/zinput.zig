@@ -23,6 +23,19 @@ pub const search_prompt = @import("search.zig");
 pub const number_prompt = @import("number.zig");
 pub const editor_prompt = @import("editor.zig");
 
+/// Returned by a prompt when the user presses one of the caller's
+/// `interrupt_keys`. The prompt stays domain-agnostic — the caller decides what
+/// the interruption means (go back, cancel, open help, …).
+pub const PromptError = error{Interrupted};
+
+/// Whether `key` is one of the caller's interrupt keys.
+pub fn isInterrupt(key: terminal.Key, keys: []const terminal.Key) bool {
+    for (keys) |k| {
+        if (std.meta.eql(key, k)) return true;
+    }
+    return false;
+}
+
 // Re-export main functions
 pub const text = text_prompt.text;
 pub const confirm = confirm_prompt.confirm;
@@ -44,6 +57,7 @@ pub fn flushWriter(writer: anytype) void {
 
 // Re-export config types
 pub const TextConfig = text_prompt.TextConfig;
+pub const Preview = text_prompt.Preview;
 pub const ConfirmConfig = confirm_prompt.ConfirmConfig;
 pub const SelectConfig = select_prompt.SelectConfig;
 pub const MultiSelectConfig = multi_select_prompt.MultiSelectConfig;

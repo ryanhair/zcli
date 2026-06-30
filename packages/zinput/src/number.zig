@@ -10,9 +10,13 @@ pub const NumberConfig = struct {
     min: ?i64 = null,
     max: ?i64 = null,
     prefix: []const u8 = "? ",
+    /// Keys the prompt should not handle itself: pressing one aborts the prompt
+    /// with `error.Interrupted`. Empty = handle/ignore all keys.
+    interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for numeric input. Returns i64.
+/// Prompt for numeric input. Returns the entered number, or `error.Interrupted`
+/// if the user presses one of `config.interrupt_keys`.
 pub fn number(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     const is_tty = terminal.isStdinTty();
 
@@ -52,15 +56,15 @@ fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
     var buf: [32]u8 = undefined;
     const line = readLine(reader, &buf);
     if (line.len == 0) {
-        return config.default orelse error.InvalidNumber;
+        return config.default orelse return error.InvalidNumber;
     }
-    return std.fmt.parseInt(i64, line, 10) catch error.InvalidNumber;
+    return std.fmt.parseInt(i64, line, 10) catch return error.InvalidNumber;
 }
 
 fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     zinput.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        return config.default orelse error.InvalidNumber;
+        return config.default orelse return error.InvalidNumber;
     };
     defer {
         raw.disable();
@@ -71,7 +75,15 @@ fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     var len: usize = 0;
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        zinput.flushWriter(writer);
+        const k = if (config.interrupt_keys.len > 0)
+            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
+        else
+            try terminal.readKey(reader);
+        if (zinput.isInterrupt(k, config.interrupt_keys)) {
+            try writer.writeAll("\r\n");
+            return error.Interrupted;
+        }
         switch (k) {
             .enter => {
                 if (len == 0) {

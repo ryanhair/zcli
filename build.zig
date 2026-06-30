@@ -44,6 +44,16 @@ pub fn build(b: *std.Build) void {
     zinput_module.addImport("terminal", terminal_module);
     zinput_module.addImport("ztheme", ztheme_module);
 
+    // Expose the PTY-based interactive test harness (testing/e2e.zig) as a
+    // consumable module so CLI projects can write interactive regression tests.
+    // Only e2e.zig is exposed (it's std-only); the rest of the testing package
+    // pulls in zcli/vterm and isn't needed for driving a TTY.
+    _ = b.addModule("testing_e2e", .{
+        .root_source_file = b.path("packages/testing/src/e2e.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Third-party serialization module
     const serde_dep = b.dependency("serde", .{ .target = target, .optimize = optimize });
 

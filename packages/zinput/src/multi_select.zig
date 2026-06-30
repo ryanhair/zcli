@@ -72,6 +72,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
     try renderMultiSelectList(writer, config.choices, selected, cursor, config.unicode);
 
     while (true) {
+        zinput.flushWriter(writer);
         const k = try terminal.readKey(reader);
         switch (k) {
             .up => {

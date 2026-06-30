@@ -90,9 +90,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
 
     // Command modules with their own unit tests.
+    const command_registry_stub = b.addModule("command_registry_stub", .{
+        .root_source_file = b.path("test/stubs/command_registry.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const command_test_files = [_][]const u8{
         "src/commands/tree.zig",
         "src/commands/dev.zig",
+        "src/commands/add/command.zig",
     };
     for (command_test_files) |path| {
         const mod = b.addModule(b.fmt("test-{s}", .{path}), .{
@@ -102,6 +108,7 @@ pub fn build(b: *std.Build) void {
         });
         mod.addImport("zcli", zcli_module);
         mod.addImport("nightwatch", nightwatch_module);
+        mod.addImport("command_registry", command_registry_stub);
         const cmd_tests = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(cmd_tests).step);
     }
@@ -120,6 +127,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     e2e_mod.addOptions("build_options", e2e_options);
+    // PTY harness for interactive (TTY) regression tests.
+    e2e_mod.addImport("testing_e2e", zcli_dep.module("testing_e2e"));
 
     const e2e_tests = b.addTest(.{ .root_module = e2e_mod });
     const run_e2e = b.addRunArtifact(e2e_tests);

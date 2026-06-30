@@ -8,9 +8,13 @@ pub const ConfirmConfig = struct {
     message: []const u8,
     default: bool = true,
     prefix: []const u8 = "? ",
+    /// Keys the prompt should not handle itself: pressing one aborts the prompt
+    /// with `error.Interrupted`. Empty = handle/ignore all keys.
+    interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for yes/no confirmation. Returns bool.
+/// Prompt for yes/no confirmation. Returns the answer, or `error.Interrupted`
+/// if the user presses one of `config.interrupt_keys`.
 pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !bool {
     const is_tty = terminal.isStdinTty();
 
@@ -41,7 +45,15 @@ pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !bool {
     }
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        zinput.flushWriter(writer);
+        const k = if (config.interrupt_keys.len > 0)
+            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
+        else
+            try terminal.readKey(reader);
+        if (zinput.isInterrupt(k, config.interrupt_keys)) {
+            try writer.writeAll("\r\n");
+            return error.Interrupted;
+        }
         switch (k) {
             .enter => {
                 try writer.print("{s}\r\n", .{if (config.default) "yes" else "no"});
