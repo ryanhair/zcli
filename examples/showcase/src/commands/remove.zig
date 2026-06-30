@@ -35,7 +35,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const confirmed = if (zinput.confirm(writer, reader, .{
         .message = msg,
         .default = false,
-    })) |outcome| outcome.unwrap() else |_| true; // Default to yes on non-interactive
+    })) |outcome| outcome.value else |_| true; // Default to yes on non-interactive
 
     if (!confirmed) {
         try context.stdout().writeAll("Cancelled.\n");

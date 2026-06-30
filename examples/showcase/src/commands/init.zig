@@ -31,24 +31,24 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const name = (try zinput.text(writer, reader, allocator, .{
         .message = "Project name:",
         .default = "my-project",
-    })).unwrap();
+    })).value;
     defer allocator.free(name);
 
     const description = (try zinput.text(writer, reader, allocator, .{
         .message = "Description:",
-    })).unwrap();
+    })).value;
     defer allocator.free(description);
 
     const method_idx = (try zinput.select(writer, reader, .{
         .message = "Methodology:",
         .choices = &.{ "Kanban", "Scrum", "None" },
-    })).unwrap();
+    })).value;
     _ = method_idx;
 
     const create_samples = (try zinput.confirm(writer, reader, .{
         .message = "Create sample tasks?",
         .default = true,
-    })).unwrap();
+    })).value;
 
     var data = store.ProjectData{
         .name = name,

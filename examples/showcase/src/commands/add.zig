@@ -51,13 +51,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
         title_owned = (try zinput.text(writer, reader, allocator, .{
             .message = "Task title:",
-        })).unwrap();
+        })).value;
         title = title_owned.?;
 
         const priority_idx = (try zinput.select(writer, reader, .{
             .message = "Priority:",
             .choices = &.{ "low", "medium", "high", "critical" },
-        })).unwrap();
+        })).value;
         priority = switch (priority_idx) {
             0 => .low,
             1 => .medium,
@@ -71,7 +71,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             .default = 1,
             .min = 0,
             .max = 100,
-        })).unwrap();
+        })).value;
         points = @intCast(pts);
     }
 

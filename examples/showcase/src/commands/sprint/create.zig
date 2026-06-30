@@ -28,7 +28,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         break :blk (try zinput.text(writer, reader, allocator, .{
             .message = "Sprint name:",
             .default = try std.fmt.allocPrint(allocator, "Sprint {d}", .{data.sprints.len + 1}),
-        })).unwrap();
+        })).value;
     };
 
     var sprints = std.ArrayList([]const u8).empty;

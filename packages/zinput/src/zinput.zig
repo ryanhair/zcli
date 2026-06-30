@@ -30,15 +30,6 @@ pub fn Outcome(comptime T: type) type {
     return union(enum) {
         value: T,
         key: terminal.Key,
-
-        /// Get the value, asserting no interrupt occurred. Safe only when the
-        /// prompt was called with no `interrupt_keys`.
-        pub fn unwrap(self: @This()) T {
-            return switch (self) {
-                .value => |v| v,
-                .key => unreachable,
-            };
-        }
     };
 }
 

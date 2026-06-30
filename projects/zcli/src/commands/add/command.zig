@@ -195,7 +195,7 @@ fn runWizardOnce(
     // Step 2 — description.
     const description = blk: {
         if (seed_description) |d| break :blk d;
-        const d = std.mem.trim(u8, (try zinput.text(w, r, arena, .{ .message = "Description:" })).unwrap(), " \t\r\n");
+        const d = std.mem.trim(u8, (try zinput.text(w, r, arena, .{ .message = "Description:" })).value, " \t\r\n");
         break :blk if (d.len == 0) "TODO: Add description" else d;
     };
 
@@ -215,7 +215,7 @@ fn runWizardOnce(
             "Add another option",
             "Start over",
             "Cancel",
-        } })).unwrap();
+        } })).value;
         switch (action) {
             0 => {
                 const content = try generateSource(arena, path.parts, description, args_list.items, opts_list.items);
@@ -516,7 +516,7 @@ fn resolveCommandPath(
             break :blk (try zinput.text(w, r, arena, .{
                 .message = "Command path:",
                 .preview = .{ .context = &pp, .render = PathPreview.render },
-            })).unwrap();
+            })).value;
         };
         seed_opt = null;
 
@@ -586,7 +586,7 @@ fn gatherArgs(
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add a positional argument?" else "Add another positional argument?";
-        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).unwrap()) break;
+        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).value) break;
 
         const spec = (try gatherOneArg(arena, w, r, theme, try argNames(arena, list.items), seen_optional)) orelse continue;
         try list.append(arena, spec);
@@ -726,7 +726,7 @@ fn gatherOptions(
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add an option?" else "Add another option?";
-        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).unwrap()) break;
+        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).value) break;
 
         const spec = (try gatherOneOption(arena, w, r, theme, try optNames(arena, list.items), try optShorts(arena, list.items))) orelse continue;
         try list.append(arena, spec);

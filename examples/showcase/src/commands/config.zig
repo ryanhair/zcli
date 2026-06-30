@@ -59,19 +59,19 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const priority_idx = (try zinput.select(writer, reader, .{
         .message = "Default priority for new tasks:",
         .choices = &priorities,
-    })).unwrap();
+    })).value;
 
     const points = (try zinput.number(writer, reader, .{
         .message = "Default story points:",
         .default = current.add.points,
         .min = 0,
         .max = 100,
-    })).unwrap();
+    })).value;
 
     const show_done = (try zinput.confirm(writer, reader, .{
         .message = "Show completed tasks in 'list' by default?",
         .default = current.list.all,
-    })).unwrap();
+    })).value;
 
     const new_config = Config{
         .output = current.output, // preserve existing global setting

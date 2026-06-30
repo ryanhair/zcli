@@ -152,7 +152,7 @@ test "text: non-TTY reads user input" {
 
     const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
-    })).unwrap();
+    })).value;
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("hello world", result);
@@ -168,7 +168,7 @@ test "text: non-TTY uses default on empty input" {
     const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
         .default = "world",
-    })).unwrap();
+    })).value;
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("world", result);
@@ -184,7 +184,7 @@ test "text: non-TTY uses default on EOF" {
     const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
         .default = "fallback",
-    })).unwrap();
+    })).value;
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("fallback", result);
@@ -200,7 +200,7 @@ test "text: prompt message appears in output" {
     const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Enter name:",
         .default = "foo",
-    })).unwrap();
+    })).value;
     defer allocator.free(result);
 
     const written = output_writer.buffer[0..output_writer.end];
