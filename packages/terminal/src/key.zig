@@ -1,7 +1,7 @@
 //! Key reading and escape sequence parsing.
 
 const std = @import("std");
-const posix = std.posix;
+const backend = @import("backend.zig");
 
 /// How long to wait for the rest of an escape sequence before deciding a bare
 /// ESC byte was a lone Escape keypress (only used by `readKeyOpt`, and only when
@@ -76,21 +76,21 @@ pub fn readKey(reader: anytype) !Key {
 
 /// Like `readKey`, but reliably distinguishes a lone Escape from the start of an
 /// escape sequence (arrow keys, etc.). A bare ESC byte with nothing buffered is
-/// ambiguous, so we poll `esc_fd` briefly for the rest of a sequence; if none
+/// ambiguous, so we poll `esc_handle` briefly for the rest of a sequence; if none
 /// arrives it's a lone Escape. Callers that want ESC to mean something pass the
-/// stdin fd here; `readKey` (no poll) is fine for callers that ignore ESC.
-pub fn readKeyOpt(reader: anytype, esc_fd: posix.fd_t) !Key {
-    return readKeyImpl(reader, esc_fd);
+/// stdin handle here; `readKey` (no poll) is fine for callers that ignore ESC.
+pub fn readKeyOpt(reader: anytype, esc_handle: backend.Handle) !Key {
+    return readKeyImpl(reader, esc_handle);
 }
 
-fn readKeyImpl(reader: anytype, esc_fd: ?posix.fd_t) !Key {
+fn readKeyImpl(reader: anytype, esc_handle: ?backend.Handle) !Key {
     const byte = try readByteFn(reader);
 
     return switch (byte) {
         '\r', '\n' => .enter,
         '\t' => .tab,
         127 => .backspace,
-        '\x1b' => parseEscapeSequence(reader, esc_fd),
+        '\x1b' => parseEscapeSequence(reader, esc_handle),
         // Ctrl+A through Ctrl+Z (1-26, excluding 9=tab, 10=newline, 13=cr, 27=esc)
         1...8, 11...12, 14...26 => .{ .ctrl = byte + 'a' - 1 },
         // Printable characters
@@ -99,11 +99,12 @@ fn readKeyImpl(reader: anytype, esc_fd: ?posix.fd_t) !Key {
     };
 }
 
-fn parseEscapeSequence(reader: anytype, esc_fd: ?posix.fd_t) !Key {
+fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Key {
     // A lone ESC has no following bytes. Arrow keys, etc. arrive as one chunk, so
-    // their bytes are already buffered; if nothing is buffered, only poll (when a
-    // fd is given) decides — otherwise treat it as a lone Escape rather than block.
-    if (!escapeSequenceFollows(reader, esc_fd)) return .escape;
+    // their bytes are already buffered; if nothing is buffered, only the poll
+    // (when a handle is given) decides — otherwise treat it as a lone Escape
+    // rather than block.
+    if (!escapeSequenceFollows(reader, esc_handle)) return .escape;
 
     // Try to read the next byte — if it's '[', this is a CSI sequence
     const next = readByteFn(reader) catch return .escape;
@@ -141,13 +142,12 @@ fn parseEscapeSequence(reader: anytype, esc_fd: ?posix.fd_t) !Key {
 
 /// Whether more of an escape sequence follows the ESC byte: true if bytes are
 /// already buffered (the common case — sequences arrive whole), otherwise a
-/// short poll on `esc_fd` (when provided) catches a sequence split across reads.
-fn escapeSequenceFollows(reader: anytype, esc_fd: ?posix.fd_t) bool {
+/// short poll on `esc_handle` (when provided) catches a sequence split across
+/// reads.
+fn escapeSequenceFollows(reader: anytype, esc_handle: ?backend.Handle) bool {
     if (bufferedLenOf(reader) > 0) return true;
-    const fd = esc_fd orelse return false;
-    var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
-    const n = posix.poll(&fds, esc_timeout_ms) catch return false;
-    return n > 0;
+    const handle = esc_handle orelse return false;
+    return backend.waitReadable(handle, esc_timeout_ms);
 }
 
 /// Buffered byte count for readers that expose it (std.Io.Reader); 0 otherwise.
