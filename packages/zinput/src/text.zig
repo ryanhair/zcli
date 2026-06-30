@@ -17,12 +17,14 @@ pub const TextConfig = struct {
     default: ?[]const u8 = null,
     prefix: []const u8 = "? ",
     preview: ?Preview = null,
-    /// When true, pressing Escape returns `error.GoBack` instead of being ignored.
-    cancelable: bool = false,
+    /// Keys the prompt should not handle itself: pressing one aborts the prompt
+    /// and returns it to the caller as `.{ .key = ... }`. Empty = handle/ignore all.
+    interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for text input. Returns owned string (caller must free with allocator).
-pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, config: TextConfig) ![]u8 {
+/// Prompt for text input. On success returns an owned string (caller frees);
+/// if an `interrupt_keys` key is pressed, returns it instead.
+pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, config: TextConfig) !zinput.Outcome([]u8) {
     const is_tty = terminal.isStdinTty();
     const use_preview = is_tty and config.preview != null;
 
@@ -39,17 +41,17 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
     if (!is_tty) {
         // Non-TTY: read a line byte by byte
         const line = readLine(reader, allocator) catch {
-            return if (config.default) |def|
+            return .{ .value = if (config.default) |def|
                 try allocator.dupe(u8, def)
             else
-                try allocator.dupe(u8, "");
+                try allocator.dupe(u8, "") };
         };
         defer allocator.free(line);
         if (line.len == 0) {
-            if (config.default) |def| return try allocator.dupe(u8, def);
+            if (config.default) |def| return .{ .value = try allocator.dupe(u8, def) };
         }
         try writer.writeAll("\n");
-        return try allocator.dupe(u8, line);
+        return .{ .value = try allocator.dupe(u8, line) };
     }
 
     // TTY: raw mode character-by-character input
@@ -57,7 +59,7 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         // Fallback if raw mode fails
         try writer.writeAll("\n");
-        return try allocator.dupe(u8, config.default orelse "");
+        return .{ .value = try allocator.dupe(u8, config.default orelse "") };
     };
     defer {
         raw.disable();
@@ -69,21 +71,21 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
 
     while (true) {
         zinput.flushWriter(writer);
-        const k = if (config.cancelable)
+        const k = if (config.interrupt_keys.len > 0)
             try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
         else
             try terminal.readKey(reader);
+        if (zinput.isInterrupt(k, config.interrupt_keys)) {
+            try writer.writeAll("\r\n");
+            return .{ .key = k };
+        }
         switch (k) {
-            .escape => if (config.cancelable) {
-                try writer.writeAll("\r\n");
-                return error.GoBack;
-            },
             .enter => {
                 try writer.writeAll("\r\n");
                 if (buf.items.len == 0) {
-                    if (config.default) |def| return try allocator.dupe(u8, def);
+                    if (config.default) |def| return .{ .value = try allocator.dupe(u8, def) };
                 }
-                return try allocator.dupe(u8, buf.items);
+                return .{ .value = try allocator.dupe(u8, buf.items) };
             },
             .backspace => {
                 if (buf.items.len > 0) {
@@ -148,9 +150,9 @@ test "text: non-TTY reads user input" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
-    });
+    })).unwrap();
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("hello world", result);
@@ -163,10 +165,10 @@ test "text: non-TTY uses default on empty input" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
         .default = "world",
-    });
+    })).unwrap();
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("world", result);
@@ -179,10 +181,10 @@ test "text: non-TTY uses default on EOF" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Name:",
         .default = "fallback",
-    });
+    })).unwrap();
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("fallback", result);
@@ -195,10 +197,10 @@ test "text: prompt message appears in output" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = (try text(&output_writer, &input_reader, allocator, .{
         .message = "Enter name:",
         .default = "foo",
-    });
+    })).unwrap();
     defer allocator.free(result);
 
     const written = output_writer.buffer[0..output_writer.end];

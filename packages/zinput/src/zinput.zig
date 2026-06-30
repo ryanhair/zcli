@@ -23,6 +23,33 @@ pub const search_prompt = @import("search.zig");
 pub const number_prompt = @import("number.zig");
 pub const editor_prompt = @import("editor.zig");
 
+/// The result of an interactive prompt: either the entered `value`, or an
+/// unhandled `key` the caller asked to be interrupted on (via `interrupt_keys`).
+/// The prompt itself stays domain-agnostic — the caller decides what a key means.
+pub fn Outcome(comptime T: type) type {
+    return union(enum) {
+        value: T,
+        key: terminal.Key,
+
+        /// Get the value, asserting no interrupt occurred. Safe only when the
+        /// prompt was called with no `interrupt_keys`.
+        pub fn unwrap(self: @This()) T {
+            return switch (self) {
+                .value => |v| v,
+                .key => unreachable,
+            };
+        }
+    };
+}
+
+/// Whether `key` is one of the caller's interrupt keys.
+pub fn isInterrupt(key: terminal.Key, keys: []const terminal.Key) bool {
+    for (keys) |k| {
+        if (std.meta.eql(key, k)) return true;
+    }
+    return false;
+}
+
 // Re-export main functions
 pub const text = text_prompt.text;
 pub const confirm = confirm_prompt.confirm;

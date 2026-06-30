@@ -72,6 +72,45 @@ fn isSupportedArrayElem(elem: []const u8) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Interruptible prompt wrappers.
+//
+// zinput reports keys it doesn't handle; "go back a step" is the wizard's own
+// interpretation of Escape, not something zinput knows about. These wrappers
+// ask zinput to surface `back_keys` and translate that outcome into the
+// wizard-local `error.Back` the gather state machines catch.
+// ---------------------------------------------------------------------------
+
+const back_keys = &[_]zinput.terminal.Key{.escape};
+
+fn askText(w: *std.Io.Writer, r: *std.Io.Reader, arena: std.mem.Allocator, message: []const u8) ![]u8 {
+    return switch (try zinput.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys })) {
+        .value => |v| v,
+        .key => error.Back,
+    };
+}
+
+fn askConfirm(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, default: bool) !bool {
+    return switch (try zinput.confirm(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys })) {
+        .value => |v| v,
+        .key => error.Back,
+    };
+}
+
+fn askNumber(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, default: i64) !i64 {
+    return switch (try zinput.number(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys })) {
+        .value => |v| v,
+        .key => error.Back,
+    };
+}
+
+fn askSelect(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, choices: []const []const u8) !usize {
+    return switch (try zinput.select(w, r, .{ .message = message, .choices = choices, .interrupt_keys = back_keys })) {
+        .value => |v| v,
+        .key => error.Back,
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -156,7 +195,7 @@ fn runWizardOnce(
     // Step 2 — description.
     const description = blk: {
         if (seed_description) |d| break :blk d;
-        const d = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "Description:" }), " \t\r\n");
+        const d = std.mem.trim(u8, (try zinput.text(w, r, arena, .{ .message = "Description:" })).unwrap(), " \t\r\n");
         break :blk if (d.len == 0) "TODO: Add description" else d;
     };
 
@@ -170,13 +209,13 @@ fn runWizardOnce(
     // Step 5 — review, then choose what to do.
     while (true) {
         try review(arena, w, theme, path.parts, file_path, description, args_list.items, opts_list.items);
-        const action = try zinput.select(w, r, .{ .message = "What next?", .choices = &.{
+        const action = (try zinput.select(w, r, .{ .message = "What next?", .choices = &.{
             "Create it",
             "Add another argument",
             "Add another option",
             "Start over",
             "Cancel",
-        } });
+        } })).unwrap();
         switch (action) {
             0 => {
                 const content = try generateSource(arena, path.parts, description, args_list.items, opts_list.items);
@@ -474,10 +513,10 @@ fn resolveCommandPath(
     while (true) {
         const raw = if (seed_opt) |s| s else blk: {
             prompted = true;
-            break :blk try zinput.text(w, r, arena, .{
+            break :blk (try zinput.text(w, r, arena, .{
                 .message = "Command path:",
                 .preview = .{ .context = &pp, .render = PathPreview.render },
-            });
+            })).unwrap();
         };
         seed_opt = null;
 
@@ -519,7 +558,7 @@ fn parsePath(arena: std.mem.Allocator, raw: []const u8) ![]const []const u8 {
 // Step 3: positional arguments
 //
 // Each item is gathered by a small state machine so that pressing Escape at a
-// prompt (which surfaces as `error.GoBack`) re-runs the previous prompt of that
+// prompt (which surfaces as `error.Back`) re-runs the previous prompt of that
 // item. Escape at the first prompt (name) abandons the in-progress item.
 // ---------------------------------------------------------------------------
 
@@ -547,7 +586,7 @@ fn gatherArgs(
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add a positional argument?" else "Add another positional argument?";
-        if (!try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })) break;
+        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).unwrap()) break;
 
         const spec = (try gatherOneArg(arena, w, r, theme, try argNames(arena, list.items), seen_optional)) orelse continue;
         try list.append(arena, spec);
@@ -583,14 +622,14 @@ fn gatherOneArg(
     while (true) switch (step) {
         .name => {
             name = readFieldName(arena, w, r, theme, "  Name:", false, existing_names) catch |e| {
-                if (e == error.GoBack) return null;
+                if (e == error.Back) return null;
                 return e;
             };
             step = .description;
         },
         .description => {
-            const d = zinput.text(w, r, arena, .{ .message = "  Description:", .cancelable = true }) catch |e| {
-                if (e == error.GoBack) {
+            const d = askText(w, r, arena, "  Description:") catch |e| {
+                if (e == error.Back) {
                     step = .name;
                     continue;
                 }
@@ -601,7 +640,7 @@ fn gatherOneArg(
         },
         .type => {
             kind = selectArgKind(w, r) catch |e| {
-                if (e == error.GoBack) {
+                if (e == error.Back) {
                     step = .description;
                     continue;
                 }
@@ -612,7 +651,7 @@ fn gatherOneArg(
                 .integer => elem_type = "i64",
                 .decimal => elem_type = "f64",
                 .custom => elem_type = readZigType(arena, w, r, theme) catch |e| {
-                    if (e == error.GoBack) continue; // re-select the type
+                    if (e == error.Back) continue; // re-select the type
                     return e;
                 },
             }
@@ -621,8 +660,8 @@ fn gatherOneArg(
         .multiple => {
             // A positional can only repeat as []const u8 varargs.
             if (kind == .text) {
-                multiple = zinput.confirm(w, r, .{ .message = "  Multiple? (captures all remaining positionals)", .default = false, .cancelable = true }) catch |e| {
-                    if (e == error.GoBack) {
+                multiple = askConfirm(w, r, "  Multiple? (captures all remaining positionals)", false) catch |e| {
+                    if (e == error.Back) {
                         step = .type;
                         continue;
                     }
@@ -640,8 +679,8 @@ fn gatherOneArg(
                 nullable = true;
                 try hint(w, theme, "  (optional \u{2014} follows an earlier optional argument)");
             } else {
-                const req = zinput.confirm(w, r, .{ .message = "  Required?", .default = true, .cancelable = true }) catch |e| {
-                    if (e == error.GoBack) {
+                const req = askConfirm(w, r, "  Required?", true) catch |e| {
+                    if (e == error.Back) {
                         step = if (kind == .text) .multiple else .type;
                         continue;
                     }
@@ -655,15 +694,11 @@ fn gatherOneArg(
 }
 
 fn selectArgKind(w: *std.Io.Writer, r: *std.Io.Reader) !ArgKind {
-    const idx = try zinput.select(w, r, .{
-        .message = "  Type:",
-        .cancelable = true,
-        .choices = &.{
-            "Text          ([]const u8)",
-            "Integer       (i64)",
-            "Decimal       (f64)",
-            "Custom Zig type\u{2026}",
-        },
+    const idx = try askSelect(w, r, "  Type:", &.{
+        "Text          ([]const u8)",
+        "Integer       (i64)",
+        "Decimal       (f64)",
+        "Custom Zig type\u{2026}",
     });
     return switch (idx) {
         0 => .text,
@@ -691,7 +726,7 @@ fn gatherOptions(
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add an option?" else "Add another option?";
-        if (!try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })) break;
+        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).unwrap()) break;
 
         const spec = (try gatherOneOption(arena, w, r, theme, try optNames(arena, list.items), try optShorts(arena, list.items))) orelse continue;
         try list.append(arena, spec);
@@ -731,14 +766,14 @@ fn gatherOneOption(
     while (true) switch (step) {
         .name => {
             name = readFieldName(arena, w, r, theme, "  Name:", true, existing_names) catch |e| {
-                if (e == error.GoBack) return null;
+                if (e == error.Back) return null;
                 return e;
             };
             step = .description;
         },
         .description => {
-            const d = zinput.text(w, r, arena, .{ .message = "  Description:", .cancelable = true }) catch |e| {
-                if (e == error.GoBack) {
+            const d = askText(w, r, arena, "  Description:") catch |e| {
+                if (e == error.Back) {
                     step = .name;
                     continue;
                 }
@@ -749,7 +784,7 @@ fn gatherOneOption(
         },
         .type => {
             kind = selectOptKind(w, r) catch |e| {
-                if (e == error.GoBack) {
+                if (e == error.Back) {
                     step = .description;
                     continue;
                 }
@@ -762,13 +797,13 @@ fn gatherOneOption(
                 .decimal => elem_type = "f64",
                 .choice => {
                     choices = readChoices(arena, w, r, theme) catch |e| {
-                        if (e == error.GoBack) continue; // re-select the type
+                        if (e == error.Back) continue; // re-select the type
                         return e;
                     };
                     elem_type = try buildEnumType(arena, choices);
                 },
                 .custom => elem_type = readZigType(arena, w, r, theme) catch |e| {
-                    if (e == error.GoBack) continue;
+                    if (e == error.Back) continue;
                     return e;
                 },
             }
@@ -776,8 +811,8 @@ fn gatherOneOption(
         },
         .multiple => {
             if (multiple_capable(kind)) {
-                multiple = zinput.confirm(w, r, .{ .message = "  Multiple? (repeatable)", .default = false, .cancelable = true }) catch |e| {
-                    if (e == error.GoBack) {
+                multiple = askConfirm(w, r, "  Multiple? (repeatable)", false) catch |e| {
+                    if (e == error.Back) {
                         step = .type;
                         continue;
                     }
@@ -789,12 +824,8 @@ fn gatherOneOption(
             step = .nullable;
         },
         .nullable => {
-            nullable = zinput.confirm(w, r, .{
-                .message = if (multiple) "  Nullable? (omit \u{2192} empty list)" else "  Nullable? (omit \u{2192} null)",
-                .default = false,
-                .cancelable = true,
-            }) catch |e| {
-                if (e == error.GoBack) {
+            nullable = askConfirm(w, r, if (multiple) "  Nullable? (omit \u{2192} empty list)" else "  Nullable? (omit \u{2192} null)", false) catch |e| {
+                if (e == error.Back) {
                     step = if (multiple_capable(kind)) .multiple else .type;
                     continue;
                 }
@@ -809,7 +840,7 @@ fn gatherOneOption(
                 default_expr = "&.{}";
             } else {
                 default_expr = promptOptionDefault(arena, w, r, theme, kind, choices) catch |e| {
-                    if (e == error.GoBack) {
+                    if (e == error.Back) {
                         step = .nullable;
                         continue;
                     }
@@ -819,8 +850,8 @@ fn gatherOneOption(
             step = .short;
         },
         .short => {
-            const want = zinput.confirm(w, r, .{ .message = "  Short flag?", .default = false, .cancelable = true }) catch |e| {
-                if (e == error.GoBack) {
+            const want = askConfirm(w, r, "  Short flag?", false) catch |e| {
+                if (e == error.Back) {
                     // Skip back over the non-prompting default step when needed.
                     step = if (!nullable and !multiple) .default else .nullable;
                     continue;
@@ -829,7 +860,7 @@ fn gatherOneOption(
             };
             if (want) {
                 short = readShort(arena, w, r, theme, existing_shorts) catch |e| {
-                    if (e == error.GoBack) continue; // re-ask the short-flag yes/no
+                    if (e == error.Back) continue; // re-ask the short-flag yes/no
                     return e;
                 };
             } else {
@@ -849,7 +880,7 @@ fn gatherOneOption(
 }
 
 /// Prompt for an option's default value (scalar, non-nullable). Any Escape
-/// surfaces as `error.GoBack` for the caller to handle.
+/// surfaces as `error.Back` for the caller to handle.
 fn promptOptionDefault(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
@@ -859,27 +890,23 @@ fn promptOptionDefault(
     choices: []const []const u8,
 ) ![]const u8 {
     return switch (kind) {
-        .flag => if (try zinput.confirm(w, r, .{ .message = "  Default on?", .default = false, .cancelable = true })) "true" else "false",
-        .text => try quoteString(arena, std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Default value:", .cancelable = true }), " \t\r\n")),
-        .integer => try std.fmt.allocPrint(arena, "{d}", .{try zinput.number(w, r, .{ .message = "  Default value:", .default = 0, .cancelable = true })}),
+        .flag => if (try askConfirm(w, r, "  Default on?", false)) "true" else "false",
+        .text => try quoteString(arena, std.mem.trim(u8, try askText(w, r, arena, "  Default value:"), " \t\r\n")),
+        .integer => try std.fmt.allocPrint(arena, "{d}", .{try askNumber(w, r, "  Default value:", 0)}),
         .decimal => try std.fmt.allocPrint(arena, "{d}", .{try readFloat(arena, w, r, theme, "  Default value:", 0)}),
-        .choice => try std.fmt.allocPrint(arena, ".{s}", .{choices[try zinput.select(w, r, .{ .message = "  Default:", .choices = choices, .cancelable = true })]}),
-        .custom => try arena.dupe(u8, std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Default (Zig expression):", .cancelable = true }), " \t\r\n")),
+        .choice => try std.fmt.allocPrint(arena, ".{s}", .{choices[try askSelect(w, r, "  Default:", choices)]}),
+        .custom => try arena.dupe(u8, std.mem.trim(u8, try askText(w, r, arena, "  Default (Zig expression):"), " \t\r\n")),
     };
 }
 
 fn selectOptKind(w: *std.Io.Writer, r: *std.Io.Reader) !OptKind {
-    const idx = try zinput.select(w, r, .{
-        .message = "  Type:",
-        .cancelable = true,
-        .choices = &.{
-            "Flag          (bool)",
-            "Text          ([]const u8)",
-            "Integer       (i64)",
-            "Decimal       (f64)",
-            "Choice        (enum)",
-            "Custom Zig type\u{2026}",
-        },
+    const idx = try askSelect(w, r, "  Type:", &.{
+        "Flag          (bool)",
+        "Text          ([]const u8)",
+        "Integer       (i64)",
+        "Decimal       (f64)",
+        "Choice        (enum)",
+        "Custom Zig type\u{2026}",
     });
     return switch (idx) {
         0 => .flag,
@@ -1199,7 +1226,7 @@ fn readFieldName(
     existing: []const []const u8,
 ) ![]const u8 {
     while (true) {
-        const raw = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = message, .cancelable = true }), " \t\r\n");
+        const raw = std.mem.trim(u8, try askText(w, r, arena, message), " \t\r\n");
         if (raw.len == 0) {
             try warn(w, theme, "  Name cannot be empty.");
             continue;
@@ -1234,7 +1261,7 @@ fn readFieldName(
 
 fn readZigType(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const Theme) ![]const u8 {
     while (true) {
-        const t = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Zig type:", .cancelable = true }), " \t\r\n");
+        const t = std.mem.trim(u8, try askText(w, r, arena, "  Zig type:"), " \t\r\n");
         if (t.len == 0) {
             try warn(w, theme, "  Type cannot be empty (e.g. u8, []const u8, enum { a, b }).");
             continue;
@@ -1251,7 +1278,7 @@ fn readShort(
     used: []const u8,
 ) !u8 {
     while (true) {
-        const raw = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Short character:", .cancelable = true }), " \t\r\n");
+        const raw = std.mem.trim(u8, try askText(w, r, arena, "  Short character:"), " \t\r\n");
         if (raw.len != 1 or !std.ascii.isAlphabetic(raw[0])) {
             try warn(w, theme, "  Enter a single letter (a-z).");
             continue;
@@ -1281,7 +1308,7 @@ fn readFloat(
     default: f64,
 ) !f64 {
     while (true) {
-        const raw = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = message, .cancelable = true }), " \t\r\n");
+        const raw = std.mem.trim(u8, try askText(w, r, arena, message), " \t\r\n");
         if (raw.len == 0) return default;
         return std.fmt.parseFloat(f64, raw) catch {
             try warn(w, theme, "  Enter a number (e.g. 1.5).");
@@ -1292,7 +1319,7 @@ fn readFloat(
 
 fn readChoices(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const Theme) ![]const []const u8 {
     while (true) {
-        const raw = try zinput.text(w, r, arena, .{ .message = "  Choices (comma-separated):", .cancelable = true });
+        const raw = try askText(w, r, arena, "  Choices (comma-separated):");
         var list = std.ArrayList([]const u8).empty;
         var ok = true;
         var it = std.mem.splitScalar(u8, raw, ',');

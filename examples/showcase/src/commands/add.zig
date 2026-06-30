@@ -49,15 +49,15 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
                 const writer = context.stdout();
                 const reader = context.stdin();
 
-        title_owned = try zinput.text(writer, reader, allocator, .{
+        title_owned = (try zinput.text(writer, reader, allocator, .{
             .message = "Task title:",
-        });
+        })).unwrap();
         title = title_owned.?;
 
-        const priority_idx = try zinput.select(writer, reader, .{
+        const priority_idx = (try zinput.select(writer, reader, .{
             .message = "Priority:",
             .choices = &.{ "low", "medium", "high", "critical" },
-        });
+        })).unwrap();
         priority = switch (priority_idx) {
             0 => .low,
             1 => .medium,
@@ -66,12 +66,12 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             else => .medium,
         };
 
-        const pts = try zinput.number(writer, reader, .{
+        const pts = (try zinput.number(writer, reader, .{
             .message = "Story points:",
             .default = 1,
             .min = 0,
             .max = 100,
-        });
+        })).unwrap();
         points = @intCast(pts);
     }
 
