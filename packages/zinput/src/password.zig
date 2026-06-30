@@ -38,6 +38,7 @@ pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, 
     defer buf.deinit(allocator);
 
     while (true) {
+        zinput.flushWriter(writer);
         const k = try terminal.readKey(reader);
         switch (k) {
             .enter => {

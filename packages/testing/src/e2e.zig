@@ -918,6 +918,13 @@ pub fn runInteractive(
         }
     }
 
+    // If the script didn't complete (an `expect` timed out), the child is almost
+    // certainly still blocked on a prompt — `child.wait` would hang forever.
+    // Terminate it so the test fails fast instead of deadlocking the suite.
+    if (!script_success) {
+        if (child.id) |pid| posix.kill(pid, toPosixSig(.SIGTERM)) catch {};
+    }
+
     // Drain any remaining output, then reap.
     drainOutput(allocator, io, read_fd, &output_buffer, 1000) catch {};
 

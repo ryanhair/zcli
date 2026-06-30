@@ -4,15 +4,30 @@ const std = @import("std");
 const terminal = @import("terminal");
 const zinput = @import("zinput.zig");
 
+/// Optional live preview rendered on the line *above* the prompt, repainted on
+/// every keystroke. `render` receives the current input and writes one line of
+/// content (no trailing newline); it owns its own styling. Only active on a TTY.
+pub const Preview = struct {
+    context: *anyopaque,
+    render: *const fn (context: *anyopaque, input: []const u8, writer: *std.Io.Writer) anyerror!void,
+};
+
 pub const TextConfig = struct {
     message: []const u8,
     default: ?[]const u8 = null,
     prefix: []const u8 = "? ",
+    preview: ?Preview = null,
+    /// When true, pressing Escape returns `error.GoBack` instead of being ignored.
+    cancelable: bool = false,
 };
 
 /// Prompt for text input. Returns owned string (caller must free with allocator).
 pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, config: TextConfig) ![]u8 {
     const is_tty = terminal.isStdinTty();
+    const use_preview = is_tty and config.preview != null;
+
+    // With a live preview, the preview line sits directly above the prompt.
+    if (use_preview) try renderPreviewLine(writer, config.preview.?, "");
 
     // Render prompt
     try writer.print("{s}{s}", .{ config.prefix, config.message });
@@ -53,8 +68,16 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
     defer buf.deinit(allocator);
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        zinput.flushWriter(writer);
+        const k = if (config.cancelable)
+            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
+        else
+            try terminal.readKey(reader);
         switch (k) {
+            .escape => if (config.cancelable) {
+                try writer.writeAll("\r\n");
+                return error.GoBack;
+            },
             .enter => {
                 try writer.writeAll("\r\n");
                 if (buf.items.len == 0) {
@@ -66,6 +89,7 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
                 if (buf.items.len > 0) {
                     _ = buf.pop();
                     try writer.writeAll("\x08 \x08"); // move back, erase, move back
+                    if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
                 }
             },
             .ctrl => |c| {
@@ -77,10 +101,26 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
             .char => |c| {
                 try buf.append(allocator, c);
                 try writer.print("{c}", .{c});
+                if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
             },
             else => {},
         }
     }
+}
+
+/// Render the preview content followed by a newline (used for the initial line).
+fn renderPreviewLine(writer: *std.Io.Writer, preview: Preview, input: []const u8) !void {
+    try preview.render(preview.context, input, writer);
+    try writer.writeAll("\r\n");
+}
+
+/// Repaint the preview line above the cursor without disturbing the input line:
+/// save cursor, move up one line, clear it, re-render, restore cursor.
+fn repaintPreview(writer: *std.Io.Writer, preview: Preview, input: []const u8) !void {
+    try writer.writeAll("\x1b7"); // DEC save cursor
+    try writer.writeAll("\x1b[1A\r\x1b[2K"); // up one line, carriage return, clear line
+    try preview.render(preview.context, input, writer);
+    try writer.writeAll("\x1b8"); // DEC restore cursor
 }
 
 /// Read a line from a reader byte by byte until newline.

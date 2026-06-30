@@ -13,7 +13,9 @@
 //!   - build_options.fixtures_dir absolute path to test/fixtures
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
+const harness = @import("testing_e2e");
 const testing = std.testing;
 const io = testing.io;
 
@@ -333,6 +335,13 @@ fn tmpSubdirAbs(a: std.mem.Allocator, tmp: testing.TmpDir, sub: []const u8) ![]c
     return std.fs.path.join(a, &.{ cwd_buf[0..cwd_len], ".zig-cache", "tmp", tmp.sub_path[0..], sub });
 }
 
+/// Absolute path of this test run's temp dir root.
+fn tmpDirAbs(a: std.mem.Allocator, tmp: testing.TmpDir) ![]const u8 {
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.process.currentPath(io, &cwd_buf);
+    return std.fs.path.join(a, &.{ cwd_buf[0..cwd_len], ".zig-cache", "tmp", tmp.sub_path[0..] });
+}
+
 test "scaffolded project builds, runs, and round-trips add command" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -390,6 +399,110 @@ test "scaffolded project builds, runs, and round-trips add command" {
         var r = try run(proj, &.{ "./zig-out/bin/demo", "ping" });
         defer r.deinit();
         try expectOk(r);
-        try expectContains(r.stdout, "TODO: Implement this command");
+        try expectContains(r.stdout, "TODO: Implement ping");
     }
+
+    // Declarative mode (`--arg`/`--option` JSON) generates a fully-typed command
+    // through the real binary. `multiple` is its own flag, independent of the
+    // element type — covering a multiple string positional, a multiple integer
+    // option, plus enum/numeric/nullable options and a short flag — and the
+    // result must compile and parse under real zcli.
+    {
+        var r = try run(proj, &.{
+            zcli_exe,        "add",                                                                  "command", "users/create",
+            "--description", "Create a user",
+            "--arg",         "{\"name\":\"email\",\"type\":\"[]const u8\"}",
+            "--arg",         "{\"name\":\"names\",\"type\":\"[]const u8\",\"multiple\":true}",
+            "--option",      "{\"name\":\"verbose\",\"type\":\"bool\",\"default\":false,\"short\":\"v\"}",
+            "--option",      "{\"name\":\"format\",\"type\":\"enum { json, yaml }\",\"default\":\"yaml\"}",
+            "--option",      "{\"name\":\"ports\",\"type\":\"u32\",\"multiple\":true}",
+            "--option",      "{\"name\":\"note\",\"type\":\"[]const u8\",\"nullable\":true}",
+        });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    // Optional positionals (`?T = null`) are a distinct generated shape.
+    {
+        var r = try run(proj, &.{
+            zcli_exe, "add",                                         "command", "lookup",
+            "--arg",  "{\"name\":\"id\",\"type\":\"[]const u8\"}",
+            "--arg",  "{\"name\":\"revision\",\"type\":\"i64\",\"nullable\":true}",
+        });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // Multiple-string positional, multiple-integer option, short flag, enum.
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "users", "create", "alice@example.com", "x", "y", "-v", "--format", "json", "--ports", "8080", "--ports", "9090" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement users create");
+    }
+}
+
+// ============================================================================
+// Layer 2 — interactive (PTY) tests
+// ============================================================================
+
+test "interactive: add command drives the wizard and echoes typed input" {
+    if (builtin.os.tag == .windows) return;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProjectDirs(tmp.dir);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpDirAbs(arena.allocator(), tmp);
+
+    // Drive the wizard with a minimal command (no args/options). `send` appends
+    // a newline (the Enter that submits a text prompt); `sendRaw` writes exactly
+    // the bytes given, which is what the single-key confirm prompts need — a
+    // trailing newline would otherwise be read as Enter by the *next* prompt.
+    //
+    // The `delay` after each prompt is essential: zinput prints+flushes the
+    // prompt *before* it enables raw mode, and `enableRawMode` uses a flushing
+    // tcsetattr that discards any input already buffered in cooked mode. Sending
+    // the instant the prompt appears would race that window and the keystroke
+    // would be dropped (single-key confirms would then block forever). The
+    // settle lets the child reach its raw-mode blocking read first.
+    const settle_ms = 400;
+    var script = harness.InteractiveScript.init(testing.allocator);
+    defer script.deinit();
+    // The final step is a `select` ("What next?") whose default (index 0) is
+    // "Create it", so Enter (sendRaw "\r") accepts it.
+    _ = script
+        .expect("Command path:").delay(settle_ms).send("deploy")
+        .expect("Description:").delay(settle_ms).send("Deploy the app")
+        .expect("Add a positional argument?").delay(settle_ms).sendRaw("n")
+        .expect("Add an option?").delay(settle_ms).sendRaw("n")
+        .expect("What next?").delay(settle_ms).sendRaw("\r");
+
+    var result = harness.runInteractive(
+        testing.allocator,
+        io,
+        &.{ zcli_exe, "add", "command" },
+        script,
+        .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
+    ) catch |err| {
+        // PTY allocation can be denied in some sandboxes; don't fail the suite.
+        std.debug.print("runInteractive unavailable: {any}\n", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    // Regression for the buffered-writer bug: the wizard enables raw mode (kernel
+    // echo OFF), so the description text can only appear in the PTY output if the
+    // program flushed its own per-keystroke echo. Before the fix, this was blank.
+    try expectContains(result.output, "Deploy the app");
+
+    // And the wizard ran to completion against the typed answers.
+    try testing.expect(result.exit_code == 0);
+    try expectContains(result.output, "Created src/commands/deploy.zig");
+    try testing.expect(fileExists(tmp.dir, "src/commands/deploy.zig"));
 }

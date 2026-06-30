@@ -44,6 +44,7 @@ pub fn flushWriter(writer: anytype) void {
 
 // Re-export config types
 pub const TextConfig = text_prompt.TextConfig;
+pub const Preview = text_prompt.Preview;
 pub const ConfirmConfig = confirm_prompt.ConfirmConfig;
 pub const SelectConfig = select_prompt.SelectConfig;
 pub const MultiSelectConfig = multi_select_prompt.MultiSelectConfig;

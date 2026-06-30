@@ -10,6 +10,7 @@ const posix = std.posix;
 pub const key = @import("key.zig");
 pub const Key = key.Key;
 pub const readKey = key.readKey;
+pub const readKeyOpt = key.readKeyOpt;
 
 // ============================================================================
 // Termios / raw mode (libc-free via std.posix)

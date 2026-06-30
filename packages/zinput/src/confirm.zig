@@ -8,6 +8,8 @@ pub const ConfirmConfig = struct {
     message: []const u8,
     default: bool = true,
     prefix: []const u8 = "? ",
+    /// When true, pressing Escape returns `error.GoBack` instead of being ignored.
+    cancelable: bool = false,
 };
 
 /// Prompt for yes/no confirmation. Returns bool.
@@ -41,8 +43,16 @@ pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !bool {
     }
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        zinput.flushWriter(writer);
+        const k = if (config.cancelable)
+            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
+        else
+            try terminal.readKey(reader);
         switch (k) {
+            .escape => if (config.cancelable) {
+                try writer.writeAll("\r\n");
+                return error.GoBack;
+            },
             .enter => {
                 try writer.print("{s}\r\n", .{if (config.default) "yes" else "no"});
                 return config.default;

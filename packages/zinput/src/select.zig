@@ -9,6 +9,8 @@ pub const SelectConfig = struct {
     choices: []const []const u8,
     prefix: []const u8 = "? ",
     unicode: bool = true,
+    /// When true, pressing Escape returns `error.GoBack` instead of being ignored.
+    cancelable: bool = false,
 };
 
 /// Prompt to select one item from a list. Returns the index of the selected item.
@@ -47,8 +49,17 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
     try renderSelectList(writer, config.choices, cursor, config.unicode);
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        zinput.flushWriter(writer);
+        const k = if (config.cancelable)
+            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
+        else
+            try terminal.readKey(reader);
         switch (k) {
+            .escape => if (config.cancelable) {
+                try eraseList(writer, config.choices.len);
+                try writer.writeAll("\x1b[A\r\x1b[K"); // also clear the prompt line
+                return error.GoBack;
+            },
             .up => {
                 if (cursor > 0) cursor -= 1;
                 try eraseList(writer, config.choices.len);

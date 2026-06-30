@@ -54,6 +54,7 @@ pub fn search(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
     rendered_lines = try renderSearch(writer, config, query.items, filtered, cursor);
 
     while (true) {
+        zinput.flushWriter(writer);
         const k = try terminal.readKey(reader);
         switch (k) {
             .up => {

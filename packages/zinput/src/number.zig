@@ -10,6 +10,8 @@ pub const NumberConfig = struct {
     min: ?i64 = null,
     max: ?i64 = null,
     prefix: []const u8 = "? ",
+    /// When true, pressing Escape returns `error.GoBack` instead of being ignored.
+    cancelable: bool = false,
 };
 
 /// Prompt for numeric input. Returns i64.
@@ -71,8 +73,16 @@ fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     var len: usize = 0;
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        zinput.flushWriter(writer);
+        const k = if (config.cancelable)
+            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
+        else
+            try terminal.readKey(reader);
         switch (k) {
+            .escape => if (config.cancelable) {
+                try writer.writeAll("\r\n");
+                return error.GoBack;
+            },
             .enter => {
                 if (len == 0) {
                     if (config.default) |def| return def;
