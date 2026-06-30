@@ -5,7 +5,7 @@
 //! and `interactive` (PTY test harness).
 
 const std = @import("std");
-const posix = std.posix;
+const backend = @import("backend.zig");
 
 pub const key = @import("key.zig");
 pub const Key = key.Key;
@@ -13,93 +13,33 @@ pub const readKey = key.readKey;
 pub const readKeyOpt = key.readKeyOpt;
 
 // ============================================================================
-// Termios / raw mode (libc-free via std.posix)
+// Raw mode, echo, window size, TTY detection
+//
+// These need OS support, which differs by platform, so the implementations live
+// in the selected backend (`backend_posix.zig` / `backend_windows.zig`). The
+// public surface is identical across platforms — `RawMode` is opaque and is
+// restored via `disable()`.
 // ============================================================================
 
-/// The platform termios struct. `std.posix` normalizes the flag words to packed
-/// structs with identical POSIX field names on Linux and macOS, so all the code
-/// below is a single cross-platform path with no `extern "c"` and no libc.
-pub const Termios = posix.termios;
+pub const TerminalError = backend.TerminalError;
 
-pub const TerminalError = error{
-    NotATerminal,
-    TerminalSettingsError,
-};
+/// Saved terminal state for restoring after raw mode. Returned by
+/// `enableRawMode`; call `disable()` to restore the original settings.
+pub const RawMode = backend.RawMode;
 
-/// Saved terminal state for restoring after raw mode.
-pub const RawMode = struct {
-    fd: posix.fd_t,
-    original: Termios,
-
-    /// Restore original terminal settings.
-    pub fn disable(self: RawMode) void {
-        posix.tcsetattr(self.fd, .FLUSH, self.original) catch {};
-    }
-};
-
-/// Enable raw mode on a file descriptor (typically stdin).
-/// Returns a RawMode handle that must be used to restore settings.
-pub fn enableRawMode(fd: posix.fd_t) TerminalError!RawMode {
-    const original = posix.tcgetattr(fd) catch return error.NotATerminal;
-
-    // cfmakeraw() equivalent: clear the flags that cook input/output so bytes
-    // arrive unmodified, one at a time, with no echo or signal handling.
-    var raw = original;
-    raw.iflag.BRKINT = false;
-    raw.iflag.ICRNL = false;
-    raw.iflag.INPCK = false;
-    raw.iflag.ISTRIP = false;
-    raw.iflag.IXON = false;
-    raw.oflag.OPOST = false;
-    raw.lflag.ECHO = false;
-    raw.lflag.ICANON = false;
-    raw.lflag.IEXTEN = false;
-    raw.lflag.ISIG = false;
-    raw.cflag.PARENB = false;
-    raw.cflag.CSIZE = .CS8;
-    raw.cc[@intFromEnum(posix.V.MIN)] = 1;
-    raw.cc[@intFromEnum(posix.V.TIME)] = 0;
-
-    posix.tcsetattr(fd, .FLUSH, raw) catch return error.TerminalSettingsError;
-    return .{ .fd = fd, .original = original };
-}
-
-// ============================================================================
-// Echo control
-// ============================================================================
+/// Enable raw mode on a handle (typically stdin). Returns a RawMode handle that
+/// must be used to restore settings.
+pub const enableRawMode = backend.enableRawMode;
 
 /// Enable or disable terminal echo (for password input).
-pub fn setEcho(fd: posix.fd_t, enabled: bool) TerminalError!void {
-    var termios = posix.tcgetattr(fd) catch return error.NotATerminal;
-    termios.lflag.ECHO = enabled;
-    posix.tcsetattr(fd, .FLUSH, termios) catch return error.TerminalSettingsError;
-}
+pub const setEcho = backend.setEcho;
 
-// ============================================================================
-// Window size
-// ============================================================================
+/// Terminal window dimensions in character cells.
+pub const Winsize = backend.Winsize;
+pub const getWindowSize = backend.getWindowSize;
 
-pub const Winsize = posix.winsize;
-
-pub fn getWindowSize(fd: posix.fd_t) !Winsize {
-    var ws: Winsize = undefined;
-    switch (posix.errno(posix.system.ioctl(fd, posix.T.IOCGWINSZ, @intFromPtr(&ws)))) {
-        .SUCCESS => return ws,
-        else => return error.NotATerminal,
-    }
-}
-
-// ============================================================================
-// TTY detection
-// ============================================================================
-
-/// A descriptor is a TTY iff its termios can be read — a libc-free isatty
-/// (`std.posix.isatty` was removed in 0.16, and the syscall-free check is
-/// exactly what isatty does under the hood).
-pub fn isTty(fd: posix.fd_t) bool {
-    _ = posix.tcgetattr(fd) catch return false;
-    return true;
-}
+/// Whether a handle refers to a terminal/console.
+pub const isTty = backend.isTty;
 
 pub fn isStdinTty() bool {
     return isTty(std.Io.File.stdin().handle);
@@ -202,11 +142,6 @@ pub const ansi = struct {
 // ============================================================================
 // Tests
 // ============================================================================
-
-test "Termios type exists" {
-    var t: Termios = undefined;
-    _ = &t;
-}
 
 test "Winsize type exists" {
     var ws: Winsize = undefined;
