@@ -4,7 +4,7 @@ const zcli = @import("zcli");
 pub const meta = .{
     .description = "Add GitHub Actions workflow for building and releasing binaries",
     .examples = &.{
-        "add gh workflow release",
+        "gh add workflow release",
     },
 };
 

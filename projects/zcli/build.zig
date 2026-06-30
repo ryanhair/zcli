@@ -105,4 +105,27 @@ pub fn build(b: *std.Build) void {
         const cmd_tests = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(cmd_tests).step);
     }
+
+    // End-to-end tests: run the built binary against temp projects. Kept out of
+    // the `test` step because the build-and-run tier compiles zcli from source
+    // and is slow. See test/e2e.zig and .context/e2e-test-plan.md.
+    const e2e_options = b.addOptions();
+    e2e_options.addOption([]const u8, "zcli_exe", b.getInstallPath(.bin, "zcli"));
+    e2e_options.addOption([]const u8, "repo_root", b.path("../..").getPath(b));
+    e2e_options.addOption([]const u8, "fixtures_dir", b.path("test/fixtures").getPath(b));
+
+    const e2e_mod = b.addModule("zcli-e2e", .{
+        .root_source_file = b.path("test/e2e.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    e2e_mod.addOptions("build_options", e2e_options);
+
+    const e2e_tests = b.addTest(.{ .root_module = e2e_mod });
+    const run_e2e = b.addRunArtifact(e2e_tests);
+    run_e2e.has_side_effects = true; // touches fs/git; always re-run
+    run_e2e.step.dependOn(b.getInstallStep()); // binary must exist before tests run
+
+    const e2e_step = b.step("e2e", "Run end-to-end tests (builds scaffolded projects; slow)");
+    e2e_step.dependOn(&run_e2e.step);
 }
