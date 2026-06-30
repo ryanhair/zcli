@@ -378,6 +378,23 @@ fn parseOptJson(arena: std.mem.Allocator, json: []const u8) !OptSpec {
 }
 
 /// Render a JSON default value as a Zig expression, using light type awareness.
+/// Whether `name` is a member of an `enum { a, b = 1, ... }` type string.
+fn enumHasMember(enum_type: []const u8, name: []const u8) bool {
+    const open = std.mem.indexOfScalar(u8, enum_type, '{') orelse return false;
+    const close = std.mem.lastIndexOfScalar(u8, enum_type, '}') orelse return false;
+    if (close <= open) return false;
+    var it = std.mem.splitScalar(u8, enum_type[open + 1 .. close], ',');
+    while (it.next()) |raw| {
+        var member = std.mem.trim(u8, raw, " \t");
+        // Drop an explicit value, e.g. `a = 1` -> `a`.
+        if (std.mem.indexOfScalar(u8, member, '=')) |eq| {
+            member = std.mem.trim(u8, member[0..eq], " \t");
+        }
+        if (member.len > 0 and std.mem.eql(u8, member, name)) return true;
+    }
+    return false;
+}
+
 fn renderDefault(arena: std.mem.Allocator, elem_type: []const u8, v: std.json.Value) ![]const u8 {
     if (std.mem.eql(u8, elem_type, "[]const u8")) {
         const s = switch (v) {
@@ -391,6 +408,9 @@ fn renderDefault(arena: std.mem.Allocator, elem_type: []const u8, v: std.json.Va
             .string => |x| x,
             else => return error.BadDefault,
         };
+        // The default must name one of the enum's members, or the generated
+        // `= .<default>` won't compile.
+        if (!enumHasMember(elem_type, s)) return error.BadDefault;
         return std.fmt.allocPrint(arena, ".{s}", .{s});
     }
     if (std.mem.eql(u8, elem_type, "bool")) {
@@ -1098,7 +1118,10 @@ fn writeOptField(w: *std.Io.Writer, o: OptSpec) !void {
     } else if (o.nullable) {
         try w.print("?{s} = null", .{o.elem_type});
     } else {
-        try w.print("{s} = {s}", .{ o.elem_type, o.default_expr orelse "undefined" });
+        // A non-nullable scalar option always carries a default (the wizard sets
+        // one at the .default step; declarative requires it). Fail loudly rather
+        // than writing `= undefined` into the user's source if that ever breaks.
+        try w.print("{s} = {s}", .{ o.elem_type, o.default_expr orelse unreachable });
     }
 }
 
@@ -1581,6 +1604,24 @@ test "parseOptJson: multiple is a separate flag, not a type" {
     try testing.expectEqualStrings("3", scalar.default_expr.?);
     try testing.expectError(error.UnsupportedArrayElement, parseOptJson(a, "{\"name\":\"x\",\"type\":\"bool\",\"multiple\":true}"));
     try testing.expectError(error.MissingDefault, parseOptJson(a, "{\"name\":\"x\",\"type\":\"u32\"}"));
+}
+
+test "parseOptJson: enum default must name a member" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const ok = try parseOptJson(a, "{\"name\":\"format\",\"type\":\"enum { json, yaml }\",\"default\":\"yaml\"}");
+    try testing.expectEqualStrings(".yaml", ok.default_expr.?);
+    // A default that isn't a member would generate `= .xml`, which won't compile.
+    try testing.expectError(error.BadDefault, parseOptJson(a, "{\"name\":\"format\",\"type\":\"enum { json, yaml }\",\"default\":\"xml\"}"));
+}
+
+test "enumHasMember handles explicit values and spacing" {
+    try testing.expect(enumHasMember("enum { json, yaml }", "json"));
+    try testing.expect(enumHasMember("enum { a = 1, b = 2 }", "b"));
+    try testing.expect(!enumHasMember("enum { json, yaml }", "xml"));
+    try testing.expect(!enumHasMember("enum {}", "x"));
 }
 
 test "parseArgJson: positional multiple must be a string" {

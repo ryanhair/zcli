@@ -4,8 +4,11 @@ const std = @import("std");
 const posix = std.posix;
 
 /// How long to wait for the rest of an escape sequence before deciding a bare
-/// ESC byte was a lone Escape keypress (only used by `readKeyOpt`).
-const esc_timeout_ms = 50;
+/// ESC byte was a lone Escape keypress (only used by `readKeyOpt`, and only when
+/// nothing is already buffered). Locally the buffered fast path makes this
+/// irrelevant; the window mainly matters over a high-latency link (e.g. SSH),
+/// where too small a value risks misreading a split arrow-key sequence as Escape.
+const esc_timeout_ms = 75;
 
 /// A parsed key input from the terminal.
 pub const Key = union(enum) {
