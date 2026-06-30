@@ -115,11 +115,21 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     try stdout.print("  Creating build.zig.zon...\n", .{});
     // Use zcli package from GitHub archive
     const zcli_version = "0.9.3";
+    // Package fingerprint: high 32 bits are a checksum of the package name, low
+    // 32 bits a random id. Zig rejects a zero fingerprint at build time.
+    const fingerprint: u64 = blk: {
+        const checksum = std.hash.Crc32.hash(project_identifier);
+        var id_bytes: [4]u8 = undefined;
+        io.random(&id_bytes);
+        var id = std.mem.readInt(u32, &id_bytes, .little);
+        if (id == 0) id = 1;
+        break :blk (@as(u64, checksum) << 32) | id;
+    };
     const zon_content = try std.fmt.allocPrint(allocator,
         \\.{{
         \\    .name = .{s},
         \\    .version = "{s}",
-        \\    .fingerprint = 0x0000000000000000,
+        \\    .fingerprint = 0x{x:0>16},
         \\    .minimum_zig_version = "0.15.1",
         \\    .dependencies = .{{
         \\        .zcli = .{{
@@ -134,7 +144,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    }},
         \\}}
         \\
-    , .{ project_identifier, app_version, zcli_version });
+    , .{ project_identifier, app_version, fingerprint, zcli_version });
     defer allocator.free(zon_content);
 
     var zon_file = try project_dir.createFile(io, "build.zig.zon", .{});
