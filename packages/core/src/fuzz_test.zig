@@ -239,11 +239,12 @@ pub const FuzzTesting = struct {
         // The danger would be if they were interpreted/executed later
     }
 
-    /// Performance stress testing with random inputs
-    pub fn fuzzPerformanceStress(random: std.Random, allocator: std.mem.Allocator, io: std.Io) !void {
-        var start = std.Io.Timestamp.now(io, .awake);
-
-        // Test many small parses
+    /// Stress the parser with many small and a few large random inputs. This is a
+    /// stability check — `testing.allocator` catches leaks and any crash/UB fails
+    /// the test. It deliberately does not assert wall-clock budgets: those only
+    /// measure the CI runner's load, not the parser, and were flaky in CI.
+    pub fn fuzzPerformanceStress(random: std.Random, allocator: std.mem.Allocator) !void {
+        // Many small parses.
         const small_iterations = 10000;
         for (0..small_iterations) |_| {
             const arg = try generateRandomString(random, allocator, 10);
@@ -253,10 +254,7 @@ pub const FuzzTesting = struct {
             _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
         }
 
-        const small_time = start.untilNow(io, .awake).nanoseconds;
-
-        // Test few large parses
-        start = std.Io.Timestamp.now(io, .awake);
+        // A few large parses.
         const large_iterations = 10;
         for (0..large_iterations) |_| {
             const arg = try generateRandomString(random, allocator, 1000);
@@ -265,19 +263,6 @@ pub const FuzzTesting = struct {
             const args = [_][]const u8{arg};
             _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
         }
-
-        const large_time = start.untilNow(io, .awake).nanoseconds;
-
-        std.log.info("Performance: {} small parses in {} ns, {} large parses in {} ns", .{
-            small_iterations,
-            small_time,
-            large_iterations,
-            large_time,
-        });
-
-        // Performance should be reasonable
-        try testing.expect(small_time < 1000 * std.time.ns_per_ms); // < 1 second for 10k small
-        try testing.expect(large_time < 100 * std.time.ns_per_ms); // < 100ms for 10 large
     }
 };
 
@@ -323,7 +308,7 @@ test "fuzz: performance stress testing" {
     const random = prng.random();
     const allocator = testing.allocator;
 
-    try FuzzTesting.fuzzPerformanceStress(random, allocator, std.testing.io);
+    try FuzzTesting.fuzzPerformanceStress(random, allocator);
 }
 
 // ============================================================================
