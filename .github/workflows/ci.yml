@@ -27,6 +27,40 @@ jobs:
       - name: Run tests
         run: zig build test
 
+  windows:
+    name: windows build + smoke test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # The terminal stack has a Windows console backend (raw mode / VT input via
+      # the console-mode API). Build the CLI natively here — a real Windows
+      # toolchain catches native linking/ABI issues that the release's
+      # cross-compile from Linux would not — then run the binary to prove it
+      # actually starts and dispatches on Windows.
+      - name: Build zcli (native Windows, ReleaseFast)
+        working-directory: projects/zcli
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Smoke test the binary
+        working-directory: projects/zcli
+        shell: bash
+        run: |
+          ./zig-out/bin/zcli.exe --version
+          ./zig-out/bin/zcli.exe --help
+
+      # Run the portable packages' unit tests natively (key parsing, ANSI, etc.).
+      # The PTY-based `testing` package is POSIX-only and excluded, so the full
+      # `zig build test` aggregate isn't used here.
+      - name: Run portable unit tests
+        run: zig build test-terminal test-zinput
+
   e2e:
     name: zcli end-to-end tests
     runs-on: ubuntu-latest
