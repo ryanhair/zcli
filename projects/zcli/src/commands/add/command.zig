@@ -71,32 +71,10 @@ fn isSupportedArrayElem(elem: []const u8) bool {
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// Interruptible prompt wrappers.
-//
-// "Go back a step" is the wizard's interpretation of Escape, not something
-// zinput knows about. zinput just surfaces `back_keys` as `error.Interrupted`;
-// the gather state machines catch that to rewind a step. These wrappers attach
-// `back_keys` so call sites stay terse.
-// ---------------------------------------------------------------------------
-
+// Wizard prompts pass `.interrupt_keys = back_keys` so Escape aborts with
+// `error.Interrupted`; the gather state machines catch that to rewind a step.
+// "Go back" is the wizard's interpretation — zinput just reports the key.
 const back_keys = &[_]zinput.terminal.Key{.escape};
-
-fn askText(w: *std.Io.Writer, r: *std.Io.Reader, arena: std.mem.Allocator, message: []const u8) ![]u8 {
-    return zinput.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys });
-}
-
-fn askConfirm(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, default: bool) !bool {
-    return zinput.confirm(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys });
-}
-
-fn askNumber(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, default: i64) !i64 {
-    return zinput.number(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys });
-}
-
-fn askSelect(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, choices: []const []const u8) !usize {
-    return zinput.select(w, r, .{ .message = message, .choices = choices, .interrupt_keys = back_keys });
-}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -636,7 +614,7 @@ fn gatherOneArg(
             step = .description;
         },
         .description => {
-            const d = askText(w, r, arena, "  Description:") catch |e| {
+            const d = zinput.text(w, r, arena, .{ .message = "  Description:", .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     step = .name;
                     continue;
@@ -668,7 +646,7 @@ fn gatherOneArg(
         .multiple => {
             // A positional can only repeat as []const u8 varargs.
             if (kind == .text) {
-                multiple = askConfirm(w, r, "  Multiple? (captures all remaining positionals)", false) catch |e| {
+                multiple = zinput.confirm(w, r, .{ .message = "  Multiple? (captures all remaining positionals)", .default = false, .interrupt_keys = back_keys }) catch |e| {
                     if (e == error.Interrupted) {
                         step = .type;
                         continue;
@@ -687,7 +665,7 @@ fn gatherOneArg(
                 nullable = true;
                 try hint(w, theme, "  (optional \u{2014} follows an earlier optional argument)");
             } else {
-                const req = askConfirm(w, r, "  Required?", true) catch |e| {
+                const req = zinput.confirm(w, r, .{ .message = "  Required?", .default = true, .interrupt_keys = back_keys }) catch |e| {
                     if (e == error.Interrupted) {
                         step = if (kind == .text) .multiple else .type;
                         continue;
@@ -702,11 +680,15 @@ fn gatherOneArg(
 }
 
 fn selectArgKind(w: *std.Io.Writer, r: *std.Io.Reader) !ArgKind {
-    const idx = try askSelect(w, r, "  Type:", &.{
-        "Text          ([]const u8)",
-        "Integer       (i64)",
-        "Decimal       (f64)",
-        "Custom Zig type\u{2026}",
+    const idx = try zinput.select(w, r, .{
+        .message = "  Type:",
+        .interrupt_keys = back_keys,
+        .choices = &.{
+            "Text          ([]const u8)",
+            "Integer       (i64)",
+            "Decimal       (f64)",
+            "Custom Zig type\u{2026}",
+        },
     });
     return switch (idx) {
         0 => .text,
@@ -780,7 +762,7 @@ fn gatherOneOption(
             step = .description;
         },
         .description => {
-            const d = askText(w, r, arena, "  Description:") catch |e| {
+            const d = zinput.text(w, r, arena, .{ .message = "  Description:", .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     step = .name;
                     continue;
@@ -819,7 +801,7 @@ fn gatherOneOption(
         },
         .multiple => {
             if (multiple_capable(kind)) {
-                multiple = askConfirm(w, r, "  Multiple? (repeatable)", false) catch |e| {
+                multiple = zinput.confirm(w, r, .{ .message = "  Multiple? (repeatable)", .default = false, .interrupt_keys = back_keys }) catch |e| {
                     if (e == error.Interrupted) {
                         step = .type;
                         continue;
@@ -832,7 +814,7 @@ fn gatherOneOption(
             step = .nullable;
         },
         .nullable => {
-            nullable = askConfirm(w, r, if (multiple) "  Nullable? (omit \u{2192} empty list)" else "  Nullable? (omit \u{2192} null)", false) catch |e| {
+            nullable = zinput.confirm(w, r, .{ .message = if (multiple) "  Nullable? (omit \u{2192} empty list)" else "  Nullable? (omit \u{2192} null)", .default = false, .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     step = if (multiple_capable(kind)) .multiple else .type;
                     continue;
@@ -858,7 +840,7 @@ fn gatherOneOption(
             step = .short;
         },
         .short => {
-            const want = askConfirm(w, r, "  Short flag?", false) catch |e| {
+            const want = zinput.confirm(w, r, .{ .message = "  Short flag?", .default = false, .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     // Skip back over the non-prompting default step when needed.
                     step = if (!nullable and !multiple) .default else .nullable;
@@ -898,23 +880,27 @@ fn promptOptionDefault(
     choices: []const []const u8,
 ) ![]const u8 {
     return switch (kind) {
-        .flag => if (try askConfirm(w, r, "  Default on?", false)) "true" else "false",
-        .text => try quoteString(arena, std.mem.trim(u8, try askText(w, r, arena, "  Default value:"), " \t\r\n")),
-        .integer => try std.fmt.allocPrint(arena, "{d}", .{try askNumber(w, r, "  Default value:", 0)}),
+        .flag => if (try zinput.confirm(w, r, .{ .message = "  Default on?", .default = false, .interrupt_keys = back_keys })) "true" else "false",
+        .text => try quoteString(arena, std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Default value:", .interrupt_keys = back_keys }), " \t\r\n")),
+        .integer => try std.fmt.allocPrint(arena, "{d}", .{try zinput.number(w, r, .{ .message = "  Default value:", .default = 0, .interrupt_keys = back_keys })}),
         .decimal => try std.fmt.allocPrint(arena, "{d}", .{try readFloat(arena, w, r, theme, "  Default value:", 0)}),
-        .choice => try std.fmt.allocPrint(arena, ".{s}", .{choices[try askSelect(w, r, "  Default:", choices)]}),
-        .custom => try arena.dupe(u8, std.mem.trim(u8, try askText(w, r, arena, "  Default (Zig expression):"), " \t\r\n")),
+        .choice => try std.fmt.allocPrint(arena, ".{s}", .{choices[try zinput.select(w, r, .{ .message = "  Default:", .choices = choices, .interrupt_keys = back_keys })]}),
+        .custom => try arena.dupe(u8, std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Default (Zig expression):", .interrupt_keys = back_keys }), " \t\r\n")),
     };
 }
 
 fn selectOptKind(w: *std.Io.Writer, r: *std.Io.Reader) !OptKind {
-    const idx = try askSelect(w, r, "  Type:", &.{
-        "Flag          (bool)",
-        "Text          ([]const u8)",
-        "Integer       (i64)",
-        "Decimal       (f64)",
-        "Choice        (enum)",
-        "Custom Zig type\u{2026}",
+    const idx = try zinput.select(w, r, .{
+        .message = "  Type:",
+        .interrupt_keys = back_keys,
+        .choices = &.{
+            "Flag          (bool)",
+            "Text          ([]const u8)",
+            "Integer       (i64)",
+            "Decimal       (f64)",
+            "Choice        (enum)",
+            "Custom Zig type\u{2026}",
+        },
     });
     return switch (idx) {
         0 => .flag,
@@ -1237,7 +1223,7 @@ fn readFieldName(
     existing: []const []const u8,
 ) ![]const u8 {
     while (true) {
-        const raw = std.mem.trim(u8, try askText(w, r, arena, message), " \t\r\n");
+        const raw = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys }), " \t\r\n");
         if (raw.len == 0) {
             try warn(w, theme, "  Name cannot be empty.");
             continue;
@@ -1272,7 +1258,7 @@ fn readFieldName(
 
 fn readZigType(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const Theme) ![]const u8 {
     while (true) {
-        const t = std.mem.trim(u8, try askText(w, r, arena, "  Zig type:"), " \t\r\n");
+        const t = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Zig type:", .interrupt_keys = back_keys }), " \t\r\n");
         if (t.len == 0) {
             try warn(w, theme, "  Type cannot be empty (e.g. u8, []const u8, enum { a, b }).");
             continue;
@@ -1289,7 +1275,7 @@ fn readShort(
     used: []const u8,
 ) !u8 {
     while (true) {
-        const raw = std.mem.trim(u8, try askText(w, r, arena, "  Short character:"), " \t\r\n");
+        const raw = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "  Short character:", .interrupt_keys = back_keys }), " \t\r\n");
         if (raw.len != 1 or !std.ascii.isAlphabetic(raw[0])) {
             try warn(w, theme, "  Enter a single letter (a-z).");
             continue;
@@ -1319,7 +1305,7 @@ fn readFloat(
     default: f64,
 ) !f64 {
     while (true) {
-        const raw = std.mem.trim(u8, try askText(w, r, arena, message), " \t\r\n");
+        const raw = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys }), " \t\r\n");
         if (raw.len == 0) return default;
         return std.fmt.parseFloat(f64, raw) catch {
             try warn(w, theme, "  Enter a number (e.g. 1.5).");
@@ -1330,7 +1316,7 @@ fn readFloat(
 
 fn readChoices(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const Theme) ![]const []const u8 {
     while (true) {
-        const raw = try askText(w, r, arena, "  Choices (comma-separated):");
+        const raw = try zinput.text(w, r, arena, .{ .message = "  Choices (comma-separated):", .interrupt_keys = back_keys });
         var list = std.ArrayList([]const u8).empty;
         var ok = true;
         var it = std.mem.splitScalar(u8, raw, ',');
