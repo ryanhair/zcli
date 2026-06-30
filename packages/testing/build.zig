@@ -27,6 +27,12 @@ pub fn build(b: *std.Build) void {
     });
     test_mod.addImport("zcli", zcli_dep.module("zcli"));
     test_mod.addImport("vterm", vterm_dep.module("vterm"));
+    // The PTY harness in src/e2e.zig links libc for grantpt/unlockpt/ptsname,
+    // which have no syscall equivalent. macOS links libSystem implicitly; Linux
+    // needs this explicit opt-in. Scoped to this test-only build — no shipped
+    // code links libc. The harness itself is slated for a libc-free rewrite onto
+    // std.process.Child + raw ioctls (tracked separately).
+    test_mod.link_libc = true;
     const main_tests = b.addTest(.{
         .root_module = test_mod,
     });

@@ -5,7 +5,6 @@
 //! and `interactive` (PTY test harness).
 
 const std = @import("std");
-const builtin = @import("builtin");
 const posix = std.posix;
 
 pub const key = @import("key.zig");
@@ -13,38 +12,18 @@ pub const Key = key.Key;
 pub const readKey = key.readKey;
 
 // ============================================================================
-// Cross-platform termios
+// Termios / raw mode (libc-free via std.posix)
 // ============================================================================
 
-pub const Termios = switch (builtin.os.tag) {
-    .linux => std.os.linux.termios,
-    .macos => extern struct {
-        c_iflag: c_ulong, // tcflag_t = unsigned long on macOS
-        c_oflag: c_ulong,
-        c_cflag: c_ulong,
-        c_lflag: c_ulong,
-        c_cc: [20]u8,
-        c_ispeed: c_ulong, // speed_t = unsigned long on macOS
-        c_ospeed: c_ulong,
-    },
-    else => std.os.linux.termios,
-};
-
-pub extern "c" fn tcgetattr(fd: c_int, termios_p: *Termios) c_int;
-pub extern "c" fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const Termios) c_int;
-pub extern "c" fn cfmakeraw(termios_p: *Termios) void;
-pub extern "c" fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
-
-pub const TCSAFLUSH = 2;
+/// The platform termios struct. `std.posix` normalizes the flag words to packed
+/// structs with identical POSIX field names on Linux and macOS, so all the code
+/// below is a single cross-platform path with no `extern "c"` and no libc.
+pub const Termios = posix.termios;
 
 pub const TerminalError = error{
     NotATerminal,
     TerminalSettingsError,
 };
-
-// ============================================================================
-// Raw mode
-// ============================================================================
 
 /// Saved terminal state for restoring after raw mode.
 pub const RawMode = struct {
@@ -53,21 +32,34 @@ pub const RawMode = struct {
 
     /// Restore original terminal settings.
     pub fn disable(self: RawMode) void {
-        _ = tcsetattr(self.fd, TCSAFLUSH, &self.original);
+        posix.tcsetattr(self.fd, .FLUSH, self.original) catch {};
     }
 };
 
 /// Enable raw mode on a file descriptor (typically stdin).
 /// Returns a RawMode handle that must be used to restore settings.
 pub fn enableRawMode(fd: posix.fd_t) TerminalError!RawMode {
-    var original: Termios = undefined;
-    if (tcgetattr(fd, &original) != 0) return error.NotATerminal;
+    const original = posix.tcgetattr(fd) catch return error.NotATerminal;
 
+    // cfmakeraw() equivalent: clear the flags that cook input/output so bytes
+    // arrive unmodified, one at a time, with no echo or signal handling.
     var raw = original;
-    cfmakeraw(&raw);
+    raw.iflag.BRKINT = false;
+    raw.iflag.ICRNL = false;
+    raw.iflag.INPCK = false;
+    raw.iflag.ISTRIP = false;
+    raw.iflag.IXON = false;
+    raw.oflag.OPOST = false;
+    raw.lflag.ECHO = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.IEXTEN = false;
+    raw.lflag.ISIG = false;
+    raw.cflag.PARENB = false;
+    raw.cflag.CSIZE = .CS8;
+    raw.cc[@intFromEnum(posix.V.MIN)] = 1;
+    raw.cc[@intFromEnum(posix.V.TIME)] = 0;
 
-    if (tcsetattr(fd, TCSAFLUSH, &raw) != 0) return error.TerminalSettingsError;
-
+    posix.tcsetattr(fd, .FLUSH, raw) catch return error.TerminalSettingsError;
     return .{ .fd = fd, .original = original };
 }
 
@@ -77,57 +69,35 @@ pub fn enableRawMode(fd: posix.fd_t) TerminalError!RawMode {
 
 /// Enable or disable terminal echo (for password input).
 pub fn setEcho(fd: posix.fd_t, enabled: bool) TerminalError!void {
-    var termios: Termios = undefined;
-    if (tcgetattr(fd, &termios) != 0) return error.NotATerminal;
-
-    switch (builtin.os.tag) {
-        .linux => {
-            const echo_flag = std.os.linux.ECHO;
-            if (enabled) termios.lflag |= echo_flag else termios.lflag &= ~echo_flag;
-        },
-        .macos => {
-            const echo_flag: c_ulong = 0x00000008;
-            if (enabled) termios.c_lflag |= echo_flag else termios.c_lflag &= ~echo_flag;
-        },
-        else => {
-            const echo_flag: c_ulong = 0x00000008;
-            if (enabled) termios.lflag |= echo_flag else termios.lflag &= ~echo_flag;
-        },
-    }
-
-    if (tcsetattr(fd, TCSAFLUSH, &termios) != 0) return error.TerminalSettingsError;
+    var termios = posix.tcgetattr(fd) catch return error.NotATerminal;
+    termios.lflag.ECHO = enabled;
+    posix.tcsetattr(fd, .FLUSH, termios) catch return error.TerminalSettingsError;
 }
 
 // ============================================================================
 // Window size
 // ============================================================================
 
-pub const Winsize = extern struct {
-    ws_row: u16,
-    ws_col: u16,
-    ws_xpixel: u16,
-    ws_ypixel: u16,
-};
-
-pub const TIOCGWINSZ: c_ulong = switch (builtin.os.tag) {
-    .linux => 0x5413,
-    .macos => 0x40087468,
-    else => 0x5413,
-};
+pub const Winsize = posix.winsize;
 
 pub fn getWindowSize(fd: posix.fd_t) !Winsize {
     var ws: Winsize = undefined;
-    if (ioctl(fd, TIOCGWINSZ, &ws) != 0) return error.NotATerminal;
-    return ws;
+    switch (posix.errno(posix.system.ioctl(fd, posix.T.IOCGWINSZ, @intFromPtr(&ws)))) {
+        .SUCCESS => return ws,
+        else => return error.NotATerminal,
+    }
 }
 
 // ============================================================================
 // TTY detection
 // ============================================================================
 
-pub fn isTty(fd: std.posix.fd_t) bool {
-    // Direct syscall — isatty is a simple ioctl check
-    return std.posix.system.isatty(fd) != 0;
+/// A descriptor is a TTY iff its termios can be read — a libc-free isatty
+/// (`std.posix.isatty` was removed in 0.16, and the syscall-free check is
+/// exactly what isatty does under the hood).
+pub fn isTty(fd: posix.fd_t) bool {
+    _ = posix.tcgetattr(fd) catch return false;
+    return true;
 }
 
 pub fn isStdinTty() bool {

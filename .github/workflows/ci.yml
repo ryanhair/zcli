@@ -7,8 +7,12 @@ on:
 
 jobs:
   test:
-    name: unit tests
-    runs-on: ubuntu-latest
+    name: unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,7 +22,8 @@ jobs:
         with:
           version: 0.16.0
 
-      # Runs the test suites for every package (packages/*).
+      # Runs the test suites for every package (packages/*) on both Linux and
+      # macOS — the terminal stack is now libc-free, so this guards portability.
       - name: Run tests
         run: zig build test
 
