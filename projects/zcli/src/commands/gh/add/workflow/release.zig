@@ -83,7 +83,7 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         \\      - name: Setup Zig
         \\        uses: mlugg/setup-zig@v2
         \\        with:
-        \\          version: 0.15.1
+        \\          version: 0.16.0
         \\
         \\      - name: Build binary
         \\        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}

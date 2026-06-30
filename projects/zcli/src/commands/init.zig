@@ -130,7 +130,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    .name = .{s},
         \\    .version = "{s}",
         \\    .fingerprint = 0x{x:0>16},
-        \\    .minimum_zig_version = "0.15.1",
+        \\    .minimum_zig_version = "0.16.0",
         \\    .dependencies = .{{
         \\        .zcli = .{{
         \\            .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz",

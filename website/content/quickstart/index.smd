@@ -38,7 +38,7 @@ zig build -Doptimize=ReleaseFast
 cp zig-out/bin/zcli ~/.local/bin/
 ```
 
-Requires Zig 0.15.1 or later.
+Requires Zig 0.16.0 or later.
 
 ## Create Your First CLI
 
