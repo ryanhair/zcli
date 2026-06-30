@@ -32,10 +32,10 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const msg = try std.fmt.allocPrint(allocator, "Remove task #{d}: {s}?", .{ task.id, task.title });
     defer allocator.free(msg);
 
-    const confirmed = if (zinput.confirm(writer, reader, .{
+    const confirmed = zinput.confirm(writer, reader, .{
         .message = msg,
         .default = false,
-    })) |outcome| outcome.value else |_| true; // Default to yes on non-interactive
+    }) catch true; // Default to yes on non-interactive
 
     if (!confirmed) {
         try context.stdout().writeAll("Cancelled.\n");

@@ -9,35 +9,36 @@ pub const ConfirmConfig = struct {
     default: bool = true,
     prefix: []const u8 = "? ",
     /// Keys the prompt should not handle itself: pressing one aborts the prompt
-    /// and returns it to the caller as `.{ .key = ... }`. Empty = handle/ignore all.
+    /// with `error.Interrupted`. Empty = handle/ignore all keys.
     interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for yes/no confirmation. Returns the answer, or an interrupt key.
-pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !zinput.Outcome(bool) {
+/// Prompt for yes/no confirmation. Returns the answer, or `error.Interrupted`
+/// if the user presses one of `config.interrupt_keys`.
+pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !bool {
     const is_tty = terminal.isStdinTty();
 
     const hint = if (config.default) "(Y/n)" else "(y/N)";
     try writer.print("{s}{s} {s} ", .{ config.prefix, config.message, hint });
 
     if (!is_tty) {
-        const first = terminal.key.readByteFn(reader) catch return .{ .value = config.default };
+        const first = terminal.key.readByteFn(reader) catch return config.default;
         // Read rest of line
         while (true) {
             const b = terminal.key.readByteFn(reader) catch break;
             if (b == '\n') break;
         }
         try writer.writeAll("\n");
-        return .{ .value = switch (first) {
+        return switch (first) {
             'y', 'Y' => true,
             'n', 'N' => false,
             else => config.default,
-        } };
+        };
     }
 
     // TTY: single keypress
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return .{ .value = config.default };
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return config.default;
     defer {
         raw.disable();
         zinput.flushWriter(writer);
@@ -51,22 +52,22 @@ pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !zinput.
             try terminal.readKey(reader);
         if (zinput.isInterrupt(k, config.interrupt_keys)) {
             try writer.writeAll("\r\n");
-            return .{ .key = k };
+            return error.Interrupted;
         }
         switch (k) {
             .enter => {
                 try writer.print("{s}\r\n", .{if (config.default) "yes" else "no"});
-                return .{ .value = config.default };
+                return config.default;
             },
             .char => |c| {
                 switch (c) {
                     'y', 'Y' => {
                         try writer.writeAll("yes\r\n");
-                        return .{ .value = true };
+                        return true;
                     },
                     'n', 'N' => {
                         try writer.writeAll("no\r\n");
-                        return .{ .value = false };
+                        return false;
                     },
                     else => {},
                 }
@@ -101,7 +102,7 @@ test "non-TTY: y input returns true" {
         .message = "Continue?",
         .default = false,
     });
-    try std.testing.expect(result.value == true);
+    try std.testing.expect(result == true);
 }
 
 test "non-TTY: n input returns false" {
@@ -114,7 +115,7 @@ test "non-TTY: n input returns false" {
         .message = "Continue?",
         .default = true,
     });
-    try std.testing.expect(result.value == false);
+    try std.testing.expect(result == false);
 }
 
 test "non-TTY: empty input uses default true" {
@@ -127,7 +128,7 @@ test "non-TTY: empty input uses default true" {
         .message = "Continue?",
         .default = true,
     });
-    try std.testing.expect(result.value == true);
+    try std.testing.expect(result == true);
 }
 
 test "non-TTY: empty input uses default false" {
@@ -140,7 +141,7 @@ test "non-TTY: empty input uses default false" {
         .message = "Continue?",
         .default = false,
     });
-    try std.testing.expect(result.value == false);
+    try std.testing.expect(result == false);
 }
 
 test "non-TTY: EOF uses default" {
@@ -153,7 +154,7 @@ test "non-TTY: EOF uses default" {
         .message = "Continue?",
         .default = true,
     });
-    try std.testing.expect(result.value == true);
+    try std.testing.expect(result == true);
 }
 
 test "prompt shows Y/n when default is true" {

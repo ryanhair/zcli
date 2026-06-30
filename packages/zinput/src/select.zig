@@ -10,12 +10,13 @@ pub const SelectConfig = struct {
     prefix: []const u8 = "? ",
     unicode: bool = true,
     /// Keys the prompt should not handle itself: pressing one aborts the prompt
-    /// and returns it to the caller as `.{ .key = ... }`. Empty = handle/ignore all.
+    /// with `error.Interrupted`. Empty = handle/ignore all keys.
     interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt to select one item from a list. Returns the chosen index, or an interrupt key.
-pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !zinput.Outcome(usize) {
+/// Prompt to select one item from a list. Returns the chosen index, or
+/// `error.Interrupted` if the user presses one of `config.interrupt_keys`.
+pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
     if (config.choices.len == 0) return error.NoChoices;
     const is_tty = terminal.isStdinTty();
 
@@ -27,16 +28,16 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !zinput.Ou
             try writer.print("  {d}) {s}\n", .{ i, choice });
         }
         try writer.writeAll("> ");
-        const line = readLine(reader, std.heap.page_allocator) catch return .{ .value = 0 };
+        const line = readLine(reader, std.heap.page_allocator) catch return 0;
         defer std.heap.page_allocator.free(line);
-        const num = std.fmt.parseInt(usize, line, 10) catch return .{ .value = 0 };
-        if (num >= 1 and num <= config.choices.len) return .{ .value = num - 1 };
-        return .{ .value = 0 };
+        const num = std.fmt.parseInt(usize, line, 10) catch return 0;
+        if (num >= 1 and num <= config.choices.len) return num - 1;
+        return 0;
     }
 
     // TTY: interactive selection
     zinput.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return .{ .value = 0 };
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
     try writer.writeAll(terminal.ansi.hide_cursor);
     defer {
         writer.writeAll(terminal.ansi.show_cursor) catch {};
@@ -58,7 +59,7 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !zinput.Ou
         if (zinput.isInterrupt(k, config.interrupt_keys)) {
             try eraseList(writer, config.choices.len);
             try writer.writeAll("\x1b[A\r\x1b[K"); // also clear the prompt line
-            return .{ .key = k };
+            return error.Interrupted;
         }
         switch (k) {
             .up => {
@@ -74,7 +75,7 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !zinput.Ou
             .enter => {
                 try eraseList(writer, config.choices.len);
                 try writer.print("  \x1b[36m{s}\x1b[0m\r\n", .{config.choices[cursor]});
-                return .{ .value = cursor };
+                return cursor;
             },
             .ctrl => |c| {
                 if (c == 'c') {
@@ -135,7 +136,7 @@ test "non-TTY: selects by number" {
         .choices = &.{ "alpha", "beta", "gamma" },
     });
 
-    try std.testing.expectEqual(@as(usize, 1), result.value); // 2 => index 1
+    try std.testing.expectEqual(@as(usize, 1), result); // 2 => index 1
 }
 
 test "non-TTY: invalid number returns 0" {
@@ -149,7 +150,7 @@ test "non-TTY: invalid number returns 0" {
         .choices = &.{ "a", "b" },
     });
 
-    try std.testing.expectEqual(@as(usize, 0), result.value);
+    try std.testing.expectEqual(@as(usize, 0), result);
 }
 
 test "non-TTY: shows numbered choices" {

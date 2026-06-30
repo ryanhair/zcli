@@ -23,15 +23,10 @@ pub const search_prompt = @import("search.zig");
 pub const number_prompt = @import("number.zig");
 pub const editor_prompt = @import("editor.zig");
 
-/// The result of an interactive prompt: either the entered `value`, or an
-/// unhandled `key` the caller asked to be interrupted on (via `interrupt_keys`).
-/// The prompt itself stays domain-agnostic — the caller decides what a key means.
-pub fn Outcome(comptime T: type) type {
-    return union(enum) {
-        value: T,
-        key: terminal.Key,
-    };
-}
+/// Returned by a prompt when the user presses one of the caller's
+/// `interrupt_keys`. The prompt stays domain-agnostic — the caller decides what
+/// the interruption means (go back, cancel, open help, …).
+pub const PromptError = error{Interrupted};
 
 /// Whether `key` is one of the caller's interrupt keys.
 pub fn isInterrupt(key: terminal.Key, keys: []const terminal.Key) bool {

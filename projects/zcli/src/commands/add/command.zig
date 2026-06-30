@@ -74,40 +74,28 @@ fn isSupportedArrayElem(elem: []const u8) bool {
 // ---------------------------------------------------------------------------
 // Interruptible prompt wrappers.
 //
-// zinput reports keys it doesn't handle; "go back a step" is the wizard's own
-// interpretation of Escape, not something zinput knows about. These wrappers
-// ask zinput to surface `back_keys` and translate that outcome into the
-// wizard-local `error.Back` the gather state machines catch.
+// "Go back a step" is the wizard's interpretation of Escape, not something
+// zinput knows about. zinput just surfaces `back_keys` as `error.Interrupted`;
+// the gather state machines catch that to rewind a step. These wrappers attach
+// `back_keys` so call sites stay terse.
 // ---------------------------------------------------------------------------
 
 const back_keys = &[_]zinput.terminal.Key{.escape};
 
 fn askText(w: *std.Io.Writer, r: *std.Io.Reader, arena: std.mem.Allocator, message: []const u8) ![]u8 {
-    return switch (try zinput.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys })) {
-        .value => |v| v,
-        .key => error.Back,
-    };
+    return zinput.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys });
 }
 
 fn askConfirm(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, default: bool) !bool {
-    return switch (try zinput.confirm(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys })) {
-        .value => |v| v,
-        .key => error.Back,
-    };
+    return zinput.confirm(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys });
 }
 
 fn askNumber(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, default: i64) !i64 {
-    return switch (try zinput.number(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys })) {
-        .value => |v| v,
-        .key => error.Back,
-    };
+    return zinput.number(w, r, .{ .message = message, .default = default, .interrupt_keys = back_keys });
 }
 
 fn askSelect(w: *std.Io.Writer, r: *std.Io.Reader, message: []const u8, choices: []const []const u8) !usize {
-    return switch (try zinput.select(w, r, .{ .message = message, .choices = choices, .interrupt_keys = back_keys })) {
-        .value => |v| v,
-        .key => error.Back,
-    };
+    return zinput.select(w, r, .{ .message = message, .choices = choices, .interrupt_keys = back_keys });
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +183,7 @@ fn runWizardOnce(
     // Step 2 — description.
     const description = blk: {
         if (seed_description) |d| break :blk d;
-        const d = std.mem.trim(u8, (try zinput.text(w, r, arena, .{ .message = "Description:" })).value, " \t\r\n");
+        const d = std.mem.trim(u8, try zinput.text(w, r, arena, .{ .message = "Description:" }), " \t\r\n");
         break :blk if (d.len == 0) "TODO: Add description" else d;
     };
 
@@ -209,13 +197,13 @@ fn runWizardOnce(
     // Step 5 — review, then choose what to do.
     while (true) {
         try review(arena, w, theme, path.parts, file_path, description, args_list.items, opts_list.items);
-        const action = (try zinput.select(w, r, .{ .message = "What next?", .choices = &.{
+        const action = try zinput.select(w, r, .{ .message = "What next?", .choices = &.{
             "Create it",
             "Add another argument",
             "Add another option",
             "Start over",
             "Cancel",
-        } })).value;
+        } });
         switch (action) {
             0 => {
                 const content = try generateSource(arena, path.parts, description, args_list.items, opts_list.items);
@@ -513,10 +501,10 @@ fn resolveCommandPath(
     while (true) {
         const raw = if (seed_opt) |s| s else blk: {
             prompted = true;
-            break :blk (try zinput.text(w, r, arena, .{
+            break :blk try zinput.text(w, r, arena, .{
                 .message = "Command path:",
                 .preview = .{ .context = &pp, .render = PathPreview.render },
-            })).value;
+            });
         };
         seed_opt = null;
 
@@ -558,7 +546,7 @@ fn parsePath(arena: std.mem.Allocator, raw: []const u8) ![]const []const u8 {
 // Step 3: positional arguments
 //
 // Each item is gathered by a small state machine so that pressing Escape at a
-// prompt (which surfaces as `error.Back`) re-runs the previous prompt of that
+// prompt (which surfaces as `error.Interrupted`) re-runs the previous prompt of that
 // item. Escape at the first prompt (name) abandons the in-progress item.
 // ---------------------------------------------------------------------------
 
@@ -586,7 +574,7 @@ fn gatherArgs(
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add a positional argument?" else "Add another positional argument?";
-        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).value) break;
+        if (!try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })) break;
 
         const spec = (try gatherOneArg(arena, w, r, theme, try argNames(arena, list.items), seen_optional)) orelse continue;
         try list.append(arena, spec);
@@ -622,14 +610,14 @@ fn gatherOneArg(
     while (true) switch (step) {
         .name => {
             name = readFieldName(arena, w, r, theme, "  Name:", false, existing_names) catch |e| {
-                if (e == error.Back) return null;
+                if (e == error.Interrupted) return null;
                 return e;
             };
             step = .description;
         },
         .description => {
             const d = askText(w, r, arena, "  Description:") catch |e| {
-                if (e == error.Back) {
+                if (e == error.Interrupted) {
                     step = .name;
                     continue;
                 }
@@ -640,7 +628,7 @@ fn gatherOneArg(
         },
         .type => {
             kind = selectArgKind(w, r) catch |e| {
-                if (e == error.Back) {
+                if (e == error.Interrupted) {
                     step = .description;
                     continue;
                 }
@@ -651,7 +639,7 @@ fn gatherOneArg(
                 .integer => elem_type = "i64",
                 .decimal => elem_type = "f64",
                 .custom => elem_type = readZigType(arena, w, r, theme) catch |e| {
-                    if (e == error.Back) continue; // re-select the type
+                    if (e == error.Interrupted) continue; // re-select the type
                     return e;
                 },
             }
@@ -661,7 +649,7 @@ fn gatherOneArg(
             // A positional can only repeat as []const u8 varargs.
             if (kind == .text) {
                 multiple = askConfirm(w, r, "  Multiple? (captures all remaining positionals)", false) catch |e| {
-                    if (e == error.Back) {
+                    if (e == error.Interrupted) {
                         step = .type;
                         continue;
                     }
@@ -680,7 +668,7 @@ fn gatherOneArg(
                 try hint(w, theme, "  (optional \u{2014} follows an earlier optional argument)");
             } else {
                 const req = askConfirm(w, r, "  Required?", true) catch |e| {
-                    if (e == error.Back) {
+                    if (e == error.Interrupted) {
                         step = if (kind == .text) .multiple else .type;
                         continue;
                     }
@@ -726,7 +714,7 @@ fn gatherOptions(
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add an option?" else "Add another option?";
-        if (!(try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })).value) break;
+        if (!try zinput.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })) break;
 
         const spec = (try gatherOneOption(arena, w, r, theme, try optNames(arena, list.items), try optShorts(arena, list.items))) orelse continue;
         try list.append(arena, spec);
@@ -766,14 +754,14 @@ fn gatherOneOption(
     while (true) switch (step) {
         .name => {
             name = readFieldName(arena, w, r, theme, "  Name:", true, existing_names) catch |e| {
-                if (e == error.Back) return null;
+                if (e == error.Interrupted) return null;
                 return e;
             };
             step = .description;
         },
         .description => {
             const d = askText(w, r, arena, "  Description:") catch |e| {
-                if (e == error.Back) {
+                if (e == error.Interrupted) {
                     step = .name;
                     continue;
                 }
@@ -784,7 +772,7 @@ fn gatherOneOption(
         },
         .type => {
             kind = selectOptKind(w, r) catch |e| {
-                if (e == error.Back) {
+                if (e == error.Interrupted) {
                     step = .description;
                     continue;
                 }
@@ -797,13 +785,13 @@ fn gatherOneOption(
                 .decimal => elem_type = "f64",
                 .choice => {
                     choices = readChoices(arena, w, r, theme) catch |e| {
-                        if (e == error.Back) continue; // re-select the type
+                        if (e == error.Interrupted) continue; // re-select the type
                         return e;
                     };
                     elem_type = try buildEnumType(arena, choices);
                 },
                 .custom => elem_type = readZigType(arena, w, r, theme) catch |e| {
-                    if (e == error.Back) continue;
+                    if (e == error.Interrupted) continue;
                     return e;
                 },
             }
@@ -812,7 +800,7 @@ fn gatherOneOption(
         .multiple => {
             if (multiple_capable(kind)) {
                 multiple = askConfirm(w, r, "  Multiple? (repeatable)", false) catch |e| {
-                    if (e == error.Back) {
+                    if (e == error.Interrupted) {
                         step = .type;
                         continue;
                     }
@@ -825,7 +813,7 @@ fn gatherOneOption(
         },
         .nullable => {
             nullable = askConfirm(w, r, if (multiple) "  Nullable? (omit \u{2192} empty list)" else "  Nullable? (omit \u{2192} null)", false) catch |e| {
-                if (e == error.Back) {
+                if (e == error.Interrupted) {
                     step = if (multiple_capable(kind)) .multiple else .type;
                     continue;
                 }
@@ -840,7 +828,7 @@ fn gatherOneOption(
                 default_expr = "&.{}";
             } else {
                 default_expr = promptOptionDefault(arena, w, r, theme, kind, choices) catch |e| {
-                    if (e == error.Back) {
+                    if (e == error.Interrupted) {
                         step = .nullable;
                         continue;
                     }
@@ -851,7 +839,7 @@ fn gatherOneOption(
         },
         .short => {
             const want = askConfirm(w, r, "  Short flag?", false) catch |e| {
-                if (e == error.Back) {
+                if (e == error.Interrupted) {
                     // Skip back over the non-prompting default step when needed.
                     step = if (!nullable and !multiple) .default else .nullable;
                     continue;
@@ -860,7 +848,7 @@ fn gatherOneOption(
             };
             if (want) {
                 short = readShort(arena, w, r, theme, existing_shorts) catch |e| {
-                    if (e == error.Back) continue; // re-ask the short-flag yes/no
+                    if (e == error.Interrupted) continue; // re-ask the short-flag yes/no
                     return e;
                 };
             } else {
@@ -880,7 +868,7 @@ fn gatherOneOption(
 }
 
 /// Prompt for an option's default value (scalar, non-nullable). Any Escape
-/// surfaces as `error.Back` for the caller to handle.
+/// surfaces as `error.Interrupted` for the caller to handle.
 fn promptOptionDefault(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,

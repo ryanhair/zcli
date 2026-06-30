@@ -11,12 +11,13 @@ pub const NumberConfig = struct {
     max: ?i64 = null,
     prefix: []const u8 = "? ",
     /// Keys the prompt should not handle itself: pressing one aborts the prompt
-    /// and returns it to the caller as `.{ .key = ... }`. Empty = handle/ignore all.
+    /// with `error.Interrupted`. Empty = handle/ignore all keys.
     interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for numeric input. Returns the entered number, or an interrupt key.
-pub fn number(writer: anytype, reader: anytype, config: NumberConfig) !zinput.Outcome(i64) {
+/// Prompt for numeric input. Returns the entered number, or `error.Interrupted`
+/// if the user presses one of `config.interrupt_keys`.
+pub fn number(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     const is_tty = terminal.isStdinTty();
 
     while (true) {
@@ -27,14 +28,10 @@ pub fn number(writer: anytype, reader: anytype, config: NumberConfig) !zinput.Ou
         }
         try writer.writeAll(" ");
 
-        const outcome = if (!is_tty)
+        const value = if (!is_tty)
             try readNumberNonTty(reader, config)
         else
             try readNumberTty(writer, reader, config);
-        const value = switch (outcome) {
-            .key => |k| return .{ .key = k },
-            .value => |v| v,
-        };
 
         // Validate range
         if (config.min) |min| {
@@ -51,23 +48,23 @@ pub fn number(writer: anytype, reader: anytype, config: NumberConfig) !zinput.Ou
         }
 
         try writer.writeAll("\r\n");
-        return .{ .value = value };
+        return value;
     }
 }
 
-fn readNumberNonTty(reader: anytype, config: NumberConfig) !zinput.Outcome(i64) {
+fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
     var buf: [32]u8 = undefined;
     const line = readLine(reader, &buf);
     if (line.len == 0) {
-        return .{ .value = config.default orelse return error.InvalidNumber };
+        return config.default orelse return error.InvalidNumber;
     }
-    return .{ .value = std.fmt.parseInt(i64, line, 10) catch return error.InvalidNumber };
+    return std.fmt.parseInt(i64, line, 10) catch return error.InvalidNumber;
 }
 
-fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !zinput.Outcome(i64) {
+fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
     zinput.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        return .{ .value = config.default orelse return error.InvalidNumber };
+        return config.default orelse return error.InvalidNumber;
     };
     defer {
         raw.disable();
@@ -85,19 +82,19 @@ fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !zinput
             try terminal.readKey(reader);
         if (zinput.isInterrupt(k, config.interrupt_keys)) {
             try writer.writeAll("\r\n");
-            return .{ .key = k };
+            return error.Interrupted;
         }
         switch (k) {
             .enter => {
                 if (len == 0) {
-                    if (config.default) |def| return .{ .value = def };
+                    if (config.default) |def| return def;
                     // No input and no default — beep and continue
                     continue;
                 }
-                return .{ .value = std.fmt.parseInt(i64, buf[0..len], 10) catch {
+                return std.fmt.parseInt(i64, buf[0..len], 10) catch {
                     // Shouldn't happen since we only accept digits
                     continue;
-                } };
+                };
             },
             .backspace => {
                 if (len > 0) {
@@ -166,7 +163,7 @@ test "non-TTY: parses a typed number" {
     const result = try number(&writer_stream, &reader_stream, .{
         .message = "Count:",
     });
-    try std.testing.expectEqual(@as(i64, 42), result.value);
+    try std.testing.expectEqual(@as(i64, 42), result);
 }
 
 test "non-TTY: multi-digit value survives the readLine buffer boundary" {
@@ -181,7 +178,7 @@ test "non-TTY: multi-digit value survives the readLine buffer boundary" {
     const result = try number(&writer_stream, &reader_stream, .{
         .message = "Value:",
     });
-    try std.testing.expectEqual(@as(i64, 1234567), result.value);
+    try std.testing.expectEqual(@as(i64, 1234567), result);
 }
 
 test "non-TTY: empty input falls back to the default" {
@@ -194,7 +191,7 @@ test "non-TTY: empty input falls back to the default" {
         .message = "Port:",
         .default = 3000,
     });
-    try std.testing.expectEqual(@as(i64, 3000), result.value);
+    try std.testing.expectEqual(@as(i64, 3000), result);
 }
 
 test "non-TTY: empty input with no default errors" {

@@ -27,10 +27,10 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
         const writer = context.stdout();
         const reader = context.stdin();
 
-    const idx = (try zinput.select(writer, reader, .{
+    const idx = try zinput.select(writer, reader, .{
         .message = "Close which sprint?",
         .choices = data.sprints,
-    })).value;
+    });
 
     const name = data.sprints[idx];
 

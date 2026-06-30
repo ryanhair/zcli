@@ -28,27 +28,27 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     try ztheme.theme("Project Setup").bold().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 
-    const name = (try zinput.text(writer, reader, allocator, .{
+    const name = try zinput.text(writer, reader, allocator, .{
         .message = "Project name:",
         .default = "my-project",
-    })).value;
+    });
     defer allocator.free(name);
 
-    const description = (try zinput.text(writer, reader, allocator, .{
+    const description = try zinput.text(writer, reader, allocator, .{
         .message = "Description:",
-    })).value;
+    });
     defer allocator.free(description);
 
-    const method_idx = (try zinput.select(writer, reader, .{
+    const method_idx = try zinput.select(writer, reader, .{
         .message = "Methodology:",
         .choices = &.{ "Kanban", "Scrum", "None" },
-    })).value;
+    });
     _ = method_idx;
 
-    const create_samples = (try zinput.confirm(writer, reader, .{
+    const create_samples = try zinput.confirm(writer, reader, .{
         .message = "Create sample tasks?",
         .default = true,
-    })).value;
+    });
 
     var data = store.ProjectData{
         .name = name,
