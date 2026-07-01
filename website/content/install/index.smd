@@ -1,0 +1,7 @@
+---
+.title = "zcli — Install",
+.description = "Install zcli with the install script, or add it as a Zig package dependency in build.zig.zon.",
+.date = @date("2025-01-01"),
+.author = "Ryan Hair",
+.layout = "install.shtml",
+---

@@ -1,22 +1,7 @@
 ---
-.title = "zcli",
+.title = "zcli — batteries-included CLI framework for Zig",
+.description = "Drop .zig files in a directory and get a fully-featured CLI — help text, completions, suggestions, prompts, progress bars, and docs. Routing wired up at compile time for zero-cost dispatch.",
 .date = @date("2025-01-01"),
-.author = "zcli Team",
+.author = "Ryan Hair",
 .layout = "home.shtml",
 ---
-
-## Why zcli?
-
-zcli uses **convention over configuration**. Your file structure directly maps to your CLI commands:
-
-```
-src/commands/
-├── hello.zig        # → myapp hello <name>
-├── users/
-│   ├── list.zig     # → myapp users list
-│   └── create.zig   # → myapp users create <email>
-└── config/
-    └── set.zig      # → myapp config set <key> <value>
-```
-
-No routing code. No boilerplate. Just drop `.zig` files and build.

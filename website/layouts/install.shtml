@@ -1,0 +1,128 @@
+<extend template="base.shtml">
+
+<head id="head">
+<style>
+  .hd { padding: 64px 0 8px; text-align: center; }
+  .hd h1 { font-size: clamp(34px, 5vw, 52px); }
+  .hd p { color: var(--muted); font-size: 18px; max-width: 50ch; margin: 16px auto 0; }
+  .tabs { display: flex; gap: 8px; justify-content: center; margin: 40px 0 0; flex-wrap: wrap; }
+  .tab { font-family: var(--mono); font-size: 13px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 16px; cursor: pointer; transition: all .15s; }
+  .tab[aria-selected="true"] { color: #1a1205; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .panels { max-width: 760px; margin: 28px auto 0; }
+  .panel { display: none; }
+  .panel.on { display: block; animation: fade .2s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
+  .panel h3 { font-size: 18px; margin: 0 0 6px; }
+  .panel p { color: var(--muted); margin-bottom: 14px; font-size: 15px; }
+
+  .cmdbox { display: flex; align-items: stretch; background: #0a0b0e; border: 1px solid var(--border2); border-radius: 10px; overflow: hidden; margin-bottom: 16px; }
+  .cmdbox pre { flex: 1; font-family: var(--mono); font-size: 14px; color: #cfd3da; padding: 16px 18px; overflow-x: auto; }
+  .cmdbox .pr { color: var(--accent); }
+  .cmdbox button { border: none; border-left: 1px solid var(--border); background: var(--surface); color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 0 18px; cursor: pointer; transition: all .15s; }
+  .cmdbox button:hover { color: var(--accent); }
+
+  .verify { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-top: 28px; }
+  .verify h4 { font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin-bottom: 10px; }
+  .verify pre { font-family: var(--mono); font-size: 13.5px; color: #cfd3da; line-height: 1.7; }
+  .verify .ok { color: var(--green); }
+
+  .grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; max-width: 760px; margin: 64px auto 0; }
+  .grid .req { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+  .grid .req .l { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+  .grid .req .v { font-size: 16px; margin-top: 6px; color: var(--fg); }
+  .grid .req .v b { color: var(--accent); }
+  @media (max-width: 700px){ .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+
+<main id="main">
+  <div class="wrap">
+    <div class="hd">
+      <div class="eyebrow" style="display:inline-block;">Install</div>
+      <h1>Get zcli running.</h1>
+      <p>Pick the install script for the CLI, or add zcli as a package dependency to start building.</p>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-t="script">Install script</button>
+      <button class="tab" role="tab" aria-selected="false" data-t="pkg">Zig package</button>
+      <button class="tab" role="tab" aria-selected="false" data-t="src">From source</button>
+    </div>
+
+    <div class="panels">
+      <!-- SCRIPT -->
+      <div class="panel on" id="p-script">
+        <h3>Install script</h3>
+        <p>Downloads the latest release binary for your platform and drops it in your install dir.</p>
+        <div class="cmdbox">
+          <pre><span class="pr">$</span> curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</pre>
+          <button onclick="cp(this,'curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh')">copy</button>
+        </div>
+        <p style="font-size:13.5px;">Requires <code class="mono" style="color:var(--accent)">curl</code>. The script reads the latest release from GitHub, verifies the checksum when available, and makes the binary executable.</p>
+      </div>
+
+      <!-- PKG -->
+      <div class="panel" id="p-pkg">
+        <h3>Add as a Zig package</h3>
+        <p>The usual path: add zcli to <code class="mono" style="color:var(--accent)">build.zig.zon</code> and import the module in <code class="mono" style="color:var(--accent)">build.zig</code>.</p>
+        <div class="cmdbox">
+          <pre>.dependencies = .{
+    .zcli = .{
+        <span class="pr">.url</span> = "https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz",
+        <span class="pr">.hash</span> = "...", // zig build prints the correct hash
+    },
+},</pre>
+          <button onclick="cp(this,'.zcli = .{ .url = &quot;https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz&quot;, .hash = &quot;...&quot; },')">copy</button>
+        </div>
+        <p style="font-size:13.5px;">Then follow steps 2 & 3 in the <a href="$site.page('docs').link().suffix('#manual')" style="color:var(--accent)">docs</a> to wire up <code class="mono">zcli.generate</code>.</p>
+      </div>
+
+      <!-- SOURCE -->
+      <div class="panel" id="p-src">
+        <h3>Build from source</h3>
+        <p>Clone the repo and build with Zig directly.</p>
+        <div class="cmdbox">
+          <pre><span class="pr">$</span> git clone https://github.com/ryanhair/zcli.git
+<span class="pr">$</span> cd zcli && zig build</pre>
+          <button onclick="cp(this,'git clone https://github.com/ryanhair/zcli.git && cd zcli && zig build')">copy</button>
+        </div>
+        <p style="font-size:13.5px;">Built artifacts land in <code class="mono">zig-out/bin/</code>. Requires Zig 0.16.0+.</p>
+      </div>
+    </div>
+
+    <div class="verify">
+      <h4>Verify the install</h4>
+<pre><span class="pr" style="color:var(--accent)">$</span> myapp --version
+<span class="ok">myapp 0.1.0  ·  built with zcli v0.17.0</span></pre>
+    </div>
+
+    <div class="grid">
+      <div class="req"><div class="l">Requires</div><div class="v"><b>Zig 0.16.0</b> or newer</div></div>
+      <div class="req"><div class="l">License</div><div class="v"><b>MIT</b> — © 2025 Ryan Hair</div></div>
+      <div class="req"><div class="l">Latest</div><div class="v"><b>v0.17.0</b></div></div>
+    </div>
+
+    <div style="text-align:center;margin:56px 0 96px;">
+      <a class="btn primary" href="$site.page('docs').link()">Read the getting-started guide →</a>
+    </div>
+  </div>
+
+<script>
+  var tabs = document.querySelectorAll('.tab');
+  tabs.forEach(function (t) {
+    t.addEventListener('click', function () {
+      tabs.forEach(function (x) { x.setAttribute('aria-selected', 'false'); });
+      t.setAttribute('aria-selected', 'true');
+      document.querySelectorAll('.panel').forEach(function (p) { p.classList.remove('on'); });
+      document.getElementById('p-' + t.dataset.t).classList.add('on');
+    });
+  });
+  function cp(btn, text) {
+    navigator.clipboard.writeText(text).then(function () {
+      var old = btn.textContent; btn.textContent = 'copied ✓'; btn.style.color = 'var(--green)';
+      setTimeout(function () { btn.textContent = old; btn.style.color = ''; }, 1600);
+    });
+  }
+</script>
+
+</main>

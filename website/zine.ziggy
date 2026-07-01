@@ -1,5 +1,5 @@
 Site {
-    .title = "zcli - Build beautiful CLIs in Zig",
+    .title = "zcli — batteries-included CLI framework for Zig",
     .host_url = "https://ryanhair.github.io",
     .url_path_prefix = "zcli",
     .content_dir_path = "content",
