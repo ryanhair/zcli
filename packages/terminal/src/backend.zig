@@ -48,3 +48,11 @@ pub const isTty = impl.isTty;
 /// Wait up to `timeout_ms` for `handle` to have input ready to read. Returns
 /// false on timeout or error. A negative timeout blocks indefinitely.
 pub const waitReadable = impl.waitReadable;
+
+/// Watches for terminal-resize events and multiplexes them with stdin
+/// readiness. Construct with `init()` for the duration of an interactive
+/// prompt, `deinit()` when done, and drive it via `wait(handle)`.
+pub const ResizeWatcher = impl.ResizeWatcher;
+
+/// Result of `ResizeWatcher.wait`: either input is ready or a resize occurred.
+pub const InputWait = impl.InputWait;

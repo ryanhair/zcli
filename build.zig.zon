@@ -8,6 +8,10 @@
             .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.3.tar.gz",
             .hash = "serde-1.0.1-1DszT9VLCwAjuQh0WSq-dIfZ-6Gq8edODuhwF9gfsxld",
         },
+        .zg = .{
+            .url = "https://codeberg.org/atman/zg/archive/v0.16.2.tar.gz",
+            .hash = "zg-0.16.2-oGqU3HqftgI6rwFS90ypwfjgToH8Pz829OKuFURlm773",
+        },
     },
     .paths = .{
         "build.zig",

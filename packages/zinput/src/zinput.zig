@@ -14,6 +14,10 @@
 const std = @import("std");
 pub const terminal = @import("terminal");
 
+/// Shared rendering machinery for the list-style prompts (wrapping, viewport,
+/// resize-safe erase).
+pub const list_render = @import("list_render.zig");
+
 pub const text_prompt = @import("text.zig");
 pub const confirm_prompt = @import("confirm.zig");
 pub const select_prompt = @import("select.zig");
