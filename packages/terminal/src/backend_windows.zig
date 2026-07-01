@@ -132,3 +132,43 @@ pub fn waitReadable(handle: Handle, timeout_ms: i32) bool {
     const ms: DWORD = if (timeout_ms < 0) INFINITE else @intCast(timeout_ms);
     return WaitForSingleObject(handle, ms) == WAIT_OBJECT_0;
 }
+
+/// Whether a `wait` returned because input is ready or the terminal resized.
+pub const InputWait = enum { input, resize };
+
+/// How often `wait` re-checks the window size while blocked on input. With
+/// `ENABLE_VIRTUAL_TERMINAL_INPUT`, resize events are not delivered through the
+/// byte stream (`ReadFile`), so rather than rewire input reading to consume
+/// console records — which would risk the VT byte path — we poll the size on a
+/// short interval. ~60ms is imperceptible for a resize repaint.
+const resize_poll_ms: i32 = 60;
+
+/// Watches for console-window resizes and multiplexes them with input
+/// readiness. Detects resize by polling `getWindowSize` on the output handle,
+/// which keeps the input-reading path (VT byte stream via `ReadFile`) untouched.
+pub const ResizeWatcher = struct {
+    out: Handle,
+    last: Winsize,
+
+    pub fn init() ResizeWatcher {
+        const out = std.Io.File.stdout().handle;
+        return .{ .out = out, .last = getWindowSize(out) catch .{ .row = 0, .col = 0 } };
+    }
+
+    pub fn deinit(self: *ResizeWatcher) void {
+        _ = self;
+    }
+
+    /// Block until stdin (`handle`) has input or the console window resizes.
+    pub fn wait(self: *ResizeWatcher, handle: Handle) InputWait {
+        while (true) {
+            const ready = WaitForSingleObject(handle, @intCast(resize_poll_ms)) == WAIT_OBJECT_0;
+            const sz = getWindowSize(self.out) catch self.last;
+            if (sz.row != self.last.row or sz.col != self.last.col) {
+                self.last = sz;
+                return .resize;
+            }
+            if (ready) return .input;
+        }
+    }
+};

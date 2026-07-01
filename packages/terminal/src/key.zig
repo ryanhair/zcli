@@ -67,11 +67,34 @@ pub fn readByteFn(reader: anytype) !u8 {
     return buf[0];
 }
 
+/// An input event: a key press or a terminal resize. Returned by `readEvent`
+/// for prompts that need to repaint when the terminal is resized.
+pub const Event = union(enum) {
+    key: Key,
+    resize,
+};
+
 /// Read a single key from a reader, parsing ANSI escape sequences.
 /// In raw mode, this reads byte-by-byte and assembles multi-byte
 /// sequences (arrow keys, etc.) into Key values.
 pub fn readKey(reader: anytype) !Key {
     return readKeyImpl(reader, null);
+}
+
+/// Like `readKey`, but also reports terminal-resize events by multiplexing
+/// stdin with the `watcher`. Blocks until a key is read or a resize occurs.
+///
+/// `handle` is the stdin handle (used both for escape-sequence disambiguation
+/// and by the watcher's poll). Buffered input already sitting in `reader` is
+/// consumed before polling, so no keypress is missed.
+pub fn readEvent(reader: anytype, handle: backend.Handle, watcher: *backend.ResizeWatcher) !Event {
+    while (true) {
+        if (bufferedLenOf(reader) > 0) return .{ .key = try readKeyImpl(reader, handle) };
+        switch (watcher.wait(handle)) {
+            .resize => return .resize,
+            .input => return .{ .key = try readKeyImpl(reader, handle) },
+        }
+    }
 }
 
 /// Like `readKey`, but reliably distinguishes a lone Escape from the start of an

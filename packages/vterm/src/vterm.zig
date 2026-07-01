@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const DisplayWidth = @import("DisplayWidth");
 
 const CellModule = @import("cell.zig");
 const PositionModule = @import("position.zig");
@@ -50,53 +51,12 @@ pub const TextAttribute = enum {
     underline,
 };
 
-// Character width detection for wide characters (CJK, emojis, etc.)
+// Character width detection for wide characters (CJK, emojis, etc.).
+// vterm uses a fixed one-cell-per-codepoint model, so only the wide/narrow
+// distinction matters here; the underlying Unicode data comes from zg's
+// DisplayWidth table rather than a hand-maintained list of ranges.
 pub fn charWidth(codepoint: u21) u8 {
-    // ASCII and Latin-1 are always 1 column
-    if (codepoint < 0x1100) return 1;
-
-    // Wide characters that take 2 columns
-    // Simplified ranges - covers most common wide characters
-    if ((codepoint >= 0x1100 and codepoint <= 0x115F) or // Hangul Jamo
-        (codepoint >= 0x2E80 and codepoint <= 0x2EFF) or // CJK Radicals
-        (codepoint >= 0x2F00 and codepoint <= 0x2FDF) or // Kangxi Radicals
-        (codepoint >= 0x2FF0 and codepoint <= 0x2FFF) or // CJK Description
-        (codepoint >= 0x3000 and codepoint <= 0x303E) or // CJK Symbols
-        (codepoint >= 0x3041 and codepoint <= 0x3096) or // Hiragana
-        (codepoint >= 0x30A1 and codepoint <= 0x30FA) or // Katakana
-        (codepoint >= 0x3105 and codepoint <= 0x312D) or // Bopomofo
-        (codepoint >= 0x3131 and codepoint <= 0x318E) or // Hangul Compatibility
-        (codepoint >= 0x3190 and codepoint <= 0x31BA) or // Kanbun
-        (codepoint >= 0x31C0 and codepoint <= 0x31E3) or // CJK Strokes
-        (codepoint >= 0x31F0 and codepoint <= 0x31FF) or // Katakana Extension
-        (codepoint >= 0x3200 and codepoint <= 0x32FF) or // Enclosed CJK
-        (codepoint >= 0x3300 and codepoint <= 0x33FF) or // CJK Compatibility
-        (codepoint >= 0x3400 and codepoint <= 0x4DBF) or // CJK Extension A
-        (codepoint >= 0x4E00 and codepoint <= 0x9FFF) or // CJK Unified Ideographs
-        (codepoint >= 0xA960 and codepoint <= 0xA97F) or // Hangul Syllables Extension A
-        (codepoint >= 0xAC00 and codepoint <= 0xD7A3) or // Hangul Syllables
-        (codepoint >= 0xF900 and codepoint <= 0xFAFF) or // CJK Compatibility Ideographs
-        (codepoint >= 0xFE10 and codepoint <= 0xFE19) or // Vertical Forms
-        (codepoint >= 0xFE30 and codepoint <= 0xFE6F) or // CJK Compatibility Forms
-        (codepoint >= 0xFF00 and codepoint <= 0xFF60) or // Fullwidth Forms
-        (codepoint >= 0xFFE0 and codepoint <= 0xFFE6) or // Fullwidth Forms
-        (codepoint >= 0x1F300 and codepoint <= 0x1F5FF) or // Misc Symbols and Pictographs
-        (codepoint >= 0x1F600 and codepoint <= 0x1F64F) or // Emoticons
-        (codepoint >= 0x1F680 and codepoint <= 0x1F6FF) or // Transport and Map
-        (codepoint >= 0x1F700 and codepoint <= 0x1F77F) or // Alchemical Symbols
-        (codepoint >= 0x1F780 and codepoint <= 0x1F7FF) or // Geometric Shapes Extended
-        (codepoint >= 0x1F800 and codepoint <= 0x1F8FF) or // Supplemental Arrows-C
-        (codepoint >= 0x1F900 and codepoint <= 0x1F9FF) or // Supplemental Symbols
-        (codepoint >= 0x1FA00 and codepoint <= 0x1FA6F) or // Chess Symbols
-        (codepoint >= 0x1FA70 and codepoint <= 0x1FAFF) or // Symbols and Pictographs Extended-A
-        (codepoint >= 0x20000 and codepoint <= 0x2FFFD) or // CJK Extension B-F
-        (codepoint >= 0x30000 and codepoint <= 0x3FFFD))
-    { // CJK Extension G
-        return 2;
-    }
-
-    // Default to 1 column for everything else
-    return 1;
+    return if (DisplayWidth.codePointWidth(codepoint) == 2) 2 else 1;
 }
 
 // Parser state for Phase 2

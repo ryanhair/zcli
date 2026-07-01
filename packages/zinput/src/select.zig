@@ -3,6 +3,7 @@
 const std = @import("std");
 const terminal = @import("terminal");
 const zinput = @import("zinput.zig");
+const lr = @import("list_render.zig");
 
 pub const SelectConfig = struct {
     message: []const u8,
@@ -20,10 +21,9 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
     if (config.choices.len == 0) return error.NoChoices;
     const is_tty = terminal.isStdinTty();
 
-    try writer.print("{s}{s}\r\n", .{ config.prefix, config.message });
-
     if (!is_tty) {
         // Non-TTY: numbered list
+        try writer.print("{s}{s}\r\n", .{ config.prefix, config.message });
         for (config.choices, 1..) |choice, i| {
             try writer.print("  {d}) {s}\n", .{ i, choice });
         }
@@ -39,71 +39,103 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
     zinput.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
     try writer.writeAll(terminal.ansi.hide_cursor);
+    var watcher = terminal.ResizeWatcher.init();
     defer {
         writer.writeAll(terminal.ansi.show_cursor) catch {};
+        watcher.deinit();
         raw.disable();
         zinput.flushWriter(writer);
     }
 
+    const stdin = std.Io.File.stdin().handle;
     var cursor: usize = 0;
-
-    // Initial render
-    try renderSelectList(writer, config.choices, cursor, config.unicode);
+    var rows = try renderList(writer, config, cursor, lr.windowSize());
 
     while (true) {
         zinput.flushWriter(writer);
-        const k = if (config.interrupt_keys.len > 0)
-            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
-        else
-            try terminal.readKey(reader);
-        if (zinput.isInterrupt(k, config.interrupt_keys)) {
-            try eraseList(writer, config.choices.len);
-            try writer.writeAll("\x1b[A\r\x1b[K"); // also clear the prompt line
-            return error.Interrupted;
-        }
-        switch (k) {
-            .up => {
-                if (cursor > 0) cursor -= 1;
-                try eraseList(writer, config.choices.len);
-                try renderSelectList(writer, config.choices, cursor, config.unicode);
+        switch (try terminal.readEvent(reader, stdin, &watcher)) {
+            .resize => {
+                try lr.eraseRegion(writer, rows);
+                rows = try renderList(writer, config, cursor, lr.windowSize());
             },
-            .down => {
-                if (cursor < config.choices.len - 1) cursor += 1;
-                try eraseList(writer, config.choices.len);
-                try renderSelectList(writer, config.choices, cursor, config.unicode);
-            },
-            .enter => {
-                try eraseList(writer, config.choices.len);
-                try writer.print("  \x1b[36m{s}\x1b[0m\r\n", .{config.choices[cursor]});
-                return cursor;
-            },
-            .ctrl => |c| {
-                if (c == 'c') {
-                    try eraseList(writer, config.choices.len);
-                    return error.UserAborted;
+            .key => |k| {
+                if (zinput.isInterrupt(k, config.interrupt_keys)) {
+                    try lr.eraseRegion(writer, rows);
+                    return error.Interrupted;
+                }
+                switch (k) {
+                    .up => {
+                        if (cursor > 0) cursor -= 1;
+                        try lr.eraseRegion(writer, rows);
+                        rows = try renderList(writer, config, cursor, lr.windowSize());
+                    },
+                    .down => {
+                        if (cursor < config.choices.len - 1) cursor += 1;
+                        try lr.eraseRegion(writer, rows);
+                        rows = try renderList(writer, config, cursor, lr.windowSize());
+                    },
+                    .enter => {
+                        try lr.eraseRegion(writer, rows);
+                        try writer.print("  \x1b[36m{s}\x1b[0m\r\n", .{config.choices[cursor]});
+                        return cursor;
+                    },
+                    .ctrl => |c| {
+                        if (c == 'c') {
+                            try lr.eraseRegion(writer, rows);
+                            return error.UserAborted;
+                        }
+                    },
+                    else => {},
                 }
             },
-            else => {},
         }
     }
 }
 
-fn renderSelectList(writer: anytype, choices: []const []const u8, cursor: usize, unicode: bool) !void {
-    const marker = terminal.symbols.select_cursor(unicode);
-    for (choices, 0..) |choice, i| {
-        if (i == cursor) {
-            try writer.print("  \x1b[36m{s} {s}\x1b[0m\r\n", .{ marker, choice });
-        } else {
-            try writer.print("    {s}\r\n", .{choice});
-        }
-    }
-}
+/// Render the header + viewport-limited choice list, returning physical rows
+/// emitted. Width is an explicit parameter so this is deterministic/testable.
+fn renderList(writer: anytype, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !usize {
+    const width = @max(@as(usize, ws.col), 1);
+    const usable = @max(width -| 1, 1);
+    const height = @max(@as(usize, ws.row), 2);
 
-fn eraseList(writer: anytype, count: usize) !void {
-    // Move cursor up `count` lines and clear each
-    for (0..count) |_| {
-        try writer.writeAll("\x1b[A\r\x1b[K");
+    const cursor_sym = terminal.symbols.select_cursor(config.unicode);
+    // "  <cur> " and "    " are both 4 columns (single-column cursor glyph).
+    const prefix_w: usize = 4;
+    const avail = @max(usable -| prefix_w, 1);
+
+    var rows: usize = 0;
+    var first_line = true;
+
+    const hprefix_w = terminal.displayWidth(config.prefix);
+    rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = config.prefix, .prefix_w = hprefix_w }, config.message, @max(usable -| hprefix_w, 1));
+
+    const Counter = struct {
+        choices: []const []const u8,
+        avail: usize,
+        fn at(self: *const @This(), i: usize) usize {
+            return terminal.wrapCount(self.choices[i], self.avail);
+        }
+    };
+    const counter = Counter{ .choices = config.choices, .avail = avail };
+    const list_budget = @max((height -| 1) -| rows, 1);
+    const win = lr.viewport(config.choices.len, cursor, list_budget, &counter, Counter.at);
+
+    for (win.start..win.end) |i| {
+        var pbuf: [32]u8 = undefined;
+        const style: lr.ItemStyle = if (i == cursor)
+            .{
+                .line_open = "\x1b[36m",
+                .first_prefix = std.fmt.bufPrint(&pbuf, "  {s} ", .{cursor_sym}) catch "  ",
+                .prefix_w = prefix_w,
+                .line_close = "\x1b[0m",
+            }
+        else
+            .{ .first_prefix = "    ", .prefix_w = prefix_w };
+        rows += try lr.renderItem(writer, &first_line, style, config.choices[i], avail);
     }
+
+    return rows;
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
@@ -169,4 +201,25 @@ test "non-TTY: shows numbered choices" {
     try std.testing.expect(std.mem.indexOf(u8, written, "2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "first") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "second") != null);
+}
+
+fn renderToBuf(buf: []u8, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
+    var w: std.Io.Writer = .fixed(buf);
+    const rows = try renderList(&w, config, cursor, ws);
+    return .{ .rows = rows, .text = w.buffered() };
+}
+
+test "renderList: short options are one row each" {
+    var buf: [1024]u8 = undefined;
+    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, .{ .row = 24, .col = 80 });
+    try std.testing.expectEqual(@as(usize, 4), r.rows); // header + 3
+}
+
+test "renderList: wrapped option reports true physical row count" {
+    var buf: [4096]u8 = undefined;
+    const long = "this is a long option label that will certainly wrap at a narrow width";
+    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, .{ .row = 24, .col = 24 });
+    try std.testing.expect(r.rows > 3);
+    const lines = std.mem.count(u8, r.text, "\r\n") + 1;
+    try std.testing.expectEqual(lines, r.rows);
 }
