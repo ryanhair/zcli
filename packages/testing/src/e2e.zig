@@ -318,12 +318,12 @@ pub const PtyManager = struct {
                     caps.supports_raw_mode = false;
                 }
 
-                caps.supports_echo_control = (self.setEcho(false) catch null) == null;
+                caps.supports_echo_control = if (self.setEcho(false)) |_| true else |_| false;
                 if (caps.supports_echo_control) {
                     _ = self.setEcho(true) catch {};
                 }
 
-                caps.supports_line_buffering = (self.setLineBuffering(false) catch null) == null;
+                caps.supports_line_buffering = if (self.setLineBuffering(false)) |_| true else |_| false;
                 if (caps.supports_line_buffering) {
                     _ = self.setLineBuffering(true) catch {};
                 }
@@ -928,6 +928,18 @@ pub fn runInteractive(
     // Drain any remaining output, then reap.
     drainOutput(allocator, io, read_fd, &output_buffer, 1000) catch {};
 
+    // For a PTY, close the master after draining so a child that reads until
+    // end-of-input gets EOF/SIGHUP and exits — otherwise `child.wait` could block
+    // on it. (The pipe path already closed stdin above for the same reason.)
+    if (using_pty) {
+        if (pty_manager) |*pty| {
+            if (pty.master_fd != -1) {
+                closeFd(pty.master_fd);
+                pty.master_fd = -1;
+            }
+        }
+    }
+
     const term = child.wait(io) catch return InteractiveError.ProcessCrashed;
     const exit_code: u8 = switch (term) {
         .exited => |code| code,
@@ -1064,16 +1076,21 @@ fn drainOutput(
     const start_time = nowMs(io);
     var temp_buffer: [4096]u8 = undefined;
 
+    // Keep reading until the stream has been idle for a few poll windows (~150ms)
+    // or the timeout is hit. Breaking on "buffer already has data" would drop
+    // output that arrives after the script's last matched `expect`.
+    var idle_polls: u8 = 0;
     while (true) {
         const elapsed = nowMs(io) - start_time;
         if (elapsed > timeout_ms) break;
 
         const bytes_read = pollRead(fd, &temp_buffer, 50);
         if (bytes_read == 0) {
-            // Idle for one poll window after we've seen data — assume drained.
-            if (output_buffer.items.len > 0) break;
+            idle_polls += 1;
+            if (idle_polls >= 3) break;
             continue;
         }
+        idle_polls = 0;
         try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
     }
 }

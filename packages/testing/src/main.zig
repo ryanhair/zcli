@@ -28,7 +28,7 @@
 //! test "login flow" {
 //!     var script = testing.e2e.InteractiveScript.init(allocator);
 //!     _ = script.expect("Password:").sendHidden("secret");
-//!     const result = try testing.e2e.runInteractive(allocator, &.{"./myapp", "login"}, script, .{});
+//!     const result = try testing.e2e.runInteractive(allocator, std.testing.io, &.{"./myapp", "login"}, script, .{});
 //!     try std.testing.expect(result.success);
 //! }
 //! ```
