@@ -1,6 +1,6 @@
 #!/bin/sh
 # zcli installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh
+# Usage: curl -fsSL https://zcli.sh/install.sh | sh
 
 set -e
 

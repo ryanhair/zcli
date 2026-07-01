@@ -80,7 +80,7 @@
           <p>Grab the binary (see the <a href="$site.page('install').link()" style="color:var(--accent)">install page</a> for all options):</p>
           <div class="code">
             <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
-<pre><span class="c-prompt">$</span> <span class="c-cmd">curl</span> -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</pre>
+<pre><span class="c-prompt">$</span> <span class="c-cmd">curl</span> -fsSL https://zcli.sh/install.sh | sh</pre>
           </div>
 
           <div class="step"><span class="n">2</span><h2>Scaffold a project</h2></div>

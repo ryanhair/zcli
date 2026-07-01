@@ -1,7 +1,7 @@
 Site {
     .title = "zcli — batteries-included CLI framework for Zig",
-    .host_url = "https://ryanhair.github.io",
-    .url_path_prefix = "zcli",
+    .host_url = "https://zcli.sh",
+    .url_path_prefix = "",
     .content_dir_path = "content",
     .layouts_dir_path = "layouts",
     .assets_dir_path = "assets",

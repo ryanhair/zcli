@@ -103,7 +103,7 @@
         <a class="btn ghost" href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener">Star on GitHub</a>
       </div>
       <div class="install-pill">
-        <span><span class="dollar">$</span> curl -fsSL zcli.sh/install.sh | sh</span>
+        <span><span class="dollar">$</span> curl -fsSL https://zcli.sh/install.sh | sh</span>
         <button class="copy" onclick="copyInstall(this)">copy</button>
       </div>
       <div class="chips">
@@ -335,7 +335,7 @@ spinner.<span class="fn">warn</span>(<span class="str">"Warning"</span>);   <spa
 
 <script>
   function copyInstall(btn) {
-    navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh").then(function () {
+    navigator.clipboard.writeText("curl -fsSL https://zcli.sh/install.sh | sh").then(function () {
       var old = btn.textContent; btn.textContent = "copied ✓"; btn.style.color = "var(--green)"; btn.style.borderColor = "var(--green)";
       setTimeout(function () { btn.textContent = old; btn.style.color = ""; btn.style.borderColor = ""; }, 1600);
     });
