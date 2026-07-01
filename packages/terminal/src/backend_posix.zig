@@ -79,3 +79,63 @@ pub fn waitReadable(fd: Handle, timeout_ms: i32) bool {
     const n = posix.poll(&fds, timeout_ms) catch return false;
     return n > 0;
 }
+
+/// Whether a `wait` returned because input is ready or the terminal resized.
+pub const InputWait = enum { input, resize };
+
+/// Backstop poll interval. A SIGWINCH interrupts the poll (EINTR) and is caught
+/// immediately; this only bounds the tiny race where the signal lands between
+/// the flag check and the poll entering the kernel — at worst that resize is
+/// noticed one interval later, which is imperceptible.
+const poll_backstop_ms: i32 = 100;
+
+/// Set by the SIGWINCH handler, drained by the watcher. Process-global because
+/// signal handlers can't carry context; only one `ResizeWatcher` is active at a
+/// time (interactive prompts are modal), which this assumes.
+var resize_pending = std.atomic.Value(bool).init(false);
+
+fn handleSigwinch(_: posix.SIG) callconv(.c) void {
+    resize_pending.store(true, .seq_cst);
+}
+
+/// Watches for terminal-resize (SIGWINCH) events and multiplexes them with
+/// stdin readiness. The handler sets an atomic flag and interrupts the poll;
+/// `wait` checks the flag on every wakeup (signal, input, or the backstop
+/// timeout), so a resize is reported promptly whether or not stdin has input.
+pub const ResizeWatcher = struct {
+    old_action: posix.Sigaction,
+
+    pub fn init() ResizeWatcher {
+        resize_pending.store(false, .seq_cst);
+        var act = posix.Sigaction{
+            .handler = .{ .handler = handleSigwinch },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        var old_action: posix.Sigaction = undefined;
+        posix.sigaction(posix.SIG.WINCH, &act, &old_action);
+        return .{ .old_action = old_action };
+    }
+
+    pub fn deinit(self: *ResizeWatcher) void {
+        posix.sigaction(posix.SIG.WINCH, &self.old_action, null);
+    }
+
+    /// Block until stdin (`fd`) has input or the terminal is resized. Uses the
+    /// raw `poll` (not `std.posix.poll`, which retries EINTR internally and
+    /// would hide the SIGWINCH wakeup).
+    pub fn wait(self: *ResizeWatcher, fd: Handle) InputWait {
+        _ = self;
+        while (true) {
+            if (resize_pending.swap(false, .seq_cst)) return .resize;
+
+            var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+            const rc = posix.system.poll(&fds, 1, poll_backstop_ms);
+            if (resize_pending.swap(false, .seq_cst)) return .resize;
+            switch (posix.errno(rc)) {
+                .SUCCESS => if (rc > 0 and fds[0].revents & posix.POLL.IN != 0) return .input,
+                else => {}, // EINTR / EAGAIN — loop and re-check the flag
+            }
+        }
+    }
+};

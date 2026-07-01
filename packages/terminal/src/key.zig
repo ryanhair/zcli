@@ -145,13 +145,15 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Key {
 /// short poll on `esc_handle` (when provided) catches a sequence split across
 /// reads.
 fn escapeSequenceFollows(reader: anytype, esc_handle: ?backend.Handle) bool {
-    if (bufferedLenOf(reader) > 0) return true;
+    if (bufferedLen(reader) > 0) return true;
     const handle = esc_handle orelse return false;
     return backend.waitReadable(handle, esc_timeout_ms);
 }
 
 /// Buffered byte count for readers that expose it (std.Io.Reader); 0 otherwise.
-fn bufferedLenOf(reader: anytype) usize {
+/// Public so the event multiplexer can avoid blocking on a poll when the reader
+/// already has bytes in hand.
+pub fn bufferedLen(reader: anytype) usize {
     const T = @TypeOf(reader);
     if (@typeInfo(T) == .pointer) {
         const Child = @typeInfo(T).pointer.child;

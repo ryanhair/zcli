@@ -12,6 +12,21 @@ pub const Key = key.Key;
 pub const readKey = key.readKey;
 pub const readKeyOpt = key.readKeyOpt;
 
+/// Input event multiplexing: a key press or a terminal resize.
+pub const event = @import("event.zig");
+pub const Event = event.Event;
+pub const readEvent = event.readEvent;
+
+/// Watches for terminal resizes; construct for the lifetime of a prompt.
+pub const ResizeWatcher = backend.ResizeWatcher;
+
+/// Display-width measurement and word-wrapping (grapheme- and ANSI-aware).
+pub const wrap = @import("wrap.zig");
+pub const displayWidth = wrap.displayWidth;
+pub const wrapToWidth = wrap.wrapToWidth;
+pub const wrapForEach = wrap.wrapForEach;
+pub const wrapCount = wrap.wrapCount;
+
 // ============================================================================
 // Raw mode, echo, window size, TTY detection
 //

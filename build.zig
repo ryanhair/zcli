@@ -19,12 +19,16 @@ pub fn build(b: *std.Build) void {
     });
     markdown_fmt_module.addImport("ztheme", ztheme_module);
 
+    // Unicode display-width/grapheme data (used by terminal's wrap.zig).
+    const zg_dep = b.dependency("zg", .{ .target = target, .optimize = optimize });
+
     // Create terminal module
     const terminal_module = b.addModule("terminal", .{
         .root_source_file = b.path("packages/terminal/src/terminal.zig"),
         .target = target,
         .optimize = optimize,
     });
+    terminal_module.addImport("Graphemes", zg_dep.module("Graphemes"));
 
     // Create zprogress module
     const zprogress_module = b.addModule("zprogress", .{
