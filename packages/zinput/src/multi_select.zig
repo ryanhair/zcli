@@ -140,7 +140,9 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
 /// Lines are separated by (not terminated with) CRLF: after rendering, the
 /// cursor sits at the end of the last row, which `lr.eraseRegion` relies on to
 /// avoid scrolling the screen when the region reaches the bottom.
-fn renderList(
+///
+/// Public for the cross-platform emulator render tests.
+pub fn renderList(
     writer: anytype,
     config: MultiSelectConfig,
     selected: []const bool,

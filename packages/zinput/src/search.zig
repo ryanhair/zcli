@@ -139,8 +139,8 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 
 /// Render the header, search-input line, and viewport-limited results, returning
 /// the number of physical rows emitted. Width is an explicit parameter so this
-/// is deterministic/testable.
-fn renderSearch(
+/// is deterministic/testable (used by the cross-platform emulator render tests).
+pub fn renderSearch(
     writer: anytype,
     config: SearchConfig,
     query: []const u8,

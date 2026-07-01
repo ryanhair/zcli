@@ -93,8 +93,9 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
 }
 
 /// Render the header + viewport-limited choice list, returning physical rows
-/// emitted. Width is an explicit parameter so this is deterministic/testable.
-fn renderList(writer: anytype, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !usize {
+/// emitted. Width is an explicit parameter so this is deterministic/testable
+/// (used by the cross-platform emulator render tests).
+pub fn renderList(writer: anytype, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !usize {
     const width = @max(@as(usize, ws.col), 1);
     const usable = @max(width -| 1, 1);
     const height = @max(@as(usize, ws.row), 2);

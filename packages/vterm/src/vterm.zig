@@ -555,10 +555,14 @@ pub const VTerm = struct {
             'A' => { // CUU - Cursor Up
                 const n = self.getParam(0, 1);
                 self.cursor.y = if (n > self.cursor.y) 0 else self.cursor.y - @as(u16, @intCast(n));
+                // Keep the write position (virtual_cursor_y) in sync, as CUP does,
+                // so text written after moving up overwrites the right rows.
+                self.virtual_cursor_y = self.cursor.y;
             },
             'B' => { // CUD - Cursor Down
                 const n = self.getParam(0, 1);
                 self.cursor.y = @min(self.cursor.y + @as(u16, @intCast(n)), self.height - 1);
+                self.virtual_cursor_y = self.cursor.y;
             },
             'C' => { // CUF - Cursor Forward
                 const n = self.getParam(0, 1);
