@@ -1,6 +1,25 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
+const zinput = zcli.zinput;
+
+/// A built-in plugin the user can opt into during `init`. `tag` is the enum
+/// tag passed to `zcli.builtin(.<tag>, .{})` in the generated build.zig.
+const BuiltinChoice = struct {
+    tag: []const u8,
+    label: []const u8,
+    default: bool,
+};
+
+const builtin_choices = [_]BuiltinChoice{
+    .{ .tag = "help", .label = "zcli_help — --help output for the app and every command", .default = true },
+    .{ .tag = "version", .label = "zcli_version — --version flag", .default = true },
+    .{ .tag = "not_found", .label = "zcli_not_found — \"did you mean?\" suggestions for mistyped commands", .default = true },
+    .{ .tag = "completions", .label = "zcli_completions — shell completion scripts (bash/zsh/fish)", .default = false },
+    .{ .tag = "config", .label = "zcli_config — load option defaults from a config file", .default = false },
+    .{ .tag = "output", .label = "zcli_output — --output flag for json/table/plain output", .default = false },
+    .{ .tag = "github_upgrade", .label = "zcli_github_upgrade — self-update from GitHub releases", .default = false },
+};
 
 pub const meta = .{
     .description = "Initialize a new zcli project",
@@ -66,10 +85,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const app_description = options.description orelse "A CLI application built with zcli";
     const app_version = options.version orelse "0.1.0";
 
-    // Handle directory creation/validation
-    var project_dir = if (use_current_dir) blk: {
+    // Validate the target directory before prompting or creating anything, so we
+    // never leave a half-created project behind if validation fails or the user
+    // aborts the plugin prompt.
+    if (use_current_dir) {
         // Check if current directory is empty or contains only hidden files
         var dir = try cwd.openDir(io, ".", .{ .iterate = true });
+        defer dir.close(io);
         var iterator = dir.iterate();
 
         var has_visible_files = false;
@@ -88,23 +110,46 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         }
 
         try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
-        break :blk try cwd.openDir(io, ".", .{});
-    } else blk: {
-        // Check if directory already exists
-        cwd.access(io, args.name, .{}) catch |err| switch (err) {
+    } else {
+        // Check if directory already exists (access succeeds => the path exists).
+        if (cwd.access(io, args.name, .{})) |_| {
+            try stderr.print("Error: Directory '{s}' already exists\n", .{args.name});
+            return error.PathAlreadyExists;
+        } else |err| switch (err) {
             error.FileNotFound => {}, // Good, directory doesn't exist
-            else => {
-                try stderr.print("Error: Directory '{s}' already exists\n", .{args.name});
-                return err;
-            },
-        };
+            else => return err,
+        }
 
         try stdout.print("Creating new zcli project: {s}\n", .{project_name});
+    }
 
-        // Create project directory
-        try cwd.createDir(io, args.name, .default_dir);
-        break :blk try cwd.openDir(io, args.name, .{});
-    };
+    // Ask which built-in plugins to include, before touching the filesystem.
+    // Falls back to the preselected defaults when stdin is not a TTY.
+    var choices: [builtin_choices.len][]const u8 = undefined;
+    var defaults: [builtin_choices.len]bool = undefined;
+    for (builtin_choices, 0..) |choice, i| {
+        choices[i] = choice.label;
+        defaults[i] = choice.default;
+    }
+    const selected = try zinput.multiSelect(stdout, context.stdin(), allocator, .{
+        .message = "Select built-in plugins to include:",
+        .choices = &choices,
+        .defaults = &defaults,
+    });
+    defer allocator.free(selected);
+
+    // Build the `zcli.builtin(...)` registration lines for build.zig.
+    var plugins_aw = std.Io.Writer.Allocating.init(allocator);
+    defer plugins_aw.deinit();
+    for (selected) |idx| {
+        try plugins_aw.writer.print("            zcli.builtin(.{s}, .{{}}),\n", .{builtin_choices[idx].tag});
+    }
+    const plugins_block = plugins_aw.written();
+
+    // Now that the destination is validated and plugins are chosen, create and
+    // open the project directory.
+    if (!use_current_dir) try cwd.createDir(io, args.name, .default_dir);
+    var project_dir = try cwd.openDir(io, if (use_current_dir) "." else args.name, .{});
     defer project_dir.close(io);
 
     // Create src and src/commands directories
@@ -113,8 +158,11 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     // Generate build.zig.zon
     try stdout.print("  Creating build.zig.zon...\n", .{});
-    // Use zcli package from GitHub archive
-    const zcli_version = "0.9.3";
+    // Pin the generated project to the same zcli release as this CLI.
+    // `context.app_version` is read from build.zig.zon at build time, so it
+    // tracks releases automatically (the framework and this CLI are tagged in
+    // lockstep as `zcli-v<version>`).
+    const zcli_version = context.app_version;
     // Package fingerprint: high 32 bits are a checksum of the package name, low
     // 32 bits a random id. Zig rejects a zero fingerprint at build time.
     const fingerprint: u64 = blk: {
@@ -125,18 +173,17 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         if (id == 0) id = 1;
         break :blk (@as(u64, checksum) << 32) | id;
     };
+    // The zcli dependency is added below by `zig fetch --save`, which computes
+    // the real hash. We must NOT pre-write a placeholder entry here: zig parses
+    // the existing manifest before fetching, and an incomplete hash makes that
+    // parse (and therefore the fetch) fail.
     const zon_content = try std.fmt.allocPrint(allocator,
         \\.{{
         \\    .name = .{s},
         \\    .version = "{s}",
         \\    .fingerprint = 0x{x:0>16},
         \\    .minimum_zig_version = "0.16.0",
-        \\    .dependencies = .{{
-        \\        .zcli = .{{
-        \\            .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz",
-        \\            .hash = "1220000000000000000000000000000000000000000000000000000000000000",
-        \\        }},
-        \\    }},
+        \\    .dependencies = .{{}},
         \\    .paths = .{{
         \\        "build.zig",
         \\        "build.zig.zon",
@@ -144,7 +191,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    }},
         \\}}
         \\
-    , .{ project_identifier, app_version, fingerprint, zcli_version });
+    , .{ project_identifier, app_version, fingerprint });
     defer allocator.free(zon_content);
 
     var zon_file = try project_dir.createFile(io, "build.zig.zon", .{});
@@ -184,11 +231,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{{
         \\        .commands_dir = "src/commands",
         \\        .plugins = &.{{
-        \\            zcli.builtin(.help, .{{}}),
-        \\            zcli.builtin(.version, .{{}}),
-        \\            zcli.builtin(.not_found, .{{}}),
-        \\            zcli.builtin(.completions, .{{}}),
-        \\        }},
+        \\{s}        }},
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",
         \\        .app_description = "{s}",
@@ -206,7 +249,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    run_step.dependOn(&run_cmd.step);
         \\}}
         \\
-    , .{ project_name, project_name, app_version, app_description });
+    , .{ project_name, plugins_block, project_name, app_version, app_description });
     defer allocator.free(build_content);
 
     var build_file = try project_dir.createFile(io, "build.zig", .{});
@@ -274,22 +317,28 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer hello_file.close(io);
     try hello_file.writeStreamingAll(io, hello_content);
 
-    // Fetch zcli dependency
-    fetch_deps: {
+    // Fetch the zcli dependency. `zig fetch --save` computes the real hash and
+    // writes the dependency into build.zig.zon; without it the generated project
+    // won't build, so warn with the exact command if it doesn't run.
+    {
         try stdout.print("  Fetching dependencies (this may take a moment)...\n", .{});
-        const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz", .{zcli_version});
+        const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/zcli-v{s}.tar.gz", .{zcli_version});
         defer allocator.free(zcli_url);
 
-        var fetch_child = std.process.spawn(io, .{
-            .argv = &.{ "zig", "fetch", "--save", zcli_url },
-            .cwd = .{ .dir = project_dir },
-            .stdout = .pipe,
-            .stderr = .pipe,
-        }) catch {
-            stdout.print("  Note: Run 'zig fetch --save {s}' to add the dependency\n", .{zcli_url}) catch {};
-            break :fetch_deps;
+        const ok = ok: {
+            var fetch_child = std.process.spawn(io, .{
+                .argv = &.{ "zig", "fetch", "--save", zcli_url },
+                .cwd = .{ .dir = project_dir },
+                .stdout = .ignore,
+                .stderr = .inherit,
+            }) catch break :ok false;
+            const term = fetch_child.wait(io) catch break :ok false;
+            break :ok term == .exited and term.exited == 0;
         };
-        _ = fetch_child.wait(io) catch {};
+        if (!ok) {
+            try stderr.print("  Warning: could not add the zcli dependency automatically.\n", .{});
+            try stderr.print("  Run this inside the project to finish setup:\n    zig fetch --save {s}\n", .{zcli_url});
+        }
     }
 
     // Success message

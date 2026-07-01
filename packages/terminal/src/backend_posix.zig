@@ -62,10 +62,16 @@ pub fn getWindowSize(fd: Handle) !Winsize {
 
 /// A descriptor is a TTY iff its termios can be read — a libc-free isatty
 /// (`std.posix.isatty` was removed in 0.16, and the syscall-free check is
-/// exactly what isatty does under the hood).
+/// exactly what isatty does under the hood). We call the syscall directly
+/// rather than `posix.tcgetattr` so that a non-terminal fd (e.g. /dev/null,
+/// which reports ENODEV on Darwin) simply returns false instead of routing
+/// through `unexpectedErrno`, which dumps a stack trace in debug builds.
 pub fn isTty(fd: Handle) bool {
-    _ = posix.tcgetattr(fd) catch return false;
-    return true;
+    var term: posix.termios = undefined;
+    return switch (posix.errno(posix.system.tcgetattr(fd, &term))) {
+        .SUCCESS => true,
+        else => false,
+    };
 }
 
 pub fn waitReadable(fd: Handle, timeout_ms: i32) bool {
