@@ -47,6 +47,9 @@ fn run(cwd: std.Io.Dir, argv: []const []const u8) !RunResult {
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .dir = cwd },
+        // Non-interactive stdin so prompts (e.g. `init`'s plugin selection)
+        // fall back to their defaults instead of blocking on a TTY.
+        .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
     });
@@ -138,10 +141,12 @@ test "init scaffolds a project with the expected files and wiring" {
 
     const build_zig = try readFile(proj, a, "build.zig");
     try expectContains(build_zig, "zcli.generate(");
+    // With no TTY, the plugin prompt falls back to its preselected defaults:
+    // help, version, and not_found (but not the opt-in plugins like completions).
     try expectContains(build_zig, "zcli.builtin(.help");
     try expectContains(build_zig, "zcli.builtin(.version");
     try expectContains(build_zig, "zcli.builtin(.not_found");
-    try expectContains(build_zig, "zcli.builtin(.completions");
+    try testing.expect(std.mem.indexOf(u8, build_zig, "zcli.builtin(.completions") == null);
 
     const hello = try readFile(proj, a, "src/commands/hello.zig");
     try expectContains(hello, "pub fn execute(");
@@ -505,4 +510,50 @@ test "interactive: add command drives the wizard and echoes typed input" {
     try testing.expect(result.exit_code == 0);
     try expectContains(result.output, "Created src/commands/deploy.zig");
     try testing.expect(fileExists(tmp.dir, "src/commands/deploy.zig"));
+}
+
+test "interactive: init's plugin multi-select toggles an opt-in plugin" {
+    if (builtin.os.tag == .windows) return;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpDirAbs(arena.allocator(), tmp);
+
+    // The multi-select enables raw mode once after printing its list, so a single
+    // settle before sending is enough (see the wizard test above for the timing
+    // rationale). The cursor starts on the first choice (help); three Down arrows
+    // move it to `completions` (an opt-in, off by default), Space toggles it on,
+    // and Enter confirms — leaving the three defaults plus completions selected.
+    const settle_ms = 400;
+    var script = harness.InteractiveScript.init(testing.allocator);
+    defer script.deinit();
+    _ = script
+        .expect("Select built-in plugins").delay(settle_ms)
+        .sendRaw("\x1b[B\x1b[B\x1b[B \r");
+
+    var result = harness.runInteractive(
+        testing.allocator,
+        io,
+        &.{ zcli_exe, "init", "myapp" },
+        script,
+        .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 30000 },
+    ) catch |err| {
+        // PTY allocation can be denied in some sandboxes; don't fail the suite.
+        std.debug.print("runInteractive unavailable: {any}\n", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    try testing.expect(result.exit_code == 0);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    const build_zig = try readFile(proj, arena.allocator(), "build.zig");
+    try expectContains(build_zig, "zcli.builtin(.help");
+    try expectContains(build_zig, "zcli.builtin(.version");
+    try expectContains(build_zig, "zcli.builtin(.not_found");
+    try expectContains(build_zig, "zcli.builtin(.completions");
 }

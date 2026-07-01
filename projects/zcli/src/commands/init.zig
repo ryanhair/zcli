@@ -1,6 +1,25 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
+const zinput = zcli.zinput;
+
+/// A built-in plugin the user can opt into during `init`. `tag` is the enum
+/// tag passed to `zcli.builtin(.<tag>, .{})` in the generated build.zig.
+const BuiltinChoice = struct {
+    tag: []const u8,
+    label: []const u8,
+    default: bool,
+};
+
+const builtin_choices = [_]BuiltinChoice{
+    .{ .tag = "help", .label = "zcli_help — --help output for the app and every command", .default = true },
+    .{ .tag = "version", .label = "zcli_version — --version flag", .default = true },
+    .{ .tag = "not_found", .label = "zcli_not_found — \"did you mean?\" suggestions for mistyped commands", .default = true },
+    .{ .tag = "completions", .label = "zcli_completions — shell completion scripts (bash/zsh/fish)", .default = false },
+    .{ .tag = "config", .label = "zcli_config — load option defaults from a config file", .default = false },
+    .{ .tag = "output", .label = "zcli_output — --output flag for json/table/plain output", .default = false },
+    .{ .tag = "github_upgrade", .label = "zcli_github_upgrade — self-update from GitHub releases", .default = false },
+};
 
 pub const meta = .{
     .description = "Initialize a new zcli project",
@@ -66,10 +85,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const app_description = options.description orelse "A CLI application built with zcli";
     const app_version = options.version orelse "0.1.0";
 
-    // Handle directory creation/validation
-    var project_dir = if (use_current_dir) blk: {
+    // Validate the target directory before prompting or creating anything, so we
+    // never leave a half-created project behind if validation fails or the user
+    // aborts the plugin prompt.
+    if (use_current_dir) {
         // Check if current directory is empty or contains only hidden files
         var dir = try cwd.openDir(io, ".", .{ .iterate = true });
+        defer dir.close(io);
         var iterator = dir.iterate();
 
         var has_visible_files = false;
@@ -88,23 +110,46 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         }
 
         try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
-        break :blk try cwd.openDir(io, ".", .{});
-    } else blk: {
-        // Check if directory already exists
-        cwd.access(io, args.name, .{}) catch |err| switch (err) {
+    } else {
+        // Check if directory already exists (access succeeds => the path exists).
+        if (cwd.access(io, args.name, .{})) |_| {
+            try stderr.print("Error: Directory '{s}' already exists\n", .{args.name});
+            return error.PathAlreadyExists;
+        } else |err| switch (err) {
             error.FileNotFound => {}, // Good, directory doesn't exist
-            else => {
-                try stderr.print("Error: Directory '{s}' already exists\n", .{args.name});
-                return err;
-            },
-        };
+            else => return err,
+        }
 
         try stdout.print("Creating new zcli project: {s}\n", .{project_name});
+    }
 
-        // Create project directory
-        try cwd.createDir(io, args.name, .default_dir);
-        break :blk try cwd.openDir(io, args.name, .{});
-    };
+    // Ask which built-in plugins to include, before touching the filesystem.
+    // Falls back to the preselected defaults when stdin is not a TTY.
+    var choices: [builtin_choices.len][]const u8 = undefined;
+    var defaults: [builtin_choices.len]bool = undefined;
+    for (builtin_choices, 0..) |choice, i| {
+        choices[i] = choice.label;
+        defaults[i] = choice.default;
+    }
+    const selected = try zinput.multiSelect(stdout, context.stdin(), allocator, .{
+        .message = "Select built-in plugins to include:",
+        .choices = &choices,
+        .defaults = &defaults,
+    });
+    defer allocator.free(selected);
+
+    // Build the `zcli.builtin(...)` registration lines for build.zig.
+    var plugins_aw = std.Io.Writer.Allocating.init(allocator);
+    defer plugins_aw.deinit();
+    for (selected) |idx| {
+        try plugins_aw.writer.print("            zcli.builtin(.{s}, .{{}}),\n", .{builtin_choices[idx].tag});
+    }
+    const plugins_block = plugins_aw.written();
+
+    // Now that the destination is validated and plugins are chosen, create and
+    // open the project directory.
+    if (!use_current_dir) try cwd.createDir(io, args.name, .default_dir);
+    var project_dir = try cwd.openDir(io, if (use_current_dir) "." else args.name, .{});
     defer project_dir.close(io);
 
     // Create src and src/commands directories
@@ -184,11 +229,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{{
         \\        .commands_dir = "src/commands",
         \\        .plugins = &.{{
-        \\            zcli.builtin(.help, .{{}}),
-        \\            zcli.builtin(.version, .{{}}),
-        \\            zcli.builtin(.not_found, .{{}}),
-        \\            zcli.builtin(.completions, .{{}}),
-        \\        }},
+        \\{s}        }},
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",
         \\        .app_description = "{s}",
@@ -206,7 +247,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    run_step.dependOn(&run_cmd.step);
         \\}}
         \\
-    , .{ project_name, project_name, app_version, app_description });
+    , .{ project_name, plugins_block, project_name, app_version, app_description });
     defer allocator.free(build_content);
 
     var build_file = try project_dir.createFile(io, "build.zig", .{});
