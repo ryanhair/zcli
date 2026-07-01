@@ -1,51 +1,372 @@
 <extend template="base.shtml">
 
-<title id="title" :text="$page.title"></title>
+<head id="head">
+<style>
+  .layout { display: grid; grid-template-columns: 240px 1fr; gap: 56px; padding: 56px 0 96px; align-items: start; }
+  .layout > * { min-width: 0; }   /* let code blocks scroll instead of widening the page */
+  .toc { position: sticky; top: 84px; font-family: var(--mono); font-size: 13px; }
+  .toc h4 { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); margin: 20px 0 10px; }
+  .toc h4:first-child { margin-top: 0; }
+  .toc a { display: block; color: var(--muted); padding: 5px 0 5px 12px; border-left: 1px solid var(--border); transition: all .15s; }
+  .toc a:hover, .toc a.active { color: var(--accent); border-left-color: var(--accent); }
+
+  .doc { max-width: 760px; }
+  .doc > section { padding: 0 0 56px; border: none; }
+  .doc h1 { font-size: 40px; margin-bottom: 12px; }
+  .doc .sub { color: var(--muted); font-size: 18px; margin-bottom: 8px; }
+  .doc h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 12px; }
+  .doc h3 { font-size: 18px; margin: 28px 0 10px; color: var(--fg); }
+  .doc p { color: var(--muted); margin-bottom: 14px; }
+  .doc ul { color: var(--muted); margin: 0 0 16px 20px; }
+  .doc li { padding: 4px 0; }
+  .doc code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
+  .doc .code code { background: none; border: none; padding: 0; color: inherit; }
+  .doc .code { margin: 16px 0 22px; }
+  .step { display: flex; align-items: baseline; gap: 12px; margin: 40px 0 4px; }
+  .step .n { font-family: var(--mono); font-size: 13px; font-weight: 700; color: #1a1205; background: var(--accent); width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: none; }
+  .step h2 { margin: 0; padding: 0; }
+  .callout { background: rgba(247,164,29,0.06); border: 1px solid rgba(247,164,29,0.25); border-radius: 9px; padding: 14px 18px; margin: 18px 0; color: var(--muted); font-size: 14.5px; }
+  .callout b { color: var(--accent); font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; display: block; margin-bottom: 4px; }
+  .pathtag { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--faint); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 6px 12px; margin: 0 0 16px; }
+  .pathtag .arrow { color: var(--accent); }
+  .recommended { display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--green); background: rgba(87,201,122,0.12); border-radius: 999px; padding: 3px 9px; margin-left: 10px; vertical-align: middle; }
+  details.manual { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); margin: 8px 0 0; overflow: hidden; }
+  details.manual > summary { cursor: pointer; list-style: none; padding: 16px 20px; font-family: var(--mono); font-size: 14px; color: var(--fg); display: flex; align-items: center; gap: 10px; }
+  details.manual > summary::-webkit-details-marker { display: none; }
+  details.manual > summary .chev { color: var(--accent); transition: transform .2s; }
+  details.manual[open] > summary .chev { transform: rotate(90deg); }
+  details.manual > summary .lbl small { color: var(--faint); font-weight: 400; }
+  details.manual .inner { padding: 4px 20px 20px; border-top: 1px solid var(--border); }
+  .nextlinks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .nextlinks a { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; transition: border-color .15s; }
+  .nextlinks a:hover { border-color: var(--accent); }
+  .nextlinks .k { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .nextlinks .t { color: var(--fg); font-size: 15px; margin-top: 4px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .toc { display: none; } .nextlinks { grid-template-columns: 1fr; } }
+</style>
+</head>
 
 <main id="main">
-    <div class="docs-container">
-        <aside class="docs-sidebar">
-            <nav class="docs-nav">
-                <div class="nav-section">
-                    <h4>Getting Started</h4>
-                    <ul>
-                        <li><a href="$site.page('quickstart').link()">Quickstart</a></li>
-                    </ul>
-                </div>
-                <div class="nav-section">
-                    <h4>Core Concepts</h4>
-                    <ul>
-                        <li><a href="$site.page('docs/commands').link()">Commands</a></li>
-                        <li><a href="$site.page('docs/options').link()">Arguments &amp; Options</a></li>
-                        <li><a href="$site.page('docs/aliases').link()">Command Aliases</a></li>
-                    </ul>
-                </div>
-                <div class="nav-section">
-                    <h4>Advanced</h4>
-                    <ul>
-                        <li><a href="$site.page('docs/plugins').link()">Plugin System</a></li>
-                        <li><a href="$site.page('docs/build-system').link()">Build System</a></li>
-                        <li><a href="$site.page('docs/shared-modules').link()">Shared Modules</a></li>
-                        <li><a href="$site.page('docs/c-dependencies').link()">C/C++ Dependencies</a></li>
-                        <li><a href="$site.page('docs/styling').link()">Styling &amp; Theming</a></li>
-                    </ul>
-                </div>
-                <div class="nav-section">
-                    <h4>Reference</h4>
-                    <ul>
-                        <li><a href="$site.page('docs/error-handling').link()">Error Handling</a></li>
-                    </ul>
-                </div>
-            </nav>
-        </aside>
+  <div class="wrap">
+    <div class="layout">
+      <aside class="toc">
+        <h4>Get started</h4>
+        <a href="#start">Overview</a>
+        <a href="#fast">Fast path · zcli init</a>
+        <a href="#manual">Manual setup</a>
+        <h4>Guide</h4>
+        <a href="#commands">Commands</a>
+        <a href="#options">Args & options</a>
+        <a href="#context">The context</a>
+        <a href="#plugins">Plugins</a>
+        <a href="#config">Config files</a>
+        <a href="#prompts">Prompts</a>
+        <a href="#progress">Progress</a>
+      </aside>
 
-        <article class="docs-content">
-            <header class="docs-header">
-                <h1 :text="$page.title"></h1>
-            </header>
-            <div class="docs-body">
-                <ctx :html="$page.content()"></ctx>
+      <article class="doc">
+        <section id="start">
+          <h1>Documentation</h1>
+          <p class="sub">A batteries-included framework for building command-line interfaces in Zig. Drop <code>.zig</code> files in a directory and get a fully-featured CLI — with command discovery and routing wired up at compile time for zero-cost dispatch.</p>
+          <div class="callout"><b>Requires</b> Zig 0.16.0 or newer. zcli is currently v0.17.0 and MIT licensed.</div>
+        </section>
+
+        <!-- ============ FAST PATH ============ -->
+        <section id="fast">
+          <h2 style="margin-top:8px;">Fast path — <code style="font-size:0.7em;">zcli init</code><span class="recommended">recommended</span></h2>
+          <p>The quickest way to a working CLI: install the <code>zcli</code> tool, then scaffold a project. <code>zcli init</code> writes <code>build.zig</code>, <code>build.zig.zon</code>, <code>src/main.zig</code>, an example command, and fetches the dependency — with the default plugins already wired up.</p>
+
+          <div class="step"><span class="n">1</span><h2>Install the zcli CLI</h2></div>
+          <p>Grab the binary (see the <a href="$site.page('install').link()" style="color:var(--accent)">install page</a> for all options):</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
+<pre><span class="c-prompt">$</span> <span class="c-cmd">curl</span> -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</pre>
+          </div>
+
+          <div class="step"><span class="n">2</span><h2>Scaffold a project</h2></div>
+          <p>Create a new project (or pass <code>.</code> to initialize the current directory). Add <code>--description</code> to set your app's tagline.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
+<pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> init my-app <span class="c-flag">--description</span> <span class="str">"My awesome CLI"</span>
+Creating new zcli project: my-app
+  Creating build.zig.zon...
+  Creating build.zig...
+  Creating src/main.zig...
+  Creating example command (hello)...
+  Fetching dependencies (this may take a moment)...
+
+<span class="c-ok">✓</span> Project 'my-app' created successfully!</pre>
+          </div>
+          <p>This generates the full structure for you:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">my-app/</span><span class="lang">tree</span></div>
+<pre style="color:var(--muted);font-family:var(--mono);font-size:13px;line-height:1.85;">my-app/
+├── build.zig             <span style="color:var(--faint);">— executable + zcli.generate()</span>
+├── build.zig.zon         <span style="color:var(--faint);">— zcli dependency</span>
+└── src/
+    ├── main.zig          <span style="color:var(--faint);">— entry point</span>
+    └── commands/
+        └── hello.zig     <span style="color:var(--accent);">→ my-app hello</span></pre>
+          </div>
+
+          <div class="step"><span class="n">3</span><h2>Build & run</h2></div>
+          <div class="code">
+            <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
+<pre><span class="c-prompt">$</span> <span class="c-cmd">cd</span> my-app
+<span class="c-prompt">$</span> <span class="c-cmd">zig</span> build
+<span class="c-prompt">$</span> ./zig-out/bin/my-app hello World
+Hello, World!
+<span class="c-prompt">$</span> ./zig-out/bin/my-app <span class="c-flag">--help</span>
+<span class="c-mut">USAGE</span>  my-app &lt;command&gt; [options]</pre>
+          </div>
+          <p>That's the whole loop. Add another command by dropping a new <code>.zig</code> file in <code>src/commands/</code> — jump to <a href="#commands" style="color:var(--accent)">Commands</a>.</p>
+        </section>
+
+        <!-- ============ MANUAL SETUP ============ -->
+        <section id="manual">
+          <h2>Manual setup</h2>
+          <p>Prefer to wire things up yourself, or adding zcli to an existing project? Here's everything <code>zcli init</code> does, by hand.</p>
+
+          <details class="manual">
+            <summary><span class="chev">›</span><span class="lbl">Set up a zcli project from scratch <small>— 4 steps</small></span></summary>
+            <div class="inner">
+
+              <div class="step"><span class="n">1</span><h2>Add zcli to build.zig.zon</h2></div>
+              <p>Add the dependency, then run <code>zig build</code> once — it prints the correct hash to paste in.</p>
+              <div class="code">
+                <div class="code-head"><span class="fname">build.zig.zon</span><span class="lang">zig</span></div>
+<pre>.dependencies = .{
+    .zcli = .{
+        .url = <span class="str">"https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz"</span>,
+        .hash = <span class="str">"..."</span>,  <span class="cm">// zig build will tell you the correct hash</span>
+    },
+},</pre>
+              </div>
+
+              <div class="step"><span class="n">2</span><h2>Set up build.zig</h2></div>
+              <p>Create the executable, import the <code>zcli</code> module, then call <code>zcli.generate</code> to discover commands and produce the routing registry at build time. Turn on the default plugins with the <code>zcli.builtin(.tag, .{})</code> shortcut — no paths to spell out.</p>
+              <div class="code">
+                <div class="code-head"><span class="fname">build.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> std = <span class="at">@import</span>(<span class="str">"std"</span>);
+
+<span class="kw">pub fn</span> <span class="fn">build</span>(b: *std.Build) <span class="kw">void</span> {
+    <span class="kw">const</span> target = b.<span class="fn">standardTargetOptions</span>(.{});
+    <span class="kw">const</span> optimize = b.<span class="fn">standardOptimizeOption</span>(.{});
+
+    <span class="kw">const</span> zcli_dep = b.<span class="fn">dependency</span>(<span class="str">"zcli"</span>, .{
+        .target = target,
+        .optimize = optimize,
+    });
+    <span class="kw">const</span> zcli_module = zcli_dep.<span class="fn">module</span>(<span class="str">"zcli"</span>);
+
+    <span class="kw">const</span> exe = b.<span class="fn">addExecutable</span>(.{
+        .name = <span class="str">"myapp"</span>,
+        .root_module = b.<span class="fn">createModule</span>(.{
+            .root_source_file = b.<span class="fn">path</span>(<span class="str">"src/main.zig"</span>),
+            .target = target, .optimize = optimize,
+        }),
+    });
+    exe.root_module.<span class="fn">addImport</span>(<span class="str">"zcli"</span>, zcli_module);
+
+    <span class="kw">const</span> zcli = <span class="at">@import</span>(<span class="str">"zcli"</span>);
+    <span class="kw">const</span> cmd_registry = zcli.<span class="fn">generate</span>(b, exe, zcli_dep, zcli_module, .{
+        .commands_dir = <span class="str">"src/commands"</span>,
+        .plugins = &.{
+            zcli.<span class="fn">builtin</span>(.help, .{}),
+            zcli.<span class="fn">builtin</span>(.version, .{}),
+            zcli.<span class="fn">builtin</span>(.not_found, .{}),
+            zcli.<span class="fn">builtin</span>(.completions, .{}),
+        },
+        .app_name = <span class="str">"myapp"</span>,
+        .app_description = <span class="str">"My CLI application"</span>,
+    });
+
+    exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_registry"</span>, cmd_registry);
+    b.<span class="fn">installArtifact</span>(exe);
+}</pre>
+              </div>
+              <div class="callout"><b>Tip</b> Need <code>config</code> or <code>output</code> too? Add <code>zcli.builtin(.config, .{})</code> / <code>zcli.builtin(.output, .{})</code>. For your <em>own</em> plugins, set <code>.plugins_dir = "src/plugins"</code> — see the <a href="$site.page('plugins').link()" style="color:var(--accent)">Plugins guide</a>.</div>
+
+              <div class="step"><span class="n">3</span><h2>Write main.zig</h2></div>
+              <p>zcli uses Zig's structured entry point. <code>main</code> receives a <code>std.process.Init</code> — hand its allocator, I/O, environment, and args to the generated registry.</p>
+              <div class="code">
+                <div class="code-head"><span class="fname">src/main.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> std = <span class="at">@import</span>(<span class="str">"std"</span>);
+<span class="kw">const</span> registry = <span class="at">@import</span>(<span class="str">"command_registry"</span>);
+
+<span class="kw">pub fn</span> <span class="fn">main</span>(init: std.process.Init) !<span class="kw">void</span> {
+    <span class="kw">const</span> args = <span class="kw">try</span> init.minimal.args.<span class="fn">toSlice</span>(init.arena.<span class="fn">allocator</span>());
+    <span class="kw">var</span> app = registry.<span class="fn">init</span>();
+    app.<span class="fn">run</span>(init.gpa, init.io, init.environ_map, args) <span class="kw">catch</span> |err| <span class="kw">switch</span> (err) {
+        <span class="kw">error</span>.CommandNotFound =&gt; std.process.<span class="fn">exit</span>(<span class="num">1</span>),
+        <span class="kw">else</span> =&gt; <span class="kw">return</span> err,
+    };
+}</pre>
+              </div>
+
+              <div class="step"><span class="n">4</span><h2>Write your first command</h2></div>
+              <p>Drop a file in <code>src/commands/</code>. The example below maps to <code>myapp hello</code>.</p>
+              <div class="code">
+                <div class="code-head"><span class="fname">src/commands/hello.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> Context = <span class="at">@import</span>(<span class="str">"command_registry"</span>).Context;
+
+<span class="kw">pub const</span> meta = .{ .description = <span class="str">"Say hello"</span> };
+<span class="kw">pub const</span> Args = <span class="kw">struct</span> {
+    name: []<span class="kw">const</span> <span class="fn">u8</span>,
+};
+<span class="kw">pub const</span> Options = <span class="kw">struct</span> {
+    loud: <span class="fn">bool</span> = <span class="num">false</span>,
+};
+
+<span class="kw">pub fn</span> <span class="fn">execute</span>(args: Args, options: Options, context: *Context) !<span class="kw">void</span> {
+    <span class="kw">const</span> greeting = <span class="kw">if</span> (options.loud) <span class="str">"HELLO"</span> <span class="kw">else</span> <span class="str">"Hello"</span>;
+    <span class="kw">try</span> context.<span class="fn">stdout</span>().<span class="fn">print</span>(<span class="str">"{s}, {s}!\n"</span>, .{ greeting, args.name });
+}</pre>
+              </div>
+              <div class="code">
+                <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
+<pre><span class="c-prompt">$</span> <span class="c-cmd">zig build</span> &amp;&amp; ./zig-out/bin/myapp hello world
+Hello, world!</pre>
+              </div>
             </div>
-        </article>
+          </details>
+        </section>
+
+        <!-- ============ GUIDE ============ -->
+        <section id="commands">
+          <h2>Commands</h2>
+          <p>Commands are <code>.zig</code> files in your commands directory; the file path becomes the command path. Create folders for subcommands, and add an <code>index.zig</code> to give a directory a description.</p>
+          <ul>
+            <li><code>init.zig</code> → <code>myapp init</code></li>
+            <li><code>users/create.zig</code> → <code>myapp users create</code></li>
+            <li><code>users/index.zig</code> → describes the <code>users</code> group (no <code>execute</code> = shows subcommands)</li>
+          </ul>
+        </section>
+
+        <section id="options">
+          <h2>Args & options</h2>
+          <p>Every command has up to four exports. Declare <code>Args</code> and <code>Options</code> as structs — field defaults become option defaults, and parsing is type-checked at compile time.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">command structure</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> meta = .{
+    .description = <span class="str">"Add files to the index"</span>,
+    .examples = &.{ <span class="str">"add file.txt"</span>, <span class="str">"add --all"</span> },
+    .options = .{
+        .all = .{
+            .short = <span class="str">'a'</span>,
+            .description = <span class="str">"Add all files"</span>,
+        },
+    },
+    .aliases = &.{ <span class="str">"a"</span> },
+};
+
+<span class="kw">pub const</span> Args = <span class="kw">struct</span> {
+    files: []<span class="kw">const</span> []<span class="kw">const</span> <span class="fn">u8</span>,   <span class="cm">// variadic: remaining args</span>
+};
+
+<span class="kw">pub const</span> Options = <span class="kw">struct</span> {
+    all: <span class="fn">bool</span> = <span class="num">false</span>,            <span class="cm">// --all / -a (flag)</span>
+    output: []<span class="kw">const</span> <span class="fn">u8</span> = <span class="str">"text"</span>,  <span class="cm">// --output &lt;value&gt;</span>
+    count: <span class="fn">u32</span> = <span class="num">1</span>,               <span class="cm">// --count &lt;number&gt;</span>
+    verbose: ?<span class="fn">bool</span> = <span class="num">null</span>,        <span class="cm">// optional flag</span>
+};</pre>
+          </div>
+        </section>
+
+        <section id="context">
+          <h2>The context</h2>
+          <p>Every command's <code>execute</code> takes a concrete <code>context: *Context</code>, imported from the generated registry: <code>const Context = @import("command_registry").Context;</code>. It's your handle to I/O, the allocator, the active theme, and plugin data — a real type, not <code>anytype</code>, so the compiler checks your usage and your editor can autocomplete it.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/whoami.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> Context = <span class="at">@import</span>(<span class="str">"command_registry"</span>).Context;
+
+<span class="kw">pub fn</span> <span class="fn">execute</span>(args: Args, options: Options, context: *Context) !<span class="kw">void</span> {
+    <span class="kw">const</span> allocator = context.allocator;     <span class="cm">// per-run allocator</span>
+    <span class="kw">const</span> out = context.<span class="fn">stdout</span>();             <span class="cm">// buffered stdout writer</span>
+    <span class="kw">const</span> in  = context.<span class="fn">stdin</span>();              <span class="cm">// stdin reader (prompts)</span>
+
+    <span class="cm">// Plugin data is namespaced under context.plugins.{plugin_id}</span>
+    <span class="kw">if</span> (context.plugins.zcli_help.help_requested) <span class="kw">return</span>;
+
+    <span class="kw">try</span> out.<span class="fn">print</span>(<span class="str">"{s}\n"</span>, .{args.name});
+}</pre>
+          </div>
+          <div class="callout"><b>Unused params</b> Set unused parameters to <code>_</code> directly in the signature: <code>pub fn execute(_: Args, _: Options, context: *Context) !void</code>. <b>Plugin authors</b> — lifecycle hooks take <code>context: anytype</code>, since a plugin can't import the registry it gets compiled into.</div>
+        </section>
+
+        <section id="plugins">
+          <h2>Plugins</h2>
+          <p>zcli ships seven plugins. Three are on by default in a freshly scaffolded project (<code>zcli_help</code>, <code>zcli_version</code>, <code>zcli_not_found</code>); the rest you opt into. Plugins contribute global options and lifecycle hooks, and store data in <code>context.plugins.{plugin_id}</code>.</p>
+          <p>Enable a default with the <code>zcli.builtin(.help, .{})</code> shortcut, or auto-discover your own by pointing <code>.plugins_dir</code> at a folder. Full details — defaults, build-time config, and writing your own — live on the dedicated page:</p>
+          <div class="nextlinks" style="margin-top:8px;">
+            <a href="$site.page('plugins').link()"><span class="k">→ plugins guide</span><span class="t">Defaults, auto-discovery & writing plugins</span></a>
+            <a href="#config"><span class="k">→ config files</span><span class="t">Load defaults from JSON / TOML / YAML</span></a>
+          </div>
+        </section>
+
+        <section id="config">
+          <h2>Config files</h2>
+          <p>The <code>zcli_config</code> plugin transparently loads option defaults from a config file — JSON, TOML, or YAML, with no changes to command code. Discovery follows: <code>--config &lt;path&gt;</code>, then <code>./{app}.config.*</code>, then <code>$XDG_CONFIG_HOME/{app}/config.*</code>.</p>
+          <p>Values cascade: <code>CLI flags &gt; command config &gt; global config &gt; struct defaults</code>.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">.myapp.config.toml</span><span class="lang">toml</span></div>
+<pre>output = <span class="str">"json"</span>     <span class="cm"># global — applies to all commands</span>
+
+[list]            <span class="cm"># scoped — applies only to "list"</span>
+all = <span class="num">true</span></pre>
+          </div>
+        </section>
+
+        <section id="prompts">
+          <h2>Interactive prompts</h2>
+          <p>The <code>zinput</code> package provides 8 prompt types — text, confirm, select, multi-select, password, search, number, and editor. It works standalone (no zcli dependency) and falls back to line-based input when stdin isn't a TTY.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">zinput</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> name = <span class="kw">try</span> zinput.<span class="fn">text</span>(writer, reader, allocator, .{
+    .message = <span class="str">"Project name:"</span>, .default = <span class="str">"my-project"</span>,
+});
+<span class="kw">const</span> features = <span class="kw">try</span> zinput.<span class="fn">multiSelect</span>(writer, reader, allocator, .{
+    .message = <span class="str">"Features:"</span>,
+    .choices = &.{ <span class="str">"typescript"</span>, <span class="str">"eslint"</span>, <span class="str">"prettier"</span> },
+    .defaults = &.{ <span class="num">true</span>, <span class="num">true</span>, <span class="num">false</span> },
+});
+<span class="kw">const</span> port = <span class="kw">try</span> zinput.<span class="fn">number</span>(writer, reader, .{
+    .message = <span class="str">"Port:"</span>,
+    .default = <span class="num">3000</span>,
+    .min = <span class="num">1</span>,
+    .max = <span class="num">65535</span>,
+});</pre>
+          </div>
+        </section>
+
+        <section id="progress">
+          <h2>Progress indicators</h2>
+          <p>The <code>zprogress</code> package provides spinners (9 styles) and progress bars with ETA. Theming uses semantic colors that adapt to terminal capabilities.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">zprogress</span><span class="lang">zig</span></div>
+<pre><span class="kw">var</span> bar = zprogress.<span class="fn">progressBar</span>(.{ .total = <span class="num">100</span>, .show_eta = <span class="num">true</span> });
+<span class="kw">var</span> spinner = zprogress.<span class="fn">spinner</span>(.{ .style = .dots });
+spinner.<span class="fn">start</span>(<span class="str">"Loading..."</span>);
+spinner.<span class="fn">succeed</span>(<span class="str">"Done!"</span>);   <span class="cm">// ✔ Done!</span></pre>
+          </div>
+          <div class="nextlinks">
+            <a href="$site.page('plugins').link()"><span class="k">→ plugins</span><span class="t">Defaults & writing your own</span></a>
+            <a href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener"><span class="k">→ github</span><span class="t">Source, issues & releases</span></a>
+          </div>
+        </section>
+      </article>
     </div>
+  </div>
+
+<script>
+  var links = document.querySelectorAll('.toc a');
+  var secs = Array.prototype.map.call(links, function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var y = window.scrollY + 120, cur = 0;
+    secs.forEach(function (s, i) { if (s && s.offsetTop <= y) cur = i; });
+    links.forEach(function (a, i) { a.classList.toggle('active', i === cur); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+</script>
+
 </main>

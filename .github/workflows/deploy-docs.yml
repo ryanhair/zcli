@@ -23,7 +23,7 @@ jobs:
 
       - name: Download Zine
         run: |
-          curl -fsSL -o zine.tar.xz https://github.com/kristoff-it/zine/releases/download/v0.11.2/x86_64-linux-musl.tar.xz
+          curl -fsSL -o zine.tar.xz https://github.com/kristoff-it/zine/releases/download/v0.11.3/x86_64-linux-musl.tar.xz
           tar -xf zine.tar.xz
           mv zine website/zine
           chmod +x website/zine

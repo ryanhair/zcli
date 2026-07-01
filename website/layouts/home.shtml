@@ -1,47 +1,345 @@
 <extend template="base.shtml">
 
-<title id="title" :text="$site.title"></title>
+<head id="head">
+<style>
+  /* ---- home page ---- */
+  .hero { padding: 84px 0 96px; position: relative; overflow: hidden; }
+  .hero::before {
+    content: ""; position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
+    width: 900px; height: 520px; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(247,164,29,0.13), transparent 68%);
+    filter: blur(8px);
+  }
+  .hero .wrap { position: relative; display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
+  .hero h1 { font-size: clamp(38px, 5.4vw, 62px); }
+  .hero h1 .amber { color: var(--accent); }
+  .hero .lead { margin: 22px 0 30px; font-size: 19px; }
+  .hero .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .install-pill {
+    display: inline-flex; align-items: center; gap: 12px; margin-top: 26px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
+    padding: 11px 12px 11px 16px; font-family: var(--mono); font-size: 13.5px; color: var(--fg);
+  }
+  .install-pill .dollar { color: var(--accent); }
+  .install-pill .copy { margin-left: 6px; border: 1px solid var(--border2); background: transparent; color: var(--muted);
+    border-radius: 6px; padding: 5px 9px; font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .15s; }
+  .install-pill .copy:hover { color: var(--accent); border-color: var(--accent); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 30px; }
+  .chip { font-family: var(--mono); font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
+  .chip b { color: var(--accent); font-weight: 600; }
+
+  /* feature grid */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+  .feat { background: var(--surface); padding: 28px 26px; }
+  .feat .ic { width: 34px; height: 34px; color: var(--accent); margin-bottom: 16px; }
+  .feat h3 { font-size: 17px; margin-bottom: 8px; }
+  .feat p { color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+
+  /* two-col explainer */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  .split + .split { margin-top: 72px; }
+  .split h3 { font-size: 24px; margin-bottom: 12px; }
+  .split p { color: var(--muted); margin-bottom: 14px; }
+  .split ul { list-style: none; }
+  .split li { color: var(--muted); font-size: 15px; padding: 6px 0 6px 24px; position: relative; }
+  .split li::before { content: "→"; position: absolute; left: 0; color: var(--accent); font-family: var(--mono); }
+
+  /* file tree */
+  .tree { font-family: var(--mono); font-size: 13px; line-height: 1.85; color: var(--muted); }
+  .tree .dir { color: var(--cyan); } .tree .arrow { color: var(--faint); } .tree .cmd { color: var(--accent); }
+
+  /* plugins table */
+  .ptable { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  .ptable th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding: 0 16px 14px; border-bottom: 1px solid var(--border); font-weight: 500; }
+  .ptable td { padding: 15px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .ptable td.name { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  .ptable td.desc { color: var(--muted); }
+  .ptable .badge { font-family: var(--mono); font-size: 11px; padding: 3px 9px; border-radius: 999px; }
+  .ptable .badge.on { background: rgba(87,201,122,0.12); color: var(--green); }
+  .ptable .badge.opt { background: rgba(146,152,164,0.1); color: var(--muted); }
+
+  /* showcase cards */
+  .show { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .show .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px; }
+  .show .card h4 { font-family: var(--mono); font-size: 13px; color: var(--fg); padding: 14px 16px 6px; }
+  .show .card p { color: var(--muted); font-size: 13px; padding: 0 16px 12px; }
+
+  /* big CTA */
+  .endcta { text-align: center; }
+  .endcta h2 { font-size: clamp(30px, 4.5vw, 46px); margin-bottom: 18px; }
+  .endcta p { color: var(--muted); font-size: 18px; max-width: 52ch; margin: 0 auto 30px; }
+  .endcta .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+  /* Let grid children shrink so inner code blocks scroll instead of
+     pushing the page wider than the viewport. */
+  .hero .wrap > *, .split > *, .show .card { min-width: 0; }
+  .code, .term { max-width: 100%; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  @media (max-width: 900px) {
+    .hero .wrap, .split, .show { grid-template-columns: 1fr; }
+    .features { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 600px) {
+    .features { grid-template-columns: 1fr; }
+    .install-pill { flex-wrap: wrap; }
+    .ptable { min-width: 460px; }
+  }
+</style>
+</head>
 
 <main id="main">
-    <section class="hero">
-        <h1>Build beautiful CLIs in Zig</h1>
-        <p class="hero-subtitle">Zero boilerplate. Type-safe. Zero-cost dispatch.</p>
-        <div class="hero-cta">
-            <a href="$site.page('quickstart').link()" class="btn btn-primary">Get Started</a>
-            <a href="$site.page('docs').link()" class="btn btn-secondary">Documentation</a>
-        </div>
-    </section>
 
-    <section class="features">
-        <div class="feature">
-            <h3>File-based Routing</h3>
-            <p>Your file structure IS your CLI structure. Drop .zig files in a directory and zcli generates the routing.</p>
-        </div>
-        <div class="feature">
-            <h3>Type-safe Parsing</h3>
-            <p>Arguments and options validated at compile time. Your Args and Options structs define what's valid.</p>
-        </div>
-        <div class="feature">
-            <h3>Zero-Cost Dispatch</h3>
-            <p>Command discovery and routing code generation happen at build time. No reflection, no dynamic dispatch.</p>
-        </div>
-        <div class="feature">
-            <h3>Plugin System</h3>
-            <p>Extensible architecture with lifecycle hooks, global options, and build-time configuration.</p>
-        </div>
-    </section>
+<!-- HERO -->
+<section class="hero" style="border-top:none;">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">CLI framework · Zig 0.16+</div>
+      <h1>Your folder structure <span class="amber">is</span> your CLI.</h1>
+      <p class="lead">zcli is a batteries-included framework for command-line tools in Zig. Add a <code class="mono">.zig</code> file, get a command. Help text, completions, "did you mean?", prompts, progress bars, and docs — wired up at compile time for zero-cost dispatch.</p>
+      <div class="cta">
+        <a class="btn primary" href="$site.page('docs').link()">Get started →</a>
+        <a class="btn ghost" href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener">Star on GitHub</a>
+      </div>
+      <div class="install-pill">
+        <span><span class="dollar">$</span> curl -fsSL zcli.sh/install.sh | sh</span>
+        <button class="copy" onclick="copyInstall(this)">copy</button>
+      </div>
+      <div class="chips">
+        <span class="chip"><b>0</b> runtime reflection</span>
+        <span class="chip"><b>7</b> built-in plugins</span>
+        <span class="chip"><b>8</b> prompt types</span>
+        <span class="chip">MIT licensed</span>
+      </div>
+    </div>
 
-    <section class="install">
-        <h2>Quick Install</h2>
-        <pre><code>curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</code></pre>
-        <p>Then create your first CLI:</p>
-        <pre><code>zcli init myapp
-cd myapp
-zig build
-./zig-out/bin/myapp --help</code></pre>
-    </section>
+    <div class="term">
+      <div class="term-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="ttl">myapp — zsh</span>
+      </div>
+      <div class="term-body">
+<pre><span class="c-prompt">$</span> <span class="c-cmd">myapp</span> deploy api <span class="c-flag">--env</span> staging
+Deploying api to staging
 
-    <section class="content-section">
-        <ctx :html="$page.content()"></ctx>
-    </section>
+<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> dploy api
+<span class="c-err">Error:</span> unknown command 'dploy'
+  Did you mean <span class="c-cmd">deploy</span>? <span class="c-mut">(run with --help)</span>
+
+<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users create <span class="c-flag">--help</span>
+<span class="c-mut">USAGE</span>  myapp users create &lt;name&gt; [options]
+  <span class="c-flag">-a, --admin</span>     Grant admin role
+  <span class="c-flag">    --output</span>   json · table · plain
+<span class="c-ok">✔</span> generated from your command metadata<span class="cursor"></span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">What you get</div>
+      <h2>Everything a polished CLI needs, none of the wiring.</h2>
+      <p>The boring-but-essential parts of a command-line tool, generated for you and type-checked at compile time.</p>
+    </div>
+    <div class="features">
+      <div class="feat">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg>
+        <h3>File-based commands</h3>
+        <p>Create files in <code class="mono">commands/</code> to add commands; nest folders for subcommands. The path becomes the command.</p>
+      </div>
+      <div class="feat">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+        <h3>Type-safe parsing</h3>
+        <p>Define args & options as Zig structs. Parsing is checked via comptime introspection — wrong types never compile.</p>
+      </div>
+      <div class="feat">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <h3>Did-you-mean</h3>
+        <p>Auto-generated <code class="mono">--help</code>, <code class="mono">--version</code>, shell completions, and typo suggestions out of the box.</p>
+      </div>
+      <div class="feat">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v16M6 9l6-5 6 5"/><rect x="4" y="16" width="16" height="4" rx="1"/></svg>
+        <h3>Interactive prompts</h3>
+        <p>Text, confirm, select, multi-select, password, search, number, and editor — all falling back gracefully without a TTY.</p>
+      </div>
+      <div class="feat">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+        <h3>Progress & spinners</h3>
+        <p>Nine spinner styles plus progress bars with ETA. Semantic colors adapt to your terminal's capabilities.</p>
+      </div>
+      <div class="feat">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h11l5 5v11H4z"/><path d="M14 4v5h5M8 13h8M8 17h8"/></svg>
+        <h3>Docs generation</h3>
+        <p>Emit markdown, man pages, and HTML straight from command metadata. Config loads transparently from JSON, TOML, or YAML.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">How it works</div>
+      <h2>Commands are <em style="font-style:normal;color:var(--accent)">discovered</em>, not registered.</h2>
+      <p>No registries to maintain, no macros to memorize. Commands are discovered and routing is generated at build time — there's no runtime filesystem scanning or reflection.</p>
+    </div>
+
+    <div class="split">
+      <div>
+        <h3>1 · Lay out your commands</h3>
+        <p>Each <code class="mono">.zig</code> file maps to a command path. Add an <code class="mono">index.zig</code> to describe a group.</p>
+        <ul>
+          <li>Folders become subcommand namespaces</li>
+          <li>Variadic args, flags, typed numbers — all from struct fields</li>
+          <li>Aliases & examples live in command metadata</li>
+        </ul>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="fname">src/commands/</span><span class="lang">tree</span></div>
+        <pre class="tree">src/commands/
+├── init.zig              <span class="arrow">→</span> <span class="cmd">myapp init</span>
+├── deploy.zig            <span class="arrow">→</span> <span class="cmd">myapp deploy</span>
+└── users/
+    ├── index.zig         <span class="arrow">→</span> <span class="cmd">myapp users</span>
+    ├── create.zig        <span class="arrow">→</span> <span class="cmd">myapp users create</span>
+    └── list.zig          <span class="arrow">→</span> <span class="cmd">myapp users list</span></pre>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="code">
+        <div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> Context = <span class="at">@import</span>(<span class="str">"command_registry"</span>).Context;
+
+<span class="kw">pub const</span> meta = .{
+    .description = <span class="str">"Deploy your application"</span>,
+    .options = .{
+        .env = .{
+            .short = <span class="str">'e'</span>,
+            .description = <span class="str">"Target environment"</span>,
+        },
+    },
+};
+
+<span class="kw">pub const</span> Args = <span class="kw">struct</span> {
+    service: []<span class="kw">const</span> <span class="fn">u8</span>,
+};
+
+<span class="kw">pub const</span> Options = <span class="kw">struct</span> {
+    env: []<span class="kw">const</span> <span class="fn">u8</span> = <span class="str">"production"</span>,
+};
+
+<span class="kw">pub fn</span> <span class="fn">execute</span>(args: Args, options: Options, context: *Context) !<span class="kw">void</span> {
+    <span class="kw">try</span> context.<span class="fn">stdout</span>().<span class="fn">print</span>(
+        <span class="str">"Deploying {s} to {s}\n"</span>, .{ args.service, options.env });
+}</pre>
+      </div>
+      <div>
+        <h3>2 · Write the command</h3>
+        <p>Up to four exports: <code class="mono">meta</code>, <code class="mono">Args</code>, <code class="mono">Options</code>, and <code class="mono">execute</code>. The <code class="mono">context</code> hands you stdout/stderr, an allocator, the active theme, and plugin data.</p>
+        <ul>
+          <li>Defaults on struct fields become option defaults</li>
+          <li><code class="mono">?bool</code> for optional flags, <code class="mono">[]const []const u8</code> for variadic</li>
+          <li>Dispatch is generated — zero-cost at runtime</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PLUGINS -->
+<section id="plugins">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">Plugins</div>
+      <h2>Seven plugins ship in the box.</h2>
+      <p>Add them in <code class="mono">build.zig</code>. Plugins contribute global options, lifecycle hooks, and build-time config — store state in <code class="mono">context.plugins.{id}</code>.</p>
+    </div>
+    <div class="table-scroll">
+    <table class="ptable">
+      <thead><tr><th>Plugin</th><th>Provides</th><th>Default</th></tr></thead>
+      <tbody>
+        <tr><td class="name">zcli_help</td><td class="desc"><code class="mono">--help</code> / <code class="mono">-h</code>, auto-generated help text</td><td><span class="badge on">default</span></td></tr>
+        <tr><td class="name">zcli_version</td><td class="desc"><code class="mono">--version</code> / <code class="mono">-V</code></td><td><span class="badge on">default</span></td></tr>
+        <tr><td class="name">zcli_not_found</td><td class="desc">"Did you mean?" suggestions for typos</td><td><span class="badge on">default</span></td></tr>
+        <tr><td class="name">zcli_completions</td><td class="desc">Generate & install completions for bash, zsh, fish</td><td><span class="badge opt">optional</span></td></tr>
+        <tr><td class="name">zcli_config</td><td class="desc">Transparent config loading — JSON, TOML, YAML, per-command scoping</td><td><span class="badge opt">optional</span></td></tr>
+        <tr><td class="name">zcli_output</td><td class="desc"><code class="mono">--output</code> flag — json, table, plain</td><td><span class="badge opt">optional</span></td></tr>
+        <tr><td class="name">zcli_github_upgrade</td><td class="desc"><code class="mono">upgrade</code> command via GitHub releases</td><td><span class="badge opt">optional</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <div style="margin-top:28px;">
+      <a class="btn ghost" href="$site.page('plugins').link()">Plugins guide — defaults, auto-discovery & writing your own →</a>
+    </div>
+  </div>
+</section>
+
+<!-- SHOWCASE -->
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="eyebrow">Standalone packages</div>
+      <h2>Prompts and progress you can use anywhere.</h2>
+      <p><code class="mono">zinput</code> and <code class="mono">zprogress</code> work with or without the rest of zcli — no framework dependency required.</p>
+    </div>
+    <div class="show">
+      <div class="card">
+        <h4>zinput — interactive prompts</h4>
+        <p>Eight prompt types. Configurable prefix; line-based fallback when stdin isn't a TTY.</p>
+        <div class="code" style="border-radius:9px;">
+          <div class="code-head"><span class="fname">select + confirm</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> idx = <span class="kw">try</span> zinput.<span class="fn">select</span>(writer, reader, .{
+    .message = <span class="str">"Framework:"</span>,
+    .choices = &.{ <span class="str">"express"</span>, <span class="str">"fastify"</span>, <span class="str">"koa"</span> },
+});
+<span class="kw">const</span> ok = <span class="kw">try</span> zinput.<span class="fn">confirm</span>(writer, reader, .{
+    .message = <span class="str">"Continue?"</span>, .default = <span class="num">true</span>,
+});</pre>
+        </div>
+      </div>
+      <div class="card">
+        <h4>zprogress — spinners & bars</h4>
+        <p>Nine spinner styles, progress bars with ETA, and semantic status states.</p>
+        <div class="code" style="border-radius:9px;">
+          <div class="code-head"><span class="fname">spinner</span><span class="lang">zig</span></div>
+<pre><span class="kw">var</span> spinner = zprogress.<span class="fn">spinner</span>(.{ .style = .dots });
+spinner.<span class="fn">start</span>(<span class="str">"Loading..."</span>);
+<span class="cm">// ... do work, spinner.tick() in a loop ...</span>
+spinner.<span class="fn">succeed</span>(<span class="str">"Done!"</span>);   <span class="cm">// ✔ Done!</span>
+spinner.<span class="fn">fail</span>(<span class="str">"Failed"</span>);    <span class="cm">// ✖ Failed</span>
+spinner.<span class="fn">warn</span>(<span class="str">"Warning"</span>);   <span class="cm">// ⚠ Warning</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- END CTA -->
+<section class="endcta">
+  <div class="wrap">
+    <div class="eyebrow" style="display:inline-block;">Ready in two minutes</div>
+    <h2>Stop wiring up arg parsers.</h2>
+    <p>Add zcli to <code class="mono">build.zig.zon</code>, drop a file in <code class="mono">commands/</code>, and run <code class="mono">zig build</code>. That's the whole onboarding.</p>
+    <div class="cta">
+      <a class="btn primary" href="$site.page('install').link()">Install zcli →</a>
+      <a class="btn ghost" href="$site.page('docs').link()">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+<script>
+  function copyInstall(btn) {
+    navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh").then(function () {
+      var old = btn.textContent; btn.textContent = "copied ✓"; btn.style.color = "var(--green)"; btn.style.borderColor = "var(--green)";
+      setTimeout(function () { btn.textContent = old; btn.style.color = ""; btn.style.borderColor = ""; }, 1600);
+    });
+  }
+</script>
+
 </main>
