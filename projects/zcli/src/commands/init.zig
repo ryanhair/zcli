@@ -158,8 +158,11 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     // Generate build.zig.zon
     try stdout.print("  Creating build.zig.zon...\n", .{});
-    // Use zcli package from GitHub archive
-    const zcli_version = "0.9.3";
+    // Pin the generated project to the same zcli release as this CLI.
+    // `context.app_version` is read from build.zig.zon at build time, so it
+    // tracks releases automatically (the framework and this CLI are tagged in
+    // lockstep as `zcli-v<version>`).
+    const zcli_version = context.app_version;
     // Package fingerprint: high 32 bits are a checksum of the package name, low
     // 32 bits a random id. Zig rejects a zero fingerprint at build time.
     const fingerprint: u64 = blk: {
@@ -170,18 +173,17 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         if (id == 0) id = 1;
         break :blk (@as(u64, checksum) << 32) | id;
     };
+    // The zcli dependency is added below by `zig fetch --save`, which computes
+    // the real hash. We must NOT pre-write a placeholder entry here: zig parses
+    // the existing manifest before fetching, and an incomplete hash makes that
+    // parse (and therefore the fetch) fail.
     const zon_content = try std.fmt.allocPrint(allocator,
         \\.{{
         \\    .name = .{s},
         \\    .version = "{s}",
         \\    .fingerprint = 0x{x:0>16},
         \\    .minimum_zig_version = "0.16.0",
-        \\    .dependencies = .{{
-        \\        .zcli = .{{
-        \\            .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz",
-        \\            .hash = "1220000000000000000000000000000000000000000000000000000000000000",
-        \\        }},
-        \\    }},
+        \\    .dependencies = .{{}},
         \\    .paths = .{{
         \\        "build.zig",
         \\        "build.zig.zon",
@@ -189,7 +191,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    }},
         \\}}
         \\
-    , .{ project_identifier, app_version, fingerprint, zcli_version });
+    , .{ project_identifier, app_version, fingerprint });
     defer allocator.free(zon_content);
 
     var zon_file = try project_dir.createFile(io, "build.zig.zon", .{});
@@ -315,22 +317,28 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer hello_file.close(io);
     try hello_file.writeStreamingAll(io, hello_content);
 
-    // Fetch zcli dependency
-    fetch_deps: {
+    // Fetch the zcli dependency. `zig fetch --save` computes the real hash and
+    // writes the dependency into build.zig.zon; without it the generated project
+    // won't build, so warn with the exact command if it doesn't run.
+    {
         try stdout.print("  Fetching dependencies (this may take a moment)...\n", .{});
-        const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz", .{zcli_version});
+        const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/zcli-v{s}.tar.gz", .{zcli_version});
         defer allocator.free(zcli_url);
 
-        var fetch_child = std.process.spawn(io, .{
-            .argv = &.{ "zig", "fetch", "--save", zcli_url },
-            .cwd = .{ .dir = project_dir },
-            .stdout = .pipe,
-            .stderr = .pipe,
-        }) catch {
-            stdout.print("  Note: Run 'zig fetch --save {s}' to add the dependency\n", .{zcli_url}) catch {};
-            break :fetch_deps;
+        const ok = ok: {
+            var fetch_child = std.process.spawn(io, .{
+                .argv = &.{ "zig", "fetch", "--save", zcli_url },
+                .cwd = .{ .dir = project_dir },
+                .stdout = .ignore,
+                .stderr = .inherit,
+            }) catch break :ok false;
+            const term = fetch_child.wait(io) catch break :ok false;
+            break :ok term == .exited and term.exited == 0;
         };
-        _ = fetch_child.wait(io) catch {};
+        if (!ok) {
+            try stderr.print("  Warning: could not add the zcli dependency automatically.\n", .{});
+            try stderr.print("  Run this inside the project to finish setup:\n    zig fetch --save {s}\n", .{zcli_url});
+        }
     }
 
     // Success message
