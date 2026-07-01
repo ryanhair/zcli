@@ -55,8 +55,8 @@
         <h3>Install script</h3>
         <p>Downloads the latest release binary for your platform and drops it in your install dir.</p>
         <div class="cmdbox">
-          <pre><span class="pr">$</span> curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</pre>
-          <button onclick="cp(this,'curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh')">copy</button>
+          <pre><span class="pr">$</span> curl -fsSL https://zcli.sh/install.sh | sh</pre>
+          <button onclick="cp(this,'curl -fsSL https://zcli.sh/install.sh | sh')">copy</button>
         </div>
         <p style="font-size:13.5px;">Requires <code class="mono" style="color:var(--accent)">curl</code>. The script reads the latest release from GitHub, verifies the checksum when available, and makes the binary executable.</p>
       </div>
