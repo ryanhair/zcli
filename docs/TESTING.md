@@ -336,6 +336,7 @@ test "login prompts for credentials" {
 
     var result = try testing.e2e.runInteractive(
         allocator,
+        std.testing.io,
         &.{"./zig-out/bin/myapp", "login"},
         script,
         .{ .allocate_pty = true },
@@ -355,6 +356,7 @@ test "ctrl-c triggers graceful shutdown" {
 
     var result = try testing.e2e.runInteractive(
         allocator,
+        std.testing.io,
         &.{"./zig-out/bin/myapp", "serve"},
         script,
         .{ .forward_signals = true },
