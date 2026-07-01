@@ -67,34 +67,11 @@ pub fn readByteFn(reader: anytype) !u8 {
     return buf[0];
 }
 
-/// An input event: a key press or a terminal resize. Returned by `readEvent`
-/// for prompts that need to repaint when the terminal is resized.
-pub const Event = union(enum) {
-    key: Key,
-    resize,
-};
-
 /// Read a single key from a reader, parsing ANSI escape sequences.
 /// In raw mode, this reads byte-by-byte and assembles multi-byte
 /// sequences (arrow keys, etc.) into Key values.
 pub fn readKey(reader: anytype) !Key {
     return readKeyImpl(reader, null);
-}
-
-/// Like `readKey`, but also reports terminal-resize events by multiplexing
-/// stdin with the `watcher`. Blocks until a key is read or a resize occurs.
-///
-/// `handle` is the stdin handle (used both for escape-sequence disambiguation
-/// and by the watcher's poll). Buffered input already sitting in `reader` is
-/// consumed before polling, so no keypress is missed.
-pub fn readEvent(reader: anytype, handle: backend.Handle, watcher: *backend.ResizeWatcher) !Event {
-    while (true) {
-        if (bufferedLenOf(reader) > 0) return .{ .key = try readKeyImpl(reader, handle) };
-        switch (watcher.wait(handle)) {
-            .resize => return .resize,
-            .input => return .{ .key = try readKeyImpl(reader, handle) },
-        }
-    }
 }
 
 /// Like `readKey`, but reliably distinguishes a lone Escape from the start of an
@@ -168,13 +145,15 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Key {
 /// short poll on `esc_handle` (when provided) catches a sequence split across
 /// reads.
 fn escapeSequenceFollows(reader: anytype, esc_handle: ?backend.Handle) bool {
-    if (bufferedLenOf(reader) > 0) return true;
+    if (bufferedLen(reader) > 0) return true;
     const handle = esc_handle orelse return false;
     return backend.waitReadable(handle, esc_timeout_ms);
 }
 
 /// Buffered byte count for readers that expose it (std.Io.Reader); 0 otherwise.
-fn bufferedLenOf(reader: anytype) usize {
+/// Public so the event multiplexer can avoid blocking on a poll when the reader
+/// already has bytes in hand.
+pub fn bufferedLen(reader: anytype) usize {
     const T = @TypeOf(reader);
     if (@typeInfo(T) == .pointer) {
         const Child = @typeInfo(T).pointer.child;

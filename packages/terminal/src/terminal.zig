@@ -12,9 +12,10 @@ pub const Key = key.Key;
 pub const readKey = key.readKey;
 pub const readKeyOpt = key.readKeyOpt;
 
-/// An input event (key or terminal resize) and the resize-aware reader.
-pub const Event = key.Event;
-pub const readEvent = key.readEvent;
+/// Input event multiplexing: a key press or a terminal resize.
+pub const event = @import("event.zig");
+pub const Event = event.Event;
+pub const readEvent = event.readEvent;
 
 /// Watches for terminal resizes; construct for the lifetime of a prompt.
 pub const ResizeWatcher = backend.ResizeWatcher;
