@@ -185,8 +185,8 @@ fn runWizardOnce(
         switch (action) {
             0 => {
                 const content = try generateSource(arena, path.parts, description, args_list.items, opts_list.items);
-                try writeCommandFile(arena, io, path.parts, file_path, content);
-                try finish(w, theme, path.parts, file_path);
+                const new_groups = try writeCommandFile(arena, io, path.parts, file_path, content);
+                try finish(w, theme, path.parts, file_path, new_groups);
                 return .created;
             },
             1 => try gatherArgs(arena, w, r, theme, &args_list),
@@ -229,8 +229,8 @@ fn skeleton(arena: std.mem.Allocator, context: *Context, args: Args, options: Op
 
     const description = options.description orelse "TODO: Add description";
     const content = try generateSource(arena, parts, description, &.{}, &.{});
-    try writeCommandFile(arena, io, parts, file_path, content);
-    try finish(context.stdout(), &context.theme, parts, file_path);
+    const new_groups = try writeCommandFile(arena, io, parts, file_path, content);
+    try finish(context.stdout(), &context.theme, parts, file_path, new_groups);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,8 +280,8 @@ fn declarative(arena: std.mem.Allocator, context: *Context, args: Args, options:
 
     const description = options.description orelse "TODO: Add description";
     const content = try generateSource(arena, parts, description, args_list.items, opts_list.items);
-    try writeCommandFile(arena, io, parts, file_path, content);
-    try finish(context.stdout(), &context.theme, parts, file_path);
+    const new_groups = try writeCommandFile(arena, io, parts, file_path, content);
+    try finish(context.stdout(), &context.theme, parts, file_path, new_groups);
 }
 
 fn parseArgJson(arena: std.mem.Allocator, json: []const u8) !ArgSpec {
@@ -958,13 +958,30 @@ fn review(
     try w.writeAll("\r\n");
 }
 
-fn finish(w: *std.Io.Writer, theme: *const Theme, parts: []const []const u8, file_path: []const u8) !void {
+fn finish(
+    w: *std.Io.Writer,
+    theme: *const Theme,
+    parts: []const []const u8,
+    file_path: []const u8,
+    new_groups: []const NewGroup,
+) !void {
     try w.writeAll("\n  ");
     {
         var buf: [512]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "\u{2714} Created {s}", .{file_path}) catch "\u{2714} Created command";
         try ztheme.theme(line).success().render(w, theme);
     }
+
+    // A nested path can bring new group directories into being; a fresh group
+    // has no index.zig, so it has no description in help or `tree`.
+    for (new_groups) |g| {
+        try w.writeAll("\n  ");
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "Note: new group '{s}' has no description.", .{g.name}) catch "Note: new group has no description.";
+        try ztheme.theme(line).warning().render(w, theme);
+        try w.print("\n    Add {s} with `pub const meta = .{{ .description = \"...\" }};` to describe it.\n", .{g.index_path});
+    }
+
     try w.writeAll("\n\n  Next steps\n");
     try w.print("    1. Implement execute() in {s}\n", .{file_path});
     try w.writeAll("    2. zig build\n");
@@ -1025,7 +1042,13 @@ fn generateSource(
 
     try w.writeAll("    .examples = &.{\n        \"");
     try writeExample(w, parts, args_list);
-    try w.writeAll("\",\n    },\n};\n\n");
+    try w.writeAll("\",\n    },\n");
+    // Surface the rest of the authored meta so the shell shows the full
+    // surface `tree --show-options` reads back (commented until the author
+    // wants them).
+    try w.writeAll("    // .aliases = &.{\"alias\"}, // alternate names this command answers to\n");
+    try w.writeAll("    // .hidden = true,          // omit from help and tree listings\n");
+    try w.writeAll("};\n\n");
 
     // Args struct.
     try w.writeAll("pub const Args = struct {");
@@ -1182,31 +1205,51 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
+/// A command group directory this invocation created from scratch. Because a
+/// fresh directory has no `index.zig`, it has no description — the caller hints
+/// how to give it one (ADR-0007: a group's description comes from index meta).
+const NewGroup = struct {
+    /// The group's command path, space-joined (e.g. "users" or "gh add").
+    name: []const u8,
+    /// Where a describing `index.zig` would live.
+    index_path: []const u8,
+};
+
+/// Write the command file, creating any missing parent group directories.
+/// Returns the groups that were newly created (and are therefore undescribed).
 fn writeCommandFile(
     arena: std.mem.Allocator,
     io: std.Io,
     parts: []const []const u8,
     file_path: []const u8,
     content: []const u8,
-) !void {
+) ![]const NewGroup {
     const cwd = std.Io.Dir.cwd();
+    var new_groups = std.ArrayList(NewGroup).empty;
 
     if (parts.len > 1) {
         var dir = std.ArrayList(u8).empty;
         try dir.appendSlice(arena, "src/commands");
-        for (parts[0 .. parts.len - 1]) |segment| {
+        for (parts[0 .. parts.len - 1], 0..) |segment, i| {
             try dir.append(arena, '/');
             try dir.appendSlice(arena, segment);
             cwd.createDir(io, dir.items, .default_dir) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
+                error.PathAlreadyExists => continue,
                 else => return err,
             };
+            // createDir succeeded, so this group is brand new and undescribed.
+            try new_groups.append(arena, .{
+                .name = try std.mem.join(arena, " ", parts[0 .. i + 1]),
+                .index_path = try std.fmt.allocPrint(arena, "{s}/index.zig", .{dir.items}),
+            });
         }
     }
 
     var file = try cwd.createFile(io, file_path, .{});
     defer file.close(io);
     try file.writeStreamingAll(io, content);
+
+    return new_groups.items;
 }
 
 // ---------------------------------------------------------------------------

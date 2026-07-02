@@ -173,16 +173,29 @@ test "add command creates stubs at the right paths" {
         var r = try run(tmp.dir, &.{ zcli_exe, "add", "command", "deploy" });
         defer r.deinit();
         try expectOk(r);
+        // A flat command births no group, so no group hint.
+        try testing.expect(std.mem.indexOf(u8, r.stdout, "new group") == null);
     }
     try testing.expect(fileExists(tmp.dir, "src/commands/deploy.zig"));
 
-    // Nested path creates intermediate directories.
+    // Nested path creates intermediate directories, and the new 'users' group
+    // has no index.zig yet — the command hints how to describe it.
     {
         var r = try run(tmp.dir, &.{ zcli_exe, "add", "command", "users/create", "--description", "Create a user" });
         defer r.deinit();
         try expectOk(r);
+        try expectContains(r.stdout, "new group 'users' has no description");
+        try expectContains(r.stdout, "src/commands/users/index.zig");
     }
     try testing.expect(fileExists(tmp.dir, "src/commands/users/create.zig"));
+
+    // A second command under an existing group births nothing, so no hint.
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "add", "command", "users/list" });
+        defer r.deinit();
+        try expectOk(r);
+        try testing.expect(std.mem.indexOf(u8, r.stdout, "new group") == null);
+    }
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -191,6 +204,10 @@ test "add command creates stubs at the right paths" {
     const created = try readFile(tmp.dir, a, "src/commands/users/create.zig");
     try expectContains(created, ".description = \"Create a user\"");
     try expectContains(created, "pub fn execute(");
+    // Full meta surface is scaffolded as commented fields (read/write symmetry
+    // with `tree --show-options`).
+    try expectContains(created, "// .aliases =");
+    try expectContains(created, "// .hidden =");
 }
 
 test "add command outside a project fails clearly" {

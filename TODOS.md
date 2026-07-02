@@ -20,8 +20,14 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   comptime dependency loop; a bad signature still fails at the framework call site.)
 
 **Phase 2 — Write surface (the scaffolding CLI)**
-- [ ] **PR: `add command` extension** — co-located unit-test stub (Q7); full `meta`
-  coverage (examples/aliases/hidden); hint when it births an undescribed group (ADR-0005/0007).
+- [x] **PR: `add command` extension** — DONE (partial). Full `meta` coverage (commented
+  `aliases`/`hidden` scaffolded alongside `examples`); hint when it births an undescribed
+  group (ADR-0005/0007). The co-located unit-test stub (Q7) was split out below — it needs a
+  `test` step wired into `init`'s generated build.zig to actually run, so it earns its own PR.
+- [ ] **PR: generated-project testing story (Q7)** — co-located unit-test stub from
+  `add command`, PLUS a `test` step in `init`'s generated build.zig that discovers command
+  files and compiles each as a test module (mirrors the meta-CLI's `command_test_files` loop +
+  a `command_registry` Context stub). Without the build wiring the stub never runs.
 - [ ] **PR: `add option`/`add arg` + remove JSON-blob bulk** (ADR-0005) — flag interface
   (positional name + `--type`/`--multiple`/`--nullable`/`--default`/`--short`/`-d`); AST
   splice preserving `execute()`; keep the wizard; `add arg` append + `--before`/`--after`.
