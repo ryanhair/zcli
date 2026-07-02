@@ -212,7 +212,9 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
     // Create BuildConfig
     const build_config = BuildConfig{
         .commands_dir = config.commands_dir,
-        .plugins_dir = null,
+        // Honor a caller-provided plugins_dir so local plugins under it are
+        // convention-discovered (ADR-0006). Optional: absent → no local scan.
+        .plugins_dir = if (@hasField(@TypeOf(config), "plugins_dir")) config.plugins_dir else null,
         .plugins = plugins.items,
         .shared_modules = if (@hasField(@TypeOf(config), "shared_modules")) config.shared_modules else null,
         .command_configs = if (@hasField(@TypeOf(config), "command_configs")) config.command_configs else null,

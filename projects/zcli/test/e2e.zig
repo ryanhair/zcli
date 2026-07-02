@@ -691,8 +691,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
 
     // `add plugin` drops a file into the convention-discovered src/plugins/ dir
     // (init wired `.plugins_dir`). The generated skeleton must compile and be
-    // auto-discovered on the next build — no build.zig edit — and its
-    // pass-through preExecute must not disturb command output.
+    // auto-discovered on the next build — no build.zig edit.
     {
         var r = try run(proj, &.{ zcli_exe, "add", "plugin", "telemetry", "-d", "Track usage" });
         defer r.deinit();
@@ -701,6 +700,23 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try testing.expect(std.mem.indexOf(u8, r.stdout, "won't be discovered") == null);
     }
     try testing.expect(fileExists(proj, "src/plugins/telemetry.zig"));
+
+    // Replace the pass-through skeleton with a plugin whose preExecute has a
+    // *visible* effect, so the rebuild proves the plugin is genuinely discovered
+    // and its hook runs — not merely that the file compiles. (A pass-through
+    // hook is indistinguishable from one that never ran.)
+    try proj.writeFile(io, .{
+        .sub_path = "src/plugins/telemetry.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
+        \\    try context.stderr().print("[telemetry] hook ran\n", .{});
+        \\    return args;
+        \\}
+        \\
+        ,
+    });
     {
         var r = try run(proj, &.{ "zig", "build" });
         defer r.deinit();
@@ -710,7 +726,10 @@ test "scaffolded project builds, runs, and round-trips add command" {
         var r = try run(proj, &.{ "./zig-out/bin/demo", "hello", "World" });
         defer r.deinit();
         try expectOk(r);
-        try expectContains(r.stdout, "Hello, World!"); // preExecute is pass-through
+        try expectContains(r.stdout, "Hello, World!");
+        // The discovered plugin's preExecute ran (proves .plugins_dir is honored
+        // and the local-plugin module resolves to the project's src/plugins/).
+        try expectContains(r.stderr, "[telemetry] hook ran");
     }
 
     // `mv` + `rm command`: whole-file restructure. Move a command into a new
