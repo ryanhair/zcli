@@ -52,6 +52,18 @@ detect_arch() {
     esac
 }
 
+# Compute a SHA-256 digest with whichever tool this system has.
+# Fails (empty output, nonzero status) when neither is available.
+sha256_digest() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
 # Get latest release version from GitHub
 get_latest_version() {
     if command -v curl >/dev/null 2>&1; then
@@ -83,24 +95,39 @@ download_binary() {
         exit 1
     fi
 
-    # Verify checksum if shasum is available
-    if command -v shasum >/dev/null 2>&1; then
-        print_info "Verifying checksum..."
-        local checksums="${tmp_dir}/checksums.txt"
-        if curl -fsSL "${checksum_url}" -o "${checksums}"; then
-            local expected_checksum=$(grep "zcli-${target}" "${checksums}" | awk '{print $1}')
-            local actual_checksum=$(shasum -a 256 "${binary_path}" | awk '{print $1}')
-
-            if [ "${expected_checksum}" != "${actual_checksum}" ]; then
-                print_error "Checksum verification failed!"
-                rm -rf "${tmp_dir}"
-                exit 1
-            fi
-            print_success "Checksum verified"
-        else
-            print_warning "Could not download checksums, skipping verification"
-        fi
+    # Verify the download. Verification is mandatory — if the checksums can't
+    # be fetched or no SHA-256 tool exists, abort rather than install an
+    # unverified binary.
+    print_info "Verifying checksum..."
+    local checksums="${tmp_dir}/checksums.txt"
+    if ! curl -fsSL "${checksum_url}" -o "${checksums}"; then
+        print_error "Failed to download checksums from ${checksum_url}"
+        rm -rf "${tmp_dir}"
+        exit 1
     fi
+
+    # Exact filename-field match so e.g. a "zcli-${target}-debug" entry can
+    # never shadow the real one.
+    local expected_checksum=$(awk -v file="zcli-${target}" '$2 == file {print $1}' "${checksums}")
+    if [ -z "${expected_checksum}" ]; then
+        print_error "No checksum entry for zcli-${target} in checksums.txt"
+        rm -rf "${tmp_dir}"
+        exit 1
+    fi
+
+    local actual_checksum=$(sha256_digest "${binary_path}")
+    if [ -z "${actual_checksum}" ]; then
+        print_error "Cannot verify download: neither sha256sum nor shasum is available"
+        rm -rf "${tmp_dir}"
+        exit 1
+    fi
+
+    if [ "${expected_checksum}" != "${actual_checksum}" ]; then
+        print_error "Checksum verification failed!"
+        rm -rf "${tmp_dir}"
+        exit 1
+    fi
+    print_success "Checksum verified"
 
     echo "${binary_path}"
 }

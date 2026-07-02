@@ -18,7 +18,16 @@
 //!   `error.ResponseTooLarge` once the limit is crossed.
 //! - **Redirects are bounded** (`max_redirects`) for bodyless requests, and are
 //!   not auto-followed for requests carrying a payload (a redirect must not
-//!   silently replay a POST body against a different host).
+//!   silently replay a POST body against a different host). Redirects are
+//!   followed by this wrapper itself, not `std.http.Client` — see below.
+//! - **Credential headers do not leak across origins.** Caller-supplied
+//!   `authorization`, `cookie`, and `proxy-authorization` headers are sent with
+//!   the initial request and kept for redirects within the same origin
+//!   (scheme + host + port), but stripped as soon as a redirect leaves it, so
+//!   a hostile redirect cannot exfiltrate a bearer token. Other caller headers
+//!   are kept across all redirects. (This is why the wrapper follows redirects
+//!   itself: as of 0.16, `std.http.Client`'s auto-follow re-sends every extra
+//!   header to the redirect target regardless of origin.)
 //! - **Each request has an overall timeout** (default `default_timeout`) so a
 //!   hung or dead server cannot make a command hang forever. See "Timeouts".
 //!
@@ -71,7 +80,79 @@ pub const Error = error{
     UnsupportedCompressionMethod,
     /// The request did not complete within its timeout.
     Timeout,
+    /// A redirect chain exceeded `max_redirects`.
+    TooManyRedirects,
 };
+
+/// Request headers that carry credentials. These are stripped from a request
+/// as soon as a redirect leaves the origin they were originally sent to.
+const privileged_header_names = [_][]const u8{
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+};
+
+fn isPrivilegedHeaderName(name: []const u8) bool {
+    for (privileged_header_names) |privileged| {
+        if (std.ascii.eqlIgnoreCase(name, privileged)) return true;
+    }
+    return false;
+}
+
+fn defaultPort(scheme: []const u8) u16 {
+    if (std.ascii.eqlIgnoreCase(scheme, "http")) return 80;
+    if (std.ascii.eqlIgnoreCase(scheme, "https")) return 443;
+    return 0;
+}
+
+/// Strict same-origin check: scheme, host, and effective port must all match.
+/// Deliberately stricter than `std.http.Client`'s parent-domain redirect rule —
+/// credentials for api.example.com must not follow a redirect to
+/// evil.example.com.
+fn sameOrigin(a: std.Uri, b: std.Uri) bool {
+    if (!std.ascii.eqlIgnoreCase(a.scheme, b.scheme)) return false;
+    var a_buf: [256]u8 = undefined;
+    var b_buf: [256]u8 = undefined;
+    const a_host = (a.host orelse return false).toRaw(&a_buf) catch return false;
+    const b_host = (b.host orelse return false).toRaw(&b_buf) catch return false;
+    if (!std.ascii.eqlIgnoreCase(a_host, b_host)) return false;
+    return (a.port orelse defaultPort(a.scheme)) == (b.port orelse defaultPort(b.scheme));
+}
+
+/// The Location to follow for a redirect response, or null when the status is
+/// not one this client follows (e.g. 300 or 304).
+fn redirectTarget(status: Status, location: ?[]const u8) ?[]const u8 {
+    return switch (status) {
+        .moved_permanently, .found, .see_other, .temporary_redirect, .permanent_redirect => location,
+        else => null,
+    };
+}
+
+/// Resolve a redirect `location` (possibly relative) against `base`, returning
+/// a freshly-allocated absolute URL string.
+fn resolveLocation(
+    allocator: std.mem.Allocator,
+    base: std.Uri,
+    location: []const u8,
+) ![]u8 {
+    // resolveInPlace wants the location at the start of a mutable buffer, with
+    // headroom after it for path merging.
+    const aux = try allocator.alloc(u8, location.len + 4096);
+    defer allocator.free(aux);
+    @memcpy(aux[0..location.len], location);
+    var remaining: []u8 = aux;
+    const resolved = try base.resolveInPlace(location.len, &remaining);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try resolved.writeToStream(&out.writer, .{
+        .scheme = true,
+        .authority = true,
+        .path = true,
+        .query = true,
+    });
+    return out.toOwnedSlice();
+}
 
 /// Per-request timeout setting (`RequestOptions.timeout`).
 pub const Timeout = union(enum) {
@@ -112,7 +193,10 @@ pub const Response = struct {
 /// Per-request knobs beyond the URL. Everything is optional; the zero value is
 /// a plain request with no extra headers and no body.
 pub const RequestOptions = struct {
-    /// Extra headers sent verbatim (kept across cross-domain redirects).
+    /// Extra headers sent verbatim. Credential-bearing headers (`authorization`,
+    /// `cookie`, `proxy-authorization`; case-insensitive) are stripped as soon
+    /// as a redirect leaves the original origin (scheme + host + port); all
+    /// others are kept across every redirect.
     headers: []const Header = &.{},
     /// Request body. When set on a `POST`/`PUT`/etc., its length is sent as
     /// `Content-Length`.
@@ -219,89 +303,129 @@ pub const Client = struct {
     /// Opens (or reuses) a connection, sends the request, then reads the whole
     /// response body into memory, bounded by `max_response_bytes` and
     /// transparently decompressed. `request` wraps this with the timeout race.
+    ///
+    /// Redirects are followed here in the wrapper, not by `std.http.Client`:
+    /// std's auto-follow (as of 0.16) re-sends every extra header to the
+    /// redirect target regardless of origin, which would leak credential
+    /// headers cross-origin. Following them ourselves lets us drop credential
+    /// headers the moment a hop leaves the original origin.
     fn requestInner(
         self: *Client,
         method: Method,
         url: []const u8,
         options: RequestOptions,
     ) !Response {
-        const uri = try std.Uri.parse(url);
+        const allocator = self.inner.allocator;
 
-        // Combine caller headers with an optional content-type into one slice.
-        var header_buf: [1]Header = undefined;
-        const extra_headers: []const Header = if (options.content_type) |ct| blk: {
-            // Fast path for the common case: only a content-type, no user
-            // headers — no allocation needed.
-            if (options.headers.len == 0) {
-                header_buf[0] = .{ .name = "content-type", .value = ct };
-                break :blk header_buf[0..1];
-            }
-            const combined = try self.inner.allocator.alloc(Header, options.headers.len + 1);
-            @memcpy(combined[0..options.headers.len], options.headers);
-            combined[options.headers.len] = .{ .name = "content-type", .value = ct };
-            break :blk combined;
-        } else options.headers;
-        defer if (options.content_type != null and options.headers.len > 0) {
-            self.inner.allocator.free(extra_headers);
-        };
-
-        // Don't auto-follow redirects for a request that carries a payload: a
-        // redirect must not silently replay the body against a new host.
-        const redirect_behavior: std.http.Client.Request.RedirectBehavior =
-            if (options.body == null) @enumFromInt(max_redirects) else .unhandled;
-
-        var req = try self.inner.request(method, uri, .{
-            .redirect_behavior = redirect_behavior,
-            .extra_headers = extra_headers,
-        });
-        defer req.deinit();
-
-        if (options.body) |body| {
-            req.transfer_encoding = .{ .content_length = body.len };
-            var body_writer = try req.sendBodyUnflushed(&.{});
-            try body_writer.writer.writeAll(body);
-            try body_writer.end();
-            try req.connection.?.flush();
-        } else {
-            try req.sendBodiless();
+        // Build the hop header list with non-credential headers (plus an
+        // optional content-type) first and credential headers last, so the
+        // credential-stripped view is simply a prefix of the full list.
+        var headers: std.ArrayList(Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.ensureTotalCapacity(allocator, options.headers.len + 1);
+        for (options.headers) |header| {
+            if (!isPrivilegedHeaderName(header.name)) headers.appendAssumeCapacity(header);
+        }
+        if (options.content_type) |ct| {
+            headers.appendAssumeCapacity(.{ .name = "content-type", .value = ct });
+        }
+        const safe_header_count = headers.items.len;
+        for (options.headers) |header| {
+            if (isPrivilegedHeaderName(header.name)) headers.appendAssumeCapacity(header);
         }
 
-        var redirect_buffer: [8 * 1024]u8 = undefined;
-        var response = try req.receiveHead(&redirect_buffer);
+        var current_method = method;
+        var current_url: []const u8 = url;
+        var owned_url: ?[]u8 = null;
+        defer if (owned_url) |u| allocator.free(u);
+        var send_credentials = true;
+        var hops: u16 = 0;
 
-        // Read header-derived fields before the first body read: obtaining the
-        // reader invalidates the header string memory.
-        const status = response.head.status;
-        const content_encoding = response.head.content_encoding;
+        while (true) {
+            const uri = try std.Uri.parse(current_url);
+            const hop_headers = headers.items[0..if (send_credentials)
+                headers.items.len
+            else
+                safe_header_count];
 
-        // Size a decompression buffer per the negotiated content encoding, the
-        // same way std.http.Client.fetch does.
-        const decompress_buffer: []u8 = switch (content_encoding) {
-            .identity => &.{},
-            .zstd => try self.inner.allocator.alloc(u8, std.compress.zstd.default_window_len),
-            .deflate, .gzip => try self.inner.allocator.alloc(u8, std.compress.flate.max_window_len),
-            .compress => return Error.UnsupportedCompressionMethod,
-        };
-        defer self.inner.allocator.free(decompress_buffer);
+            var req = try self.inner.request(current_method, uri, .{
+                .redirect_behavior = .unhandled,
+                .extra_headers = hop_headers,
+            });
+            defer req.deinit();
 
-        var transfer_buffer: [64]u8 = undefined;
-        var decompress: std.http.Decompress = undefined;
-        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+            if (options.body) |body| {
+                req.transfer_encoding = .{ .content_length = body.len };
+                var body_writer = try req.sendBodyUnflushed(&.{});
+                try body_writer.writer.writeAll(body);
+                try body_writer.end();
+                try req.connection.?.flush();
+            } else {
+                try req.sendBodiless();
+            }
 
-        const body = reader.allocRemaining(
-            self.inner.allocator,
-            .limited(self.max_response_bytes),
-        ) catch |err| switch (err) {
-            error.StreamTooLong => return Error.ResponseTooLarge,
-            error.ReadFailed => return response.bodyErr().?,
-            error.OutOfMemory => return error.OutOfMemory,
-        };
+            // No aux buffer needed: with `.unhandled` receiveHead never
+            // resolves redirects itself.
+            var response = try req.receiveHead(&.{});
 
-        return .{
-            .allocator = self.inner.allocator,
-            .status = status,
-            .body = body,
-        };
+            // Read header-derived fields before the first body read: obtaining
+            // the reader invalidates the header string memory.
+            const status = response.head.status;
+            const content_encoding = response.head.content_encoding;
+
+            // Follow redirects only for bodyless requests: a redirect must not
+            // silently replay a payload against a new host. Payload-carrying
+            // requests get the 3xx response back as the result.
+            if (options.body == null and status.class() == .redirect) {
+                if (redirectTarget(status, response.head.location)) |location| {
+                    if (hops >= max_redirects) return Error.TooManyRedirects;
+                    hops += 1;
+
+                    const next_url = try resolveLocation(allocator, uri, location);
+                    errdefer allocator.free(next_url);
+                    // `uri` still references the previous URL string — settle
+                    // the origin question before releasing it.
+                    const next_uri = try std.Uri.parse(next_url);
+                    if (!sameOrigin(uri, next_uri)) send_credentials = false;
+                    // A 303 means "GET the result of what you sent".
+                    if (status == .see_other) current_method = .GET;
+
+                    if (owned_url) |u| allocator.free(u);
+                    owned_url = next_url;
+                    current_url = next_url;
+                    continue;
+                }
+            }
+
+            // Size a decompression buffer per the negotiated content encoding,
+            // the same way std.http.Client.fetch does.
+            const decompress_buffer: []u8 = switch (content_encoding) {
+                .identity => &.{},
+                .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+                .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+                .compress => return Error.UnsupportedCompressionMethod,
+            };
+            defer allocator.free(decompress_buffer);
+
+            var transfer_buffer: [64]u8 = undefined;
+            var decompress: std.http.Decompress = undefined;
+            const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+
+            const body = reader.allocRemaining(
+                allocator,
+                .limited(self.max_response_bytes),
+            ) catch |err| switch (err) {
+                error.StreamTooLong => return Error.ResponseTooLarge,
+                error.ReadFailed => return response.bodyErr().?,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+
+            return .{
+                .allocator = allocator,
+                .status = status,
+                .body = body,
+            };
+        }
     }
 };
 
@@ -340,6 +464,36 @@ test "postJson serializes a value the same way it is read back" {
 
     try testing.expectEqualStrings("zcli", parsed.value.name);
     try testing.expectEqual(@as(u32, 3), parsed.value.count);
+}
+
+test "isPrivilegedHeaderName matches credential headers case-insensitively" {
+    try testing.expect(isPrivilegedHeaderName("authorization"));
+    try testing.expect(isPrivilegedHeaderName("Authorization"));
+    try testing.expect(isPrivilegedHeaderName("COOKIE"));
+    try testing.expect(isPrivilegedHeaderName("Proxy-Authorization"));
+    try testing.expect(!isPrivilegedHeaderName("accept"));
+    try testing.expect(!isPrivilegedHeaderName("x-api-version"));
+    try testing.expect(!isPrivilegedHeaderName("authorization-extra"));
+}
+
+test "sameOrigin requires scheme, host, and effective port to match" {
+    const parse = std.Uri.parse;
+    try testing.expect(sameOrigin(try parse("https://api.example.com/a"), try parse("https://api.example.com/b")));
+    try testing.expect(sameOrigin(try parse("https://api.example.com/"), try parse("https://API.EXAMPLE.COM:443/")));
+    try testing.expect(!sameOrigin(try parse("https://api.example.com/"), try parse("http://api.example.com/")));
+    try testing.expect(!sameOrigin(try parse("https://api.example.com/"), try parse("https://evil.example.com/")));
+    try testing.expect(!sameOrigin(try parse("https://api.example.com/"), try parse("https://example.com/")));
+    try testing.expect(!sameOrigin(try parse("https://api.example.com/"), try parse("https://api.example.com:8443/")));
+    try testing.expect(!sameOrigin(try parse("http://127.0.0.1:8080/"), try parse("http://127.0.0.1:9090/")));
+}
+
+test "redirectTarget follows only real redirect statuses" {
+    try testing.expectEqualStrings("/next", redirectTarget(.found, "/next").?);
+    try testing.expectEqualStrings("/next", redirectTarget(.moved_permanently, "/next").?);
+    try testing.expectEqualStrings("/next", redirectTarget(.permanent_redirect, "/next").?);
+    try testing.expect(redirectTarget(.not_modified, "/next") == null);
+    try testing.expect(redirectTarget(.multiple_choice, "/next") == null);
+    try testing.expect(redirectTarget(.found, null) == null);
 }
 
 test "an invalid URL fails before any network work" {
@@ -442,6 +596,158 @@ test "a response larger than the cap fails with ResponseTooLarge" {
     defer testing.allocator.free(url);
 
     try testing.expectError(Error.ResponseTooLarge, client.get(url));
+}
+
+/// Accept one connection and answer with a redirect to `location` (with
+/// `Connection: close`, so the client must dial the next hop instead of
+/// reusing the pooled connection), then accept a second connection and report
+/// which interesting headers arrived on it, as "auth=<bool> custom=<bool>".
+fn serveRedirectThenEchoHeaders(io: std.Io, server: *std.Io.net.Server, location: []const u8) void {
+    {
+        var stream = server.accept(io) catch return;
+        defer stream.close(io);
+
+        var read_buf: [4096]u8 = undefined;
+        var write_buf: [4096]u8 = undefined;
+        var stream_reader = stream.reader(io, &read_buf);
+        var stream_writer = stream.writer(io, &write_buf);
+
+        var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+        var request = http_server.receiveHead() catch return;
+        request.respond("", .{
+            .status = .found,
+            .keep_alive = false,
+            .extra_headers = &.{.{ .name = "location", .value = location }},
+        }) catch return;
+    }
+    {
+        var stream = server.accept(io) catch return;
+        defer stream.close(io);
+
+        var read_buf: [4096]u8 = undefined;
+        var write_buf: [4096]u8 = undefined;
+        var stream_reader = stream.reader(io, &read_buf);
+        var stream_writer = stream.writer(io, &write_buf);
+
+        var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+        var request = http_server.receiveHead() catch return;
+
+        var has_auth = false;
+        var has_custom = false;
+        var it = request.iterateHeaders();
+        while (it.next()) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "authorization")) has_auth = true;
+            if (std.ascii.eqlIgnoreCase(header.name, "x-zcli-test")) has_custom = true;
+        }
+
+        var body_buf: [64]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf, "auth={} custom={}", .{ has_auth, has_custom }) catch return;
+        request.respond(body, .{}) catch return;
+    }
+}
+
+const redirect_test_headers = [_]Header{
+    .{ .name = "authorization", .value = "Bearer secret-token" },
+    .{ .name = "x-zcli-test", .value = "1" },
+};
+
+test "credential headers survive a same-host redirect" {
+    const io = testing.io;
+
+    var addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    const location = try std.fmt.allocPrint(testing.allocator, "http://127.0.0.1:{d}/next", .{port});
+    defer testing.allocator.free(location);
+
+    var future = try io.concurrent(serveRedirectThenEchoHeaders, .{ io, &server, @as([]const u8, location) });
+    defer future.await(io);
+
+    var client = Client.init(testing.allocator, io, .{});
+    defer client.deinit();
+
+    const url = try loopbackUrl(port);
+    defer testing.allocator.free(url);
+
+    var response = try client.request(.GET, url, .{ .headers = &redirect_test_headers });
+    defer response.deinit();
+
+    try testing.expectEqual(Status.ok, response.status);
+    try testing.expectEqualStrings("auth=true custom=true", response.body);
+}
+
+test "credential headers are stripped when a redirect crosses hosts" {
+    const io = testing.io;
+
+    var addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    // Same listener, but the redirect names a different host ("localhost" vs
+    // "127.0.0.1"), so std.http.Client must treat the hop as cross-domain and
+    // drop the privileged headers while keeping the custom one.
+    const location = try std.fmt.allocPrint(testing.allocator, "http://localhost:{d}/next", .{port});
+    defer testing.allocator.free(location);
+
+    var future = try io.concurrent(serveRedirectThenEchoHeaders, .{ io, &server, @as([]const u8, location) });
+    defer future.await(io);
+
+    var client = Client.init(testing.allocator, io, .{});
+    defer client.deinit();
+
+    const url = try loopbackUrl(port);
+    defer testing.allocator.free(url);
+
+    var response = try client.request(.GET, url, .{ .headers = &redirect_test_headers });
+    defer response.deinit();
+
+    try testing.expectEqual(Status.ok, response.status);
+    try testing.expectEqualStrings("auth=false custom=true", response.body);
+}
+
+/// Answer every connection with a redirect back to `location`, until canceled.
+/// Used to prove the client bounds redirect chains.
+fn serveEndlessRedirects(io: std.Io, server: *std.Io.net.Server, location: []const u8) void {
+    while (true) {
+        var stream = server.accept(io) catch return;
+        defer stream.close(io);
+
+        var read_buf: [4096]u8 = undefined;
+        var write_buf: [4096]u8 = undefined;
+        var stream_reader = stream.reader(io, &read_buf);
+        var stream_writer = stream.writer(io, &write_buf);
+
+        var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+        var request = http_server.receiveHead() catch return;
+        request.respond("", .{
+            .status = .found,
+            .keep_alive = false,
+            .extra_headers = &.{.{ .name = "location", .value = location }},
+        }) catch return;
+    }
+}
+
+test "a redirect loop fails with TooManyRedirects" {
+    const io = testing.io;
+
+    var addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    const url = try loopbackUrl(port);
+    defer testing.allocator.free(url);
+
+    var future = try io.concurrent(serveEndlessRedirects, .{ io, &server, @as([]const u8, url) });
+    defer _ = future.cancel(io);
+
+    var client = Client.init(testing.allocator, io, .{});
+    defer client.deinit();
+
+    try testing.expectError(Error.TooManyRedirects, client.get(url));
 }
 
 test "a request that outlives its timeout fails with error.Timeout" {
