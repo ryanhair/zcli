@@ -48,6 +48,20 @@ pub const CommandResult = struct {
     }
 };
 
+/// True if the command has an argument with no default (a required positional),
+/// i.e. its `Args` is not default-constructible. The scaffolded co-located test
+/// uses this to guard `runCommand(cmd, &.{}, .{})`: it auto-runs while every arg
+/// is optional and comptime-compiles-away once a required arg is added (at which
+/// point the author supplies real `.args`). Options are always defaulted, so
+/// only `Args` needs checking.
+pub fn hasRequiredArgs(comptime Command: type) bool {
+    if (!@hasDecl(Command, "Args")) return false;
+    for (@typeInfo(Command.Args).@"struct".fields) |field| {
+        if (field.default_value_ptr == null) return true;
+    }
+    return false;
+}
+
 /// Run a command's execute() function in-process with captured I/O.
 ///
 /// The command module must have Args, Options, and execute declarations.

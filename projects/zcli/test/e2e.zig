@@ -780,6 +780,65 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
 }
 
+test "scaffolded commands are unit-testable via zig build test" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "app", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpSubdirAbs(arena.allocator(), tmp, "app");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // A scaffolded command ships with a co-located runCommand test.
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "command", "greet", "-d", "Greet" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    // `zig build test` (wired by init via zcli.addCommandTests) compiles each
+    // command as a test binary against the TestContext stub + the bundled
+    // zcli-testing tier and runs the co-located tests.
+    {
+        var r = try run(proj, &.{ "zig", "build", "test" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    // Prove the tests actually EXECUTE — a green step with zero tests would be a
+    // false pass. A co-located test that fails on purpose must turn it red.
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/canary.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\const Context = @import("command_registry").Context;
+        \\pub const meta = .{ .description = "canary" };
+        \\pub const Args = struct {};
+        \\pub const Options = struct {};
+        \\pub fn execute(_: Args, _: Options, _: *Context) !void {}
+        \\test "canary fails on purpose" {
+        \\    try std.testing.expect(false);
+        \\}
+        \\
+        ,
+    });
+    {
+        var r = try run(proj, &.{ "zig", "build", "test" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+    }
+}
+
 // ============================================================================
 // Layer 2 — interactive (PTY) tests
 // ============================================================================
