@@ -805,9 +805,16 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             zcli_io.finalize();
             defer zcli_io.flush();
 
+            // Arena-per-command allocator: everything the command and framework
+            // bookkeeping allocate during this invocation lives in the arena and is
+            // reclaimed wholesale when execute() returns. Command authors never need
+            // to call free. See docs/adr/0001-arena-per-command-allocator.md.
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+
             // Use the computed Context type which includes type-safe plugin data
             var context = Context{
-                .allocator = allocator,
+                .allocator = arena.allocator(),
                 .io = &zcli_io,
                 .environ = environ,
                                 .theme = zcli.ztheme.Theme.init(environ, io),
