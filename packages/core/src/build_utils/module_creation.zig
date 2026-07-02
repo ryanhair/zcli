@@ -193,14 +193,19 @@ fn createGroupModules(
 pub fn addPluginModulesToRegistry(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, plugins: []const PluginInfo) void {
     for (plugins) |plugin_info| {
         if (plugin_info.is_local) {
-            // import_name is like "src/plugins/zcli_help/plugin"
-            // zcli_dep path handling:
-            // - If using .path dependency, it points directly to packages/core
-            // - If using .url dependency, it points to the repo root
-            // We'll try both paths for compatibility
-            const plugin_path = b.fmt("{s}.zig", .{plugin_info.import_name});
+            // Two kinds of "local" plugin resolve against different roots:
+            //   - project_path set → a plugin in the *consuming project*
+            //     (discovered under plugins_dir); resolve with b.path.
+            //   - otherwise → a framework built-in living in the zcli package;
+            //     import_name is like "src/plugins/zcli_help/plugin", resolved
+            //     against the zcli dependency.
+            const root_source_file = if (plugin_info.project_path) |project_path|
+                b.path(project_path)
+            else
+                zcli_dep.path(b.fmt("{s}.zig", .{plugin_info.import_name}));
+
             const plugin_module = b.addModule(plugin_info.import_name, .{
-                .root_source_file = zcli_dep.path(plugin_path),
+                .root_source_file = root_source_file,
             });
             plugin_module.addImport("zcli", zcli_module);
 

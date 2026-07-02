@@ -147,12 +147,6 @@ pub const VTerm = struct {
         return @min(self.total_lines_written - 1, self.scrollback_lines - 1);
     }
 
-    // Convert 2D coordinates to buffer index (updated for circular buffer)
-    fn cellIndex(self: VTerm, x: u16, y: u16) usize {
-        // Note: This now expects y to be a buffer line index, not viewport y
-        return @as(usize, y) * @as(usize, self.width) + @as(usize, x);
-    }
-
     // Bounds checking
     fn isValidPos(self: VTerm, x: u16, y: u16) bool {
         return x < self.width and y < self.height;
@@ -360,25 +354,31 @@ pub const VTerm = struct {
 
     // Resize Support
     pub fn resize(self: *VTerm, new_width: u16, new_height: u16) !void {
-        const new_total = @as(usize, new_width) * @as(usize, new_height);
+        // The cell buffer holds the whole scrollback (scrollback_lines ×
+        // width), not just the viewport — the new buffer must too, or every
+        // `line % scrollback_lines` lookup past the new viewport indexes off
+        // the end of the allocation.
+        const new_total = @as(usize, self.scrollback_lines) * @as(usize, new_width);
         const new_cells = try self.allocator.alloc(Cell, new_total);
         @memset(new_cells, Cell.empty());
 
-        // Copy existing content
+        // Copy every written logical line (not just the viewport),
+        // translating from the old circular order to a rebased buffer.
         const copy_width = @min(self.width, new_width);
-        const copy_height = @min(self.height, new_height);
-
-        for (0..copy_height) |y| {
-            const old_start = y * self.width;
-            const new_start = y * new_width;
+        const lines_to_copy: u32 = @min(self.total_lines_written, self.scrollback_lines);
+        var logical: u32 = 0;
+        while (logical < lines_to_copy) : (logical += 1) {
+            const old_start = @as(usize, self.bufferLineIndex(logical)) * self.width;
+            const new_start = @as(usize, logical) * new_width;
             @memcpy(new_cells[new_start .. new_start + copy_width], self.cells[old_start .. old_start + copy_width]);
         }
 
-        // Replace buffer
+        // Replace buffer (rebased, so the circular window starts at 0 again)
         self.allocator.free(self.cells);
         self.cells = new_cells;
         self.width = new_width;
         self.height = new_height;
+        self.buffer_start = 0;
 
         // Clamp cursor to new bounds
         self.cursor.x = @min(self.cursor.x, new_width - 1);
@@ -681,20 +681,24 @@ pub const VTerm = struct {
 
     // Erase helper functions
     fn eraseFromCursor(self: *VTerm) void {
-        // Erase from cursor to end of screen
-        const start_idx = self.cellIndex(self.cursor.x, self.cursor.y);
-        const end_idx = self.cells.len;
-        for (start_idx..end_idx) |i| {
-            self.cells[i] = Cell.empty();
+        // Erase from the cursor to the end of the SCREEN (viewport rows only,
+        // not the rest of the scrollback allocation). setCell/clearLine
+        // translate viewport rows to buffer lines; cursor.y is a viewport y
+        // and must never be used as a buffer index directly.
+        self.eraseLineFromCursor();
+        var y: u16 = self.cursor.y + 1;
+        while (y < self.height) : (y += 1) {
+            self.clearLine(y);
         }
     }
 
     fn eraseToCursor(self: *VTerm) void {
-        // Erase from start of screen to cursor
-        const end_idx = self.cellIndex(self.cursor.x, self.cursor.y) + 1;
-        for (0..end_idx) |i| {
-            self.cells[i] = Cell.empty();
+        // Erase from the start of the screen to the cursor, inclusive.
+        var y: u16 = 0;
+        while (y < self.cursor.y) : (y += 1) {
+            self.clearLine(y);
         }
+        self.eraseLineToCursor();
     }
 
     fn eraseLineFromCursor(self: *VTerm) void {
