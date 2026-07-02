@@ -34,7 +34,8 @@ const b64 = std.base64.standard;
 // libsecret / glib FFI
 // ---------------------------------------------------------------------------
 
-/// `GError` — glib's error box. We only ever read nothing out of it and free it.
+/// `GError` — glib's error box. We read its code/message for a debug log, then
+/// free it; a `GError` never carries a secret value.
 const GError = extern struct {
     domain: u32, // GQuark
     code: c_int,
@@ -111,6 +112,16 @@ pub const Error = error{
     SecretServiceFailure,
 };
 
+const log = std.log.scoped(.zcli_secrets);
+
+/// Log a `GError`'s code/message (never a secret value) and free it. The most
+/// common real failure — no Secret Service daemon running — surfaces here.
+fn reportAndFree(e: *GError) void {
+    const msg: []const u8 = if (e.message) |m| std.mem.span(m) else "(no message)";
+    log.debug("libsecret error {d}: {s}", .{ e.code, msg });
+    g_error_free(e);
+}
+
 /// Retrieve a secret. Returns `null` if no matching item exists. The returned
 /// bytes are owned by `allocator`.
 pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) !?[]const u8 {
@@ -122,7 +133,7 @@ pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) 
     var err: ?*GError = null;
     const pw = secret_password_lookup_sync(&schema, null, &err, attr_service, svc.ptr, attr_account, acct.ptr, varargs_end);
     if (err) |e| {
-        g_error_free(e);
+        reportAndFree(e);
         return Error.SecretServiceFailure;
     }
     const raw = pw orelse return null; // not found
@@ -154,7 +165,7 @@ pub fn set(allocator: std.mem.Allocator, service: []const u8, name: []const u8, 
     var err: ?*GError = null;
     const ok = secret_password_store_sync(&schema, null, label.ptr, encoded.ptr, null, &err, attr_service, svc.ptr, attr_account, acct.ptr, varargs_end);
     if (ok == 0) {
-        if (err) |e| g_error_free(e);
+        if (err) |e| reportAndFree(e);
         return Error.SecretServiceFailure;
     }
 }
@@ -171,7 +182,7 @@ pub fn delete(allocator: std.mem.Allocator, service: []const u8, name: []const u
     // fine. Only a set `err` is a real failure.
     _ = secret_password_clear_sync(&schema, null, &err, attr_service, svc.ptr, attr_account, acct.ptr, varargs_end);
     if (err) |e| {
-        g_error_free(e);
+        reportAndFree(e);
         return Error.SecretServiceFailure;
     }
 }

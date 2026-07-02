@@ -1,8 +1,8 @@
 //! macOS Keychain backend for `zcli_secrets`.
 //!
 //! Stores each secret as a *generic password* item in the user's login
-//! keychain, keyed by `(service = app_name, account = secret name)`. Unlike the
-//! file-backed fallback, the OS encrypts these at rest and mediates access.
+//! keychain, keyed by `(service = app_name, account = secret name)`. The OS
+//! encrypts these at rest and mediates access.
 //!
 //! ## Why this makes the plugin opt-in
 //!
@@ -24,6 +24,14 @@
 //! deprecation attribute produces no warning here.)
 
 const std = @import("std");
+
+const log = std.log.scoped(.zcli_secrets);
+
+/// Log a failing `OSStatus` (never a secret value) and map it to `KeychainFailure`.
+fn keychainFailure(status: OSStatus) Error {
+    log.debug("keychain call failed, OSStatus {d}", .{status});
+    return Error.KeychainFailure;
+}
 
 // ---------------------------------------------------------------------------
 // Security.framework / CoreFoundation FFI
@@ -107,7 +115,7 @@ pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) 
         null,
     );
     if (status == errSecItemNotFound) return null;
-    if (status != errSecSuccess) return Error.KeychainFailure;
+    if (status != errSecSuccess) return keychainFailure(status);
 
     defer _ = SecKeychainItemFreeContent(null, password_data);
     // A success with no data pointer is not a documented outcome, but guard it
@@ -134,7 +142,7 @@ pub fn set(_: std.mem.Allocator, service: []const u8, name: []const u8, value: [
         null,
     );
     if (status == errSecSuccess) return;
-    if (status != errSecDuplicateItem) return Error.KeychainFailure;
+    if (status != errSecDuplicateItem) return keychainFailure(status);
 
     // Item exists — find it and modify its data in place.
     var item: SecKeychainItemRef = null;
@@ -148,11 +156,11 @@ pub fn set(_: std.mem.Allocator, service: []const u8, name: []const u8, value: [
         null,
         &item,
     );
-    if (find != errSecSuccess) return Error.KeychainFailure;
+    if (find != errSecSuccess) return keychainFailure(find);
     defer CFRelease(item);
 
     const modify = SecKeychainItemModifyAttributesAndData(item, null, value_len, value.ptr);
-    if (modify != errSecSuccess) return Error.KeychainFailure;
+    if (modify != errSecSuccess) return keychainFailure(modify);
 }
 
 /// Remove a secret. Succeeds (no-op) if no item exists. `allocator` is unused
@@ -170,11 +178,11 @@ pub fn delete(_: std.mem.Allocator, service: []const u8, name: []const u8) !void
         &item,
     );
     if (find == errSecItemNotFound) return;
-    if (find != errSecSuccess) return Error.KeychainFailure;
+    if (find != errSecSuccess) return keychainFailure(find);
     defer CFRelease(item);
 
     const status = SecKeychainItemDelete(item);
-    if (status != errSecSuccess) return Error.KeychainFailure;
+    if (status != errSecSuccess) return keychainFailure(status);
 }
 
 test "keychain backend compiles and links against Security.framework" {

@@ -59,6 +59,14 @@ pub const Error = error{
     SecretTooLarge,
 };
 
+const log = std.log.scoped(.zcli_secrets);
+
+/// Log the last Win32 error (never a secret value) and map it to a failure.
+fn credentialFailure() Error {
+    log.debug("credential manager call failed, Win32 error {d}", .{@intFromEnum(windows.GetLastError())});
+    return Error.CredentialManagerFailure;
+}
+
 /// Build the UTF-16, NUL-terminated target name `service:account`.
 fn makeTarget(allocator: std.mem.Allocator, service: []const u8, name: []const u8) ![:0]u16 {
     const utf8 = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ service, name });
@@ -78,7 +86,7 @@ pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) 
     var cred: ?*CREDENTIALW = null;
     if (!CredReadW(target.ptr, CRED_TYPE_GENERIC, 0, &cred).toBool()) {
         if (windows.GetLastError() == windows.Win32Error.NOT_FOUND) return null;
-        return Error.CredentialManagerFailure;
+        return credentialFailure();
     }
     const c = cred.?;
     defer CredFree(c);
@@ -108,7 +116,7 @@ pub fn set(allocator: std.mem.Allocator, service: []const u8, name: []const u8, 
         .Persist = CRED_PERSIST_LOCAL_MACHINE,
         .UserName = user.ptr,
     };
-    if (!CredWriteW(&cred, 0).toBool()) return Error.CredentialManagerFailure;
+    if (!CredWriteW(&cred, 0).toBool()) return credentialFailure();
 }
 
 /// Remove a secret. Succeeds (no-op) if no matching credential exists.
@@ -118,7 +126,7 @@ pub fn delete(allocator: std.mem.Allocator, service: []const u8, name: []const u
 
     if (!CredDeleteW(target.ptr, CRED_TYPE_GENERIC, 0).toBool()) {
         if (windows.GetLastError() == windows.Win32Error.NOT_FOUND) return; // no-op
-        return Error.CredentialManagerFailure;
+        return credentialFailure();
     }
 }
 

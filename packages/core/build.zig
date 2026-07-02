@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     const test_security_step = b.step("test-security", "Run security tests only");
     const test_sequential_step = b.step("test-seq", "Run tests sequentially (avoids conflicts)");
     const test_debug_step = b.step("test-debug", "Debug test hanging issue");
-    const test_secrets_step = b.step("test-secrets", "Run zcli_secrets tests (file store + host backend compile/link)");
+    const test_secrets_step = b.step("test-secrets", "Run zcli_secrets tests (plugin surface + host backend compile/link)");
     const test_secrets_live_step = b.step("test-secrets-live", "Round-trip the host's native secrets backend against the real OS keychain (CI)");
 
     // Core test files - zcli.zig imports everything else through the dependency chain

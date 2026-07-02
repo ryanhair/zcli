@@ -113,17 +113,21 @@ jobs:
         shell: bash
         run: |
           dbus-run-session -- bash -c '
+            set -e
             echo "" | gnome-keyring-daemon --unlock --components=secrets
-            # Wait until the secrets service owns its name on the bus.
+            # Wait until the secrets service owns its name on the bus; fail loudly
+            # rather than run the test against a keyring that never came up.
+            ready=
             for i in $(seq 1 30); do
               if dbus-send --session --dest=org.freedesktop.DBus \
                    --type=method_call --print-reply \
                    /org/freedesktop/DBus org.freedesktop.DBus.GetNameOwner \
                    string:org.freedesktop.secrets >/dev/null 2>&1; then
-                echo "org.freedesktop.secrets ready after ${i}s"; break
+                echo "org.freedesktop.secrets ready after ${i}s"; ready=1; break
               fi
               sleep 1
             done
+            [ -n "$ready" ] || { echo "ERROR: org.freedesktop.secrets never came up"; exit 1; }
             zig build test-secrets-live
           '
 

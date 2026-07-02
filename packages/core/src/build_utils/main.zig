@@ -24,6 +24,17 @@ pub fn linkSecretsBackend(module: *std.Build.Module, target: std.Target) void {
             module.linkFramework("CoreFoundation", .{});
         },
         .linux => {
+            // libsecret/glib are glibc-based, so a musl target — zcli's flagship
+            // static-single-binary case — cannot link them. Fail with a legible
+            // message instead of a cryptic linker/pkg-config error, mirroring the
+            // plugin's own unsupported-OS @compileError.
+            if (target.abi.isMusl()) std.debug.panic(
+                "zcli_secrets: the Linux Secret Service backend links libsecret " ++
+                    "(glibc), which is incompatible with a musl target ({s}). Build " ++
+                    "with a gnu ABI (e.g. -Dtarget=x86_64-linux-gnu), or do not " ++
+                    "register the plugin for musl.",
+                .{@tagName(target.abi)},
+            );
             module.link_libc = true;
             module.linkSystemLibrary("secret-1", .{});
             module.linkSystemLibrary("glib-2.0", .{});

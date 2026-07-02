@@ -32,6 +32,18 @@
 //! keychain, not a plaintext file; so registering this plugin for any other
 //! target is a **compile-time error** rather than a silent, insecure store.
 //!
+//! ## Key and value constraints
+//!
+//! A secret `name` must not contain a NUL byte (`InvalidSecretName`) — the
+//! backends key on C strings, so an embedded NUL would silently truncate the key
+//! and cross backends inconsistently. Beyond that, keep two portability limits
+//! in mind: on **Windows** a value is capped at `CRED_MAX_CREDENTIAL_BLOB_SIZE`
+//! (2560 bytes) and fails with `SecretTooLarge` above it (macOS/Linux have no
+//! such practical cap); and the Windows credential is keyed by the flattened
+//! string `"{app_name}:{name}"`, so two different apps whose `app_name`/`name`
+//! concatenate to the same string would share an entry (a non-issue within one
+//! app, whose `app_name` is fixed).
+//!
 //! ## Usage from command code
 //!
 //! Because the plugin is registered, its data is reachable on the context and
@@ -84,9 +96,22 @@ comptime {
     // get/set/delete call, which is generic and would otherwise defer the error.
     // Referencing `active_backend` (the enum) rather than `native` (the backend
     // module) is deliberate: it triggers the `@compileError` without pulling the
-    // backend's FFI symbols into a build that never calls the API, so a plugin
-    // that is registered-but-unused still links nothing extra.
+    // backend's FFI *symbols* into the codegen of a build that never calls the
+    // API. (The keychain library itself is still linked by the build half —
+    // `main.linkSecretsBackend` — whenever the plugin is registered; this only
+    // keeps unused API symbols out of a plain `zig build test`.)
     _ = active_backend;
+}
+
+/// Errors raised by the plugin before it reaches a backend.
+pub const Error = error{
+    /// A secret name contained a NUL byte, which the C-string-keyed backends
+    /// cannot represent unambiguously.
+    InvalidSecretName,
+};
+
+fn validateName(name: []const u8) Error!void {
+    if (std.mem.indexOfScalar(u8, name, 0) != null) return Error.InvalidSecretName;
 }
 
 /// Per-context data. Holds no state today, but exists so the plugin's storage
@@ -97,17 +122,20 @@ pub const ContextData = struct {
     /// returned bytes are owned by `context.allocator` (the per-command arena),
     /// so they are freed when the command returns; free earlier if desired.
     pub fn get(_: *ContextData, context: anytype, name: []const u8) !?[]const u8 {
+        try validateName(name);
         return native.get(context.allocator, context.app_name, name);
     }
 
     /// Store (or overwrite) a secret. The value is copied; the caller retains
     /// ownership of the passed slice.
     pub fn set(_: *ContextData, context: anytype, name: []const u8, value: []const u8) !void {
+        try validateName(name);
         return native.set(context.allocator, context.app_name, name, value);
     }
 
     /// Remove a secret. A no-op (success) if it does not exist.
     pub fn delete(_: *ContextData, context: anytype, name: []const u8) !void {
+        try validateName(name);
         return native.delete(context.allocator, context.app_name, name);
     }
 };
@@ -125,4 +153,10 @@ test "plugin exposes the storage surface" {
     try testing.expect(@hasDecl(ContextData, "set"));
     try testing.expect(@hasDecl(ContextData, "delete"));
     try testing.expectEqualStrings("zcli_secrets", plugin_id);
+}
+
+test "validateName rejects an embedded NUL" {
+    try validateName("token"); // ok
+    try validateName(""); // ok (empty is a valid, if odd, key)
+    try testing.expectError(Error.InvalidSecretName, validateName("to\x00ken"));
 }
