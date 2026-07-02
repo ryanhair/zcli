@@ -74,10 +74,19 @@ pub fn runCommand(
     io.stdout_override = &stdout_aw.writer;
     io.stderr_override = &stderr_aw.writer;
 
+    // Arena-per-command allocator: mirror the runtime (Registry.execute) so a
+    // command written to never free is leak-free under unit tests too, not just
+    // in production. Command-body allocations are reclaimed when the arena is
+    // dropped; the capture writers and vterm below stay on `allocator` so the
+    // testing allocator still catches harness leaks.
+    // See docs/adr/0001-arena-per-command-allocator.md.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
     // Create context with plugins
     const Ctx = zcli.TestContext(plugins);
     var context = Ctx{
-        .allocator = allocator,
+        .allocator = arena.allocator(),
         .io = &io,
     };
     defer context.deinit();
@@ -235,6 +244,34 @@ test "runCommand vterm contains text" {
 
     try std.testing.expect(result.term.containsText("Hello World"));
     try std.testing.expect(!result.term.containsText("Goodbye"));
+}
+
+test "runCommand arena reclaims allocations for a command that never frees" {
+    // The arena-per-command contract: business logic can allocate via
+    // context.allocator and never call free. runCommand uses
+    // std.testing.allocator, which panics on leak, so this test fails if the
+    // arena is removed. See docs/adr/0001-arena-per-command-allocator.md.
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: anytype) !void {
+            // Several allocations of different sizes, none freed.
+            var i: usize = 0;
+            while (i < 8) : (i += 1) {
+                const buf = try context.allocator.alloc(u8, 64 * (i + 1));
+                @memset(buf, 'x');
+            }
+            const dup = try context.allocator.dupe(u8, "leaked-on-purpose");
+            try context.stdout().print("allocated {d} bytes\n", .{dup.len});
+        }
+    };
+
+    var result = try runCommand(TestCommand, &.{}, .{});
+    defer result.deinit();
+
+    try std.testing.expect(result.success);
+    try std.testing.expect(result.term.containsText("allocated 17 bytes"));
 }
 
 test "runCommand vterm detects ANSI formatting" {
