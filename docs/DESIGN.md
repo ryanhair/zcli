@@ -144,6 +144,7 @@ pub const meta = .{
     .options = .{
         .limit = .{ .description = "Maximum number of results" },
         .format = .{ .description = "Output format" },
+        .api_key = .{ .description = "API key", .env = "MYAPP_API_KEY" },
     }
 };
 
@@ -174,6 +175,20 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 - Last field can be `[][]const u8` to capture remaining args
 - Types supported: `[]const u8`, `u32`, `i32`, `bool`, enums
 - Default values make an arg optional
+
+**Environment Variable Fallbacks:**
+
+An option can declare an environment variable as its fallback via
+`meta.options.<field>.env`. When the flag is not passed on the command line,
+the variable's value is parsed as the field's type. Precedence, highest to
+lowest: CLI argument > environment variable > default value.
+
+- `bool`: `1`/`0`, `true`/`false`, `yes`/`no` (case-insensitive)
+- strings: used verbatim; integers/floats: parsed; enums: matched by tag name
+- A value that doesn't parse as the field's type is ignored (the default stays)
+
+Values come from the environ threaded down from `process.Init` — the
+framework performs no ambient `getenv`.
 
 **Context Structure:**
 
@@ -213,7 +228,6 @@ const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .global_options = .{
         .verbose = .{ .short = 'v', .type = bool, .default = false, .help = "Enable verbose output" },
         .config = .{ .short = 'c', .type = ?[]const u8, .help = "Config file path" },
-        .api_key = .{ .env = "MYAPP_API_KEY", .type = []const u8, .help = "API key for service" },
         .no_color = .{ .type = bool, .default = false, .help = "Disable colored output" },
     },
     // ... other config
@@ -232,61 +246,6 @@ Plugins can provide global options. For example, the zcli_help plugin provides:
 - CLI flags: underscores become dashes (`no_color` → `--no-color`)
 - Zig access: accessed through typed globals struct (`context.globals.no_color`)
 
-**Environment Variable Fallbacks:**
-
-Global options and command-specific options can specify an environment variable as a fallback value using the `.env` field:
-
-```zig
-.global_options = .{
-    .api_key = .{
-        .env = "MYAPP_API_KEY",
-        .type = []const u8,
-        .help = "API key for service"
-    },
-    .timeout = .{
-        .env = "MYAPP_TIMEOUT",
-        .type = u32,
-        .default = 30,
-        .help = "Request timeout in seconds"
-    },
-    .debug = .{
-        .env = "MYAPP_DEBUG",
-        .short = 'd',
-        .type = bool,
-        .default = false,
-        .help = "Enable debug mode"
-    },
-},
-```
-
-**Precedence Order (highest to lowest):**
-
-1. **CLI argument**: `--api-key mykey` (highest priority)
-2. **Environment variable**: `MYAPP_API_KEY=envkey` (fallback if CLI arg not provided)
-3. **Default value**: `.default = "defaultkey"` (fallback if both above are missing)
-
-**Type Conversion:**
-
-- `bool`: Environment variables parsed as "true"/"false", "1"/"0", "yes"/"no" (case insensitive)
-- `string`: Used directly from environment
-- `integer/float`: Parsed from environment string
-- `optional`: `null` if environment variable is not set or empty
-
-**Command-Specific Options:**
-
-Environment variable fallbacks also work for command-specific options:
-
-```zig
-// In commands/deploy.zig
-pub const Options = struct {
-    region: []const u8 = .{ .env = "AWS_REGION", .default = "us-east-1" },
-    instance_type: []const u8 = .{ .env = "AWS_INSTANCE_TYPE", .default = "t3.micro" },
-    dry_run: bool = .{ .env = "DRY_RUN", .default = false },
-};
-```
-
-This allows users to configure commonly-used values through environment variables while still allowing CLI overrides.
-
 **Context Access:**
 
 Global options are accessible to all commands through the strongly-typed `context.globals` struct:
@@ -303,13 +262,6 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     if (context.globals.config) |config_path| {
         try loadConfig(config_path);
     }
-
-    // String globals are directly available
-    const api_key = context.globals.api_key;
-    try makeApiCall(api_key);
-
-    // Environment variable fallbacks work transparently
-    const timeout = context.globals.timeout; // From CLI, env var, or default
 }
 ```
 
@@ -322,9 +274,6 @@ Based on the `global_options` definition in build.zig, zcli generates a strongly
 pub const Globals = struct {
     verbose: bool,           // .default = false
     config: ?[]const u8,     // Optional type, no default
-    api_key: []const u8,     // From .env fallback or CLI
-    timeout: u32,            // .default = 30, .env = "MYAPP_TIMEOUT"
-    debug: bool,             // .default = false, .env = "MYAPP_DEBUG"
     no_color: bool,          // .default = false
 };
 ```

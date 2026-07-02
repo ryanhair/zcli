@@ -415,7 +415,7 @@ pub const Config = registry.Config;
 ///
 /// **Memory Management**: ⚠️ CRITICAL - Call `result.deinit()` to cleanup!
 /// ```zig
-/// const result = try parseCommandLine(Args, Options, null, allocator, args);
+/// const result = try parseCommandLine(Args, Options, null, allocator, context.environ, args);
 /// defer result.deinit(); // REQUIRED!
 /// // Use result.args and result.options...
 /// ```
@@ -472,7 +472,7 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
 /// Validate command metadata at compile time to catch typos and invalid fields.
 /// This function checks:
 /// - Top-level meta fields (description, examples, args, options, hidden)
-/// - Options metadata fields (description, short, name)
+/// - Options metadata fields (description, short, name, env)
 /// - That option/arg meta field names match actual struct fields
 ///
 /// `path` names the owning command so every error points back at its file.
