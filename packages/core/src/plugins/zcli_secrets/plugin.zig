@@ -17,16 +17,23 @@
 //!
 //! ## Backend selection
 //!
-//! The backend is chosen at compile time from the target OS:
+//! The backend is chosen at compile time from the target OS. Registering the
+//! plugin is what pulls in that platform's native-library linking; a CLI that
+//! never registers it stays static.
 //!
-//! - **macOS** → the OS Keychain (`keychain_macos.zig`). Registering the plugin
-//!   on macOS is what pulls in `Security` / `CoreFoundation` framework linking.
-//! - **everything else** → the documented file-backed fallback
+//! - **macOS** → the OS Keychain (`keychain_macos.zig`; `Security` +
+//!   `CoreFoundation`).
+//! - **Linux** → the Secret Service via libsecret (`secret_service_linux.zig`;
+//!   `libsecret-1` + glib, over D-Bus).
+//! - **Windows** → the Credential Manager (`credential_manager_windows.zig`;
+//!   `advapi32`).
+//! - **any other target** → the documented file-backed fallback
 //!   (`file_store.zig`): pure Zig, no dynamic linking, so the app stays static.
 //!   Secrets are stored `0600` in the app's XDG data dir, in plaintext (perms
-//!   are the only protection — see `file_store.zig`). Linux Secret Service and
-//!   Windows Credential Manager backends can slot in here later behind the same
-//!   opt-in wiring.
+//!   are the only protection — see `file_store.zig`).
+//!
+//! The file backend's tests run on every platform, so the fallback stays
+//! covered even where it is not the default.
 //!
 //! ## Usage from command code
 //!
@@ -48,13 +55,29 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const file_store = @import("file_store.zig");
-const keychain = @import("keychain_macos.zig");
 
 pub const plugin_id = "zcli_secrets";
 
-/// Compile-time backend selector. macOS gets the native Keychain; other targets
-/// use the portable file-backed fallback.
-const use_keychain = builtin.os.tag == .macos;
+/// Which backend the target OS uses. `.file` is the portable pure-Zig fallback;
+/// the others are native OS keychains that require dynamic linking.
+const Backend = enum { keychain, secret_service, credential_manager, file };
+
+const active_backend: Backend = switch (builtin.os.tag) {
+    .macos => .keychain,
+    .linux => .secret_service,
+    .windows => .credential_manager,
+    else => .file,
+};
+
+/// The native backend module for this target (unused when `active_backend` is
+/// `.file`). Only the selected switch prong is evaluated at compile time, so a
+/// non-native target never imports — or links — a keychain backend.
+const native = switch (active_backend) {
+    .keychain => @import("keychain_macos.zig"),
+    .secret_service => @import("secret_service_linux.zig"),
+    .credential_manager => @import("credential_manager_windows.zig"),
+    .file => struct {},
+};
 
 /// Per-context data. Holds no state today, but exists so the plugin's storage
 /// API is reachable as `context.plugins.zcli_secrets.<op>(...)` without the
@@ -64,36 +87,33 @@ pub const ContextData = struct {
     /// returned bytes are owned by `context.allocator` (the per-command arena),
     /// so they are freed when the command returns; free earlier if desired.
     pub fn get(_: *ContextData, context: anytype, name: []const u8) !?[]const u8 {
-        if (use_keychain) {
-            return keychain.get(context.allocator, context.app_name, name);
-        } else {
+        if (active_backend == .file) {
             var dir = try openStoreDir(context);
             defer dir.close(context.io.io);
             return file_store.get(context.io.io, context.allocator, dir, name);
         }
+        return native.get(context.allocator, context.app_name, name);
     }
 
     /// Store (or overwrite) a secret. The value is copied; the caller retains
     /// ownership of the passed slice.
     pub fn set(_: *ContextData, context: anytype, name: []const u8, value: []const u8) !void {
-        if (use_keychain) {
-            return keychain.set(context.app_name, name, value);
-        } else {
+        if (active_backend == .file) {
             var dir = try openStoreDir(context);
             defer dir.close(context.io.io);
             return file_store.set(context.io.io, context.allocator, dir, name, value);
         }
+        return native.set(context.allocator, context.app_name, name, value);
     }
 
     /// Remove a secret. A no-op (success) if it does not exist.
     pub fn delete(_: *ContextData, context: anytype, name: []const u8) !void {
-        if (use_keychain) {
-            return keychain.delete(context.app_name, name);
-        } else {
+        if (active_backend == .file) {
             var dir = try openStoreDir(context);
             defer dir.close(context.io.io);
             return file_store.delete(context.io.io, context.allocator, dir, name);
         }
+        return native.delete(context.allocator, context.app_name, name);
     }
 };
 

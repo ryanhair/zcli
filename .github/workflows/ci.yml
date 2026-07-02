@@ -61,6 +61,72 @@ jobs:
       - name: Run portable unit tests
         run: zig build test-terminal test-zinput
 
+  secrets:
+    name: zcli_secrets backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # Linux needs libsecret + glib to LINK the Secret Service backend, plus
+      # gnome-keyring + dbus to provide a running Secret Service for the live
+      # round-trip. macOS (Keychain) and Windows (Credential Manager) need
+      # nothing installed — the store is always available for the runner user.
+      - name: Install Secret Service deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libsecret-1-dev libglib2.0-dev gnome-keyring dbus libsecret-tools
+
+      # Compile + link the host's native backend. This is the link-time half of
+      # ADR-0003's opt-in guarantee — it proves the backend links against the
+      # platform library — and it does NOT touch the real credential store.
+      - name: Compile + link native backend
+        working-directory: packages/core
+        run: zig build test-secrets
+
+      # Live round-trip against the real OS keychain (set / get / overwrite /
+      # delete a throwaway entry). macOS Keychain and Windows Credential Manager
+      # are available directly for the logged-in runner user.
+      - name: Live round-trip (macOS Keychain / Windows Credential Manager)
+        if: runner.os != 'Linux'
+        working-directory: packages/core
+        run: zig build test-secrets-live
+
+      # On Linux the Secret Service must be brought up first: a private session
+      # bus (dbus-run-session) with an unlocked gnome-keyring registering
+      # org.freedesktop.secrets. Recipe mirrors GNOME/libsecret's own headless
+      # test setup.
+      - name: Live round-trip (Linux Secret Service)
+        if: runner.os == 'Linux'
+        working-directory: packages/core
+        shell: bash
+        run: |
+          dbus-run-session -- bash -c '
+            echo "" | gnome-keyring-daemon --unlock --components=secrets
+            # Wait until the secrets service owns its name on the bus.
+            for i in $(seq 1 30); do
+              if dbus-send --session --dest=org.freedesktop.DBus \
+                   --type=method_call --print-reply \
+                   /org/freedesktop/DBus org.freedesktop.DBus.GetNameOwner \
+                   string:org.freedesktop.secrets >/dev/null 2>&1; then
+                echo "org.freedesktop.secrets ready after ${i}s"; break
+              fi
+              sleep 1
+            done
+            zig build test-secrets-live
+          '
+
   e2e:
     name: zcli end-to-end tests
     runs-on: ubuntu-latest

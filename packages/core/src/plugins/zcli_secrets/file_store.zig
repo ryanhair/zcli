@@ -47,9 +47,15 @@ pub const Error = error{
     CorruptStore,
 };
 
-/// Owner-only permissions for the store file (`-rw-------`).
+/// Owner-only permissions for the store file (`-rw-------`) on POSIX. On
+/// platforms whose permission model has no Unix mode (e.g. Windows — where this
+/// backend is only a theoretical fallback, the native store being the default),
+/// fall back to the default file permissions.
 fn filePermissions() std.Io.File.Permissions {
-    return std.Io.File.Permissions.fromMode(0o600);
+    return if (@hasDecl(std.Io.File.Permissions, "fromMode"))
+        std.Io.File.Permissions.fromMode(0o600)
+    else
+        .default_file;
 }
 
 /// Read the whole store file into a parsed JSON object, or return an empty
@@ -222,18 +228,21 @@ test "values with arbitrary bytes survive base64 round-trip" {
 }
 
 test "store file is created with owner-only permissions" {
-    if (std.Io.File.Permissions.has_executable_bit == false) return error.SkipZigTest;
-    const io = std.testing.io;
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
+    // POSIX-only: guard at compile time so the Unix-mode API (`toMode`) is not
+    // even analyzed on platforms without it (e.g. Windows).
+    if (comptime std.Io.File.Permissions.has_executable_bit) {
+        const io = std.testing.io;
+        const allocator = std.testing.allocator;
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
 
-    try set(io, allocator, tmp.dir, "k", "v");
+        try set(io, allocator, tmp.dir, "k", "v");
 
-    var file = try tmp.dir.openFile(io, store_file_name, .{});
-    defer file.close(io);
-    const stat = try file.stat(io);
-    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+        var file = try tmp.dir.openFile(io, store_file_name, .{});
+        defer file.close(io);
+        const stat = try file.stat(io);
+        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+    } else return error.SkipZigTest;
 }
 
 test "set leaves no temp file behind after the atomic rename" {

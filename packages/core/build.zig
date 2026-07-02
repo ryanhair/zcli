@@ -54,6 +54,8 @@ pub fn build(b: *std.Build) void {
     const test_security_step = b.step("test-security", "Run security tests only");
     const test_sequential_step = b.step("test-seq", "Run tests sequentially (avoids conflicts)");
     const test_debug_step = b.step("test-debug", "Debug test hanging issue");
+    const test_secrets_step = b.step("test-secrets", "Run zcli_secrets tests (file store + host backend compile/link)");
+    const test_secrets_live_step = b.step("test-secrets-live", "Round-trip the host's native secrets backend against the real OS keychain (CI)");
 
     // Core test files - zcli.zig imports everything else through the dependency chain
     const core_test_files = [_][]const u8{
@@ -166,11 +168,11 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
-    // Secrets plugin tests. These files depend only on std, so they need none
-    // of the shared-module imports. The plugin/file-store test runs everywhere;
-    // the keychain test forces the macOS backend to compile and link, so it is
-    // macOS-only and pulls in the Security/CoreFoundation frameworks (the same
-    // opt-in linking a real CLI gets when it registers the plugin).
+    // Secrets plugin tests. The plugin/file-store tests are pure Zig and run on
+    // every platform. The host's native backend gets a compile+link test (the
+    // link-time half of ADR-0003's opt-in guarantee) plus a CI-only live
+    // round-trip against the real OS keychain. Native linking is applied exactly
+    // as a registered app gets it, via `main.linkSecretsBackend`.
     {
         const plugin_mod = b.addModule("test-secrets-plugin", .{
             .root_source_file = b.path("src/plugins/zcli_secrets/plugin.zig"),
@@ -179,21 +181,45 @@ pub fn build(b: *std.Build) void {
         });
         const plugin_tests = b.addTest(.{ .root_module = plugin_mod });
         const run_plugin_tests = b.addRunArtifact(plugin_tests);
-        test_plugins_step.dependOn(&run_plugin_tests.step);
-        test_step.dependOn(&run_plugin_tests.step);
+        for ([_]*std.Build.Step{ test_plugins_step, test_secrets_step, test_step }) |s| {
+            s.dependOn(&run_plugin_tests.step);
+        }
 
-        if (target.result.os.tag == .macos) {
-            const keychain_mod = b.addModule("test-secrets-keychain", .{
-                .root_source_file = b.path("src/plugins/zcli_secrets/keychain_macos.zig"),
+        // The native backend source file for the host OS (null → file fallback
+        // only, e.g. a BSD, so there is no native backend to test).
+        const native_backend_file: ?[]const u8 = switch (target.result.os.tag) {
+            .macos => "src/plugins/zcli_secrets/keychain_macos.zig",
+            .linux => "src/plugins/zcli_secrets/secret_service_linux.zig",
+            .windows => "src/plugins/zcli_secrets/credential_manager_windows.zig",
+            else => null,
+        };
+
+        if (native_backend_file) |backend_file| {
+            // Compile + link the native backend (does not touch the real store).
+            // Only in `test-secrets`, never the default `test`: it pulls in a
+            // native lib (libsecret on Linux), and keeping the plain `zig build
+            // test` lib-free avoids friction for devs without those dev packages.
+            const backend_mod = b.addModule("test-secrets-backend", .{
+                .root_source_file = b.path(backend_file),
                 .target = target,
                 .optimize = optimize,
             });
-            keychain_mod.linkFramework("Security", .{});
-            keychain_mod.linkFramework("CoreFoundation", .{});
-            const keychain_tests = b.addTest(.{ .root_module = keychain_mod });
-            const run_keychain_tests = b.addRunArtifact(keychain_tests);
-            test_plugins_step.dependOn(&run_keychain_tests.step);
-            test_step.dependOn(&run_keychain_tests.step);
+            main.linkSecretsBackend(backend_mod, target.result);
+            const backend_tests = b.addTest(.{ .root_module = backend_mod });
+            const run_backend_tests = b.addRunArtifact(backend_tests);
+            test_secrets_step.dependOn(&run_backend_tests.step);
+
+            // Live round-trip against the real OS keychain — CI-only, so it is
+            // wired ONLY into the dedicated `test-secrets-live` step.
+            const live_mod = b.addModule("test-secrets-live", .{
+                .root_source_file = b.path("src/plugins/zcli_secrets/secrets_live_test.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            main.linkSecretsBackend(live_mod, target.result);
+            const live_tests = b.addTest(.{ .root_module = live_mod });
+            const run_live_tests = b.addRunArtifact(live_tests);
+            test_secrets_live_step.dependOn(&run_live_tests.step);
         }
     }
 

@@ -118,8 +118,10 @@ pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) 
 }
 
 /// Store (or overwrite) a secret. If an item already exists it is updated in
-/// place; otherwise a new item is added.
-pub fn set(service: []const u8, name: []const u8, value: []const u8) !void {
+/// place; otherwise a new item is added. The `allocator` is unused here (the
+/// Keychain C API is length-based); it is in the signature so every native
+/// backend shares one interface.
+pub fn set(_: std.mem.Allocator, service: []const u8, name: []const u8, value: []const u8) !void {
     const value_len = try castLen(value.len);
     const status = SecKeychainAddGenericPassword(
         null,
@@ -153,8 +155,9 @@ pub fn set(service: []const u8, name: []const u8, value: []const u8) !void {
     if (modify != errSecSuccess) return Error.KeychainFailure;
 }
 
-/// Remove a secret. Succeeds (no-op) if no item exists.
-pub fn delete(service: []const u8, name: []const u8) !void {
+/// Remove a secret. Succeeds (no-op) if no item exists. `allocator` is unused
+/// (see `set`), present for interface parity across native backends.
+pub fn delete(_: std.mem.Allocator, service: []const u8, name: []const u8) !void {
     var item: SecKeychainItemRef = null;
     const find = SecKeychainFindGenericPassword(
         null,

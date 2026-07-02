@@ -11,6 +11,29 @@ const BuildConfig = types.BuildConfig;
 const DiscoveredCommands = types.DiscoveredCommands;
 const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 
+/// Link the native libraries the `zcli_secrets` plugin's backend needs for
+/// `target`. macOS: Security + CoreFoundation frameworks. Linux: libsecret-1 +
+/// glib-2.0 (over libc). Windows: advapi32. Any other OS uses the pure-Zig file
+/// fallback and needs nothing. Exposed so the plugin's own test targets can link
+/// exactly the same way a registered app does.
+pub fn linkSecretsBackend(module: *std.Build.Module, target: std.Target) void {
+    switch (target.os.tag) {
+        .macos => {
+            module.linkFramework("Security", .{});
+            module.linkFramework("CoreFoundation", .{});
+        },
+        .linux => {
+            module.link_libc = true;
+            module.linkSystemLibrary("secret-1", .{});
+            module.linkSystemLibrary("glib-2.0", .{});
+        },
+        .windows => {
+            module.linkSystemLibrary("advapi32", .{});
+        },
+        else => {},
+    }
+}
+
 // ============================================================================
 // VERSION MANAGEMENT - Read version from build.zig.zon
 // ============================================================================
@@ -209,20 +232,16 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         };
     }
 
-    // Opt-in native linking. The secrets plugin's macOS backend calls into
-    // Security.framework (and CoreFoundation for CFRelease), which requires
-    // dynamic linking. We add those frameworks to the executable ONLY when the
-    // secrets plugin is registered AND the target is macOS — so a CLI that does
-    // not opt in stays a static, libc-free single binary. This is the build
-    // half of ADR-0003's opt-in guarantee (the source half is the compile-time
-    // backend selection in the plugin). Future Linux/Windows keychain backends
-    // slot in here the same way (libsecret / advapi32).
+    // Opt-in native linking. The secrets plugin's native backends call into an
+    // OS keychain, which requires dynamic linking. We add each platform's
+    // libraries to the executable ONLY when the secrets plugin is registered —
+    // so a CLI that does not opt in stays a static, libc-free single binary.
+    // This is the build half of ADR-0003's opt-in guarantee (the source half is
+    // the compile-time backend selection in the plugin). The file-backed
+    // fallback on any other OS needs nothing linked.
     inline for (config.plugins) |plugin_config| {
-        if (std.mem.eql(u8, plugin_config.name, "zcli_secrets") and
-            exe.rootModuleTarget().os.tag == .macos)
-        {
-            exe.root_module.linkFramework("Security", .{});
-            exe.root_module.linkFramework("CoreFoundation", .{});
+        if (std.mem.eql(u8, plugin_config.name, "zcli_secrets")) {
+            linkSecretsBackend(exe.root_module, exe.rootModuleTarget());
         }
     }
 
