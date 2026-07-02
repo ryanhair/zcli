@@ -141,6 +141,8 @@ test "init scaffolds a project with the expected files and wiring" {
 
     const build_zig = try readFile(proj, a, "build.zig");
     try expectContains(build_zig, "zcli.generate(");
+    // Local-plugin discovery is wired so `add plugin` needs no build.zig edit.
+    try expectContains(build_zig, ".plugins_dir = \"src/plugins\"");
     // With no TTY, the plugin prompt falls back to its preselected defaults:
     // help, version, and not_found (but not the opt-in plugins like completions).
     try expectContains(build_zig, "zcli.builtin(.help");
@@ -247,6 +249,41 @@ test "add group scaffolds meta-only and landing index files" {
     try expectContains(landing, "pub const Args = struct {};"); // no positionals
     try expectContains(landing, "pub fn execute(args: Args, options: Options");
     try expectContains(landing, "TODO: Implement gh pr");
+}
+
+test "add plugin scaffolds a skeleton and hints when plugins_dir is missing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProjectDirs(tmp.dir);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A build.zig that does NOT wire plugins_dir → the command prints the
+    // one-line fix rather than editing build.zig.
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "pub fn build(b: *std.Build) void { _ = b; }\n" });
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "add", "plugin", "telemetry", "-d", "Track usage" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "won't be discovered");
+        try expectContains(r.stdout, ".plugins_dir = \"src/plugins\",");
+    }
+
+    const src = try readFile(tmp.dir, a, "src/plugins/telemetry.zig");
+    try expectContains(src, "The `telemetry` plugin — Track usage");
+    try expectContains(src, "pub fn preExecute(context: anytype, args: zcli.ParsedArgs)");
+    try expectContains(src, "// pub fn onError(context: anytype, err: anyerror) !bool"); // catalog, commented
+    try expectContains(src, "// pub const plugin_id = \"telemetry\";");
+
+    // A duplicate is refused.
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "add", "plugin", "telemetry" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "already exists");
+    }
 }
 
 test "add command outside a project fails clearly" {
@@ -650,6 +687,77 @@ test "scaffolded project builds, runs, and round-trips add command" {
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement server status");
+    }
+
+    // `add plugin` drops a file into the convention-discovered src/plugins/ dir
+    // (init wired `.plugins_dir`). The generated skeleton must compile and be
+    // auto-discovered on the next build — no build.zig edit — and its
+    // pass-through preExecute must not disturb command output.
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "plugin", "telemetry", "-d", "Track usage" });
+        defer r.deinit();
+        try expectOk(r);
+        // plugins_dir is wired by init, so no "won't be discovered" hint.
+        try testing.expect(std.mem.indexOf(u8, r.stdout, "won't be discovered") == null);
+    }
+    try testing.expect(fileExists(proj, "src/plugins/telemetry.zig"));
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "hello", "World" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "Hello, World!"); // preExecute is pass-through
+    }
+
+    // `mv` + `rm command`: whole-file restructure. Move a command into a new
+    // group, rebuild, and run it at its new path; then remove it, rebuild, and
+    // confirm both the command and its now-empty group directory are gone.
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "command", "scratch", "-d", "Scratch" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "mv", "scratch", "tools/scratch" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    try testing.expect(!fileExists(proj, "src/commands/scratch.zig"));
+    try testing.expect(fileExists(proj, "src/commands/tools/scratch.zig"));
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // The moved command runs at its new path (its execute() travelled intact).
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "tools", "scratch" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement scratch");
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "rm", "command", "tools/scratch" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    // The command file is gone and its sole-occupant group dir was cleaned up.
+    try testing.expect(!fileExists(proj, "src/commands/tools/scratch.zig"));
+    try testing.expect(!fileExists(proj, "src/commands/tools"));
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // The removed command no longer resolves.
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "tools", "scratch" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
     }
 }
 

@@ -50,10 +50,17 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   (optional group — positionals would clash with subcommand names). Describes an existing
   undescribed group; refuses an already-described one. The `add command` group-hint now points
   at `zcli add group <path>/... -d`. (The co-located test rides the deferred Q7 testing PR.)
-- [ ] **PR: `add plugin` + `init` sets `plugins_dir`** (ADR-0006) — convention discovery,
-  no build.zig mutation on the happy path; guided skeleton + commented hook catalog.
-- [ ] **PR: `mv` + `rm`** (grill Q10) — whole-file restructure, carry the co-located test,
-  clean emptied group dirs.
+- [x] **PR: `add plugin` + `init` sets `plugins_dir`** (ADR-0006) — DONE. `init` now emits
+  `.plugins_dir = "src/plugins"` in the generated build.zig, so `add plugin <name> [-d]` just
+  drops `src/plugins/<name>.zig` (auto-discovered by `scanLocalPlugins`, no build.zig mutation).
+  Guided skeleton: one working pass-through `preExecute` + a commented catalog of every other
+  hook with exact signatures; `plugin_id`/`ContextData` commented out. Residual case: on a
+  build.zig lacking `plugins_dir`, it prints the one-line fix (never splices).
+- [x] **PR: `mv` + `rm command`** (grill Q10) — DONE. Whole-file restructure. `mv <from> <to>`
+  renames/moves a leaf command file (creating destination group dirs); `rm command <path>`
+  deletes one. Both clean group dirs the move/removal leaves empty (`scaffold.fs.removeEmptyParents`,
+  cascading up but preserving a group that still holds an `index.zig` or siblings). In-file
+  tests/`execute` travel with the file. Leaf-only: moving/removing a whole group errors clearly.
 
 **Phase 3 — Primitives that shrink the freeform surface** (parallelizable with Phase 2)
 - [ ] **PR: HTTP client with safe defaults** (ADR-0002/0003) — core; TLS-verified, timeouts.
