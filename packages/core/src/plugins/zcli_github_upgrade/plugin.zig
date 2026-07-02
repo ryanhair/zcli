@@ -520,14 +520,21 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
 /// Each line is formatted `<sha256-hex>  <filename>`; the first line whose
 /// filename contains `binary_name` wins. Returns the hex digest borrowed from
 /// `content`, or null if no matching entry exists.
+/// Find the digest for exactly `binary_name` in a checksums.txt. Lines are
+/// `<hex digest>  <filename>` (shasum/sha256sum format; the filename may carry
+/// a leading `*` binary-mode marker). The filename column is compared exactly
+/// — the previous whole-line substring match could pick the line for
+/// `myapp-x86_64-linux-debug` when looking for `myapp-x86_64-linux` and fail
+/// the upgrade with a bogus checksum mismatch.
 fn parseExpectedChecksum(content: []const u8, binary_name: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, binary_name) == null) continue;
-        var parts = std.mem.splitScalar(u8, line, ' ');
-        if (parts.next()) |checksum| {
-            if (checksum.len > 0) return checksum;
-        }
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        var parts = std.mem.tokenizeAny(u8, line, " \t");
+        const digest = parts.next() orelse continue;
+        var name = parts.next() orelse continue;
+        if (std.mem.startsWith(u8, name, "*")) name = name[1..];
+        if (std.mem.eql(u8, name, binary_name)) return digest;
     }
     return null;
 }
@@ -837,6 +844,28 @@ test "parseExpectedChecksum - tolerates trailing newline and no final newline" {
     const without_nl = "deadbeef  bin";
     try std.testing.expectEqualStrings("deadbeef", parseExpectedChecksum(with_nl, "bin").?);
     try std.testing.expectEqualStrings("deadbeef", parseExpectedChecksum(without_nl, "bin").?);
+}
+
+test "parseExpectedChecksum - exact filename match, not substring" {
+    // The -debug asset's name CONTAINS the wanted name and sorts first; a
+    // substring match would return its digest and doom the verify step.
+    const content =
+        "dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000  myapp-x86_64-linux-debug\n" ++
+        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  myapp-x86_64-linux\n";
+
+    const digest = parseExpectedChecksum(content, "myapp-x86_64-linux").?;
+    try std.testing.expectEqualStrings("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111", digest);
+
+    // And a name that only exists as a substring of another is NOT found.
+    try std.testing.expectEqual(@as(?[]const u8, null), parseExpectedChecksum(content, "x86_64-linux"));
+}
+
+test "parseExpectedChecksum - tolerates binary-mode marker and CRLF" {
+    // `shasum -b` / `sha256sum -b` prefix the filename with `*`; Windows
+    // tooling may emit CRLF line endings.
+    const content = "cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234 *myapp-x86_64-windows.exe\r\n";
+    const digest = parseExpectedChecksum(content, "myapp-x86_64-windows.exe").?;
+    try std.testing.expectEqualStrings("cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234", digest);
 }
 
 test "sha256FileHex - matches known digest" {

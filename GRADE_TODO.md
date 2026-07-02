@@ -22,7 +22,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 ## Security — remaining
 
 - [x] 12. **testBinary is a no-op** — prints "Testing new binary…" but never executes it (`plugin.zig:583-590`). Actually spawn the temp binary with `--version` and check exit code, or remove the step and message.
-- [ ] 13. **Checksum line matching is a loose substring** — `parseExpectedChecksum` uses `indexOf` on the whole line (`plugin.zig:550-560`), so `myapp-x86_64-linux-debug` can match before `myapp-x86_64-linux`. Split into digest/filename columns and compare exactly.
+- [x] 13. **Checksum line matching is a loose substring** — `parseExpectedChecksum` uses `indexOf` on the whole line (`plugin.zig:550-560`), so `myapp-x86_64-linux-debug` can match before `myapp-x86_64-linux`. Split into digest/filename columns and compare exactly.
 - [ ] 14. **`sh -c` in release.zig** — `getReleaseNotes` interpolates tag names into a shell string (`projects/zcli/src/commands/release.zig:633-640`); every other call uses argv arrays. Drop the shell, pass the tag range as one argv element.
 - [ ] 15. **Resource limits partially enforced** — only `checkOptionCount`/`checkOptionNameLength` are wired; `checkArraySize`, `max_argument_count`, `checkCommandDepth` unused (`packages/core/src/resource_limits.zig` vs `options/parser.zig`, `args.zig`). Wire them in or delete the unused fields; tighten `security_test.zig` to assert the caps that are enforced.
 - [ ] 16. **serde hash label mismatch** — `build.zig.zon` pins v1.0.3 URL but the hash string says `serde-1.0.1`; re-run `zig fetch --save` so label and artifact agree.
