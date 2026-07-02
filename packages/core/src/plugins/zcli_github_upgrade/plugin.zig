@@ -139,30 +139,50 @@ pub fn init(config: Config) type {
             const binary_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ context.app_name, platform });
             defer allocator.free(binary_name);
 
+            // Resolve the executable's location up front: the download goes
+            // into a private, randomly-named scratch directory next to it —
+            // never a predictable path in the CWD, which a local attacker
+            // could pre-plant (e.g. a symlink redirecting the write). This
+            // also keeps the download on the filesystem the final swap
+            // happens on, and fails fast when the install dir isn't writable.
+            var exe_path_buf: [4096]u8 = undefined;
+            const exe_len = try std.process.executablePath(context.io.io, &exe_path_buf);
+            const exe_path = exe_path_buf[0..exe_len];
+            const exe_dir_path = std.fs.path.dirname(exe_path) orelse return error.InvalidExecutablePath;
+
+            var exe_dir = try std.Io.Dir.cwd().openDir(context.io.io, exe_dir_path, .{});
+            defer exe_dir.close(context.io.io);
+
+            var scratch_name_buf: [scratch_name_len]u8 = undefined;
+            const scratch_name = randomScratchName(context.io.io, &scratch_name_buf);
+            try exe_dir.createDir(context.io.io, scratch_name, scratch_dir_permissions);
+            defer exe_dir.deleteTree(context.io.io, scratch_name) catch {};
+            var scratch_dir = try exe_dir.openDir(context.io.io, scratch_name, .{});
+            defer scratch_dir.close(context.io.io);
+
             // Download binary
             try stdout.print("Downloading {s}...\n", .{binary_name});
-            const temp_path = try downloadBinary(allocator, context.io.io, plugin_config.repo, context.app_name, target_version, binary_name);
-            defer allocator.free(temp_path);
-            defer std.Io.Dir.cwd().deleteFile(context.io.io, temp_path) catch {};
+            try downloadBinary(allocator, context.io.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
 
             // Verify checksum
             try stdout.print("Verifying checksum...\n", .{});
-            try verifyChecksum(allocator, context.io.io, plugin_config.repo, context.app_name, target_version, temp_path, binary_name);
+            try verifyChecksum(allocator, context.io.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
 
             // Make binary executable before testing (Unix only - Windows uses .exe extension)
             if (builtin.os.tag != .windows) {
-                const temp_file = try std.Io.Dir.cwd().openFile(context.io.io, temp_path, .{});
+                const temp_file = try scratch_dir.openFile(context.io.io, binary_name, .{});
                 defer temp_file.close(context.io.io);
                 try temp_file.setPermissions(context.io.io, .executable_file);
             }
 
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
-            try testBinary(allocator, temp_path);
+            try testBinary(allocator, binary_name);
 
             // Replace current binary
             try stdout.print("Installing new version...\n", .{});
-            try replaceBinary(allocator, context.io.io, temp_path);
+            std.debug.print("Replacing binary at: {s}\n", .{exe_path});
+            try replaceBinaryAt(allocator, context.io.io, scratch_dir, binary_name, exe_path);
 
             const action = if (is_downgrade) "downgraded" else "upgraded";
             try stdout.print("✓ Successfully {s} to {s}\n", .{ action, target_version });
@@ -419,19 +439,31 @@ fn detectPlatform(allocator: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, os });
 }
 
-/// Download binary from GitHub releases
-fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) ![]const u8 {
+/// Permissions for the scratch directory: private to the owner — it holds a
+/// soon-to-be-executed binary while it is downloaded and verified.
+const scratch_dir_permissions: std.Io.Dir.Permissions = @enumFromInt(0o700);
+
+/// Length of a scratch directory name: the ".upgrade-" prefix plus 16 hex chars.
+const scratch_name_len = ".upgrade-".len + 16;
+
+/// A random, unpredictable name for the scratch directory, so a local attacker
+/// cannot pre-plant anything (e.g. a symlink) at the download path.
+fn randomScratchName(io: std.Io, buf: *[scratch_name_len]u8) []const u8 {
+    var random_bytes: [8]u8 = undefined;
+    io.random(&random_bytes);
+    const hex = std.fmt.bytesToHex(&random_bytes, .lower);
+    return std.fmt.bufPrint(buf, ".upgrade-{s}", .{hex}) catch unreachable;
+}
+
+/// Download the release binary into `dir` (the private scratch directory) as a
+/// file named `binary_name`.
+fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) !void {
     std.debug.print("Downloading binary... (this may take a while on slow connections)\n", .{});
 
     const url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, binary_name);
     defer allocator.free(url);
 
-    // Create temporary file
-    const temp_dir = std.Io.Dir.cwd();
-    const temp_filename = try std.fmt.allocPrint(allocator, ".upgrade-{s}-{d}", .{ binary_name, 0 });
-    errdefer allocator.free(temp_filename);
-
-    // Download to temp file
+    // Download to a file in the scratch directory
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
@@ -470,16 +502,15 @@ fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cl
     const binary_data = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_BINARY_SIZE));
     defer allocator.free(binary_data);
 
-    // Write to file
-    var temp_file = try temp_dir.createFile(io, temp_filename, .{});
+    // Write to file. Exclusive: the scratch dir was freshly created and is
+    // private, so anything already sitting at this name is an attack or a bug.
+    var temp_file = try dir.createFile(io, binary_name, .{ .exclusive = true });
     defer temp_file.close(io);
     try temp_file.writeStreamingAll(io, binary_data);
-
-    return temp_filename;
 }
 
-/// Verify checksum of downloaded binary
-fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cli_name: []const u8, version: []const u8, binary_path: []const u8, binary_name: []const u8) !void {
+/// Verify the checksum of the downloaded binary at `binary_name` within `dir`.
+fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) !void {
     std.debug.print("Verifying checksum...\n", .{});
 
     // Download checksums.txt (published as a release asset alongside the binaries)
@@ -531,7 +562,7 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cl
     };
 
     // Calculate actual checksum of the downloaded binary
-    const actual_checksum = try sha256FileHex(io, std.Io.Dir.cwd(), binary_path);
+    const actual_checksum = try sha256FileHex(io, dir, binary_name);
 
     // Compare checksums
     if (!std.mem.eql(u8, expected_checksum, &actual_checksum)) {
@@ -589,30 +620,17 @@ fn testBinary(allocator: std.mem.Allocator, path: []const u8) !void {
     defer if (!std.fs.path.isAbsolute(path)) allocator.free(exe_path);
 }
 
-/// Replace the running executable with the new binary, atomically and with a
-/// backup. Resolves the current executable's path and delegates the actual
-/// swap to `replaceBinaryAt`, which is the testable core.
-fn replaceBinary(allocator: std.mem.Allocator, io: std.Io, new_binary_path: []const u8) !void {
-    var exe_path_buf: [4096]u8 = undefined;
-    const exe_len = try std.process.executablePath(io, &exe_path_buf);
-    const exe_path = exe_path_buf[0..exe_len];
-
-    std.debug.print("Replacing binary at: {s}\n", .{exe_path});
-
-    try replaceBinaryAt(allocator, io, std.Io.Dir.cwd(), new_binary_path, exe_path);
-}
-
-/// Atomically replace `target_path` (within `dir`) with the binary at
-/// `new_binary_path` (also within `dir`), keeping the old binary safe at every
-/// step:
+/// Atomically replace `target_path` (an absolute path, or a path within `dir`)
+/// with the binary at `new_binary_path` (within `dir`), keeping the old binary
+/// safe at every step:
 /// 1. Back up the current target to `{target}.backup` (best-effort).
 /// 2. Copy the new binary to `{target}.new`, mark it executable.
 /// 3. Atomically rename `{target}.new` over the target (atomic on Unix when on
 ///    the same filesystem — a crash mid-swap leaves the original intact).
 /// 4. Remove the backup on success.
 ///
-/// Split from `replaceBinary` so the swap can be exercised against temp files
-/// instead of the live executable.
+/// Takes the directory and paths as parameters so the swap can be exercised
+/// against temp files instead of the live executable.
 fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, new_binary_path: []const u8, target_path: []const u8) !void {
     // Step 1+2: Back up the current binary (best-effort — nice-to-have).
     const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{target_path});
@@ -718,7 +736,19 @@ test "security limits - constants are reasonable" {
     try std.testing.expect(MAX_BINARY_SIZE <= 500 * 1024 * 1024); // Not more than 500MB
 }
 
-test "replaceBinary - atomic replacement strategy" {
+test "randomScratchName - hidden, fixed-length, unpredictable" {
+    var buf_a: [scratch_name_len]u8 = undefined;
+    var buf_b: [scratch_name_len]u8 = undefined;
+    const a = randomScratchName(std.testing.io, &buf_a);
+    const b = randomScratchName(std.testing.io, &buf_b);
+
+    try std.testing.expect(std.mem.startsWith(u8, a, ".upgrade-"));
+    try std.testing.expectEqual(scratch_name_len, a.len);
+    // 64 bits of CSPRNG entropy per name — a collision means a broken RNG.
+    try std.testing.expect(!std.mem.eql(u8, a, b));
+}
+
+test "replaceBinaryAt - atomic replacement strategy" {
     // This test documents the atomic replacement strategy
     // Actual testing would require filesystem mocking
 
