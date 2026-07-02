@@ -17,6 +17,7 @@ pub const SpliceError = error{
     SubNotStruct,
     AnchorNotFound,
     DuplicateField,
+    FieldNotFound,
 };
 
 /// Where to place a new field among existing ones.
@@ -67,6 +68,24 @@ fn ensureNoField(arena: std.mem.Allocator, source: [:0]const u8, container: []co
     for (try fieldNames(arena, source, container)) |existing| {
         if (std.mem.eql(u8, existing, name)) return SpliceError.DuplicateField;
     }
+}
+
+/// The `targets` that are not fields of `container`, in the given order. Empty
+/// slice → all present. Lets a bulk `rm` reject the whole batch before editing.
+pub fn missingFields(arena: std.mem.Allocator, source: [:0]const u8, container: []const u8, targets: []const []const u8) ![]const []const u8 {
+    const existing = try fieldNames(arena, source, container);
+    var missing = std.ArrayList([]const u8).empty;
+    for (targets) |t| {
+        var found = false;
+        for (existing) |e| {
+            if (std.mem.eql(u8, e, t)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) try missing.append(arena, t);
+    }
+    return missing.items;
 }
 
 /// The ordering-relevant shape of an existing `Args`/`Options` field.
@@ -155,6 +174,97 @@ pub fn insertMetaEntry(arena: std.mem.Allocator, source: [:0]const u8, sub: []co
     // Absent → append `.sub = .{ entry }` as a new meta field.
     const block = try std.fmt.allocPrint(arena, ".{s} = .{{\n        {s},\n    }}", .{ sub, entry_text });
     return spliceMembers(arena, &ast, source, si.ast.fields, ast.lastToken(init), block, "    ", .append, initFieldName);
+}
+
+// ---------------------------------------------------------------------------
+// Removal (the splice-out inverse of insert*)
+// ---------------------------------------------------------------------------
+
+/// Remove an option from a command's source: its field in `Options` and its
+/// entry in `meta.options`. Errors if the field does not exist; a missing meta
+/// entry is tolerated (the struct field is the source of truth).
+pub fn removeOption(arena: std.mem.Allocator, source: [:0]const u8, name: []const u8) ![]u8 {
+    const without_field = try removeStructField(arena, source, "Options", name);
+    return removeMetaEntry(arena, try arena.dupeZ(u8, without_field), "options", name);
+}
+
+/// Remove an argument from a command's source: its field in `Args` and its entry
+/// in `meta.args`. Errors if the field does not exist.
+pub fn removeArg(arena: std.mem.Allocator, source: [:0]const u8, name: []const u8) ![]u8 {
+    const without_field = try removeStructField(arena, source, "Args", name);
+    return removeMetaEntry(arena, try arena.dupeZ(u8, without_field), "args", name);
+}
+
+/// Remove the `name` field from `pub const <container> = struct {...}`.
+fn removeStructField(arena: std.mem.Allocator, source: [:0]const u8, container: []const u8, name: []const u8) ![]u8 {
+    var ast = try Ast.parse(arena, source, .zig);
+    const init = findDeclInit(&ast, container) orelse return SpliceError.ContainerNotFound;
+    var buf: [2]Ast.Node.Index = undefined;
+    const cd = ast.fullContainerDecl(&buf, init) orelse return SpliceError.NotAStruct;
+
+    for (cd.ast.members) |m| {
+        if (std.mem.eql(u8, memberName(&ast, m), name)) {
+            return cutSpan(arena, source, memberSpan(&ast, source, ast.firstToken(m), ast.lastToken(m)));
+        }
+    }
+    return SpliceError.FieldNotFound;
+}
+
+/// Remove the `.name` entry from `meta.<sub> = .{...}`. If it was the only entry,
+/// the whole `.<sub> = .{...}` meta field is removed. A missing block or entry is
+/// tolerated (no-op) — the struct field, not the meta, defines the field.
+fn removeMetaEntry(arena: std.mem.Allocator, source: [:0]const u8, sub: []const u8, name: []const u8) ![]u8 {
+    var ast = try Ast.parse(arena, source, .zig);
+    const init = findDeclInit(&ast, "meta") orelse return SpliceError.NoMeta;
+    var buf: [2]Ast.Node.Index = undefined;
+    const si = ast.fullStructInit(&buf, init) orelse return SpliceError.MetaNotStruct;
+
+    for (si.ast.fields) |field| {
+        if (!std.mem.eql(u8, initFieldName(&ast, field), sub)) continue;
+
+        var b2: [2]Ast.Node.Index = undefined;
+        const inner = ast.fullStructInit(&b2, field) orelse return SpliceError.SubNotStruct;
+
+        // Last entry → drop the whole `.sub = .{...}` meta field.
+        if (inner.ast.fields.len == 1 and std.mem.eql(u8, initFieldName(&ast, inner.ast.fields[0]), name)) {
+            return cutSpan(arena, source, metaFieldSpan(&ast, source, field));
+        }
+        for (inner.ast.fields) |entry| {
+            if (std.mem.eql(u8, initFieldName(&ast, entry), name)) {
+                return cutSpan(arena, source, metaFieldSpan(&ast, source, entry));
+            }
+        }
+        break; // block found, entry absent → tolerate
+    }
+    return arena.dupe(u8, source); // block/entry absent → unchanged
+}
+
+/// The byte range to cut for a struct field: from its first token through its
+/// trailing comma, extended over the surrounding same-line whitespace and the
+/// trailing newline so the whole line is removed cleanly.
+fn memberSpan(ast: *Ast, source: [:0]const u8, first: Ast.TokenIndex, last: Ast.TokenIndex) [2]usize {
+    var lo = tokStart(ast, first);
+    while (lo > 0 and (source[lo - 1] == ' ' or source[lo - 1] == '\t')) lo -= 1;
+
+    var hi = tokEnd(ast, last);
+    if (ast.tokens.items(.tag)[last + 1] == .comma) hi = tokEnd(ast, last + 1);
+    while (hi < source.len and (source[hi] == ' ' or source[hi] == '\t')) hi += 1;
+    if (hi < source.len and source[hi] == '\n') hi += 1;
+
+    return .{ lo, hi };
+}
+
+/// Like `memberSpan` but for a `meta` struct-init field, whose logical start is
+/// the leading `.` (three tokens before the value: `.` `name` `=`).
+fn metaFieldSpan(ast: *Ast, source: [:0]const u8, field: Ast.Node.Index) [2]usize {
+    return memberSpan(ast, source, ast.firstToken(field) - 3, ast.lastToken(field));
+}
+
+fn cutSpan(arena: std.mem.Allocator, source: [:0]const u8, span: [2]usize) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    try out.appendSlice(arena, source[0..span[0]]);
+    try out.appendSlice(arena, source[span[1]..]);
+    return out.items;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +468,76 @@ test "insertArg appends and positions with before/after" {
     const ci = std.mem.indexOf(u8, before, "count: ?u32 = null").?;
     const ni = std.mem.indexOf(u8, before, "name: []const u8").?;
     try testing.expect(ci < ni); // count spliced before name
+}
+
+test "removeOption strips the field and its meta entry, preserving execute" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Build a command with two options, then remove one.
+    const one = try insertOption(a, shell, .{
+        .name = "limit",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "10",
+        .description = "Max",
+    });
+    const two = try insertOption(a, try a.dupeZ(u8, one), .{
+        .name = "verbose",
+        .elem_type = "bool",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "false",
+        .description = "Loud",
+    });
+
+    const out = try removeOption(a, try a.dupeZ(u8, two), "limit");
+    try expectParses(a, out);
+    try testing.expect(std.mem.indexOf(u8, out, "limit") == null); // field + meta entry gone
+    try testing.expect(std.mem.indexOf(u8, out, "verbose: bool = false,") != null); // sibling kept
+    try testing.expect(std.mem.indexOf(u8, out, "author's business logic") != null);
+}
+
+test "removing the only option drops the emptied meta.options block" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const one = try insertOption(a, shell, .{
+        .name = "limit",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "10",
+        .description = "Max",
+    });
+    const out = try removeOption(a, try a.dupeZ(u8, one), "limit");
+    try expectParses(a, out);
+    try testing.expect(std.mem.indexOf(u8, out, ".options") == null); // whole meta block removed
+    try testing.expect(std.mem.indexOf(u8, out, "limit") == null); // field gone; Options now empty
+}
+
+test "removeArg strips the field and keeps ordering of the rest" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const one = try insertArg(a, shell, .{ .name = "name", .elem_type = "[]const u8", .multiple = false, .nullable = false, .description = "Who" }, .append);
+    const two = try insertArg(a, try a.dupeZ(u8, one), .{ .name = "count", .elem_type = "u32", .multiple = false, .nullable = true, .description = "" }, .append);
+
+    const out = try removeArg(a, try a.dupeZ(u8, two), "name");
+    try expectParses(a, out);
+    try testing.expect(std.mem.indexOf(u8, out, "name:") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "count: ?u32 = null,") != null);
+}
+
+test "removing an absent field errors" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectError(SpliceError.FieldNotFound, removeOption(a, shell, "ghost"));
 }
 
 test "duplicate field is rejected" {
