@@ -185,7 +185,7 @@ test "add command creates stubs at the right paths" {
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "new group 'users' has no description");
-        try expectContains(r.stdout, "src/commands/users/index.zig");
+        try expectContains(r.stdout, "zcli add group users");
     }
     try testing.expect(fileExists(tmp.dir, "src/commands/users/create.zig"));
 
@@ -208,6 +208,45 @@ test "add command creates stubs at the right paths" {
     // with `tree --show-options`).
     try expectContains(created, "// .aliases =");
     try expectContains(created, "// .hidden =");
+}
+
+test "add group scaffolds meta-only and landing index files" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProjectDirs(tmp.dir);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Meta-only group (a pure group: index.zig with just a description).
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "add", "group", "users", "--description", "Manage users" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    const idx = try readFile(tmp.dir, a, "src/commands/users/index.zig");
+    try expectContains(idx, ".description = \"Manage users\"");
+    try testing.expect(std.mem.indexOf(u8, idx, "pub fn execute") == null); // pure group
+
+    // Describing an already-described group is refused.
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "add", "group", "users", "-d", "again" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "already described");
+    }
+
+    // A landing group (nested path) gets an empty-Args execute.
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "add", "group", "gh/pr", "--with-landing", "-d", "Pull requests" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    const landing = try readFile(tmp.dir, a, "src/commands/gh/pr/index.zig");
+    try expectContains(landing, "pub const Args = struct {};"); // no positionals
+    try expectContains(landing, "pub fn execute(args: Args, options: Options");
+    try expectContains(landing, "TODO: Implement gh pr");
 }
 
 test "add command outside a project fails clearly" {
@@ -579,6 +618,38 @@ test "scaffolded project builds, runs, and round-trips add command" {
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement users create");
+    }
+
+    // `add group --with-landing` scaffolds a runnable group; with a subcommand
+    // under it, both the group landing and the subcommand must compile and run.
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "group", "server", "--with-landing", "-d", "Manage the server" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "command", "server/status", "-d", "Show status" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // The group runs on its own (landing execute)...
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "server" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement server");
+    }
+    {
+        // ...and dispatches to its subcommand.
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "server", "status" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement server status");
     }
 }
 

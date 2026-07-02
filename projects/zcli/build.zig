@@ -111,6 +111,7 @@ pub fn build(b: *std.Build) void {
         "src/commands/add/command.zig",
         "src/commands/add/option.zig",
         "src/commands/add/arg.zig",
+        "src/commands/add/group.zig",
         "src/commands/rm/option.zig",
         "src/commands/rm/arg.zig",
     };

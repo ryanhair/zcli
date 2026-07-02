@@ -703,7 +703,7 @@ fn finish(
         var buf: [512]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Note: new group '{s}' has no description.", .{g.name}) catch "Note: new group has no description.";
         try ztheme.theme(line).warning().render(w, theme);
-        try w.print("\n    Add {s} with `pub const meta = .{{ .description = \"...\" }};` to describe it.\n", .{g.index_path});
+        try w.print("\n    Describe it with `zcli add group {s} -d \"...\"`.\n", .{g.name});
     }
 
     try w.writeAll("\n\n  Next steps\n");
@@ -864,10 +864,9 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 /// fresh directory has no `index.zig`, it has no description — the caller hints
 /// how to give it one (ADR-0007: a group's description comes from index meta).
 const NewGroup = struct {
-    /// The group's command path, space-joined (e.g. "users" or "gh add").
+    /// The group's path, slash-joined (e.g. "users" or "gh/pr") — the form
+    /// `zcli add group` accepts as a single argument.
     name: []const u8,
-    /// Where a describing `index.zig` would live.
-    index_path: []const u8,
 };
 
 /// Write the command file, creating any missing parent group directories.
@@ -894,8 +893,7 @@ fn writeCommandFile(
             };
             // createDir succeeded, so this group is brand new and undescribed.
             try new_groups.append(arena, .{
-                .name = try std.mem.join(arena, " ", parts[0 .. i + 1]),
-                .index_path = try std.fmt.allocPrint(arena, "{s}/index.zig", .{dir.items}),
+                .name = try std.mem.join(arena, "/", parts[0 .. i + 1]),
             });
         }
     }

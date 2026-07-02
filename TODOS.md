@@ -45,8 +45,11 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   subcommands. Splice-out (`splice.removeOption`/`removeArg`) computes each field's span +
   trailing comma/whitespace and cuts it, dropping the emptied `meta.<sub>` block; variadic
   `names`; batch is atomic — a missing name (`splice.missingFields`) rejects the whole edit.
-- [ ] **PR: `add group`** (grill Q8) — meta-only `index.zig` by default; `--with-landing`
-  for a custom execute + test.
+- [x] **PR: `add group`** (grill Q8) — DONE. `add group <path> [-d] [--with-landing]` writes a
+  meta-only `index.zig` (pure group) by default; `--with-landing` adds an empty-`Args` `execute`
+  (optional group — positionals would clash with subcommand names). Describes an existing
+  undescribed group; refuses an already-described one. The `add command` group-hint now points
+  at `zcli add group <path>/... -d`. (The co-located test rides the deferred Q7 testing PR.)
 - [ ] **PR: `add plugin` + `init` sets `plugins_dir`** (ADR-0006) — convention discovery,
   no build.zig mutation on the happy path; guided skeleton + commented hook catalog.
 - [ ] **PR: `mv` + `rm`** (grill Q10) — whole-file restructure, carry the co-located test,
