@@ -6,11 +6,23 @@ pub const SnapshotOptions = struct {
     mask: bool = true,
     /// Whether to preserve ANSI escape codes (colors, formatting)
     ansi: bool = true,
+    /// When true, write (or overwrite) the snapshot instead of comparing.
+    /// Thread this from explicit test configuration — typically a build
+    /// option (`zig build test -Dupdate-snapshots` exposed via
+    /// `@import("build_options")`). zcli style is explicit configuration;
+    /// there is no ambient environment-variable check.
+    update: bool = false,
 };
 
-/// Unified snapshot testing function with configurable options
+/// Unified snapshot testing function with configurable options.
+///
+/// `snapshot_root` is the directory `tests/snapshots/...` paths are resolved
+/// against — pass `std.Io.Dir.cwd()` in a normal test suite (the package
+/// root, when run via `zig build test`).
 pub fn expectSnapshot(
     allocator: std.mem.Allocator,
+    io: std.Io,
+    snapshot_root: std.Io.Dir,
     actual: []const u8,
     comptime location: std.builtin.SourceLocation,
     comptime snapshot_name: []const u8,
@@ -40,13 +52,9 @@ pub fn expectSnapshot(
         should_free_actual = true;
     }
 
-    // Check if we should update snapshots
-    const update_mode = std.process.getEnvVarOwned(allocator, "UPDATE_SNAPSHOTS") catch null;
-    defer if (update_mode) |mode| allocator.free(mode);
-
-    if (update_mode != null) {
+    if (options.update) {
         // Update mode - create/update the snapshot
-        try updateSnapshot(allocator, snapshot_dir, snapshot_name, processed_actual);
+        try updateSnapshot(allocator, io, snapshot_root, snapshot_dir, snapshot_name, processed_actual);
         const snapshot_type = if (options.ansi) "ANSI " else "";
         const mask_info = if (options.mask) " (masked)" else "";
         std.debug.print("✅ Updated {s}snapshot: {s}{s}\n", .{ snapshot_type, snapshot_file, mask_info });
@@ -54,7 +62,7 @@ pub fn expectSnapshot(
     }
 
     // Try to read existing snapshot
-    const expected = std.fs.cwd().readFileAlloc(allocator, snapshot_file, 1024 * 1024) catch |err| switch (err) {
+    const expected = snapshot_root.readFileAlloc(io, snapshot_file, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => {
             // No snapshot exists - this is a new test
             printCleanMissingSnapshotError(.{
@@ -93,18 +101,16 @@ fn getSnapshotDir(comptime test_file_path: []const u8) []const u8 {
     return "tests/snapshots/" ++ filename_no_ext;
 }
 
-fn updateSnapshot(allocator: std.mem.Allocator, snapshot_dir: []const u8, snapshot_name: []const u8, content: []const u8) !void {
-    // Ensure snapshot directory exists
-    std.fs.cwd().makePath(snapshot_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+fn updateSnapshot(allocator: std.mem.Allocator, io: std.Io, snapshot_root: std.Io.Dir, snapshot_dir: []const u8, snapshot_name: []const u8, content: []const u8) !void {
+    // Ensure snapshot directory exists (creates missing parents, tolerates
+    // already-existing directories)
+    try snapshot_root.createDirPath(io, snapshot_dir);
 
     // Write snapshot file
     const snapshot_file = try std.fmt.allocPrint(allocator, "{s}/{s}.txt", .{ snapshot_dir, snapshot_name });
     defer allocator.free(snapshot_file);
 
-    try std.fs.cwd().writeFile(.{ .sub_path = snapshot_file, .data = content });
+    try snapshot_root.writeFile(io, .{ .sub_path = snapshot_file, .data = content });
 }
 
 const SnapshotErrorInfo = struct {
@@ -155,7 +161,7 @@ fn printCleanMissingSnapshotError(info: MissingSnapshotInfo) void {
     }
 
     std.debug.print("├─────────────────────────────────────────────────────────┤\n", .{});
-    std.debug.print("│ Run 'zig build update-snapshots' to create\n", .{});
+    std.debug.print("│ Re-run with .update = true to create\n", .{});
     std.debug.print("└─────────────────────────────────────────────────────────┘\n", .{});
     std.debug.print("\n", .{});
 }
@@ -190,7 +196,7 @@ fn printCleanSnapshotError(info: SnapshotErrorInfo) void {
     printEnhancedDiff(info.expected, info.actual);
 
     std.debug.print("├─────────────────────────────────────────────────────────┤\n", .{});
-    std.debug.print("│ Run 'zig build update-snapshots' to update\n", .{});
+    std.debug.print("│ Re-run with .update = true to update\n", .{});
     std.debug.print("└─────────────────────────────────────────────────────────┘\n", .{});
     std.debug.print("\n", .{});
 }
@@ -416,6 +422,8 @@ fn maskMemoryAddresses(allocator: std.mem.Allocator, text: []const u8, replaceme
 /// by passing explicit expected data (for testing framework behavior, not CLI output)
 pub fn expectSnapshotWithData(
     allocator: std.mem.Allocator,
+    io: std.Io,
+    snapshot_root: std.Io.Dir,
     actual: []const u8,
     comptime location: std.builtin.SourceLocation,
     comptime snapshot_name: []const u8,
@@ -423,7 +431,7 @@ pub fn expectSnapshotWithData(
 ) !void {
     // If no expected data provided, use normal snapshot testing
     if (expected_data == null) {
-        return expectSnapshot(allocator, actual, location, snapshot_name, .{});
+        return expectSnapshot(allocator, io, snapshot_root, actual, location, snapshot_name, .{});
     }
 
     const expected = expected_data.?;
@@ -467,4 +475,60 @@ pub fn stripAnsi(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "maskDynamicContent masks UUIDs, timestamps, and memory addresses" {
+    const input = "id=550e8400-e29b-41d4-a716-446655440000 at 2024-01-15T10:30:00Z ptr=0x7fff5fbff8a0 done";
+    const masked = try maskDynamicContent(testing.allocator, input);
+    defer testing.allocator.free(masked);
+    try testing.expectEqualStrings("id=[UUID] at [TIMESTAMP] ptr=[MEMORY_ADDR] done", masked);
+}
+
+test "maskDynamicContent leaves static content alone" {
+    const input = "just a normal line with a number 12345 and 0xg (not hex)";
+    const masked = try maskDynamicContent(testing.allocator, input);
+    defer testing.allocator.free(masked);
+    try testing.expectEqualStrings(input, masked);
+}
+
+test "stripAnsi removes escape sequences" {
+    const stripped = try stripAnsi(testing.allocator, "\x1b[1;32mOK\x1b[0m done");
+    defer testing.allocator.free(stripped);
+    try testing.expectEqualStrings("OK done", stripped);
+}
+
+test "expectSnapshot round-trip: update writes, compare matches, mismatch and missing error" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Update mode creates the snapshot file (ANSI preserved by default).
+    try expectSnapshot(a, io, tmp.dir, "hello \x1b[1mworld\x1b[0m", @src(), "roundtrip", .{ .update = true });
+
+    // Compare mode passes against what was just written.
+    try expectSnapshot(a, io, tmp.dir, "hello \x1b[1mworld\x1b[0m", @src(), "roundtrip", .{});
+
+    // A differing value is a mismatch (prints its diff box to stderr).
+    try testing.expectError(error.SnapshotMismatch, expectSnapshot(a, io, tmp.dir, "different", @src(), "roundtrip", .{}));
+
+    // A snapshot that was never written is its own error.
+    try testing.expectError(error.SnapshotMissing, expectSnapshot(a, io, tmp.dir, "x", @src(), "never-written", .{}));
+}
+
+test "expectSnapshot with ansi=false compares stripped content" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try expectSnapshot(a, io, tmp.dir, "\x1b[31mred\x1b[0m text", @src(), "stripped", .{ .ansi = false, .update = true });
+    // Different coloring, same visible text: still a match once stripped.
+    try expectSnapshot(a, io, tmp.dir, "\x1b[32mred\x1b[0m text", @src(), "stripped", .{ .ansi = false });
 }
