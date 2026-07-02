@@ -19,7 +19,7 @@ pub const meta = .{
         .name = "Option name (snake_case or kebab-case)",
     },
     .options = .{
-        .type = .{ .description = "Element/scalar Zig type (e.g. u32, bool, []const u8)", .short = 't' },
+        .type = .{ .description = "Element/scalar Zig type (e.g. u32, bool, []const u8; default: []const u8)", .short = 't' },
         .multiple = .{ .description = "Accumulate repeated flags into a slice" },
         .nullable = .{ .description = "Optional: renders as ?T = null" },
         .default = .{ .description = "Default value, a Zig expression (required for a non-nullable scalar)" },
@@ -34,7 +34,9 @@ pub const Args = struct {
 };
 
 pub const Options = struct {
-    type: []const u8,
+    // Defaults to a string option — the same default the wizard uses for
+    // its "text" choice.
+    type: []const u8 = "[]const u8",
     // `description` MUST precede `default`: zcli auto-derives a short flag from
     // each field's first letter, so `default` would otherwise claim `-d`. Short
     // flags resolve to the first matching field, so declaring `description`

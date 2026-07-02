@@ -19,7 +19,7 @@ pub const meta = .{
         .name = "Argument name (snake_case or kebab-case)",
     },
     .options = .{
-        .type = .{ .description = "Element/scalar Zig type (e.g. u32, []const u8)", .short = 't' },
+        .type = .{ .description = "Element/scalar Zig type (e.g. u32, []const u8; default: []const u8)", .short = 't' },
         .multiple = .{ .description = "Variadic: captures all remaining positionals ([]const u8 only)" },
         .nullable = .{ .description = "Optional: renders as ?T = null" },
         .before = .{ .description = "Insert before this existing argument" },
@@ -34,7 +34,9 @@ pub const Args = struct {
 };
 
 pub const Options = struct {
-    type: []const u8,
+    // Defaults to a string arg — the same default the wizard uses for its
+    // "text" choice.
+    type: []const u8 = "[]const u8",
     // See option.zig: `description` precedes any other d-word so `-d` stays its
     // short. (No collision here, but kept for consistency with `add option`.)
     description: ?[]const u8 = null,
