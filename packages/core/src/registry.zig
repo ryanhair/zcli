@@ -24,6 +24,41 @@ fn splitPath(comptime path: []const u8) []const []const u8 {
     }
 }
 
+/// Join a command path with spaces at compile time, for `@compileError`
+/// messages — no allocator exists there, so `std.mem.join` cannot be used.
+fn comptimeJoinPath(comptime path: []const []const u8) []const u8 {
+    comptime {
+        var result: []const u8 = "";
+        for (path, 0..) |component, i| {
+            if (i != 0) result = result ++ " ";
+            result = result ++ component;
+        }
+        return result;
+    }
+}
+
+/// Sort command entries by path length (descending) at compile time, so
+/// routing tries the most specific path first. The loop condition is
+/// `i + 1 < len` rather than `len - 1`: a plugin-only registry has zero
+/// commands, and `0 - 1` underflows usize at comptime.
+fn sortedByPathLengthDesc(comptime commands: anytype) @TypeOf(commands[0..commands.len].*) {
+    var cmds = commands[0..commands.len].*;
+    var changed = true;
+    while (changed) {
+        changed = false;
+        var i: usize = 0;
+        while (i + 1 < cmds.len) : (i += 1) {
+            if (cmds[i].path.len < cmds[i + 1].path.len) {
+                const temp = cmds[i];
+                cmds[i] = cmds[i + 1];
+                cmds[i + 1] = temp;
+                changed = true;
+            }
+        }
+    }
+    return cmds;
+}
+
 /// Build an alias path by replacing the last component with the alias name
 fn buildAliasPath(comptime original_path: []const []const u8, comptime alias: []const u8) []const []const u8 {
     comptime {
@@ -415,9 +450,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     }
                 }
                 if (paths_equal) {
-                    // Convert path to string for error message
-                    const path_str = std.mem.join(&[_]u8{}, " ", cmd.path);
-                    @compileError("Duplicate command path: " ++ path_str);
+                    @compileError("Duplicate command path: " ++ comptimeJoinPath(cmd.path));
                 }
             }
             command_paths = command_paths ++ .{cmd.path};
@@ -484,8 +517,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             }
                         }
                         if (paths_equal) {
-                            const path_str = std.mem.join(&[_]u8{}, " ", plugin_cmd.path);
-                            @compileError("Plugin command conflicts with existing command: " ++ path_str);
+                            @compileError("Plugin command conflicts with existing command: " ++ comptimeJoinPath(plugin_cmd.path));
                         }
                     }
                     // Check against other plugin commands
@@ -500,8 +532,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             }
                         }
                         if (paths_equal) {
-                            const path_str = std.mem.join(&[_]u8{}, " ", plugin_cmd.path);
-                            @compileError("Duplicate plugin command: " ++ path_str);
+                            @compileError("Duplicate plugin command: " ++ comptimeJoinPath(plugin_cmd.path));
                         }
                     }
                     plugin_command_paths = plugin_command_paths ++ .{plugin_cmd.path};
@@ -1040,25 +1071,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             }
 
             // Sort commands by path length (longest first) at compile time to ensure longest match wins
-            const sorted_commands = comptime blk: {
-                var cmds = cmd_entries[0..cmd_entries.len].*;
-
-                // Bubble sort by path length (descending)
-                var changed = true;
-                while (changed) {
-                    changed = false;
-                    var i: usize = 0;
-                    while (i < cmds.len - 1) : (i += 1) {
-                        if (cmds[i].path.len < cmds[i + 1].path.len) {
-                            const temp = cmds[i];
-                            cmds[i] = cmds[i + 1];
-                            cmds[i + 1] = temp;
-                            changed = true;
-                        }
-                    }
-                }
-                break :blk cmds;
-            };
+            const sorted_commands = comptime sortedByPathLengthDesc(cmd_entries);
 
             // Try to find matching command (longest first due to sorting)
             var found = false;
@@ -1345,7 +1358,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                     try field_list.append(context.allocator, zcli.FieldInfo{
                                         .name = field.name,
                                         .is_optional = field_type_info == .optional or field.default_value_ptr != null,
-                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .Slice and field_type_info.pointer.child != u8,
+                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
                                         .short = null,
                                         .description = null,
                                     });
@@ -1385,7 +1398,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                     try field_list.append(context.allocator, zcli.FieldInfo{
                                         .name = field.name,
                                         .is_optional = field_type_info == .optional or field.default_value_ptr != null,
-                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .Slice and field_type_info.pointer.child != u8,
+                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
                                         .short = short,
                                         .description = description,
                                     });
@@ -2038,26 +2051,9 @@ test "command routing: longest match wins for nested commands" {
     try testing.expect(found_root);
     try testing.expect(found_nested);
 
-    // Test command path sorting - longer paths should come first (simulating registry logic)
-    const sorted_commands = comptime blk: {
-        var cmds = commands[0..commands.len].*;
-
-        // Bubble sort by path length (descending)
-        var changed = true;
-        while (changed) {
-            changed = false;
-            var i: usize = 0;
-            while (i < cmds.len - 1) : (i += 1) {
-                if (cmds[i].path.len < cmds[i + 1].path.len) {
-                    const temp = cmds[i];
-                    cmds[i] = cmds[i + 1];
-                    cmds[i + 1] = temp;
-                    changed = true;
-                }
-            }
-        }
-        break :blk cmds;
-    };
+    // Test command path sorting - longer paths should come first (the same
+    // comptime sort execute() uses for routing)
+    const sorted_commands = comptime sortedByPathLengthDesc(commands);
 
     // Verify that longer commands come first in sorted order
     var prev_length: usize = std.math.maxInt(usize);
@@ -2291,6 +2287,73 @@ test "error handling: plugin returns true prevents error propagation" {
     // Plugin should have handled the error
     try testing.expect(TestHelpPlugin.command_found_error);
     try testing.expect(TestHelpPlugin.help_shown);
+}
+
+test "comptimeJoinPath joins components with spaces" {
+    try testing.expectEqualStrings("container run", comptime comptimeJoinPath(&.{ "container", "run" }));
+    try testing.expectEqualStrings("root", comptime comptimeJoinPath(&.{"root"}));
+    try testing.expectEqualStrings("", comptime comptimeJoinPath(&.{}));
+}
+
+test "sortedByPathLengthDesc handles an empty command list" {
+    // Regression: the sort used `i < len - 1`, which underflows usize at
+    // comptime for a registry with zero regular commands (plugin-only).
+    const Entry = struct { path: []const []const u8 };
+    const none: [0]Entry = .{};
+    const sorted = comptime sortedByPathLengthDesc(&none);
+    try testing.expectEqual(@as(usize, 0), sorted.len);
+}
+
+// Regression fixture: a registry whose ONLY command comes from a plugin, with
+// slice-typed Args/Options fields. Exercises two comptime paths that used to
+// be compile errors when first reached: the zero-command routing sort (usize
+// underflow) and FieldInfo extraction for slice fields (`.Slice` is not a
+// valid `std.builtin.Type.Pointer.Size` literal in 0.16 — it's `.slice`).
+const SliceFieldPlugin = struct {
+    var executed = false;
+    var tag_count: usize = 0;
+
+    pub fn reset() void {
+        executed = false;
+        tag_count = 0;
+    }
+
+    pub const commands = struct {
+        pub const tagged = struct {
+            pub const meta = .{ .description = "test command with slice fields" };
+            pub const Args = struct {
+                tags: []const []const u8,
+            };
+            pub const Options = struct {
+                labels: []const []const u8 = &.{},
+            };
+            pub fn execute(args: Args, options: Options, context: anytype) !void {
+                _ = options;
+                _ = context;
+                SliceFieldPlugin.executed = true;
+                SliceFieldPlugin.tag_count = args.tags.len;
+            }
+        };
+    };
+};
+
+test "plugin-only registry routes and executes a plugin command with slice fields" {
+    const TestApp = Registry.init(.{
+        .app_name = "plugin-only",
+        .app_version = "1.0.0",
+        .app_description = "Registry with zero regular commands",
+    })
+        .registerPlugin(SliceFieldPlugin)
+        .build();
+
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    SliceFieldPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "tagged", "a", "b" });
+
+    try testing.expect(SliceFieldPlugin.executed);
+    try testing.expectEqual(@as(usize, 2), SliceFieldPlugin.tag_count);
 }
 
 // ============================================================================
