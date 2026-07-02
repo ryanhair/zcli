@@ -13,6 +13,10 @@ pub const zprogress = @import("zprogress");
 pub const zinput = @import("zinput");
 pub const serde = @import("serde");
 
+/// HTTP client with safe defaults (TLS verification on, bounded response body)
+/// over `std.http.Client`. See http.zig.
+pub const http = @import("http.zig");
+
 /// Filesystem command discovery — the same scan the build system runs to
 /// generate the registry. Exposed so tools can determine a project's command
 /// tree without building it (e.g. the `zcli tree` command).
