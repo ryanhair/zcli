@@ -418,8 +418,49 @@ pub const parseCommandLine = command_parser.parseCommandLine;
 pub const CommandParseResult = command_parser.CommandParseResult;
 
 // ============================================================================
-// Metadata Validation - Compile-time validation for command metadata
+// Command Validation - Compile-time validation of the command contract
 // ============================================================================
+
+/// The prefix every command contract error carries. `path` is the command's
+/// registered path (e.g. "add command"), which maps directly to the file under
+/// src/commands/ — so the author, or an AI agent, can jump straight to it.
+fn commandContext(comptime path: []const u8) []const u8 {
+    return "command '" ++ path ++ "': ";
+}
+
+/// Validate a command module's contract at compile time, with every error
+/// naming the command by its path in plain language. This is the "verify" signal
+/// of the authoring loop: a malformed command fails the build with a message an
+/// author (or an AI agent) can act on, not a template error buried deep in the
+/// framework.
+///
+/// Checks that `Args`/`Options` are structs and the `meta` block is well-formed
+/// (delegated to `validateMeta`). The `execute` signature is intentionally *not*
+/// asserted here: a command's `execute` typically takes `context: *Context`,
+/// and `Context` is a projection of the very registry being built — reaching for
+/// `@TypeOf(execute)` at registration time forms a comptime dependency loop.
+/// A wrong `execute` shape still fails the build at the framework's own call
+/// site, pointing at the author's file.
+pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
+    @setEvalBranchQuota(10000);
+    const loc = commandContext(path);
+
+    const ArgsType = if (@hasDecl(Module, "Args")) Module.Args else struct {};
+    const OptionsType = if (@hasDecl(Module, "Options")) Module.Options else struct {};
+
+    if (@hasDecl(Module, "Args") and @typeInfo(ArgsType) != .@"struct") {
+        @compileError(loc ++ "`Args` must be a struct, found `" ++ @typeName(ArgsType) ++
+            "`. Example: `pub const Args = struct { name: []const u8 };`");
+    }
+    if (@hasDecl(Module, "Options") and @typeInfo(OptionsType) != .@"struct") {
+        @compileError(loc ++ "`Options` must be a struct, found `" ++ @typeName(OptionsType) ++
+            "`. Example: `pub const Options = struct { verbose: bool = false };`");
+    }
+
+    if (@hasDecl(Module, "meta")) {
+        validateMeta(path, Module.meta, ArgsType, OptionsType);
+    }
+}
 
 /// Validate command metadata at compile time to catch typos and invalid fields.
 /// This function checks:
@@ -427,20 +468,22 @@ pub const CommandParseResult = command_parser.CommandParseResult;
 /// - Options metadata fields (description, short, name)
 /// - That option/arg meta field names match actual struct fields
 ///
-/// Call this in the registry when processing commands to get compile-time errors
-/// for invalid metadata.
+/// `path` names the owning command so every error points back at its file.
+/// Prefer `validateCommand`, which calls this as part of the full contract.
 pub fn validateMeta(
+    comptime path: []const u8,
     comptime meta: anytype,
     comptime ArgsType: type,
     comptime OptionsType: type,
 ) void {
     @setEvalBranchQuota(10000);
+    const loc = commandContext(path);
 
     const MetaType = @TypeOf(meta);
     const meta_info = @typeInfo(MetaType);
 
     if (meta_info != .@"struct") {
-        @compileError("meta must be a struct");
+        @compileError(loc ++ "`meta` must be a struct");
     }
 
     // Valid top-level meta fields
@@ -457,7 +500,7 @@ pub fn validateMeta(
             break :blk false;
         };
         if (!is_valid) {
-            @compileError("Unknown meta field: '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden, aliases");
+            @compileError(loc ++ "unknown meta field '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden, aliases");
         }
     }
 
@@ -467,7 +510,7 @@ pub fn validateMeta(
         const options_meta_info = @typeInfo(@TypeOf(options_meta));
 
         if (options_meta_info != .@"struct") {
-            @compileError("meta.options must be a struct");
+            @compileError(loc ++ "`meta.options` must be a struct");
         }
 
         const options_fields = @typeInfo(OptionsType).@"struct".fields;
@@ -484,7 +527,7 @@ pub fn validateMeta(
             }
 
             if (!field_exists) {
-                @compileError("Option metadata field '" ++ field.name ++ "' does not exist in Options struct");
+                @compileError(loc ++ "meta.options describes '" ++ field.name ++ "', which is not a field in the Options struct");
             }
 
             // Validate the metadata for this option
@@ -504,7 +547,7 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError("Unknown option metadata field: '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env");
+                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env");
                     }
                 }
             }
@@ -517,7 +560,7 @@ pub fn validateMeta(
         const args_meta_info = @typeInfo(@TypeOf(args_meta));
 
         if (args_meta_info != .@"struct") {
-            @compileError("meta.args must be a struct");
+            @compileError(loc ++ "`meta.args` must be a struct");
         }
 
         const args_fields = @typeInfo(ArgsType).@"struct".fields;
@@ -534,7 +577,7 @@ pub fn validateMeta(
             }
 
             if (!field_exists) {
-                @compileError("Args metadata field '" ++ field.name ++ "' does not exist in Args struct");
+                @compileError(loc ++ "meta.args describes '" ++ field.name ++ "', which is not a field in the Args struct");
             }
 
             // Args metadata should be simple strings (descriptions)
@@ -562,12 +605,48 @@ pub fn validateMeta(
             };
 
             if (!is_valid_type) {
-                @compileError("Args metadata for field '" ++ field.name ++ "' must be a string description");
+                @compileError(loc ++ "meta.args for '" ++ field.name ++ "' must be a string description");
             }
         }
     }
 }
 
+test "validateCommand accepts a well-formed command" {
+    // A full, valid command: reaching the assertion means it compiled without
+    // tripping a contract error.
+    const Cmd = struct {
+        pub const meta = .{
+            .description = "Greet someone",
+            .aliases = &.{"hi"},
+            .options = .{ .loud = .{ .short = 'l', .description = "Shout it" } },
+        };
+        pub const Args = struct { name: []const u8 };
+        pub const Options = struct { loud: bool = false };
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
+    };
+    comptime validateCommand("greet", Cmd);
+
+    // A metadata-only command group (no execute) is valid too.
+    const Group = struct {
+        pub const meta = .{ .description = "A group" };
+    };
+    comptime validateCommand("group", Group);
+
+    try testing.expect(true);
+}
+
+// The negative cases below are compile errors by design, so they cannot be run
+// as tests. Each is verified by hand; uncomment one to see the message it emits.
+//
+//   command 'broken': unknown meta field 'desciption'. Valid fields are: ...
+//     pub const meta = .{ .desciption = "typo" };
+//
+//   command 'broken': `Args` must be a struct, found `u32`. ...
+//     pub const Args = u32;
+//
+//   command 'broken': meta.options describes 'nope', which is not a field in the Options struct
+//     pub const meta = .{ .options = .{ .nope = .{ .short = 'x' } } };
+//     pub const Options = struct { real: bool = false };
 
 test "Context creation" {
     const allocator = testing.allocator;
