@@ -43,9 +43,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         error.FileNotFound => {
             const stderr = context.stderr();
             try stderr.print("No '{s}' directory found. Run this from a zcli project root.\n", .{commands_dir});
-            try stderr.flush(); // process.exit won't flush the buffered writer
-            context.exit(1);
-            return;
+            context.exit(1); // flushes buffered output before exiting
         },
         else => return err,
     };

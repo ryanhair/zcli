@@ -296,6 +296,18 @@ test "add command outside a project fails clearly" {
     try expectContains(r.stderr, "Not in a zcli project");
 }
 
+test "tree outside a project exits nonzero and its message survives the exit" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "tree" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    // The message goes to a buffered writer immediately before context.exit —
+    // it only reaches us because exit() flushes the framework IO.
+    try expectContains(r.stderr, "No 'src/commands' directory found");
+}
+
 test "gh add workflow release writes the workflow file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
