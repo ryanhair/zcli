@@ -13,9 +13,10 @@ const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 
 /// Link the native libraries the `zcli_secrets` plugin's backend needs for
 /// `target`. macOS: Security + CoreFoundation frameworks. Linux: libsecret-1 +
-/// glib-2.0 (over libc). Windows: advapi32. Any other OS uses the pure-Zig file
-/// fallback and needs nothing. Exposed so the plugin's own test targets can link
-/// exactly the same way a registered app does.
+/// glib-2.0 (over libc). Windows: advapi32. Any other OS has no secure backend —
+/// registering the plugin there is a compile error in the plugin source — so
+/// nothing is linked. Exposed so the plugin's own test targets can link exactly
+/// the same way a registered app does.
 pub fn linkSecretsBackend(module: *std.Build.Module, target: std.Target) void {
     switch (target.os.tag) {
         .macos => {
@@ -237,8 +238,9 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
     // libraries to the executable ONLY when the secrets plugin is registered —
     // so a CLI that does not opt in stays a static, libc-free single binary.
     // This is the build half of ADR-0003's opt-in guarantee (the source half is
-    // the compile-time backend selection in the plugin). The file-backed
-    // fallback on any other OS needs nothing linked.
+    // the compile-time backend selection in the plugin). Registering the plugin
+    // for an unsupported OS is a compile error in the plugin source — there is
+    // no insecure file fallback — so `linkSecretsBackend` links nothing there.
     inline for (config.plugins) |plugin_config| {
         if (std.mem.eql(u8, plugin_config.name, "zcli_secrets")) {
             linkSecretsBackend(exe.root_module, exe.rootModuleTarget());

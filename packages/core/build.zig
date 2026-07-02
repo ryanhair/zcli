@@ -168,9 +168,9 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
-    // Secrets plugin tests. The plugin/file-store tests are pure Zig and run on
-    // every platform. The host's native backend gets a compile+link test (the
-    // link-time half of ADR-0003's opt-in guarantee) plus a CI-only live
+    // Secrets plugin tests. The plugin-surface test is pure Zig and runs on
+    // every supported OS. The host's native backend gets a compile+link test
+    // (the link-time half of ADR-0003's opt-in guarantee) plus a CI-only live
     // round-trip against the real OS keychain. Native linking is applied exactly
     // as a registered app gets it, via `main.linkSecretsBackend`.
     {
@@ -185,8 +185,9 @@ pub fn build(b: *std.Build) void {
             s.dependOn(&run_plugin_tests.step);
         }
 
-        // The native backend source file for the host OS (null → file fallback
-        // only, e.g. a BSD, so there is no native backend to test).
+        // The native backend source file for the host OS (null → an unsupported
+        // OS, where registering the plugin is a compile error, so there is no
+        // backend to test here).
         const native_backend_file: ?[]const u8 = switch (target.result.os.tag) {
             .macos => "src/plugins/zcli_secrets/keychain_macos.zig",
             .linux => "src/plugins/zcli_secrets/secret_service_linux.zig",
