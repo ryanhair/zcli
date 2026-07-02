@@ -1,6 +1,7 @@
 const std = @import("std");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
+const option_utils = @import("options/utils.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 
 pub const ZcliError = diagnostic_errors.ZcliError;
@@ -239,14 +240,23 @@ fn initializeDefaultOptions(comptime OptionsType: type) OptionsType {
     var result: OptionsType = undefined;
 
     inline for (type_info.@"struct".fields) |field| {
-        if (field.type == bool) {
+        if (comptime option_utils.isArrayType(field.type)) {
+            const element_type = @typeInfo(field.type).pointer.child;
+            @field(result, field.name) = @as(field.type, &[_]element_type{});
+        } else if (@typeInfo(field.type) == .optional) {
+            @field(result, field.name) = null;
+        } else if (field.type == bool) {
             @field(result, field.name) = false;
         } else if (field.default_value_ptr) |default_ptr| {
             const default_value: *const field.type = @ptrCast(@alignCast(default_ptr));
             @field(result, field.name) = default_value.*;
         } else {
-            // Required field without default
-            @field(result, field.name) = undefined;
+            // Same rule the options parser enforces: a field with no
+            // absent-flag value would be read as undefined memory.
+            @compileError("option field '" ++ field.name ++ "' has type `" ++ @typeName(field.type) ++
+                "` and no default value, so it would be undefined when the flag is not passed. " ++
+                "Options must be bool, optional, an accumulating array, or have a default; " ++
+                "required values belong in Args.");
         }
     }
 

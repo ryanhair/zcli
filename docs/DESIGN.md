@@ -176,6 +176,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 - Types supported: `[]const u8`, `u32`, `i32`, `bool`, enums
 - Default values make an arg optional
 
+**Options Rules:**
+
+- Every field must have a well-defined value when its flag is absent:
+  `bool` (defaults to `false`), optional (`null`), an accumulating array
+  (empty), or an explicit default value. This is enforced at compile time —
+  required values belong in `Args`.
+
 **Environment Variable Fallbacks:**
 
 An option can declare an environment variable as its fallback via

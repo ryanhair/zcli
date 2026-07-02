@@ -578,7 +578,9 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
     }
     {
-        var r = try run(proj, &.{ zcli_exe, "add", "arg", "users/create", "email", "--type", "[]const u8" });
+        // No --type: defaults to []const u8 (a string arg), same as the
+        // wizard's "text" choice.
+        var r = try run(proj, &.{ zcli_exe, "add", "arg", "users/create", "email" });
         defer r.deinit();
         try expectOk(r);
     }
