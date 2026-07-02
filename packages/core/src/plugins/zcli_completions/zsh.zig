@@ -464,5 +464,6 @@ pub fn generate(
     // Call the function
     try writer.print("_{s} \"$@\"\n", .{app_name});
 
-    var al = aw.toArrayList(); return al.toOwnedSlice(allocator);
+    var al = aw.toArrayList();
+    return al.toOwnedSlice(allocator);
 }

@@ -272,13 +272,23 @@ test "renderOptField covers scalar, nullable, multiple" {
     const a = arena.allocator();
 
     try testing.expectEqualStrings("limit: u32 = 10", try renderOptField(a, .{
-        .name = "limit", .elem_type = "u32", .multiple = false, .nullable = false, .default_expr = "10",
+        .name = "limit",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "10",
     }));
     try testing.expectEqualStrings("repeat: ?u32 = null", try renderOptField(a, .{
-        .name = "repeat", .elem_type = "u32", .multiple = false, .nullable = true,
+        .name = "repeat",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = true,
     }));
     try testing.expectEqualStrings("tags: [][]const u8 = &.{}", try renderOptField(a, .{
-        .name = "tags", .elem_type = "[]const u8", .multiple = true, .nullable = false,
+        .name = "tags",
+        .elem_type = "[]const u8",
+        .multiple = true,
+        .nullable = false,
     }));
 }
 
@@ -288,13 +298,25 @@ test "renderArgField covers required, optional, variadic" {
     const a = arena.allocator();
 
     try testing.expectEqualStrings("name: []const u8", try renderArgField(a, .{
-        .name = "name", .elem_type = "[]const u8", .multiple = false, .nullable = false, .description = "",
+        .name = "name",
+        .elem_type = "[]const u8",
+        .multiple = false,
+        .nullable = false,
+        .description = "",
     }));
     try testing.expectEqualStrings("count: ?u32 = null", try renderArgField(a, .{
-        .name = "count", .elem_type = "u32", .multiple = false, .nullable = true, .description = "",
+        .name = "count",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = true,
+        .description = "",
     }));
     try testing.expectEqualStrings("files: [][]const u8", try renderArgField(a, .{
-        .name = "files", .elem_type = "[]const u8", .multiple = true, .nullable = false, .description = "",
+        .name = "files",
+        .elem_type = "[]const u8",
+        .multiple = true,
+        .nullable = false,
+        .description = "",
     }));
 }
 
@@ -304,10 +326,21 @@ test "renderOptMetaEntry includes short only when present" {
     const a = arena.allocator();
 
     try testing.expectEqualStrings(".loud = .{ .description = \"Shout it\", .short = 'l' }", try renderOptMetaEntry(a, .{
-        .name = "loud", .elem_type = "bool", .multiple = false, .nullable = false, .default_expr = "false", .short = 'l', .description = "Shout it",
+        .name = "loud",
+        .elem_type = "bool",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "false",
+        .short = 'l',
+        .description = "Shout it",
     }));
     try testing.expectEqualStrings(".limit = .{ .description = \"Max\" }", try renderOptMetaEntry(a, .{
-        .name = "limit", .elem_type = "u32", .multiple = false, .nullable = false, .default_expr = "1", .description = "Max",
+        .name = "limit",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "1",
+        .description = "Max",
     }));
 }
 

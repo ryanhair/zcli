@@ -6,6 +6,23 @@ on:
     branches: [main]
 
 jobs:
+  fmt:
+    name: zig fmt check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # Explicit paths rather than "." — scripts/ and website/ contain no Zig
+      # source, and this keeps cache/output dirs out of scope.
+      - name: Check formatting
+        run: zig fmt --check packages projects examples build.zig
+
   test:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -395,7 +395,6 @@ test "parse markdown inside semantic tags" {
 test "write with semantic tags and runtime values" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
-    
 
     try write(&writer, "<success>Processed **{d}** items</success>", .{42});
 

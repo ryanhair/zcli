@@ -19,7 +19,7 @@ pub const meta = .{
         .name = "Option name (snake_case or kebab-case)",
     },
     .options = .{
-        .@"type" = .{ .description = "Element/scalar Zig type (e.g. u32, bool, []const u8)", .short = 't' },
+        .type = .{ .description = "Element/scalar Zig type (e.g. u32, bool, []const u8)", .short = 't' },
         .multiple = .{ .description = "Accumulate repeated flags into a slice" },
         .nullable = .{ .description = "Optional: renders as ?T = null" },
         .default = .{ .description = "Default value, a Zig expression (required for a non-nullable scalar)" },
@@ -34,7 +34,7 @@ pub const Args = struct {
 };
 
 pub const Options = struct {
-    @"type": []const u8,
+    type: []const u8,
     // `description` MUST precede `default`: zcli auto-derives a short flag from
     // each field's first letter, so `default` would otherwise claim `-d`. Short
     // flags resolve to the first matching field, so declaring `description`
@@ -108,7 +108,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 /// `--default` and `--nullable` are contradictory; a non-nullable scalar needs
 /// a `--default`; a `--multiple` element type must be one the parser accumulates.
 fn buildSpec(arena: std.mem.Allocator, stderr: *std.Io.Writer, name: []const u8, options: Options) !spec.OptSpec {
-    const elem_type = std.mem.trim(u8, options.@"type", " \t");
+    const elem_type = std.mem.trim(u8, options.type, " \t");
     if (elem_type.len == 0) {
         try stderr.print("Error: --type is required\n", .{});
         return error.MissingType;
@@ -181,20 +181,22 @@ fn expectBuildError(err: anyerror, name: []const u8, options: Options) !void {
 
 test "buildSpec: nullable + default is contradictory" {
     try expectBuildError(error.ContradictoryFlags, "region", .{
-        .@"type" = "[]const u8", .nullable = true, .default = "\"us\"",
+        .type = "[]const u8",
+        .nullable = true,
+        .default = "\"us\"",
     });
 }
 
 test "buildSpec: non-nullable scalar requires a default" {
-    try expectBuildError(error.MissingDefault, "count", .{ .@"type" = "u32" });
+    try expectBuildError(error.MissingDefault, "count", .{ .type = "u32" });
 }
 
 test "buildSpec: multiple rejects unsupported element types" {
-    try expectBuildError(error.UnsupportedArrayElement, "flags", .{ .@"type" = "bool", .multiple = true });
+    try expectBuildError(error.UnsupportedArrayElement, "flags", .{ .type = "bool", .multiple = true });
 }
 
 test "buildSpec: bad short flag" {
-    try expectBuildError(error.BadShort, "loud", .{ .@"type" = "bool", .default = "false", .short = "loud" });
+    try expectBuildError(error.BadShort, "loud", .{ .type = "bool", .default = "false", .short = "loud" });
 }
 
 test "buildSpec: well-formed scalar" {
@@ -202,7 +204,10 @@ test "buildSpec: well-formed scalar" {
     defer arena.deinit();
     var aw = std.Io.Writer.Allocating.init(arena.allocator());
     const s = try buildSpec(arena.allocator(), &aw.writer, "limit", .{
-        .@"type" = "u32", .default = "10", .short = "l", .description = "Max",
+        .type = "u32",
+        .default = "10",
+        .short = "l",
+        .description = "Max",
     });
     try testing.expectEqualStrings("limit", s.name);
     try testing.expectEqualStrings("u32", s.elem_type);
@@ -214,6 +219,6 @@ test "buildSpec: non-nullable multiple defaults to empty slice" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var aw = std.Io.Writer.Allocating.init(arena.allocator());
-    const s = try buildSpec(arena.allocator(), &aw.writer, "tags", .{ .@"type" = "[]const u8", .multiple = true });
+    const s = try buildSpec(arena.allocator(), &aw.writer, "tags", .{ .type = "[]const u8", .multiple = true });
     try testing.expectEqualStrings("&.{}", s.default_expr.?);
 }

@@ -11,7 +11,6 @@ const zcli = @import("zcli");
 ///   1. --config <path>
 ///   2. ./{app_name}.config.json / .toml / .yaml / .yml
 ///   3. $XDG_CONFIG_HOME/{app_name}/config.json / .toml / .yaml / .yml
-
 pub const plugin_id = "zcli_config";
 
 pub const Format = enum { json, toml, yaml };

@@ -201,5 +201,6 @@ pub fn generate(
     // Register completion
     try writer.print("complete -F _{s}_completions {s}\n", .{ app_name, app_name });
 
-    var al = aw.toArrayList(); return al.toOwnedSlice(allocator);
+    var al = aw.toArrayList();
+    return al.toOwnedSlice(allocator);
 }
