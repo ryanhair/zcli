@@ -1,8 +1,10 @@
 # Secrets storage is an opt-in plugin, not core
 
-Status: proposed
+Status: accepted
 
-An HTTP client with safe defaults (TLS verification on by default, a bounded response body, and an overall request timeout) belongs in core — nearly all CLIs make HTTP calls, so it passes the "genuine use-case in a large portion of CLIs" test universally (ADR-0002). Secrets storage passes that test too, but only for the *service-client* category of CLI (those with a `login`/`auth` step that persists a token), not utility CLIs. More importantly, real OS keychain backends (Linux Secret Service via D-Bus/libsecret, Windows Credential Manager) require dynamic linking and would compromise zcli's static-single-binary (libc-free musl) property for *everyone*, including authors who never store a secret. Therefore secrets ship as an **opt-in `zcli_secrets` plugin** — keychain-backed where available with a documented fallback — so the portability cost is paid only by those who opt in.
+An HTTP client with safe defaults (TLS verification on by default, a bounded response body, and an overall request timeout) belongs in core — nearly all CLIs make HTTP calls, so it passes the "genuine use-case in a large portion of CLIs" test universally (ADR-0002). Secrets storage passes that test too, but only for the *service-client* category of CLI (those with a `login`/`auth` step that persists a token), not utility CLIs. More importantly, real OS keychain backends (Linux Secret Service via D-Bus/libsecret, Windows Credential Manager) require dynamic linking and would compromise zcli's static-single-binary (libc-free musl) property for *everyone*, including authors who never store a secret. Therefore secrets ship as an **opt-in `zcli_secrets` plugin** — backed by a real OS keychain — so the portability cost is paid only by those who opt in.
+
+> **Update (superseding the original "documented fallback").** An earlier draft of this decision allowed a plaintext file-backed fallback on platforms without a keychain. That is rejected: a credential store that silently persists secrets in a plaintext file (protected only by filesystem permissions) is not an acceptable default for *credentials*, and a fallback that is quietly weaker than what the user expects is worse than none. The plugin now supports **only** platforms with a real OS keychain (macOS, Linux, Windows); registering it for any other target is a **compile-time error**, not a silent downgrade.
 
 ## Considered Options
 
@@ -13,6 +15,23 @@ An HTTP client with safe defaults (TLS verification on by default, a bounded res
 ## Scope boundary
 
 The plugin covers *storage/retrieval of an opaque credential* (`get`/`set`/`delete` a named secret). It does **not** cover the auth flow that produces the credential (OAuth, device-code, etc.) — that is service-specific domain logic, left to freeform command code plus shipped patterns.
+
+## Implementation outcome
+
+Implemented as `packages/core/src/plugins/zcli_secrets/`. The plugin holds no state; its API is reachable from command code as `context.plugins.zcli_secrets.{get,set,delete}(context, name, ...)` — no import needed, and the field only exists (so the calls only compile) when the app registers the plugin via `zcli.builtin(.secrets, .{})`.
+
+The backend is a real OS keychain, selected at **compile time** from the target OS:
+
+- **macOS** → the OS Keychain (`keychain_macos.zig`), storing each secret as a generic-password item keyed by `(service = app_name, account = name)`. It uses the flat `SecKeychain*GenericPassword` C API deliberately: it needs no CoreFoundation dictionary marshalling, keeping the FFI small and auditable.
+- **Linux** → the freedesktop Secret Service via **libsecret** (`secret_service_linux.zig`), using the `secret_password_{store,lookup,clear}_sync` helpers keyed by the same `service`/`account` attributes. libsecret's password API is NUL-terminated, so values are base64-encoded to preserve the opaque-bytes contract (documented; a value inspected via `secret-tool` shows base64).
+- **Windows** → the Credential Manager via `advapi32` (`credential_manager_windows.zig`), a `CRED_TYPE_GENERIC` credential with target `service:account` and a length-based blob (binary-safe, no base64 needed).
+- **any other target** → **a compile-time error**. There is no plaintext file fallback (see the update note above); the plugin's backend `switch` resolves to `@compileError` naming the plugin and the unsupported OS. A `comptime` reference forces this at registration time, so the failure is a clear build error, not a deferred runtime one.
+
+The opt-in portability guarantee is enforced in **two halves**: the source half is the compile-time backend selection above (a non-registered build never references any keychain symbol); the build half is `main.linkSecretsBackend`, called from `generate()`, which links each platform's libraries into the executable **only** when `zcli_secrets` is registered — `Security` + `CoreFoundation` (macOS), `libsecret-1` + `glib-2.0` (Linux), `advapi32` (Windows). Verified with `otool -L` on the `showcase` example: without the plugin the binary links only `libSystem`; adding `zcli.builtin(.secrets, .{})` is what makes the frameworks appear. A CLI that does not opt in stays a static, libc-free single binary; the plain `zig build test` also stays lib-free (native linking lives only in the dedicated `test-secrets` steps).
+
+### Proving every backend in CI
+
+Each backend is proven on its own OS in `.github/workflows/ci.yml` (a `secrets` job over ubuntu/macOS/windows): `zig build test-secrets` compiles and **links** the host backend (the link-time half), and `zig build test-secrets-live` runs a real set/get/overwrite/delete round-trip against the actual OS store. Windows (Credential Manager) and macOS (Keychain) are available directly for the runner user; Linux brings up a private D-Bus session with an unlocked `gnome-keyring` so libsecret has a Secret Service. The live round-trips are excluded from the default `test` step (they would mutate a developer's keychain), so local `zig build test` never touches a real store.
 
 ## Note: what "safe defaults" means for the HTTP client
 

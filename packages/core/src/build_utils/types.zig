@@ -170,6 +170,7 @@ pub const Builtin = enum {
     completions,
     config,
     output,
+    secrets,
     github_upgrade,
 
     /// Registration name, e.g. `zcli_help`.
