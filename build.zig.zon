@@ -4,6 +4,11 @@
     .fingerprint = 0x927117ca001313d0,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        // NOTE: the v1.0.3 release tag of serde.zig ships a build.zig.zon that still
+        // declares `.version = "1.0.1"` (upstream forgot to bump it), so Zig's content
+        // hash is labeled `serde-1.0.1-…` even though the URL points at v1.0.3. This is
+        // correct and intentional — do NOT "fix" the label to 1.0.3; the hash would no
+        // longer match the fetched tarball and the build would fail.
         .serde = .{
             .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.3.tar.gz",
             .hash = "serde-1.0.1-1DszT9VLCwAjuQh0WSq-dIfZ-6Gq8edODuhwF9gfsxld",

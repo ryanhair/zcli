@@ -192,7 +192,7 @@ pub fn init(config: Config) type {
 
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
-            try testBinary(allocator, binary_name);
+            try testBinary(allocator, context.io.io, scratch_dir, binary_name);
 
             // Replace current binary
             try stdout.print("Installing new version...\n", .{});
@@ -520,14 +520,21 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
 /// Each line is formatted `<sha256-hex>  <filename>`; the first line whose
 /// filename contains `binary_name` wins. Returns the hex digest borrowed from
 /// `content`, or null if no matching entry exists.
+/// Find the digest for exactly `binary_name` in a checksums.txt. Lines are
+/// `<hex digest>  <filename>` (shasum/sha256sum format; the filename may carry
+/// a leading `*` binary-mode marker). The filename column is compared exactly
+/// — the previous whole-line substring match could pick the line for
+/// `myapp-x86_64-linux-debug` when looking for `myapp-x86_64-linux` and fail
+/// the upgrade with a bogus checksum mismatch.
 fn parseExpectedChecksum(content: []const u8, binary_name: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, binary_name) == null) continue;
-        var parts = std.mem.splitScalar(u8, line, ' ');
-        if (parts.next()) |checksum| {
-            if (checksum.len > 0) return checksum;
-        }
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        var parts = std.mem.tokenizeAny(u8, line, " \t");
+        const digest = parts.next() orelse continue;
+        var name = parts.next() orelse continue;
+        if (std.mem.startsWith(u8, name, "*")) name = name[1..];
+        if (std.mem.eql(u8, name, binary_name)) return digest;
     }
     return null;
 }
@@ -552,14 +559,28 @@ fn sha256FileHex(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) ![64]u8 {
     return std.fmt.bytesToHex(&hash_bytes, .lower);
 }
 
-/// Test that the new binary works
-fn testBinary(allocator: std.mem.Allocator, path: []const u8) !void {
-    // Need to use absolute path or ./ prefix for executable
-    const exe_path = if (std.fs.path.isAbsolute(path))
-        path
-    else
-        try std.fmt.allocPrint(allocator, "./{s}", .{path});
-    defer if (!std.fs.path.isAbsolute(path)) allocator.free(exe_path);
+/// Smoke-test the downloaded binary before it replaces the live one: run
+/// `<binary> --version` from `dir` and require the process to exec and
+/// terminate normally. The checksum already proves the bytes match the
+/// release; this catches assets that are unrunnable anyway — e.g. a release
+/// published with the wrong architecture's binary under this platform's
+/// asset name, which exec rejects. The exit code is deliberately ignored:
+/// the version plugin is optional, so `--version` may legitimately exit
+/// nonzero in apps without it.
+fn testBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, binary_name: []const u8) !void {
+    // "./" so the spawn resolves against `dir`, never PATH.
+    const argv0 = try std.fmt.allocPrint(allocator, "./{s}", .{binary_name});
+    defer allocator.free(argv0);
+
+    var child = std.process.spawn(io, .{
+        .argv = &.{ argv0, "--version" },
+        .cwd = .{ .dir = dir },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.NewBinaryFailedToRun;
+    const term = child.wait(io) catch return error.NewBinaryFailedToRun;
+    if (term != .exited) return error.NewBinaryFailedToRun;
 }
 
 /// Atomically replace `target_path` (an absolute path, or a path within `dir`)
@@ -825,6 +846,28 @@ test "parseExpectedChecksum - tolerates trailing newline and no final newline" {
     try std.testing.expectEqualStrings("deadbeef", parseExpectedChecksum(without_nl, "bin").?);
 }
 
+test "parseExpectedChecksum - exact filename match, not substring" {
+    // The -debug asset's name CONTAINS the wanted name and sorts first; a
+    // substring match would return its digest and doom the verify step.
+    const content =
+        "dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000dddd0000  myapp-x86_64-linux-debug\n" ++
+        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  myapp-x86_64-linux\n";
+
+    const digest = parseExpectedChecksum(content, "myapp-x86_64-linux").?;
+    try std.testing.expectEqualStrings("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111", digest);
+
+    // And a name that only exists as a substring of another is NOT found.
+    try std.testing.expectEqual(@as(?[]const u8, null), parseExpectedChecksum(content, "x86_64-linux"));
+}
+
+test "parseExpectedChecksum - tolerates binary-mode marker and CRLF" {
+    // `shasum -b` / `sha256sum -b` prefix the filename with `*`; Windows
+    // tooling may emit CRLF line endings.
+    const content = "cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234 *myapp-x86_64-windows.exe\r\n";
+    const digest = parseExpectedChecksum(content, "myapp-x86_64-windows.exe").?;
+    try std.testing.expectEqualStrings("cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234", digest);
+}
+
 test "sha256FileHex - matches known digest" {
     // SHA-256 of the empty input is a well-known constant.
     const empty_digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -998,4 +1041,49 @@ test "replaceBinaryAt - a missing new binary leaves the target untouched" {
     const got = try tmp.dir.readFileAlloc(io, "current", a, .limited(1024));
     defer a.free(got);
     try std.testing.expectEqualStrings("ORIGINAL", got);
+}
+
+/// Write an executable shell script named `name` into `dir` (POSIX only).
+fn writeTestScript(io: std.Io, dir: std.Io.Dir, name: []const u8, body: []const u8) !void {
+    try dir.writeFile(io, .{ .sub_path = name, .data = body });
+    const file = try dir.openFile(io, name, .{});
+    defer file.close(io);
+    try file.setPermissions(io, .executable_file);
+}
+
+test "testBinary - accepts a binary that execs and exits, regardless of exit code" {
+    if (builtin.os.tag == .windows) return; // shell-script fixtures are POSIX-only
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestScript(io, tmp.dir, "ok", "#!/bin/sh\nexit 0\n");
+    try testBinary(a, io, tmp.dir, "ok");
+
+    // Exit code is deliberately not checked: `--version` may exit nonzero in
+    // apps without the version plugin. Only "does it exec and terminate
+    // normally" matters.
+    try writeTestScript(io, tmp.dir, "grumpy", "#!/bin/sh\nexit 3\n");
+    try testBinary(a, io, tmp.dir, "grumpy");
+}
+
+test "testBinary - rejects a binary that cannot exec or dies on a signal" {
+    if (builtin.os.tag == .windows) return; // shell-script fixtures are POSIX-only
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Garbage bytes with the executable bit: exec rejects it (the wrong-arch
+    // release-asset case this check exists for).
+    try writeTestScript(io, tmp.dir, "garbage", "\x7fNOT-AN-ELF-OR-MACHO\x00\x01\x02");
+    try std.testing.expectError(error.NewBinaryFailedToRun, testBinary(a, io, tmp.dir, "garbage"));
+
+    // Missing file: spawn fails outright.
+    try std.testing.expectError(error.NewBinaryFailedToRun, testBinary(a, io, tmp.dir, "does-not-exist"));
+
+    // A binary that dies on a signal did not "terminate normally".
+    try writeTestScript(io, tmp.dir, "suicidal", "#!/bin/sh\nkill -9 $$\n");
+    try std.testing.expectError(error.NewBinaryFailedToRun, testBinary(a, io, tmp.dir, "suicidal"));
 }

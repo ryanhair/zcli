@@ -225,38 +225,48 @@ test "security: malicious input handling - format strings" {
 // Resource Exhaustion Tests
 // ============================================================================
 
-test "security: resource exhaustion - memory limits" {
+test "security: resource limits - option count cap is enforced at the boundary" {
     const allocator = testing.allocator;
 
-    // Test protection against memory exhaustion via large option arrays
-    var large_args: std.ArrayList([]const u8) = .empty;
-    defer large_args.deinit(allocator);
-
-    // Create a reasonable number of file options for testing
-    const file_count = 100; // Reasonable test size to avoid actually exhausting memory
-    for (0..file_count) |i| {
-        try large_args.append(allocator, "--files");
-        try large_args.append(allocator, try std.fmt.allocPrint(allocator, "file{d}.txt", .{i}));
-    }
+    // Exactly at the default cap (100 option occurrences): parses fine, and
+    // the accumulated array holds exactly what was passed.
+    var at_cap: std.ArrayList([]const u8) = .empty;
+    defer at_cap.deinit(allocator);
+    var names: std.ArrayList([]u8) = .empty;
     defer {
-        // Clean up allocated filenames
-        var i: usize = 1; // Skip "--files" entries
-        while (i < large_args.items.len) : (i += 2) {
-            allocator.free(large_args.items[i]);
-        }
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+    for (0..100) |i| {
+        const name = try std.fmt.allocPrint(allocator, "file{d}.txt", .{i});
+        try names.append(allocator, name);
+        try at_cap.append(allocator, "--files");
+        try at_cap.append(allocator, name);
     }
 
-    if (options_parser.parseOptions(TestOptions, allocator, large_args.items)) |parsed| {
-        defer options_parser.cleanupOptions(TestOptions, parsed.options, allocator);
-        // If it succeeded, verify reasonable limits were applied
-        try testing.expect(parsed.options.files.len <= 10000); // Should have some reasonable limit
-    } else |err| {
-        // Resource limit errors are acceptable and expected
-        switch (err) {
-            zcli.ZcliError.ResourceLimitExceeded, zcli.ZcliError.SystemOutOfMemory => {}, // Good - limits are enforced
-            else => return err, // Unexpected error
-        }
-    }
+    const parsed = try options_parser.parseOptions(TestOptions, allocator, at_cap.items);
+    defer options_parser.cleanupOptions(TestOptions, parsed.options, allocator);
+    try testing.expectEqual(@as(usize, 100), parsed.options.files.len);
+
+    // One past the cap: hard failure, not a truncated success.
+    try at_cap.append(allocator, "--enabled");
+    try testing.expectError(
+        zcli.ZcliError.ResourceLimitExceeded,
+        options_parser.parseOptions(TestOptions, allocator, at_cap.items),
+    );
+}
+
+test "security: resource limits - absurd option names are rejected" {
+    const allocator = testing.allocator;
+
+    // An option name longer than the 256-byte cap fails fast instead of
+    // being fed through lookup and suggestion machinery.
+    const long_name = "--" ++ ("a" ** 300);
+    const args = [_][]const u8{long_name};
+    try testing.expectError(
+        zcli.ZcliError.ResourceLimitExceeded,
+        options_parser.parseOptions(TestOptions, allocator, &args),
+    );
 }
 
 test "security: resource exhaustion - processing time limits" {
