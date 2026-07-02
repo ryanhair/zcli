@@ -259,6 +259,8 @@ test "help output matches snapshot" {
 
     try testing.expectSnapshot(
         std.testing.allocator,
+        std.testing.io,
+        std.Io.Dir.cwd(),
         result.stdout,
         @src(),
         "help_output",
@@ -267,18 +269,32 @@ test "help output matches snapshot" {
 }
 ```
 
-Snapshots are stored in `tests/snapshots/{test_file}/{snapshot_name}.txt`.
+Snapshots are stored in `tests/snapshots/{test_file}/{snapshot_name}.txt`,
+resolved against the directory you pass (usually `std.Io.Dir.cwd()` — the
+package root when run via `zig build test`).
 
 **Creating and updating snapshots:**
 
-```bash
-# First run: creates snapshot files
-UPDATE_SNAPSHOTS=1 zig build test
+Pass `.update = true` to write snapshots instead of comparing. Thread it from
+explicit configuration — the idiomatic setup is a build option:
 
-# Or add to build.zig using the build utility:
-const testing_build = @import("zcli-testing");
-testing_build.setup(b, test_step);
-# Then: zig build update-snapshots
+```zig
+// build.zig
+const update_snapshots = b.option(bool, "update-snapshots", "Rewrite snapshot files") orelse false;
+const test_options = b.addOptions();
+test_options.addOption(bool, "update_snapshots", update_snapshots);
+tests.root_module.addOptions("build_options", test_options);
+```
+
+```zig
+// in the test
+try testing.expectSnapshot(allocator, io, std.Io.Dir.cwd(), result.stdout, @src(), "help_output", .{
+    .update = @import("build_options").update_snapshots,
+});
+```
+
+```bash
+zig build test -Dupdate-snapshots
 ```
 
 **Snapshot options:**
@@ -287,6 +303,7 @@ testing_build.setup(b, test_step);
 |--------|---------|-------------|
 | `.mask` | `true` | Replace UUIDs, timestamps, and memory addresses with placeholders |
 | `.ansi` | `true` | Preserve ANSI color codes in snapshots |
+| `.update` | `false` | Write/overwrite the snapshot instead of comparing |
 
 Masking prevents snapshots from breaking due to dynamic content like timestamps or UUIDs.
 

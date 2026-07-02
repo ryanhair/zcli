@@ -167,7 +167,10 @@ pub const Context = struct {
         return self.io.stdin();
     }
 
-    pub fn exit(_: *Self, code: u8) void {
+    pub fn exit(self: *Self, code: u8) noreturn {
+        // std.process.exit does not flush buffered writers — without this,
+        // anything printed just before exit() is silently dropped.
+        self.io.flush();
         std.process.exit(code);
     }
 

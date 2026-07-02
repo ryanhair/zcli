@@ -41,9 +41,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     var probe = std.Io.Dir.cwd().openDir(io, "src", .{}) catch |err| switch (err) {
         error.FileNotFound => {
             try status.writeAll("No 'src' directory found. Run this from a zcli project root.\n");
-            try status.flush();
             context.exit(1);
-            return;
         },
         else => return err,
     };
