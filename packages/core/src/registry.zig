@@ -1230,7 +1230,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                 }
                             }
 
-                            const parse_result = try command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, cli_args);
+                            const parse_result = try command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, cli_args);
                             defer parse_result.deinit();
 
                             const args_instance = parse_result.args;
@@ -1475,6 +1475,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             OptionsType,
                             cmd_meta,
                             context.allocator,
+                            context.environ,
                             parsed_args.positional,
                         );
                         defer parse_result.deinit();

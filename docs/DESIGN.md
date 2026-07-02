@@ -144,6 +144,7 @@ pub const meta = .{
     .options = .{
         .limit = .{ .description = "Maximum number of results" },
         .format = .{ .description = "Output format" },
+        .api_key = .{ .description = "API key", .env = "MYAPP_API_KEY" },
     }
 };
 
@@ -174,6 +175,20 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 - Last field can be `[][]const u8` to capture remaining args
 - Types supported: `[]const u8`, `u32`, `i32`, `bool`, enums
 - Default values make an arg optional
+
+**Environment Variable Fallbacks:**
+
+An option can declare an environment variable as its fallback via
+`meta.options.<field>.env`. When the flag is not passed on the command line,
+the variable's value is parsed as the field's type. Precedence, highest to
+lowest: CLI argument > environment variable > default value.
+
+- `bool`: `1`/`0`, `true`/`false`, `yes`/`no` (case-insensitive)
+- strings: used verbatim; integers/floats: parsed; enums: matched by tag name
+- A value that doesn't parse as the field's type is ignored (the default stays)
+
+Values come from the environ threaded down from `process.Init` — the
+framework performs no ambient `getenv`.
 
 **Context Structure:**
 

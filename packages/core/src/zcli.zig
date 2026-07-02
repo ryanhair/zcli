@@ -412,7 +412,7 @@ pub const Config = registry.Config;
 ///
 /// **Memory Management**: ⚠️ CRITICAL - Call `result.deinit()` to cleanup!
 /// ```zig
-/// const result = try parseCommandLine(Args, Options, null, allocator, args);
+/// const result = try parseCommandLine(Args, Options, null, allocator, context.environ, args);
 /// defer result.deinit(); // REQUIRED!
 /// // Use result.args and result.options...
 /// ```
@@ -469,7 +469,7 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
 /// Validate command metadata at compile time to catch typos and invalid fields.
 /// This function checks:
 /// - Top-level meta fields (description, examples, args, options, hidden)
-/// - Options metadata fields (description, short, name)
+/// - Options metadata fields (description, short, name, env)
 /// - That option/arg meta field names match actual struct fields
 ///
 /// `path` names the owning command so every error points back at its file.
@@ -539,7 +539,7 @@ pub fn validateMeta(
             const option_meta_info = @typeInfo(@TypeOf(option_meta));
 
             if (option_meta_info == .@"struct") {
-                const valid_option_fields = .{ "description", "short", "name" };
+                const valid_option_fields = .{ "description", "short", "name", "env" };
 
                 inline for (option_meta_info.@"struct".fields) |opt_field| {
                     const opt_is_valid = comptime blk: {
@@ -551,7 +551,7 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name");
+                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env");
                     }
                 }
             }

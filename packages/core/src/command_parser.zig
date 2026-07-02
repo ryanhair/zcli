@@ -36,7 +36,7 @@ pub fn CommandParseResult(comptime ArgsType: type, comptime OptionsType: type) t
 /// const Args = struct { file: []const u8, output: ?[]const u8 = null };
 /// const Options = struct { verbose: bool = false, format: enum { json, yaml } = .json };
 ///
-/// const result = try parseCommandLine(Args, Options, null, allocator,
+/// const result = try parseCommandLine(Args, Options, null, allocator, context.environ,
 ///     &.{"input.txt", "--verbose", "--format", "json", "output.txt"});
 /// defer result.deinit();
 ///
@@ -50,6 +50,7 @@ pub fn parseCommandLine(
     comptime OptionsType: type,
     comptime meta: anytype,
     allocator: std.mem.Allocator,
+    environ: ?*const std.process.Environ.Map,
     args: []const []const u8,
 ) ZcliError!CommandParseResult(ArgsType, OptionsType) {
     // First pass: separate options from positional arguments
@@ -115,11 +116,10 @@ pub fn parseCommandLine(
         i += 1;
     }
 
-    // Parse options from the collected option arguments
-    const options = if (option_args.items.len > 0)
-        try parseOptionsFromArgs(OptionsType, allocator, option_args.items)
-    else
-        initializeDefaultOptions(OptionsType);
+    // Parse options from the collected option arguments. Always goes through
+    // the meta-aware parser (not just when flags were passed) so `.env`
+    // fallbacks apply to a command line with no options at all.
+    const options = try parseOptionsFromArgs(OptionsType, meta, allocator, environ, option_args.items);
 
     // Parse positional arguments
     // Note: We need to keep positional_args.items alive for the lifetime of the result
@@ -216,9 +216,16 @@ fn convertUnderscoresToDashes(name: []const u8, buffer: []u8) []const u8 {
 }
 
 /// Parse options from a list of option arguments
-fn parseOptionsFromArgs(comptime OptionsType: type, allocator: std.mem.Allocator, option_args: []const []const u8) ZcliError!OptionsType {
-    // Delegate to the existing options parser
-    const result = try options_parser.parseOptions(OptionsType, allocator, option_args);
+fn parseOptionsFromArgs(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    allocator: std.mem.Allocator,
+    environ: ?*const std.process.Environ.Map,
+    option_args: []const []const u8,
+) ZcliError!OptionsType {
+    // Delegate to the meta-aware options parser: meta carries custom names,
+    // shorts, and `.env` fallback declarations.
+    const result = try options_parser.parseOptionsWithMeta(OptionsType, meta, allocator, environ, option_args);
     return result.options;
 }
 
@@ -295,7 +302,7 @@ test "parseCommandLine basic usage" {
     };
 
     // Test mixed args and options
-    const result = try parseCommandLine(Args, Options, null, allocator, &.{ "input.txt", "--verbose", "output.txt" });
+    const result = try parseCommandLine(Args, Options, null, allocator, null, &.{ "input.txt", "--verbose", "output.txt" });
     defer result.deinit();
 
     try testing.expectEqualStrings("input.txt", result.args.file);
@@ -317,7 +324,7 @@ test "parseCommandLine options only" {
         count: u32 = 1,
     };
 
-    const result = try parseCommandLine(Args, Options, null, allocator, &.{ "--verbose", "--count", "5" });
+    const result = try parseCommandLine(Args, Options, null, allocator, null, &.{ "--verbose", "--count", "5" });
     defer result.deinit();
 
     try testing.expect(result.args.file == null);
@@ -337,7 +344,7 @@ test "e2e: arguments only" {
         output: ?[]const u8 = null,
     };
 
-    const result = try parseCommandLine(BasicArgs, struct {}, null, allocator, &.{ "input.txt", "output.txt" });
+    const result = try parseCommandLine(BasicArgs, struct {}, null, allocator, null, &.{ "input.txt", "output.txt" });
     defer result.deinit();
 
     try testing.expectEqualStrings("input.txt", result.args.file);
@@ -353,7 +360,7 @@ test "e2e: optional arguments" {
         output: ?[]const u8 = null,
     };
 
-    const result = try parseCommandLine(BasicArgs, struct {}, null, allocator, &.{"input.txt"});
+    const result = try parseCommandLine(BasicArgs, struct {}, null, allocator, null, &.{"input.txt"});
     defer result.deinit();
 
     try testing.expectEqualStrings("input.txt", result.args.file);
@@ -371,7 +378,7 @@ test "e2e: boolean flags only" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = try parseCommandLine(struct {}, BasicOptions, null, allocator, &.{ "--verbose", "--debug" });
+    const result = try parseCommandLine(struct {}, BasicOptions, null, allocator, null, &.{ "--verbose", "--debug" });
     defer result.deinit();
 
     try testing.expect(result.options.verbose);
@@ -391,7 +398,7 @@ test "e2e: value options" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = try parseCommandLine(struct {}, BasicOptions, null, allocator, &.{ "--count", "42", "--format", "yaml" });
+    const result = try parseCommandLine(struct {}, BasicOptions, null, allocator, null, &.{ "--count", "42", "--format", "yaml" });
     defer result.deinit();
 
     try testing.expect(!result.options.verbose);
@@ -416,7 +423,7 @@ test "e2e: options after arguments" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = try parseCommandLine(BasicArgs, BasicOptions, null, allocator, &.{ "input.txt", "--verbose", "output.txt", "--count", "10" });
+    const result = try parseCommandLine(BasicArgs, BasicOptions, null, allocator, null, &.{ "input.txt", "--verbose", "output.txt", "--count", "10" });
     defer result.deinit();
 
     try testing.expectEqualStrings("input.txt", result.args.file);
@@ -441,7 +448,7 @@ test "e2e: options before arguments" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = try parseCommandLine(BasicArgs, BasicOptions, null, allocator, &.{ "--verbose", "--count", "5", "input.txt", "output.txt" });
+    const result = try parseCommandLine(BasicArgs, BasicOptions, null, allocator, null, &.{ "--verbose", "--count", "5", "input.txt", "output.txt" });
     defer result.deinit();
 
     try testing.expectEqualStrings("input.txt", result.args.file);
@@ -466,7 +473,7 @@ test "e2e: fully interleaved options and arguments" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = try parseCommandLine(BasicArgs, BasicOptions, null, allocator, &.{ "--debug", "input.txt", "--count", "3", "--verbose", "output.txt" });
+    const result = try parseCommandLine(BasicArgs, BasicOptions, null, allocator, null, &.{ "--debug", "input.txt", "--count", "3", "--verbose", "output.txt" });
     defer result.deinit();
 
     try testing.expectEqualStrings("input.txt", result.args.file);
@@ -486,7 +493,7 @@ test "e2e: multiple array values" {
         verbose: bool = false,
     };
 
-    const result = try parseCommandLine(struct {}, ArrayOptions, null, allocator, &.{ "--files", "a.txt", "--files", "b.txt", "--files", "c.txt" });
+    const result = try parseCommandLine(struct {}, ArrayOptions, null, allocator, null, &.{ "--files", "a.txt", "--files", "b.txt", "--files", "c.txt" });
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 3), result.options.files.len);
@@ -505,7 +512,7 @@ test "e2e: array options mixed with other options" {
         verbose: bool = false,
     };
 
-    const result = try parseCommandLine(struct {}, ArrayOptions, null, allocator, &.{ "--files", "first.txt", "--verbose", "--files", "second.txt", "--numbers", "42" });
+    const result = try parseCommandLine(struct {}, ArrayOptions, null, allocator, null, &.{ "--files", "first.txt", "--verbose", "--files", "second.txt", "--numbers", "42" });
     defer result.deinit();
 
     try testing.expectEqual(@as(usize, 2), result.options.files.len);
@@ -532,7 +539,7 @@ test "e2e: repeated array options with short codes" {
 
     // Test with long form (should work)
     {
-        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, &.{ "--output", "file1.txt", "--output", "file2.txt", "--output", "file3.txt" });
+        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, null, &.{ "--output", "file1.txt", "--output", "file2.txt", "--output", "file3.txt" });
         defer result.deinit();
 
         try testing.expectEqual(@as(usize, 3), result.options.output.len);
@@ -543,7 +550,7 @@ test "e2e: repeated array options with short codes" {
 
     // Test with short form (reported bug: doesn't work)
     {
-        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, &.{ "-o", "file1.txt", "-o", "file2.txt", "-o", "file3.txt" });
+        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, null, &.{ "-o", "file1.txt", "-o", "file2.txt", "-o", "file3.txt" });
         defer result.deinit();
 
         try testing.expectEqual(@as(usize, 3), result.options.output.len);
@@ -554,7 +561,7 @@ test "e2e: repeated array options with short codes" {
 
     // Test mixed long and short form
     {
-        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, &.{ "-o", "file1.txt", "--output", "file2.txt", "-o", "file3.txt" });
+        const result = try parseCommandLine(struct {}, RepeatOptions, RepeatOptions.meta, allocator, null, &.{ "-o", "file1.txt", "--output", "file2.txt", "-o", "file3.txt" });
         defer result.deinit();
 
         try testing.expectEqual(@as(usize, 3), result.options.output.len);
@@ -578,7 +585,7 @@ test "e2e: git-like command" {
         template: ?[]const u8 = null,
     };
 
-    const result = try parseCommandLine(GitArgs, GitOptions, null, allocator, &.{ "my-repo", "--bare", "--template", "/path/to/template" });
+    const result = try parseCommandLine(GitArgs, GitOptions, null, allocator, null, &.{ "my-repo", "--bare", "--template", "/path/to/template" });
     defer result.deinit();
 
     try testing.expectEqualStrings("my-repo", result.args.repository.?);
@@ -598,7 +605,7 @@ test "e2e: docker-like command with filters" {
         quiet: bool = false,
     };
 
-    const result = try parseCommandLine(struct {}, DockerOptions, null, allocator, &.{ "--filter", "status=running", "--all", "--filter", "name=web", "--quiet" });
+    const result = try parseCommandLine(struct {}, DockerOptions, null, allocator, null, &.{ "--filter", "status=running", "--all", "--filter", "name=web", "--quiet" });
     defer result.deinit();
 
     try testing.expect(result.options.all);
@@ -624,7 +631,7 @@ test "e2e: negative numbers as arguments" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = try parseCommandLine(NumberArgs, BasicOptions, null, allocator, &.{ "--verbose", "-5", "--count", "10", "-42" });
+    const result = try parseCommandLine(NumberArgs, BasicOptions, null, allocator, null, &.{ "--verbose", "-5", "--count", "10", "-42" });
     defer result.deinit();
 
     try testing.expectEqualStrings("-5", result.args.threshold);
@@ -647,7 +654,7 @@ test "e2e: empty string values" {
         prefix: []const u8 = "default",
     };
 
-    const result = try parseCommandLine(EmptyArgs, EmptyOptions, null, allocator, &.{ "test", "", "--output", "", "--prefix", "custom" });
+    const result = try parseCommandLine(EmptyArgs, EmptyOptions, null, allocator, null, &.{ "test", "", "--output", "", "--prefix", "custom" });
     defer result.deinit();
 
     try testing.expectEqualStrings("test", result.args.name);
@@ -672,7 +679,7 @@ test "e2e: missing required arguments" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = parseCommandLine(BasicArgs, BasicOptions, null, allocator, &.{"--verbose"});
+    const result = parseCommandLine(BasicArgs, BasicOptions, null, allocator, null, &.{"--verbose"});
     try testing.expectError(ZcliError.ArgumentMissingRequired, result);
 }
 
@@ -691,7 +698,7 @@ test "e2e: too many arguments" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = parseCommandLine(LimitedArgs, BasicOptions, null, allocator, &.{ "arg1", "arg2", "arg3" });
+    const result = parseCommandLine(LimitedArgs, BasicOptions, null, allocator, null, &.{ "arg1", "arg2", "arg3" });
     try testing.expectError(ZcliError.ArgumentTooMany, result);
 }
 
@@ -711,7 +718,7 @@ test "e2e: unknown option" {
         format: enum { json, yaml, xml } = .json,
     };
 
-    const result = parseCommandLine(BasicArgs, BasicOptions, null, allocator, &.{ "input.txt", "--unknown", "value" });
+    const result = parseCommandLine(BasicArgs, BasicOptions, null, allocator, null, &.{ "input.txt", "--unknown", "value" });
     try testing.expectError(ZcliError.OptionUnknown, result);
 }
 
@@ -729,7 +736,7 @@ test "e2e: basic example init command scenarios" {
 
     // Option only
     {
-        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, &.{"--bare"});
+        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, null, &.{"--bare"});
         defer result.deinit();
         try testing.expect(result.args.directory == null);
         try testing.expect(result.options.bare);
@@ -737,7 +744,7 @@ test "e2e: basic example init command scenarios" {
 
     // Argument then option
     {
-        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, &.{ "test-repo", "--bare" });
+        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, null, &.{ "test-repo", "--bare" });
         defer result.deinit();
         try testing.expectEqualStrings("test-repo", result.args.directory.?);
         try testing.expect(result.options.bare);
@@ -745,7 +752,7 @@ test "e2e: basic example init command scenarios" {
 
     // Argument only
     {
-        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, &.{"new-repo"});
+        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, null, &.{"new-repo"});
         defer result.deinit();
         try testing.expectEqualStrings("new-repo", result.args.directory.?);
         try testing.expect(!result.options.bare);
@@ -753,7 +760,7 @@ test "e2e: basic example init command scenarios" {
 
     // Option then argument
     {
-        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, &.{ "--bare", "another-repo" });
+        const result = try parseCommandLine(InitArgs, InitOptions, null, allocator, null, &.{ "--bare", "another-repo" });
         defer result.deinit();
         try testing.expectEqualStrings("another-repo", result.args.directory.?);
         try testing.expect(result.options.bare);
@@ -777,7 +784,7 @@ test "e2e: advanced example container ls scenarios" {
 
     // Multiple filters with other options
     {
-        const result = try parseCommandLine(struct {}, ContainerOptions, null, allocator, &.{ "--filter", "status=running", "--filter", "name=web", "--all" });
+        const result = try parseCommandLine(struct {}, ContainerOptions, null, allocator, null, &.{ "--filter", "status=running", "--filter", "name=web", "--all" });
         defer result.deinit();
         try testing.expect(result.options.all);
         try testing.expectEqual(@as(usize, 2), result.options.filter.len);
@@ -787,11 +794,36 @@ test "e2e: advanced example container ls scenarios" {
 
     // Mixed option ordering
     {
-        const result = try parseCommandLine(struct {}, ContainerOptions, null, allocator, &.{ "--all", "--filter", "status=Up", "--quiet" });
+        const result = try parseCommandLine(struct {}, ContainerOptions, null, allocator, null, &.{ "--all", "--filter", "status=Up", "--quiet" });
         defer result.deinit();
         try testing.expect(result.options.all);
         try testing.expect(result.options.quiet);
         try testing.expectEqual(@as(usize, 1), result.options.filter.len);
         try testing.expectEqualStrings("status=Up", result.options.filter[0]);
     }
+}
+
+test "parseCommandLine applies env fallbacks even with no flags on the command line" {
+    const allocator = std.testing.allocator;
+
+    const Args = struct { file: []const u8 };
+    const Options = struct { region: []const u8 = "us-east-1" };
+    const meta = .{ .options = .{ .region = .{ .env = "ZCLI_TEST_REGION" } } };
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("ZCLI_TEST_REGION", "eu-west-2");
+
+    // No --region flag anywhere: the env fallback must still apply (the
+    // no-options path used to skip the meta-aware parser entirely).
+    const result = try parseCommandLine(Args, Options, meta, allocator, &env, &.{"input.txt"});
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("input.txt", result.args.file);
+    try std.testing.expectEqualStrings("eu-west-2", result.options.region);
+
+    // And the CLI still wins when both are present.
+    const r2 = try parseCommandLine(Args, Options, meta, allocator, &env, &.{ "input.txt", "--region", "ap-south-1" });
+    defer r2.deinit();
+    try std.testing.expectEqualStrings("ap-south-1", r2.options.region);
 }
