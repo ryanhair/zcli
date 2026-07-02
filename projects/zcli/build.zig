@@ -19,6 +19,15 @@ pub fn build(b: *std.Build) void {
     });
     const nightwatch_module = nightwatch_dep.module("nightwatch");
 
+    // Shared scaffolding library (arg/option spec model + in-file AST splice),
+    // used by the `add command`/`add option`/`add arg` command modules. Exposed
+    // to command modules via shared_modules below.
+    const scaffold_module = b.addModule("scaffold", .{
+        .root_source_file = b.path("src/scaffold.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "zcli",
@@ -51,6 +60,7 @@ pub fn build(b: *std.Build) void {
         .app_description = "Build beautiful CLIs with zcli - scaffold projects, add commands, and more",
         .shared_modules = &[_]zcli.SharedModule{
             .{ .name = "nightwatch", .module = nightwatch_module },
+            .{ .name = "scaffold", .module = scaffold_module },
         },
     });
 
@@ -99,6 +109,7 @@ pub fn build(b: *std.Build) void {
         "src/commands/tree.zig",
         "src/commands/dev.zig",
         "src/commands/add/command.zig",
+        "src/commands/add/option.zig",
     };
     for (command_test_files) |path| {
         const mod = b.addModule(b.fmt("test-{s}", .{path}), .{
@@ -108,10 +119,15 @@ pub fn build(b: *std.Build) void {
         });
         mod.addImport("zcli", zcli_module);
         mod.addImport("nightwatch", nightwatch_module);
+        mod.addImport("scaffold", scaffold_module);
         mod.addImport("command_registry", command_registry_stub);
         const cmd_tests = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(cmd_tests).step);
     }
+
+    // The scaffold library's own unit tests (spec rendering + AST splice).
+    const scaffold_tests = b.addTest(.{ .root_module = scaffold_module });
+    test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);
 
     // End-to-end tests: run the built binary against temp projects. Kept out of
     // the `test` step because the build-and-run tier compiles zcli from source

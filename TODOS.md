@@ -28,10 +28,17 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   `add command`, PLUS a `test` step in `init`'s generated build.zig that discovers command
   files and compiles each as a test module (mirrors the meta-CLI's `command_test_files` loop +
   a `command_registry` Context stub). Without the build wiring the stub never runs.
-- [ ] **PR: `add option`/`add arg` + remove JSON-blob bulk** (ADR-0005) — flag interface
-  (positional name + `--type`/`--multiple`/`--nullable`/`--default`/`--short`/`-d`); AST
-  splice preserving `execute()`; keep the wizard; `add arg` append + `--before`/`--after`.
-  The centerpiece; highest complexity (in-file AST write). Depends on `add command` PR.
+- [x] **PR: `add option` + splice engine** (ADR-0005) — DONE. The centerpiece's first half.
+  New `scaffold` shared module: `spec` (the arg/option model + rendering/type/name/path
+  helpers, extracted from `add command` as the single source of truth) and `splice` (the
+  in-file, AST-guided textual editor that adds a field + meta entry while preserving
+  `execute()`/comments/formatting). `add option <cmd> <name> --type/--multiple/--nullable/
+  --default/--short/-d`. (Note: zcli auto-derives shorts from field first-letters — `default`
+  would claim `-d`, so the command's own Options declares `description` before `default`.)
+- [ ] **PR: `add arg` + remove JSON-blob bulk** (ADR-0005) — the second half. `add arg` append
+  + `--before`/`--after` (splice engine's `Anchor` already supports both), ordering rules via
+  `validateArg`; then delete the JSON front-end (`parseArgJson`/`parseOptJson` + `--arg`/
+  `--option` on `add command`) now that flag-based authoring replaces it. Keep the wizard.
 - [ ] **PR: `rm option`/`rm arg`** (ADR-0005) — splice-out; variadic names; error on missing.
   Shares splice machinery with the previous PR.
 - [ ] **PR: `add group`** (grill Q8) — meta-only `index.zig` by default; `--with-landing`

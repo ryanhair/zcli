@@ -5,6 +5,27 @@ const zinput = zcli.zinput;
 const ztheme = zcli.ztheme;
 const Theme = ztheme.Theme;
 
+// The shared arg/option spec model plus its rendering, type, name, and path
+// helpers live in the `scaffold` library (single source of truth, shared with
+// `add option`/`add arg`). Aliased here so this file's call sites are unchanged.
+const scaffold = @import("scaffold");
+const ArgSpec = scaffold.spec.ArgSpec;
+const OptSpec = scaffold.spec.OptSpec;
+const isSupportedArrayElem = scaffold.spec.isSupportedArrayElem;
+const enumHasMember = scaffold.spec.enumHasMember;
+const buildEnumType = scaffold.spec.buildEnumType;
+const writeEscaped = scaffold.spec.writeEscaped;
+const quoteString = scaffold.spec.quoteString;
+const writeArgField = scaffold.spec.writeArgFieldType;
+const writeOptField = scaffold.spec.writeOptFieldType;
+const writeDashed = scaffold.spec.writeDashed;
+const parsePath = scaffold.spec.parsePath;
+const buildFilePath = scaffold.spec.buildFilePath;
+const isValidIdentifier = scaffold.spec.isValidIdentifier;
+const isReservedWord = scaffold.spec.isReservedWord;
+const toFieldName = scaffold.spec.toFieldName;
+const normalizeName = scaffold.spec.normalizeName;
+
 pub const meta = .{
     .description = "Add a new command to your zcli project",
     .examples = &.{
@@ -32,44 +53,6 @@ pub const Options = struct {
     arg: [][]const u8 = &.{},
     option: [][]const u8 = &.{},
 };
-
-// ---------------------------------------------------------------------------
-// Gathered specs — the single model both front-ends (wizard, JSON flags) build.
-// `elem_type` is the element/scalar Zig type; `multiple` lifts it to a slice
-// (varargs `[][]const u8` for positionals, `[]elem` for options).
-// ---------------------------------------------------------------------------
-
-const ArgSpec = struct {
-    name: []const u8,
-    elem_type: []const u8,
-    multiple: bool,
-    nullable: bool,
-    description: []const u8,
-};
-
-const OptSpec = struct {
-    name: []const u8,
-    elem_type: []const u8,
-    multiple: bool,
-    nullable: bool,
-    /// Rendered Zig expression for the default; present iff scalar and not nullable.
-    default_expr: ?[]const u8 = null,
-    short: ?u8 = null,
-    description: []const u8 = "",
-};
-
-/// Option array element types zcli's parser can accumulate (see
-/// packages/core/src/options/array_utils.zig).
-const supported_array_elems = [_][]const u8{
-    "[]const u8", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64",
-};
-
-fn isSupportedArrayElem(elem: []const u8) bool {
-    for (supported_array_elems) |e| {
-        if (std.mem.eql(u8, elem, e)) return true;
-    }
-    return false;
-}
 
 // Wizard prompts pass `.interrupt_keys = back_keys` so Escape aborts with
 // `error.Interrupted`; the gather state machines catch that to rewind a step.
@@ -357,22 +340,6 @@ fn parseOptJson(arena: std.mem.Allocator, json: []const u8) !OptSpec {
 
 /// Render a JSON default value as a Zig expression, using light type awareness.
 /// Whether `name` is a member of an `enum { a, b = 1, ... }` type string.
-fn enumHasMember(enum_type: []const u8, name: []const u8) bool {
-    const open = std.mem.indexOfScalar(u8, enum_type, '{') orelse return false;
-    const close = std.mem.lastIndexOfScalar(u8, enum_type, '}') orelse return false;
-    if (close <= open) return false;
-    var it = std.mem.splitScalar(u8, enum_type[open + 1 .. close], ',');
-    while (it.next()) |raw| {
-        var member = std.mem.trim(u8, raw, " \t");
-        // Drop an explicit value, e.g. `a = 1` -> `a`.
-        if (std.mem.indexOfScalar(u8, member, '=')) |eq| {
-            member = std.mem.trim(u8, member[0..eq], " \t");
-        }
-        if (member.len > 0 and std.mem.eql(u8, member, name)) return true;
-    }
-    return false;
-}
-
 fn renderDefault(arena: std.mem.Allocator, elem_type: []const u8, v: std.json.Value) ![]const u8 {
     if (std.mem.eql(u8, elem_type, "[]const u8")) {
         const s = switch (v) {
@@ -524,21 +491,6 @@ fn resolveCommandPath(
     }
 }
 
-/// Split a `/`-separated path into validated identifier segments.
-fn parsePath(arena: std.mem.Allocator, raw: []const u8) ![]const []const u8 {
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n/");
-    if (trimmed.len == 0) return error.InvalidCommandPath;
-
-    var parts = std.ArrayList([]const u8).empty;
-    var it = std.mem.splitScalar(u8, trimmed, '/');
-    while (it.next()) |segment| {
-        if (segment.len == 0) continue;
-        if (!isValidIdentifier(segment)) return error.InvalidCommandPath;
-        try parts.append(arena, segment);
-    }
-    if (parts.items.len == 0) return error.InvalidCommandPath;
-    return parts.items;
-}
 
 // ---------------------------------------------------------------------------
 // Step 3: positional arguments
@@ -1107,33 +1059,6 @@ fn generateSource(
     return aw.written();
 }
 
-fn writeArgField(w: *std.Io.Writer, a: ArgSpec) !void {
-    if (a.multiple) {
-        try w.writeAll("[][]const u8");
-    } else if (a.nullable) {
-        try w.print("?{s} = null", .{a.elem_type});
-    } else {
-        try w.writeAll(a.elem_type);
-    }
-}
-
-fn writeOptField(w: *std.Io.Writer, o: OptSpec) !void {
-    if (o.multiple) {
-        if (o.nullable) {
-            try w.print("?[]{s} = null", .{o.elem_type});
-        } else {
-            try w.print("[]{s} = &.{{}}", .{o.elem_type});
-        }
-    } else if (o.nullable) {
-        try w.print("?{s} = null", .{o.elem_type});
-    } else {
-        // A non-nullable scalar option always carries a default (the wizard sets
-        // one at the .default step; declarative requires it). Fail loudly rather
-        // than writing `= undefined` into the user's source if that ever breaks.
-        try w.print("{s} = {s}", .{ o.elem_type, o.default_expr orelse unreachable });
-    }
-}
-
 fn writeExample(w: *std.Io.Writer, parts: []const []const u8, args_list: []const ArgSpec) !void {
     try writeExamplePath(w, parts);
     for (args_list) |a| {
@@ -1154,51 +1079,9 @@ fn writeExamplePath(w: *std.Io.Writer, parts: []const []const u8) !void {
     }
 }
 
-fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
-    for (s) |ch| switch (ch) {
-        '"' => try w.writeAll("\\\""),
-        '\\' => try w.writeAll("\\\\"),
-        '\n' => try w.writeAll("\\n"),
-        '\r' => {},
-        else => try w.writeByte(ch),
-    };
-}
-
-fn quoteString(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    var aw = std.Io.Writer.Allocating.init(arena);
-    const w = &aw.writer;
-    try w.writeByte('"');
-    try writeEscaped(w, s);
-    try w.writeByte('"');
-    return aw.written();
-}
-
-fn buildEnumType(arena: std.mem.Allocator, choices: []const []const u8) ![]const u8 {
-    var aw = std.Io.Writer.Allocating.init(arena);
-    const w = &aw.writer;
-    try w.writeAll("enum {");
-    for (choices, 0..) |c, i| {
-        if (i > 0) try w.writeByte(',');
-        try w.print(" {s}", .{c});
-    }
-    try w.writeAll(" }");
-    return aw.written();
-}
-
 // ---------------------------------------------------------------------------
 // Filesystem
 // ---------------------------------------------------------------------------
-
-fn buildFilePath(arena: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8).empty;
-    try buf.appendSlice(arena, "src/commands");
-    for (parts) |p| {
-        try buf.append(arena, '/');
-        try buf.appendSlice(arena, p);
-    }
-    try buf.appendSlice(arena, ".zig");
-    return buf.items;
-}
 
 fn fileExists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
@@ -1378,61 +1261,6 @@ fn readChoices(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, t
         }
         return list.items;
     }
-}
-
-// ---------------------------------------------------------------------------
-// Names & validation
-// ---------------------------------------------------------------------------
-
-fn isValidIdentifier(name: []const u8) bool {
-    if (name.len == 0) return false;
-    const first = name[0];
-    if (!std.ascii.isAlphabetic(first) and first != '_') return false;
-    for (name[1..]) |ch| {
-        if (!std.ascii.isAlphanumeric(ch) and ch != '_') return false;
-    }
-    return true;
-}
-
-/// Normalize a name to a Zig field name (dashes → underscores) and validate it.
-fn normalizeName(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    const field = try toFieldName(arena, trimmed);
-    if (!isValidIdentifier(field)) return error.InvalidName;
-    if (isReservedWord(field)) return error.ReservedName;
-    return field;
-}
-
-fn toFieldName(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, name);
-    for (out) |*ch| {
-        if (ch.* == '-') ch.* = '_';
-    }
-    return out;
-}
-
-fn writeDashed(w: *std.Io.Writer, field: []const u8) !void {
-    for (field) |ch| {
-        try w.writeByte(if (ch == '_') '-' else ch);
-    }
-}
-
-const reserved_words = [_][]const u8{
-    "addrspace", "align",       "allowzero",      "and",      "anyframe",    "anytype",
-    "asm",       "async",       "await",          "break",    "callconv",    "catch",
-    "comptime",  "const",       "continue",       "defer",    "else",        "enum",
-    "errdefer",  "error",       "export",         "extern",   "fn",          "for",
-    "if",        "inline",      "noalias",        "noinline", "nosuspend",   "opaque",
-    "or",        "orelse",      "packed",         "pub",      "resume",      "return",
-    "struct",    "suspend",     "switch",         "test",     "threadlocal", "try",
-    "union",     "unreachable", "usingnamespace", "var",      "volatile",    "while",
-};
-
-fn isReservedWord(name: []const u8) bool {
-    for (reserved_words) |kw| {
-        if (std.mem.eql(u8, name, kw)) return true;
-    }
-    return false;
 }
 
 fn argNames(arena: std.mem.Allocator, list: []const ArgSpec) ![]const []const u8 {
