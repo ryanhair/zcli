@@ -324,9 +324,9 @@ test "release --dry-run previews without creating a tag" {
     }
 
     var r = try run(tmp.dir, &.{
-        zcli_exe,        "release", "patch",
-        "--dry-run",     "--skip-checks", "--skip-tests",
-        "--message",     "test notes",
+        zcli_exe,    "release",       "patch",
+        "--dry-run", "--skip-checks", "--skip-tests",
+        "--message", "test notes",
     });
     defer r.deinit();
     try expectOk(r);
@@ -541,6 +541,41 @@ test "scaffolded project builds, runs, and round-trips add command" {
     {
         // required + optional + variadic positionals, short flag, enum, multiple option.
         var r = try run(proj, &.{ "./zig-out/bin/demo", "users", "create", "alice@example.com", "5", "x", "y", "-v", "--format", "json", "--ports", "8080", "--ports", "9090" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement users create");
+    }
+
+    // `rm option`/`rm arg` splice fields back out (the inverse editor). A bulk
+    // removal that names a missing field rejects the whole batch and edits
+    // nothing; the valid removals then splice out cleanly and the result must
+    // still compile and run under the real binary.
+    {
+        var r = try run(proj, &.{ zcli_exe, "rm", "option", "users/create", "note", "ghost" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "has no option named 'ghost'");
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "rm", "option", "users/create", "note", "ports" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "Removed 2 options");
+    }
+    {
+        // Remove the optional positional; email + variadic names remain valid.
+        var r = try run(proj, &.{ zcli_exe, "rm", "arg", "users/create", "age" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // The removed --ports/--note flags are gone; the trimmed command still runs.
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "users", "create", "alice@example.com", "x", "y", "-v", "--format", "json" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement users create");

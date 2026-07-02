@@ -41,8 +41,10 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   real file via a new `splice.fieldShapes` reader, erroring clearly before any write. Deleted
   the JSON front-end (`declarative`/`parseArgJson`/`parseOptJson` + `--arg`/`--option` on
   `add command`) and the now-dead `validateArg`/`validateOpt`; the wizard + shared spec stay.
-- [ ] **PR: `rm option`/`rm arg`** (ADR-0005) — splice-out; variadic names; error on missing.
-  Shares splice machinery with the previous PR.
+- [x] **PR: `rm option`/`rm arg`** (ADR-0005) — DONE. New `rm` group with `option`/`arg`
+  subcommands. Splice-out (`splice.removeOption`/`removeArg`) computes each field's span +
+  trailing comma/whitespace and cuts it, dropping the emptied `meta.<sub>` block; variadic
+  `names`; batch is atomic — a missing name (`splice.missingFields`) rejects the whole edit.
 - [ ] **PR: `add group`** (grill Q8) — meta-only `index.zig` by default; `--with-landing`
   for a custom execute + test.
 - [ ] **PR: `add plugin` + `init` sets `plugins_dir`** (ADR-0006) — convention discovery,
