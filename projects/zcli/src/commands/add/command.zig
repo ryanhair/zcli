@@ -11,8 +11,6 @@ const Theme = ztheme.Theme;
 const scaffold = @import("scaffold");
 const ArgSpec = scaffold.spec.ArgSpec;
 const OptSpec = scaffold.spec.OptSpec;
-const isSupportedArrayElem = scaffold.spec.isSupportedArrayElem;
-const enumHasMember = scaffold.spec.enumHasMember;
 const buildEnumType = scaffold.spec.buildEnumType;
 const writeEscaped = scaffold.spec.writeEscaped;
 const quoteString = scaffold.spec.quoteString;
@@ -32,15 +30,12 @@ pub const meta = .{
         "add command",
         "add command deploy",
         "add command users/create --description \"Create a user\"",
-        "add command search --arg '{\"name\":\"query\",\"type\":\"[]const u8\"}' --option '{\"name\":\"limit\",\"type\":\"u32\",\"nullable\":true}'",
     },
     .args = .{
         .path = "Command path (e.g., 'deploy' or 'users/create'). Omit to be prompted.",
     },
     .options = .{
         .description = .{ .description = "Description of the command", .short = 'd' },
-        .arg = .{ .description = "Declarative positional arg as JSON {name,type,multiple?,nullable?,description?}. Repeatable." },
-        .option = .{ .description = "Declarative option as JSON {name,type,multiple?,nullable?,default?,short?,description?}. Repeatable." },
     },
 };
 
@@ -50,8 +45,6 @@ pub const Args = struct {
 
 pub const Options = struct {
     description: ?[]const u8 = null,
-    arg: [][]const u8 = &.{},
-    option: [][]const u8 = &.{},
 };
 
 // Wizard prompts pass `.interrupt_keys = back_keys` so Escape aborts with
@@ -78,12 +71,9 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         return error.NotInZcliProject;
     };
 
-    // Declarative mode: any --arg/--option fully specifies the command up front.
-    if (options.arg.len > 0 or options.option.len > 0) {
-        return declarative(arena, context, args, options);
-    }
-
-    // Otherwise: interactive on a TTY, classic skeleton when piped.
+    // Interactive on a TTY, classic skeleton when piped. Args and options are
+    // added afterward with `add arg`/`add option` (ADR-0005) or, interactively,
+    // through the wizard's own prompts.
     if (!zinput.terminal.isStdinTty()) {
         return skeleton(arena, context, args, options);
     }
@@ -217,223 +207,6 @@ fn skeleton(arena: std.mem.Allocator, context: *Context, args: Args, options: Op
 }
 
 // ---------------------------------------------------------------------------
-// Declarative mode (--arg / --option JSON)
-// ---------------------------------------------------------------------------
-
-fn declarative(arena: std.mem.Allocator, context: *Context, args: Args, options: Options) !void {
-    const stderr = context.stderr();
-    const io = context.io.io;
-
-    const raw_path = args.path orelse {
-        try stderr.print("Error: A command path is required\n", .{});
-        try stderr.print("Usage: zcli add command <path> --arg '{{...}}' --option '{{...}}'\n", .{});
-        return error.MissingCommandPath;
-    };
-
-    const parts = parsePath(arena, raw_path) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{raw_path});
-        return error.InvalidCommandPath;
-    };
-
-    const file_path = try buildFilePath(arena, parts);
-    if (fileExists(io, file_path)) {
-        try stderr.print("Error: Command already exists: {s}\n", .{file_path});
-        return error.CommandAlreadyExists;
-    }
-
-    var args_list = std.ArrayList(ArgSpec).empty;
-    for (options.arg, 0..) |json, i| {
-        const spec = parseArgJson(arena, json) catch |err| {
-            try stderr.print("Error: --arg #{d} {s}: {s}\n", .{ i + 1, @errorName(err), json });
-            return err;
-        };
-        try validateArg(stderr, &args_list, spec, i);
-        try args_list.append(arena, spec);
-    }
-
-    var opts_list = std.ArrayList(OptSpec).empty;
-    for (options.option, 0..) |json, i| {
-        const spec = parseOptJson(arena, json) catch |err| {
-            try stderr.print("Error: --option #{d} {s}: {s}\n", .{ i + 1, @errorName(err), json });
-            return err;
-        };
-        try validateOpt(stderr, &opts_list, spec, i);
-        try opts_list.append(arena, spec);
-    }
-
-    const description = options.description orelse "TODO: Add description";
-    const content = try generateSource(arena, parts, description, args_list.items, opts_list.items);
-    const new_groups = try writeCommandFile(arena, io, parts, file_path, content);
-    try finish(context.stdout(), &context.theme, parts, file_path, new_groups);
-}
-
-fn parseArgJson(arena: std.mem.Allocator, json: []const u8) !ArgSpec {
-    const parsed = try std.json.parseFromSlice(std.json.Value, arena, json, .{});
-    defer parsed.deinit();
-    const obj = switch (parsed.value) {
-        .object => |o| o,
-        else => return error.NotAnObject,
-    };
-
-    const name = try normalizeName(arena, try jsonString(obj, "name", error.MissingName));
-    const elem_type = try arena.dupe(u8, try jsonString(obj, "type", error.MissingType));
-    if (elem_type.len == 0) return error.EmptyType;
-    const multiple = jsonBool(obj, "multiple", false);
-    // Positional varargs are []const u8 slices only.
-    if (multiple and !std.mem.eql(u8, elem_type, "[]const u8")) return error.PositionalMultipleMustBeString;
-    const nullable = jsonBool(obj, "nullable", false);
-    const description = try arena.dupe(u8, jsonStringOr(obj, "description", ""));
-
-    return .{
-        .name = name,
-        .elem_type = elem_type,
-        .multiple = multiple,
-        .nullable = nullable,
-        .description = description,
-    };
-}
-
-fn parseOptJson(arena: std.mem.Allocator, json: []const u8) !OptSpec {
-    const parsed = try std.json.parseFromSlice(std.json.Value, arena, json, .{});
-    defer parsed.deinit();
-    const obj = switch (parsed.value) {
-        .object => |o| o,
-        else => return error.NotAnObject,
-    };
-
-    const name = try normalizeName(arena, try jsonString(obj, "name", error.MissingName));
-    const elem_type = try arena.dupe(u8, try jsonString(obj, "type", error.MissingType));
-    if (elem_type.len == 0) return error.EmptyType;
-    const multiple = jsonBool(obj, "multiple", false);
-    if (multiple and !isSupportedArrayElem(elem_type)) return error.UnsupportedArrayElement;
-    const nullable = jsonBool(obj, "nullable", false);
-    const description = try arena.dupe(u8, jsonStringOr(obj, "description", ""));
-
-    var short: ?u8 = null;
-    if (obj.get("short")) |v| switch (v) {
-        .string => |s| {
-            if (s.len != 1 or !std.ascii.isAlphabetic(s[0])) return error.BadShort;
-            short = s[0];
-        },
-        else => return error.BadShort,
-    };
-
-    var default_expr: ?[]const u8 = null;
-    if (multiple) {
-        // List option: non-nullable defaults to an empty slice; no scalar default.
-        if (!nullable) default_expr = "&.{}";
-    } else if (!nullable) {
-        const v = obj.get("default") orelse return error.MissingDefault; // non-nullable scalar requires a default
-        default_expr = try renderDefault(arena, elem_type, v);
-    }
-
-    return .{
-        .name = name,
-        .elem_type = elem_type,
-        .multiple = multiple,
-        .nullable = nullable,
-        .default_expr = default_expr,
-        .short = short,
-        .description = description,
-    };
-}
-
-/// Render a JSON default value as a Zig expression, using light type awareness.
-/// Whether `name` is a member of an `enum { a, b = 1, ... }` type string.
-fn renderDefault(arena: std.mem.Allocator, elem_type: []const u8, v: std.json.Value) ![]const u8 {
-    if (std.mem.eql(u8, elem_type, "[]const u8")) {
-        const s = switch (v) {
-            .string => |x| x,
-            else => return error.BadDefault,
-        };
-        return quoteString(arena, s);
-    }
-    if (std.mem.startsWith(u8, elem_type, "enum")) {
-        const s = switch (v) {
-            .string => |x| x,
-            else => return error.BadDefault,
-        };
-        // The default must name one of the enum's members, or the generated
-        // `= .<default>` won't compile.
-        if (!enumHasMember(elem_type, s)) return error.BadDefault;
-        return std.fmt.allocPrint(arena, ".{s}", .{s});
-    }
-    if (std.mem.eql(u8, elem_type, "bool")) {
-        return switch (v) {
-            .bool => |b| if (b) "true" else "false",
-            else => error.BadDefault,
-        };
-    }
-    // Numeric or custom type: emit the JSON scalar verbatim.
-    return switch (v) {
-        .integer => |x| std.fmt.allocPrint(arena, "{d}", .{x}),
-        .float => |x| std.fmt.allocPrint(arena, "{d}", .{x}),
-        .number_string => |x| arena.dupe(u8, x),
-        .string => |x| arena.dupe(u8, x), // custom type → raw Zig expression
-        .bool => |x| if (x) "true" else "false",
-        else => error.BadDefault,
-    };
-}
-
-fn jsonString(obj: std.json.ObjectMap, key: []const u8, miss: anyerror) ![]const u8 {
-    const v = obj.get(key) orelse return miss;
-    return switch (v) {
-        .string => |s| s,
-        else => error.NotAString,
-    };
-}
-
-fn jsonStringOr(obj: std.json.ObjectMap, key: []const u8, fallback: []const u8) []const u8 {
-    const v = obj.get(key) orelse return fallback;
-    return switch (v) {
-        .string => |s| s,
-        else => fallback,
-    };
-}
-
-fn jsonBool(obj: std.json.ObjectMap, key: []const u8, fallback: bool) bool {
-    const v = obj.get(key) orelse return fallback;
-    return switch (v) {
-        .bool => |b| b,
-        else => fallback,
-    };
-}
-
-fn validateArg(stderr: *std.Io.Writer, list: *std.ArrayList(ArgSpec), spec: ArgSpec, index: usize) !void {
-    for (list.items) |e| {
-        if (std.mem.eql(u8, e.name, spec.name)) {
-            try stderr.print("Error: --arg #{d}: duplicate name '{s}'\n", .{ index + 1, spec.name });
-            return error.DuplicateArg;
-        }
-        if (e.multiple) {
-            try stderr.print("Error: --arg #{d}: a multiple argument must be last\n", .{index + 1});
-            return error.MultipleNotLast;
-        }
-    }
-    if (!spec.nullable and !spec.multiple) {
-        for (list.items) |e| {
-            if (e.nullable and !e.multiple) {
-                try stderr.print("Error: --arg #{d}: required '{s}' cannot follow an optional argument\n", .{ index + 1, spec.name });
-                return error.BadArgOrder;
-            }
-        }
-    }
-}
-
-fn validateOpt(stderr: *std.Io.Writer, list: *std.ArrayList(OptSpec), spec: OptSpec, index: usize) !void {
-    for (list.items) |e| {
-        if (std.mem.eql(u8, e.name, spec.name)) {
-            try stderr.print("Error: --option #{d}: duplicate name '{s}'\n", .{ index + 1, spec.name });
-            return error.DuplicateOption;
-        }
-        if (spec.short) |c| if (e.short == c) {
-            try stderr.print("Error: --option #{d}: duplicate short flag '-{c}'\n", .{ index + 1, c });
-            return error.DuplicateShort;
-        };
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Step 1: command path (with live preview)
 // ---------------------------------------------------------------------------
 
@@ -490,7 +263,6 @@ fn resolveCommandPath(
         return .{ .parts = parts, .prompted = prompted };
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Step 3: positional arguments
@@ -1443,54 +1215,6 @@ test "generateSource: multiple is independent of element type" {
     try expectContains(src, "tags: [][]const u8 = &.{},"); // multiple string option
     try expectContains(src, "\"users create <email> [age] names...\"");
 }
-
-test "parseOptJson: multiple is a separate flag, not a type" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const ints = try parseOptJson(a, "{\"name\":\"ports\",\"type\":\"u32\",\"multiple\":true}");
-    try testing.expect(ints.multiple);
-    try testing.expectEqualStrings("u32", ints.elem_type);
-    try testing.expectEqualStrings("&.{}", ints.default_expr.?);
-
-    const nullable_list = try parseOptJson(a, "{\"name\":\"ports\",\"type\":\"i64\",\"multiple\":true,\"nullable\":true}");
-    try testing.expect(nullable_list.default_expr == null);
-
-    const scalar = try parseOptJson(a, "{\"name\":\"retries\",\"type\":\"u32\",\"default\":3}");
-    try testing.expectEqualStrings("3", scalar.default_expr.?);
-    try testing.expectError(error.UnsupportedArrayElement, parseOptJson(a, "{\"name\":\"x\",\"type\":\"bool\",\"multiple\":true}"));
-    try testing.expectError(error.MissingDefault, parseOptJson(a, "{\"name\":\"x\",\"type\":\"u32\"}"));
-}
-
-test "parseOptJson: enum default must name a member" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const ok = try parseOptJson(a, "{\"name\":\"format\",\"type\":\"enum { json, yaml }\",\"default\":\"yaml\"}");
-    try testing.expectEqualStrings(".yaml", ok.default_expr.?);
-    // A default that isn't a member would generate `= .xml`, which won't compile.
-    try testing.expectError(error.BadDefault, parseOptJson(a, "{\"name\":\"format\",\"type\":\"enum { json, yaml }\",\"default\":\"xml\"}"));
-}
-
-test "enumHasMember handles explicit values and spacing" {
-    try testing.expect(enumHasMember("enum { json, yaml }", "json"));
-    try testing.expect(enumHasMember("enum { a = 1, b = 2 }", "b"));
-    try testing.expect(!enumHasMember("enum { json, yaml }", "xml"));
-    try testing.expect(!enumHasMember("enum {}", "x"));
-}
-
-test "parseArgJson: positional multiple must be a string" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const ok = try parseArgJson(a, "{\"name\":\"names\",\"type\":\"[]const u8\",\"multiple\":true}");
-    try testing.expect(ok.multiple);
-    try testing.expectError(error.PositionalMultipleMustBeString, parseArgJson(a, "{\"name\":\"nums\",\"type\":\"u8\",\"multiple\":true}"));
-}
-
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {
         std.debug.print("\nexpected to find:\n  {s}\nin:\n{s}\n", .{ needle, haystack });

@@ -35,10 +35,12 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   `execute()`/comments/formatting). `add option <cmd> <name> --type/--multiple/--nullable/
   --default/--short/-d`. (Note: zcli auto-derives shorts from field first-letters — `default`
   would claim `-d`, so the command's own Options declares `description` before `default`.)
-- [ ] **PR: `add arg` + remove JSON-blob bulk** (ADR-0005) — the second half. `add arg` append
-  + `--before`/`--after` (splice engine's `Anchor` already supports both), ordering rules via
-  `validateArg`; then delete the JSON front-end (`parseArgJson`/`parseOptJson` + `--arg`/
-  `--option` on `add command`) now that flag-based authoring replaces it. Keep the wizard.
+- [x] **PR: `add arg` + remove JSON-blob bulk** (ADR-0005) — DONE. The centerpiece's second
+  half. `add arg <cmd> <name> --type/--multiple/--nullable/--before/--after/-d`, reusing the
+  splice `Anchor`; ordering (required-before-optional, `multiple` last) validated against the
+  real file via a new `splice.fieldShapes` reader, erroring clearly before any write. Deleted
+  the JSON front-end (`declarative`/`parseArgJson`/`parseOptJson` + `--arg`/`--option` on
+  `add command`) and the now-dead `validateArg`/`validateOpt`; the wizard + shared spec stay.
 - [ ] **PR: `rm option`/`rm arg`** (ADR-0005) — splice-out; variadic names; error on missing.
   Shares splice machinery with the previous PR.
 - [ ] **PR: `add group`** (grill Q8) — meta-only `index.zig` by default; `--with-landing`

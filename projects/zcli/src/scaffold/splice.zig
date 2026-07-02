@@ -69,6 +69,50 @@ fn ensureNoField(arena: std.mem.Allocator, source: [:0]const u8, container: []co
     }
 }
 
+/// The ordering-relevant shape of an existing `Args`/`Options` field.
+pub const FieldShape = struct {
+    name: []const u8,
+    /// Nullable (`?T`) or defaulted — optional to supply.
+    optional: bool,
+    /// Variadic/accumulating slice (element type is not `u8`).
+    multiple: bool,
+};
+
+/// Each field of `container`'s struct as its ordering shape, in source order.
+/// Mirrors the type analysis tree.zig uses for read-back; used to validate arg
+/// ordering (required-before-optional, `multiple` last) against the real file.
+pub fn fieldShapes(arena: std.mem.Allocator, source: [:0]const u8, container: []const u8) ![]const FieldShape {
+    var ast = try Ast.parse(arena, source, .zig);
+    const init = findDeclInit(&ast, container) orelse return &.{};
+    var buf: [2]Ast.Node.Index = undefined;
+    const cd = ast.fullContainerDecl(&buf, init) orelse return SpliceError.NotAStruct;
+
+    var out = std.ArrayList(FieldShape).empty;
+    for (cd.ast.members) |m| {
+        const cf = ast.fullContainerField(m) orelse continue;
+        const type_node = cf.ast.type_expr.unwrap() orelse continue;
+
+        var node = type_node;
+        var optional = cf.ast.value_expr != .none; // has a default
+        if (ast.nodeTag(node) == .optional_type) {
+            optional = true;
+            node = ast.nodeData(node).node;
+        }
+        var multiple = false;
+        if (ast.fullPtrType(node)) |ptr| {
+            if (ptr.size == .slice and !std.mem.eql(u8, nodeSource(&ast, ptr.ast.child_type), "u8")) {
+                multiple = true;
+            }
+        }
+        try out.append(arena, .{
+            .name = try arena.dupe(u8, ast.tokenSlice(cf.ast.main_token)),
+            .optional = optional,
+            .multiple = multiple,
+        });
+    }
+    return out.items;
+}
+
 // ---------------------------------------------------------------------------
 // Struct-field splice
 // ---------------------------------------------------------------------------
@@ -212,6 +256,10 @@ fn findDeclInit(ast: *Ast, name: []const u8) ?Ast.Node.Index {
     return null;
 }
 
+fn nodeSource(ast: *Ast, node: Ast.Node.Index) []const u8 {
+    return ast.source[tokStart(ast, ast.firstToken(node))..tokEnd(ast, ast.lastToken(node))];
+}
+
 fn memberName(ast: *Ast, member: Ast.Node.Index) []const u8 {
     const cf = ast.fullContainerField(member) orelse return "";
     return ast.tokenSlice(cf.ast.main_token);
@@ -257,8 +305,13 @@ test "insertOption creates block, appends field, preserves execute" {
     const a = arena.allocator();
 
     const out = try insertOption(a, shell, .{
-        .name = "limit", .elem_type = "u32", .multiple = false, .nullable = false,
-        .default_expr = "10", .short = 'l', .description = "Max results",
+        .name = "limit",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "10",
+        .short = 'l',
+        .description = "Max results",
     });
     try expectParses(a, out);
     try testing.expect(std.mem.indexOf(u8, out, "limit: u32 = 10,") != null);
@@ -267,7 +320,12 @@ test "insertOption creates block, appends field, preserves execute" {
 
     // Chain a second option into the now-existing block.
     const out2 = try insertOption(a, try a.dupeZ(u8, out), .{
-        .name = "verbose", .elem_type = "bool", .multiple = false, .nullable = false, .default_expr = "false", .description = "Loud",
+        .name = "verbose",
+        .elem_type = "bool",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "false",
+        .description = "Loud",
     });
     try expectParses(a, out2);
     try testing.expect(std.mem.indexOf(u8, out2, "verbose: bool = false,") != null);
@@ -279,14 +337,22 @@ test "insertArg appends and positions with before/after" {
     const a = arena.allocator();
 
     const one = try insertArg(a, shell, .{
-        .name = "name", .elem_type = "[]const u8", .multiple = false, .nullable = false, .description = "Who",
+        .name = "name",
+        .elem_type = "[]const u8",
+        .multiple = false,
+        .nullable = false,
+        .description = "Who",
     }, .append);
     try expectParses(a, one);
     try testing.expect(std.mem.indexOf(u8, one, "name: []const u8,") != null);
     try testing.expect(std.mem.indexOf(u8, one, ".name = \"Who\",") != null);
 
     const before = try insertArg(a, try a.dupeZ(u8, one), .{
-        .name = "count", .elem_type = "u32", .multiple = false, .nullable = true, .description = "",
+        .name = "count",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = true,
+        .description = "",
     }, .{ .before = "name" });
     try expectParses(a, before);
     const ci = std.mem.indexOf(u8, before, "count: ?u32 = null").?;
@@ -300,10 +366,20 @@ test "duplicate field is rejected" {
     const a = arena.allocator();
 
     const one = try insertOption(a, shell, .{
-        .name = "limit", .elem_type = "u32", .multiple = false, .nullable = false, .default_expr = "10", .description = "",
+        .name = "limit",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "10",
+        .description = "",
     });
     try testing.expectError(SpliceError.DuplicateField, insertOption(a, try a.dupeZ(u8, one), .{
-        .name = "limit", .elem_type = "u32", .multiple = false, .nullable = false, .default_expr = "1", .description = "",
+        .name = "limit",
+        .elem_type = "u32",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = "1",
+        .description = "",
     }));
 }
 
@@ -319,4 +395,29 @@ test "fieldNames reads Args in source order" {
     try testing.expectEqual(@as(usize, 2), names.len);
     try testing.expectEqualStrings("first", names[0]);
     try testing.expectEqualStrings("second", names[1]);
+}
+
+test "fieldShapes classifies required, optional, and variadic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src =
+        \\pub const Args = struct {
+        \\    name: []const u8,
+        \\    count: u32 = 1,
+        \\    tag: ?[]const u8 = null,
+        \\    rest: [][]const u8,
+        \\};
+        \\
+    ;
+    const shapes = try fieldShapes(a, src, "Args");
+    try testing.expectEqual(@as(usize, 4), shapes.len);
+    // name: required string (not optional, not multiple).
+    try testing.expect(!shapes[0].optional and !shapes[0].multiple);
+    // count: defaulted → optional.
+    try testing.expect(shapes[1].optional and !shapes[1].multiple);
+    // tag: nullable → optional.
+    try testing.expect(shapes[2].optional);
+    // rest: [][]const u8 → variadic.
+    try testing.expect(shapes[3].multiple);
 }
