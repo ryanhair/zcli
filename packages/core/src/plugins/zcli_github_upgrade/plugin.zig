@@ -2,11 +2,26 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zcli = @import("zcli");
 
+/// All network traffic goes through zcli's safe-defaults HTTP client, which
+/// enforces TLS, bounded (decompressed) bodies, bounded redirects with
+/// credential stripping, and a per-request timeout.
+const http = zcli.http;
+
 // Security limits for HTTP responses
-const MAX_COMPRESSED_RESPONSE_SIZE = 10 * 1024 * 1024; // 10MB compressed
-const MAX_DECOMPRESSED_RESPONSE_SIZE = 20 * 1024 * 1024; // 20MB decompressed
+const MAX_RELEASES_RESPONSE_SIZE = 20 * 1024 * 1024; // 20MB for the releases JSON
 const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB for binary downloads
 const MAX_CHECKSUMS_SIZE = 1024 * 1024; // 1MB for checksums file
+
+// Per-request deadlines. std.http.Client has no timeout of its own — an
+// unreachable or stalled peer would otherwise hang forever.
+/// Interactive API calls made by the upgrade command itself.
+const api_timeout: std.Io.Duration = .fromSeconds(30);
+/// The passive update check at startup: it must never make the CLI feel hung,
+/// so it gets seconds, not minutes.
+const startup_check_timeout: std.Io.Duration = .fromSeconds(3);
+/// The binary download — generous (binaries can be ~100MB on slow
+/// connections), but still bounded so a dead peer cannot hang the command.
+const download_timeout: std.Io.Duration = .fromSeconds(15 * 60);
 
 // Base URLs for GitHub. Kept as named constants so URL construction is a pure,
 // testable step and so a test/mirror host could be substituted in one place.
@@ -87,7 +102,7 @@ pub fn init(config: Config) type {
             const target_version = if (args.version) |v|
                 try allocator.dupe(u8, v)
             else
-                try fetchLatestVersion(allocator, context.io.io, plugin_config.repo, context.app_name);
+                try fetchLatestVersion(allocator, context.io.io, plugin_config.repo, context.app_name, api_timeout);
             defer allocator.free(target_version);
 
             if (options.check) {
@@ -198,8 +213,9 @@ pub fn init(config: Config) type {
             const allocator = context.allocator;
             const stderr = context.stderr();
 
-            // Check for latest version (with timeout)
-            const latest_version = fetchLatestVersion(allocator, context.io.io, plugin_config.repo, context.app_name) catch |err| {
+            // Passive check: short deadline (startup_check_timeout) so a slow
+            // or black-holed network can never make the CLI feel hung.
+            const latest_version = fetchLatestVersion(allocator, context.io.io, plugin_config.repo, context.app_name, startup_check_timeout) catch |err| {
                 // Silently fail - don't interrupt the user's workflow
                 _ = err;
                 return;
@@ -246,95 +262,44 @@ pub fn init(config: Config) type {
 // Helper Functions
 // ============================================================================
 
-/// Fetch the latest version from GitHub releases API filtered by CLI name prefix
-fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cli_name: []const u8) ![]const u8 {
+/// Fetch the latest version from GitHub releases API filtered by CLI name
+/// prefix. `timeout` bounds the whole request: the upgrade command passes
+/// `api_timeout`, while `onStartup` passes `startup_check_timeout` so a
+/// stalled network can never hang CLI startup.
+fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cli_name: []const u8, timeout: std.Io.Duration) ![]const u8 {
     std.debug.print("Checking for updates...\n", .{});
 
     // Fetch all releases and filter by tag prefix
     const url = try buildReleasesUrl(allocator, github_api_base, repo);
     defer allocator.free(url);
 
-    // Create HTTP client
-    var client = std.http.Client{ .allocator = allocator, .io = io };
+    var client = http.Client.init(allocator, io, .{
+        .max_response_bytes = MAX_RELEASES_RESPONSE_SIZE,
+        .timeout = timeout,
+    });
     defer client.deinit();
 
-    const uri = try std.Uri.parse(url);
-    var request = try client.request(.GET, uri, .{
-        .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
-    });
-    defer request.deinit();
-
-    try request.sendBodiless();
-
-    // Use 1KB buffer for redirect handling
-    var redirect_buffer: [1024]u8 = undefined;
-    var response = try request.receiveHead(&redirect_buffer);
+    var response = try client.get(url);
+    defer response.deinit();
 
     // Check for rate limiting
-    if (response.head.status == .too_many_requests) {
-        // Check for Retry-After header
-        var it = response.head.iterateHeaders();
-        while (it.next()) |header| {
-            if (std.mem.eql(u8, header.name, "retry-after")) {
-                const retry_seconds = std.fmt.parseInt(u32, header.value, 10) catch 60;
-                std.debug.print("GitHub API rate limit exceeded. Retry after {d} seconds.\n", .{retry_seconds});
-                return error.RateLimitExceeded;
-            }
-        }
+    if (response.status == .too_many_requests) {
         std.debug.print("GitHub API rate limit exceeded.\n", .{});
         return error.RateLimitExceeded;
     }
 
-    if (response.head.status != .ok) {
+    if (response.status != .ok) {
         // Provide specific error messages based on status code
-        switch (response.head.status) {
+        switch (response.status) {
             .not_found => std.debug.print("GitHub repository not found: {s}\n", .{repo}),
             .unauthorized => std.debug.print("GitHub API authentication failed (unauthorized)\n", .{}),
             .forbidden => std.debug.print("GitHub API access forbidden (check permissions)\n", .{}),
-            else => std.debug.print("GitHub API request failed with status: {}\n", .{response.head.status}),
+            else => std.debug.print("GitHub API request failed with status: {}\n", .{response.status}),
         }
         return error.FailedToFetchVersion;
     }
 
-    // Read the raw response body (may be gzip-compressed).
-    var transfer_buffer: [4096]u8 = undefined;
-    var body_reader = response.reader(&transfer_buffer);
-    const raw_body = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_COMPRESSED_RESPONSE_SIZE));
-    defer allocator.free(raw_body);
-
-    const body = try decodeResponseBody(allocator, raw_body);
-    defer allocator.free(body);
-
-    return selectVersion(allocator, body, cli_name);
-}
-
-/// Decode a (possibly gzip-compressed) HTTP response body into a freshly
-/// allocated buffer the caller owns. Plain bodies are duplicated; gzip bodies
-/// (magic bytes 0x1f 0x8b) are inflated with a hard cap to defeat gzip bombs.
-fn decodeResponseBody(allocator: std.mem.Allocator, raw_body: []const u8) ![]u8 {
-    const is_gzipped = raw_body.len >= 2 and raw_body[0] == 0x1f and raw_body[1] == 0x8b;
-    if (!is_gzipped) return allocator.dupe(u8, raw_body);
-
-    var reader: std.Io.Reader = .fixed(raw_body);
-
-    // Allocate decompression buffer (32KB window)
-    const decompress_buffer = try allocator.alloc(u8, std.compress.flate.max_window_len);
-    defer allocator.free(decompress_buffer);
-
-    var decompressor = std.compress.flate.Decompress.init(&reader, .gzip, decompress_buffer);
-
-    // Collect decompressed data, enforcing a size limit to prevent gzip bombs.
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-
-    const bytes_written = try decompressor.reader.streamRemaining(&aw.writer);
-    if (bytes_written > MAX_DECOMPRESSED_RESPONSE_SIZE) {
-        std.debug.print("Error: Decompressed response ({d} bytes) exceeds maximum size ({d} bytes)\n", .{ bytes_written, MAX_DECOMPRESSED_RESPONSE_SIZE });
-        std.debug.print("This might indicate a malformed or malicious response.\n", .{});
-        return error.DecompressedDataTooLarge;
-    }
-
-    return allocator.dupe(u8, aw.written());
+    return selectVersion(allocator, response.body, cli_name);
 }
 
 /// Pick the version for `cli_name` from a GitHub releases JSON array body.
@@ -463,50 +428,38 @@ fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
     const url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, binary_name);
     defer allocator.free(url);
 
-    // Download to a file in the scratch directory
-    var client = std.http.Client{ .allocator = allocator, .io = io };
+    var client = http.Client.init(allocator, io, .{
+        .max_response_bytes = MAX_BINARY_SIZE,
+        .timeout = download_timeout,
+    });
     defer client.deinit();
 
-    const uri = try std.Uri.parse(url);
-    var request = try client.request(.GET, uri, .{
-        .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
-    });
-    defer request.deinit();
-
-    try request.sendBodiless();
-
-    var redirect_buffer: [1024]u8 = undefined;
-    var response = try request.receiveHead(&redirect_buffer);
+    var response = try client.get(url);
+    defer response.deinit();
 
     // Check for rate limiting
-    if (response.head.status == .too_many_requests) {
+    if (response.status == .too_many_requests) {
         std.debug.print("GitHub API rate limit exceeded while downloading binary.\n", .{});
         return error.RateLimitExceeded;
     }
 
-    if (response.head.status != .ok) {
-        switch (response.head.status) {
+    if (response.status != .ok) {
+        switch (response.status) {
             .not_found => {
                 std.debug.print("Error: Binary not found at URL: {s}\n", .{url});
                 std.debug.print("Expected binary name: {s}\n", .{binary_name});
                 std.debug.print("Verify that the release contains binaries for your platform.\n", .{});
             },
-            else => std.debug.print("Failed to download binary from {s}, status: {}\n", .{ url, response.head.status }),
+            else => std.debug.print("Failed to download binary from {s}, status: {}\n", .{ url, response.status }),
         }
         return error.FailedToDownloadBinary;
     }
-
-    // Read entire response body with size limit
-    var transfer_buffer: [8192]u8 = undefined;
-    var body_reader = response.reader(&transfer_buffer);
-    const binary_data = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_BINARY_SIZE));
-    defer allocator.free(binary_data);
 
     // Write to file. Exclusive: the scratch dir was freshly created and is
     // private, so anything already sitting at this name is an attack or a bug.
     var temp_file = try dir.createFile(io, binary_name, .{ .exclusive = true });
     defer temp_file.close(io);
-    try temp_file.writeStreamingAll(io, binary_data);
+    try temp_file.writeStreamingAll(io, response.body);
 }
 
 /// Verify the checksum of the downloaded binary at `binary_name` within `dir`.
@@ -517,45 +470,34 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
     const checksums_url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, "checksums.txt");
     defer allocator.free(checksums_url);
 
-    var client = std.http.Client{ .allocator = allocator, .io = io };
+    var client = http.Client.init(allocator, io, .{
+        .max_response_bytes = MAX_CHECKSUMS_SIZE,
+        .timeout = api_timeout,
+    });
     defer client.deinit();
 
-    const uri = try std.Uri.parse(checksums_url);
-    var request = try client.request(.GET, uri, .{
-        .headers = .{ .user_agent = .{ .override = "zcli-github-upgrade" } },
-    });
-    defer request.deinit();
-
-    try request.sendBodiless();
-
-    var redirect_buffer: [1024]u8 = undefined;
-    var response = try request.receiveHead(&redirect_buffer);
+    var response = try client.get(checksums_url);
+    defer response.deinit();
 
     // Check for rate limiting
-    if (response.head.status == .too_many_requests) {
+    if (response.status == .too_many_requests) {
         std.debug.print("GitHub API rate limit exceeded while downloading checksums.\n", .{});
         return error.RateLimitExceeded;
     }
 
-    if (response.head.status != .ok) {
-        switch (response.head.status) {
+    if (response.status != .ok) {
+        switch (response.status) {
             .not_found => {
-                std.debug.print("Warning: Checksums file not found at URL: {s}\n", .{checksums_url});
-                std.debug.print("Skipping checksum verification (not recommended).\n", .{});
+                std.debug.print("Error: Checksums file not found at URL: {s}\n", .{checksums_url});
+                std.debug.print("Refusing to install an unverifiable binary.\n", .{});
             },
-            else => std.debug.print("Failed to download checksums from {s}, status: {}\n", .{ checksums_url, response.head.status }),
+            else => std.debug.print("Failed to download checksums from {s}, status: {}\n", .{ checksums_url, response.status }),
         }
         return error.FailedToDownloadChecksums;
     }
 
-    // Read checksums file
-    var transfer_buffer: [4096]u8 = undefined;
-    var body_reader = response.reader(&transfer_buffer);
-    const checksums_content = try body_reader.allocRemaining(allocator, std.Io.Limit.limited(MAX_CHECKSUMS_SIZE));
-    defer allocator.free(checksums_content);
-
     // Find the checksum for our binary
-    const expected_checksum = parseExpectedChecksum(checksums_content, binary_name) orelse {
+    const expected_checksum = parseExpectedChecksum(response.body, binary_name) orelse {
         std.debug.print("Error: Checksum not found for binary: {s}\n", .{binary_name});
         std.debug.print("The checksums.txt file may be incomplete or corrupted.\n", .{});
         return error.ChecksumNotFound;
@@ -722,18 +664,20 @@ test "isNewerVersion - semantic comparison" {
 }
 
 test "security limits - constants are reasonable" {
-    // Verify security limits are set to reasonable values
-    try std.testing.expect(MAX_COMPRESSED_RESPONSE_SIZE == 10 * 1024 * 1024); // 10MB
-    try std.testing.expect(MAX_DECOMPRESSED_RESPONSE_SIZE == 20 * 1024 * 1024); // 20MB
+    // Verify security limits are set to reasonable values. These are enforced
+    // by http.Client's max_response_bytes (on the decompressed body).
+    try std.testing.expect(MAX_RELEASES_RESPONSE_SIZE == 20 * 1024 * 1024); // 20MB
     try std.testing.expect(MAX_BINARY_SIZE == 100 * 1024 * 1024); // 100MB
     try std.testing.expect(MAX_CHECKSUMS_SIZE == 1024 * 1024); // 1MB
-
-    // Ensure decompressed limit is greater than compressed (gzip typically 2-10x compression)
-    try std.testing.expect(MAX_DECOMPRESSED_RESPONSE_SIZE > MAX_COMPRESSED_RESPONSE_SIZE);
 
     // Ensure binary size is reasonable for CLI tools
     try std.testing.expect(MAX_BINARY_SIZE >= 1024 * 1024); // At least 1MB
     try std.testing.expect(MAX_BINARY_SIZE <= 500 * 1024 * 1024); // Not more than 500MB
+
+    // The startup check must be dramatically shorter than interactive calls —
+    // it runs on every CLI invocation when inform_out_of_date is enabled.
+    try std.testing.expect(startup_check_timeout.toSeconds() <= 5);
+    try std.testing.expect(api_timeout.toSeconds() >= startup_check_timeout.toSeconds());
 }
 
 test "randomScratchName - hidden, fixed-length, unpredictable" {
@@ -961,44 +905,6 @@ test "buildDownloadUrl - binary and checksums asset URLs use the {cli}-v{ver} ta
 }
 
 // ----------------------------------------------------------------------------
-// Response body decoding (gzip)
-// ----------------------------------------------------------------------------
-
-// gzip of: [{"tag_name":"myapp-v1.2.3","name":"r"},{"tag_name":"other-v9.9.9"}]
-// Produced with Python's gzip (mtime=0) for determinism; only the magic bytes
-// and DEFLATE payload matter to the decoder.
-const gzipped_releases = [_]u8{
-    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x8b, 0xae,
-    0x56, 0x2a, 0x49, 0x4c, 0x8f, 0xcf, 0x4b, 0xcc, 0x4d, 0x55, 0xb2, 0x52,
-    0xca, 0xad, 0x4c, 0x2c, 0x28, 0xd0, 0x2d, 0x33, 0xd4, 0x33, 0xd2, 0x33,
-    0x56, 0xd2, 0x51, 0x82, 0x8a, 0x16, 0x29, 0xd5, 0xea, 0xa0, 0x28, 0xcb,
-    0x2f, 0xc9, 0x48, 0x2d, 0xd2, 0x2d, 0xb3, 0xd4, 0x03, 0x42, 0xa5, 0xda,
-    0x58, 0x00, 0xc9, 0xa3, 0xea, 0xaa, 0x44, 0x00, 0x00, 0x00,
-};
-const decoded_releases_json = "[{\"tag_name\":\"myapp-v1.2.3\",\"name\":\"r\"},{\"tag_name\":\"other-v9.9.9\"}]";
-
-test "decodeResponseBody - passes plain bodies through unchanged" {
-    const a = std.testing.allocator;
-    const body = try decodeResponseBody(a, "not compressed at all");
-    defer a.free(body);
-    try std.testing.expectEqualStrings("not compressed at all", body);
-}
-
-test "decodeResponseBody - empty body is not mistaken for gzip" {
-    const a = std.testing.allocator;
-    const body = try decodeResponseBody(a, "");
-    defer a.free(body);
-    try std.testing.expectEqual(@as(usize, 0), body.len);
-}
-
-test "decodeResponseBody - inflates a gzip-compressed body" {
-    const a = std.testing.allocator;
-    const body = try decodeResponseBody(a, &gzipped_releases);
-    defer a.free(body);
-    try std.testing.expectEqualStrings(decoded_releases_json, body);
-}
-
-// ----------------------------------------------------------------------------
 // Release selection from the releases JSON
 // ----------------------------------------------------------------------------
 
@@ -1045,17 +951,6 @@ test "selectVersion - non-JSON body (e.g. an HTML error page) is an error" {
         a.free(v);
         try std.testing.expect(false); // must not succeed
     } else |_| {}
-}
-
-test "fetch decode+select - gzip body flows into version selection" {
-    // Mirrors fetchLatestVersion's post-HTTP path: decode the (gzip) body, then
-    // pick the version — without touching the network.
-    const a = std.testing.allocator;
-    const body = try decodeResponseBody(a, &gzipped_releases);
-    defer a.free(body);
-    const v = try selectVersion(a, body, "myapp");
-    defer a.free(v);
-    try std.testing.expectEqualStrings("1.2.3", v);
 }
 
 // ----------------------------------------------------------------------------
