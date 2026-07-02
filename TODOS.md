@@ -11,8 +11,8 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
 **Phase 1 — Loop foundations (read + verify + safe execution)**
 - [x] **Arena-per-command allocator** (ADR-0001) — DONE. The keystone: makes freeform AI
   business logic memory-safe by construction.
-- [ ] **PR: Enriched `tree --show-options`** (ADR-0007) — the AI's read-back. Unified
-  `<>`/`[]`/`:type`/`=default`/`...`/`/-short` grammar; add short flags, defaults,
+- [x] **PR: Enriched `tree --show-options`** (ADR-0007) — DONE. The AI's read-back. Unified
+  `<>`/`[]`/`:type`/`=default`/`...`/`/-short` grammar; short flags, defaults,
   nullable-vs-required, variadic, aliases, hidden; ANSI-free on non-TTY.
 - [ ] **PR: Legible comptime build errors** (grill Q6) — the verify feedback signal; point
   contract violations at file + field in plain language. Replaces a would-be `zcli check`.

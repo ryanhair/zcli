@@ -246,7 +246,7 @@ test "tree lists the discovered commands" {
     try expectContains(r.stdout, "create");
 }
 
-test "tree --show-options surfaces args and options" {
+test "tree --show-options surfaces the unified arg/option grammar" {
     var sample = try openSampleFixture();
     defer sample.close(io);
 
@@ -254,8 +254,25 @@ test "tree --show-options surfaces args and options" {
     defer r.deinit();
     try expectOk(r);
 
-    try expectContains(r.stdout, "name"); // hello's positional arg
-    try expectContains(r.stdout, "loud"); // hello's option
+    // Command-level aliases (ADR-0007): surfaced only under --show-options.
+    try expectContains(r.stdout, "aliases=hi");
+    // Args: required <>, defaulted [=], variadic [...].
+    try expectContains(r.stdout, "<name:[]const u8> [times:u32=1] [extra:[]const u8...]");
+    // Options: bool renders bare with its short flag; optional keeps its type.
+    try expectContains(r.stdout, "[--loud/-l] [--repeat:u32]");
+}
+
+test "tree stays compact without --show-options" {
+    var sample = try openSampleFixture();
+    defer sample.close(io);
+
+    var r = try run(sample, &.{ zcli_exe, "tree" });
+    defer r.deinit();
+    try expectOk(r);
+
+    // Descriptions stay; the read-back-only aliases marker does not.
+    try expectContains(r.stdout, "Say hello to someone");
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "aliases=") == null);
 }
 
 // ============================================================================
