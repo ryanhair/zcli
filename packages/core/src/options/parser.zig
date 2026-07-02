@@ -86,7 +86,8 @@ pub fn parseOptions(
     allocator: std.mem.Allocator,
     args: []const []const u8,
 ) ZcliError!types.OptionsResult(OptionsType) {
-    return parseOptionsWithMeta(OptionsType, null, allocator, args);
+    // No meta means no `.env` declarations, so there is nothing to look up.
+    return parseOptionsWithMeta(OptionsType, null, allocator, null, args);
 }
 
 /// Parse command-line options with custom metadata for option names and descriptions.
@@ -99,6 +100,9 @@ pub fn parseOptions(
 /// - `OptionsType`: Struct type defining expected options
 /// - `meta`: Optional metadata struct with custom option configurations
 /// - `allocator`: Memory allocator for array options
+/// - `environ`: Environment map for `.env` fallbacks (threaded from
+///   `process.Init` — 0.16 has no ambient getenv). Pass null when the caller
+///   has no environment or the meta declares no `.env` names.
 /// - `args`: Command-line arguments to parse
 ///
 /// ## Metadata Format
@@ -107,17 +111,21 @@ pub fn parseOptions(
 /// const meta = .{
 ///     .options = .{
 ///         .output_file = .{ .name = "out", .short = 'o' },
+///         .api_key = .{ .env = "MYAPP_API_KEY" },
 ///         .verbose = .{ .short = 'v' },
 ///     },
 /// };
 /// ```
+///
+/// An `.env` entry names an environment variable used as a fallback when the
+/// flag is not passed on the command line. Precedence: CLI > env > default.
 ///
 /// ## Examples
 /// ```zig
 /// const Options = struct { output_file: ?[]const u8 = null };
 /// const meta = .{ .options = .{ .output_file = .{ .name = "out" } } };
 ///
-/// const result = try parseOptionsWithMeta(Options, meta, allocator, args);
+/// const result = try parseOptionsWithMeta(Options, meta, allocator, environ, args);
 /// // Now accepts --out instead of --output-file
 /// defer cleanupOptions(Options, result.options, allocator);
 /// ```
@@ -129,6 +137,7 @@ pub fn parseOptionsWithMeta(
     comptime OptionsType: type,
     comptime meta: anytype,
     allocator: std.mem.Allocator,
+    environ: ?*const std.process.Environ.Map,
     args: []const []const u8,
 ) ZcliError!types.OptionsResult(OptionsType) {
     const type_info = @typeInfo(OptionsType);
@@ -181,29 +190,17 @@ pub fn parseOptionsWithMeta(
         }
     }
 
-    // Apply environment variable values (precedence: CLI > env > default)
-    // Check metadata for .env field and look up environment variables
-    inline for (struct_info.fields) |field| {
-        comptime var has_env = false;
-        comptime var env_name: []const u8 = "";
-
-        // Check if meta is not null (meta type is not @TypeOf(null))
-        if (comptime @TypeOf(meta) != @TypeOf(null)) {
-            if (comptime @hasField(@TypeOf(meta), "options")) {
-                if (comptime @hasField(@TypeOf(meta.options), field.name)) {
-                    const field_meta = @field(meta.options, field.name);
-                    if (comptime @hasField(@TypeOf(field_meta), "env")) {
-                        has_env = true;
-                        env_name = field_meta.env;
-                    }
+    // Apply environment-variable fallbacks declared as meta.options.<field>.env.
+    // Running after defaults and before CLI parsing gives the documented
+    // precedence — CLI > env > default — without tracking which fields the
+    // CLI set. Values come from the environ map threaded down from
+    // process.Init; 0.16 has no ambient getenv.
+    if (environ) |env_map| {
+        inline for (struct_info.fields) |field| {
+            if (comptime envNameFor(meta, field.name)) |env_name| {
+                if (env_map.get(env_name)) |env_value| {
+                    _ = applyEnvValue(field.type, &@field(result, field.name), env_value);
                 }
-            }
-        }
-
-        if (comptime has_env) {
-            if (std.posix.getenv(env_name)) |env_value| {
-                // Parse environment variable value based on field type
-                _ = applyEnvValue(field.type, &@field(result, field.name), env_value);
             }
         }
     }
@@ -308,26 +305,33 @@ fn convertShortOptionError(err: anyerror) ZcliError {
     };
 }
 
-/// Apply an environment variable value to an option field.
-/// Returns true if value was applied, false if parsing failed.
-/// This is a comptime function that handles different field types.
+/// The environment-variable name declared for a field via
+/// `meta.options.<field>.env`, or null when the meta declares none.
+fn envNameFor(comptime meta: anytype, comptime field_name: []const u8) ?[]const u8 {
+    if (@TypeOf(meta) == @TypeOf(null)) return null;
+    if (!@hasField(@TypeOf(meta), "options")) return null;
+    if (!@hasField(@TypeOf(meta.options), field_name)) return null;
+    const field_meta = @field(meta.options, field_name);
+    if (!@hasField(@TypeOf(field_meta), "env")) return null;
+    return field_meta.env;
+}
+
+/// Apply an environment variable's string value to an option field.
+/// Returns true if the value was applied, false if it didn't parse as the
+/// field's type (the field keeps its previous value — the default).
 fn applyEnvValue(comptime T: type, target: *T, env_value: []const u8) bool {
-    // Handle boolean type
     if (T == bool) {
-        // Common boolean env var values
+        // Common boolean env var spellings; anything else is ignored.
         if (std.mem.eql(u8, env_value, "1") or
-            std.mem.eql(u8, env_value, "true") or
-            std.mem.eql(u8, env_value, "TRUE") or
-            std.mem.eql(u8, env_value, "yes") or
-            std.mem.eql(u8, env_value, "YES"))
+            std.ascii.eqlIgnoreCase(env_value, "true") or
+            std.ascii.eqlIgnoreCase(env_value, "yes"))
         {
             target.* = true;
             return true;
-        } else if (std.mem.eql(u8, env_value, "0") or
-            std.mem.eql(u8, env_value, "false") or
-            std.mem.eql(u8, env_value, "FALSE") or
-            std.mem.eql(u8, env_value, "no") or
-            std.mem.eql(u8, env_value, "NO"))
+        }
+        if (std.mem.eql(u8, env_value, "0") or
+            std.ascii.eqlIgnoreCase(env_value, "false") or
+            std.ascii.eqlIgnoreCase(env_value, "no"))
         {
             target.* = false;
             return true;
@@ -335,45 +339,37 @@ fn applyEnvValue(comptime T: type, target: *T, env_value: []const u8) bool {
         return false;
     }
 
-    // Handle string type
     if (T == []const u8) {
         target.* = env_value;
         return true;
     }
 
-    // Handle optional types
     const type_info = @typeInfo(T);
     if (type_info == .optional) {
-        const child_type = type_info.optional.child;
-        var child_value: child_type = undefined;
-        if (applyEnvValue(child_type, &child_value, env_value)) {
+        var child_value: type_info.optional.child = undefined;
+        if (applyEnvValue(type_info.optional.child, &child_value, env_value)) {
             target.* = child_value;
             return true;
         }
         return false;
     }
 
-    // Handle integer types
     if (type_info == .int) {
-        if (std.fmt.parseInt(T, env_value, 10)) |parsed| {
-            target.* = parsed;
-            return true;
-        } else |_| {
-            return false;
-        }
+        target.* = std.fmt.parseInt(T, env_value, 10) catch return false;
+        return true;
     }
 
-    // Handle float types
     if (type_info == .float) {
-        if (std.fmt.parseFloat(T, env_value)) |parsed| {
-            target.* = parsed;
-            return true;
-        } else |_| {
-            return false;
-        }
+        target.* = std.fmt.parseFloat(T, env_value) catch return false;
+        return true;
     }
 
-    // Unsupported type
+    if (type_info == .@"enum") {
+        target.* = std.meta.stringToEnum(T, env_value) orelse return false;
+        return true;
+    }
+
+    // Unsupported type (accumulating arrays, etc.)
     return false;
 }
 
@@ -1086,7 +1082,7 @@ test "parseOptionsWithMeta custom name mapping" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--file", "test1.txt", "--file", "test2.txt", "--verbose" };
-    const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, &args);
+    const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
@@ -1096,7 +1092,7 @@ test "parseOptionsWithMeta custom name mapping" {
 
     // Should fail with the field name when custom name is specified
     const fail_args = [_][]const u8{ "--files", "should_fail.txt" };
-    try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, &fail_args));
+    try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &fail_args));
 }
 
 test "parseOptionsWithMeta custom names are exclusive" {
@@ -1116,7 +1112,7 @@ test "parseOptionsWithMeta custom names are exclusive" {
     // Should work with custom name
     {
         const args = [_][]const u8{ "--file", "test.txt" };
-        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, &args);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args);
         defer cleanupOptions(TestOptions, parsed.options, allocator);
 
         try std.testing.expectEqual(@as(usize, 1), parsed.options.output_files.len);
@@ -1126,7 +1122,7 @@ test "parseOptionsWithMeta custom names are exclusive" {
     // Should fail with field name when custom name is provided
     {
         const args = [_][]const u8{ "--output-files", "test.txt" };
-        try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, &args));
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &args));
     }
 }
 
@@ -1285,6 +1281,7 @@ pub fn parseOptionsAndArgs(
     comptime OptionsType: type,
     comptime meta: anytype,
     allocator: std.mem.Allocator,
+    environ: ?*const std.process.Environ.Map,
     args: []const []const u8,
 ) ZcliError!ParseOptionsAndArgsResult(OptionsType) {
     // Lists to collect options and remaining args
@@ -1346,7 +1343,7 @@ pub fn parseOptionsAndArgs(
     }
 
     // Parse the collected options
-    const parsed = try parseOptionsWithMeta(OptionsType, meta, allocator, option_args.items);
+    const parsed = try parseOptionsWithMeta(OptionsType, meta, allocator, environ, option_args.items);
     const remaining_slice = remaining_args.toOwnedSlice(allocator) catch {
         return ZcliError.SystemOutOfMemory;
     };
@@ -1415,86 +1412,124 @@ test "parseOptions default values - some options provided" {
 }
 
 // ============================================================================
-// Environment Variable Binding Tests
+// Environment Variable Fallback Tests
 // ============================================================================
 
-test "applyEnvValue boolean true values" {
+const EnvTestOptions = struct {
+    count: u32 = 5,
+    name: ?[]const u8 = null,
+    debug: bool = false,
+    format: enum { json, table } = .table,
+};
+
+const env_test_meta = .{
+    .options = .{
+        .count = .{ .env = "ZCLI_TEST_COUNT" },
+        .name = .{ .env = "ZCLI_TEST_NAME" },
+        .debug = .{ .env = "ZCLI_TEST_DEBUG" },
+        .format = .{ .env = "ZCLI_TEST_FORMAT" },
+    },
+};
+
+test "env fallback fills unset options from the environ map" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("ZCLI_TEST_COUNT", "42");
+    try env.put("ZCLI_TEST_NAME", "from-env");
+    try env.put("ZCLI_TEST_DEBUG", "true");
+    try env.put("ZCLI_TEST_FORMAT", "json");
+
+    const args = [_][]const u8{};
+    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args);
+    defer cleanupOptions(EnvTestOptions, result.options, allocator);
+
+    try std.testing.expectEqual(@as(u32, 42), result.options.count);
+    try std.testing.expectEqualStrings("from-env", result.options.name.?);
+    try std.testing.expect(result.options.debug);
+    try std.testing.expectEqual(.json, result.options.format);
+}
+
+test "env fallback precedence: CLI beats env beats default" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("ZCLI_TEST_COUNT", "42");
+
+    // CLI wins over env.
+    const args = [_][]const u8{ "--count", "7" };
+    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args);
+    defer cleanupOptions(EnvTestOptions, result.options, allocator);
+    try std.testing.expectEqual(@as(u32, 7), result.options.count);
+
+    // Unset env vars leave the default in place.
+    try std.testing.expectEqual(@as(?[]const u8, null), result.options.name);
+    try std.testing.expect(!result.options.debug);
+}
+
+test "env fallback: unparseable value keeps the default" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("ZCLI_TEST_COUNT", "not-a-number");
+    try env.put("ZCLI_TEST_DEBUG", "maybe");
+
+    const args = [_][]const u8{};
+    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args);
+    defer cleanupOptions(EnvTestOptions, result.options, allocator);
+
+    try std.testing.expectEqual(@as(u32, 5), result.options.count); // default kept
+    try std.testing.expect(!result.options.debug); // default kept
+}
+
+test "env fallback: null environ and metaless parse are no-ops" {
+    const allocator = std.testing.allocator;
+    const args = [_][]const u8{};
+
+    // No environ at all.
+    const r1 = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, null, &args);
+    defer cleanupOptions(EnvTestOptions, r1.options, allocator);
+    try std.testing.expectEqual(@as(u32, 5), r1.options.count);
+
+    // Environ present but meta declares no env names.
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("ZCLI_TEST_COUNT", "42");
+    const r2 = try parseOptionsWithMeta(EnvTestOptions, null, allocator, &env, &args);
+    defer cleanupOptions(EnvTestOptions, r2.options, allocator);
+    try std.testing.expectEqual(@as(u32, 5), r2.options.count);
+}
+
+test "applyEnvValue boolean spellings" {
     var target: bool = false;
-
     try std.testing.expect(applyEnvValue(bool, &target, "1"));
-    try std.testing.expect(target == true);
-
-    target = false;
-    try std.testing.expect(applyEnvValue(bool, &target, "true"));
-    try std.testing.expect(target == true);
-
-    target = false;
-    try std.testing.expect(applyEnvValue(bool, &target, "TRUE"));
-    try std.testing.expect(target == true);
-
-    target = false;
-    try std.testing.expect(applyEnvValue(bool, &target, "yes"));
-    try std.testing.expect(target == true);
-}
-
-test "applyEnvValue boolean false values" {
-    var target: bool = true;
-
-    try std.testing.expect(applyEnvValue(bool, &target, "0"));
-    try std.testing.expect(target == false);
-
-    target = true;
-    try std.testing.expect(applyEnvValue(bool, &target, "false"));
-    try std.testing.expect(target == false);
-
-    target = true;
+    try std.testing.expect(target);
     try std.testing.expect(applyEnvValue(bool, &target, "FALSE"));
-    try std.testing.expect(target == false);
-
-    target = true;
+    try std.testing.expect(!target);
+    try std.testing.expect(applyEnvValue(bool, &target, "Yes"));
+    try std.testing.expect(target);
     try std.testing.expect(applyEnvValue(bool, &target, "no"));
-    try std.testing.expect(target == false);
+    try std.testing.expect(!target);
+    try std.testing.expect(!applyEnvValue(bool, &target, "maybe"));
 }
 
-test "applyEnvValue string" {
-    var target: []const u8 = "";
+test "applyEnvValue numeric, optional, and enum types" {
+    var count: u32 = 0;
+    try std.testing.expect(applyEnvValue(u32, &count, "100"));
+    try std.testing.expectEqual(@as(u32, 100), count);
+    try std.testing.expect(!applyEnvValue(u32, &count, "-5"));
 
-    try std.testing.expect(applyEnvValue([]const u8, &target, "hello world"));
-    try std.testing.expectEqualStrings("hello world", target);
-}
+    var ratio: f64 = 0;
+    try std.testing.expect(applyEnvValue(f64, &ratio, "2.5"));
+    try std.testing.expectEqual(@as(f64, 2.5), ratio);
 
-test "applyEnvValue integer" {
-    var target: i32 = 0;
+    var maybe: ?i32 = null;
+    try std.testing.expect(applyEnvValue(?i32, &maybe, "123"));
+    try std.testing.expectEqual(@as(i32, 123), maybe.?);
 
-    try std.testing.expect(applyEnvValue(i32, &target, "42"));
-    try std.testing.expect(target == 42);
-
-    try std.testing.expect(applyEnvValue(i32, &target, "-10"));
-    try std.testing.expect(target == -10);
-}
-
-test "applyEnvValue unsigned integer" {
-    var target: u32 = 0;
-
-    try std.testing.expect(applyEnvValue(u32, &target, "100"));
-    try std.testing.expect(target == 100);
-
-    // Invalid value should return false
-    try std.testing.expect(!applyEnvValue(u32, &target, "-5"));
-}
-
-test "applyEnvValue optional string" {
-    var target: ?[]const u8 = null;
-
-    try std.testing.expect(applyEnvValue(?[]const u8, &target, "test"));
-    try std.testing.expect(target != null);
-    try std.testing.expectEqualStrings("test", target.?);
-}
-
-test "applyEnvValue optional integer" {
-    var target: ?i32 = null;
-
-    try std.testing.expect(applyEnvValue(?i32, &target, "123"));
-    try std.testing.expect(target != null);
-    try std.testing.expect(target.? == 123);
+    const Mode = enum { fast, slow };
+    var mode: Mode = .slow;
+    try std.testing.expect(applyEnvValue(Mode, &mode, "fast"));
+    try std.testing.expectEqual(Mode.fast, mode);
+    try std.testing.expect(!applyEnvValue(Mode, &mode, "warp"));
 }
