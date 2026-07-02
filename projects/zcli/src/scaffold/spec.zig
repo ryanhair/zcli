@@ -323,3 +323,16 @@ test "parsePath accepts slash and space separators" {
     try testing.expectError(error.InvalidCommandPath, parsePath(a, "  "));
     try testing.expectEqualStrings("src/commands/users/create.zig", try buildFilePath(a, p));
 }
+
+test "enumHasMember handles explicit values and spacing" {
+    try testing.expect(enumHasMember("enum { json, yaml }", "json"));
+    try testing.expect(enumHasMember("enum { a = 1, b = 2 }", "b"));
+    try testing.expect(!enumHasMember("enum { json, yaml }", "xml"));
+    try testing.expect(!enumHasMember("enum {}", "x"));
+}
+
+test "isSupportedArrayElem accepts numeric and string element types" {
+    try testing.expect(isSupportedArrayElem("[]const u8"));
+    try testing.expect(isSupportedArrayElem("u32"));
+    try testing.expect(!isSupportedArrayElem("bool"));
+}

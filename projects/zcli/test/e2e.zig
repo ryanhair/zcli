@@ -479,32 +479,57 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectContains(r.stdout, "TODO: Implement ping");
     }
 
-    // Declarative mode (`--arg`/`--option` JSON) generates a fully-typed command
-    // through the real binary. `multiple` is its own flag, independent of the
-    // element type — covering a multiple string positional, a multiple integer
-    // option, plus enum/numeric/nullable options and a short flag — and the
-    // result must compile and parse under real zcli.
+    // A second command assembled entirely from atomic `add arg`/`add option`
+    // edits — the flag interface that replaced the JSON blob (ADR-0005). This
+    // exercises the full arg shape set (required, optional, variadic) with
+    // `--before` positioning, plus enum/numeric/nullable/multiple options and a
+    // short flag; the result must compile and parse under the real binary.
     {
-        var r = try run(proj, &.{
-            zcli_exe,        "add",                                                                  "command", "users/create",
-            "--description", "Create a user",
-            "--arg",         "{\"name\":\"email\",\"type\":\"[]const u8\"}",
-            "--arg",         "{\"name\":\"names\",\"type\":\"[]const u8\",\"multiple\":true}",
-            "--option",      "{\"name\":\"verbose\",\"type\":\"bool\",\"default\":false,\"short\":\"v\"}",
-            "--option",      "{\"name\":\"format\",\"type\":\"enum { json, yaml }\",\"default\":\"yaml\"}",
-            "--option",      "{\"name\":\"ports\",\"type\":\"u32\",\"multiple\":true}",
-            "--option",      "{\"name\":\"note\",\"type\":\"[]const u8\",\"nullable\":true}",
-        });
+        var r = try run(proj, &.{ zcli_exe, "add", "command", "users/create", "--description", "Create a user" });
         defer r.deinit();
         try expectOk(r);
     }
-    // Optional positionals (`?T = null`) are a distinct generated shape.
     {
-        var r = try run(proj, &.{
-            zcli_exe, "add",                                         "command", "lookup",
-            "--arg",  "{\"name\":\"id\",\"type\":\"[]const u8\"}",
-            "--arg",  "{\"name\":\"revision\",\"type\":\"i64\",\"nullable\":true}",
-        });
+        var r = try run(proj, &.{ zcli_exe, "add", "arg", "users/create", "email", "--type", "[]const u8" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "arg", "users/create", "names", "--type", "[]const u8", "--multiple" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    // An optional positional inserted *before* the variadic (kept valid by
+    // --before: required email, optional age, variadic names).
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "arg", "users/create", "age", "--type", "u8", "--nullable", "--before", "names" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    // The ordering rule is enforced live: nothing may follow a variadic.
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "arg", "users/create", "late", "--type", "[]const u8" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "must be last");
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "users/create", "verbose", "--type", "bool", "--default", "false", "--short", "v" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "users/create", "format", "--type", "enum { json, yaml }", "--default", ".yaml" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "users/create", "ports", "--type", "u32", "--multiple" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "users/create", "note", "--type", "[]const u8", "--nullable" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -514,8 +539,8 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
     }
     {
-        // Multiple-string positional, multiple-integer option, short flag, enum.
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "users", "create", "alice@example.com", "x", "y", "-v", "--format", "json", "--ports", "8080", "--ports", "9090" });
+        // required + optional + variadic positionals, short flag, enum, multiple option.
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "users", "create", "alice@example.com", "5", "x", "y", "-v", "--format", "json", "--ports", "8080", "--ports", "9090" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement users create");

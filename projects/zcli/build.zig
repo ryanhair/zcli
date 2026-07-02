@@ -110,6 +110,7 @@ pub fn build(b: *std.Build) void {
         "src/commands/dev.zig",
         "src/commands/add/command.zig",
         "src/commands/add/option.zig",
+        "src/commands/add/arg.zig",
     };
     for (command_test_files) |path| {
         const mod = b.addModule(b.fmt("test-{s}", .{path}), .{
