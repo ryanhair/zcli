@@ -230,6 +230,9 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    const zcli = @import("zcli");
         \\    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{{
         \\        .commands_dir = "src/commands",
+        \\        // Local plugins in src/plugins/ are auto-discovered (add with
+        \\        // `zcli add plugin <name>`). Harmless when the directory is absent.
+        \\        .plugins_dir = "src/plugins",
         \\        .plugins = &.{{
         \\{s}        }},
         \\        .app_name = "{s}",
