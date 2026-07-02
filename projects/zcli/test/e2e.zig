@@ -441,6 +441,44 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectContains(r.stdout, "TODO: Implement ping");
     }
 
+    // `add option` splices options into the just-created `ping` command via the
+    // AST editor, preserving its execute() body. The spliced source must compile
+    // and the new flags must parse under the real binary — covering a scalar with
+    // a short + default, a bool, and an accumulating (multiple) option.
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "ping", "count", "--type", "u32", "--default", "1", "--short", "c", "-d", "How many pings" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "ping", "loud", "--type", "bool", "--default", "false" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "ping", "tags", "--type", "[]const u8", "--multiple" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    // A duplicate option name is rejected (never silently splices twice).
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "ping", "count", "--type", "u32", "--default", "2" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "already has an option named 'count'");
+    }
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "ping", "-c", "3", "--loud", "--tags", "a", "--tags", "b" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement ping");
+    }
+
     // Declarative mode (`--arg`/`--option` JSON) generates a fully-typed command
     // through the real binary. `multiple` is its own flag, independent of the
     // element type — covering a multiple string positional, a multiple integer
