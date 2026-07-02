@@ -172,8 +172,12 @@ pub fn parseOptionsWithMeta(
                 @field(result, field.name) = default_value.*;
             }
         } else {
-            // Required field without default - initialize to undefined for now
-            @field(result, field.name) = undefined;
+            // Backstop for callers that bypass validateCommand: a field with
+            // no absent-flag value would be read as undefined memory.
+            @compileError("option field '" ++ field.name ++ "' has type `" ++ @typeName(field.type) ++
+                "` and no default value, so it would be undefined when the flag is not passed. " ++
+                "Options must be bool, optional, an accumulating array, or have a default; " ++
+                "required values belong in Args.");
         }
     }
 

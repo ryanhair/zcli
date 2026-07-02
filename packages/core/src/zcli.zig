@@ -7,6 +7,7 @@ pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 const type_utils = @import("type_utils.zig");
+const option_utils = @import("options/utils.zig");
 pub const ztheme = @import("ztheme");
 pub const markdown_fmt = @import("markdown_fmt");
 pub const zprogress = @import("zprogress");
@@ -459,6 +460,26 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
     if (@hasDecl(Module, "Options") and @typeInfo(OptionsType) != .@"struct") {
         @compileError(loc ++ "`Options` must be a struct, found `" ++ @typeName(OptionsType) ++
             "`. Example: `pub const Options = struct { verbose: bool = false };`");
+    }
+
+    // Every Options field must have a well-defined value when its flag is
+    // absent: bool (false), optional (null), accumulating array (empty), or
+    // an explicit default. Anything else would be read as undefined memory
+    // when the flag isn't passed — required values belong in Args.
+    if (@typeInfo(OptionsType) == .@"struct") {
+        inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+            const has_absent_value = field.type == bool or
+                @typeInfo(field.type) == .optional or
+                option_utils.isArrayType(field.type) or
+                field.default_value_ptr != null;
+            if (!has_absent_value) {
+                @compileError(loc ++ "option '" ++ field.name ++ "' has type `" ++ @typeName(field.type) ++
+                    "` and no default value, so it would be undefined when the flag is not passed. " ++
+                    "Give it a default (`" ++ field.name ++ ": " ++ @typeName(field.type) ++ " = ...`), " ++
+                    "make it optional (`?" ++ @typeName(field.type) ++ "`), " ++
+                    "or make it a required positional in `Args`.");
+            }
+        }
     }
 
     if (@hasDecl(Module, "meta")) {
