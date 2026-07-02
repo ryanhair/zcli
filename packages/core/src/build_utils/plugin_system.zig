@@ -45,12 +45,17 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
                     }
 
                     const import_name = try std.fmt.allocPrint(b.allocator, "plugins/{s}", .{plugin_name});
+                    // `entry.name` aliases the iterator's buffer, reused on the
+                    // next `next()`, so `plugin_name` must be duped to outlive the
+                    // scan (import_name/project_path already copy via allocPrint).
+                    const project_path = try std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ plugins_dir, entry.name });
 
                     try plugins.append(b.allocator, PluginInfo{
-                        .name = plugin_name,
+                        .name = try b.allocator.dupe(u8, plugin_name),
                         .import_name = import_name,
                         .is_local = true,
                         .dependency = null,
+                        .project_path = project_path,
                     });
                 }
             },
@@ -70,12 +75,15 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) ![]PluginInfo {
                 _ = subdir.statFile(b.graph.io, "plugin.zig", .{}) catch continue; // Skip if no plugin.zig
 
                 const import_name = try std.fmt.allocPrint(b.allocator, "plugins/{s}/plugin", .{entry.name});
+                // Dupe entry.name — it aliases the iterator's reused buffer.
+                const project_path = try std.fmt.allocPrint(b.allocator, "{s}/{s}/plugin.zig", .{ plugins_dir, entry.name });
 
                 try plugins.append(b.allocator, PluginInfo{
-                    .name = entry.name,
+                    .name = try b.allocator.dupe(u8, entry.name),
                     .import_name = import_name,
                     .is_local = true,
                     .dependency = null,
+                    .project_path = project_path,
                 });
             },
             else => continue,
