@@ -633,15 +633,13 @@ fn getInitialReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*c
 }
 
 fn getReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map, cli_name: []const u8, current_version: []const u8, new_version: []const u8) ![]const u8 {
-    // Generate commit log since last tag
-    const log_cmd = try std.fmt.allocPrint(
-        allocator,
-        "git log {s}-v{s}..HEAD --oneline --pretty=format:\"- %s\"",
-        .{ cli_name, current_version },
-    );
-    defer allocator.free(log_cmd);
+    // Generate commit log since last tag. Plain argv like every other git
+    // call in this file — no shell, so a tag name is never interpreted (and
+    // the pretty format needs no quoting gymnastics).
+    const tag_range = try std.fmt.allocPrint(allocator, "{s}-v{s}..HEAD", .{ cli_name, current_version });
+    defer allocator.free(tag_range);
 
-    const commits = runCommand(allocator, io, &.{ "sh", "-c", log_cmd }) catch
+    const commits = runCommand(allocator, io, &.{ "git", "log", tag_range, "--oneline", "--pretty=format:- %s" }) catch
         try allocator.dupe(u8, "");
     defer allocator.free(commits);
 
