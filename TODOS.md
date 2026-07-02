@@ -14,8 +14,10 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
 - [x] **PR: Enriched `tree --show-options`** (ADR-0007) — DONE. The AI's read-back. Unified
   `<>`/`[]`/`:type`/`=default`/`...`/`/-short` grammar; short flags, defaults,
   nullable-vs-required, variadic, aliases, hidden; ANSI-free on non-TTY.
-- [ ] **PR: Legible comptime build errors** (grill Q6) — the verify feedback signal; point
-  contract violations at file + field in plain language. Replaces a would-be `zcli check`.
+- [x] **PR: Legible comptime build errors** (grill Q6) — DONE. The verify feedback signal;
+  `validateCommand` names every meta/Args/Options contract violation by command path in
+  plain language. (execute-shape check omitted: `@TypeOf(execute)` → Context → registry is a
+  comptime dependency loop; a bad signature still fails at the framework call site.)
 
 **Phase 2 — Write surface (the scaffolding CLI)**
 - [ ] **PR: `add command` extension** — co-located unit-test stub (Q7); full `meta`

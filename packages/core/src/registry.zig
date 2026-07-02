@@ -119,12 +119,9 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
         ) {
             _ = self;
 
-            // Validate command metadata at compile time if meta is present
-            if (@hasDecl(Module, "meta")) {
-                const ArgsType = if (@hasDecl(Module, "Args")) Module.Args else struct {};
-                const OptionsType = if (@hasDecl(Module, "Options")) Module.Options else struct {};
-                zcli.validateMeta(Module.meta, ArgsType, OptionsType);
-            }
+            // Validate the whole command contract at compile time, with errors
+            // that name this command by its path.
+            comptime zcli.validateCommand(path, Module);
 
             return RegistryBuilder(
                 config,
@@ -192,12 +189,14 @@ fn discoverPluginCommands(comptime CommandsStruct: type, comptime path_prefix: [
         // Build the path for this command
         const current_path = path_prefix ++ .{decl.name};
 
-        // Validate command metadata at compile time if meta is present
-        if (@hasDecl(CommandType, "meta")) {
-            const ArgsType = if (@hasDecl(CommandType, "Args")) CommandType.Args else struct {};
-            const OptionsType = if (@hasDecl(CommandType, "Options")) CommandType.Options else struct {};
-            zcli.validateMeta(CommandType.meta, ArgsType, OptionsType);
+        // Validate the whole command contract at compile time, naming the
+        // command by its space-joined path.
+        comptime var path_str: []const u8 = "";
+        inline for (current_path, 0..) |component, idx| {
+            if (idx > 0) path_str = path_str ++ " ";
+            path_str = path_str ++ component;
         }
+        comptime zcli.validateCommand(path_str, CommandType);
 
         // Add this command/group to entries
         entries = entries ++ .{CommandEntry{
