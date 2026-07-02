@@ -59,6 +59,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 - [ ] 38. **release.yml uses deprecated setup-zig action** — `goto-bus-stop/setup-zig@v2` vs ci.yml's `mlugg/setup-zig@v2`.
 - [ ] 39. **Root build shells out per package** — `addSystemCommand(&.{"zig"})` + `setCwd` forfeits shared cache/flag propagation; module wiring duplicated between root `build.zig:65-74` and `packages/core/build.zig:32-41`. Consider `b.dependency`-based aggregation.
 - [ ] 40. **`generate()` config is `anytype`** — hand-rolled `@hasField` checks (`build_utils/main.zig:164-167`); use a typed config struct. Also `readVersionFromZon` string-scans the zon and build errors call `std.process.exit(1)` mid-build.
+- [x] 43. **PTY harness deadlock (found during fix 11)** — `runInteractive` leaked the PTY master fd into the child (no CLOEXEC on `/dev/ptmx`), so closing the harness's master never delivered EIO to a child blocked writing into the full (4 KiB on macOS) PTY buffer; combined with a fixed 1s post-script drain before an unbounded `child.wait`, any child printing >4 KiB after its last prompt (e.g. `init` post-#41) hung the e2e suite forever. Fixed: CLOEXEC on master/slave/pipe fds, drain-until-HUP with the config deadline, SIGTERM on timeout.
 
 ## Docs — remaining
 
