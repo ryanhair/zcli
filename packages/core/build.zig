@@ -91,7 +91,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -111,7 +111,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -130,7 +130,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -166,6 +166,37 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    // Secrets plugin tests. These files depend only on std, so they need none
+    // of the shared-module imports. The plugin/file-store test runs everywhere;
+    // the keychain test forces the macOS backend to compile and link, so it is
+    // macOS-only and pulls in the Security/CoreFoundation frameworks (the same
+    // opt-in linking a real CLI gets when it registers the plugin).
+    {
+        const plugin_mod = b.addModule("test-secrets-plugin", .{
+            .root_source_file = b.path("src/plugins/zcli_secrets/plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const plugin_tests = b.addTest(.{ .root_module = plugin_mod });
+        const run_plugin_tests = b.addRunArtifact(plugin_tests);
+        test_plugins_step.dependOn(&run_plugin_tests.step);
+        test_step.dependOn(&run_plugin_tests.step);
+
+        if (target.result.os.tag == .macos) {
+            const keychain_mod = b.addModule("test-secrets-keychain", .{
+                .root_source_file = b.path("src/plugins/zcli_secrets/keychain_macos.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            keychain_mod.linkFramework("Security", .{});
+            keychain_mod.linkFramework("CoreFoundation", .{});
+            const keychain_tests = b.addTest(.{ .root_module = keychain_mod });
+            const run_keychain_tests = b.addRunArtifact(keychain_tests);
+            test_plugins_step.dependOn(&run_keychain_tests.step);
+            test_step.dependOn(&run_keychain_tests.step);
+        }
+    }
+
     // Sequential test execution (separate from parallel execution above)
     // This creates a completely separate dependency chain for sequential execution
     const all_test_files = core_test_files ++ integration_test_files ++ security_test_files;
@@ -181,7 +212,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const sequential_tests = b.addTest(.{
             .root_module = test_mod,
         });
