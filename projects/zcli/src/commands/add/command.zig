@@ -828,7 +828,34 @@ fn generateSource(
     try writeExamplePath(w, parts);
     try w.writeAll("\\n\", .{});\n}\n");
 
+    // Co-located unit test — runs under `zig build test` (init wires the step).
+    try writeTestBlock(w, parts);
+
     return aw.written();
+}
+
+/// Emit a co-located `test` block that runs the command in-process via
+/// `zcli-testing`'s runCommand and asserts it succeeds. The `hasRequiredArgs`
+/// comptime guard keeps it robust as the command grows: it auto-runs while every
+/// argument is optional/defaulted, and compiles away once `add arg` introduces a
+/// required positional — at which point the author supplies real `.args`. (This
+/// avoids coupling every `add arg` to a fragile in-test edit.)
+fn writeTestBlock(w: *std.Io.Writer, parts: []const []const u8) !void {
+    try w.writeAll("\ntest \"");
+    try writeExamplePath(w, parts);
+    try w.writeAll(
+        \\: runs" {
+        \\    const zcli_testing = @import("zcli-testing");
+        \\    // Auto-runs while every argument is optional. Once you `add arg` a
+        \\    // required one this compiles away — replace it with a test that
+        \\    // passes example argument values to runCommand's config.
+        \\    if (comptime zcli_testing.hasRequiredArgs(@This())) return;
+        \\    var result = try zcli_testing.runCommand(@This(), &.{}, .{});
+        \\    defer result.deinit();
+        \\    try std.testing.expect(result.success);
+        \\}
+        \\
+    );
 }
 
 fn writeExample(w: *std.Io.Writer, parts: []const []const u8, args_list: []const ArgSpec) !void {
@@ -1180,6 +1207,10 @@ test "generateSource: empty command is the minimal skeleton" {
     try expectContains(src, "\"ping\"");
     try expectContains(src, "TODO: Implement ping");
     try testing.expect(std.mem.indexOf(u8, src, ".args = .{") == null);
+    // Co-located, schema-robust unit test scaffolded alongside the command.
+    try expectContains(src, "test \"ping: runs\" {");
+    try expectContains(src, "@import(\"zcli-testing\")");
+    try expectContains(src, "if (comptime zcli_testing.hasRequiredArgs(@This())) return;");
 }
 
 test "generateSource: multiple is independent of element type" {
