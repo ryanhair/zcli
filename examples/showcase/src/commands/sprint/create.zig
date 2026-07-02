@@ -23,8 +23,8 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var data = parsed.value;
 
     const name = if (args.name) |n| n else blk: {
-                const writer = context.stdout();
-                const reader = context.stdin();
+        const writer = context.stdout();
+        const reader = context.stdin();
         break :blk try zinput.text(writer, reader, allocator, .{
             .message = "Sprint name:",
             .default = try std.fmt.allocPrint(allocator, "Sprint {d}", .{data.sprints.len + 1}),

@@ -32,8 +32,8 @@ const priorities = [_][]const u8{ "low", "medium", "high", "critical" };
 
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
-        const writer = context.stdout();
-        const reader = context.stdin();
+    const writer = context.stdout();
+    const reader = context.stdin();
 
     // Load the current config so prompts can show existing values as defaults.
     // Keep `parsed` alive until after we write, so its strings stay valid.

@@ -33,8 +33,8 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     }
     defer for (titles.items) |t| allocator.free(t);
 
-        const writer = context.stdout();
-        const reader = context.stdin();
+    const writer = context.stdout();
+    const reader = context.stdin();
 
     const idx = try zinput.search(writer, reader, allocator, .{
         .message = "Search tasks:",

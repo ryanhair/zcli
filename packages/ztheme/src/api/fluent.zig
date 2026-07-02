@@ -417,7 +417,8 @@ pub fn Themed(comptime T: type) type {
         /// Get the styled content as a string (requires allocator)
         pub fn toString(self: Self, allocator: std.mem.Allocator, theme_ctx: *const Theme) ![]u8 {
             var list: std.ArrayList(u8) = .empty;
-            var aw_render: std.Io.Writer.Allocating = .init(allocator); try self.render(&aw_render.writer, theme_ctx);
+            var aw_render: std.Io.Writer.Allocating = .init(allocator);
+            try self.render(&aw_render.writer, theme_ctx);
             return list.toOwnedSlice(allocator);
         }
 

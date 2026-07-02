@@ -231,7 +231,7 @@ fn getShellType(shell: []const u8) ?ShellType {
 
 fn detectShell(_: std.mem.Allocator, environ: *const std.process.Environ.Map) ?ShellType {
     const shell_path = environ.get("SHELL") orelse return null;
-    
+
     // Extract shell name from path (e.g., "/bin/bash" -> "bash")
     const shell_name = std.fs.path.basename(shell_path);
 
@@ -240,7 +240,7 @@ fn detectShell(_: std.mem.Allocator, environ: *const std.process.Environ.Map) ?S
 
 fn getInstallPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map, shell_type: ShellType, app_name: []const u8) ![]const u8 {
     const home = environ.get("HOME") orelse return error.HomeNotFound;
-    
+
     return switch (shell_type) {
         .bash => try std.fmt.allocPrint(
             allocator,

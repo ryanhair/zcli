@@ -248,5 +248,6 @@ pub fn generate(
         try writer.writeAll("\n");
     }
 
-    var al = aw.toArrayList(); return al.toOwnedSlice(allocator);
+    var al = aw.toArrayList();
+    return al.toOwnedSlice(allocator);
 }

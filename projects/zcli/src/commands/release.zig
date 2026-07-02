@@ -535,7 +535,11 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, io: std.Io, new_version: 
                 while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
                 break :blk line[0..i];
             };
-            { const s = try std.fmt.allocPrint(allocator, "{s}.version = \"{s}\",\n", .{ indent, new_version }); defer allocator.free(s); try new_content.appendSlice(allocator, s); }
+            {
+                const s = try std.fmt.allocPrint(allocator, "{s}.version = \"{s}\",\n", .{ indent, new_version });
+                defer allocator.free(s);
+                try new_content.appendSlice(allocator, s);
+            }
         } else {
             try new_content.appendSlice(allocator, line);
             try new_content.append(allocator, '\n');

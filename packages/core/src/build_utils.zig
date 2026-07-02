@@ -380,7 +380,6 @@ test "empty plugin list handling" {
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
 }
 
-
 /// Comprehensive integration tests for the plugin system
 /// These tests verify that plugins work correctly in realistic scenarios
 
@@ -450,7 +449,6 @@ const TestData = struct {
     help_transform_called: bool = false,
     plugin_command_executed: bool = false,
 };
-
 
 test "context data defaults" {
     // ContextData is a plain, default-constructible struct. The generated

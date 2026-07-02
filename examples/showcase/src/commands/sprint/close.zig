@@ -24,8 +24,8 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
         return;
     }
 
-        const writer = context.stdout();
-        const reader = context.stdin();
+    const writer = context.stdout();
+    const reader = context.stdin();
 
     const idx = try zinput.select(writer, reader, .{
         .message = "Close which sprint?",

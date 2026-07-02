@@ -46,8 +46,8 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         priority = store.priorityFromString(options.priority) orelse .medium;
     } else {
         // Interactive mode
-                const writer = context.stdout();
-                const reader = context.stdin();
+        const writer = context.stdout();
+        const reader = context.stdin();
 
         title_owned = try zinput.text(writer, reader, allocator, .{
             .message = "Task title:",

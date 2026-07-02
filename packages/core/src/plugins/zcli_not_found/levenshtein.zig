@@ -47,8 +47,8 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
 
             curr_row[j] = @min(@min(prev_row[j] + 1, // deletion
                 curr_row[j - 1] + 1 // insertion
-                ), prev_row[j - 1] + cost // substitution
-                );
+            ), prev_row[j - 1] + cost // substitution
+            );
         }
 
         // Swap rows

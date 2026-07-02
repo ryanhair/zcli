@@ -324,4 +324,3 @@ test "renderList: continuation lines hang-indent under the option text" {
     // under the label text rather than under the bullet.
     try std.testing.expect(std.mem.indexOf(u8, buf[0..], "\r\n        ") != null);
 }
-

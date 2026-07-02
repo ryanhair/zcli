@@ -15,8 +15,8 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
-        const writer = context.stdout();
-        const reader = context.stdin();
+    const writer = context.stdout();
+    const reader = context.stdin();
 
     // Check if already initialized
     if (std.Io.Dir.cwd().access(context.io.io, "tasks.json", .{})) |_| {

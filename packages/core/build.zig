@@ -91,7 +91,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -111,7 +111,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -130,7 +130,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const tests = b.addTest(.{
             .root_module = test_mod,
         });
@@ -181,7 +181,7 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
         test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
         test_mod.addImport("zinput", zinput_dep.module("zinput"));
-                test_mod.addImport("serde", serde_dep.module("serde"));
+        test_mod.addImport("serde", serde_dep.module("serde"));
         const sequential_tests = b.addTest(.{
             .root_module = test_mod,
         });

@@ -311,7 +311,7 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
                 .allocator = allocator,
                 .io = io_struct,
                 .environ = env,
-                                .theme = zcli.ztheme.Theme.init(env, io_struct.io),
+                .theme = zcli.ztheme.Theme.init(env, io_struct.io),
             };
         }
 
@@ -342,8 +342,6 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
                     Plugin.deinitContextData(&@field(self.plugins, field_name), self.allocator);
                 }
             }
-
-            
         }
 
         // I/O convenience methods
@@ -816,7 +814,7 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 .allocator = arena.allocator(),
                 .io = &zcli_io,
                 .environ = environ,
-                                .theme = zcli.ztheme.Theme.init(environ, io),
+                .theme = zcli.ztheme.Theme.init(environ, io),
                 .available_commands = available_commands,
                 .command_path = &.{},
                 .plugin_command_info = plugin_command_info_list,
