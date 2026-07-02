@@ -386,8 +386,11 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
             return self.global_options;
         }
 
-        /// Exit the process with the given code
-        pub fn exit(_: *Self, code: u8) void {
+        /// Exit the process with the given code, flushing buffered output
+        /// first — std.process.exit alone silently drops anything printed
+        /// just before the call.
+        pub fn exit(self: *Self, code: u8) noreturn {
+            self.io.flush();
             std.process.exit(code);
         }
     };

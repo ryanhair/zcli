@@ -12,6 +12,10 @@ pub const PluginInfo = struct {
     dependency: ?*std.Build.Dependency,
     /// Optional initialization code (from PluginConfig)
     init: ?[]const u8 = null,
+    /// For plugins discovered in the *consuming project* (via `plugins_dir`):
+    /// the project-relative source path, resolved with `b.path`. Null for
+    /// framework built-ins, which live in the zcli package (`zcli_dep.path`).
+    project_path: ?[]const u8 = null,
 };
 
 /// Command type classification
@@ -166,6 +170,7 @@ pub const Builtin = enum {
     completions,
     config,
     output,
+    secrets,
     github_upgrade,
 
     /// Registration name, e.g. `zcli_help`.

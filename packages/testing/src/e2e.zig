@@ -18,8 +18,15 @@ const posix = std.posix;
 // Create a pipe — std.posix.pipe was removed in 0.16.
 fn makePipe() error{PipeFailed}![2]posix.fd_t {
     var fds: [2]posix.fd_t = undefined;
-    if (posix.system.pipe(&fds) == 0) return fds;
-    return error.PipeFailed;
+    if (posix.system.pipe(&fds) != 0) return error.PipeFailed;
+    // CLOEXEC both ends: the child must not inherit the harness's copies
+    // (spawn dup2s the ones it needs onto stdio, which clears CLOEXEC).
+    // A leaked write end in the child would keep the stream open after the
+    // harness closes its own, defeating EOF detection.
+    for (fds) |fd| {
+        _ = posix.system.fcntl(fd, @as(c_int, posix.F.SETFD), @as(c_int, posix.FD_CLOEXEC));
+    }
+    return fds;
 }
 
 fn closeFd(fd: posix.fd_t) void {
@@ -369,9 +376,14 @@ fn createPty(allocator: std.mem.Allocator) !PtyResult {
 
 /// Create a real PTY using raw syscalls/ioctls (no libc grantpt/unlockpt/ptsname).
 fn createRealPty(allocator: std.mem.Allocator) !PtyResult {
+    // CLOEXEC is load-bearing: without it the child inherits a copy of the
+    // MASTER fd across exec. Then closing the harness's master doesn't close
+    // the master side, so a child blocked writing into a full PTY buffer
+    // never gets EIO and never exits — deadlocked against child.wait().
     const master_fd = posix.openat(posix.AT.FDCWD, "/dev/ptmx", .{
         .ACCMODE = .RDWR,
         .NOCTTY = true,
+        .CLOEXEC = true,
     }, 0) catch |err| {
         std.log.warn("Failed to open /dev/ptmx: {any}", .{err});
         return err;
@@ -400,9 +412,13 @@ fn createRealPty(allocator: std.mem.Allocator) !PtyResult {
     };
     errdefer allocator.free(slave_name);
 
+    // CLOEXEC here too: spawn dup2s this onto the child's stdio (dup2 copies
+    // don't carry CLOEXEC), so the child keeps exactly its stdio slave fds
+    // and no stray extra copy of ours.
     const slave_fd = posix.openat(posix.AT.FDCWD, slave_name, .{
         .ACCMODE = .RDWR,
         .NOCTTY = true,
+        .CLOEXEC = true,
     }, 0) catch |err| {
         std.log.warn("Failed to open slave {s}: {any}", .{ slave_name, err });
         return err;
@@ -925,8 +941,28 @@ pub fn runInteractive(
         if (child.id) |pid| posix.kill(pid, toPosixSig(.SIGTERM)) catch {};
     }
 
-    // Drain any remaining output, then reap.
-    drainOutput(allocator, io, read_fd, &output_buffer, 1000) catch {};
+    // Drain remaining output. For a PTY this must run until the child has
+    // actually exited (the master reports HUP once the last slave fd closes),
+    // not for a fixed idle window: the kernel PTY buffer is small (4 KiB on
+    // macOS), so a child still printing after an idle-window drain stopped
+    // reading blocks in write() forever — deadlocked against child.wait().
+    if (using_pty) {
+        const elapsed_ms: u64 = @intCast(nowMs(io) - start_time);
+        const remaining: u64 = if (config.total_timeout_ms > elapsed_ms)
+            config.total_timeout_ms - elapsed_ms
+        else
+            0;
+        const child_exited = drainUntilHup(allocator, io, read_fd, &output_buffer, @max(remaining, 1000)) catch false;
+        if (!child_exited) {
+            // Deadline passed with the child still alive: kill it so wait()
+            // below returns, and record the run as failed.
+            script_success = false;
+            if (child.id) |pid| posix.kill(pid, toPosixSig(.SIGTERM)) catch {};
+            drainOutput(allocator, io, read_fd, &output_buffer, 500) catch {};
+        }
+    } else {
+        drainOutput(allocator, io, read_fd, &output_buffer, 1000) catch {};
+    }
 
     // For a PTY, close the master after draining so a child that reads until
     // end-of-input gets EOF/SIGHUP and exits — otherwise `child.wait` could block
@@ -1066,6 +1102,41 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) error{WriteFailed}!void {
 }
 
 /// Drain any remaining output until idle or timeout.
+/// Drain a PTY master until the child's side hangs up — POLLHUP (or EIO/EOF
+/// on read) once the last slave fd closes on child exit — or until
+/// `deadline_ms` passes. Returns true if the hangup was seen (the child is
+/// gone), false on deadline. Data is always read before honoring HUP, so a
+/// final burst that arrives together with the hangup is not lost.
+fn drainUntilHup(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    fd: posix.fd_t,
+    output_buffer: *std.ArrayList(u8),
+    deadline_ms: u64,
+) InteractiveError!bool {
+    const start_time = nowMs(io);
+    var temp_buffer: [4096]u8 = undefined;
+
+    while (@as(u64, @intCast(nowMs(io) - start_time)) < deadline_ms) {
+        var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+        const ready = posix.poll(&fds, 50) catch return false;
+        if (ready == 0) continue; // poll window elapsed; check deadline and re-poll
+
+        if (fds[0].revents & posix.POLL.IN != 0) {
+            const bytes_read = posix.read(fd, &temp_buffer) catch |err| switch (err) {
+                // A closed PTY slave surfaces as EIO on the master.
+                error.InputOutput => return true,
+                else => return false,
+            };
+            if (bytes_read == 0) return true;
+            try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
+            continue;
+        }
+        if (fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) return true;
+    }
+    return false;
+}
+
 fn drainOutput(
     allocator: std.mem.Allocator,
     io: std.Io,
