@@ -56,8 +56,11 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   Guided skeleton: one working pass-through `preExecute` + a commented catalog of every other
   hook with exact signatures; `plugin_id`/`ContextData` commented out. Residual case: on a
   build.zig lacking `plugins_dir`, it prints the one-line fix (never splices).
-- [ ] **PR: `mv` + `rm`** (grill Q10) — whole-file restructure, carry the co-located test,
-  clean emptied group dirs.
+- [x] **PR: `mv` + `rm command`** (grill Q10) — DONE. Whole-file restructure. `mv <from> <to>`
+  renames/moves a leaf command file (creating destination group dirs); `rm command <path>`
+  deletes one. Both clean group dirs the move/removal leaves empty (`scaffold.fs.removeEmptyParents`,
+  cascading up but preserving a group that still holds an `index.zig` or siblings). In-file
+  tests/`execute` travel with the file. Leaf-only: moving/removing a whole group errors clearly.
 
 **Phase 3 — Primitives that shrink the freeform surface** (parallelizable with Phase 2)
 - [ ] **PR: HTTP client with safe defaults** (ADR-0002/0003) — core; TLS-verified, timeouts.

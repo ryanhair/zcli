@@ -712,6 +712,53 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
         try expectContains(r.stdout, "Hello, World!"); // preExecute is pass-through
     }
+
+    // `mv` + `rm command`: whole-file restructure. Move a command into a new
+    // group, rebuild, and run it at its new path; then remove it, rebuild, and
+    // confirm both the command and its now-empty group directory are gone.
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "command", "scratch", "-d", "Scratch" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "mv", "scratch", "tools/scratch" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    try testing.expect(!fileExists(proj, "src/commands/scratch.zig"));
+    try testing.expect(fileExists(proj, "src/commands/tools/scratch.zig"));
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // The moved command runs at its new path (its execute() travelled intact).
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "tools", "scratch" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement scratch");
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "rm", "command", "tools/scratch" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    // The command file is gone and its sole-occupant group dir was cleaned up.
+    try testing.expect(!fileExists(proj, "src/commands/tools/scratch.zig"));
+    try testing.expect(!fileExists(proj, "src/commands/tools"));
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // The removed command no longer resolves.
+        var r = try run(proj, &.{ "./zig-out/bin/demo", "tools", "scratch" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+    }
 }
 
 // ============================================================================
