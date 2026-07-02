@@ -87,6 +87,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "zprogress", .path = "packages/zprogress" },
         .{ .name = "terminal", .path = "packages/terminal" },
         .{ .name = "zinput", .path = "packages/zinput" },
+        .{ .name = "ztheme", .path = "packages/ztheme" },
+        .{ .name = "zcli", .path = "projects/zcli" },
     };
 
     const example_projects = [_]ProjectInfo{
