@@ -192,7 +192,7 @@ pub fn init(config: Config) type {
 
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
-            try testBinary(allocator, binary_name);
+            try testBinary(allocator, context.io.io, scratch_dir, binary_name);
 
             // Replace current binary
             try stdout.print("Installing new version...\n", .{});
@@ -552,14 +552,28 @@ fn sha256FileHex(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) ![64]u8 {
     return std.fmt.bytesToHex(&hash_bytes, .lower);
 }
 
-/// Test that the new binary works
-fn testBinary(allocator: std.mem.Allocator, path: []const u8) !void {
-    // Need to use absolute path or ./ prefix for executable
-    const exe_path = if (std.fs.path.isAbsolute(path))
-        path
-    else
-        try std.fmt.allocPrint(allocator, "./{s}", .{path});
-    defer if (!std.fs.path.isAbsolute(path)) allocator.free(exe_path);
+/// Smoke-test the downloaded binary before it replaces the live one: run
+/// `<binary> --version` from `dir` and require the process to exec and
+/// terminate normally. The checksum already proves the bytes match the
+/// release; this catches assets that are unrunnable anyway — e.g. a release
+/// published with the wrong architecture's binary under this platform's
+/// asset name, which exec rejects. The exit code is deliberately ignored:
+/// the version plugin is optional, so `--version` may legitimately exit
+/// nonzero in apps without it.
+fn testBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, binary_name: []const u8) !void {
+    // "./" so the spawn resolves against `dir`, never PATH.
+    const argv0 = try std.fmt.allocPrint(allocator, "./{s}", .{binary_name});
+    defer allocator.free(argv0);
+
+    var child = std.process.spawn(io, .{
+        .argv = &.{ argv0, "--version" },
+        .cwd = .{ .dir = dir },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.NewBinaryFailedToRun;
+    const term = child.wait(io) catch return error.NewBinaryFailedToRun;
+    if (term != .exited) return error.NewBinaryFailedToRun;
 }
 
 /// Atomically replace `target_path` (an absolute path, or a path within `dir`)
@@ -998,4 +1012,49 @@ test "replaceBinaryAt - a missing new binary leaves the target untouched" {
     const got = try tmp.dir.readFileAlloc(io, "current", a, .limited(1024));
     defer a.free(got);
     try std.testing.expectEqualStrings("ORIGINAL", got);
+}
+
+/// Write an executable shell script named `name` into `dir` (POSIX only).
+fn writeTestScript(io: std.Io, dir: std.Io.Dir, name: []const u8, body: []const u8) !void {
+    try dir.writeFile(io, .{ .sub_path = name, .data = body });
+    const file = try dir.openFile(io, name, .{});
+    defer file.close(io);
+    try file.setPermissions(io, .executable_file);
+}
+
+test "testBinary - accepts a binary that execs and exits, regardless of exit code" {
+    if (builtin.os.tag == .windows) return; // shell-script fixtures are POSIX-only
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeTestScript(io, tmp.dir, "ok", "#!/bin/sh\nexit 0\n");
+    try testBinary(a, io, tmp.dir, "ok");
+
+    // Exit code is deliberately not checked: `--version` may exit nonzero in
+    // apps without the version plugin. Only "does it exec and terminate
+    // normally" matters.
+    try writeTestScript(io, tmp.dir, "grumpy", "#!/bin/sh\nexit 3\n");
+    try testBinary(a, io, tmp.dir, "grumpy");
+}
+
+test "testBinary - rejects a binary that cannot exec or dies on a signal" {
+    if (builtin.os.tag == .windows) return; // shell-script fixtures are POSIX-only
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Garbage bytes with the executable bit: exec rejects it (the wrong-arch
+    // release-asset case this check exists for).
+    try writeTestScript(io, tmp.dir, "garbage", "\x7fNOT-AN-ELF-OR-MACHO\x00\x01\x02");
+    try std.testing.expectError(error.NewBinaryFailedToRun, testBinary(a, io, tmp.dir, "garbage"));
+
+    // Missing file: spawn fails outright.
+    try std.testing.expectError(error.NewBinaryFailedToRun, testBinary(a, io, tmp.dir, "does-not-exist"));
+
+    // A binary that dies on a signal did not "terminate normally".
+    try writeTestScript(io, tmp.dir, "suicidal", "#!/bin/sh\nkill -9 $$\n");
+    try std.testing.expectError(error.NewBinaryFailedToRun, testBinary(a, io, tmp.dir, "suicidal"));
 }
