@@ -892,8 +892,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             const plugin_command_info_list = command_info;
 
             // Create the standard-stream holder and finalize before passing to Context
-            var stdio = zcli.Stdio.init(io);
-            stdio.finalize();
+            var stdio: zcli.Stdio = undefined;
+            stdio.init(io);
             defer stdio.flush();
 
             // Arena-per-command allocator: everything the command and framework

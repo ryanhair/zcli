@@ -271,8 +271,8 @@ test "basic argument transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -328,8 +328,8 @@ test "transformation with argument consumption" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -406,8 +406,8 @@ test "transformation chain with multiple plugins" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -470,8 +470,8 @@ test "stopping transformation pipeline" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -528,8 +528,8 @@ test "environment variable expansion transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -581,8 +581,8 @@ test "path expansion transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -645,8 +645,8 @@ test "argument injection transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -696,8 +696,8 @@ test "transformation error handling" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();

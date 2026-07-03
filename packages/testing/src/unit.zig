@@ -70,7 +70,8 @@ pub fn runCommand(
     errdefer stderr_aw.deinit();
 
     // Create the standard-stream holder with overrides for capturing
-    var stdio = zcli.Stdio.init(std.testing.io);
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
     stdio.stdout_override = &stdout_aw.writer;
     stdio.stderr_override = &stderr_aw.writer;
 
