@@ -136,9 +136,43 @@ const topics = [_]Topic{
         \\  const store = @import("store");
         \\
         \\A shared module can itself import zcli packages — e.g.
-        \\`store_module.addImport("ztheme", zcli_dep.module("ztheme"));`.
+        \\`store_module.addImport("ztheme", zcli_dep.module("ztheme"));`. For a
+        \\complete shared module that persists data, see `zcli guide storage`.
         \\
         ,
+    },
+    .{
+        .name = "storage",
+        .summary = "save and load data (JSON files)",
+        .body =
+        \\storage — save and load data (JSON files)
+        \\
+        \\Commands persist state by reading and writing files themselves — there is
+        \\no zcli storage API, just the standard library. `context.io` is a `std.Io`;
+        \\pass it to `std.Io.Dir` to touch the filesystem:
+        \\
+        \\  const cwd = std.Io.Dir.cwd();
+        \\  const bytes = try cwd.readFileAlloc(context.io, "data.json", context.allocator, .limited(1 << 20));
+        \\  try cwd.writeFile(context.io, .{ .sub_path = "data.json", .data = bytes });
+        \\
+        \\For structured data, let `std.json` carry it both ways — a typed struct
+        \\decodes from bytes, and any value re-encodes through the `{f}` specifier;
+        \\no walking a generic tree, no hand-written string building:
+        \\
+        \\  const parsed = try std.json.parseFromSlice(MyData, arena, bytes, .{ .allocate = .alloc_always });
+        \\  const data = parsed.value;                                     // bytes  -> struct
+        \\  const json = std.json.fmt(data, .{ .whitespace = .indent_2 });  // struct -> JSON, print with "{f}"
+        \\
+        \\Load into `context.allocator` (the arena) and never free — the data lives
+        \\until the command ends (see `zcli guide arena`). Paths are relative to the
+        \\working directory, so a command reads and writes where the user ran it;
+        \\a test that drives such a command touches real files (see `zcli guide
+        \\testing`).
+        \\
+        \\Worked example — examples/notes/src/store.zig, a persistence helper shared
+        \\by every command (see `zcli guide sharing`):
+        \\
+        ++ "\n" ++ examples.notes_store,
     },
     .{
         .name = "arena",

@@ -459,6 +459,16 @@ test "guide lists topics and embeds the canonical example source" {
         try expectContains(r.stdout, "https://api.github.com/repos/");
     }
 
+    // Same for `storage`, embedding examples/notes/src/store.zig — the canonical
+    // JSON-persistence idiom (typed parse + std.json.fmt).
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "guide", "storage" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "std.json.parseFromSlice");
+        try expectContains(r.stdout, "std.json.fmt(notes");
+    }
+
     // An unknown topic fails (non-zero) with the topic list, no stack trace.
     {
         var r = try run(tmp.dir, &.{ zcli_exe, "guide", "nope" });
