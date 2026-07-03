@@ -48,20 +48,58 @@ pub const CommandResult = struct {
     }
 };
 
+/// True when every field of `T` has a default value, so `T{}` compiles.
+fn isDefaultConstructible(comptime T: type) bool {
+    inline for (@typeInfo(T).@"struct".fields) |field| {
+        if (field.default_value_ptr == null) return false;
+    }
+    return true;
+}
+
+/// Field attributes for a `runCommand` `args`/`options` field: it carries a
+/// default (so the caller may omit it) only when `T` is default-constructible.
+/// When `T` has a required field, the config field is required too — so
+/// omitting `.args`/`.options` for such a command is a plain "missing struct
+/// field" compile error at the call site, not a cryptic one inside a default.
+fn fieldAttrs(comptime T: type) std.builtin.Type.StructField.Attributes {
+    const default_ptr: ?*const anyopaque = if (isDefaultConstructible(T)) blk: {
+        const value: T = .{};
+        break :blk &value;
+    } else null;
+    return .{ .default_value_ptr = default_ptr };
+}
+
+/// The `config` parameter type for `runCommand`, tailored to `Command` so that
+/// `args`/`options` are only optional-to-pass when default-constructible.
+fn RunConfig(comptime Command: type) type {
+    const default_alloc: std.mem.Allocator = std.testing.allocator;
+    const names = [_][]const u8{ "args", "options", "allocator" };
+    const types = [_]type{ Command.Args, Command.Options, std.mem.Allocator };
+    const attrs = [_]std.builtin.Type.StructField.Attributes{
+        fieldAttrs(Command.Args),
+        fieldAttrs(Command.Options),
+        .{ .default_value_ptr = &default_alloc },
+    };
+    return @Struct(.auto, null, &names, &types, &attrs);
+}
+
 /// Run a command's execute() function in-process with captured I/O.
 ///
 /// The command module must have Args, Options, and execute declarations.
 /// Plugins can be provided to populate context.plugins.
+///
+/// Pass `.args`/`.options` to drive the command. They may be omitted only
+/// when the command's Args/Options are default-constructible (every field has
+/// a default); a command with a required positional or option must be given
+/// `.args`/`.options` or the call fails to compile with "missing struct field".
 pub fn runCommand(
     comptime Command: type,
     comptime plugins: []const type,
-    config: struct {
-        args: Command.Args = .{},
-        options: Command.Options = .{},
-        allocator: std.mem.Allocator = std.testing.allocator,
-    },
+    config: RunConfig(Command),
 ) !CommandResult {
     const allocator = config.allocator;
+    const args = config.args;
+    const options = config.options;
 
     // Capture output using allocating writers
     var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
@@ -96,7 +134,7 @@ pub fn runCommand(
     // Execute the command
     var success = true;
     var err: ?anyerror = null;
-    Command.execute(config.args, config.options, &context) catch |e| {
+    Command.execute(args, options, &context) catch |e| {
         success = false;
         err = e;
     };
@@ -202,6 +240,24 @@ test "runCommand passes args and options" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("widget: 5\n", result.stdout);
+}
+
+test "runCommand with a required (no-default) arg" {
+    const TestCommand = struct {
+        pub const Args = struct {
+            name: []const u8,
+        };
+        pub const Options = struct {};
+
+        pub fn execute(args: Args, _: Options, context: anytype) !void {
+            try context.stdout().print("hello {s}\n", .{args.name});
+        }
+    };
+
+    var result = try runCommand(TestCommand, &.{}, .{ .args = .{ .name = "Ada" } });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("hello Ada\n", result.stdout);
 }
 
 test "runCommand with plugin data" {

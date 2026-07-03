@@ -268,6 +268,12 @@ const topics = [_]Topic{
         \\asserting on rendered color/layout). Pass plugin types as the second arg to
         \\populate context.plugins.
         \\
+        \\runCommand runs execute() in-process against the real filesystem and the
+        \\real cwd — it captures I/O, not the disk. A command that reads or writes
+        \\files touches actual files during `zig build test`, so a leftover file can
+        \\make the next run behave differently. Point file I/O at a temp dir or a
+        \\unique path, and clean up in the test.
+        \\
         ,
     },
 };
