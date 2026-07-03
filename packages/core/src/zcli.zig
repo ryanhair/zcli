@@ -108,7 +108,11 @@ pub const CommandModuleInfo = struct {
 /// Use the Context exported from your command_registry module instead.
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    io: *IO,
+    /// The framework's `std.Io` instance — the entry point for all explicit I/O.
+    io: std.Io,
+    /// Standard-stream holder backing `stdout()`/`stderr()`/`stdin()`. Internal:
+    /// command and plugin code should use those accessors and `io`, not this.
+    stdio: *Stdio,
 
     // Core zcli command execution context
     app_name: []const u8 = "app",
@@ -130,11 +134,12 @@ pub const Context = struct {
 
     const Self = @This();
 
-    /// Initialize a new Context with the provided IO.
-    pub fn init(allocator: std.mem.Allocator, io: *IO) Self {
+    /// Initialize a new Context with the provided standard streams.
+    pub fn init(allocator: std.mem.Allocator, stdio: *Stdio) Self {
         return .{
             .allocator = allocator,
-            .io = io,
+            .io = stdio.io,
+            .stdio = stdio,
         };
     }
 
@@ -162,21 +167,21 @@ pub const Context = struct {
 
     // Convenience methods for I/O
     pub fn stdout(self: *Self) *std.Io.Writer {
-        return self.io.stdout();
+        return self.stdio.stdout();
     }
 
     pub fn stderr(self: *Self) *std.Io.Writer {
-        return self.io.stderr();
+        return self.stdio.stderr();
     }
 
     pub fn stdin(self: *Self) *std.Io.Reader {
-        return self.io.stdin();
+        return self.stdio.stdin();
     }
 
     pub fn exit(self: *Self, code: u8) noreturn {
         // std.process.exit does not flush buffered writers — without this,
         // anything printed just before exit() is silently dropped.
-        self.io.flush();
+        self.stdio.flush();
         std.process.exit(code);
     }
 
@@ -216,9 +221,9 @@ pub const Context = struct {
 ///
 /// ```zig
 /// const TestCtx = zcli.TestContext(&.{ MyPlugin });
-/// var io = zcli.IO.init(std.testing.io);
-/// io.finalize();
-/// var ctx = TestCtx.init(testing.allocator, &io);
+/// var stdio = zcli.Stdio.init(std.testing.io);
+/// stdio.finalize();
+/// var ctx = TestCtx.init(testing.allocator, &stdio);
 /// defer ctx.deinit();
 /// ctx.plugins.my_plugin.some_field = true;
 /// ```
@@ -272,7 +277,8 @@ pub fn TestContext(comptime test_plugins: []const type) type {
 
     return struct {
         allocator: std.mem.Allocator,
-        io: *IO,
+        io: std.Io,
+        stdio: *Stdio,
         theme: ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
 
         app_name: []const u8 = "test-app",
@@ -290,10 +296,11 @@ pub fn TestContext(comptime test_plugins: []const type) type {
 
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, io: *IO) Self {
+        pub fn init(allocator: std.mem.Allocator, stdio: *Stdio) Self {
             return .{
                 .allocator = allocator,
-                .io = io,
+                .io = stdio.io,
+                .stdio = stdio,
             };
         }
 
@@ -312,15 +319,15 @@ pub fn TestContext(comptime test_plugins: []const type) type {
         }
 
         pub fn stdout(self: *Self) *std.Io.Writer {
-            return self.io.stdout();
+            return self.stdio.stdout();
         }
 
         pub fn stderr(self: *Self) *std.Io.Writer {
-            return self.io.stderr();
+            return self.stdio.stderr();
         }
 
         pub fn stdin(self: *Self) *std.Io.Reader {
-            return self.io.stdin();
+            return self.stdio.stdin();
         }
 
         pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
@@ -349,8 +356,12 @@ pub fn TestContext(comptime test_plugins: []const type) type {
     };
 }
 
-/// I/O abstraction for the framework
-pub const IO = struct {
+/// Holder for the process's standard streams. Owns the buffered stdout/stderr
+/// writers and stdin reader (plus their backing buffers), which is why it must
+/// live at a stable address and be passed to a Context by pointer. Command and
+/// plugin code never reaches into this directly — it reads the `std.Io` instance
+/// via `context.io` and does I/O via `context.stdout()`/`stderr()`/`stdin()`.
+pub const Stdio = struct {
     io: std.Io,
     stdout_writer: std.Io.File.Writer = undefined,
     stderr_writer: std.Io.File.Writer = undefined,
@@ -367,7 +378,7 @@ pub const IO = struct {
         return .{ .io = io };
     }
 
-    /// Finalize the IO struct by creating writers/readers in-place.
+    /// Finalize the Stdio struct by creating writers/readers in-place.
     /// Must be called after the struct is in its final memory location.
     pub fn finalize(self: *@This()) void {
         self.stdout_writer = std.Io.File.stdout().writer(self.io, &self.stdout_buf);
@@ -685,10 +696,10 @@ test "Context creation" {
     const allocator = testing.allocator;
 
     // Just verify the Context struct can be created
-    var io = IO.init(std.testing.io);
-    io.finalize();
+    var stdio = Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = Context.init(allocator, &io);
+    var context = Context.init(allocator, &stdio);
     defer context.deinit();
 
     // Test that convenience methods work
@@ -709,10 +720,10 @@ test "TestContext with plugins" {
     };
 
     const Ctx = TestContext(&.{MockPlugin});
-    var io = IO.init(std.testing.io);
-    io.finalize();
+    var stdio = Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var ctx = Ctx.init(allocator, &io);
+    var ctx = Ctx.init(allocator, &stdio);
     defer ctx.deinit();
 
     // Verify plugin data is accessible and mutable
@@ -730,10 +741,10 @@ test "TestContext without plugins" {
     const allocator = testing.allocator;
 
     const Ctx = TestContext(&.{});
-    var io = IO.init(std.testing.io);
-    io.finalize();
+    var stdio = Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var ctx = Ctx.init(allocator, &io);
+    var ctx = Ctx.init(allocator, &stdio);
     defer ctx.deinit();
 
     _ = ctx.stdout();

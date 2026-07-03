@@ -280,7 +280,7 @@ lookup, so access is fully typed:
 // Generated context (conceptually):
 pub const Context = struct {
     allocator: std.mem.Allocator,
-    io: *zcli.IO,
+    io: std.Io, // the framework's std.Io; do I/O via context.stdout()/stderr()/stdin()
     // ... app metadata, command path, etc. ...
 
     // One field per plugin that declares ContextData, named by plugin_id:

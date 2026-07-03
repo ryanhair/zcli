@@ -12,7 +12,7 @@ pub const Args = struct {};
 pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *Context) !void {
-    const io = context.io.io;
+    const io = context.io;
     var spinner = zprogress.spinner(io, .{ .style = .dots });
     spinner.start("Connecting to server...");
 

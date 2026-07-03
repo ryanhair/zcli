@@ -114,7 +114,7 @@ then the context tail `examples → guide → AGENTS.md`. **Parallelizable early
 - **What:** The `testing` package was zero-dependency until the 2026-06-01 unit-tier move
   (commit `703fd69`). It now depends on `core` + `vterm` (and transitively on serde and core's
   whole sibling tree) solely because the **unit tier** (`testing.unit` / `runCommand`) needs
-  `zcli.IO`/`TestContext` + vterm. The **integration** and **E2E** tiers need none of that.
+  `zcli.Stdio`/`TestContext` + vterm. The **integration** and **E2E** tiers need none of that.
   Consider splitting the unit tier into its own sub-module/package so consumers who only write
   subprocess/PTY tests don't pull the entire framework + a remote serde dep into their test build.
 - **Why deferred:** Acceptable trade-off for putting the unit tier in its natural home; not worth
