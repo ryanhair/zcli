@@ -212,6 +212,23 @@ pub const Context = struct {
 /// defer ctx.deinit();
 /// ctx.plugins.my_plugin.some_field = true;
 /// ```
+/// The context field name for a test plugin: its plugin_id with every
+/// non-identifier character replaced by '_' (same rule the registry uses).
+fn testPluginFieldName(comptime Plugin: type) []const u8 {
+    comptime {
+        const id: []const u8 = Plugin.plugin_id;
+        var name_buf: [256]u8 = undefined;
+        var name_len: usize = 0;
+        for (id) |c| {
+            if (name_len >= name_buf.len - 1) break;
+            name_buf[name_len] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
+            name_len += 1;
+        }
+        const final = name_buf[0..name_len].*;
+        return &final;
+    }
+}
+
 pub fn TestContext(comptime test_plugins: []const type) type {
     // Build the plugins struct type from the provided plugins
     const PluginsType = comptime blk: {
@@ -240,17 +257,7 @@ pub fn TestContext(comptime test_plugins: []const type) type {
                 const DataType = Plugin.ContextData;
                 const default_val: DataType = .{};
 
-                // Sanitize plugin_id to valid identifier
-                const id: []const u8 = Plugin.plugin_id;
-                var name_buf: [256]u8 = undefined;
-                var name_len: usize = 0;
-                for (id) |c| {
-                    if (name_len >= name_buf.len - 1) break;
-                    name_buf[name_len] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
-                    name_len += 1;
-                }
-
-                field_names[idx] = name_buf[0..name_len];
+                field_names[idx] = testPluginFieldName(Plugin);
                 field_types[idx] = DataType;
                 field_attrs[idx] = .{ .default_value_ptr = @ptrCast(&default_val) };
                 idx += 1;
@@ -289,9 +296,16 @@ pub fn TestContext(comptime test_plugins: []const type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            // Nothing to free — see Context.deinit: framework-attached data
-            // is arena-owned and reclaimed wholesale (ADR-0001).
-            _ = self;
+            // Mirror the real Context's lifecycle: run plugin
+            // deinitContextData hooks, so a plugin that frees its
+            // ContextData behaves the same under test as in production.
+            // Framework-attached data is otherwise arena-owned and needs no
+            // per-field frees (ADR-0001).
+            inline for (test_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "ContextData") and @hasDecl(Plugin, "deinitContextData")) {
+                    Plugin.deinitContextData(&@field(self.plugins, testPluginFieldName(Plugin)), self.allocator);
+                }
+            }
         }
 
         pub fn stdout(self: *Self) *std.Io.Writer {
@@ -1069,4 +1083,31 @@ test "Stdio.init wires streams to the struct's own buffers, in place" {
     defer aw.deinit();
     stdio.stdout_override = &aw.writer;
     try testing.expectEqual(&aw.writer, stdio.stdout());
+}
+
+test "TestContext.deinit runs plugin deinitContextData hooks" {
+    const HookPlugin = struct {
+        pub const plugin_id = "hook-plugin"; // dash exercises field-name sanitization
+        var hook_ran: bool = false;
+        pub const ContextData = struct { payload: ?[]u8 = null };
+        pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
+            hook_ran = true;
+            if (data.payload) |p| allocator.free(p);
+            data.payload = null;
+        }
+    };
+
+    const Ctx = TestContext(&.{HookPlugin});
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+
+    var ctx = Ctx.init(testing.allocator, std.testing.io, &stdio);
+    ctx.plugins.hook_plugin.payload = try testing.allocator.dupe(u8, "plugin-owned");
+    ctx.deinit();
+
+    // The hook ran — and freed the allocation, or std.testing.allocator's
+    // leak check fails this test. Before this fix TestContext.deinit never
+    // ran lifecycle hooks, so plugins cleaned up in production but leaked
+    // under test.
+    try testing.expect(HookPlugin.hook_ran);
 }
