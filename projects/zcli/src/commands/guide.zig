@@ -102,6 +102,45 @@ const topics = [_]Topic{
         ,
     },
     .{
+        .name = "sharing",
+        .summary = "reuse a helper module across commands",
+        .body =
+        \\sharing — reuse code across commands
+        \\
+        \\When two or more commands need the same helper (a `store.zig`, an API
+        \\client, shared types), put it in its own module and register it once. This
+        \\is build wiring you edit by hand — unlike command structure, there is no
+        \\`zcli add` for it.
+        \\
+        \\1. Write the helper, e.g. `src/store.zig`.
+        \\2. In build.zig, create a module for it and add it to `shared_modules`:
+        \\
+        \\  const store_module = b.createModule(.{
+        \\      .root_source_file = b.path("src/store.zig"),
+        \\      .target = target,
+        \\      .optimize = optimize,
+        \\  });
+        \\
+        \\  const shared_modules = [_]zcli.SharedModule{
+        \\      .{ .name = "store", .module = store_module },
+        \\  };
+        \\
+        \\3. Pass `shared_modules` to BOTH `zcli.generate(...)` and
+        \\   `zcli.addCommandTests(...)` — a generated project already wires the one
+        \\   list into both. If a module reaches `generate` but not the tests, `zig
+        \\   build` is green while `zig build test` fails with "no module named
+        \\   'store'". One list, two call sites.
+        \\
+        \\4. Import it from any command (or its test) by the registered name:
+        \\
+        \\  const store = @import("store");
+        \\
+        \\A shared module can itself import zcli packages — e.g.
+        \\`store_module.addImport("ztheme", zcli_dep.module("ztheme"));`.
+        \\
+        ,
+    },
+    .{
         .name = "arena",
         .summary = "the per-command allocator (never free)",
         .body =
