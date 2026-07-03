@@ -88,6 +88,7 @@ fn benchParseSimpleArgs(allocator: std.mem.Allocator) !void {
         allocator,
         null,
         &test_args,
+        null,
     );
     defer result.deinit();
 }
@@ -105,7 +106,7 @@ fn benchParseComplexArgs(allocator: std.mem.Allocator) !void {
 
     const test_args = [_][]const u8{ "serve", "8080", "localhost", "false", "file1.txt", "file2.txt", "file3.txt" };
 
-    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args);
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args, null);
     defer result.deinit();
 }
 
@@ -120,7 +121,7 @@ fn benchParseOptions(allocator: std.mem.Allocator) !void {
     };
 
     const test_args = [_][]const u8{ "--output", "result.txt", "--verbose", "--jobs", "4", "--include", "src", "--include", "lib" };
-    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args);
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args, null);
     defer result.deinit();
 }
 
@@ -139,7 +140,7 @@ fn benchParseMixed(allocator: std.mem.Allocator) !void {
     const test_input = [_][]const u8{ "--verbose", "--jobs", "8", "build", "release" };
 
     // Single unified parsing call - much simpler and handles mixed syntax correctly
-    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_input);
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_input, null);
     defer result.deinit();
 }
 
@@ -178,7 +179,7 @@ fn benchParseEnum(allocator: std.mem.Allocator) !void {
 
     const test_args = [_][]const u8{"warn"};
 
-    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args);
+    const result = try command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args, null);
     defer result.deinit();
 }
 
@@ -193,7 +194,7 @@ fn benchErrorPath(allocator: std.mem.Allocator) !void {
     // Intentionally invalid input
     const test_args = [_][]const u8{ "myapp", "not_a_number" };
 
-    const result = command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args);
+    const result = command_parser.parseCommandLine(TestArgs, TestOptions, null, allocator, null, &test_args, null);
     if (result) |parsed| {
         parsed.deinit();
         return error.ExpectedError;

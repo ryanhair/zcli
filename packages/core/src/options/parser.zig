@@ -33,7 +33,7 @@ const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 ///     verbose: bool = false,          // Non-array field - no cleanup needed
 /// };
 ///
-/// const parsed = try parseOptions(Options, allocator, args);
+/// const parsed = try parseOptions(Options, allocator, args, null);
 /// defer allocator.free(parsed.options.files);  // REQUIRED
 /// defer allocator.free(parsed.options.counts); // REQUIRED
 /// ```
@@ -71,23 +71,24 @@ const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 ///     files: [][]const u8 = &.{}, // --files a.txt b.txt
 /// };
 ///
-/// const result = try zcli.parseOptions(Options, allocator, args);
+/// const result = try zcli.parseOptions(Options, allocator, args, null);
 /// defer zcli.cleanupOptions(Options, result.options, allocator);
 /// ```
 ///
 /// ## Memory Management
 /// **IMPORTANT**: Array options allocate memory. Always call `cleanupOptions` when done:
 /// ```zig
-/// const result = try parseOptions(Options, allocator, args);
+/// const result = try parseOptions(Options, allocator, args, null);
 /// defer cleanupOptions(Options, result.options, allocator);
 /// ```
 pub fn parseOptions(
     comptime OptionsType: type,
     allocator: std.mem.Allocator,
     args: []const []const u8,
+    diag: ?*?ZcliDiagnostic,
 ) ZcliError!types.OptionsResult(OptionsType) {
     // No meta means no `.env` declarations, so there is nothing to look up.
-    return parseOptionsWithMeta(OptionsType, null, allocator, null, args);
+    return parseOptionsWithMeta(OptionsType, null, allocator, null, args, diag);
 }
 
 /// Parse command-line options with custom metadata for option names and descriptions.
@@ -139,6 +140,7 @@ pub fn parseOptionsWithMeta(
     allocator: std.mem.Allocator,
     environ: ?*const std.process.Environ.Map,
     args: []const []const u8,
+    diag: ?*?ZcliDiagnostic,
 ) ZcliError!types.OptionsResult(OptionsType) {
     const type_info = @typeInfo(OptionsType);
 
@@ -232,11 +234,14 @@ pub fn parseOptionsWithMeta(
         }
 
         // Check resource limits before processing option
-        resource_tracker.checkOptionCount() catch |err| {
-            return switch (err) {
-                error.TooManyOptions => ZcliError.ResourceLimitExceeded,
-                else => ZcliError.SystemOutOfMemory,
-            };
+        resource_tracker.checkOptionCount() catch {
+            if (diag) |d| d.* = .{ .ResourceLimitExceeded = .{
+                .limit_type = "total options",
+                .limit_value = resource_tracker.limits.max_total_options,
+                .actual_value = resource_tracker.option_count,
+                .suggestion = null,
+            } };
+            return ZcliError.ResourceLimitExceeded;
         };
 
         if (std.mem.startsWith(u8, arg, "--")) {
@@ -246,20 +251,23 @@ pub fn parseOptionsWithMeta(
             else
                 arg[2..];
 
-            resource_tracker.checkOptionNameLength(option_name) catch |err| {
-                return switch (err) {
-                    error.OptionNameTooLong => ZcliError.ResourceLimitExceeded,
-                    else => ZcliError.SystemOutOfMemory,
-                };
+            resource_tracker.checkOptionNameLength(option_name) catch {
+                if (diag) |d| d.* = .{ .ResourceLimitExceeded = .{
+                    .limit_type = "option name length",
+                    .limit_value = resource_tracker.limits.max_option_name_length,
+                    .actual_value = option_name.len,
+                    .suggestion = null,
+                } };
+                return ZcliError.ResourceLimitExceeded;
             };
 
-            const consumed = parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator) catch |err| {
+            const consumed = parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, diag) catch |err| {
                 return convertLongOptionError(err);
             };
             arg_index += consumed;
         } else {
             // Short option(s)
-            const consumed = parseShortOptionsWithMeta(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator) catch |err| {
+            const consumed = parseShortOptionsWithMeta(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, diag) catch |err| {
                 return convertShortOptionError(err);
             };
             arg_index += consumed;
@@ -289,7 +297,10 @@ fn convertLongOptionError(err: anyerror) ZcliError {
         error.UnknownOption => ZcliError.OptionUnknown,
         error.MissingOptionValue => ZcliError.OptionMissingValue,
         error.InvalidOptionValue => ZcliError.OptionInvalidValue,
+        error.BooleanOptionWithValue => ZcliError.OptionBooleanWithValue,
         error.OutOfMemory => ZcliError.SystemOutOfMemory,
+        // The helpers' error sets are hand-listed above; anything new must be
+        // mapped (and given a diagnostic) rather than silently misclassified.
         else => ZcliError.OptionInvalidValue,
     };
 }
@@ -300,7 +311,9 @@ fn convertShortOptionError(err: anyerror) ZcliError {
         error.UnknownOption => ZcliError.OptionUnknown,
         error.MissingOptionValue => ZcliError.OptionMissingValue,
         error.InvalidOptionValue => ZcliError.OptionInvalidValue,
+        error.BooleanOptionWithValue => ZcliError.OptionBooleanWithValue,
         error.OutOfMemory => ZcliError.SystemOutOfMemory,
+        // See convertLongOptionError: map new helper errors explicitly.
         else => ZcliError.OptionInvalidValue,
     };
 }
@@ -383,6 +396,7 @@ fn parseLongOptions(
     arg_index: usize,
     array_lists: anytype,
     allocator: std.mem.Allocator,
+    diag: ?*?ZcliDiagnostic,
 ) !usize {
     const arg = args[arg_index];
     const option_part = arg[2..]; // Skip "--"
@@ -437,8 +451,12 @@ fn parseLongOptions(
             // Handle boolean flags
             if (comptime utils.isBooleanType(field.type)) {
                 if (option_value != null) {
-                    logging.booleanOptionWithValue(option_name);
-                    return error.InvalidOptionValue;
+                    if (diag) |d| d.* = .{ .OptionBooleanWithValue = .{
+                        .option_name = option_name,
+                        .is_short = false,
+                        .provided_value = option_value.?,
+                    } };
+                    return error.BooleanOptionWithValue;
                 }
                 @field(result, field.name) = true;
                 return 1;
@@ -451,7 +469,11 @@ fn parseLongOptions(
                 } else if (arg_index + 1 < args.len and (!std.mem.startsWith(u8, args[arg_index + 1], "-") or utils.isNegativeNumber(args[arg_index + 1]))) {
                     break :blk args[arg_index + 1];
                 } else {
-                    logging.missingOptionValue(option_name);
+                    if (diag) |d| d.* = .{ .OptionMissingValue = .{
+                        .option_name = option_name,
+                        .is_short = false,
+                        .expected_type = @typeName(field.type),
+                    } };
                     return error.MissingOptionValue;
                 }
             };
@@ -466,6 +488,12 @@ fn parseLongOptions(
             } else {
                 // Handle single values
                 const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
+                    if (diag) |d| d.* = .{ .OptionInvalidValue = .{
+                        .option_name = option_name,
+                        .is_short = false,
+                        .provided_value = value,
+                        .expected_type = @typeName(field.type),
+                    } };
                     return err;
                 };
                 @field(result, field.name) = parsed_value;
@@ -477,6 +505,11 @@ fn parseLongOptions(
     }
 
     if (!found) {
+        if (diag) |d| d.* = .{ .OptionUnknown = .{
+            .option_name = option_name,
+            .is_short = false,
+            .suggestions = &.{},
+        } };
         return error.UnknownOption;
     }
 
@@ -493,11 +526,17 @@ fn parseShortOptionsWithMeta(
     arg_index: usize,
     array_lists: anytype,
     allocator: std.mem.Allocator,
+    diag: ?*?ZcliDiagnostic,
 ) !usize {
     const arg = args[arg_index];
     const options_part = arg[1..]; // Skip "-"
 
     if (options_part.len == 0) {
+        if (diag) |d| d.* = .{ .OptionUnknown = .{
+            .option_name = options_part,
+            .is_short = true,
+            .suggestions = &.{},
+        } };
         return error.UnknownOption;
     }
 
@@ -617,7 +656,11 @@ fn parseShortOptionsWithMeta(
                     } else {
                         // Value in next argument
                         if (arg_index + 1 >= args.len) {
-                            logging.missingOptionValue(&[_]u8{char});
+                            if (diag) |d| d.* = .{ .OptionMissingValue = .{
+                                .option_name = options_part[0..1],
+                                .is_short = true,
+                                .expected_type = @typeName(field.type),
+                            } };
                             return error.MissingOptionValue;
                         }
                         value = args[arg_index + 1];
@@ -632,7 +675,12 @@ fn parseShortOptionsWithMeta(
                         }
                     } else {
                         const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
-                            // This error will be logged by the parsing utility, no need to duplicate
+                            if (diag) |d| d.* = .{ .OptionInvalidValue = .{
+                                .option_name = options_part[0..1],
+                                .is_short = true,
+                                .provided_value = value,
+                                .expected_type = @typeName(field.type),
+                            } };
                             return err;
                         };
                         @field(result, field.name) = parsed_value;
@@ -644,6 +692,11 @@ fn parseShortOptionsWithMeta(
         }
 
         if (!char_found) {
+            if (diag) |d| d.* = .{ .OptionUnknown = .{
+                .option_name = options_part[0..1],
+                .is_short = true,
+                .suggestions = &.{},
+            } };
             return error.UnknownOption;
         }
 
@@ -769,7 +822,7 @@ fn parseShortOptions(
 ///
 /// ### Manual Usage Example:
 /// ```zig
-/// const parsed = try parseOptions(Options, allocator, args);
+/// const parsed = try parseOptions(Options, allocator, args, null);
 /// defer cleanupOptions(Options, parsed.options, allocator);
 /// ```
 /// Clean up memory allocated for array options by parseOptions/parseOptionsWithMeta.
@@ -791,7 +844,7 @@ fn parseShortOptions(
 ///
 /// ## Examples
 /// ```zig
-/// const result = try zcli.parseOptions(Options, allocator, args);
+/// const result = try zcli.parseOptions(Options, allocator, args, null);
 /// defer zcli.cleanupOptions(Options, result.options, allocator);
 ///
 /// // Use result.options safely here
@@ -844,7 +897,7 @@ test "parseOptions basic" {
 
     {
         const args = [_][]const u8{ "--verbose", "--name", "test", "--count", "42" };
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expectEqualStrings("test", parsed.options.name);
         try std.testing.expectEqual(@as(u32, 42), parsed.options.count);
@@ -862,7 +915,7 @@ test "parseOptions short flags" {
 
     {
         const args = [_][]const u8{"-vq"};
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
     }
@@ -878,7 +931,7 @@ test "parseOptions long option with equals" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--name=myapp", "--port=3000", "--verbose" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
     try std.testing.expectEqualStrings("myapp", parsed.options.name);
     try std.testing.expectEqual(@as(u16, 3000), parsed.options.port);
@@ -896,7 +949,7 @@ test "parseOptions short option with value" {
     // Test with space
     {
         const args = [_][]const u8{ "-n", "test", "-p", "9000" };
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
         try std.testing.expectEqualStrings("test", parsed.options.name);
         try std.testing.expectEqual(@as(u16, 9000), parsed.options.port);
     }
@@ -904,7 +957,7 @@ test "parseOptions short option with value" {
     // Test without space
     {
         const args = [_][]const u8{ "-ntest2", "-p9001" };
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
         try std.testing.expectEqualStrings("test2", parsed.options.name);
         try std.testing.expectEqual(@as(u16, 9001), parsed.options.port);
     }
@@ -918,7 +971,7 @@ test "parseOptions double dash stops parsing" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--verbose", "--", "--not-an-option" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
     try std.testing.expect(parsed.options.verbose);
     try std.testing.expectEqual(@as(usize, 2), parsed.result.next_arg_index);
@@ -934,7 +987,7 @@ test "parseOptions enum types" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--level", "debug", "--format", "json" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
     try std.testing.expectEqual(LogLevel.debug, parsed.options.level);
     try std.testing.expectEqual(@as(@TypeOf(parsed.options.format), .json), parsed.options.format);
@@ -951,7 +1004,7 @@ test "parseOptions optional types" {
     // Test with values provided
     {
         const args = [_][]const u8{ "--config", "app.conf", "--port", "8080" };
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
         try std.testing.expectEqualStrings("app.conf", parsed.options.config.?);
         try std.testing.expectEqual(@as(u16, 8080), parsed.options.port.?);
@@ -960,7 +1013,7 @@ test "parseOptions optional types" {
     // Test with defaults
     {
         const args = [_][]const u8{};
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
         try std.testing.expectEqual(@as(?[]const u8, null), parsed.options.config);
         try std.testing.expectEqual(@as(?u16, null), parsed.options.port);
@@ -977,7 +1030,7 @@ test "parseOptions dash to underscore conversion" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--no-color", "--log-level", "debug", "--max-retries", "5" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
     try std.testing.expect(parsed.options.no_color);
     try std.testing.expectEqualStrings("debug", parsed.options.log_level);
@@ -995,19 +1048,19 @@ test "parseOptions error cases" {
     // Unknown option
     {
         const args = [_][]const u8{"--unknown"};
-        try std.testing.expectError(ZcliError.OptionUnknown, parseOptions(TestOptions, allocator, &args));
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptions(TestOptions, allocator, &args, null));
     }
 
     // Missing option value
     {
         const args = [_][]const u8{"--name"};
-        try std.testing.expectError(ZcliError.OptionMissingValue, parseOptions(TestOptions, allocator, &args));
+        try std.testing.expectError(ZcliError.OptionMissingValue, parseOptions(TestOptions, allocator, &args, null));
     }
 
     // Invalid option value
     {
         const args = [_][]const u8{ "--count", "not_a_number" };
-        try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(TestOptions, allocator, &args));
+        try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(TestOptions, allocator, &args, null));
     }
 
     // Boolean option with value
@@ -1016,9 +1069,9 @@ test "parseOptions error cases" {
             verbose: bool = false,
         };
         const args = [_][]const u8{"--verbose=true"};
-        // Currently boolean options with =value are treated as invalid value
-        // rather than boolean_with_value. This is acceptable behavior.
-        try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(BoolOptions, allocator, &args));
+        // A boolean flag given a value is its own error (it used to be
+        // misclassified as OptionInvalidValue by a catch-all).
+        try std.testing.expectError(ZcliError.OptionBooleanWithValue, parseOptions(BoolOptions, allocator, &args, null));
     }
 }
 
@@ -1032,7 +1085,7 @@ test "parseOptions array accumulation" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--files", "a.txt", "--files", "b.txt", "--numbers", "1", "--numbers", "2", "--verbose" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
@@ -1055,7 +1108,7 @@ test "parseOptions array accumulation with short flags" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "-f", "first.txt", "-f", "second.txt", "-n", "10", "-n", "20" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
@@ -1082,7 +1135,7 @@ test "parseOptionsWithMeta custom name mapping" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--file", "test1.txt", "--file", "test2.txt", "--verbose" };
-    const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args);
+    const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
@@ -1092,7 +1145,7 @@ test "parseOptionsWithMeta custom name mapping" {
 
     // Should fail with the field name when custom name is specified
     const fail_args = [_][]const u8{ "--files", "should_fail.txt" };
-    try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &fail_args));
+    try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &fail_args, null));
 }
 
 test "parseOptionsWithMeta custom names are exclusive" {
@@ -1112,7 +1165,7 @@ test "parseOptionsWithMeta custom names are exclusive" {
     // Should work with custom name
     {
         const args = [_][]const u8{ "--file", "test.txt" };
-        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
         defer cleanupOptions(TestOptions, parsed.options, allocator);
 
         try std.testing.expectEqual(@as(usize, 1), parsed.options.output_files.len);
@@ -1122,7 +1175,7 @@ test "parseOptionsWithMeta custom names are exclusive" {
     // Should fail with field name when custom name is provided
     {
         const args = [_][]const u8{ "--output-files", "test.txt" };
-        try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &args));
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null));
     }
 }
 
@@ -1137,7 +1190,7 @@ test "cleanupOptions helper function" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--files", "a.txt", "--files", "b.txt", "--counts", "1", "--counts", "2", "--name", "test" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
     // Verify arrays were allocated
     try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
@@ -1156,7 +1209,7 @@ test "parseOptions negative numbers" {
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "--value", "-42", "--verbose" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
     try std.testing.expectEqual(@as(i32, -42), parsed.options.value);
     try std.testing.expect(parsed.options.verbose);
@@ -1171,7 +1224,7 @@ test "parseOptions continues through negative numbers (GNU-style)" {
 
     // Should continue parsing through negative numbers in GNU-style
     const args = [_][]const u8{ "--verbose", "-123", "other", "args" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
     try std.testing.expect(parsed.options.verbose);
     try std.testing.expectEqual(@as(usize, 4), parsed.result.next_arg_index);
@@ -1190,7 +1243,7 @@ test "parseOptions bundled short options" {
     // Test various bundled combinations
     {
         const args = [_][]const u8{"-vqf"};
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
@@ -1201,7 +1254,7 @@ test "parseOptions bundled short options" {
     // Test mixed bundled and separate
     {
         const args = [_][]const u8{ "-vq", "-f", "-a" };
-        const parsed = try parseOptions(TestOptions, allocator, &args);
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
@@ -1283,6 +1336,7 @@ pub fn parseOptionsAndArgs(
     allocator: std.mem.Allocator,
     environ: ?*const std.process.Environ.Map,
     args: []const []const u8,
+    diag: ?*?ZcliDiagnostic,
 ) ZcliError!ParseOptionsAndArgsResult(OptionsType) {
     // Lists to collect options and remaining args
     var option_args = std.ArrayList([]const u8).empty;
@@ -1343,7 +1397,7 @@ pub fn parseOptionsAndArgs(
     }
 
     // Parse the collected options
-    const parsed = try parseOptionsWithMeta(OptionsType, meta, allocator, environ, option_args.items);
+    const parsed = try parseOptionsWithMeta(OptionsType, meta, allocator, environ, option_args.items, diag);
     const remaining_slice = remaining_args.toOwnedSlice(allocator) catch {
         return ZcliError.SystemOutOfMemory;
     };
@@ -1366,7 +1420,7 @@ test "resource limits option count basic functionality" {
 
     // Test that basic functionality still works with resource limits enabled
     const args = [_][]const u8{ "--verbose", "--name", "test", "--count", "42", "--debug" };
-    const parsed = try parseOptions(TestOptions, allocator, &args);
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
 
     try std.testing.expectEqual(true, parsed.options.verbose);
@@ -1385,7 +1439,7 @@ test "parseOptions default values - no options provided" {
     const allocator = std.testing.allocator;
     const args: [0][]const u8 = .{};
 
-    const result = try parseOptions(TestOptions, allocator, &args);
+    const result = try parseOptions(TestOptions, allocator, &args, null);
     defer cleanupOptions(TestOptions, result.options, allocator);
 
     try std.testing.expectEqualStrings("stdout", result.options.output);
@@ -1403,7 +1457,7 @@ test "parseOptions default values - some options provided" {
     const allocator = std.testing.allocator;
     const args = [_][]const u8{ "--count", "100" };
 
-    const result = try parseOptions(TestOptions, allocator, &args);
+    const result = try parseOptions(TestOptions, allocator, &args, null);
     defer cleanupOptions(TestOptions, result.options, allocator);
 
     try std.testing.expectEqualStrings("stdout", result.options.output); // Should use default
@@ -1441,7 +1495,7 @@ test "env fallback fills unset options from the environ map" {
     try env.put("ZCLI_TEST_FORMAT", "json");
 
     const args = [_][]const u8{};
-    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args);
+    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args, null);
     defer cleanupOptions(EnvTestOptions, result.options, allocator);
 
     try std.testing.expectEqual(@as(u32, 42), result.options.count);
@@ -1458,7 +1512,7 @@ test "env fallback precedence: CLI beats env beats default" {
 
     // CLI wins over env.
     const args = [_][]const u8{ "--count", "7" };
-    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args);
+    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args, null);
     defer cleanupOptions(EnvTestOptions, result.options, allocator);
     try std.testing.expectEqual(@as(u32, 7), result.options.count);
 
@@ -1475,7 +1529,7 @@ test "env fallback: unparseable value keeps the default" {
     try env.put("ZCLI_TEST_DEBUG", "maybe");
 
     const args = [_][]const u8{};
-    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args);
+    const result = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, &env, &args, null);
     defer cleanupOptions(EnvTestOptions, result.options, allocator);
 
     try std.testing.expectEqual(@as(u32, 5), result.options.count); // default kept
@@ -1487,7 +1541,7 @@ test "env fallback: null environ and metaless parse are no-ops" {
     const args = [_][]const u8{};
 
     // No environ at all.
-    const r1 = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, null, &args);
+    const r1 = try parseOptionsWithMeta(EnvTestOptions, env_test_meta, allocator, null, &args, null);
     defer cleanupOptions(EnvTestOptions, r1.options, allocator);
     try std.testing.expectEqual(@as(u32, 5), r1.options.count);
 
@@ -1495,7 +1549,7 @@ test "env fallback: null environ and metaless parse are no-ops" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("ZCLI_TEST_COUNT", "42");
-    const r2 = try parseOptionsWithMeta(EnvTestOptions, null, allocator, &env, &args);
+    const r2 = try parseOptionsWithMeta(EnvTestOptions, null, allocator, &env, &args, null);
     defer cleanupOptions(EnvTestOptions, r2.options, allocator);
     try std.testing.expectEqual(@as(u32, 5), r2.options.count);
 }
@@ -1532,4 +1586,69 @@ test "applyEnvValue numeric, optional, and enum types" {
     try std.testing.expect(applyEnvValue(Mode, &mode, "fast"));
     try std.testing.expectEqual(Mode.fast, mode);
     try std.testing.expect(!applyEnvValue(Mode, &mode, "warp"));
+}
+
+test "diagnostics: option error sites fill precise context" {
+    const allocator = std.testing.allocator;
+    const Options = struct {
+        count: u32 = 0,
+        verbose: bool = false,
+    };
+
+    // Unknown long option.
+    {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{"--bogus"};
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptions(Options, allocator, &args, &diag));
+        try std.testing.expectEqualStrings("bogus", diag.?.OptionUnknown.option_name);
+        try std.testing.expect(!diag.?.OptionUnknown.is_short);
+    }
+
+    // Unknown short option.
+    {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{"-x"};
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptions(Options, allocator, &args, &diag));
+        try std.testing.expectEqualStrings("x", diag.?.OptionUnknown.option_name);
+        try std.testing.expect(diag.?.OptionUnknown.is_short);
+    }
+
+    // Missing value.
+    {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{"--count"};
+        try std.testing.expectError(ZcliError.OptionMissingValue, parseOptions(Options, allocator, &args, &diag));
+        try std.testing.expectEqualStrings("count", diag.?.OptionMissingValue.option_name);
+        try std.testing.expectEqualStrings("u32", diag.?.OptionMissingValue.expected_type);
+    }
+
+    // Invalid value.
+    {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{ "--count", "many" };
+        try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(Options, allocator, &args, &diag));
+        try std.testing.expectEqualStrings("count", diag.?.OptionInvalidValue.option_name);
+        try std.testing.expectEqualStrings("many", diag.?.OptionInvalidValue.provided_value);
+    }
+
+    // Boolean flag given a value.
+    {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{"--verbose=yes"};
+        try std.testing.expectError(ZcliError.OptionBooleanWithValue, parseOptions(Options, allocator, &args, &diag));
+        try std.testing.expectEqualStrings("verbose", diag.?.OptionBooleanWithValue.option_name);
+        try std.testing.expectEqualStrings("yes", diag.?.OptionBooleanWithValue.provided_value);
+    }
+}
+
+test "diagnostics: resource-limit sites report which cap tripped" {
+    const allocator = std.testing.allocator;
+    const Options = struct { enabled: bool = false };
+
+    var diag: ?ZcliDiagnostic = null;
+    const long_name = "--" ++ ("a" ** 300);
+    const args = [_][]const u8{long_name};
+    try std.testing.expectError(ZcliError.ResourceLimitExceeded, parseOptions(Options, allocator, &args, &diag));
+    try std.testing.expectEqualStrings("option name length", diag.?.ResourceLimitExceeded.limit_type);
+    try std.testing.expectEqual(@as(usize, 300), diag.?.ResourceLimitExceeded.actual_value);
 }

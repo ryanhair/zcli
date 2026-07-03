@@ -296,6 +296,20 @@ test "add command outside a project fails clearly" {
     try expectContains(r.stderr, "Not in a zcli project");
 }
 
+test "unknown option prints the diagnostic message, exits 1, no error trace" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProjectDirs(tmp.dir);
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "tree", "--bogus" });
+    defer r.deinit();
+    try testing.expect(r.exit_code == 1);
+    // The wired diagnostic names the exact flag...
+    try expectContains(r.stderr, "Unknown option '--bogus'");
+    // ...and the raw Zig error trace no longer follows the friendly message.
+    try testing.expect(std.mem.indexOf(u8, r.stderr, "error: OptionUnknown") == null);
+}
+
 test "tree outside a project exits nonzero and its message survives the exit" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
