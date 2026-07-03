@@ -1,0 +1,19 @@
+.{
+    .name = .repostat,
+    .version = "0.1.0",
+    .fingerprint = 0x4365e7a6833ce10b,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // This example lives inside the zcli repo, so it builds against the
+        // local tree (that's what lets CI compile it against unreleased changes
+        // as a drift-detector). In your OWN project you don't hand-write this —
+        // `zcli init` fetches a released zcli for you, which looks like:
+        //   .zcli = .{ .url = "git+https://github.com/ryanhair/zcli#<tag>", .hash = "..." },
+        .zcli = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
