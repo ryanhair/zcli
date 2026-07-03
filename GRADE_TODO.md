@@ -32,7 +32,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 ## Zig patterns / correctness — remaining
 
 - [x] 19. **Dead diagnostic system** — `ZcliDiagnostic`/`formatDiagnostic` (`diagnostic_errors.zig`) never constructed or consumed; real error context goes through a test-suppressed `std.log` side channel invisible to `onError` plugins. Wire diagnostics through the pipeline (so help plugin can name the unknown option) or delete. Also fix `convertLongOptionError`/`convertShortOptionError` `anyerror` catch-alls (`options/parser.zig:286-305`).
-- [ ] 20. **Option-parsing heuristics disagree** — three different "does this flag take a value" heuristics: `command_parser.zig:75-115`, `options/parser.zig`, `args.zig:findNextPositional` (`:240-257`). Unify on one source of truth (the comptime Options type).
+- [x] 20. **Option-parsing heuristics disagree** — three different "does this flag take a value" heuristics: `command_parser.zig:75-115`, `options/parser.zig`, `args.zig:findNextPositional` (`:240-257`). Unify on one source of truth (the comptime Options type).
 - [ ] 21. **Global options half-implemented** — short options "assume boolean for now" (`registry.zig:916-917`); `convertValue` supports only bool/u16/u32/[]const u8 while `plugin_types.option()` accepts more (`registry.zig:951-960`). Support the full type set or reject unsupported types at declaration.
 - [ ] 22. **`IO` two-phase init pointer-stability trap** — `finalize()` wires writers to in-struct buffers; any copy after finalize dangles (`zcli.zig:344-391`). Restructure to prevent misuse (heap/pin, or factory that returns a pointer).
 - [ ] 23. **parseCommandLine leak on error path** — frees only the slice, not parsed option arrays, when `parseArgs` fails outside an arena (`command_parser.zig:128-132`); plus muddled belt-and-suspenders frees of arena memory in `Context.deinit`.
@@ -48,7 +48,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 - [ ] 30. **plugin_system.zig dead apparatus** — ~850 of 1,014 lines are mocks/tests including a sandbox/capabilities concept that doesn't exist in the runtime (`build_utils/plugin_system.zig:659`). Trim to the ~160 lines of real build logic.
 - [x] 31. **`scanLocalPlugins` unreachable / ADR-0006 dead** *(resolved by #41/#51: `generate()` honors `plugins_dir`, init wires it, discovery fixed)* — `generate()` hardcodes `.plugins_dir = null` (`build_utils/main.zig:215`), so convention plugin discovery is dead code while ADR-0006 says "accepted". Either implement (roadmap: `zcli add plugin`) or mark the ADR deferred and remove the dead path.
 - [ ] 32. **Stale `terminal` dep in core's zon** — `packages/core/build.zig.zon` declares `.terminal` but core never uses it.
-- [ ] 33. **Dead parser code** — `parseShortOptions` has zero callers (dead un-meta duplicate of `parseShortOptionsWithMeta`, `options/parser.zig:655+`); `expected_char` comptime block copy-pasted three times in one function (`:511`, `:546`, `:582`).
+- [ ] 33. **Dead parser code** — `parseShortOptions` has zero callers (dead un-meta duplicate of `parseShortOptionsWithMeta`, `options/parser.zig:655+`). *(The triple-pasted `expected_char` block was consolidated into `shortCharForField` by item 20.)*
 - [ ] 34. **core/build.zig test-wiring duplication** — same five `addImport` lines copy-pasted across four test loops with mis-indentation (`packages/core/build.zig:84-198`), plus a leftover "debug hanging" step (`:200-210`). Extract a helper.
 
 ## Build / CI / test — remaining

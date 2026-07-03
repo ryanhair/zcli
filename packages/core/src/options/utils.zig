@@ -524,3 +524,123 @@ test "isArrayType function" {
     try std.testing.expect(!isArrayType(u32));
     try std.testing.expect(!isArrayType(bool));
 }
+
+// ============================================================================
+// Option-name resolution — the single source of truth
+// ============================================================================
+//
+// Shared by the options parser (which parses flags) and command_parser's
+// pre-split classifier (which decides whether the token after a flag is that
+// flag's value or a positional). Both must answer "which field does this
+// flag name, and does it take a value?" identically, or the same command
+// line gets split one way and parsed another.
+
+/// The custom long name declared via `meta.options.<field>.name`, if any.
+fn customNameFor(comptime meta: anytype, comptime field_name: []const u8) ?[]const u8 {
+    if (@TypeOf(meta) == @TypeOf(null)) return null;
+    if (!@hasField(@TypeOf(meta), "options")) return null;
+    if (!@hasField(@TypeOf(meta.options), field_name)) return null;
+    const field_meta = @field(meta.options, field_name);
+    if (@TypeOf(field_meta) == []const u8) return null;
+    if (!@hasField(@TypeOf(field_meta), "name")) return null;
+    return field_meta.name;
+}
+
+/// Does the argv long-option name `option_name` address the field
+/// `field_name`? A field with a custom `meta.options.<field>.name` matches
+/// ONLY that custom name; otherwise the field matches both its literal name
+/// and its dashes-for-underscores spelling.
+pub fn longNameMatchesField(
+    comptime meta: anytype,
+    comptime field_name: []const u8,
+    option_name: []const u8,
+) bool {
+    if (comptime customNameFor(meta, field_name)) |custom| {
+        return std.mem.eql(u8, custom, option_name);
+    }
+    const dashed = comptime blk: {
+        var buf: [field_name.len]u8 = undefined;
+        for (field_name, 0..) |c, i| buf[i] = if (c == '_') '-' else c;
+        const frozen = buf;
+        break :blk frozen;
+    };
+    return std.mem.eql(u8, field_name, option_name) or std.mem.eql(u8, &dashed, option_name);
+}
+
+/// The short flag character for a field: `meta.options.<field>.short` when
+/// declared, otherwise the field name's first character.
+pub fn shortCharForField(comptime meta: anytype, comptime field_name: []const u8) u8 {
+    if (@TypeOf(meta) != @TypeOf(null) and @hasField(@TypeOf(meta), "options")) {
+        if (@hasField(@TypeOf(meta.options), field_name)) {
+            const field_meta = @field(meta.options, field_name);
+            if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
+                return field_meta.short;
+            }
+        }
+    }
+    return if (field_name.len > 0) field_name[0] else 0;
+}
+
+/// Whether the long option `option_name` takes a value. Null means no field
+/// matches (an unknown option — the parser reports it with a diagnostic).
+pub fn longOptionTakesValue(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    option_name: []const u8,
+) ?bool {
+    inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+        if (longNameMatchesField(meta, field.name, option_name)) {
+            return field.type != bool;
+        }
+    }
+    return null;
+}
+
+/// Whether the short option `char` takes a value. Null means unknown.
+pub fn shortOptionTakesValue(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    char: u8,
+) ?bool {
+    inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+        if (shortCharForField(meta, field.name) == char) {
+            return field.type != bool;
+        }
+    }
+    return null;
+}
+
+test "longNameMatchesField honors custom names exclusively" {
+    const meta = .{ .options = .{ .output_file = .{ .name = "out" } } };
+    // Custom name matches...
+    try std.testing.expect(longNameMatchesField(meta, "output_file", "out"));
+    // ...and the field's own spellings no longer do.
+    try std.testing.expect(!longNameMatchesField(meta, "output_file", "output_file"));
+    try std.testing.expect(!longNameMatchesField(meta, "output_file", "output-file"));
+}
+
+test "longNameMatchesField accepts both spellings without custom name" {
+    try std.testing.expect(longNameMatchesField(null, "output_file", "output_file"));
+    try std.testing.expect(longNameMatchesField(null, "output_file", "output-file"));
+    try std.testing.expect(!longNameMatchesField(null, "output_file", "output"));
+}
+
+test "takes-value resolution matches parser semantics" {
+    const Options = struct {
+        verbose: bool = false,
+        count: u32 = 0,
+        output_file: ?[]const u8 = null,
+    };
+    const meta = .{ .options = .{ .output_file = .{ .name = "out", .short = 'o' } } };
+
+    try std.testing.expectEqual(@as(?bool, false), longOptionTakesValue(Options, meta, "verbose"));
+    try std.testing.expectEqual(@as(?bool, true), longOptionTakesValue(Options, meta, "count"));
+    try std.testing.expectEqual(@as(?bool, true), longOptionTakesValue(Options, meta, "out"));
+    try std.testing.expectEqual(@as(?bool, null), longOptionTakesValue(Options, meta, "output-file")); // custom name shadows
+    try std.testing.expectEqual(@as(?bool, null), longOptionTakesValue(Options, meta, "bogus"));
+
+    try std.testing.expectEqual(@as(?bool, false), shortOptionTakesValue(Options, meta, 'v'));
+    try std.testing.expectEqual(@as(?bool, true), shortOptionTakesValue(Options, meta, 'c'));
+    try std.testing.expectEqual(@as(?bool, true), shortOptionTakesValue(Options, meta, 'o'));
+    try std.testing.expectEqual(@as(?bool, null), shortOptionTakesValue(Options, meta, 'x'));
+}

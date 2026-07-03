@@ -87,13 +87,17 @@ pub fn parseCommandLine(
                     i += 1;
                     continue;
                 } else {
-                    // --option format, might need next arg as value
+                    // --option format, might need next arg as value. Uses the
+                    // same resolution the options parser uses (incl. custom
+                    // meta names) and the same "next token is a value, not
+                    // another flag" condition, so split and parse agree.
                     const option_name = arg[2..]; // Remove "--"
-                    if (needsValue(OptionsType, option_name) and i + 1 < args.len) {
+                    const takes_value = option_utils.longOptionTakesValue(OptionsType, meta, option_name) orelse false;
+                    if (takes_value and i + 1 < args.len and
+                        (!std.mem.startsWith(u8, args[i + 1], "-") or isNegativeNumber(args[i + 1])))
+                    {
                         i += 1;
-                        if (i < args.len) {
-                            option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
-                        }
+                        option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
                     }
                 }
             } else {
@@ -102,11 +106,10 @@ pub fn parseCommandLine(
                 if (option_chars.len == 1) {
                     // Single short option, might need value
                     const option_char = option_chars[0];
-                    if (needsValueShort(OptionsType, meta, option_char) and i + 1 < args.len) {
+                    const takes_value = option_utils.shortOptionTakesValue(OptionsType, meta, option_char) orelse false;
+                    if (takes_value and i + 1 < args.len) {
                         i += 1;
-                        if (i < args.len) {
-                            option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
-                        }
+                        option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
                     }
                 }
                 // For bundled short options (-xyz), assume they're all boolean
@@ -154,68 +157,6 @@ fn isNegativeNumber(arg: []const u8) bool {
 
     // Check if the character after '-' is a digit
     return std.ascii.isDigit(arg[1]);
-}
-
-/// Check if an option field needs a value (i.e., is not a boolean)
-fn needsValue(comptime OptionsType: type, option_name: []const u8) bool {
-    const type_info = @typeInfo(OptionsType);
-    if (type_info != .@"struct") return false;
-
-    inline for (type_info.@"struct".fields) |field| {
-        if (std.mem.eql(u8, field.name, option_name)) {
-            return field.type != bool;
-        }
-
-        // Also check with dash conversion (field_name -> field-name)
-        var dash_name_buf: [64]u8 = undefined;
-        const dash_name = convertUnderscoresToDashes(field.name, &dash_name_buf);
-        if (std.mem.eql(u8, dash_name, option_name)) {
-            return field.type != bool;
-        }
-    }
-
-    return false;
-}
-
-/// Check if a short option needs a value
-fn needsValueShort(comptime OptionsType: type, comptime meta: anytype, option_char: u8) bool {
-    const type_info = @typeInfo(OptionsType);
-    if (type_info != .@"struct") return false;
-
-    inline for (type_info.@"struct".fields) |field| {
-        // Get the expected short option character for this field
-        const expected_char = comptime blk: {
-            // Check if meta provides a custom short option
-            if (@TypeOf(meta) != @TypeOf(null) and @hasField(@TypeOf(meta), "options")) {
-                const options_meta = meta.options;
-                if (@hasField(@TypeOf(options_meta), field.name)) {
-                    const field_meta = @field(options_meta, field.name);
-                    if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
-                        break :blk field_meta.short;
-                    }
-                }
-            }
-            // Fall back to first character of field name
-            break :blk if (field.name.len > 0) field.name[0] else 0;
-        };
-
-        if (expected_char == option_char) {
-            // Return true if the field is not a boolean (needs a value)
-            return field.type != bool;
-        }
-    }
-
-    return false;
-}
-
-/// Convert underscores to dashes for option names
-fn convertUnderscoresToDashes(name: []const u8, buffer: []u8) []const u8 {
-    var i: usize = 0;
-    for (name) |c| {
-        buffer[i] = if (c == '_') '-' else c;
-        i += 1;
-    }
-    return buffer[0..name.len];
 }
 
 /// Parse options from a list of option arguments
@@ -839,4 +780,55 @@ test "parseCommandLine applies env fallbacks even with no flags on the command l
     const r2 = try parseCommandLine(Args, Options, meta, allocator, &env, &.{ "input.txt", "--region", "ap-south-1" }, null);
     defer r2.deinit();
     try std.testing.expectEqualStrings("ap-south-1", r2.options.region);
+}
+
+test "pre-split honors custom meta names when classifying values" {
+    // --out is a custom name for output_file, which takes a value. The old
+    // pre-split heuristic only looked at field names, so "result.txt" was
+    // classified as a positional and parsing then failed with
+    // MissingOptionValue — split and parse disagreed about the same token.
+    const allocator = std.testing.allocator;
+    const Args = struct { file: []const u8 };
+    const Options = struct { output_file: ?[]const u8 = null };
+    const meta = .{ .options = .{ .output_file = .{ .name = "out" } } };
+
+    const result = try parseCommandLine(Args, Options, meta, allocator, null, &.{ "--out", "result.txt", "input.zig" }, null);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("result.txt", result.options.output_file.?);
+    try std.testing.expectEqualStrings("input.zig", result.args.file);
+}
+
+test "boolean flag followed by a bare word keeps the word as a positional" {
+    const allocator = std.testing.allocator;
+    const Args = struct { file: []const u8 };
+    const Options = struct { verbose: bool = false };
+
+    const result = try parseCommandLine(Args, Options, null, allocator, null, &.{ "--verbose", "input.txt" }, null);
+    defer result.deinit();
+    try std.testing.expect(result.options.verbose);
+    try std.testing.expectEqualStrings("input.txt", result.args.file);
+}
+
+test "a flag is never classified as another flag's value" {
+    // --tag wants a value but the next token is itself a flag: the split
+    // applies the same next-token rule the parser does, so the parser
+    // reports the missing value for the right option.
+    const allocator = std.testing.allocator;
+    const Options = struct { tag: ?[]const u8 = null, verbose: bool = false };
+
+    var diag: ?ZcliDiagnostic = null;
+    const result = parseCommandLine(struct {}, Options, null, allocator, null, &.{ "--tag", "--verbose" }, &diag);
+    try std.testing.expectError(ZcliError.OptionMissingValue, result);
+    try std.testing.expectEqualStrings("tag", diag.?.OptionMissingValue.option_name);
+}
+
+test "negative numbers classify as values and positionals, not flags" {
+    const allocator = std.testing.allocator;
+    const Args = struct { delta: i32 };
+    const Options = struct { offset: i32 = 0 };
+
+    const result = try parseCommandLine(Args, Options, null, allocator, null, &.{ "--offset", "-5", "-10" }, null);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(i32, -5), result.options.offset);
+    try std.testing.expectEqual(@as(i32, -10), result.args.delta);
 }
