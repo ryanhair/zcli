@@ -66,9 +66,12 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   tests/`execute` travel with the file. Leaf-only: moving/removing a whole group errors clearly.
 
 **Phase 3 — Primitives that shrink the freeform surface** (parallelizable with Phase 2)
-- [ ] **PR: HTTP client with safe defaults** (ADR-0002/0003) — core; TLS-verified, timeouts.
-- [ ] **PR: `zcli_secrets` opt-in plugin** (ADR-0003) — credential storage only (not auth
-  flows); keychain-backed with fallback; opt-in to preserve static-musl portability.
+- [x] **PR: HTTP client with safe defaults** (ADR-0002/0003) — DONE (#36). Core `zcli.http`
+  over `std.http.Client`; TLS-verified, timeouts, bounded body; strips credential headers on
+  cross-origin redirects (#45).
+- [x] **PR: `zcli_secrets` opt-in plugin** (ADR-0003) — DONE (#39). Credential storage only
+  (not auth flows); OS keychains (macOS/Linux/Windows), no fallback; opt-in to preserve
+  static-musl portability.
 
 **Phase 4 — Context layer (leg 3)** — depends on Phases 2–3 existing
 - [ ] **PR: Canonical example CLIs + CI compile** (ADR-0004) — first-class maintained
