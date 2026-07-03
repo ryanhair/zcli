@@ -221,8 +221,8 @@ pub const Context = struct {
 ///
 /// ```zig
 /// const TestCtx = zcli.TestContext(&.{ MyPlugin });
-/// var stdio = zcli.Stdio.init(std.testing.io);
-/// stdio.finalize();
+/// var stdio: zcli.Stdio = undefined;
+/// stdio.init(std.testing.io);
 /// var ctx = TestCtx.init(testing.allocator, std.testing.io, &stdio);
 /// defer ctx.deinit();
 /// ctx.plugins.my_plugin.some_field = true;
@@ -361,6 +361,15 @@ pub fn TestContext(comptime test_plugins: []const type) type {
 /// live at a stable address and be passed to a Context by pointer. Command and
 /// plugin code never reaches into this directly — it reads the `std.Io` instance
 /// via `context.io` and does I/O via `context.stdout()`/`stderr()`/`stdin()`.
+/// Standard-stream holder backing `context.stdout()`/`stderr()`/`stdin()`.
+///
+/// PINNED TYPE: the buffered writers/reader point into buffers inside the
+/// struct itself, so a Stdio must stay at one address for its whole life —
+/// never copy it, never return it by value. `init` therefore initializes in
+/// place (there is no by-value constructor to accidentally move):
+///
+///     var stdio: zcli.Stdio = undefined;
+///     stdio.init(io);
 pub const Stdio = struct {
     io: std.Io,
     stdout_writer: std.Io.File.Writer = undefined,
@@ -374,16 +383,16 @@ pub const Stdio = struct {
     stdout_override: ?*std.Io.Writer = null,
     stderr_override: ?*std.Io.Writer = null,
 
-    pub fn init(io: std.Io) @This() {
-        return .{ .io = io };
-    }
-
-    /// Finalize the Stdio struct by creating writers/readers in-place.
-    /// Must be called after the struct is in its final memory location.
-    pub fn finalize(self: *@This()) void {
-        self.stdout_writer = std.Io.File.stdout().writer(self.io, &self.stdout_buf);
-        self.stderr_writer = std.Io.File.stderr().writer(self.io, &self.stderr_buf);
-        self.stdin_reader = std.Io.File.stdin().reader(self.io, &self.stdin_buf);
+    /// Initialize in place; `self` must already be at its final address.
+    /// Replaces the old two-phase init()+finalize(), whose window between
+    /// the by-value return and finalize() invited exactly the copy that
+    /// dangles — and which made "forgot to finalize" (undefined streams)
+    /// possible at all.
+    pub fn init(self: *@This(), io: std.Io) void {
+        self.* = .{ .io = io };
+        self.stdout_writer = std.Io.File.stdout().writer(io, &self.stdout_buf);
+        self.stderr_writer = std.Io.File.stderr().writer(io, &self.stderr_buf);
+        self.stdin_reader = std.Io.File.stdin().reader(io, &self.stdin_buf);
     }
 
     pub fn stdout(self: *@This()) *std.Io.Writer {
@@ -696,8 +705,8 @@ test "Context creation" {
     const allocator = testing.allocator;
 
     // Just verify the Context struct can be created
-    var stdio = Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -720,8 +729,8 @@ test "TestContext with plugins" {
     };
 
     const Ctx = TestContext(&.{MockPlugin});
-    var stdio = Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var ctx = Ctx.init(allocator, std.testing.io, &stdio);
     defer ctx.deinit();
@@ -741,8 +750,8 @@ test "TestContext without plugins" {
     const allocator = testing.allocator;
 
     const Ctx = TestContext(&.{});
-    var stdio = Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var ctx = Ctx.init(allocator, std.testing.io, &stdio);
     defer ctx.deinit();
@@ -1062,4 +1071,26 @@ test "global options consumed before command" {
 
     // Note: Since execute() creates its own context, we can't verify the argument processing.
     // The test passes if it completes without hanging, confirming global options are handled.
+}
+
+test "Stdio.init wires streams to the struct's own buffers, in place" {
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+
+    // The buffered streams must point into this instance's buffers — that is
+    // the pinned-type invariant init establishes (and the reason there is no
+    // by-value constructor: a copy would leave these pointing at the source).
+    try testing.expectEqual(@as([*]u8, &stdio.stdout_buf), stdio.stdout_writer.interface.buffer.ptr);
+    try testing.expectEqual(@as([*]u8, &stdio.stderr_buf), stdio.stderr_writer.interface.buffer.ptr);
+    try testing.expectEqual(@as([*]u8, &stdio.stdin_buf), stdio.stdin_reader.interface.buffer.ptr);
+
+    // stdin is usable without any override — the old two-phase API left it
+    // undefined when finalize() was skipped (as the unit-test helper did).
+    _ = stdio.stdin();
+
+    // Overrides still take precedence over the wired streams.
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+    try testing.expectEqual(&aw.writer, stdio.stdout());
 }

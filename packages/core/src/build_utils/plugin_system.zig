@@ -379,8 +379,8 @@ test "plugin security: resource exhaustion prevention" {
     const allocator = testing.allocator;
 
     // Create a test context
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -417,8 +417,8 @@ test "plugin security: resource exhaustion prevention" {
 test "plugin security: sensitive option access prevention" {
     const allocator = testing.allocator;
 
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -459,8 +459,8 @@ test "plugin security: sensitive option access prevention" {
 test "plugin security: file system access restrictions" {
     const allocator = testing.allocator;
 
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -496,8 +496,8 @@ test "plugin security: file system access restrictions" {
 test "plugin security: command injection prevention" {
     const allocator = testing.allocator;
 
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -543,8 +543,8 @@ test "plugin security: command injection prevention" {
 test "plugin security: information disclosure prevention" {
     const allocator = testing.allocator;
 
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -679,8 +679,8 @@ test "plugin security: integration with command processing" {
     const allocator = testing.allocator;
 
     // Test that malicious plugins can't interfere with normal command processing
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -707,13 +707,13 @@ test "plugin security: plugin isolation" {
     const allocator = testing.allocator;
 
     // Test that plugins can't interfere with each other
-    var stdio1 = zcli.Stdio.init(std.testing.io);
-    stdio1.finalize();
+    var stdio1: zcli.Stdio = undefined;
+    stdio1.init(std.testing.io);
     var context1 = zcli.Context.init(allocator, std.testing.io, &stdio1);
     defer context1.deinit();
 
-    var stdio2 = zcli.Stdio.init(std.testing.io);
-    stdio2.finalize();
+    var stdio2: zcli.Stdio = undefined;
+    stdio2.init(std.testing.io);
     var context2 = zcli.Context.init(allocator, std.testing.io, &stdio2);
     defer context2.deinit();
 
@@ -847,8 +847,8 @@ test "plugin argument transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
@@ -921,8 +921,8 @@ test "plugin option consumption" {
         .build();
 
     var app = TestRegistry.init();
-    var stdio = zcli.Stdio.init(std.testing.io);
-    stdio.finalize();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
 
     var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
