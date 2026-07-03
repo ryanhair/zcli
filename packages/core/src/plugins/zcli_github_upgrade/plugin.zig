@@ -19,6 +19,11 @@ const api_timeout: std.Io.Duration = .fromSeconds(30);
 /// The passive update check at startup: it must never make the CLI feel hung,
 /// so it gets seconds, not minutes.
 const startup_check_timeout: std.Io.Duration = .fromSeconds(3);
+/// Minimum interval between passive startup checks. The time of the last
+/// attempt is recorded in the platform cache dir (see lastCheckFilePath), so
+/// enabling inform_out_of_date probes the network at most once per day —
+/// not on every invocation.
+const startup_check_interval_s: i64 = 24 * 60 * 60;
 /// The binary download — generous (binaries can be ~100MB on slow
 /// connections), but still bounded so a dead peer cannot hang the command.
 const download_timeout: std.Io.Duration = .fromSeconds(15 * 60);
@@ -38,6 +43,66 @@ fn buildDownloadUrl(allocator: std.mem.Allocator, base: []const u8, repo: []cons
     return std.fmt.allocPrint(allocator, "{s}/{s}/releases/download/{s}-v{s}/{s}", .{ base, repo, cli_name, version, asset_name });
 }
 
+/// Platform-standard per-user cache file recording the last passive update
+/// check (unix seconds, decimal). Resolved from the threaded environ — no
+/// ambient getenv:
+///
+///   Linux/BSD: $XDG_CACHE_HOME/<app>/last-update-check, else ~/.cache/<app>/…
+///   macOS:     ~/Library/Caches/<app>/last-update-check
+///   Windows:   %LOCALAPPDATA%\<app>\last-update-check
+///
+/// Returns null when the environment variable it needs is absent — rate
+/// limiting then degrades to checking every run, never to failing.
+fn lastCheckFilePath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map, app_name: []const u8) !?[]u8 {
+    const file_name = "last-update-check";
+    switch (builtin.os.tag) {
+        .windows => {
+            const base = environ.get("LOCALAPPDATA") orelse return null;
+            return try std.fs.path.join(allocator, &.{ base, app_name, file_name });
+        },
+        .macos => {
+            const home = environ.get("HOME") orelse return null;
+            return try std.fs.path.join(allocator, &.{ home, "Library", "Caches", app_name, file_name });
+        },
+        else => {
+            if (environ.get("XDG_CACHE_HOME")) |xdg| {
+                return try std.fs.path.join(allocator, &.{ xdg, app_name, file_name });
+            }
+            const home = environ.get("HOME") orelse return null;
+            return try std.fs.path.join(allocator, &.{ home, ".cache", app_name, file_name });
+        },
+    }
+}
+
+/// Read the last-check timestamp from `path` (within `dir`). Any failure —
+/// missing file, unreadable, garbage contents — reads as "never checked".
+fn readLastCheck(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) ?i64 {
+    const contents = dir.readFileAlloc(io, path, allocator, .limited(64)) catch return null;
+    defer allocator.free(contents);
+    const trimmed = std.mem.trim(u8, contents, " \t\r\n");
+    return std.fmt.parseInt(i64, trimmed, 10) catch null;
+}
+
+/// Record a check attempt at `now_s`. Creates missing parent directories.
+/// Callers treat failure as best-effort (a read-only home dir must never
+/// break startup).
+fn writeLastCheck(io: std.Io, dir: std.Io.Dir, path: []const u8, now_s: i64) !void {
+    if (std.fs.path.dirname(path)) |parent| {
+        try dir.createDirPath(io, parent);
+    }
+    var buf: [32]u8 = undefined;
+    const text = try std.fmt.bufPrint(&buf, "{d}\n", .{now_s});
+    try dir.writeFile(io, .{ .sub_path = path, .data = text });
+}
+
+/// True when the recorded last check is recent enough to skip the probe.
+/// A timestamp in the future (clock skew, corrupt cache) never skips — the
+/// probe runs and rewrites a sane value.
+fn checkedRecently(last: ?i64, now_s: i64, interval_s: i64) bool {
+    const l = last orelse return false;
+    return now_s >= l and now_s - l < interval_s;
+}
+
 /// zcli-github-upgrade Plugin
 ///
 /// Provides self-upgrade functionality for CLI applications that release via GitHub.
@@ -51,6 +116,15 @@ pub const Config = struct {
     command_name: []const u8 = "upgrade",
 
     /// Whether to check for updates on startup and inform the user (default: false)
+    ///
+    /// When enabled, startup makes an outbound HTTPS request to
+    /// api.github.com (the repo's releases list) — but at most once per 24
+    /// hours: the time of the last attempt is recorded in the platform's
+    /// per-user cache directory ($XDG_CACHE_HOME or ~/.cache on Linux,
+    /// ~/Library/Caches on macOS, %LOCALAPPDATA% on Windows) and the probe
+    /// is skipped while the interval hasn't elapsed. The check is
+    /// time-boxed to seconds, and every failure — cache or network — is
+    /// silent: this feature can slow startup briefly, but never break it.
     inform_out_of_date: bool = false,
 
     /// Message to show when a newer version is available
@@ -211,11 +285,28 @@ pub fn init(config: Config) type {
             }
 
             const allocator = context.allocator;
+            const io = context.io.io;
             const stderr = context.stderr();
+
+            // Rate limit: at most one probe per startup_check_interval_s,
+            // tracked in the platform cache dir. The attempt is recorded
+            // before the network call so an offline machine isn't re-probed
+            // on every invocation, and every cache failure degrades toward
+            // checking — never toward breaking startup.
+            const now_s: i64 = @intCast(@divTrunc(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s));
+            const cache_path: ?[]u8 = lastCheckFilePath(allocator, context.environ, context.app_name) catch null;
+            defer if (cache_path) |p| allocator.free(p);
+            if (cache_path) |p| {
+                const cwd = std.Io.Dir.cwd();
+                if (checkedRecently(readLastCheck(allocator, io, cwd, p), now_s, startup_check_interval_s)) {
+                    return;
+                }
+                writeLastCheck(io, cwd, p, now_s) catch {};
+            }
 
             // Passive check: short deadline (startup_check_timeout) so a slow
             // or black-holed network can never make the CLI feel hung.
-            const latest_version = fetchLatestVersion(allocator, context.io.io, plugin_config.repo, context.app_name, startup_check_timeout) catch |err| {
+            const latest_version = fetchLatestVersion(allocator, io, plugin_config.repo, context.app_name, startup_check_timeout) catch |err| {
                 // Silently fail - don't interrupt the user's workflow
                 _ = err;
                 return;
@@ -1086,4 +1177,78 @@ test "testBinary - rejects a binary that cannot exec or dies on a signal" {
     // A binary that dies on a signal did not "terminate normally".
     try writeTestScript(io, tmp.dir, "suicidal", "#!/bin/sh\nkill -9 $$\n");
     try std.testing.expectError(error.NewBinaryFailedToRun, testBinary(a, io, tmp.dir, "suicidal"));
+}
+
+test "checkedRecently - skip window semantics" {
+    // Never checked → probe.
+    try std.testing.expect(!checkedRecently(null, 1000, 100));
+    // Checked within the window → skip.
+    try std.testing.expect(checkedRecently(950, 1000, 100));
+    try std.testing.expect(checkedRecently(1000, 1000, 100)); // just now
+    // Window elapsed → probe.
+    try std.testing.expect(!checkedRecently(900, 1000, 100));
+    // Future timestamp (clock skew / corrupt cache) → probe; the caller
+    // rewrites a sane value.
+    try std.testing.expect(!checkedRecently(2000, 1000, 100));
+}
+
+test "lastCheckFilePath - platform-standard location from the threaded environ" {
+    const a = std.testing.allocator;
+
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    switch (builtin.os.tag) {
+        .windows => {
+            try env.put("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local");
+            const path = (try lastCheckFilePath(a, &env, "myapp")).?;
+            defer a.free(path);
+            try std.testing.expectEqualStrings("C:\\Users\\u\\AppData\\Local\\myapp\\last-update-check", path);
+        },
+        .macos => {
+            try env.put("HOME", "/Users/u");
+            const path = (try lastCheckFilePath(a, &env, "myapp")).?;
+            defer a.free(path);
+            try std.testing.expectEqualStrings("/Users/u/Library/Caches/myapp/last-update-check", path);
+        },
+        else => {
+            try env.put("HOME", "/home/u");
+            const fallback = (try lastCheckFilePath(a, &env, "myapp")).?;
+            defer a.free(fallback);
+            try std.testing.expectEqualStrings("/home/u/.cache/myapp/last-update-check", fallback);
+
+            // XDG_CACHE_HOME wins over the ~/.cache fallback when set.
+            try env.put("XDG_CACHE_HOME", "/home/u/.xdg-cache");
+            const xdg = (try lastCheckFilePath(a, &env, "myapp")).?;
+            defer a.free(xdg);
+            try std.testing.expectEqualStrings("/home/u/.xdg-cache/myapp/last-update-check", xdg);
+        },
+    }
+}
+
+test "lastCheckFilePath - missing environment reads as no cache (null)" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try std.testing.expectEqual(@as(?[]u8, null), try lastCheckFilePath(a, &env, "myapp"));
+}
+
+test "last-check cache round-trips, tolerates garbage, and creates parents" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = "myapp/last-update-check";
+
+    // Never checked: no file yet.
+    try std.testing.expectEqual(@as(?i64, null), readLastCheck(a, io, tmp.dir, path));
+
+    // Round-trip, with the parent directory created on demand.
+    try writeLastCheck(io, tmp.dir, path, 1_700_000_000);
+    try std.testing.expectEqual(@as(?i64, 1_700_000_000), readLastCheck(a, io, tmp.dir, path));
+
+    // Garbage contents read as "never checked", not an error.
+    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "not-a-number\n" });
+    try std.testing.expectEqual(@as(?i64, null), readLastCheck(a, io, tmp.dir, path));
 }

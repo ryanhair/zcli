@@ -27,7 +27,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 - [x] 15. **Resource limits partially enforced** — only `checkOptionCount`/`checkOptionNameLength` are wired; `checkArraySize`, `max_argument_count`, `checkCommandDepth` unused (`packages/core/src/resource_limits.zig` vs `options/parser.zig`, `args.zig`). Wire them in or delete the unused fields; tighten `security_test.zig` to assert the caps that are enforced.
 - [x] 16. **serde hash label mismatch** — *false alarm*: upstream v1.0.3 tag ships a zon still declaring version 1.0.1, so the `serde-1.0.1-…` hash IS correct for the v1.0.3 tarball. Explanatory comment (already in core's zon) copied to the root zon so it isn't "fixed" into a broken build.
 - [x] 17. **No release signing (documented decision)** — integrity anchors solely on GitHub (checksums.txt from the same release). Consider minisign/cosign signing of checksums.txt; at minimum document the trust model in ADR-0002/0003.
-- [ ] 18. **Startup version check behavior** — document the outbound network call at `Config.inform_out_of_date`, and cache the last check with a min interval so it doesn't fire on every invocation.
+- [x] 18. **Startup version check behavior** — document the outbound network call at `Config.inform_out_of_date`, and cache the last check with a min interval so it doesn't fire on every invocation.
 
 ## Zig patterns / correctness — remaining
 
