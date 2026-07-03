@@ -87,7 +87,7 @@ pub fn runCommand(
     const Ctx = zcli.TestContext(plugins);
     var context = Ctx{
         .allocator = arena.allocator(),
-        .io = stdio.io,
+        .io = std.testing.io,
         .stdio = &stdio,
     };
     defer context.deinit();

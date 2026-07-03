@@ -381,14 +381,14 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
 
         const Self = @This();
 
-        /// Initialize a new Context with the provided standard streams and environment.
-        pub fn init(allocator: std.mem.Allocator, stdio: *zcli.Stdio, env: *const std.process.Environ.Map) Self {
+        /// Initialize a new Context with the provided io, standard streams, and environment.
+        pub fn init(allocator: std.mem.Allocator, io: std.Io, stdio: *zcli.Stdio, env: *const std.process.Environ.Map) Self {
             return .{
                 .allocator = allocator,
-                .io = stdio.io,
+                .io = io,
                 .stdio = stdio,
                 .environ = env,
-                .theme = zcli.ztheme.Theme.init(env, stdio.io),
+                .theme = zcli.ztheme.Theme.init(env, io),
             };
         }
 

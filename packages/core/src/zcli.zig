@@ -134,11 +134,11 @@ pub const Context = struct {
 
     const Self = @This();
 
-    /// Initialize a new Context with the provided standard streams.
-    pub fn init(allocator: std.mem.Allocator, stdio: *Stdio) Self {
+    /// Initialize a new Context with the provided io and standard streams.
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, stdio: *Stdio) Self {
         return .{
             .allocator = allocator,
-            .io = stdio.io,
+            .io = io,
             .stdio = stdio,
         };
     }
@@ -223,7 +223,7 @@ pub const Context = struct {
 /// const TestCtx = zcli.TestContext(&.{ MyPlugin });
 /// var stdio = zcli.Stdio.init(std.testing.io);
 /// stdio.finalize();
-/// var ctx = TestCtx.init(testing.allocator, &stdio);
+/// var ctx = TestCtx.init(testing.allocator, std.testing.io, &stdio);
 /// defer ctx.deinit();
 /// ctx.plugins.my_plugin.some_field = true;
 /// ```
@@ -296,10 +296,10 @@ pub fn TestContext(comptime test_plugins: []const type) type {
 
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, stdio: *Stdio) Self {
+        pub fn init(allocator: std.mem.Allocator, io: std.Io, stdio: *Stdio) Self {
             return .{
                 .allocator = allocator,
-                .io = stdio.io,
+                .io = io,
                 .stdio = stdio,
             };
         }
@@ -699,7 +699,7 @@ test "Context creation" {
     var stdio = Stdio.init(std.testing.io);
     stdio.finalize();
 
-    var context = Context.init(allocator, &stdio);
+    var context = Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     // Test that convenience methods work
@@ -723,7 +723,7 @@ test "TestContext with plugins" {
     var stdio = Stdio.init(std.testing.io);
     stdio.finalize();
 
-    var ctx = Ctx.init(allocator, &stdio);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio);
     defer ctx.deinit();
 
     // Verify plugin data is accessible and mutable
@@ -744,7 +744,7 @@ test "TestContext without plugins" {
     var stdio = Stdio.init(std.testing.io);
     stdio.finalize();
 
-    var ctx = Ctx.init(allocator, &stdio);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio);
     defer ctx.deinit();
 
     _ = ctx.stdout();
