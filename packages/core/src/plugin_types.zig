@@ -48,7 +48,30 @@ pub const DefaultValue = union(enum) {
 };
 
 /// Unified helper function for creating GlobalOptions with better ergonomics
+/// The types a global option may declare: bool, integers, floats, strings,
+/// and optionals of those — exactly what the registry's converter handles.
+fn validateGlobalOptionType(comptime name: []const u8, comptime T: type) void {
+    const ok = switch (@typeInfo(T)) {
+        .bool, .int, .float => true,
+        .pointer => |ptr| ptr.size == .slice and ptr.child == u8 and ptr.is_const,
+        .optional => |opt| switch (@typeInfo(opt.child)) {
+            .bool, .int, .float => true,
+            .pointer => |ptr| ptr.size == .slice and ptr.child == u8 and ptr.is_const,
+            else => false,
+        },
+        else => false,
+    };
+    if (!ok) {
+        @compileError("global option '" ++ name ++ "' has unsupported type `" ++ @typeName(T) ++
+            "`. Supported: bool, integers, floats, []const u8, and optionals of those.");
+    }
+}
+
 pub fn option(comptime name: []const u8, comptime T: type, comptime config: anytype) GlobalOption {
+    // Reject types the global-option pipeline cannot convert, at the point
+    // of declaration — not at some later use site with a baffling error.
+    comptime validateGlobalOptionType(name, T);
+
     // Extract fields from config, providing defaults if not present
     const short = if (@hasField(@TypeOf(config), "short")) config.short else null;
     const description = if (@hasField(@TypeOf(config), "description")) config.description else "";
