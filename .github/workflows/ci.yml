@@ -148,6 +148,25 @@ jobs:
             zig build test-secrets-live
           '
 
+  examples:
+    name: canonical examples compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # The canonical example CLIs are the idiom source AND the drift-detector
+      # (ADR-0004): compiling them here means a framework change that breaks the
+      # documented idioms fails CI, rather than silently rotting the examples
+      # (and the AI context sourced from them).
+      - name: Build all example CLIs
+        run: zig build build-examples
+
   e2e:
     name: zcli end-to-end tests
     runs-on: ubuntu-latest

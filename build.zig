@@ -109,8 +109,13 @@ pub fn build(b: *std.Build) void {
         .{ .name = "zcli", .path = "projects/zcli" },
     };
 
+    // Canonical example CLIs (ADR-0004): first-class, CI-compiled artifacts that
+    // are simultaneously the examples, the idiom source, and the drift-detector —
+    // a breaking framework change breaks `zig build build-examples` (run in CI),
+    // forcing the examples (and the context derived from them) back up to date.
     const example_projects = [_]ProjectInfo{
         .{ .name = "showcase", .path = "examples/showcase" },
+        .{ .name = "repostat", .path = "examples/repostat" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 
