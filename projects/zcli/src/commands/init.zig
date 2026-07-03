@@ -96,8 +96,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
         var has_visible_files = false;
         while (try iterator.next(io)) |entry| {
-            // Ignore hidden files (starting with .)
-            if (entry.name[0] != '.') {
+            // Ignore hidden files (starting with .) and a pre-existing AGENTS.md,
+            // which init appends its (marker-delimited) section to rather than
+            // treating as a conflict (ADR-0008).
+            if (entry.name[0] != '.' and !std.mem.eql(u8, entry.name, "AGENTS.md")) {
                 has_visible_files = true;
                 break;
             }
@@ -105,7 +107,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
         if (has_visible_files) {
             try stderr.print("Error: Current directory is not empty\n", .{});
-            try stderr.print("Tip: Only hidden files (starting with '.') are allowed\n", .{});
+            try stderr.print("Tip: only hidden files and an existing AGENTS.md are allowed\n", .{});
             return error.DirectoryNotEmpty;
         }
 
@@ -330,6 +332,16 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer hello_file.close(io);
     try hello_file.writeStreamingAll(io, hello_content);
 
+    // Scaffold AGENTS.md — the thin, frozen, command-speaking spine that points
+    // coding agents at `zcli guide` (ADR-0008). Marker-delimited so it never
+    // clobbers a user's own AGENTS.md, and a future upgrade can refresh just the
+    // zcli section.
+    switch (try scaffoldAgentsMd(allocator, io, project_dir)) {
+        .created => try stdout.print("  Creating AGENTS.md...\n", .{}),
+        .appended => try stdout.print("  Adding zcli section to existing AGENTS.md...\n", .{}),
+        .refreshed => try stdout.print("  Refreshing zcli section in AGENTS.md...\n", .{}),
+    }
+
     // Fetch the zcli dependency. `zig fetch --save` computes the real hash and
     // writes the dependency into build.zig.zon; without it the generated project
     // won't build, so warn with the exact command if it doesn't run.
@@ -363,4 +375,147 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     try stdout.print("  zig build\n", .{});
     try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
     try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
+}
+
+// ---------------------------------------------------------------------------
+// AGENTS.md scaffolding (ADR-0008)
+// ---------------------------------------------------------------------------
+
+const agents_begin = "<!-- zcli:begin -->";
+const agents_end = "<!-- zcli:end -->";
+
+/// The zcli section, delimited by markers. Thin and "speaks commands" — no Zig
+/// API signatures (those live in the drift-proof `zcli guide`), so it stays true
+/// even as the framework's code evolves. Between the markers only.
+const agents_section = agents_begin ++
+    \\
+    \\## Building this CLI with zcli
+    \\
+    \\This project is built with [zcli](https://github.com/ryanhair/zcli): its command
+    \\structure *is* the files under `src/commands/`. For version-matched API detail and
+    \\worked examples, run **`zcli guide`** (and `zcli guide <topic>`) — it always matches
+    \\the exact zcli this project builds against.
+    \\
+    \\**The loop**
+    \\
+    \\- **Read** what exists — `zcli tree --show-options`
+    \\- **Change** structure — `zcli add command|arg|option|group|plugin`, `zcli rm ...`,
+    \\  `zcli mv ...` (never edit structure by hand)
+    \\- **Write** logic — freeform Zig in each command's `execute()` body
+    \\- **Verify** — `zig build && zig build test`
+    \\
+    \\**Invariants**
+    \\
+    \\1. Never `free`/`deinit` memory you allocate in `execute()` — `context.allocator` is
+    \\   a per-command arena, reclaimed automatically. (Do still `deinit` non-memory
+    \\   resources: files, sockets, `http.Client`.)
+    \\2. Change structure with `zcli add`/`rm`/`mv`, not by editing files by hand. Write
+    \\   freeform code only inside `execute()` bodies.
+    \\3. Print through `context.stdout()` / `context.stderr()` — never `std.debug.print` or
+    \\   a raw stdout handle.
+    \\4. Don't hand-roll terminal I/O — use `zinput` (prompts), `zprogress` (progress),
+    \\   `ztheme` (color).
+    \\5. Verify with `zig build` and `zig build test`. Run `zcli guide <topic>` for
+    \\   version-matched API detail and worked examples.
+    \\6. File path = command path: `src/commands/foo/bar.zig` → `app foo bar`; a directory's
+    \\   `index.zig` is the group landing; plugins live in `src/plugins/`.
+    \\
+    \\`zcli guide` topics: structure, arena, output, prompts, http, secrets, plugins, testing.
+    \\
+++ agents_end ++ "\n";
+
+const AgentsResult = enum { created, appended, refreshed };
+
+/// Write the zcli section into AGENTS.md without ever clobbering the user's own
+/// content: create the file if absent, replace the marker-delimited block if it
+/// exists (an idempotent re-run / upgrade), or append it if the file exists but
+/// has no zcli section yet.
+fn scaffoldAgentsMd(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !AgentsResult {
+    const existing = dir.readFileAlloc(io, "AGENTS.md", allocator, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => {
+            try dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = agents_section });
+            return .created;
+        },
+        else => return err,
+    };
+    defer allocator.free(existing);
+
+    if (std.mem.indexOf(u8, existing, agents_begin)) |begin| {
+        // Refresh: splice the fresh section in place of the old markers-region.
+        const end_rel = std.mem.indexOf(u8, existing[begin..], agents_end) orelse return error.MalformedAgentsMarkers;
+        const after = begin + end_rel + agents_end.len;
+        const trailing = if (after < existing.len and existing[after] == '\n') after + 1 else after;
+        const updated = try std.mem.concat(allocator, u8, &.{ existing[0..begin], agents_section, existing[trailing..] });
+        defer allocator.free(updated);
+        try dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = updated });
+        return .refreshed;
+    }
+
+    // Append, keeping exactly one blank line between the user's content and ours.
+    const sep = if (std.mem.endsWith(u8, existing, "\n")) "\n" else "\n\n";
+    const updated = try std.mem.concat(allocator, u8, &.{ existing, sep, agents_section });
+    defer allocator.free(updated);
+    try dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = updated });
+    return .appended;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+fn readAgents(a: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) ![]u8 {
+    return dir.readFileAlloc(io, "AGENTS.md", a, .limited(1 << 20));
+}
+
+test "scaffoldAgentsMd creates AGENTS.md when absent" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try testing.expectEqual(AgentsResult.created, try scaffoldAgentsMd(testing.allocator, io, tmp.dir));
+
+    const content = try readAgents(testing.allocator, io, tmp.dir);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings(agents_section, content);
+    try testing.expect(std.mem.indexOf(u8, content, "zcli guide") != null);
+}
+
+test "scaffoldAgentsMd appends without clobbering the user's AGENTS.md" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "# Mine\n\nkeep me\n" });
+
+    try testing.expectEqual(AgentsResult.appended, try scaffoldAgentsMd(testing.allocator, io, tmp.dir));
+
+    const content = try readAgents(testing.allocator, io, tmp.dir);
+    defer testing.allocator.free(content);
+    try testing.expect(std.mem.startsWith(u8, content, "# Mine\n\nkeep me\n"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, agents_begin));
+}
+
+test "scaffoldAgentsMd refreshes an existing zcli block idempotently" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // User content wrapped around a STALE zcli block.
+    const stale = "# Mine\n\n" ++ agents_begin ++ "\nold stale text\n" ++ agents_end ++ "\n\nmore mine\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = stale });
+
+    try testing.expectEqual(AgentsResult.refreshed, try scaffoldAgentsMd(testing.allocator, io, tmp.dir));
+
+    const content = try readAgents(testing.allocator, io, tmp.dir);
+    defer testing.allocator.free(content);
+    try testing.expect(std.mem.indexOf(u8, content, "old stale text") == null); // stale replaced
+    try testing.expect(std.mem.indexOf(u8, content, "more mine") != null); // user tail kept
+    try testing.expect(std.mem.startsWith(u8, content, "# Mine")); // user head kept
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, agents_begin)); // exactly one block
+
+    // Running again is a no-op-shaped refresh: still exactly one block.
+    try testing.expectEqual(AgentsResult.refreshed, try scaffoldAgentsMd(testing.allocator, io, tmp.dir));
+    const again = try readAgents(testing.allocator, io, tmp.dir);
+    defer testing.allocator.free(again);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, again, agents_begin));
 }

@@ -135,6 +135,7 @@ pub fn build(b: *std.Build) void {
         "src/commands/add/plugin.zig",
         "src/commands/rm/option.zig",
         "src/commands/rm/arg.zig",
+        "src/commands/init.zig",
     };
     for (command_test_files) |path| {
         const mod = b.addModule(b.fmt("test-{s}", .{path}), .{
