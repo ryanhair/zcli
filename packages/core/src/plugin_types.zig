@@ -51,14 +51,13 @@ pub const DefaultValue = union(enum) {
 /// The types a global option may declare: bool, integers, floats, strings,
 /// and optionals of those — exactly what the registry's converter handles.
 fn validateGlobalOptionType(comptime name: []const u8, comptime T: type) void {
-    const ok = switch (@typeInfo(T)) {
+    // Labeled switch: optionals re-dispatch on their child instead of
+    // duplicating the base-type arms — mirroring convertGlobalValue's
+    // recursion, so validator and converter agree on nested optionals.
+    const ok = blk: switch (@typeInfo(T)) {
         .bool, .int, .float => true,
         .pointer => |ptr| ptr.size == .slice and ptr.child == u8 and ptr.is_const,
-        .optional => |opt| switch (@typeInfo(opt.child)) {
-            .bool, .int, .float => true,
-            .pointer => |ptr| ptr.size == .slice and ptr.child == u8 and ptr.is_const,
-            else => false,
-        },
+        .optional => |opt| continue :blk @typeInfo(opt.child),
         else => false,
     };
     if (!ok) {
