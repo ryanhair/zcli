@@ -228,8 +228,19 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\
         \\    exe.root_module.addImport("zcli", zcli_module);
         \\
-        \\    // Generate command registry with built-in plugins
         \\    const zcli = @import("zcli");
+        \\
+        \\    // Shared modules: helper code (e.g. a `store.zig`) imported by more
+        \\    // than one command. Create it with `b.createModule(...)`, then add an
+        \\    // entry here — this one list is wired into your commands AND their
+        \\    // tests below, so you never register it twice. Editing this build
+        \\    // config by hand is expected; `zcli add`/`rm`/`mv` manage command
+        \\    // *structure*, not build wiring.
+        \\    const shared_modules = [_]zcli.SharedModule{{
+        \\        // .{{ .name = "store", .module = store_module }},
+        \\    }};
+        \\
+        \\    // Generate command registry with built-in plugins
         \\    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{{
         \\        .commands_dir = "src/commands",
         \\        // Local plugins in src/plugins/ are auto-discovered (add with
@@ -237,6 +248,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\        .plugins_dir = "src/plugins",
         \\        .plugins = &.{{
         \\{s}        }},
+        \\        .shared_modules = &shared_modules,
         \\        .app_name = "{s}",
         \\        .app_version = "{s}",
         \\        .app_description = "{s}",
@@ -261,6 +273,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\        .commands_dir = "src/commands",
         \\        .target = target,
         \\        .optimize = optimize,
+        \\        .shared_modules = &shared_modules,
         \\    }});
         \\}}
         \\
@@ -409,8 +422,10 @@ const agents_section = agents_begin ++
     \\1. Never `free`/`deinit` memory you allocate in `execute()` — `context.allocator` is
     \\   a per-command arena, reclaimed automatically. (Do still `deinit` non-memory
     \\   resources: files, sockets, `http.Client`.)
-    \\2. Change structure with `zcli add`/`rm`/`mv`, not by editing files by hand. Write
-    \\   freeform code only inside `execute()` bodies.
+    \\2. Change command *structure* with `zcli add`/`rm`/`mv`, not by editing files by
+    \\   hand — write freeform code inside `execute()` bodies. (Editing `build.zig`
+    \\   config, like plugins or shared modules, by hand is expected: that's build
+    \\   wiring, not structure.)
     \\3. Print through `context.stdout()` / `context.stderr()` — never `std.debug.print` or
     \\   a raw stdout handle.
     \\4. Don't hand-roll terminal I/O — use `zinput` (prompts), `zprogress` (progress),
@@ -420,7 +435,7 @@ const agents_section = agents_begin ++
     \\6. File path = command path: `src/commands/foo/bar.zig` → `app foo bar`; a directory's
     \\   `index.zig` is the group landing; plugins live in `src/plugins/`.
     \\
-    \\`zcli guide` topics: structure, arena, output, prompts, http, secrets, plugins, testing.
+    \\`zcli guide` topics: structure, sharing, arena, output, prompts, http, secrets, plugins, testing.
     \\
 ++ agents_end ++ "\n";
 

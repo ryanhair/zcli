@@ -84,6 +84,16 @@ fn readFile(dir: std.Io.Dir, a: std.mem.Allocator, path: []const u8) ![]u8 {
     return dir.readFileAlloc(io, path, a, .limited(1 << 20));
 }
 
+/// Replace the first occurrence of `needle` with `replacement` in `path`,
+/// erroring if `needle` is absent — so a test that edits generated code fails
+/// loudly the moment the generator's output drifts from what it expects.
+fn replaceInFile(dir: std.Io.Dir, a: std.mem.Allocator, path: []const u8, needle: []const u8, replacement: []const u8) !void {
+    const orig = try readFile(dir, a, path);
+    const at = std.mem.indexOf(u8, orig, needle) orelse return error.NeedleNotFound;
+    const out = try std.mem.concat(a, u8, &.{ orig[0..at], replacement, orig[at + needle.len ..] });
+    try dir.writeFile(io, .{ .sub_path = path, .data = out });
+}
+
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {
         std.debug.print(
@@ -958,6 +968,84 @@ test "scaffolded commands are unit-testable via zig build test" {
         var r = try run(proj, &build_test);
         defer r.deinit();
         try testing.expect(r.exit_code != 0);
+    }
+}
+
+test "a shared module reaches both commands and their tests" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "app", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const proj_abs = try tmpSubdirAbs(a, tmp, "app");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // A helper module imported by a command AND its co-located test.
+    try proj.writeFile(io, .{
+        .sub_path = "src/store.zig",
+        .data = "pub fn tag() []const u8 {\n    return \"from-store\";\n}\n",
+    });
+
+    // Populate the `shared_modules` list init leaves empty (with a commented
+    // example). Matching that exact block also asserts the template still ships
+    // the anchor — if init's output drifts, replaceInFile errors loudly.
+    try replaceInFile(proj, a, "build.zig",
+        \\    const shared_modules = [_]zcli.SharedModule{
+        \\        // .{ .name = "store", .module = store_module },
+        \\    };
+    ,
+        \\    const store_module = b.createModule(.{
+        \\        .root_source_file = b.path("src/store.zig"),
+        \\        .target = target,
+        \\        .optimize = optimize,
+        \\    });
+        \\    const shared_modules = [_]zcli.SharedModule{
+        \\        .{ .name = "store", .module = store_module },
+        \\    };
+    );
+
+    // A command importing `store` in both execute() and its runCommand test.
+    // `zig build test` passes only if `store` reaches the command's *test*
+    // binary — i.e. shared_modules flowed to addCommandTests, not just
+    // generate(). One list, two call sites (see `zcli guide sharing`).
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/greet.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\const store = @import("store");
+        \\const Context = @import("command_registry").Context;
+        \\pub const meta = .{ .description = "greet" };
+        \\pub const Args = struct { name: []const u8 };
+        \\pub const Options = struct {};
+        \\pub fn execute(args: Args, _: Options, context: *Context) !void {
+        \\    try context.stdout().print("hi {s} ({s})\n", .{ args.name, store.tag() });
+        \\}
+        \\test "greet uses the shared store module" {
+        \\    const zcli_testing = @import("zcli-testing");
+        \\    var r = try zcli_testing.runCommand(@This(), &.{}, .{ .args = .{ .name = "Ada" } });
+        \\    defer r.deinit();
+        \\    try std.testing.expect(r.success);
+        \\    try std.testing.expect(std.mem.indexOf(u8, r.stdout, store.tag()) != null);
+        \\}
+        \\
+        ,
+    });
+
+    {
+        var r = try run(proj, &.{ "zig", "build", "test" });
+        defer r.deinit();
+        try expectOk(r);
     }
 }
 
