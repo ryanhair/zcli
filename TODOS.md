@@ -122,3 +122,21 @@ then the context tail `examples → guide → AGENTS.md`. **Parallelizable early
 - **Effort:** S–M (module split within `packages/testing`, or a new `zcli-testing-unit` package).
 - **Context:** `packages/testing/build.zig.zon` (the new `zcli_core` + `vterm` deps);
   `packages/testing/src/unit.zig` is the only tier needing core.
+
+### Sign releases (checksums.txt) with a pinned client key
+
+- **What:** Sign `checksums.txt` with a detached-signature scheme (minisign/signify style) in the
+  release workflow, verify in both `install.sh` and the `zcli_github_upgrade` plugin against a
+  public key pinned in the client. Removes GitHub account/token security as the sole integrity
+  anchor for distributed binaries.
+- **Why deferred:** ADR-0009 records the current model: fail-closed checksums from the same
+  release defend transit integrity and asset mix-ups, not a malicious publisher. A signing key
+  only adds security once it lives somewhere the release credentials do not — pre-adoption,
+  it's key-management ceremony with no one downstream to protect.
+- **Trigger to revisit:** Third-party install base emerges; releases move to CI with long-lived
+  credentials; or a packaging ecosystem (Homebrew tap, distro) wants a verifiable artifact.
+- **Effort:** M (keygen + secret in release workflow, ~30-line verify in installer and plugin,
+  key-rotation story documented).
+- **Context:** `docs/adr/0009-release-integrity-trust-model.md`; enforcement landed in the
+  audit-fix series (#46 installer fail-closed, #47 scratch dir, #57 exec smoke test, #58 exact
+  checksum matching).
