@@ -59,6 +59,38 @@ fn sortedByPathLengthDesc(comptime commands: anytype) @TypeOf(commands[0..comman
     return cmds;
 }
 
+/// Default rendering for a parse error no plugin handled: the diagnostic's
+/// precise, human-readable message on stderr (flushed — the process is about
+/// to exit with an error). Falls back silently when no diagnostic was filled
+/// (the error name still reaches the caller).
+fn reportParseError(context: anytype, diag: ?zcli.ZcliDiagnostic) !void {
+    const d = diag orelse return;
+    const message = zcli.formatDiagnostic(d, context.allocator) catch return;
+    var stderr = context.stderr();
+    try stderr.print("Error: {s}\n", .{message});
+    try stderr.flush();
+}
+
+/// Errors that execute() reports to the user before returning them — the
+/// user-facing message has already been printed by the time these surface.
+fn isReportedCliError(err: anyerror) bool {
+    return switch (err) {
+        error.CommandNotFound,
+        error.SubcommandNotFound,
+        error.OptionUnknown,
+        error.OptionMissingValue,
+        error.OptionInvalidValue,
+        error.OptionBooleanWithValue,
+        error.OptionDuplicate,
+        error.ArgumentMissingRequired,
+        error.ArgumentInvalidValue,
+        error.ArgumentTooMany,
+        error.ResourceLimitExceeded,
+        => true,
+        else => false,
+    };
+}
+
 /// Build an alias path by replacing the last component with the alias name
 fn buildAliasPath(comptime original_path: []const []const u8, comptime alias: []const u8) []const []const u8 {
     comptime {
@@ -328,6 +360,11 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
         available_commands: []const []const []const u8 = &.{},
         command_path: []const []const u8 = &.{},
         command_path_allocated: bool = false,
+
+        /// Structured detail for the most recent parse/routing error, set by
+        /// the framework just before onError hooks run. Payload slices point
+        /// into argv and comptime type names — valid for the whole execution.
+        diagnostic: ?zcli.ZcliDiagnostic = null,
         command_meta: ?zcli.CommandMeta = null,
         command_module_info: ?zcli.CommandModuleInfo = null,
 
@@ -890,7 +927,17 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
         /// Convenient run method that handles process args, io, and environment
         pub fn run(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
-            try self.execute(allocator, io, environ, if (args.len > 0) args[1..] else args);
+            self.execute(allocator, io, environ, if (args.len > 0) args[1..] else args) catch |err| {
+                // CLI-entry semantics: parse/routing failures were already
+                // reported to the user (diagnostic rendering, a plugin, or
+                // the framework fallback message) — exit(1) without letting
+                // the raw error trace follow the friendly message. Anything
+                // else is a real command failure; propagate it so the trace
+                // aids debugging. Library/test callers who want the error
+                // itself use execute() directly.
+                if (isReportedCliError(err)) std.process.exit(1);
+                return err;
+            };
         }
 
         pub fn parseGlobalOptions(self: *Self, context: *Context, args: []const []const u8) !zcli.GlobalOptionsResult {
@@ -1233,7 +1280,24 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                                 }
                             }
 
-                            const parse_result = try command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, cli_args);
+                            var parse_diag: ?zcli.ZcliDiagnostic = null;
+                            const parse_result = command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, cli_args, &parse_diag) catch |err| {
+                                context.diagnostic = parse_diag;
+                                var error_handled = false;
+                                inline for (sorted_plugins) |Plugin| {
+                                    if (@hasDecl(Plugin, "onError")) {
+                                        if (try Plugin.onError(context, err)) {
+                                            error_handled = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!error_handled) {
+                                    try reportParseError(context, parse_diag);
+                                    return err;
+                                }
+                                return;
+                            };
                             defer parse_result.deinit();
 
                             const args_instance = parse_result.args;
@@ -1473,14 +1537,32 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                         // Parse args and options using unified parser
                         const cmd_meta = if (@hasDecl(CommandModule, "meta")) CommandModule.meta else null;
 
-                        const parse_result = try command_parser.parseCommandLine(
+                        var parse_diag: ?zcli.ZcliDiagnostic = null;
+                        const parse_result = command_parser.parseCommandLine(
                             ArgsType,
                             OptionsType,
                             cmd_meta,
                             context.allocator,
                             context.environ,
                             parsed_args.positional,
-                        );
+                            &parse_diag,
+                        ) catch |err| {
+                            context.diagnostic = parse_diag;
+                            var error_handled = false;
+                            inline for (sorted_plugins) |Plugin| {
+                                if (@hasDecl(Plugin, "onError")) {
+                                    if (try Plugin.onError(context, err)) {
+                                        error_handled = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!error_handled) {
+                                try reportParseError(context, parse_diag);
+                                return err;
+                            }
+                            return;
+                        };
                         defer parse_result.deinit();
 
                         const cmd_args = parse_result.args;
@@ -2460,4 +2542,62 @@ test "alias registration: command without aliases creates single entry" {
 
     // Should have only 1 entry
     try testing.expectEqual(@as(usize, 1), entries.len);
+}
+
+// Regression fixture for the diagnostic pipeline: a plugin that records what
+// context.diagnostic held when its onError hook ran, plus a command with a
+// typed option to fail parsing against.
+const DiagnosticCapturePlugin = struct {
+    var captured: ?zcli.ZcliDiagnostic = null;
+    var captured_err: ?anyerror = null;
+
+    pub fn reset() void {
+        captured = null;
+        captured_err = null;
+    }
+
+    pub fn onError(context: anytype, err: anyerror) !bool {
+        captured = context.diagnostic;
+        captured_err = err;
+        return true; // handled — suppress
+    }
+
+    pub const commands = struct {
+        pub const ping = struct {
+            pub const meta = .{ .description = "ping with a typed option" };
+            pub const Args = struct {};
+            pub const Options = struct { count: u32 = 1 };
+            pub fn execute(args: Args, options: Options, context: anytype) !void {
+                _ = args;
+                _ = options;
+                _ = context;
+            }
+        };
+    };
+};
+
+test "parse errors run onError with context.diagnostic populated" {
+    const TestApp = Registry.init(.{
+        .app_name = "diag-test",
+        .app_version = "1.0.0",
+        .app_description = "diagnostic pipeline test",
+    })
+        .registerPlugin(DiagnosticCapturePlugin)
+        .build();
+
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    // Unknown option: the plugin sees the error AND the precise diagnostic.
+    DiagnosticCapturePlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "--bogus" });
+    try testing.expectEqual(@as(?anyerror, error.OptionUnknown), DiagnosticCapturePlugin.captured_err);
+    try testing.expectEqualStrings("bogus", DiagnosticCapturePlugin.captured.?.OptionUnknown.option_name);
+
+    // Invalid value: same pipeline, different diagnostic payload.
+    DiagnosticCapturePlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "--count", "lots" });
+    try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), DiagnosticCapturePlugin.captured_err);
+    try testing.expectEqualStrings("lots", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.provided_value);
+    try testing.expectEqualStrings("count", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.option_name);
 }

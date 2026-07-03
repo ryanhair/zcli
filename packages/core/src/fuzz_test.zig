@@ -63,7 +63,7 @@ pub const FuzzTesting = struct {
             }
 
             // Test that random input doesn't crash the parser
-            if (args_parser.parseArgs(FuzzTestArgs, args.items)) |_| {
+            if (args_parser.parseArgs(FuzzTestArgs, args.items, null)) |_| {
                 successful_parses += 1;
             } else |_| {
                 failed_parses += 1;
@@ -142,7 +142,7 @@ pub const FuzzTesting = struct {
             }
 
             // Test option parsing
-            const result = options_parser.parseOptions(FuzzTestOptions, allocator, args.items) catch |err| switch (err) {
+            const result = options_parser.parseOptions(FuzzTestOptions, allocator, args.items, null) catch |err| switch (err) {
                 zcli.ZcliError.SystemOutOfMemory => {
                     memory_errors += 1;
                     continue;
@@ -206,7 +206,7 @@ pub const FuzzTesting = struct {
             // Test argument parsing
             const args = [_][]const u8{malicious_input};
 
-            if (args_parser.parseArgs(FuzzTestArgs, &args)) |parsed| {
+            if (args_parser.parseArgs(FuzzTestArgs, &args, null)) |parsed| {
                 // If it parsed, verify it's treated as literal string
                 try testing.expectEqualStrings(malicious_input, parsed.name);
 
@@ -251,7 +251,7 @@ pub const FuzzTesting = struct {
             defer allocator.free(arg);
 
             const args = [_][]const u8{arg};
-            _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
+            _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
         }
 
         // A few large parses.
@@ -261,7 +261,7 @@ pub const FuzzTesting = struct {
             defer allocator.free(arg);
 
             const args = [_][]const u8{arg};
-            _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
+            _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
         }
     }
 };
@@ -346,7 +346,7 @@ test "fuzz: unicode and encoding edge cases" {
         const args = [_][]const u8{valid_string};
 
         // Should handle Unicode without crashing
-        _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
+        _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
     }
 }
 
@@ -370,7 +370,7 @@ test "fuzz: memory boundary conditions" {
         const args = [_][]const u8{test_string};
 
         // Should handle various sizes without boundary errors
-        const result = args_parser.parseArgs(FuzzTestArgs, &args) catch |err| switch (err) {
+        const result = args_parser.parseArgs(FuzzTestArgs, &args, null) catch |err| switch (err) {
             zcli.ZcliError.SystemOutOfMemory => continue, // Acceptable
             else => return err,
         };
@@ -396,7 +396,7 @@ test "fuzz: concurrent parsing stress" {
             defer allocator.free(test_string);
 
             const args = [_][]const u8{test_string};
-            _ = args_parser.parseArgs(FuzzTestArgs, &args) catch {};
+            _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
         }
     }
 }
@@ -423,7 +423,7 @@ test "fuzz: regression tests for past vulnerabilities" {
         const args = [_][]const u8{input};
 
         // Should not crash or behave unexpectedly
-        const result = args_parser.parseArgs(FuzzTestArgs, &args) catch |err| switch (err) {
+        const result = args_parser.parseArgs(FuzzTestArgs, &args, null) catch |err| switch (err) {
             zcli.ZcliError.SystemOutOfMemory => continue, // Acceptable
             else => {
                 std.log.warn("Regression test failed for input: {any}, error: {}", .{ input, err });

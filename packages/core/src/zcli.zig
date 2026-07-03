@@ -28,6 +28,7 @@ const testing = std.testing;
 // Re-export error types
 pub const ZcliError = diagnostic_errors.ZcliError;
 pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
+pub const formatDiagnostic = diagnostic_errors.formatDiagnostic;
 
 // Re-export plugin types for user convenience
 
@@ -122,6 +123,10 @@ pub const Context = struct {
     // Plugin-specific command information for introspection
     plugin_command_info: []const CommandInfo = &.{},
     global_options: []const OptionInfo = &.{},
+
+    /// Structured detail for the most recent parse/routing error (see the
+    /// registry Context, which is the one commands actually receive).
+    diagnostic: ?ZcliDiagnostic = null,
 
     const Self = @This();
 
