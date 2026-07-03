@@ -241,6 +241,9 @@ pub fn parsePath(arena: std.mem.Allocator, raw: []const u8) ![]const []const u8 
     while (it.next()) |segment| {
         if (segment.len == 0) continue;
         if (!isValidIdentifier(segment)) return error.InvalidCommandPath;
+        // Underscore-prefixed names are helper files/dirs to command
+        // discovery, never commands — refuse to scaffold one.
+        if (segment[0] == '_') return error.InvalidCommandPath;
         try parts.append(arena, segment);
     }
     if (parts.items.len == 0) return error.InvalidCommandPath;
@@ -342,6 +345,36 @@ test "renderOptMetaEntry includes short only when present" {
         .default_expr = "1",
         .description = "Max",
     }));
+}
+
+test "isValidIdentifier accepts identifiers, rejects junk" {
+    try testing.expect(isValidIdentifier("deploy"));
+    try testing.expect(isValidIdentifier("_hidden"));
+    try testing.expect(!isValidIdentifier("2cool"));
+    try testing.expect(!isValidIdentifier("has-dash"));
+    try testing.expect(!isValidIdentifier(""));
+}
+
+test "parsePath splits and validates segments" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const parts = try parsePath(a, "users/create");
+    try testing.expectEqual(@as(usize, 2), parts.len);
+    try testing.expectEqualStrings("users", parts[0]);
+    try testing.expectEqualStrings("create", parts[1]);
+    try testing.expectError(error.InvalidCommandPath, parsePath(a, ""));
+    try testing.expectError(error.InvalidCommandPath, parsePath(a, "bad-seg"));
+}
+
+test "parsePath rejects underscore-prefixed segments (discovery treats them as helpers)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectError(error.InvalidCommandPath, parsePath(a, "_wizard"));
+    try testing.expectError(error.InvalidCommandPath, parsePath(a, "users/_create"));
 }
 
 test "parsePath accepts slash and space separators" {

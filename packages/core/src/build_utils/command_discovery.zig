@@ -74,6 +74,10 @@ fn scanDirectory(
                         continue;
                     }
 
+                    // Underscore-prefixed files are helpers a command file
+                    // imports (e.g. `_wizard.zig`), not commands.
+                    if (entry.name[0] == '_') continue;
+
                     // Skip invalid command names
                     if (!isValidCommandName(name_without_ext)) {
                         logging.invalidCommandName(name_without_ext, "contains invalid characters or patterns");
@@ -112,8 +116,9 @@ fn scanDirectory(
                 }
             },
             .directory => {
-                // Skip hidden directories
-                if (entry.name[0] == '.') continue;
+                // Skip hidden directories, and underscore-prefixed helper
+                // directories (same convention as `_helper.zig` files).
+                if (entry.name[0] == '.' or entry.name[0] == '_') continue;
 
                 // Skip invalid command names
                 if (!isValidCommandName(entry.name)) {
@@ -234,6 +239,34 @@ pub fn isValidCommandName(name: []const u8) bool {
 // ============================================================================
 // TESTS
 // ============================================================================
+
+test "discovery skips underscore-prefixed helper files and directories" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // deploy.zig is a command; _generate.zig is a helper it imports; _helpers/
+    // holds more helpers. Only the command may be discovered — helper files
+    // becoming commands is exactly how a split command file would leak
+    // `myapp add _wizard` into the CLI.
+    try tmp.dir.writeFile(io, .{ .sub_path = "deploy.zig", .data = "pub fn execute() void {}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "_generate.zig", .data = "pub fn helper() void {}" });
+    try tmp.dir.createDir(io, "_helpers", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "_helpers/render.zig", .data = "pub fn helper() void {}" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = try discoverInDir(testing.allocator, io, dir);
+    defer commands.deinit();
+
+    try testing.expectEqual(@as(usize, 1), commands.root.count());
+    try testing.expect(commands.root.get("deploy") != null);
+    try testing.expect(commands.root.get("_generate") == null);
+    try testing.expect(commands.root.get("_helpers") == null);
+}
 
 test "isValidCommandName security checks" {
     const testing = std.testing;

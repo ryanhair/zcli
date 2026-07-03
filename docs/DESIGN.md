@@ -28,6 +28,7 @@ myapp/
 - File names map directly to command names (kebab-case supported)
 - Special file: `root.zig` for base command (optional, executed when no subcommand given)
 - Hidden directories (starting with `.`) are automatically skipped
+- Underscore-prefixed files and directories (e.g. `_helpers.zig`, `_render/`) are helper code a command imports, never commands themselves
 - Maximum nesting depth: 6 levels (configurable)
 
 ## 2. Build-Time Command Discovery

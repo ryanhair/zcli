@@ -197,6 +197,7 @@ For each subdirectory found:
 - Recursively scans up to a maximum depth (default: 6 levels)
 - Looks for `index.zig` to determine if it's a valid group
 - Skips empty directories automatically
+- Skips underscore-prefixed files and directories (helper code for commands to import, e.g. `_wizard.zig`)
 
 ### 4. Command Validation
 
