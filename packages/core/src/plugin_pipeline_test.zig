@@ -418,6 +418,239 @@ test "pipeline: postExecute receives success=true after a successful command" {
 }
 
 // ---------------------------------------------------------------------------
+// 11. Plugin-provided commands run the IDENTICAL pipeline as regular commands
+//
+// The registry routes them differently (registered tree vs Plugin.commands),
+// but everything after routing must be the same shared sequence. These are
+// the parity tests for that shared execution path.
+// ---------------------------------------------------------------------------
+
+const PluginCmdProvider = struct {
+    pub const commands = struct {
+        pub const pgreet = struct {
+            var executed = false;
+            pub const meta = .{ .description = "plugin greet" };
+            pub const Args = zcli.NoArgs;
+            pub const Options = zcli.NoOptions;
+            pub fn execute(_: Args, _: Options, _: anytype) !void {
+                executed = true;
+            }
+        };
+        pub const pfail = struct {
+            pub const meta = .{ .description = "plugin fail" };
+            pub const Args = zcli.NoArgs;
+            pub const Options = zcli.NoOptions;
+            pub fn execute(_: Args, _: Options, _: anytype) !void {
+                return error.Boom;
+            }
+        };
+        // Nested namespace: "remote" registers as a metadata-only plugin
+        // command group, "remote add" as a leaf under it.
+        pub const remote = struct {
+            pub const meta = .{ .description = "nested group" };
+            pub const add = struct {
+                var last: []const u8 = "";
+                pub const meta = .{ .description = "nested plugin command" };
+                pub const Args = struct { name: []const u8 };
+                pub const Options = zcli.NoOptions;
+                pub fn execute(args: Args, _: Options, _: anytype) !void {
+                    last = args.name;
+                }
+            };
+        };
+    };
+};
+
+test "pipeline parity: a plugin command runs the identical hook sequence as a regular command" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(FullHookPlugin)
+        .registerPlugin(PluginCmdProvider)
+        .build();
+
+    const expected: []const []const u8 = &.{ "preParse", "transformArgs", "postParse", "preExecute", "postExecute" };
+
+    Trace.reset();
+    Greet.executed = false;
+    try run(App, &.{"greet"});
+    try testing.expect(Greet.executed);
+    try Trace.expectOrder(expected);
+
+    Trace.reset();
+    PluginCmdProvider.commands.pgreet.executed = false;
+    try run(App, &.{"pgreet"});
+    try testing.expect(PluginCmdProvider.commands.pgreet.executed);
+    try Trace.expectOrder(expected);
+}
+
+test "pipeline parity: a failing plugin command gets onError suppression and postExecute(success=false)" {
+    const App = zcli.Registry.init(test_config)
+        .registerPlugin(SuppressErrPlugin)
+        .registerPlugin(PluginCmdProvider)
+        .build();
+
+    SuppressErrPlugin.seen = null;
+    SuppressErrPlugin.post_success = null;
+    try run(App, &.{"pfail"}); // handled -> no propagation, same as a regular command
+    try testing.expectEqual(@as(?anyerror, error.Boom), SuppressErrPlugin.seen);
+    try testing.expectEqual(@as(?bool, false), SuppressErrPlugin.post_success);
+}
+
+test "pipeline parity: nested plugin commands route longest-match first" {
+    const App = zcli.Registry.init(test_config)
+        .registerPlugin(PluginCmdProvider)
+        .build();
+
+    PluginCmdProvider.commands.remote.add.last = "";
+    try run(App, &.{ "remote", "add", "origin" });
+    try testing.expectEqualStrings("origin", PluginCmdProvider.commands.remote.add.last);
+}
+
+// ---------------------------------------------------------------------------
+// 12. Metadata-only groups (regular AND plugin) run hooks, then route through
+//     CommandNotFound — the same trace shape from both origins.
+// ---------------------------------------------------------------------------
+
+const MetaGroup = struct {
+    pub const meta = .{ .description = "group without execute" };
+};
+
+/// Low-priority error sink so handled-error flows stay silent and error-free
+/// while a recorder plugin observes the sequence.
+const HandleAllPlugin = struct {
+    pub const priority = 1;
+    pub fn onError(_: anytype, _: anyerror) !bool {
+        return true;
+    }
+};
+
+test "pipeline parity: metadata-only groups run hooks then onError, from either origin" {
+    const App = zcli.Registry.init(test_config)
+        .register("mgroup", MetaGroup)
+        .registerPlugin(FullHookPlugin)
+        .registerPlugin(HandleAllPlugin)
+        .registerPlugin(PluginCmdProvider)
+        .build();
+
+    // Hooks run first; then the group routes through onError (handled here),
+    // and postExecute must NOT fire — nothing executed.
+    const expected: []const []const u8 = &.{ "preParse", "transformArgs", "postParse", "preExecute", "onError" };
+
+    Trace.reset();
+    try run(App, &.{"mgroup"}); // regular registered group
+    try Trace.expectOrder(expected);
+
+    Trace.reset();
+    try run(App, &.{"remote"}); // plugin command group (nested namespace)
+    try Trace.expectOrder(expected);
+}
+
+// ---------------------------------------------------------------------------
+// 13. A parse error runs onError (with the pipeline intact behind it) and
+//     skips postExecute.
+// ---------------------------------------------------------------------------
+
+test "pipeline: parse errors reach onError and skip postExecute" {
+    const App = zcli.Registry.init(test_config)
+        .register("echo", Echo)
+        .registerPlugin(FullHookPlugin)
+        .registerPlugin(HandleAllPlugin)
+        .build();
+
+    Trace.reset();
+    try run(App, &.{"echo"}); // missing required positional; handled -> no error
+    try Trace.expectOrder(&.{ "preParse", "transformArgs", "postParse", "preExecute", "onError" });
+}
+
+// ---------------------------------------------------------------------------
+// 14. onError dispatch is first-handler-wins in priority order
+// ---------------------------------------------------------------------------
+
+fn ErrOrderPlugin(comptime tag: []const u8, comptime prio: i32, comptime handles: bool) type {
+    return struct {
+        pub const priority = prio;
+        pub fn onError(_: anytype, _: anyerror) !bool {
+            Trace.record(tag);
+            return handles;
+        }
+    };
+}
+
+test "pipeline: the first handling plugin stops onError dispatch" {
+    const App = zcli.Registry.init(test_config)
+        .register("fail", Fail)
+        .registerPlugin(ErrOrderPlugin("err-low", 1, true))
+        .registerPlugin(ErrOrderPlugin("err-high", 100, true))
+        .build();
+
+    Trace.reset();
+    try run(App, &.{"fail"});
+    // High handles it; low is never consulted.
+    try Trace.expectOrder(&.{"err-high"});
+}
+
+test "pipeline: a non-handling plugin passes onError down the priority chain" {
+    const App = zcli.Registry.init(test_config)
+        .register("fail", Fail)
+        .registerPlugin(ErrOrderPlugin("obs-high", 100, false))
+        .registerPlugin(ErrOrderPlugin("sink-low", 1, true))
+        .build();
+
+    Trace.reset();
+    try run(App, &.{"fail"});
+    try Trace.expectOrder(&.{ "obs-high", "sink-low" });
+}
+
+// ---------------------------------------------------------------------------
+// 15. ContextData: default-initialized, shared across hooks and the command,
+//     and handed to deinitContextData at the end of the run
+// ---------------------------------------------------------------------------
+
+const StatefulPlugin = struct {
+    pub const plugin_id = "stateful";
+    pub const ContextData = struct { count: u32 = 0 };
+
+    var final_count: ?u32 = null;
+
+    pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
+        _ = allocator;
+        final_count = data.count;
+    }
+
+    pub fn preExecute(context: anytype, parsed: zcli.ParsedArgs) !?zcli.ParsedArgs {
+        context.plugins.stateful.count += 1;
+        return parsed;
+    }
+};
+
+const ReadState = struct {
+    var seen: ?u32 = null;
+    pub const meta = .{ .description = "read plugin state" };
+    pub const Args = zcli.NoArgs;
+    pub const Options = zcli.NoOptions;
+    pub fn execute(_: Args, _: Options, context: anytype) !void {
+        seen = context.plugins.stateful.count;
+        context.plugins.stateful.count += 10;
+    }
+};
+
+test "pipeline: ContextData flows default -> hook mutation -> command -> deinit" {
+    const App = zcli.Registry.init(test_config)
+        .register("state", ReadState)
+        .registerPlugin(StatefulPlugin)
+        .build();
+
+    StatefulPlugin.final_count = null;
+    ReadState.seen = null;
+    try run(App, &.{"state"});
+
+    // Default 0, +1 in preExecute, observed by the command...
+    try testing.expectEqual(@as(?u32, 1), ReadState.seen);
+    // ...whose own mutation is what deinitContextData receives at teardown.
+    try testing.expectEqual(@as(?u32, 11), StatefulPlugin.final_count);
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline robustness against adversarial input
 //
 // security_test.zig and fuzz_test.zig feed malicious input to the parsers in

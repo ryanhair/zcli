@@ -41,7 +41,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 
 ## Structure / dead code
 
-- [ ] 26. **Split `executeCommand`** — single ~584-line function (`registry.zig:962-1545`); regular-command and plugin-command paths are ~230 near-identical lines each (6 copies of the onError inline-for). Extract shared helpers.
+- [x] 26. **Split `executeCommand`** *(routing stays in executeCommand; the shared per-command pipeline — context info, hooks, parse, execute, error dispatch — is one `executeResolvedCommand` used by both regular and plugin paths, plus hook helpers; metadata-only groups now uniformly print + return CommandNotFound when unhandled)* — single ~584-line function (`registry.zig:962-1545`); regular-command and plugin-command paths are ~230 near-identical lines each (6 copies of the onError inline-for). Extract shared helpers.
 - [ ] 27. **Context triplication** — the Context interface is defined three times (`registry.zig:278-396`, `zcli.zig:107-203`, `zcli.zig:264-341`); `getCommandDescription` copy-pasted verbatim in all three. Single source of truth.
 - [ ] 28. **Split `add/command.zig`** (1,221 lines) — wizard prompt IO, declarative scaffold, source rendering, and ANSI paint helpers in one file. (Split plan already sketched: generate/declarative/wizard/command.)
 - [ ] 29. **Legacy `build_utils.zig` cleanup** — 772-line doc-header + stale test grab-bag incl. a no-op `expect(true)` test (`:25-36`). Also `build_utils/main.zig` contains never-run tests asserting a generator signature that no longer exists (`:465`, `:547` vs `code_generation.zig:180-190`) — fix and wire them, or delete.
