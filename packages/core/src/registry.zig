@@ -1117,337 +1117,251 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             return result;
         }
 
+        // ------------------------------------------------------------------
+        // Command execution
+        //
+        // executeCommand routes argv to a command module; everything after
+        // routing — context metadata, hook dispatch, parsing, execution,
+        // error handling — is shared by regular and plugin commands in
+        // executeResolvedCommand and the hook helpers below.
+        // ------------------------------------------------------------------
+
+        /// Whether a resolved module came from the app's command tree or a
+        /// plugin's `commands`. The paths differ in one place: a regular
+        /// command with no positional Args treats a stray non-option argument
+        /// as a mistyped subcommand (CommandNotFound); plugin commands keep
+        /// their historical behavior of letting the parser report it.
+        const CommandKind = enum { regular, plugin };
+
+        /// Dispatch `err` to the plugins' onError hooks, first handler wins.
+        /// Returns whether a plugin handled (and thereby suppressed) the error.
+        fn runOnErrorHooks(context: *Context, err: anyerror) !bool {
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "onError")) {
+                    if (try Plugin.onError(context, err)) return true;
+                }
+            }
+            return false;
+        }
+
+        /// Run postParse hooks, threading each plugin's replacement ParsedArgs.
+        fn runPostParseHooks(context: *Context, parsed: zcli.ParsedArgs) !zcli.ParsedArgs {
+            var parsed_args = parsed;
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "postParse")) {
+                    if (try Plugin.postParse(context, parsed_args)) |new_parsed| {
+                        parsed_args = new_parsed;
+                    }
+                }
+            }
+            return parsed_args;
+        }
+
+        /// Run preExecute hooks. Returns null when a plugin cancels execution.
+        fn runPreExecuteHooks(context: *Context, parsed: zcli.ParsedArgs) !?zcli.ParsedArgs {
+            var parsed_args = parsed;
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "preExecute")) {
+                    if (try Plugin.preExecute(context, parsed_args)) |new_parsed| {
+                        parsed_args = new_parsed;
+                    } else {
+                        return null;
+                    }
+                }
+            }
+            return parsed_args;
+        }
+
+        /// Point context.command_path at an allocated copy of `parts`.
+        fn setCommandPath(context: *Context, parts: []const []const u8) !void {
+            const copy = try context.allocator.alloc([]const u8, parts.len);
+            for (parts, 0..) |part, i| {
+                copy[i] = try context.allocator.dupe(u8, part);
+            }
+            context.command_path = copy;
+        }
+
+        /// Convert a command struct's fields to runtime FieldInfo for plugin
+        /// introspection, pulling per-option short/description from
+        /// `options_meta` (pass null for Args structs, which carry neither).
+        fn buildFieldInfoList(comptime T: type, comptime options_meta: anytype, allocator: std.mem.Allocator) ![]const zcli.FieldInfo {
+            const type_info = @typeInfo(T);
+            if (type_info != .@"struct") return &.{};
+            var field_list = std.ArrayList(zcli.FieldInfo).empty;
+            inline for (type_info.@"struct".fields) |field| {
+                const field_type_info = @typeInfo(field.type);
+                var short: ?u8 = null;
+                var description: ?[]const u8 = null;
+                if (comptime @TypeOf(options_meta) != @TypeOf(null)) {
+                    if (@hasField(@TypeOf(options_meta), field.name)) {
+                        const field_meta = @field(options_meta, field.name);
+                        if (@hasField(@TypeOf(field_meta), "short")) short = field_meta.short;
+                        if (@hasField(@TypeOf(field_meta), "description")) description = field_meta.description;
+                    }
+                }
+                try field_list.append(allocator, zcli.FieldInfo{
+                    .name = field.name,
+                    .is_optional = field_type_info == .optional or field.default_value_ptr != null,
+                    .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
+                    .short = short,
+                    .description = description,
+                });
+            }
+            return field_list.toOwnedSlice(allocator);
+        }
+
+        /// Record the resolved command's metadata and introspection info on
+        /// the context (the help plugin renders from these).
+        fn setCommandInfo(comptime Module: type, context: *Context) !void {
+            if (@hasDecl(Module, "meta")) {
+                const meta = Module.meta;
+                context.command_meta = zcli.CommandMeta{
+                    .description = if (@hasField(@TypeOf(meta), "description")) meta.description else null,
+                    .examples = if (@hasField(@TypeOf(meta), "examples")) meta.examples else null,
+                };
+            }
+
+            const options_meta = comptime blk: {
+                if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "options")) break :blk Module.meta.options;
+                break :blk null;
+            };
+            context.command_module_info = zcli.CommandModuleInfo{
+                .has_args = @hasDecl(Module, "Args"),
+                .has_options = @hasDecl(Module, "Options"),
+                .raw_meta_ptr = if (@hasDecl(Module, "meta")) &Module.meta else null,
+                .args_fields = if (@hasDecl(Module, "Args")) try buildFieldInfoList(Module.Args, null, context.allocator) else &.{},
+                .options_fields = if (@hasDecl(Module, "Options")) try buildFieldInfoList(Module.Options, options_meta, context.allocator) else &.{},
+            };
+        }
+
+        /// Everything that happens after routing has resolved a command
+        /// module: record context info, run postParse/preExecute hooks, parse
+        /// argv, execute, and dispatch errors/postExecute. `command_parts` is
+        /// the matched command path; `remaining_args` the argv after it.
+        fn executeResolvedCommand(comptime Module: type, comptime kind: CommandKind, context: *Context, command_parts: []const []const u8, remaining_args: []const []const u8) !void {
+            @setEvalBranchQuota(10000);
+            try setCommandPath(context, command_parts);
+            try setCommandInfo(Module, context);
+
+            var parsed_args = zcli.ParsedArgs.init(context.allocator);
+            parsed_args.positional = remaining_args;
+            parsed_args = try runPostParseHooks(context, parsed_args);
+            parsed_args = (try runPreExecuteHooks(context, parsed_args)) orelse return; // plugin cancelled execution
+
+            // Metadata-only command group (no execute): route through
+            // CommandNotFound so the help plugin renders the subcommand list.
+            if (!@hasDecl(Module, "execute")) {
+                if (try runOnErrorHooks(context, error.CommandNotFound)) return;
+                const cmd_name_str = try std.mem.join(context.allocator, " ", command_parts);
+                defer context.allocator.free(cmd_name_str);
+                try context.stderr().print("'{s}' is a command group. Use --help to see available subcommands.\n", .{cmd_name_str});
+                return error.CommandNotFound;
+            }
+
+            const ArgsType = if (@hasDecl(Module, "Args")) Module.Args else struct {};
+            const OptionsType = if (@hasDecl(Module, "Options")) Module.Options else struct {};
+            const cmd_meta = if (@hasDecl(Module, "meta")) Module.meta else null;
+
+            // A regular command that declares no positionals but got a
+            // non-option argument was almost certainly invoked with a
+            // mistyped subcommand — CommandNotFound, not a parse error.
+            if (kind == .regular and std.meta.fields(ArgsType).len == 0 and
+                remaining_args.len > 0 and !std.mem.startsWith(u8, remaining_args[0], "-"))
+            {
+                return error.CommandNotFound;
+            }
+
+            var parse_diag: ?zcli.ZcliDiagnostic = null;
+            const parse_result = command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, parsed_args.positional, &parse_diag) catch |err| {
+                context.diagnostic = parse_diag;
+                if (try runOnErrorHooks(context, err)) return;
+                try reportParseError(context, parse_diag);
+                return err;
+            };
+            defer parse_result.deinit();
+
+            const args_instance = parse_result.args;
+            var options_instance = parse_result.options;
+
+            // Config defaults override struct defaults; CLI-provided values
+            // (already parsed) still take precedence.
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "applyConfigDefaults")) {
+                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance);
+                }
+            }
+
+            // Execute. A handled error (onError returns true) is suppressed
+            // and falls through to postExecute with success = false.
+            var success = true;
+            Module.execute(args_instance, options_instance, context) catch |err| {
+                success = false;
+                if (!try runOnErrorHooks(context, err)) return err;
+            };
+
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "postExecute")) {
+                    try Plugin.postExecute(context, success);
+                }
+            }
+        }
+
         fn executeCommand(_: *Self, context: *Context, args_input: []const []const u8) !void {
             @setEvalBranchQuota(10000);
-            // Check if we should use the root command
-            // Root command is executed when:
-            // 1. No arguments provided, OR
-            // 2. First argument starts with '-' (it's an option, not a command)
-            const use_root_command = blk: {
-                if (args_input.len == 0) {
-                    break :blk true;
-                }
-                // Check if first arg is an option (starts with -)
-                if (args_input.len > 0 and std.mem.startsWith(u8, args_input[0], "-")) {
-                    break :blk true;
+            // The root command handles bare invocation: no args, or a first
+            // arg that's an option rather than a command name.
+            const use_root_command = args_input.len == 0 or std.mem.startsWith(u8, args_input[0], "-");
+
+            const root_exists = comptime blk: {
+                for (cmd_entries) |cmd| {
+                    if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) break :blk true;
                 }
                 break :blk false;
             };
 
-            // Determine which args to use
-            const args = if (use_root_command) blk: {
-                // Check if there's a root command
-                const root_exists = comptime check: {
-                    for (cmd_entries) |cmd| {
-                        if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) {
-                            break :check true;
-                        }
-                    }
-                    break :check false;
-                };
+            // Route through the "root" pseudo-path when applicable. The root
+            // command still receives the original argv for option parsing.
+            const root_args = [_][]const u8{"root"};
+            const args: []const []const u8 = if (use_root_command and root_exists) &root_args else args_input;
 
-                if (root_exists) {
-                    // Create args array with "root" prepended (but this is internal only)
-                    // We'll still pass the original args to the command for option parsing
-                    const root_args = [_][]const u8{"root"};
-                    break :blk &root_args;
-                } else {
-                    break :blk args_input;
-                }
-            } else args_input;
-
-            // Handle the case where no command is specified and no root command exists
+            // No command and no root command to fall back on: run the hooks
+            // (the help plugin answers a bare --help here), then route
+            // through CommandNotFound.
             if (args.len == 0) {
-                // No root command - run hooks for empty command case
-                var parsed_args = zcli.ParsedArgs.init(context.allocator);
-
-                // Run postParse hooks
-                inline for (sorted_plugins) |Plugin| {
-                    if (@hasDecl(Plugin, "postParse")) {
-                        if (try Plugin.postParse(context, parsed_args)) |new_parsed| {
-                            parsed_args = new_parsed;
-                        }
-                    }
-                }
-
-                // Run preExecute hooks - this allows help plugin to handle --help with no command
-                inline for (sorted_plugins) |Plugin| {
-                    if (@hasDecl(Plugin, "preExecute")) {
-                        if (try Plugin.preExecute(context, parsed_args)) |new_parsed| {
-                            parsed_args = new_parsed;
-                        } else {
-                            return; // Plugin cancelled execution
-                        }
-                    }
-                }
-
-                // No actual command to execute - trigger CommandNotFound so help plugin can handle it
-                var error_handled = false;
-                inline for (sorted_plugins) |Plugin| {
-                    if (@hasDecl(Plugin, "onError")) {
-                        if (!error_handled) {
-                            error_handled = try Plugin.onError(context, error.CommandNotFound);
-                        }
-                    }
-                }
-
-                if (!error_handled) {
-                    var stderr = context.stderr();
-                    try stderr.print("No command specified. Use --help for usage information.\n", .{});
-                    return error.CommandNotFound;
-                }
-                return;
+                const parsed_args = try runPostParseHooks(context, zcli.ParsedArgs.init(context.allocator));
+                _ = (try runPreExecuteHooks(context, parsed_args)) orelse return; // plugin cancelled execution
+                if (try runOnErrorHooks(context, error.CommandNotFound)) return;
+                try context.stderr().print("No command specified. Use --help for usage information.\n", .{});
+                return error.CommandNotFound;
             }
 
-            // Sort commands by path length (longest first) at compile time to ensure longest match wins
+            // Regular commands, longest path first so the longest match wins.
             const sorted_commands = comptime sortedByPathLengthDesc(cmd_entries);
-
-            // Try to find matching command (longest first due to sorting)
-            var found = false;
-            command_loop: inline for (sorted_commands) |cmd| {
-
-                // Get parts count directly from the path array
-                const parts_count: usize = cmd.path.len;
-
-                if (parts_count <= args.len) {
-                    // Check if all parts match
+            inline for (sorted_commands) |cmd| {
+                if (cmd.path.len <= args.len) {
                     var parts_match = true;
                     for (cmd.path, 0..) |part, i| {
-                        if (i >= args.len or !std.mem.eql(u8, part, args[i])) {
+                        if (!std.mem.eql(u8, part, args[i])) {
                             parts_match = false;
                             break;
                         }
                     }
-
                     if (parts_match) {
-                        const matched_command = cmd.path;
-                        // For root command, use original args (they're all options/args for root)
-                        // For other commands, skip the command parts
+                        // The root command keeps the original argv (it's all
+                        // options/positionals for root); other commands skip
+                        // their matched path parts.
                         const remaining_args = if (use_root_command and std.mem.eql(u8, cmd.path[0], "root"))
-                            args_input // Use original args for root command
+                            args_input
                         else
-                            args[parts_count..]; // Skip command parts for regular commands
-
-                        found = true;
-
-                        // Set command_path to the command parts array (already an array)
-                        var command_parts = try context.allocator.alloc([]const u8, matched_command.len);
-                        for (matched_command, 0..) |part, i| {
-                            command_parts[i] = try context.allocator.dupe(u8, part);
-                        }
-                        context.command_path = command_parts;
-
-                        // Store basic command metadata
-                        if (@hasDecl(cmd.module, "meta")) {
-                            const meta = cmd.module.meta;
-                            context.command_meta = zcli.CommandMeta{
-                                .description = if (@hasField(@TypeOf(meta), "description")) meta.description else null,
-                                .examples = if (@hasField(@TypeOf(meta), "examples")) meta.examples else null,
-                            };
-                        }
-
-                        // Extract field info at compile time and allocate for runtime use
-                        var args_field_list: []const zcli.FieldInfo = &.{};
-                        var options_field_list: []const zcli.FieldInfo = &.{};
-
-                        if (@hasDecl(cmd.module, "Args")) {
-                            const ArgsType = cmd.module.Args;
-                            const args_type_info = @typeInfo(ArgsType);
-                            if (args_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
-                                inline for (args_type_info.@"struct".fields) |field| {
-                                    const field_type_info = @typeInfo(field.type);
-                                    try field_list.append(context.allocator, zcli.FieldInfo{
-                                        .name = field.name,
-                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
-                                        .is_array = field_type_info == .pointer and field_type_info.pointer.child != u8,
-                                    });
-                                }
-                                args_field_list = try field_list.toOwnedSlice(context.allocator);
-                            }
-                        }
-
-                        if (@hasDecl(cmd.module, "Options")) {
-                            const OptionsType = cmd.module.Options;
-                            const options_type_info = @typeInfo(OptionsType);
-                            if (options_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
-                                inline for (options_type_info.@"struct".fields) |field| {
-                                    const field_type_info = @typeInfo(field.type);
-
-                                    // Extract metadata from meta.options
-                                    var short: ?u8 = null;
-                                    var description: ?[]const u8 = null;
-
-                                    // Extract from meta.options in module
-                                    if (@hasDecl(cmd.module, "meta")) {
-                                        const meta = cmd.module.meta;
-                                        if (@hasField(@TypeOf(meta), "options")) {
-                                            const options_meta = meta.options;
-                                            if (@hasField(@TypeOf(options_meta), field.name)) {
-                                                const field_meta = @field(options_meta, field.name);
-                                                if (@hasField(@TypeOf(field_meta), "short")) {
-                                                    short = field_meta.short;
-                                                }
-                                                if (@hasField(@TypeOf(field_meta), "description")) {
-                                                    description = field_meta.description;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    try field_list.append(context.allocator, zcli.FieldInfo{
-                                        .name = field.name,
-                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
-                                        .is_array = field_type_info == .pointer and field_type_info.pointer.child != u8,
-                                        .short = short,
-                                        .description = description,
-                                    });
-                                }
-                                options_field_list = try field_list.toOwnedSlice(context.allocator);
-                            }
-                        }
-
-                        // Store raw command module info for plugins to introspect
-                        context.command_module_info = zcli.CommandModuleInfo{
-                            .has_args = @hasDecl(cmd.module, "Args"),
-                            .has_options = @hasDecl(cmd.module, "Options"),
-                            .raw_meta_ptr = if (@hasDecl(cmd.module, "meta")) &cmd.module.meta else null,
-                            .args_fields = args_field_list,
-                            .options_fields = options_field_list,
-                        };
-
-                        // Run postParse hooks
-                        var parsed_args = zcli.ParsedArgs.init(context.allocator);
-                        parsed_args.positional = remaining_args;
-
-                        inline for (sorted_plugins) |Plugin| {
-                            if (@hasDecl(Plugin, "postParse")) {
-                                if (try Plugin.postParse(context, parsed_args)) |new_parsed| {
-                                    parsed_args = new_parsed;
-                                }
-                            }
-                        }
-
-                        // Run preExecute hooks
-                        inline for (sorted_plugins) |Plugin| {
-                            if (@hasDecl(Plugin, "preExecute")) {
-                                if (try Plugin.preExecute(context, parsed_args)) |new_parsed| {
-                                    parsed_args = new_parsed;
-                                } else {
-                                    return; // Plugin cancelled execution
-                                }
-                            }
-                        }
-
-                        // Execute the command
-                        var success = true;
-                        if (@hasDecl(cmd.module, "execute")) {
-                            const cli_args = parsed_args.positional;
-
-                            const ArgsType = if (@hasDecl(cmd.module, "Args")) cmd.module.Args else struct {};
-                            const OptionsType = if (@hasDecl(cmd.module, "Options")) cmd.module.Options else struct {};
-                            const cmd_meta = if (@hasDecl(cmd.module, "meta")) cmd.module.meta else null;
-
-                            // Before parsing, check if this command expects no arguments
-                            // but we have arguments that look like subcommands (not options).
-                            const args_fields = std.meta.fields(ArgsType);
-                            if (args_fields.len == 0 and remaining_args.len > 0) {
-                                if (!std.mem.startsWith(u8, remaining_args[0], "-")) {
-                                    return error.CommandNotFound;
-                                }
-                            }
-
-                            var parse_diag: ?zcli.ZcliDiagnostic = null;
-                            const parse_result = command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, cli_args, &parse_diag) catch |err| {
-                                context.diagnostic = parse_diag;
-                                var error_handled = false;
-                                inline for (sorted_plugins) |Plugin| {
-                                    if (@hasDecl(Plugin, "onError")) {
-                                        if (try Plugin.onError(context, err)) {
-                                            error_handled = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (!error_handled) {
-                                    try reportParseError(context, parse_diag);
-                                    return err;
-                                }
-                                return;
-                            };
-                            defer parse_result.deinit();
-
-                            const args_instance = parse_result.args;
-                            var options_instance = parse_result.options;
-
-                            // Apply config defaults: config overrides struct defaults,
-                            // but CLI args (already parsed) take precedence
-                            inline for (sorted_plugins) |Plugin| {
-                                if (@hasDecl(Plugin, "applyConfigDefaults")) {
-                                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance);
-                                }
-                            }
-
-                            cmd.module.execute(args_instance, options_instance, context) catch |err| {
-                                success = false;
-
-                                // Run error hooks. If a plugin handles the error
-                                // (returns true) it is suppressed — symmetric with
-                                // the CommandNotFound path — and execution falls
-                                // through to postExecute with success = false.
-                                var error_handled = false;
-                                inline for (sorted_plugins) |Plugin| {
-                                    if (@hasDecl(Plugin, "onError")) {
-                                        if (try Plugin.onError(context, err)) {
-                                            error_handled = true;
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                if (!error_handled) return err;
-                            };
-                        } else {
-                            // Command group without execute function (metadata-only)
-                            // Treat this as CommandNotFound to show help for subcommands
-                            var error_handled = false;
-                            inline for (sorted_plugins) |Plugin| {
-                                if (@hasDecl(Plugin, "onError")) {
-                                    const handled = try Plugin.onError(context, error.CommandNotFound);
-                                    if (handled) {
-                                        error_handled = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if (!error_handled) {
-                                const cmd_name_str = try std.mem.join(context.allocator, " ", matched_command);
-                                defer context.allocator.free(cmd_name_str);
-                                var stderr = context.stderr();
-                                try stderr.print("'{s}' is a command group. Use --help to see available subcommands.\n", .{cmd_name_str});
-                            }
-                            return;
-                        }
-
-                        // Run postExecute hooks
-                        inline for (sorted_plugins) |Plugin| {
-                            if (@hasDecl(Plugin, "postExecute")) {
-                                try Plugin.postExecute(context, success);
-                            }
-                        }
-
-                        break :command_loop; // Exit the loop since we found and executed the command
+                            args[cmd.path.len..];
+                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, remaining_args);
                     }
                 }
             }
 
-            // Check plugin commands (including nested)
-            // Find the longest matching command path
+            // Plugin commands: find the longest matching path, then execute it.
             var best_match_idx: ?usize = null;
             var best_match_len: usize = 0;
-
             inline for (plugin_command_entries, 0..) |plugin_cmd, idx| {
                 if (args.len >= plugin_cmd.path.len and plugin_cmd.path.len > best_match_len) {
                     var matches = true;
@@ -1463,255 +1377,20 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     }
                 }
             }
-
-            // Execute the best match if found
             if (best_match_idx) |match_idx| {
                 inline for (plugin_command_entries, 0..) |plugin_cmd, idx| {
                     if (idx == match_idx) {
-                        found = true;
-                        const plugin_remaining_args = args[plugin_cmd.path.len..];
-
-                        // Set command_path
-                        var plugin_command_array = try context.allocator.alloc([]const u8, plugin_cmd.path.len);
-                        for (plugin_cmd.path, 0..) |part, i| {
-                            plugin_command_array[i] = try context.allocator.dupe(u8, part);
-                        }
-                        context.command_path = plugin_command_array;
-
-                        // Set command metadata for help plugin (needs to be set before hooks run)
-                        const CommandModule = plugin_cmd.module;
-                        const ArgsType = if (@hasDecl(CommandModule, "Args")) CommandModule.Args else struct {};
-                        const OptionsType = if (@hasDecl(CommandModule, "Options")) CommandModule.Options else struct {};
-
-                        if (@hasDecl(CommandModule, "meta")) {
-                            const meta = CommandModule.meta;
-                            context.command_meta = zcli.CommandMeta{
-                                .description = if (@hasField(@TypeOf(meta), "description")) meta.description else null,
-                                .examples = if (@hasField(@TypeOf(meta), "examples")) meta.examples else null,
-                            };
-                        }
-
-                        // Build field lists for help generation (convert to FieldInfo)
-                        var args_field_list: []zcli.FieldInfo = &.{};
-                        if (@hasDecl(CommandModule, "Args")) {
-                            const args_type_info = @typeInfo(ArgsType);
-                            if (args_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
-                                inline for (args_type_info.@"struct".fields) |field| {
-                                    const field_type_info = @typeInfo(field.type);
-                                    try field_list.append(context.allocator, zcli.FieldInfo{
-                                        .name = field.name,
-                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
-                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
-                                        .short = null,
-                                        .description = null,
-                                    });
-                                }
-                                args_field_list = try field_list.toOwnedSlice(context.allocator);
-                            }
-                        }
-
-                        var options_field_list: []zcli.FieldInfo = &.{};
-                        if (@hasDecl(CommandModule, "Options")) {
-                            const options_type_info = @typeInfo(OptionsType);
-                            if (options_type_info == .@"struct") {
-                                var field_list = std.ArrayList(zcli.FieldInfo).empty;
-                                inline for (options_type_info.@"struct".fields) |field| {
-                                    const field_type_info = @typeInfo(field.type);
-
-                                    // Extract metadata from meta.options
-                                    var short: ?u8 = null;
-                                    var description: ?[]const u8 = null;
-
-                                    if (@hasDecl(CommandModule, "meta")) {
-                                        const meta = CommandModule.meta;
-                                        if (@hasField(@TypeOf(meta), "options")) {
-                                            const options_meta = meta.options;
-                                            if (@hasField(@TypeOf(options_meta), field.name)) {
-                                                const field_meta = @field(options_meta, field.name);
-                                                if (@hasField(@TypeOf(field_meta), "short")) {
-                                                    short = field_meta.short;
-                                                }
-                                                if (@hasField(@TypeOf(field_meta), "description")) {
-                                                    description = field_meta.description;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    try field_list.append(context.allocator, zcli.FieldInfo{
-                                        .name = field.name,
-                                        .is_optional = field_type_info == .optional or field.default_value_ptr != null,
-                                        .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
-                                        .short = short,
-                                        .description = description,
-                                    });
-                                }
-                                options_field_list = try field_list.toOwnedSlice(context.allocator);
-                            }
-                        }
-
-                        context.command_module_info = zcli.CommandModuleInfo{
-                            .has_args = @hasDecl(CommandModule, "Args"),
-                            .has_options = @hasDecl(CommandModule, "Options"),
-                            .raw_meta_ptr = if (@hasDecl(CommandModule, "meta")) &CommandModule.meta else null,
-                            .args_fields = args_field_list,
-                            .options_fields = options_field_list,
-                        };
-
-                        // Run postParse hooks
-                        var parsed_args = zcli.ParsedArgs.init(context.allocator);
-                        parsed_args.positional = plugin_remaining_args;
-
-                        inline for (sorted_plugins) |HookPlugin| {
-                            if (@hasDecl(HookPlugin, "postParse")) {
-                                if (try HookPlugin.postParse(context, parsed_args)) |new_parsed| {
-                                    parsed_args = new_parsed;
-                                }
-                            }
-                        }
-
-                        // Run preExecute hooks
-                        inline for (sorted_plugins) |HookPlugin| {
-                            if (@hasDecl(HookPlugin, "preExecute")) {
-                                if (try HookPlugin.preExecute(context, parsed_args)) |new_parsed| {
-                                    parsed_args = new_parsed;
-                                } else {
-                                    return; // Plugin cancelled execution
-                                }
-                            }
-                        }
-
-                        // Execute the plugin command
-                        var success = true;
-
-                        // Check if this command has an execute function (metadata-only groups don't)
-                        if (!@hasDecl(CommandModule, "execute")) {
-                            // This is a metadata-only group, trigger error handling for help plugin
-                            const err = zcli.ZcliError.CommandNotFound;
-
-                            // Run onError hooks (same pattern as regular execute errors)
-                            var error_handled = false;
-                            inline for (sorted_plugins) |HookPlugin| {
-                                if (@hasDecl(HookPlugin, "onError")) {
-                                    const handled = try HookPlugin.onError(context, err);
-                                    if (handled) {
-                                        error_handled = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            // Only return error if no hook handled it
-                            if (!error_handled) {
-                                return err;
-                            }
-
-                            // Error was handled, return successfully
-                            return;
-                        }
-
-                        // Parse args and options using unified parser
-                        const cmd_meta = if (@hasDecl(CommandModule, "meta")) CommandModule.meta else null;
-
-                        var parse_diag: ?zcli.ZcliDiagnostic = null;
-                        const parse_result = command_parser.parseCommandLine(
-                            ArgsType,
-                            OptionsType,
-                            cmd_meta,
-                            context.allocator,
-                            context.environ,
-                            parsed_args.positional,
-                            &parse_diag,
-                        ) catch |err| {
-                            context.diagnostic = parse_diag;
-                            var error_handled = false;
-                            inline for (sorted_plugins) |Plugin| {
-                                if (@hasDecl(Plugin, "onError")) {
-                                    if (try Plugin.onError(context, err)) {
-                                        error_handled = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!error_handled) {
-                                try reportParseError(context, parse_diag);
-                                return err;
-                            }
-                            return;
-                        };
-                        defer parse_result.deinit();
-
-                        const cmd_args = parse_result.args;
-                        var cmd_options = parse_result.options;
-
-                        // Apply config defaults for plugin commands
-                        inline for (sorted_plugins) |ConfigPlugin| {
-                            if (@hasDecl(ConfigPlugin, "applyConfigDefaults")) {
-                                ConfigPlugin.applyConfigDefaults(context, OptionsType, &cmd_options);
-                            }
-                        }
-
-                        CommandModule.execute(cmd_args, cmd_options, context) catch |err| {
-                            success = false;
-                            // Run onError hooks. A handled error (returns true) is
-                            // suppressed and falls through to postExecute with
-                            // success = false; otherwise it propagates.
-                            var error_handled = false;
-                            inline for (sorted_plugins) |HookPlugin| {
-                                if (@hasDecl(HookPlugin, "onError")) {
-                                    if (try HookPlugin.onError(context, err)) {
-                                        error_handled = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!error_handled) return err;
-                        };
-
-                        // Run postExecute hooks
-                        inline for (sorted_plugins) |HookPlugin| {
-                            if (@hasDecl(HookPlugin, "postExecute")) {
-                                try HookPlugin.postExecute(context, success);
-                            }
-                        }
-
-                        return;
+                        return executeResolvedCommand(plugin_cmd.module, .plugin, context, plugin_cmd.path, args[plugin_cmd.path.len..]);
                     }
                 }
             }
 
-            if (!found) {
-                // Set command_path to the attempted command parts for error handling
-                var attempted_command_array = try context.allocator.alloc([]const u8, args.len);
-                for (args, 0..) |arg, i| {
-                    attempted_command_array[i] = try context.allocator.dupe(u8, arg);
-                }
-                context.command_path = attempted_command_array;
-
-                // Run onError hooks for CommandNotFound
-                var error_handled = false;
-                inline for (sorted_plugins) |Plugin| {
-                    if (@hasDecl(Plugin, "onError")) {
-                        const handled = try Plugin.onError(context, error.CommandNotFound);
-                        if (handled) {
-                            error_handled = true;
-                            break; // Stop processing further error handlers
-                        }
-                    }
-                }
-
-                // If no plugin handled the error, print a basic message and return error
-                if (!error_handled) {
-                    const cmd_name = if (context.command_path.len > 0) context.command_path[0] else "unknown";
-                    var stderr = context.stderr();
-                    try stderr.print("command {s} not found\n", .{cmd_name});
-                    return error.CommandNotFound;
-                }
-
-                // Plugin handled the error, so we don't return an error
-                return;
-            }
+            // Nothing matched. Record the attempted path and route through
+            // CommandNotFound (the help plugin suggests near-misses).
+            try setCommandPath(context, args);
+            if (try runOnErrorHooks(context, error.CommandNotFound)) return;
+            try context.stderr().print("command {s} not found\n", .{args[0]});
+            return error.CommandNotFound;
         }
 
         // Testing/introspection methods for the test suite
@@ -2449,6 +2128,128 @@ test "error handling: plugin returns true prevents error propagation" {
     // Plugin should have handled the error
     try testing.expect(TestHelpPlugin.command_found_error);
     try testing.expect(TestHelpPlugin.help_shown);
+}
+
+// ============================================================================
+// Execution-path semantics (guard the executeResolvedCommand refactor):
+// metadata-only groups, and error/postExecute dispatch.
+// ============================================================================
+
+const MetadataOnlyGroup = struct {
+    pub const meta = .{
+        .description = "A command group registered without an execute function",
+    };
+};
+
+test "metadata-only group without a handling plugin reports CommandNotFound" {
+    const TestApp = Registry.init(.{
+        .app_name = "test",
+        .app_version = "1.0.0",
+        .app_description = "test",
+    })
+        .register("group", MetadataOnlyGroup)
+        .build();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    // No plugin handles CommandNotFound: the group message is printed (stderr
+    // noise below is expected) and the error propagates — invoking a bare
+    // group is not a success.
+    try testing.expectError(
+        error.CommandNotFound,
+        app.execute(testing.allocator, std.testing.io, &test_environ, &.{"group"}),
+    );
+}
+
+test "metadata-only group routes through onError so the help plugin can render it" {
+    const TestApp = Registry.init(.{
+        .app_name = "test",
+        .app_version = "1.0.0",
+        .app_description = "test",
+    })
+        .register("group", MetadataOnlyGroup)
+        .registerPlugin(TestHelpPlugin)
+        .build();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    TestHelpPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"group"});
+    try testing.expect(TestHelpPlugin.command_found_error);
+}
+
+const OkCommand = struct {
+    pub const Args = zcli.NoArgs;
+    pub const Options = zcli.NoOptions;
+    pub fn execute(_: Args, _: Options, context: anytype) !void {
+        _ = context;
+    }
+};
+
+const FailingCommand = struct {
+    pub const Args = zcli.NoArgs;
+    pub const Options = zcli.NoOptions;
+    pub fn execute(_: Args, _: Options, context: anytype) !void {
+        _ = context;
+        return error.Boom;
+    }
+};
+
+const PostExecuteCapturePlugin = struct {
+    var post_execute_success: ?bool = null;
+    var seen_error: ?anyerror = null;
+
+    pub fn reset() void {
+        post_execute_success = null;
+        seen_error = null;
+    }
+
+    pub fn onError(context: anytype, err: anyerror) !bool {
+        _ = context;
+        seen_error = err;
+        return err == error.Boom; // handle command failures, not routing errors
+    }
+
+    pub fn postExecute(context: anytype, success: bool) !void {
+        _ = context;
+        post_execute_success = success;
+    }
+};
+
+fn createPostExecuteTestRegistry() type {
+    return Registry.init(.{
+        .app_name = "test",
+        .app_version = "1.0.0",
+        .app_description = "test",
+    })
+        .register("ok", OkCommand)
+        .register("fail", FailingCommand)
+        .registerPlugin(PostExecuteCapturePlugin)
+        .build();
+}
+
+test "successful execution reaches postExecute with success=true" {
+    const TestApp = createPostExecuteTestRegistry();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    PostExecuteCapturePlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"ok"});
+    try testing.expectEqual(@as(?bool, true), PostExecuteCapturePlugin.post_execute_success);
+    try testing.expectEqual(@as(?anyerror, null), PostExecuteCapturePlugin.seen_error);
+}
+
+test "handled execution error is suppressed and reaches postExecute with success=false" {
+    const TestApp = createPostExecuteTestRegistry();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    PostExecuteCapturePlugin.reset();
+    // onError handles error.Boom, so execute() must not propagate it — but
+    // postExecute still observes the failure.
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"fail"});
+    try testing.expectEqual(@as(?anyerror, error.Boom), PostExecuteCapturePlugin.seen_error);
+    try testing.expectEqual(@as(?bool, false), PostExecuteCapturePlugin.post_execute_success);
 }
 
 test "comptimeJoinPath joins components with spaces" {
