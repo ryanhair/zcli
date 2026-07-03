@@ -73,6 +73,24 @@ pub fn build(b: *std.Build) void {
     zcli_module.addImport("zinput", zinput_module);
     zcli_module.addImport("serde", serde_dep.module("serde"));
 
+    // Expose the unit-testing tier (packages/testing — `runCommand`, assertions)
+    // from the zcli dependency, so scaffolded projects can unit-test their
+    // commands with no extra dependency (see `zcli.addCommandTests`). Lazy: costs
+    // nothing unless a consumer imports it. Needs zcli + vterm (VTerm assertions).
+    const vterm_module = b.addModule("vterm", .{
+        .root_source_file = b.path("packages/vterm/src/vterm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    vterm_module.addImport("DisplayWidth", zg_dep.module("DisplayWidth"));
+    const zcli_testing_module = b.addModule("zcli_testing", .{
+        .root_source_file = b.path("packages/testing/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zcli_testing_module.addImport("zcli", zcli_module);
+    zcli_testing_module.addImport("vterm", vterm_module);
+
     // Define the project directories that have tests
     const ProjectInfo = struct {
         name: []const u8,
@@ -176,6 +194,7 @@ pub fn build(b: *std.Build) void {
 // they're importing this root build.zig from the tarball/git archive.
 pub const generate = @import("packages/core/build.zig").generate;
 pub const generateDocs = @import("packages/core/build.zig").generateDocs;
+pub const addCommandTests = @import("packages/core/build.zig").addCommandTests;
 pub const PluginConfig = @import("packages/core/build.zig").PluginConfig;
 pub const Builtin = @import("packages/core/build.zig").Builtin;
 pub const builtin = @import("packages/core/build.zig").builtin;

@@ -828,7 +828,31 @@ fn generateSource(
     try writeExamplePath(w, parts);
     try w.writeAll("\\n\", .{});\n}\n");
 
+    // Co-located unit test — runs under `zig build test` (init wires the step).
+    try writeTestBlock(w, parts);
+
     return aw.written();
+}
+
+/// Emit a co-located placeholder `test` block — a starting point the author
+/// fleshes out. It always compiles and passes; the comment shows the
+/// `zcli-testing` runCommand pattern for a real assertion. `zig build test`
+/// (wired by `zcli.addCommandTests`) discovers and runs it.
+fn writeTestBlock(w: *std.Io.Writer, parts: []const []const u8) !void {
+    try w.writeAll("\ntest \"");
+    try writeExamplePath(w, parts);
+    try w.writeAll(
+        \\" {
+        \\    // Scaffolded smoke test — replace with real assertions. Example:
+        \\    //   const zcli_testing = @import("zcli-testing");
+        \\    //   var r = try zcli_testing.runCommand(@This(), &.{}, .{});
+        \\    //   defer r.deinit();
+        \\    //   try std.testing.expect(r.success);
+        \\    // For a command with arguments, pass them via the config's args field.
+        \\    _ = @This();
+        \\}
+        \\
+    );
 }
 
 fn writeExample(w: *std.Io.Writer, parts: []const []const u8, args_list: []const ArgSpec) !void {
@@ -1180,6 +1204,11 @@ test "generateSource: empty command is the minimal skeleton" {
     try expectContains(src, "\"ping\"");
     try expectContains(src, "TODO: Implement ping");
     try testing.expect(std.mem.indexOf(u8, src, ".args = .{") == null);
+    // A co-located placeholder test is scaffolded alongside the command; it
+    // always compiles and passes, and `zig build test` discovers it.
+    try expectContains(src, "test \"ping\" {");
+    try expectContains(src, "_ = @This();");
+    try expectContains(src, "runCommand(@This()"); // the example pattern in the comment
 }
 
 test "generateSource: multiple is independent of element type" {

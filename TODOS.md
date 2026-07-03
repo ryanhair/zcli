@@ -24,10 +24,13 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   `aliases`/`hidden` scaffolded alongside `examples`); hint when it births an undescribed
   group (ADR-0005/0007). The co-located unit-test stub (Q7) was split out below — it needs a
   `test` step wired into `init`'s generated build.zig to actually run, so it earns its own PR.
-- [ ] **PR: generated-project testing story (Q7)** — co-located unit-test stub from
-  `add command`, PLUS a `test` step in `init`'s generated build.zig that discovers command
-  files and compiles each as a test module (mirrors the meta-CLI's `command_test_files` loop +
-  a `command_registry` Context stub). Without the build wiring the stub never runs.
+- [x] **PR: generated-project testing story (Q7)** — DONE. `zcli add command` scaffolds a
+  co-located, schema-robust `runCommand` test (a `hasRequiredArgs` comptime guard makes it
+  auto-run while args are optional and compile away once `add arg` adds a required one).
+  `init`'s build.zig calls the new `zcli.addCommandTests` helper, which discovers command files
+  and compiles each as a test module against a `command_registry` stub (`Context =
+  zcli.TestContext(&.{})`) + the unit-testing tier. That tier is now exposed FROM the zcli
+  dependency (root build.zig `zcli_testing` module), so scaffolded projects need no extra dep.
 - [x] **PR: `add option` + splice engine** (ADR-0005) — DONE. The centerpiece's first half.
   New `scaffold` shared module: `spec` (the arg/option model + rendering/type/name/path
   helpers, extracted from `add command` as the single source of truth) and `splice` (the

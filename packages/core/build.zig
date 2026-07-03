@@ -309,3 +309,4 @@ pub const CommandModuleConfig = types.CommandModuleConfig;
 pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
 pub const generate = main.generate;
 pub const generateDocs = main.generateDocs;
+pub const addCommandTests = @import("src/build_utils/command_tests.zig").addCommandTests;
