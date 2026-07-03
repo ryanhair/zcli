@@ -160,6 +160,14 @@ jobs:
         with:
           version: 0.16.0
 
+      # The `ghauth` example opts into zcli_secrets, whose Linux backend links
+      # libsecret at build time (ADR-0003). Compiling the examples therefore
+      # needs the dev headers on Linux; macOS/Windows keychains link nothing.
+      - name: Install Secret Service deps (for the ghauth example)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsecret-1-dev libglib2.0-dev
+
       # The canonical example CLIs are the idiom source AND the drift-detector
       # (ADR-0004): compiling them here means a framework change that breaks the
       # documented idioms fails CI, rather than silently rotting the examples

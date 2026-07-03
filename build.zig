@@ -116,6 +116,7 @@ pub fn build(b: *std.Build) void {
     const example_projects = [_]ProjectInfo{
         .{ .name = "showcase", .path = "examples/showcase" },
         .{ .name = "repostat", .path = "examples/repostat" },
+        .{ .name = "ghauth", .path = "examples/ghauth" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 
