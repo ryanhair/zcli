@@ -28,6 +28,25 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Canonical example sources embedded into `zcli guide` (ADR-0004/0008). Each
+    // anonymous import binds a `@embedFile` name in guide_examples.zig to a real
+    // CI-compiled example file — the guide shows compiled truth, and the build
+    // grants the cross-package embed a bare relative path can't reach.
+    const guide_examples_module = b.addModule("guide_examples", .{
+        .root_source_file = b.path("src/guide_examples.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    guide_examples_module.addAnonymousImport("repostat/repo.zig", .{
+        .root_source_file = b.path("../../examples/repostat/src/commands/repo.zig"),
+    });
+    guide_examples_module.addAnonymousImport("ghauth/login.zig", .{
+        .root_source_file = b.path("../../examples/ghauth/src/commands/login.zig"),
+    });
+    guide_examples_module.addAnonymousImport("ghauth/whoami.zig", .{
+        .root_source_file = b.path("../../examples/ghauth/src/commands/whoami.zig"),
+    });
+
     // Create the executable
     const exe = b.addExecutable(.{
         .name = "zcli",
@@ -61,6 +80,7 @@ pub fn build(b: *std.Build) void {
         .shared_modules = &[_]zcli.SharedModule{
             .{ .name = "nightwatch", .module = nightwatch_module },
             .{ .name = "scaffold", .module = scaffold_module },
+            .{ .name = "guide_examples", .module = guide_examples_module },
         },
     });
 

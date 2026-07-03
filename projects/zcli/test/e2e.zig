@@ -394,6 +394,41 @@ test "tree stays compact without --show-options" {
     try std.testing.expect(std.mem.indexOf(u8, r.stdout, "aliases=") == null);
 }
 
+test "guide lists topics and embeds the canonical example source" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // The overview lists topics.
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "guide" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "Topics (zcli guide <topic>)");
+        try expectContains(r.stdout, "http");
+        try expectContains(r.stdout, "secrets");
+    }
+
+    // A topic embeds the *actual* compiled example source (ADR-0008): its
+    // presence proves the build-wired cross-package @embedFile reached the
+    // binary. `zcli.http.Client` is a line from examples/repostat/.../repo.zig.
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "guide", "http" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "zcli.http.Client.init");
+        try expectContains(r.stdout, "https://api.github.com/repos/");
+    }
+
+    // An unknown topic fails (non-zero) with the topic list, no stack trace.
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "guide", "nope" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "Unknown guide topic");
+        try std.testing.expect(std.mem.indexOf(u8, r.stderr, "error: UnknownTopic") == null);
+    }
+}
+
 // ============================================================================
 // release — dry run must not mutate git
 // ============================================================================
