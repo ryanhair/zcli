@@ -74,13 +74,19 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   static-musl portability.
 
 **Phase 4 — Context layer (leg 3)** — depends on Phases 2–3 existing
-- [ ] **PR: Canonical example CLIs + CI compile** (ADR-0004) — first-class maintained
-  artifacts; the idiom source and drift-detector. Demonstrate the primitives above.
-- [ ] **PR: `zcli guide`** (ADR-0008) — topic-based; `@embedFile`s the canonical examples
-  from the pinned version. Depends on the examples PR.
-- [ ] **PR: `AGENTS.md` scaffold + `init` append** (ADR-0008) — thin frozen spine (six
-  invariants, speaks commands); marker-delimited, never clobbers. Capstone: it advertises
-  the whole surface, so it lands last.
+- [x] **PR: Canonical example CLIs + CI compile** (ADR-0004) — DONE (#66, #73). `examples/`
+  compiled by the CI `examples` job (drift-detector); `repostat` (zcli.http idiom) and
+  `ghauth` (zcli_secrets + auth idiom) alongside the existing `showcase`.
+- [x] **PR: `zcli guide`** (ADR-0008) — DONE (#74). Topic-based (`structure`/`arena`/`output`/
+  `prompts`/`http`/`secrets`/`plugins`/`testing`); the http/secrets topics `@embedFile` the
+  real CI-compiled canonical examples (wired via a `guide_examples` module + `addAnonymousImport`,
+  since a bare cross-package relative `@embedFile` is rejected).
+- [x] **PR: `AGENTS.md` scaffold + `init` append** (ADR-0008) — DONE. Thin, command-speaking,
+  marker-delimited spine (six invariants + the loop + a `zcli guide` pointer). `init` creates it,
+  or appends/refreshes the `<!-- zcli:begin/end -->` block on a pre-existing AGENTS.md without
+  clobbering user content (the empty-dir check now allows a stray AGENTS.md).
+
+**The AI-authored-CLI roadmap (Phases 1–4) is complete.**
 
 **Critical path:** `add command` → `add option/arg` → `rm option/arg` (the splice family),
 then the context tail `examples → guide → AGENTS.md`. **Parallelizable early:** enriched

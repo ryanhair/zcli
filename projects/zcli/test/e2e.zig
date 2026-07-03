@@ -152,6 +152,13 @@ test "init scaffolds a project with the expected files and wiring" {
 
     const hello = try readFile(proj, a, "src/commands/hello.zig");
     try expectContains(hello, "pub fn execute(");
+
+    // The AGENTS.md spine (ADR-0008): thin, command-speaking, points at the guide.
+    const agents = try readFile(proj, a, "AGENTS.md");
+    try expectContains(agents, "<!-- zcli:begin -->");
+    try expectContains(agents, "<!-- zcli:end -->");
+    try expectContains(agents, "zcli guide");
+    try expectContains(agents, "per-command arena");
 }
 
 test "init . scaffolds into the current directory" {
@@ -164,6 +171,29 @@ test "init . scaffolds into the current directory" {
 
     try testing.expect(fileExists(tmp.dir, "build.zig"));
     try testing.expect(fileExists(tmp.dir, "src/commands/hello.zig"));
+}
+
+test "init . appends to a pre-existing AGENTS.md instead of refusing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A directory whose only visible file is the user's own AGENTS.md — init
+    // treats it as appendable, not a conflict (ADR-0008).
+    try tmp.dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "# House rules\n\nRun the linter.\n" });
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "." });
+    defer r.deinit();
+    try expectOk(r);
+    try testing.expect(fileExists(tmp.dir, "build.zig"));
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const agents = try readFile(tmp.dir, arena.allocator(), "AGENTS.md");
+    try expectContains(agents, "# House rules"); // user content preserved
+    try expectContains(agents, "Run the linter.");
+    try expectContains(agents, "<!-- zcli:begin -->"); // zcli section appended
+    try std.testing.expect(std.mem.indexOf(u8, agents, "# House rules").? <
+        std.mem.indexOf(u8, agents, "<!-- zcli:begin -->").?); // user content first
 }
 
 test "add command creates stubs at the right paths" {
