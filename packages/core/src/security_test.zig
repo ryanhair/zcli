@@ -3,7 +3,7 @@ const testing = std.testing;
 const zcli = @import("zcli.zig");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
-const error_handler = @import("errors.zig");
+const levenshtein = @import("plugins/zcli_not_found/levenshtein.zig");
 
 // ============================================================================
 // Security Test Framework - Corrected Version
@@ -281,7 +281,7 @@ test "security: resource exhaustion - processing time limits" {
     defer freeSimilarStrings(allocator, similar_commands);
 
     // Test command suggestion with typo
-    const suggestions = error_handler.findSimilarCommands("commnd", similar_commands, allocator) catch |err| switch (err) {
+    const suggestions = levenshtein.findSimilarCommands("commnd", similar_commands, allocator) catch |err| switch (err) {
         error.OutOfMemory => {
             // Acceptable - ran out of memory during suggestion generation
             return;
