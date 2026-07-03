@@ -2,7 +2,6 @@ const std = @import("std");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
 const command_parser = @import("command_parser.zig");
-const error_handler = @import("errors.zig");
 pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
