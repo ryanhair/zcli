@@ -89,8 +89,7 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
             },
             .backspace => {
                 if (buf.items.len > 0) {
-                    _ = buf.pop();
-                    try writer.writeAll("\x08 \x08"); // move back, erase, move back
+                    try zinput.eraseTrailingGrapheme(writer, &buf);
                     if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
                 }
             },
@@ -101,8 +100,7 @@ pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, conf
                 }
             },
             .char => |c| {
-                try buf.append(allocator, c);
-                try writer.print("{c}", .{c});
+                try writer.writeAll(try zinput.appendCodepoint(allocator, &buf, c));
                 if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
             },
             else => {},

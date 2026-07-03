@@ -37,7 +37,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 - [x] 22. **`IO` two-phase init pointer-stability trap** — `finalize()` wires writers to in-struct buffers; any copy after finalize dangles (`zcli.zig:344-391`). Restructure to prevent misuse (heap/pin, or factory that returns a pointer).
 - [x] 23. **parseCommandLine leak on error path** — frees only the slice, not parsed option arrays, when `parseArgs` fails outside an arena (`command_parser.zig:128-132`); plus muddled belt-and-suspenders frees of arena memory in `Context.deinit`.
 - [x] 24. **errors.zig fossils** — discarded `allocator` params kept "for API compatibility" (`errors.zig:11`, `:33`, `:97`) contrary to the no-backward-compat rule; doc references a nonexistent "zcli-suggestions plugin"; `editDistance` silently caps at 62 chars with a 32KB stack matrix.
-- [ ] 25. **zinput text input is byte-oriented** — `char: u8` echo/backspace per byte breaks multibyte UTF-8 (`packages/zinput/src/text.zig`), inconsistent with the grapheme-aware wrapping elsewhere in the stack.
+- [x] 25. **zinput text input is byte-oriented** *(fixed at the source: `terminal.Key.char` is now a `u21` codepoint — `readKey` assembles UTF-8, invalid input decodes to U+FFFD; backspace in text/password/search deletes one grapheme cluster and erases its true display width)* — `char: u8` echo/backspace per byte breaks multibyte UTF-8 (`packages/zinput/src/text.zig`), inconsistent with the grapheme-aware wrapping elsewhere in the stack.
 
 ## Structure / dead code
 

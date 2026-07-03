@@ -47,8 +47,8 @@ pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, 
             },
             .backspace => {
                 if (buf.items.len > 0) {
-                    _ = buf.pop();
-                    try renderMask(writer, config, buf.items.len);
+                    zinput.popTrailingGrapheme(&buf);
+                    try renderMask(writer, config, terminal.graphemeCount(buf.items));
                 }
             },
             .ctrl => |c| {
@@ -58,8 +58,9 @@ pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, 
                 }
             },
             .char => |c| {
-                try buf.append(allocator, c);
-                try renderMask(writer, config, buf.items.len);
+                // One mask glyph per typed character, not per UTF-8 byte.
+                _ = try zinput.appendCodepoint(allocator, &buf, c);
+                try renderMask(writer, config, terminal.graphemeCount(buf.items));
             },
             else => {},
         }

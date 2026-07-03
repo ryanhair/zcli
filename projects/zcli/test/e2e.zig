@@ -993,6 +993,53 @@ test "interactive: add command drives the wizard and echoes typed input" {
     try testing.expect(fileExists(tmp.dir, "src/commands/deploy.zig"));
 }
 
+test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
+    if (builtin.os.tag == .windows) return;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProjectDirs(tmp.dir);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpDirAbs(arena.allocator(), tmp);
+
+    // Description keystrokes: C a f é <backspace> e <enter>. The backspace lands
+    // on the 2-byte é — a grapheme-aware editor deletes it whole, leaving "Cafe";
+    // the old byte-oriented one popped a single byte, leaving invalid UTF-8
+    // ("Caf\xC3" + "e") in the generated file. See the wizard test above for the
+    // settle-delay rationale.
+    const settle_ms = 400;
+    var script = harness.InteractiveScript.init(testing.allocator);
+    defer script.deinit();
+    _ = script
+        .expect("Command path:").delay(settle_ms).send("greet")
+        .expect("Description:").delay(settle_ms).sendRaw("Caf\xc3\xa9\x7fe\r")
+        .expect("Add a positional argument?").delay(settle_ms).sendRaw("n")
+        .expect("Add an option?").delay(settle_ms).sendRaw("n")
+        .expect("What next?").delay(settle_ms).sendRaw("\r");
+
+    var result = harness.runInteractive(
+        testing.allocator,
+        io,
+        &.{ zcli_exe, "add", "command" },
+        script,
+        .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
+    ) catch |err| {
+        // PTY allocation can be denied in some sandboxes; don't fail the suite.
+        std.debug.print("runInteractive unavailable: {any}\n", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    // The é was echoed as a whole character while it was typed.
+    try expectContains(result.output, "Café");
+
+    try testing.expect(result.exit_code == 0);
+    const generated = try readFile(tmp.dir, arena.allocator(), "src/commands/greet.zig");
+    try expectContains(generated, ".description = \"Cafe\"");
+}
+
 test "interactive: init's plugin multi-select toggles an opt-in plugin" {
     if (builtin.os.tag == .windows) return;
 

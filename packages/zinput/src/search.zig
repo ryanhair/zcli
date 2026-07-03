@@ -80,7 +80,7 @@ pub fn search(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
                 },
                 .backspace => {
                     if (query.items.len > 0) {
-                        _ = query.pop();
+                        zinput.popTrailingGrapheme(&query);
                         allocator.free(filtered);
                         filtered = try buildFiltered(allocator, config.choices, query.items);
                         cursor = 0;
@@ -95,7 +95,7 @@ pub fn search(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
                     }
                 },
                 .char => |c| {
-                    try query.append(allocator, c);
+                    _ = try zinput.appendCodepoint(allocator, &query, c);
                     allocator.free(filtered);
                     filtered = try buildFiltered(allocator, config.choices, query.items);
                     cursor = 0;
