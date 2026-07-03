@@ -18,7 +18,7 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
 
     // Verify we're in a zcli project
     const cwd = std.Io.Dir.cwd();
-    const io = context.io.io;
+    const io = context.io;
     cwd.access(io, "src/commands", .{}) catch {
         try stderr.print("Error: Not in a zcli project directory\n", .{});
         try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});

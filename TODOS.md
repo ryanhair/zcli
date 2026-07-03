@@ -66,9 +66,12 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
   tests/`execute` travel with the file. Leaf-only: moving/removing a whole group errors clearly.
 
 **Phase 3 — Primitives that shrink the freeform surface** (parallelizable with Phase 2)
-- [ ] **PR: HTTP client with safe defaults** (ADR-0002/0003) — core; TLS-verified, timeouts.
-- [ ] **PR: `zcli_secrets` opt-in plugin** (ADR-0003) — credential storage only (not auth
-  flows); keychain-backed with fallback; opt-in to preserve static-musl portability.
+- [x] **PR: HTTP client with safe defaults** (ADR-0002/0003) — DONE (#36). Core `zcli.http`
+  over `std.http.Client`; TLS-verified, timeouts, bounded body; strips credential headers on
+  cross-origin redirects (#45).
+- [x] **PR: `zcli_secrets` opt-in plugin** (ADR-0003) — DONE (#39). Credential storage only
+  (not auth flows); OS keychains (macOS/Linux/Windows), no fallback; opt-in to preserve
+  static-musl portability.
 
 **Phase 4 — Context layer (leg 3)** — depends on Phases 2–3 existing
 - [ ] **PR: Canonical example CLIs + CI compile** (ADR-0004) — first-class maintained
@@ -114,7 +117,7 @@ then the context tail `examples → guide → AGENTS.md`. **Parallelizable early
 - **What:** The `testing` package was zero-dependency until the 2026-06-01 unit-tier move
   (commit `703fd69`). It now depends on `core` + `vterm` (and transitively on serde and core's
   whole sibling tree) solely because the **unit tier** (`testing.unit` / `runCommand`) needs
-  `zcli.IO`/`TestContext` + vterm. The **integration** and **E2E** tiers need none of that.
+  `zcli.Stdio`/`TestContext` + vterm. The **integration** and **E2E** tiers need none of that.
   Consider splitting the unit tier into its own sub-module/package so consumers who only write
   subprocess/PTY tests don't pull the entire framework + a remote serde dep into their test build.
 - **Why deferred:** Acceptable trade-off for putting the unit tier in its natural home; not worth

@@ -32,7 +32,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const io = context.io.io;
+    const io = context.io;
     const stderr = context.stderr();
     const cwd = std.Io.Dir.cwd();
 

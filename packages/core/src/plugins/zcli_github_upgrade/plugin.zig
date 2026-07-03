@@ -176,7 +176,7 @@ pub fn init(config: Config) type {
             const target_version = if (args.version) |v|
                 try allocator.dupe(u8, v)
             else
-                try fetchLatestVersion(allocator, context.io.io, plugin_config.repo, context.app_name, api_timeout);
+                try fetchLatestVersion(allocator, context.io, plugin_config.repo, context.app_name, api_timeout);
             defer allocator.free(target_version);
 
             if (options.check) {
@@ -235,43 +235,43 @@ pub fn init(config: Config) type {
             // also keeps the download on the filesystem the final swap
             // happens on, and fails fast when the install dir isn't writable.
             var exe_path_buf: [4096]u8 = undefined;
-            const exe_len = try std.process.executablePath(context.io.io, &exe_path_buf);
+            const exe_len = try std.process.executablePath(context.io, &exe_path_buf);
             const exe_path = exe_path_buf[0..exe_len];
             const exe_dir_path = std.fs.path.dirname(exe_path) orelse return error.InvalidExecutablePath;
 
-            var exe_dir = try std.Io.Dir.cwd().openDir(context.io.io, exe_dir_path, .{});
-            defer exe_dir.close(context.io.io);
+            var exe_dir = try std.Io.Dir.cwd().openDir(context.io, exe_dir_path, .{});
+            defer exe_dir.close(context.io);
 
             var scratch_name_buf: [scratch_name_len]u8 = undefined;
-            const scratch_name = randomScratchName(context.io.io, &scratch_name_buf);
-            try exe_dir.createDir(context.io.io, scratch_name, scratch_dir_permissions);
-            defer exe_dir.deleteTree(context.io.io, scratch_name) catch {};
-            var scratch_dir = try exe_dir.openDir(context.io.io, scratch_name, .{});
-            defer scratch_dir.close(context.io.io);
+            const scratch_name = randomScratchName(context.io, &scratch_name_buf);
+            try exe_dir.createDir(context.io, scratch_name, scratch_dir_permissions);
+            defer exe_dir.deleteTree(context.io, scratch_name) catch {};
+            var scratch_dir = try exe_dir.openDir(context.io, scratch_name, .{});
+            defer scratch_dir.close(context.io);
 
             // Download binary
             try stdout.print("Downloading {s}...\n", .{binary_name});
-            try downloadBinary(allocator, context.io.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
+            try downloadBinary(allocator, context.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
 
             // Verify checksum
             try stdout.print("Verifying checksum...\n", .{});
-            try verifyChecksum(allocator, context.io.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
+            try verifyChecksum(allocator, context.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
 
             // Make binary executable before testing (Unix only - Windows uses .exe extension)
             if (builtin.os.tag != .windows) {
-                const temp_file = try scratch_dir.openFile(context.io.io, binary_name, .{});
-                defer temp_file.close(context.io.io);
-                try temp_file.setPermissions(context.io.io, .executable_file);
+                const temp_file = try scratch_dir.openFile(context.io, binary_name, .{});
+                defer temp_file.close(context.io);
+                try temp_file.setPermissions(context.io, .executable_file);
             }
 
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
-            try testBinary(allocator, context.io.io, scratch_dir, binary_name);
+            try testBinary(allocator, context.io, scratch_dir, binary_name);
 
             // Replace current binary
             try stdout.print("Installing new version...\n", .{});
             std.debug.print("Replacing binary at: {s}\n", .{exe_path});
-            try replaceBinaryAt(allocator, context.io.io, scratch_dir, binary_name, exe_path);
+            try replaceBinaryAt(allocator, context.io, scratch_dir, binary_name, exe_path);
 
             const action = if (is_downgrade) "downgraded" else "upgraded";
             try stdout.print("✓ Successfully {s} to {s}\n", .{ action, target_version });
@@ -285,7 +285,7 @@ pub fn init(config: Config) type {
             }
 
             const allocator = context.allocator;
-            const io = context.io.io;
+            const io = context.io;
             const stderr = context.stderr();
 
             // Rate limit: at most one probe per startup_check_interval_s,

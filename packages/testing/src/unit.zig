@@ -69,10 +69,10 @@ pub fn runCommand(
     var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer stderr_aw.deinit();
 
-    // Create IO with overrides for capturing
-    var io = zcli.IO.init(std.testing.io);
-    io.stdout_override = &stdout_aw.writer;
-    io.stderr_override = &stderr_aw.writer;
+    // Create the standard-stream holder with overrides for capturing
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.stdout_override = &stdout_aw.writer;
+    stdio.stderr_override = &stderr_aw.writer;
 
     // Arena-per-command allocator: mirror the runtime (Registry.execute) so a
     // command written to never free is leak-free under unit tests too, not just
@@ -87,7 +87,8 @@ pub fn runCommand(
     const Ctx = zcli.TestContext(plugins);
     var context = Ctx{
         .allocator = arena.allocator(),
-        .io = &io,
+        .io = std.testing.io,
+        .stdio = &stdio,
     };
     defer context.deinit();
 

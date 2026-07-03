@@ -57,7 +57,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const use_current_dir = std.mem.eql(u8, args.name, ".");
 
     // Get the project name
-    const io = context.io.io;
+    const io = context.io;
     const project_name = if (use_current_dir) blk: {
         // Get current directory name
         var buf: [4096]u8 = undefined;

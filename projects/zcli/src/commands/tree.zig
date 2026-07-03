@@ -34,7 +34,7 @@ const max_source_bytes = 1024 * 1024;
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     _ = args;
 
-    const io = context.io.io;
+    const io = context.io;
     const commands_dir = "src/commands";
 
     // One handle, used both to scan (discovery) and to read each command's

@@ -30,7 +30,7 @@ const debounce_ms = 80;
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     _ = options;
 
-    const io = context.io.io;
+    const io = context.io;
     const gpa = context.allocator;
     // Status/framing goes to stderr so it never competes with a redirected
     // stdout (e.g. `zcli dev > log`) or the build child's inherited stdout.

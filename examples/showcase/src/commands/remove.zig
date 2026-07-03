@@ -17,7 +17,7 @@ pub const Options = struct {};
 
 pub fn execute(args: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator, context.io.io);
+    var parsed = try store.load(allocator, context.io);
     defer parsed.deinit();
     var data = parsed.value;
 
@@ -49,7 +49,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         if (t.id != args.id) try remaining.append(allocator, t);
     }
     data.tasks = remaining.items;
-    try store.save(allocator, context.io.io, data);
+    try store.save(allocator, context.io, data);
 
     try ztheme.theme("✖").err().render(context.stdout(), &context.theme);
     try context.stdout().print(" Removed task #{d}\n", .{args.id});

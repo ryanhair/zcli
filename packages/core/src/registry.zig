@@ -365,7 +365,11 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
 
     return struct {
         allocator: std.mem.Allocator,
-        io: *zcli.IO,
+        /// The framework's `std.Io` instance — the entry point for all explicit I/O.
+        io: std.Io,
+        /// Standard-stream holder backing `stdout()`/`stderr()`/`stdin()`. Internal:
+        /// command and plugin code should use those accessors and `io`, not this.
+        stdio: *zcli.Stdio,
         environ: *const std.process.Environ.Map,
         theme: zcli.ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
 
@@ -395,13 +399,14 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
 
         const Self = @This();
 
-        /// Initialize a new Context with the provided IO and environment.
-        pub fn init(allocator: std.mem.Allocator, io_struct: *zcli.IO, env: *const std.process.Environ.Map) Self {
+        /// Initialize a new Context with the provided io, standard streams, and environment.
+        pub fn init(allocator: std.mem.Allocator, io: std.Io, stdio: *zcli.Stdio, env: *const std.process.Environ.Map) Self {
             return .{
                 .allocator = allocator,
-                .io = io_struct,
+                .io = io,
+                .stdio = stdio,
                 .environ = env,
-                .theme = zcli.ztheme.Theme.init(env, io_struct.io),
+                .theme = zcli.ztheme.Theme.init(env, io),
             };
         }
 
@@ -436,15 +441,15 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
 
         // I/O convenience methods
         pub fn stdout(self: *Self) *std.Io.Writer {
-            return self.io.stdout();
+            return self.stdio.stdout();
         }
 
         pub fn stderr(self: *Self) *std.Io.Writer {
-            return self.io.stderr();
+            return self.stdio.stderr();
         }
 
         pub fn stdin(self: *Self) *std.Io.Reader {
-            return self.io.stdin();
+            return self.stdio.stdin();
         }
 
         /// Get command description by path (for plugins)
@@ -480,7 +485,7 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
         /// first — std.process.exit alone silently drops anything printed
         /// just before the call.
         pub fn exit(self: *Self, code: u8) noreturn {
-            self.io.flush();
+            self.stdio.flush();
             std.process.exit(code);
         }
     };
@@ -886,10 +891,10 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
 
             const plugin_command_info_list = command_info;
 
-            // Create IO and finalize before passing to Context
-            var zcli_io = zcli.IO.init(io);
-            zcli_io.finalize();
-            defer zcli_io.flush();
+            // Create the standard-stream holder and finalize before passing to Context
+            var stdio = zcli.Stdio.init(io);
+            stdio.finalize();
+            defer stdio.flush();
 
             // Arena-per-command allocator: everything the command and framework
             // bookkeeping allocate during this invocation lives in the arena and is
@@ -901,7 +906,8 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             // Use the computed Context type which includes type-safe plugin data
             var context = Context{
                 .allocator = arena.allocator(),
-                .io = &zcli_io,
+                .io = io,
+                .stdio = &stdio,
                 .environ = environ,
                 .theme = zcli.ztheme.Theme.init(environ, io),
                 .available_commands = available_commands,

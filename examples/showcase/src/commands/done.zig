@@ -15,14 +15,14 @@ pub const Options = struct {};
 
 pub fn execute(args: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator, context.io.io);
+    var parsed = try store.load(allocator, context.io);
     defer parsed.deinit();
     const data = parsed.value;
 
     for (data.tasks) |*task| {
         if (task.id == args.id) {
             task.status = .done;
-            try store.save(allocator, context.io.io, data);
+            try store.save(allocator, context.io, data);
             try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
             try context.stdout().print(" Task #{d} marked as done: {s}\n", .{ task.id, task.title });
             return;

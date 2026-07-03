@@ -19,7 +19,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const reader = context.stdin();
 
     // Check if already initialized
-    if (std.Io.Dir.cwd().access(context.io.io, "tasks.json", .{})) |_| {
+    if (std.Io.Dir.cwd().access(context.io, "tasks.json", .{})) |_| {
         try writer.writeAll("\r\n  Project already initialized in this directory.\r\n  Run 'tasks list' to see your tasks.\r\n\r\n");
         return;
     } else |_| {}
@@ -64,7 +64,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
         data.next_id = 4;
     }
 
-    try store.save(allocator, context.io.io, data);
+    try store.save(allocator, context.io, data);
 
     try writer.writeAll("\r\n  ");
     try ztheme.theme("✔ Project initialized!").success().render(writer, &context.theme);
