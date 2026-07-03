@@ -57,6 +57,15 @@ pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 /// // parsed.name = "Alice", parsed.age = 25, parsed.verbose = true
 /// ```
 ///
+/// ## Contract: positionals only
+/// `args` must contain positional arguments only — every token is consumed
+/// in order, exactly as given. parseArgs does NOT detect or skip `--flags`:
+/// it cannot know the command's Options type, so any guess about whether a
+/// flag consumes the next token would be wrong for someone (a boolean flag
+/// followed by a real positional used to lose that positional). Splitting a
+/// mixed command line is `parseCommandLine`'s job — it classifies with the
+/// actual Options type, then hands the positionals here.
+///
 /// ## Returns
 /// Returns ArgsType on success or ZcliError on failure.
 /// Common errors include:
@@ -113,8 +122,8 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
             }
             break;
         } else if (comptime @typeInfo(field_type) == .optional) {
-            // Optional field - find next positional argument
-            const next_positional = findNextPositional(args, arg_index);
+            // Optional field - consume the next argument if present
+            const next_positional: ?usize = if (arg_index < args.len) arg_index else null;
             if (next_positional) |pos| {
                 @field(result, field.name) = parseValue(field_type, args[pos]) catch |err| {
                     if (err == ZcliError.ArgumentInvalidValue) {
@@ -134,7 +143,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
             }
         } else if (comptime type_utils.hasDefaultValue(ArgsType, field.name)) {
             // Field with default value - optional in parsing
-            const next_positional = findNextPositional(args, arg_index);
+            const next_positional: ?usize = if (arg_index < args.len) arg_index else null;
             if (next_positional) |pos| {
                 @field(result, field.name) = parseValue(field_type, args[pos]) catch |err| {
                     if (err == ZcliError.ArgumentInvalidValue) {
@@ -151,8 +160,8 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
             }
             // If no argument provided, default value is already set by struct initialization
         } else {
-            // Required field - find next positional argument
-            const next_positional = findNextPositional(args, arg_index);
+            // Required field - consume the next argument
+            const next_positional: ?usize = if (arg_index < args.len) arg_index else null;
             if (next_positional == null) {
                 if (diag) |d| d.* = .{ .ArgumentMissingRequired = .{
                     .field_name = field.name,
@@ -262,33 +271,6 @@ fn hasVarArgs(comptime T: type) bool {
         if (isVarArgs(field.type)) return true;
     }
     return false;
-}
-
-/// Check if a string looks like a negative number
-fn isNegativeNumber(str: []const u8) bool {
-    if (str.len < 2 or str[0] != '-') return false;
-    // Check if the character after '-' is a digit
-    return str[1] >= '0' and str[1] <= '9';
-}
-
-/// Find the next positional argument starting from the given index, skipping options
-fn findNextPositional(args: []const []const u8, start_index: usize) ?usize {
-    var i = start_index;
-    while (i < args.len) {
-        const arg = args[i];
-        if (std.mem.startsWith(u8, arg, "-") and !isNegativeNumber(arg)) {
-            // Skip option (but not negative numbers)
-            i += 1;
-            // Skip option value if it doesn't start with -
-            if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-                i += 1;
-            }
-        } else {
-            // Found positional argument (including negative numbers)
-            return i;
-        }
-    }
-    return null;
 }
 
 /// Count the number of required arguments (non-optional, non-varargs)
@@ -613,24 +595,32 @@ test "parseArgs all supported float types" {
     try std.testing.expectApproxEqAbs(@as(f128, 789.012), parsed.f128_val, 0.001);
 }
 
-test "parseArgs skip options" {
-    // Test that options are properly skipped during argument parsing
+test "parseArgs consumes tokens in order, no option guessing" {
+    // parseArgs' contract is positionals-only: it must NOT try to detect and
+    // skip flags. (The old heuristic assumed every flag consumed the next
+    // token, so a boolean flag followed by a real positional lost the
+    // positional. Classification belongs to parseCommandLine, which knows
+    // the Options type.)
     const TestArgs = struct {
         image: []const u8,
         command: ?[]const u8,
         args: [][]const u8,
     };
 
-    // Mix options with positional arguments
-    const args = [_][]const u8{ "--name", "mycontainer", "ubuntu", "-v", "/tmp:/tmp", "bash", "arg1", "arg2" };
+    const args = [_][]const u8{ "ubuntu", "bash", "arg1", "arg2" };
     const parsed = try parseArgs(TestArgs, &args, null);
 
-    // Should extract positional args correctly, skipping options
     try std.testing.expectEqualStrings("ubuntu", parsed.image);
     try std.testing.expectEqualStrings("bash", parsed.command.?);
     try std.testing.expectEqual(@as(usize, 2), parsed.args.len);
     try std.testing.expectEqualStrings("arg1", parsed.args[0]);
     try std.testing.expectEqualStrings("arg2", parsed.args[1]);
+
+    // A dash token is data, not a flag to skip.
+    const DashArgs = struct { first: []const u8, rest: [][]const u8 };
+    const dash_args = [_][]const u8{ "--literal", "x" };
+    const dashed = try parseArgs(DashArgs, &dash_args, null);
+    try std.testing.expectEqualStrings("--literal", dashed.first);
 }
 
 test "parseArgs varargs empty" {

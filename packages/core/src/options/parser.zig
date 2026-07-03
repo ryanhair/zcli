@@ -412,34 +412,11 @@ fn parseLongOptions(
         option_name = option_part;
     }
 
-    // Convert dashes to underscores for field name
-    const option_field_name_buf = try allocator.alloc(u8, option_name.len);
-    defer allocator.free(option_field_name_buf);
-    const option_field_name = utils.dashesToUnderscores(option_field_name_buf, option_name) catch |err| {
-        return err;
-    };
-
-    // Generate field matching code at comptime
+    // Generate field matching code at comptime, via the shared resolution
+    // rules (options/utils.zig) that the pre-split classifier also uses.
     var found = false;
     inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
-        // Check if this field matches the option name, either by field name or custom name
-        const matches = blk: {
-            // Check if this field has a custom name in metadata
-            if (comptime @TypeOf(meta) != @TypeOf(null)) {
-                if (comptime @hasField(@TypeOf(meta), "options")) {
-                    const options_meta = meta.options;
-                    if (comptime @hasField(@TypeOf(options_meta), field.name)) {
-                        const field_meta = @field(options_meta, field.name);
-                        if (comptime @hasField(@TypeOf(field_meta), "name")) {
-                            // Custom name is specified - only match on custom name, not field name
-                            break :blk std.mem.eql(u8, field_meta.name, option_name);
-                        }
-                    }
-                }
-            }
-            // No custom name specified - fall back to standard field name matching
-            break :blk std.mem.eql(u8, field.name, option_field_name) or std.mem.eql(u8, field.name, option_name);
-        };
+        const matches = utils.longNameMatchesField(meta, field.name, option_name);
 
         if (matches) {
             found = true;
@@ -547,20 +524,7 @@ fn parseShortOptionsWithMeta(
         var char_is_boolean = false;
         inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
             // Get the expected short option character for this field (comptime)
-            const expected_char = comptime blk: {
-                if (@TypeOf(meta) != @TypeOf(null) and @hasField(@TypeOf(meta), "options")) {
-                    const options_meta = meta.options;
-                    if (@hasField(@TypeOf(options_meta), field.name)) {
-                        const field_meta = @field(options_meta, field.name);
-                        if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
-                            // Custom short option is specified
-                            break :blk field_meta.short;
-                        }
-                    }
-                }
-                // Fall back to first character of field name
-                break :blk if (field.name.len > 0) field.name[0] else 0;
-            };
+            const expected_char = comptime utils.shortCharForField(meta, field.name);
 
             const matches = expected_char == char;
 
@@ -581,21 +545,7 @@ fn parseShortOptionsWithMeta(
         for (options_part) |char| {
             inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
                 _ = i; // Unused for boolean flags
-                // Get the expected short option character for this field (comptime)
-                const expected_char = comptime blk: {
-                    if (@TypeOf(meta) != @TypeOf(null) and @hasField(@TypeOf(meta), "options")) {
-                        const options_meta = meta.options;
-                        if (@hasField(@TypeOf(options_meta), field.name)) {
-                            const field_meta = @field(options_meta, field.name);
-                            if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
-                                // Custom short option is specified
-                                break :blk field_meta.short;
-                            }
-                        }
-                    }
-                    // Fall back to first character of field name
-                    break :blk if (field.name.len > 0) field.name[0] else 0;
-                };
+                const expected_char = comptime utils.shortCharForField(meta, field.name);
 
                 const matches = expected_char == char;
 
@@ -618,20 +568,7 @@ fn parseShortOptionsWithMeta(
         var char_found = false;
         inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
             // Get the expected short option character for this field (comptime)
-            const expected_char = comptime blk: {
-                if (@TypeOf(meta) != @TypeOf(null) and @hasField(@TypeOf(meta), "options")) {
-                    const options_meta = meta.options;
-                    if (@hasField(@TypeOf(options_meta), field.name)) {
-                        const field_meta = @field(options_meta, field.name);
-                        if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
-                            // Custom short option is specified
-                            break :blk field_meta.short;
-                        }
-                    }
-                }
-                // Fall back to first character of field name
-                break :blk if (field.name.len > 0) field.name[0] else 0;
-            };
+            const expected_char = comptime utils.shortCharForField(meta, field.name);
 
             const matches = expected_char == char;
 
