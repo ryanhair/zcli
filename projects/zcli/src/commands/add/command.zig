@@ -61,7 +61,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const io = context.io.io;
+    const io = context.io;
     const stderr = context.stderr();
 
     // Preflight: must be inside a zcli project.
@@ -116,7 +116,7 @@ fn runWizardOnce(
 ) !WizardResult {
     const w = context.stdout();
     const r = context.stdin();
-    const io = context.io.io;
+    const io = context.io;
 
     try heading(w, theme, "Add a command");
     try hint(w, theme, "src/commands/ \u{00b7} Ctrl+C to cancel any time");
@@ -181,7 +181,7 @@ fn runWizardOnce(
 
 fn skeleton(arena: std.mem.Allocator, context: *Context, args: Args, options: Options) !void {
     const stderr = context.stderr();
-    const io = context.io.io;
+    const io = context.io;
 
     const raw_path = args.path orelse {
         try stderr.print("Error: A command path is required when input is not interactive\n", .{});

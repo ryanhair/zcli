@@ -57,7 +57,7 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
     const data = &context.plugins.zcli_config;
 
     var path_allocated = false;
-    const path = findConfigFile(allocator, context.io.io, context.environ, context.app_name, data.custom_path, &path_allocated) orelse return args;
+    const path = findConfigFile(allocator, context.io, context.environ, context.app_name, data.custom_path, &path_allocated) orelse return args;
 
     const format = detectFormat(path) orelse {
         // Unrecognized extension — warn and skip
@@ -67,7 +67,7 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
         return args;
     };
 
-    const content = std.Io.Dir.cwd().readFileAlloc(context.io.io, path, allocator, .limited(1024 * 1024)) catch {
+    const content = std.Io.Dir.cwd().readFileAlloc(context.io, path, allocator, .limited(1024 * 1024)) catch {
         if (path_allocated) allocator.free(path);
         return args;
     };

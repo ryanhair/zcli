@@ -16,7 +16,7 @@ pub const Options = struct {};
 
 pub fn execute(args: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator, context.io.io);
+    var parsed = try store.load(allocator, context.io);
     defer parsed.deinit();
     const data = parsed.value;
 
@@ -46,7 +46,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
 
         const content = try zinput.editor(writer, reader, allocator, .{
             .message = msg,
-            .io = context.io.io,
+            .io = context.io,
             .default = initial,
             .extension = ".md",
         });
@@ -62,7 +62,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         // save() serializes synchronously before defers run, so this is safe.
         task.title = parsed_edit.title;
         task.description = parsed_edit.description;
-        try store.save(allocator, context.io.io, data);
+        try store.save(allocator, context.io, data);
         try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
         try context.stdout().print(" Updated task #{d}\n", .{task.id});
         return;

@@ -379,10 +379,10 @@ test "plugin security: resource exhaustion prevention" {
     const allocator = testing.allocator;
 
     // Create a test context
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     const test_event = plugin_types.OptionEvent{
@@ -417,10 +417,10 @@ test "plugin security: resource exhaustion prevention" {
 test "plugin security: sensitive option access prevention" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     const sensitive_options = [_][]const u8{
@@ -459,10 +459,10 @@ test "plugin security: sensitive option access prevention" {
 test "plugin security: file system access restrictions" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     const test_event = plugin_types.OptionEvent{
@@ -496,10 +496,10 @@ test "plugin security: file system access restrictions" {
 test "plugin security: command injection prevention" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     const injection_tests = [_][]const u8{
@@ -543,10 +543,10 @@ test "plugin security: command injection prevention" {
 test "plugin security: information disclosure prevention" {
     const allocator = testing.allocator;
 
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     const system_errors = [_]anyerror{
@@ -664,11 +664,11 @@ fn isPluginNameSafe(name: []const u8) bool {
 }
 
 /// Create a sandboxed context for plugin execution (placeholder)
-fn createSandboxedContext(allocator: std.mem.Allocator, io: *zcli.IO, capabilities: anytype) !zcli.Context {
+fn createSandboxedContext(allocator: std.mem.Allocator, io: std.Io, stdio: *zcli.Stdio, capabilities: anytype) !zcli.Context {
     _ = capabilities;
     // In a real implementation, this would create a restricted context
     // based on the plugin's declared capabilities
-    return zcli.Context.init(allocator, io);
+    return zcli.Context.init(allocator, io, stdio);
 }
 
 // ============================================================================
@@ -679,10 +679,10 @@ test "plugin security: integration with command processing" {
     const allocator = testing.allocator;
 
     // Test that malicious plugins can't interfere with normal command processing
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     // Simulate normal command processing with potentially malicious plugin active
@@ -707,14 +707,14 @@ test "plugin security: plugin isolation" {
     const allocator = testing.allocator;
 
     // Test that plugins can't interfere with each other
-    var io1 = zcli.IO.init(std.testing.io);
-    io1.finalize();
-    var context1 = zcli.Context.init(allocator, &io1);
+    var stdio1 = zcli.Stdio.init(std.testing.io);
+    stdio1.finalize();
+    var context1 = zcli.Context.init(allocator, std.testing.io, &stdio1);
     defer context1.deinit();
 
-    var io2 = zcli.IO.init(std.testing.io);
-    io2.finalize();
-    var context2 = zcli.Context.init(allocator, &io2);
+    var stdio2 = zcli.Stdio.init(std.testing.io);
+    stdio2.finalize();
+    var context2 = zcli.Context.init(allocator, std.testing.io, &stdio2);
     defer context2.deinit();
 
     // Both plugins process the same event independently
@@ -847,10 +847,10 @@ test "plugin argument transformation" {
         .build();
 
     var app = TestRegistry.init();
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     // Test alias transformation
@@ -921,10 +921,10 @@ test "plugin option consumption" {
         .build();
 
     var app = TestRegistry.init();
-    var io = zcli.IO.init(std.testing.io);
-    io.finalize();
+    var stdio = zcli.Stdio.init(std.testing.io);
+    stdio.finalize();
 
-    var context = zcli.Context.init(allocator, &io);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
     defer context.deinit();
 
     // Test that config option is consumed

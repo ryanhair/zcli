@@ -125,7 +125,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();
 
-    const io = context.io.io;
+    const io = context.io;
     // 0. Validate this is a zcli-based project (not the zcli repo itself)
     try validateZcliProject(allocator, io, stderr);
 

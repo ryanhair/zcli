@@ -125,19 +125,19 @@ pub const commands = struct {
                     return error.InvalidPath;
                 };
 
-                std.Io.Dir.cwd().createDirPath(context.io.io, dir_path) catch |err| {
+                std.Io.Dir.cwd().createDirPath(context.io, dir_path) catch |err| {
                     try stderr.print("Error: failed to create directory '{s}': {}\n", .{ dir_path, err });
                     return err;
                 };
 
                 // Write completion script
-                const file = std.Io.Dir.cwd().createFile(context.io.io, install_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().createFile(context.io, install_path, .{}) catch |err| {
                     try stderr.print("Error: failed to write to '{s}': {}\n", .{ install_path, err });
                     return err;
                 };
-                defer file.close(context.io.io);
+                defer file.close(context.io);
 
-                try file.writeStreamingAll(context.io.io, script);
+                try file.writeStreamingAll(context.io, script);
 
                 const shell_name = switch (shell_type) {
                     .bash => "bash",
@@ -193,7 +193,7 @@ pub const commands = struct {
                 defer allocator.free(install_path);
 
                 // Remove completion script
-                std.Io.Dir.cwd().deleteFile(context.io.io, install_path) catch |err| {
+                std.Io.Dir.cwd().deleteFile(context.io, install_path) catch |err| {
                     if (err == error.FileNotFound) {
                         try stdout.print("Completions not installed at {s}\n", .{install_path});
                         return;

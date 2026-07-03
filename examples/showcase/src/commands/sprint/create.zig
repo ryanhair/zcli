@@ -18,7 +18,7 @@ pub const Options = struct {};
 
 pub fn execute(args: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator, context.io.io);
+    var parsed = try store.load(allocator, context.io);
     defer parsed.deinit();
     var data = parsed.value;
 
@@ -36,7 +36,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     try sprints.appendSlice(allocator, data.sprints);
     try sprints.append(allocator, name);
     data.sprints = sprints.items;
-    try store.save(allocator, context.io.io, data);
+    try store.save(allocator, context.io, data);
 
     try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Created sprint: {s}\n", .{name});

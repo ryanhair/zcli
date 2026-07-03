@@ -14,7 +14,7 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
-    var parsed = try store.load(allocator, context.io.io);
+    var parsed = try store.load(allocator, context.io);
     defer parsed.deinit();
 
     if (parsed.value.sprints.len == 0) {

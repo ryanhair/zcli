@@ -41,7 +41,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     defer if (parsed) |p| p.deinit();
     var current = Config{};
     const cwd = std.Io.Dir.cwd();
-    if (cwd.readFileAlloc(context.io.io, CONFIG_FILE, allocator, .limited(1024 * 1024))) |content| {
+    if (cwd.readFileAlloc(context.io, CONFIG_FILE, allocator, .limited(1024 * 1024))) |content| {
         defer allocator.free(content);
         if (std.json.parseFromSlice(Config, allocator, content, .{
             .allocate = .alloc_always,
@@ -79,10 +79,10 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
         .list = .{ .all = show_done },
     };
 
-    const file = try cwd.createFile(context.io.io, CONFIG_FILE, .{});
-    defer file.close(context.io.io);
+    const file = try cwd.createFile(context.io, CONFIG_FILE, .{});
+    defer file.close(context.io);
     var buf: [4096]u8 = undefined;
-    var file_writer = file.writer(context.io.io, &buf);
+    var file_writer = file.writer(context.io, &buf);
     try file_writer.interface.print("{f}", .{std.json.fmt(new_config, .{ .whitespace = .indent_2 })});
     try file_writer.interface.flush();
 

@@ -222,7 +222,7 @@ pub const Client = struct {
     };
 
     /// `io` is the `std.Io` the client performs network I/O with — in a command,
-    /// `context.io.io`. `allocator` owns client-internal allocations and every
+    /// `context.io`. `allocator` owns client-internal allocations and every
     /// returned `Response.body`; in a command, the arena-per-command allocator.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options) Client {
         return .{
