@@ -65,6 +65,25 @@ pub fn displayWidth(text: []const u8) usize {
     return total;
 }
 
+/// Byte length of the trailing grapheme cluster of `text` (0 for empty text).
+/// Line editors use this to delete one *visible* character per backspace —
+/// popping bytes or codepoints would tear multibyte chars or strip combining
+/// marks off their base.
+pub fn trailingGraphemeLen(text: []const u8) usize {
+    var last: usize = 0;
+    var it = Graphemes.iterator(text);
+    while (it.next()) |g| last = g.len;
+    return last;
+}
+
+/// Number of grapheme clusters in `text` (what a user perceives as characters).
+pub fn graphemeCount(text: []const u8) usize {
+    var n: usize = 0;
+    var it = Graphemes.iterator(text);
+    while (it.next()) |_| n += 1;
+    return n;
+}
+
 fn isBreakSpace(text: []const u8, g: Graphemes.Grapheme) bool {
     return g.len == 1 and (text[g.offset] == ' ' or text[g.offset] == '\t');
 }
@@ -247,6 +266,26 @@ test "displayWidth: emoji and combining marks" {
 test "displayWidth: skips ANSI escapes" {
     // Without skipping, zg would count the '[36m' bytes → 6.
     try testing.expectEqual(@as(usize, 2), displayWidth("\x1b[36mhi\x1b[0m"));
+}
+
+test "trailingGraphemeLen: ascii, CJK, combining, ZWJ emoji" {
+    try testing.expectEqual(@as(usize, 0), trailingGraphemeLen(""));
+    try testing.expectEqual(@as(usize, 1), trailingGraphemeLen("abc"));
+    // 你 is 3 bytes.
+    try testing.expectEqual(@as(usize, 3), trailingGraphemeLen("a你"));
+    // 'e' + combining acute = one 3-byte cluster.
+    try testing.expectEqual(@as(usize, 3), trailingGraphemeLen("cafe\u{0301}"));
+    // Family ZWJ sequence is a single cluster.
+    const family = "👨\u{200D}👩\u{200D}👧";
+    try testing.expectEqual(family.len, trailingGraphemeLen("x" ++ family));
+}
+
+test "graphemeCount counts clusters, not bytes" {
+    try testing.expectEqual(@as(usize, 0), graphemeCount(""));
+    try testing.expectEqual(@as(usize, 3), graphemeCount("abc"));
+    try testing.expectEqual(@as(usize, 2), graphemeCount("你好"));
+    // café with a combining accent: 4 clusters, 6 bytes.
+    try testing.expectEqual(@as(usize, 4), graphemeCount("cafe\u{0301}"));
 }
 
 fn expectWrap(text: []const u8, width: usize, expected: []const []const u8) !void {

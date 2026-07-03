@@ -12,7 +12,9 @@ const esc_timeout_ms = 75;
 
 /// A parsed key input from the terminal.
 pub const Key = union(enum) {
-    char: u8,
+    /// A typed Unicode codepoint. Multibyte UTF-8 sequences are assembled by
+    /// `readKey`, so one keypress (or one pasted character) is one `.char`.
+    char: u21,
     enter,
     backspace,
     delete,
@@ -28,7 +30,7 @@ pub const Key = union(enum) {
 
     pub fn format(self: Key, writer: anytype) !void {
         switch (self) {
-            .char => |c| try writer.print("'{c}'", .{c}),
+            .char => |c| try writer.print("'{u}'", .{c}),
             .enter => try writer.writeAll("<enter>"),
             .backspace => try writer.writeAll("<backspace>"),
             .delete => try writer.writeAll("<delete>"),
@@ -93,10 +95,27 @@ fn readKeyImpl(reader: anytype, esc_handle: ?backend.Handle) !Key {
         '\x1b' => parseEscapeSequence(reader, esc_handle),
         // Ctrl+A through Ctrl+Z (1-26, excluding 9=tab, 10=newline, 13=cr, 27=esc)
         1...8, 11...12, 14...26 => .{ .ctrl = byte + 'a' - 1 },
-        // Printable characters
-        32...126 => .{ .char = byte },
+        // Lead byte of a multibyte UTF-8 sequence
+        0x80...0xff => .{ .char = readUtf8Tail(reader, byte) },
+        // Printable ASCII (plus the few remaining C0 codes callers ignore)
         else => .{ .char = byte },
     };
+}
+
+/// U+FFFD REPLACEMENT CHARACTER — what invalid UTF-8 input decodes to.
+pub const replacement_char: u21 = 0xFFFD;
+
+/// Assemble the rest of a multibyte UTF-8 sequence whose lead byte was already
+/// read. The continuation bytes arrive in the same terminal write as the lead
+/// byte, so they're already buffered. Anything invalid (stray continuation
+/// byte, bad lead, overlong encoding) decodes to U+FFFD rather than surfacing
+/// raw bytes as separate keys.
+fn readUtf8Tail(reader: anytype, lead: u8) u21 {
+    const len = std.unicode.utf8ByteSequenceLength(lead) catch return replacement_char;
+    var seq: [4]u8 = undefined;
+    seq[0] = lead;
+    for (seq[1..len]) |*b| b.* = readByteFn(reader) catch return replacement_char;
+    return std.unicode.utf8Decode(seq[0..len]) catch replacement_char;
 }
 
 fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Key {
@@ -205,6 +224,42 @@ test "readKey parses printable char" {
     var reader: std.Io.Reader = .fixed(&buf);
     const k = try readKey(&reader);
     try std.testing.expect(k.char == 'a');
+}
+
+test "readKey assembles multibyte UTF-8 into one char" {
+    // 2-byte (é), 3-byte (你), and 4-byte (😊) sequences each yield one key.
+    var buf = "é你😊".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    try std.testing.expectEqual(Key{ .char = 'é' }, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = '你' }, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = '😊' }, try readKey(&reader));
+    try std.testing.expectError(error.EndOfStream, readKey(&reader));
+}
+
+test "readKey maps invalid UTF-8 to U+FFFD" {
+    // Stray continuation byte (no lead).
+    var cont = [_]u8{0xa9};
+    var r1: std.Io.Reader = .fixed(&cont);
+    try std.testing.expectEqual(Key{ .char = replacement_char }, try readKey(&r1));
+
+    // Lead byte with a truncated tail (followed by ASCII, which gets consumed
+    // as the would-be continuation byte and fails the decode).
+    var trunc = "\xc3a".*;
+    var r2: std.Io.Reader = .fixed(&trunc);
+    try std.testing.expectEqual(Key{ .char = replacement_char }, try readKey(&r2));
+
+    // Overlong encoding of '/' (0xc0 0xaf) — an invalid lead in modern UTF-8.
+    var overlong = "\xc0\xaf".*;
+    var r3: std.Io.Reader = .fixed(&overlong);
+    try std.testing.expectEqual(Key{ .char = replacement_char }, try readKey(&r3));
+}
+
+test "Key format renders a multibyte char" {
+    const allocator = std.testing.allocator;
+    const k: Key = .{ .char = '你' };
+    const str = try std.fmt.allocPrint(allocator, "{f}", .{k});
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("'你'", str);
 }
 
 test "readKey parses arrow up" {

@@ -109,17 +109,17 @@ fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
                 }
             },
             .char => |c| {
-                // Accept digits and leading minus
+                // Accept digits and leading minus (all ASCII, so the u8 casts hold)
                 if (c >= '0' and c <= '9') {
                     if (len < buf.len) {
-                        buf[len] = c;
+                        buf[len] = @intCast(c);
                         len += 1;
-                        try writer.print("{c}", .{c});
+                        try writer.print("{c}", .{@as(u8, @intCast(c))});
                     }
                 } else if (c == '-' and len == 0) {
-                    buf[len] = c;
+                    buf[len] = @intCast(c);
                     len += 1;
-                    try writer.print("{c}", .{c});
+                    try writer.print("{c}", .{@as(u8, @intCast(c))});
                 }
                 // Silently ignore other characters
             },

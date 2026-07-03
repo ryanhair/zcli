@@ -26,6 +26,8 @@ pub const displayWidth = wrap.displayWidth;
 pub const wrapToWidth = wrap.wrapToWidth;
 pub const wrapForEach = wrap.wrapForEach;
 pub const wrapCount = wrap.wrapCount;
+pub const trailingGraphemeLen = wrap.trailingGraphemeLen;
+pub const graphemeCount = wrap.graphemeCount;
 
 // ============================================================================
 // Raw mode, echo, window size, TTY detection
