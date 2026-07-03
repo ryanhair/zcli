@@ -381,7 +381,6 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
         // Command execution context
         available_commands: []const []const []const u8 = &.{},
         command_path: []const []const u8 = &.{},
-        command_path_allocated: bool = false,
 
         /// Structured detail for the most recent parse/routing error, set by
         /// the framework just before onError hooks run. Payload slices point
@@ -412,23 +411,11 @@ fn ComputedContextType(comptime config: Config, comptime plugins: []const type) 
 
         /// Clean up context resources
         pub fn deinit(self: *Self) void {
-            // Free command_path only if it was allocated
-            if (self.command_path_allocated and self.command_path.len > 0) {
-                for (self.command_path) |component| {
-                    self.allocator.free(component);
-                }
-                self.allocator.free(self.command_path);
-            }
-
-            // Free allocated field info arrays
-            if (self.command_module_info) |info| {
-                if (info.args_fields.len > 0) {
-                    self.allocator.free(info.args_fields);
-                }
-                if (info.options_fields.len > 0) {
-                    self.allocator.free(info.options_fields);
-                }
-            }
+            // No per-field frees here: everything the framework attaches to the
+            // context (command_path, FieldInfo arrays, diagnostics) is allocated
+            // from context.allocator — the arena-per-command — and reclaimed
+            // wholesale by arena.deinit() (ADR-0001). Freeing it piecemeal here
+            // was belt-and-suspenders that muddied the ownership story.
 
             // Call plugin deinit hooks if they exist
             inline for (plugins) |Plugin| {
@@ -1249,7 +1236,6 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             command_parts[i] = try context.allocator.dupe(u8, part);
                         }
                         context.command_path = command_parts;
-                        context.command_path_allocated = true;
 
                         // Store basic command metadata
                         if (@hasDecl(cmd.module, "meta")) {
@@ -1491,7 +1477,6 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             plugin_command_array[i] = try context.allocator.dupe(u8, part);
                         }
                         context.command_path = plugin_command_array;
-                        context.command_path_allocated = true;
 
                         // Set command metadata for help plugin (needs to be set before hooks run)
                         const CommandModule = plugin_cmd.module;
@@ -1703,7 +1688,6 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                     attempted_command_array[i] = try context.allocator.dupe(u8, arg);
                 }
                 context.command_path = attempted_command_array;
-                context.command_path_allocated = true;
 
                 // Run onError hooks for CommandNotFound
                 var error_handled = false;

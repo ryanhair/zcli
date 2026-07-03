@@ -120,7 +120,6 @@ pub const Context = struct {
     app_description: []const u8 = "",
     available_commands: []const []const []const u8 = &.{},
     command_path: []const []const u8 = &.{},
-    command_path_allocated: bool = false,
     command_meta: ?CommandMeta = null,
     command_module_info: ?CommandModuleInfo = null,
 
@@ -144,25 +143,11 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Free command_path only if it was allocated
-        if (self.command_path_allocated and self.command_path.len > 0) {
-            for (self.command_path) |component| {
-                self.allocator.free(component);
-            }
-            self.allocator.free(self.command_path);
-        }
-
-        // Free allocated field info arrays
-        if (self.command_module_info) |info| {
-            if (info.args_fields.len > 0) {
-                self.allocator.free(info.args_fields);
-            }
-            if (info.options_fields.len > 0) {
-                self.allocator.free(info.options_fields);
-            }
-        }
-
-        // No-op — environ is owned by process.Init
+        // Nothing to free: framework-attached data (command_path, FieldInfo
+        // arrays, diagnostics) is allocated from context.allocator — the
+        // arena-per-command — and reclaimed wholesale when the arena drops
+        // (ADR-0001). environ is owned by process.Init.
+        _ = self;
     }
 
     // Convenience methods for I/O
@@ -286,7 +271,6 @@ pub fn TestContext(comptime test_plugins: []const type) type {
         app_description: []const u8 = "",
         available_commands: []const []const []const u8 = &.{},
         command_path: []const []const u8 = &.{},
-        command_path_allocated: bool = false,
         command_meta: ?CommandMeta = null,
         command_module_info: ?CommandModuleInfo = null,
         plugin_command_info: []const CommandInfo = &.{},
@@ -305,17 +289,9 @@ pub fn TestContext(comptime test_plugins: []const type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            if (self.command_path_allocated and self.command_path.len > 0) {
-                for (self.command_path) |component| {
-                    self.allocator.free(component);
-                }
-                self.allocator.free(self.command_path);
-            }
-            if (self.command_module_info) |info| {
-                if (info.args_fields.len > 0) self.allocator.free(info.args_fields);
-                if (info.options_fields.len > 0) self.allocator.free(info.options_fields);
-            }
-            // No-op — environ is owned by process.Init
+            // Nothing to free — see Context.deinit: framework-attached data
+            // is arena-owned and reclaimed wholesale (ADR-0001).
+            _ = self;
         }
 
         pub fn stdout(self: *Self) *std.Io.Writer {
