@@ -1,5 +1,6 @@
 const std = @import("std");
 const command_parser = @import("command_parser.zig");
+const option_utils = @import("options/utils.zig");
 const plugin_types = @import("plugin_types.zig");
 const types = @import("build_utils/types.zig");
 const zcli = @import("zcli.zig");
@@ -69,6 +70,23 @@ fn reportParseError(context: anytype, diag: ?zcli.ZcliDiagnostic) !void {
     var stderr = context.stderr();
     try stderr.print("Error: {s}\n", .{message});
     try stderr.flush();
+}
+
+/// Convert a global option's argv string to its declared type. Covers the
+/// full set plugin_types.option() accepts (validated at declaration, so the
+/// compile-error backstop here is unreachable for declared options).
+fn convertGlobalValue(comptime T: type, value: []const u8) !T {
+    return switch (@typeInfo(T)) {
+        .bool => std.mem.eql(u8, value, "true"),
+        .int => try std.fmt.parseInt(T, value, 10),
+        .float => try std.fmt.parseFloat(T, value),
+        .optional => |opt| try convertGlobalValue(opt.child, value),
+        .pointer => |ptr| if (ptr.size == .slice and ptr.child == u8)
+            value
+        else
+            @compileError("Unsupported global option type: " ++ @typeName(T)),
+        else => @compileError("Unsupported global option type: " ++ @typeName(T)),
+    };
 }
 
 /// Errors that execute() reports to the user before returning them — the
@@ -907,8 +925,26 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                 }
             }
 
-            // 2. Extract and handle global options
-            const global_result = try self.parseGlobalOptions(&context, current_args);
+            // 2. Extract and handle global options. Failures here are parse
+            // errors like any other: dispatch onError, default-render the
+            // diagnostic when unhandled.
+            const global_result = self.parseGlobalOptions(&context, current_args) catch |err| {
+                if (!isReportedCliError(err)) return err;
+                var error_handled = false;
+                inline for (sorted_plugins) |Plugin| {
+                    if (@hasDecl(Plugin, "onError")) {
+                        if (try Plugin.onError(&context, err)) {
+                            error_handled = true;
+                            break;
+                        }
+                    }
+                }
+                if (!error_handled) {
+                    try reportParseError(&context, context.diagnostic);
+                    return err;
+                }
+                return;
+            };
             defer context.allocator.free(global_result.consumed);
             defer context.allocator.free(global_result.remaining);
             current_args = global_result.remaining;
@@ -946,7 +982,32 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             };
         }
 
-        pub fn parseGlobalOptions(self: *Self, context: *Context, args: []const []const u8) !zcli.GlobalOptionsResult {
+        /// Convert `value` and hand it to the plugin that declared
+        /// `global_opt`. A value that doesn't parse as the declared type is
+        /// reported as OptionInvalidValue with a diagnostic.
+        fn dispatchGlobalOption(context: *Context, comptime global_opt: zcli.GlobalOption, value: []const u8, is_short: bool) !void {
+            const typed_value = convertGlobalValue(global_opt.type, value) catch {
+                context.diagnostic = .{ .OptionInvalidValue = .{
+                    .option_name = global_opt.name,
+                    .is_short = is_short,
+                    .provided_value = value,
+                    .expected_type = @typeName(global_opt.type),
+                } };
+                return zcli.ZcliError.OptionInvalidValue;
+            };
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "handleGlobalOption") and @hasDecl(Plugin, "global_options")) {
+                    inline for (Plugin.global_options) |plugin_opt| {
+                        if (comptime std.mem.eql(u8, plugin_opt.name, global_opt.name)) {
+                            try Plugin.handleGlobalOption(context, global_opt.name, typed_value);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        pub fn parseGlobalOptions(_: *Self, context: *Context, args: []const []const u8) !zcli.GlobalOptionsResult {
             var consumed = std.ArrayList(usize).empty;
             var remaining = std.ArrayList([]const u8).empty;
             defer consumed.deinit(context.allocator);
@@ -965,56 +1026,92 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
                             // Handle the global option
                             try consumed.append(context.allocator, i);
 
-                            var value: []const u8 = "true"; // Default for boolean flags
-                            if (global_opt.type != bool and i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
-                                i += 1;
-                                value = args[i];
-                                try consumed.append(context.allocator, i);
-                            }
-
-                            // Call the plugin's handler
-                            inline for (sorted_plugins) |Plugin| {
-                                if (@hasDecl(Plugin, "handleGlobalOption") and @hasDecl(Plugin, "global_options")) {
-                                    inline for (Plugin.global_options) |plugin_opt| {
-                                        if (std.mem.eql(u8, plugin_opt.name, global_opt.name)) {
-                                            // Convert value to the appropriate type
-                                            const typed_value = try self.convertValue(global_opt.type, value);
-                                            try Plugin.handleGlobalOption(context, opt_name, typed_value);
-                                            break;
-                                        }
-                                    }
+                            var value: []const u8 = "true"; // Boolean flags: presence == true
+                            if (global_opt.type != bool) {
+                                // Same next-token-is-a-value rule the command
+                                // parsers share (options/utils.zig).
+                                if (i + 1 < args.len and
+                                    (!std.mem.startsWith(u8, args[i + 1], "-") or option_utils.isNegativeNumber(args[i + 1])))
+                                {
+                                    i += 1;
+                                    value = args[i];
+                                    try consumed.append(context.allocator, i);
+                                } else {
+                                    context.diagnostic = .{ .OptionMissingValue = .{
+                                        .option_name = global_opt.name,
+                                        .is_short = false,
+                                        .expected_type = @typeName(global_opt.type),
+                                    } };
+                                    return zcli.ZcliError.OptionMissingValue;
                                 }
                             }
+
+                            try dispatchGlobalOption(context, global_opt, value, false);
 
                             handled = true;
                             break;
                         }
                     }
-                } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
-                    // Handle short options
-                    const short_opts = arg[1..];
-                    for (short_opts) |short_char| {
-                        inline for (global_options) |global_opt| {
-                            if (global_opt.short == short_char) {
-                                try consumed.append(context.allocator, i);
+                } else if (std.mem.startsWith(u8, arg, "-") and arg.len == 2) {
+                    // Single short option: mirrors the long path, including
+                    // values for non-boolean globals (`-c config.json`).
+                    const short_char = arg[1];
+                    inline for (global_options) |global_opt| {
+                        if (global_opt.short == short_char) {
+                            try consumed.append(context.allocator, i);
 
-                                // For short options, assume boolean for now
-                                inline for (sorted_plugins) |Plugin| {
-                                    if (@hasDecl(Plugin, "handleGlobalOption") and @hasDecl(Plugin, "global_options")) {
-                                        inline for (Plugin.global_options) |plugin_opt| {
-                                            if (plugin_opt.short == short_char) {
-                                                const typed_value = try self.convertValue(global_opt.type, "true");
-                                                try Plugin.handleGlobalOption(context, global_opt.name, typed_value);
-                                                break;
-                                            }
-                                        }
-                                    }
+                            var value: []const u8 = "true";
+                            if (global_opt.type != bool) {
+                                if (i + 1 < args.len and
+                                    (!std.mem.startsWith(u8, args[i + 1], "-") or option_utils.isNegativeNumber(args[i + 1])))
+                                {
+                                    i += 1;
+                                    value = args[i];
+                                    try consumed.append(context.allocator, i);
+                                } else {
+                                    context.diagnostic = .{ .OptionMissingValue = .{
+                                        .option_name = global_opt.name,
+                                        .is_short = true,
+                                        .expected_type = @typeName(global_opt.type),
+                                    } };
+                                    return zcli.ZcliError.OptionMissingValue;
                                 }
+                            }
 
-                                handled = true;
-                                break;
+                            try dispatchGlobalOption(context, global_opt, value, true);
+
+                            handled = true;
+                            break;
+                        }
+                    }
+                } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 2) {
+                    // Bundled shorts (-abc): consumed as globals only when
+                    // EVERY char is a boolean global — a partial match would
+                    // silently drop the other chars, and a value-taking short
+                    // can't get a value inside a bundle. Anything else stays
+                    // in `remaining` for the command's own option parser.
+                    const short_opts = arg[1..];
+                    var all_boolean_globals = true;
+                    for (short_opts) |short_char| {
+                        var char_is_boolean_global = false;
+                        inline for (global_options) |global_opt| {
+                            if (global_opt.short == short_char and global_opt.type == bool) {
+                                char_is_boolean_global = true;
                             }
                         }
+                        if (!char_is_boolean_global) all_boolean_globals = false;
+                    }
+
+                    if (all_boolean_globals) {
+                        try consumed.append(context.allocator, i);
+                        for (short_opts) |short_char| {
+                            inline for (global_options) |global_opt| {
+                                if (global_opt.short == short_char) {
+                                    try dispatchGlobalOption(context, global_opt, "true", true);
+                                }
+                            }
+                        }
+                        handled = true;
                     }
                 }
 
@@ -1031,17 +1128,6 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
             };
             // Note: Caller is responsible for freeing consumed and remaining arrays
             return result;
-        }
-
-        fn convertValue(self: *Self, comptime T: type, value: []const u8) !T {
-            _ = self;
-            return switch (T) {
-                bool => std.mem.eql(u8, value, "true"),
-                u16 => try std.fmt.parseInt(u16, value, 10),
-                u32 => try std.fmt.parseInt(u32, value, 10),
-                []const u8 => value,
-                else => @compileError("Unsupported global option type"),
-            };
         }
 
         fn executeCommand(_: *Self, context: *Context, args_input: []const []const u8) !void {
@@ -2606,4 +2692,157 @@ test "parse errors run onError with context.diagnostic populated" {
     try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), DiagnosticCapturePlugin.captured_err);
     try testing.expectEqualStrings("lots", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("count", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.option_name);
+}
+
+// Fixture for the typed-global-options pipeline: declares one global of each
+// supported category (also exercising declaration-time type validation),
+// records what handleGlobalOption receives, and captures parse failures.
+const TypedGlobalsPlugin = struct {
+    var level: i64 = -1;
+    var ratio: f64 = 0;
+    var label: []const u8 = "";
+    var verbose: bool = false;
+    var debug: bool = false;
+    var captured_err: ?anyerror = null;
+    var captured_diag: ?zcli.ZcliDiagnostic = null;
+    var command_ran: bool = false;
+
+    pub fn reset() void {
+        level = -1;
+        ratio = 0;
+        label = "";
+        verbose = false;
+        debug = false;
+        captured_err = null;
+        captured_diag = null;
+        command_ran = false;
+    }
+
+    pub const global_options = [_]zcli.GlobalOption{
+        zcli.option("level", i64, .{ .short = 'l', .description = "level" }),
+        zcli.option("ratio", f64, .{ .description = "ratio" }),
+        zcli.option("label", []const u8, .{ .description = "label" }),
+        zcli.option("verbose", bool, .{ .short = 'v', .description = "verbose" }),
+        zcli.option("debug", bool, .{ .short = 'd', .description = "debug" }),
+    };
+
+    pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !void {
+        _ = context;
+        const T = @TypeOf(value);
+        if (comptime T == i64) {
+            level = value;
+        } else if (comptime T == f64) {
+            ratio = value;
+        } else if (comptime T == []const u8) {
+            label = value;
+        } else if (comptime T == bool) {
+            if (std.mem.eql(u8, name, "verbose")) verbose = value;
+            if (std.mem.eql(u8, name, "debug")) debug = value;
+        }
+    }
+
+    pub fn onError(context: anytype, err: anyerror) !bool {
+        captured_err = err;
+        captured_diag = context.diagnostic;
+        return true;
+    }
+
+    pub const commands = struct {
+        pub const ping = struct {
+            pub const meta = .{ .description = "noop" };
+            pub const Args = struct {};
+            pub const Options = struct {};
+            pub fn execute(args: Args, options: Options, context: anytype) !void {
+                _ = args;
+                _ = options;
+                _ = context;
+                TypedGlobalsPlugin.command_ran = true;
+            }
+        };
+    };
+};
+
+fn typedGlobalsApp() type {
+    return Registry.init(.{
+        .app_name = "globals-test",
+        .app_version = "1.0.0",
+        .app_description = "typed global options",
+    })
+        .registerPlugin(TypedGlobalsPlugin)
+        .build();
+}
+
+test "global options: full type set converts and dispatches" {
+    const TestApp = typedGlobalsApp();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "5", "--ratio", "1.5", "--label", "hi", "-v", "ping" });
+    try testing.expectEqual(@as(i64, 5), TypedGlobalsPlugin.level);
+    try testing.expectEqual(@as(f64, 1.5), TypedGlobalsPlugin.ratio);
+    try testing.expectEqualStrings("hi", TypedGlobalsPlugin.label);
+    try testing.expect(TypedGlobalsPlugin.verbose);
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+}
+
+test "global options: short options take values (no more assume-boolean)" {
+    const TestApp = typedGlobalsApp();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "-l", "7", "ping" });
+    try testing.expectEqual(@as(i64, 7), TypedGlobalsPlugin.level);
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+
+    // Negative values pass the shared next-token rule.
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "-5", "ping" });
+    try testing.expectEqual(@as(i64, -5), TypedGlobalsPlugin.level);
+}
+
+test "global options: boolean bundles are all-or-nothing" {
+    const TestApp = typedGlobalsApp();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    // All chars are boolean globals: both dispatch.
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "-vd", "ping" });
+    try testing.expect(TypedGlobalsPlugin.verbose);
+    try testing.expect(TypedGlobalsPlugin.debug);
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+
+    // A bundle containing a non-global char is left for the command parser
+    // (which reports it, instead of the old behavior: consuming the token
+    // and silently dropping the unknown chars).
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "-vx" });
+    try testing.expectEqual(@as(?anyerror, error.OptionUnknown), TypedGlobalsPlugin.captured_err);
+    try testing.expect(!TypedGlobalsPlugin.command_ran);
+}
+
+test "global options: missing and invalid values produce diagnostics" {
+    const TestApp = typedGlobalsApp();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    // Value missing at end of argv.
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"--level"});
+    try testing.expectEqual(@as(?anyerror, error.OptionMissingValue), TypedGlobalsPlugin.captured_err);
+    try testing.expectEqualStrings("level", TypedGlobalsPlugin.captured_diag.?.OptionMissingValue.option_name);
+
+    // Next token is a flag, not a value.
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "--verbose" });
+    try testing.expectEqual(@as(?anyerror, error.OptionMissingValue), TypedGlobalsPlugin.captured_err);
+
+    // Unparseable value.
+    TypedGlobalsPlugin.reset();
+    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "abc", "ping" });
+    try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), TypedGlobalsPlugin.captured_err);
+    try testing.expectEqualStrings("abc", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.provided_value);
+    try testing.expectEqualStrings("i64", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.expected_type);
 }
