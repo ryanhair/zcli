@@ -798,18 +798,47 @@ test "scaffolded commands are unit-testable via zig build test" {
     const proj_abs = try tmpSubdirAbs(arena.allocator(), tmp, "app");
     try pointDependencyAtLocalTree(proj, proj_abs);
 
-    // A scaffolded command ships with a co-located runCommand test.
+    const build_test = [_][]const u8{ "zig", "build", "test" };
+
+    // A scaffolded command ships with a co-located placeholder test.
     {
         var r = try run(proj, &.{ zcli_exe, "add", "command", "greet", "-d", "Greet" });
         defer r.deinit();
         try expectOk(r);
     }
 
+    // Prove the full runCommand chain works in a *generated* project: a command
+    // tested against the TestContext stub + the bundled zcli-testing tier, with
+    // captured output. If the stub Context or the exposed testing module were
+    // mis-wired, this would fail to compile.
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/hi.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\const Context = @import("command_registry").Context;
+        \\pub const meta = .{ .description = "hi" };
+        \\pub const Args = struct {};
+        \\pub const Options = struct {};
+        \\pub fn execute(_: Args, _: Options, context: *Context) !void {
+        \\    try context.stdout().print("hi there\n", .{});
+        \\}
+        \\test "hi runs via runCommand" {
+        \\    const zcli_testing = @import("zcli-testing");
+        \\    var r = try zcli_testing.runCommand(@This(), &.{}, .{});
+        \\    defer r.deinit();
+        \\    try std.testing.expect(r.success);
+        \\    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "hi there") != null);
+        \\}
+        \\
+        ,
+    });
+
     // `zig build test` (wired by init via zcli.addCommandTests) compiles each
-    // command as a test binary against the TestContext stub + the bundled
-    // zcli-testing tier and runs the co-located tests.
+    // command as a test binary and runs the co-located tests — the scaffolded
+    // greet placeholder plus the real hi runCommand test above.
     {
-        var r = try run(proj, &.{ "zig", "build", "test" });
+        var r = try run(proj, &build_test);
         defer r.deinit();
         try expectOk(r);
     }
@@ -833,7 +862,7 @@ test "scaffolded commands are unit-testable via zig build test" {
         ,
     });
     {
-        var r = try run(proj, &.{ "zig", "build", "test" });
+        var r = try run(proj, &build_test);
         defer r.deinit();
         try testing.expect(r.exit_code != 0);
     }

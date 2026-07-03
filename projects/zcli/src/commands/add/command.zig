@@ -834,25 +834,22 @@ fn generateSource(
     return aw.written();
 }
 
-/// Emit a co-located `test` block that runs the command in-process via
-/// `zcli-testing`'s runCommand and asserts it succeeds. The `hasRequiredArgs`
-/// comptime guard keeps it robust as the command grows: it auto-runs while every
-/// argument is optional/defaulted, and compiles away once `add arg` introduces a
-/// required positional — at which point the author supplies real `.args`. (This
-/// avoids coupling every `add arg` to a fragile in-test edit.)
+/// Emit a co-located placeholder `test` block — a starting point the author
+/// fleshes out. It always compiles and passes; the comment shows the
+/// `zcli-testing` runCommand pattern for a real assertion. `zig build test`
+/// (wired by `zcli.addCommandTests`) discovers and runs it.
 fn writeTestBlock(w: *std.Io.Writer, parts: []const []const u8) !void {
     try w.writeAll("\ntest \"");
     try writeExamplePath(w, parts);
     try w.writeAll(
-        \\: runs" {
-        \\    const zcli_testing = @import("zcli-testing");
-        \\    // Auto-runs while every argument is optional. Once you `add arg` a
-        \\    // required one this compiles away — replace it with a test that
-        \\    // passes example argument values to runCommand's config.
-        \\    if (comptime zcli_testing.hasRequiredArgs(@This())) return;
-        \\    var result = try zcli_testing.runCommand(@This(), &.{}, .{});
-        \\    defer result.deinit();
-        \\    try std.testing.expect(result.success);
+        \\" {
+        \\    // Scaffolded smoke test — replace with real assertions. Example:
+        \\    //   const zcli_testing = @import("zcli-testing");
+        \\    //   var r = try zcli_testing.runCommand(@This(), &.{}, .{});
+        \\    //   defer r.deinit();
+        \\    //   try std.testing.expect(r.success);
+        \\    // For a command with arguments, pass them via the config's args field.
+        \\    _ = @This();
         \\}
         \\
     );
@@ -1207,10 +1204,11 @@ test "generateSource: empty command is the minimal skeleton" {
     try expectContains(src, "\"ping\"");
     try expectContains(src, "TODO: Implement ping");
     try testing.expect(std.mem.indexOf(u8, src, ".args = .{") == null);
-    // Co-located, schema-robust unit test scaffolded alongside the command.
-    try expectContains(src, "test \"ping: runs\" {");
-    try expectContains(src, "@import(\"zcli-testing\")");
-    try expectContains(src, "if (comptime zcli_testing.hasRequiredArgs(@This())) return;");
+    // A co-located placeholder test is scaffolded alongside the command; it
+    // always compiles and passes, and `zig build test` discovers it.
+    try expectContains(src, "test \"ping\" {");
+    try expectContains(src, "_ = @This();");
+    try expectContains(src, "runCommand(@This()"); // the example pattern in the comment
 }
 
 test "generateSource: multiple is independent of element type" {

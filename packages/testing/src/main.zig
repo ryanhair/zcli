@@ -42,7 +42,6 @@ const std = @import("std");
 pub const unit = @import("unit.zig");
 pub const runCommand = unit.runCommand;
 pub const CommandResult = unit.CommandResult;
-pub const hasRequiredArgs = unit.hasRequiredArgs;
 
 // ============================================================================
 // Integration Testing — subprocess-based CLI testing
