@@ -132,7 +132,10 @@ pub fn parseCommandLine(
     // because parseArgs may create references to the input slice (for varargs)
     const positional_slice = positional_args.toOwnedSlice(allocator) catch return ZcliError.SystemOutOfMemory;
     const parsed_args = args_parser.parseArgs(ArgsType, positional_slice, diag) catch |err| {
-        // If parseArgs fails, we need to clean up the slice we allocated
+        // parseArgs failed AFTER options were parsed: free the accumulated
+        // option arrays as well as the slice we allocated — under a plain
+        // (non-arena) allocator both would otherwise leak.
+        options_parser.cleanupOptions(OptionsType, options, allocator);
         allocator.free(positional_slice);
         return err;
     };
@@ -831,4 +834,20 @@ test "negative numbers classify as values and positionals, not flags" {
     defer result.deinit();
     try std.testing.expectEqual(@as(i32, -5), result.options.offset);
     try std.testing.expectEqual(@as(i32, -10), result.args.delta);
+}
+
+test "parseArgs failure after array options were parsed does not leak them" {
+    const allocator = std.testing.allocator;
+
+    const Args = struct { required: []const u8 };
+    const Options = struct { files: []const []const u8 = &.{} };
+
+    // Options parse first and accumulate two allocations; the missing
+    // required positional then fails parseArgs. Under std.testing.allocator
+    // the accumulated arrays must be freed on this error path — the leak
+    // check at test exit is the regression assertion.
+    try std.testing.expectError(
+        ZcliError.ArgumentMissingRequired,
+        parseCommandLine(Args, Options, null, allocator, null, &.{ "--files", "a.txt", "--files", "b.txt" }, null),
+    );
 }
