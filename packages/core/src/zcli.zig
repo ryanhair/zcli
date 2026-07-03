@@ -100,250 +100,33 @@ pub const CommandModuleInfo = struct {
     options_fields: []const FieldInfo = &.{}, // Runtime-safe field info
 };
 
-/// Execution context provided to commands and plugins
-/// Base Context type definition.
-/// Note: The actual Context type used at runtime is computed by the Registry
-/// based on registered plugins. This struct defines the common interface.
-/// Use the Context exported from your command_registry module instead.
-pub const Context = struct {
-    allocator: std.mem.Allocator,
-    /// The framework's `std.Io` instance — the entry point for all explicit I/O.
-    io: std.Io,
-    /// Standard-stream holder backing `stdout()`/`stderr()`/`stdin()`. Internal:
-    /// command and plugin code should use those accessors and `io`, not this.
-    stdio: *Stdio,
+/// Execution context provided to commands and plugins — see context.zig,
+/// the single source of truth for the interface.
+///
+/// `ContextFor(plugins)` computes the concrete type with one type-safe field
+/// per plugin ContextData under `.plugins`; the Registry re-exports its
+/// instantiation as `Registry...build().Context`, which is what generated
+/// apps import via `@import("command_registry").Context`.
+pub const ContextFor = @import("context.zig").ContextFor;
 
-    // Core zcli command execution context
-    app_name: []const u8 = "app",
-    app_version: []const u8 = "unknown",
-    app_description: []const u8 = "",
-    available_commands: []const []const []const u8 = &.{},
-    command_path: []const []const u8 = &.{},
-    command_meta: ?CommandMeta = null,
-    command_module_info: ?CommandModuleInfo = null,
+/// Plugin-less context instantiation, for library code and tests that don't
+/// touch `context.plugins`.
+pub const Context = ContextFor(&.{});
 
-    // Plugin-specific command information for introspection
-    plugin_command_info: []const CommandInfo = &.{},
-    global_options: []const OptionInfo = &.{},
-
-    /// Structured detail for the most recent parse/routing error (see the
-    /// registry Context, which is the one commands actually receive).
-    diagnostic: ?ZcliDiagnostic = null,
-
-    const Self = @This();
-
-    /// Initialize a new Context with the provided io and standard streams.
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, stdio: *Stdio) Self {
-        return .{
-            .allocator = allocator,
-            .io = io,
-            .stdio = stdio,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        // Nothing to free: framework-attached data (command_path, FieldInfo
-        // arrays, diagnostics) is allocated from context.allocator — the
-        // arena-per-command — and reclaimed wholesale when the arena drops
-        // (ADR-0001). environ is owned by process.Init.
-        _ = self;
-    }
-
-    // Convenience methods for I/O
-    pub fn stdout(self: *Self) *std.Io.Writer {
-        return self.stdio.stdout();
-    }
-
-    pub fn stderr(self: *Self) *std.Io.Writer {
-        return self.stdio.stderr();
-    }
-
-    pub fn stdin(self: *Self) *std.Io.Reader {
-        return self.stdio.stdin();
-    }
-
-    pub fn exit(self: *Self, code: u8) noreturn {
-        // std.process.exit does not flush buffered writers — without this,
-        // anything printed just before exit() is silently dropped.
-        self.stdio.flush();
-        std.process.exit(code);
-    }
-
-    /// Get command description by path (for plugins)
-    /// Returns null if command not found or has no description
-    pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
-        for (self.plugin_command_info) |cmd_info| {
-            if (command_path_query.len == cmd_info.path.len) {
-                var matches = true;
-                for (command_path_query, cmd_info.path) |provided_part, stored_part| {
-                    if (!std.mem.eql(u8, provided_part, stored_part)) {
-                        matches = false;
-                        break;
-                    }
-                }
-                if (matches) {
-                    return cmd_info.description;
-                }
-            }
-        }
-        return null;
-    }
-
-    /// Get all available command information (for plugins)
-    pub fn getAvailableCommandInfo(self: *Self) []const CommandInfo {
-        return self.plugin_command_info;
-    }
-
-    /// Get all global options (for completions)
-    pub fn getGlobalOptions(self: *Self) []const OptionInfo {
-        return self.global_options;
-    }
-};
-
-/// Create a test context type with plugin data support.
-/// Use this when testing code that accesses `context.plugins.{plugin_id}`.
+/// Create a test context type with plugin data support (an alias of
+/// `ContextFor`). Use this when testing code that accesses
+/// `context.plugins.{plugin_id}`.
 ///
 /// ```zig
 /// const TestCtx = zcli.TestContext(&.{ MyPlugin });
 /// var stdio: zcli.Stdio = undefined;
 /// stdio.init(std.testing.io);
-/// var ctx = TestCtx.init(testing.allocator, std.testing.io, &stdio);
+/// const environ = std.process.Environ.Map.init(testing.allocator);
+/// var ctx = TestCtx.init(testing.allocator, std.testing.io, &stdio, &environ);
 /// defer ctx.deinit();
 /// ctx.plugins.my_plugin.some_field = true;
 /// ```
-/// The context field name for a test plugin: its plugin_id with every
-/// non-identifier character replaced by '_' (same rule the registry uses).
-fn testPluginFieldName(comptime Plugin: type) []const u8 {
-    comptime {
-        const id: []const u8 = Plugin.plugin_id;
-        var name_buf: [256]u8 = undefined;
-        var name_len: usize = 0;
-        for (id) |c| {
-            if (name_len >= name_buf.len - 1) break;
-            name_buf[name_len] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
-            name_len += 1;
-        }
-        const final = name_buf[0..name_len].*;
-        return &final;
-    }
-}
-
-pub fn TestContext(comptime test_plugins: []const type) type {
-    // Build the plugins struct type from the provided plugins
-    const PluginsType = comptime blk: {
-        var field_count: usize = 0;
-        for (test_plugins) |Plugin| {
-            if (@hasDecl(Plugin, "ContextData")) {
-                field_count += 1;
-            }
-        }
-
-        if (field_count == 0) {
-            break :blk struct {};
-        }
-
-        var field_names: [field_count][]const u8 = undefined;
-        var field_types: [field_count]type = undefined;
-        var field_attrs: [field_count]std.builtin.Type.StructField.Attributes = undefined;
-        var idx: usize = 0;
-
-        for (test_plugins) |Plugin| {
-            if (@hasDecl(Plugin, "ContextData")) {
-                if (!@hasDecl(Plugin, "plugin_id")) {
-                    @compileError("Plugins with ContextData must declare 'pub const plugin_id'.");
-                }
-
-                const DataType = Plugin.ContextData;
-                const default_val: DataType = .{};
-
-                field_names[idx] = testPluginFieldName(Plugin);
-                field_types[idx] = DataType;
-                field_attrs[idx] = .{ .default_value_ptr = @ptrCast(&default_val) };
-                idx += 1;
-            }
-        }
-
-        break :blk @Struct(.auto, null, &field_names, &field_types, &field_attrs);
-    };
-
-    return struct {
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        stdio: *Stdio,
-        theme: ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
-
-        app_name: []const u8 = "test-app",
-        app_version: []const u8 = "0.0.0",
-        app_description: []const u8 = "",
-        available_commands: []const []const []const u8 = &.{},
-        command_path: []const []const u8 = &.{},
-        command_meta: ?CommandMeta = null,
-        command_module_info: ?CommandModuleInfo = null,
-        plugin_command_info: []const CommandInfo = &.{},
-        global_options: []const OptionInfo = &.{},
-
-        plugins: PluginsType = .{},
-
-        const Self = @This();
-
-        pub fn init(allocator: std.mem.Allocator, io: std.Io, stdio: *Stdio) Self {
-            return .{
-                .allocator = allocator,
-                .io = io,
-                .stdio = stdio,
-            };
-        }
-
-        pub fn deinit(self: *Self) void {
-            // Mirror the real Context's lifecycle: run plugin
-            // deinitContextData hooks, so a plugin that frees its
-            // ContextData behaves the same under test as in production.
-            // Framework-attached data is otherwise arena-owned and needs no
-            // per-field frees (ADR-0001).
-            inline for (test_plugins) |Plugin| {
-                if (@hasDecl(Plugin, "ContextData") and @hasDecl(Plugin, "deinitContextData")) {
-                    Plugin.deinitContextData(&@field(self.plugins, testPluginFieldName(Plugin)), self.allocator);
-                }
-            }
-        }
-
-        pub fn stdout(self: *Self) *std.Io.Writer {
-            return self.stdio.stdout();
-        }
-
-        pub fn stderr(self: *Self) *std.Io.Writer {
-            return self.stdio.stderr();
-        }
-
-        pub fn stdin(self: *Self) *std.Io.Reader {
-            return self.stdio.stdin();
-        }
-
-        pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
-            for (self.plugin_command_info) |cmd_info| {
-                if (command_path_query.len == cmd_info.path.len) {
-                    var matches = true;
-                    for (command_path_query, cmd_info.path) |provided_part, stored_part| {
-                        if (!std.mem.eql(u8, provided_part, stored_part)) {
-                            matches = false;
-                            break;
-                        }
-                    }
-                    if (matches) return cmd_info.description;
-                }
-            }
-            return null;
-        }
-
-        pub fn getAvailableCommandInfo(self: *Self) []const CommandInfo {
-            return self.plugin_command_info;
-        }
-
-        pub fn getGlobalOptions(self: *Self) []const OptionInfo {
-            return self.global_options;
-        }
-    };
-}
+pub const TestContext = ContextFor;
 
 /// Holder for the process's standard streams. Owns the buffered stdout/stderr
 /// writers and stdin reader (plus their backing buffers), which is why it must
@@ -697,13 +480,46 @@ test "Context creation" {
     var stdio: Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     // Test that convenience methods work
     _ = context.stdout();
     _ = context.stderr();
     _ = context.stdin();
+}
+
+test "Context is one generic: base and TestContext instantiations unify" {
+    // The three historical Context definitions (base, TestContext, and the
+    // registry's computed type) are now one generic. Zig memoizes generic
+    // instantiation, so the same plugin list must yield the SAME type — a
+    // command typed against one is callable with the other.
+    try testing.expect(Context == TestContext(&.{}));
+    try testing.expect(Context == ContextFor(&.{}));
+}
+
+test "getCommandDescription matches full paths only" {
+    const allocator = testing.allocator;
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = Context.init(allocator, std.testing.io, &stdio, &test_environ);
+    defer context.deinit();
+
+    const infos = [_]CommandInfo{
+        .{ .path = &.{"deploy"}, .description = "Deploy the app" },
+        .{ .path = &.{ "remote", "add" }, .description = "Add a remote" },
+    };
+    context.plugin_command_info = &infos;
+
+    try testing.expectEqualStrings("Deploy the app", context.getCommandDescription(&.{"deploy"}).?);
+    try testing.expectEqualStrings("Add a remote", context.getCommandDescription(&.{ "remote", "add" }).?);
+    // Prefixes, wrong parts, and unknown paths all miss.
+    try testing.expect(context.getCommandDescription(&.{"remote"}) == null);
+    try testing.expect(context.getCommandDescription(&.{ "remote", "rm" }) == null);
+    try testing.expect(context.getCommandDescription(&.{"nope"}) == null);
 }
 
 test "TestContext with plugins" {
@@ -721,7 +537,8 @@ test "TestContext with plugins" {
     var stdio: Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var ctx = Ctx.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &test_environ);
     defer ctx.deinit();
 
     // Verify plugin data is accessible and mutable
@@ -742,7 +559,8 @@ test "TestContext without plugins" {
     var stdio: Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var ctx = Ctx.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &test_environ);
     defer ctx.deinit();
 
     _ = ctx.stdout();
@@ -1100,7 +918,8 @@ test "TestContext.deinit runs plugin deinitContextData hooks" {
     var stdio: Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var ctx = Ctx.init(testing.allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+    var ctx = Ctx.init(testing.allocator, std.testing.io, &stdio, &test_environ);
     ctx.plugins.hook_plugin.payload = try testing.allocator.dupe(u8, "plugin-owned");
     ctx.deinit();
 

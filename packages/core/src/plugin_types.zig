@@ -274,7 +274,8 @@ test "basic argument transformation" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     const args = [_][]const u8{ "hello", "world" };
@@ -331,7 +332,8 @@ test "transformation with argument consumption" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     const args = [_][]const u8{ "command", "--internal-debug", "arg1", "--internal-trace", "arg2" };
@@ -409,7 +411,8 @@ test "transformation chain with multiple plugins" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     const args = [_][]const u8{ "alias", "arg" };
@@ -473,7 +476,8 @@ test "stopping transformation pipeline" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     TransformNeverCalledPlugin.was_called = false;
@@ -531,7 +535,8 @@ test "environment variable expansion transformation" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     // Without environment variables set, $VAR references stay unexpanded
@@ -584,7 +589,8 @@ test "path expansion transformation" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     // Without environ on base Context, tilde expansion uses /home/user fallback
@@ -648,7 +654,8 @@ test "argument injection transformation" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     // Test injection when -m is missing
@@ -699,7 +706,8 @@ test "transformation error handling" {
     var stdio: zcli.Stdio = undefined;
     stdio.init(std.testing.io);
 
-    var context = zcli.Context.init(allocator, std.testing.io, &stdio);
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = zcli.Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
     const args = [_][]const u8{ "error", "command" };

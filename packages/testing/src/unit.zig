@@ -122,12 +122,15 @@ pub fn runCommand(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    // Create context with plugins
+    // Create context with plugins (empty environment; commands that read env
+    // vars should take them as options instead)
+    const test_environ = std.process.Environ.Map.init(allocator);
     const Ctx = zcli.TestContext(plugins);
     var context = Ctx{
         .allocator = arena.allocator(),
         .io = std.testing.io,
         .stdio = &stdio,
+        .environ = &test_environ,
     };
     defer context.deinit();
 
