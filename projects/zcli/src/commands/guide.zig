@@ -351,8 +351,21 @@ const topics = [_]Topic{
         \\runCommand runs execute() in-process against the real filesystem and the
         \\real cwd — it captures I/O, not the disk. A command that reads or writes
         \\files touches actual files during `zig build test`, so a leftover file can
-        \\make the next run behave differently. Point file I/O at a temp dir or a
-        \\unique path, and clean up in the test.
+        \\make the next run behave differently. Delete the file around such a test —
+        \\`io` in a test is `std.testing.io`:
+        \\
+        \\  test "add: persists a task" {
+        \\      const io = std.testing.io;
+        \\      std.Io.Dir.cwd().deleteFile(io, "tasks.json") catch {};        // start clean
+        \\      defer std.Io.Dir.cwd().deleteFile(io, "tasks.json") catch {};  // and don't leak it
+        \\      var r = try zcli_testing.runCommand(@This(), &.{}, .{ .args = .{ .title = "Buy milk" } });
+        \\      defer r.deinit();
+        \\      try std.testing.expect(r.success);
+        \\  }
+        \\
+        \\For I/O you drive directly (say a store module that takes a dir), hand it a
+        \\scratch dir instead: `var tmp = std.testing.tmpDir(.{}); defer tmp.cleanup();`
+        \\— `tmp.dir` is a `std.Io.Dir`.
         \\
         ,
     },
