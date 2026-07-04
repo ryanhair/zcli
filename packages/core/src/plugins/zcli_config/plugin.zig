@@ -9,7 +9,7 @@ const zcli = @import("zcli");
 ///
 /// Config file discovery (by extension):
 ///   1. --config <path>
-///   2. ./{app_name}.config.json / .toml / .yaml / .yml
+///   2. .{app_name}.config.json / .toml / .yaml / .yml (in the current directory — note the leading dot)
 ///   3. $XDG_CONFIG_HOME/{app_name}/config.json / .toml / .yaml / .yml
 pub const plugin_id = "zcli_config";
 

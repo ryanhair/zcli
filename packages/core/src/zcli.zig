@@ -213,7 +213,8 @@ pub const Config = registry.Config;
 ///
 /// **Memory Management**: ⚠️ CRITICAL - Call `result.deinit()` to cleanup!
 /// ```zig
-/// const result = try parseCommandLine(Args, Options, null, allocator, context.environ, args);
+/// var diag: ?ZcliDiagnostic = null;
+/// const result = try parseCommandLine(Args, Options, null, allocator, context.environ, args, &diag);
 /// defer result.deinit(); // REQUIRED!
 /// // Use result.args and result.options...
 /// ```

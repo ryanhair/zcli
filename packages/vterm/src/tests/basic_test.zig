@@ -136,6 +136,48 @@ test "unicode characters - basic support" {
     try testing.expectEqual(@as(u16, 2), term.cursor.x);
 }
 
+test "UTF-8 sequence split across write() calls" {
+    var term = try VTerm.init(testing.allocator, 10, 5);
+    defer term.deinit();
+
+    // "é" is 0xC3 0xA9; feed the two bytes in separate write() calls, as a
+    // pipe/PTY reader legitimately can. The lead byte must be carried over,
+    // not dropped (which smeared the continuation into a skipped garbage
+    // byte and lost the character).
+    term.write("A\xC3");
+    term.write("\xA9B");
+
+    try testing.expectEqual(@as(u21, 'A'), term.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'é'), term.getCell(1, 0).char);
+    try testing.expectEqual(@as(u21, 'B'), term.getCell(2, 0).char);
+}
+
+test "UTF-8 4-byte sequence split byte-by-byte across writes" {
+    var term = try VTerm.init(testing.allocator, 10, 5);
+    defer term.deinit();
+
+    // 😀 U+1F600 = F0 9F 98 80, one byte per write().
+    term.write("\xF0");
+    term.write("\x9F");
+    term.write("\x98");
+    term.write("\x80");
+
+    try testing.expectEqual(@as(u21, 0x1F600), term.getCell(0, 0).char);
+}
+
+test "ASCII byte aborts a pending partial UTF-8 sequence" {
+    var term = try VTerm.init(testing.allocator, 10, 5);
+    defer term.deinit();
+
+    // A lead byte with no continuation, then ASCII: the fragment is dropped
+    // and must not swallow the following character or a later sequence.
+    term.write("\xC3");
+    term.write("AB");
+
+    try testing.expectEqual(@as(u21, 'A'), term.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'B'), term.getCell(1, 0).char);
+}
+
 test "Cell helper functions" {
     const Cell = vterm.Cell;
 

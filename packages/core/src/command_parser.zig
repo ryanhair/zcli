@@ -227,20 +227,17 @@ fn hasArrayFields(comptime OptionsType: type) bool {
     return false;
 }
 
-/// Check if an args type has varargs fields (last field is an array)
+/// Check if an args type has a varargs field (last field is a slice of
+/// strings). Delegates to args.zig's isVarArgs so the two classifiers cannot
+/// drift — a plain trailing string (`[]const u8`) is a positional, not
+/// varargs, and must not cause the positional slice to be retained.
 fn hasVarargsFields(comptime ArgsType: type) bool {
     const type_info = @typeInfo(ArgsType);
     if (type_info != .@"struct") return false;
     if (type_info.@"struct".fields.len == 0) return false;
 
-    // Check if the last field is an array/slice
     const last_field = type_info.@"struct".fields[type_info.@"struct".fields.len - 1];
-    if (@typeInfo(last_field.type) == .pointer) {
-        const ptr_info = @typeInfo(last_field.type).pointer;
-        return ptr_info.size == .slice;
-    }
-
-    return false;
+    return args_parser.isVarArgs(last_field.type);
 }
 
 // Tests

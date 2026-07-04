@@ -68,6 +68,9 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 
     // The app started by `-- <command>`, if any. Killed and restarted each cycle.
     var app_child: ?std.process.Child = null;
+    // The loop below only exits via error (Ctrl-C kills the whole process
+    // group) — don't leave the spawned app running past dev itself.
+    defer if (app_child) |*c| c.kill(io);
 
     // Build once up front, then rebuild on every change.
     runCycle(io, &cycle_arena, status, theme, args.command, &app_child);

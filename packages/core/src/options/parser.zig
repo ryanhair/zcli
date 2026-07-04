@@ -71,8 +71,10 @@ const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 ///     files: [][]const u8 = &.{}, // --files a.txt b.txt
 /// };
 ///
-/// const result = try zcli.parseOptions(Options, allocator, args, null);
-/// defer zcli.cleanupOptions(Options, result.options, allocator);
+/// // Not re-exported at the package root — reachable via zcli.parseCommandLine,
+/// // or directly as parseOptions within this module:
+/// const result = try parseOptions(Options, allocator, args, null);
+/// defer cleanupOptions(Options, result.options, allocator);
 /// ```
 ///
 /// ## Memory Management
@@ -274,13 +276,26 @@ pub fn parseOptionsWithMeta(
         }
     }
 
-    // Finalize array fields by converting ArrayLists to slices
+    // Finalize array fields by converting ArrayLists to slices. If a later
+    // field's conversion fails, the slices already handed to `result` must be
+    // freed here — their lists are empty by then, so the deinit defer above
+    // no longer owns that memory. (The framework's arena masks this, but the
+    // parser is also usable as a library with any allocator.)
+    var converted = [_]bool{false} ** struct_info.fields.len;
+    errdefer {
+        inline for (struct_info.fields, 0..) |field, i| {
+            if (comptime utils.isArrayType(field.type)) {
+                if (converted[i]) allocator.free(@field(result, field.name));
+            }
+        }
+    }
     inline for (struct_info.fields, 0..) |field, i| {
         if (comptime utils.isArrayType(field.type)) {
             if (array_lists[i]) |*list_union| {
                 @field(result, field.name) = array_utils.arrayListUnionToOwnedSlice(field.type, allocator, list_union) catch {
                     return ZcliError.SystemOutOfMemory;
                 };
+                converted[i] = true;
             }
         }
     }
@@ -669,8 +684,10 @@ fn parseShortOptionsWithMeta(
 ///
 /// ## Examples
 /// ```zig
-/// const result = try zcli.parseOptions(Options, allocator, args, null);
-/// defer zcli.cleanupOptions(Options, result.options, allocator);
+/// // Not re-exported at the package root — reachable via zcli.parseCommandLine,
+/// // or directly as parseOptions within this module:
+/// const result = try parseOptions(Options, allocator, args, null);
+/// defer cleanupOptions(Options, result.options, allocator);
 ///
 /// // Use result.options safely here
 /// for (result.options.files) |file| {
