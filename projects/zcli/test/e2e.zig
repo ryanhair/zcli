@@ -5,7 +5,7 @@
 //! the generated project actually builds and runs.
 //!
 //! Run with `zig build e2e` (NOT part of `zig build test`, since the build-and-run
-//! tier compiles zcli from source and is slow). See `.context/e2e-test-plan.md`.
+//! tier compiles zcli from source and is slow).
 //!
 //! Build-time injected paths (see build.zig):
 //!   - build_options.zcli_exe     absolute path to the built `zcli` binary

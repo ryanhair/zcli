@@ -172,7 +172,7 @@ The build system starts by scanning the configured commands directory:
 
 ```zig
 // In build.zig
-const cmd_registry = zcli_build.generateCommandRegistry(b, target, optimize, zcli_module, .{
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .commands_dir = "src/commands",  // Starting point
     .app_name = "myapp",
     .app_description = "My CLI app",

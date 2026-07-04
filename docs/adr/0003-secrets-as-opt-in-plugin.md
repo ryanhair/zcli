@@ -31,7 +31,7 @@ The opt-in portability guarantee is enforced in **two halves**: the source half 
 
 ### Proving every backend in CI
 
-Each backend is proven on its own OS in `.github/workflows/ci.yml` (a `secrets` job over ubuntu/macOS/windows): `zig build test-secrets` compiles and **links** the host backend (the link-time half), and `zig build test-secrets-live` runs a real set/get/overwrite/delete round-trip against the actual OS store. Windows (Credential Manager) and macOS (Keychain) are available directly for the runner user; Linux brings up a private D-Bus session with an unlocked `gnome-keyring` so libsecret has a Secret Service. The live round-trips are excluded from the default `test` step (they would mutate a developer's keychain), so local `zig build test` never touches a real store.
+Each backend is proven on its own OS in `.github/workflows/ci.yml` (a `secrets` job over ubuntu/macOS/windows, run from `packages/core`): `zig build test-secrets` compiles and **links** the host backend (the link-time half), and `zig build test-secrets-live` runs a real set/get/overwrite/delete round-trip against the actual OS store. Windows (Credential Manager) and macOS (Keychain) are available directly for the runner user; Linux brings up a private D-Bus session with an unlocked `gnome-keyring` so libsecret has a Secret Service. The live round-trips are excluded from the default `test` step (they would mutate a developer's keychain), so local `zig build test` never touches a real store.
 
 ## Note: what "safe defaults" means for the HTTP client
 

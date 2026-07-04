@@ -228,18 +228,17 @@ pub const Context = struct {
 
 ## 4. Global Options
 
-Global options are defined when calling `zcli.generate()` in your build.zig. These options are available to all commands and can be accessed through the context:
+Global options are declared by plugins: a plugin exports a `global_options` list and a `handleGlobalOption` hook, and the generated registry parses those options before command dispatch (they are consumed by the plugin, not passed to your command):
 
 ```zig
-// In build.zig
-const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
-    .global_options = .{
-        .verbose = .{ .short = 'v', .type = bool, .default = false, .help = "Enable verbose output" },
-        .config = .{ .short = 'c', .type = ?[]const u8, .help = "Config file path" },
-        .no_color = .{ .type = bool, .default = false, .help = "Disable colored output" },
-    },
-    // ... other config
-});
+// In a plugin (see packages/core/src/plugins/zcli_help/plugin.zig)
+pub const global_options = [_]zcli.GlobalOption{
+    zcli.option("verbose", bool, .{ .short = 'v', .default = false, .description = "Enable verbose output" }),
+};
+
+pub fn handleGlobalOption(context: anytype, option_name: []const u8, value: anytype) !void {
+    // stash it on the context (or your plugin's state) for later hooks
+}
 ```
 
 **Framework-Provided Options:**
@@ -577,22 +576,21 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    const zcli_dep = b.dependency("zcli", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zcli_module = zcli_dep.module("zcli");
+    exe.root_module.addImport("zcli", zcli_module);
+
     // zcli build integration
-    const cmd_registry = zcli.generateCommandRegistry(b, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",
         .app_name = "myapp",
         .app_description = "My awesome CLI app",
         // Version automatically read from build.zig.zon
     });
-
-    exe.step.dependOn(&cmd_registry.step);
-    exe.root_module.addImport("command_registry", cmd_registry.module);
-
-    const zcli_dep = b.dependency("zcli", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("zcli", zcli_dep.module("zcli"));
+    exe.root_module.addImport("command_registry", cmd_registry);
 
     b.installArtifact(exe);
 }

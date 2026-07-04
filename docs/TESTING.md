@@ -16,20 +16,11 @@ Test a single command's `execute()` function without compiling or spawning a bin
 
 ### Setup
 
-Unit testing lives in the `zcli-testing` package (alongside the integration and E2E tiers). Add it as a dependency — same setup as the [Integration Testing](#integration-testing) tier below:
-
-```zig
-// build.zig.zon
-.dependencies = .{
-    .zcli = .{ .path = "path/to/zcli" },
-    .@"zcli-testing" = .{ .path = "path/to/zcli/packages/testing" },
-},
-```
+The unit-testing tier ships with the `zcli` dependency itself — no separate dependency entry. Projects scaffolded by `zcli init` are already wired: `zcli.addCommandTests(...)` in build.zig compiles each command file as its own test root with `zcli-testing` importable. For hand-rolled wiring, import the module from your existing zcli dependency:
 
 ```zig
 // build.zig
-const testing_dep = b.dependency("zcli-testing", .{});
-test_module.addImport("zcli-testing", testing_dep.module("testing"));
+test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing"));
 ```
 
 ### Writing tests
@@ -168,20 +159,11 @@ Test your compiled CLI binary as a subprocess. This validates the full stack —
 
 ### Setup
 
-Add the testing package as a dependency:
-
-```zig
-// build.zig.zon
-.dependencies = .{
-    .zcli = .{ .path = "path/to/zcli" },
-    .@"zcli-testing" = .{ .path = "path/to/zcli/packages/testing" },
-},
-```
+The integration tier lives in the same `zcli-testing` module the unit tier uses — it ships with the `zcli` dependency, so the wiring is one line:
 
 ```zig
 // build.zig
-const testing_dep = b.dependency("zcli-testing", .{});
-test_module.addImport("zcli-testing", testing_dep.module("testing"));
+test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing"));
 ```
 
 ### Writing tests

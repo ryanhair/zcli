@@ -484,7 +484,6 @@ try testing.expectSnapshot(allocator, result.stdout, @src(), "help_output", .{})
 | **terminal** | Raw mode, key reading, cursor control, unicode detection |
 | **vterm** | Virtual terminal emulator for testing ANSI output |
 | **testing** | Subprocess runner, assertions, snapshot testing, e2e harness |
-| **interactive** | PTY-based test harness for interactive CLI testing |
 
 All packages work standalone — you can use `zinput`, `zprogress`, `ztheme`, or `terminal` in any Zig project without the zcli framework.
 
