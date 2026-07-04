@@ -53,7 +53,9 @@ pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 /// };
 ///
 /// const args = [_][]const u8{ "Alice", "25", "true" };
-/// const parsed = try zcli.parseArgs(Args, &args, null);
+/// // Not re-exported at the package root — reachable via zcli.parseCommandLine,
+/// // or directly as parseArgs within this module:
+/// const parsed = try parseArgs(Args, &args, null);
 /// // parsed.name = "Alice", parsed.age = 25, parsed.verbose = true
 /// ```
 ///

@@ -55,10 +55,12 @@ fn scanDirectory(
 ) !void {
     // Prevent excessive nesting
     if (depth >= max_depth) {
-        // Convert path array to string for logging
-        const path_string = if (current_path.len == 0) "" else std.mem.join(allocator, "/", current_path) catch "unknown";
-        defer if (current_path.len > 0) allocator.free(path_string);
-        logging.maxNestingDepthReached(max_depth, path_string);
+        // Convert path array to string for logging. On OOM log without the
+        // path — the old `catch "unknown"` fallback flowed into the free
+        // below, which is UB on a string literal.
+        const joined: ?[]u8 = if (current_path.len == 0) null else std.mem.join(allocator, "/", current_path) catch null;
+        defer if (joined) |p| allocator.free(p);
+        logging.maxNestingDepthReached(max_depth, joined orelse "");
         return;
     }
     var iterator = dir.iterate();

@@ -99,6 +99,13 @@ pub const VTerm = struct {
     param_count: u8,
     private_sequence: bool, // Track if this is a private sequence (starts with ?)
 
+    // A UTF-8 sequence can be split across write() calls; the partial sequence
+    // is stashed here and completed by the next write. Dropping the lead byte
+    // instead would smear the continuation bytes into mojibake.
+    utf8_partial: [4]u8,
+    utf8_partial_have: u8,
+    utf8_partial_expected: u8,
+
     // Current text attributes - NEW in Phase 2
     current_fg: u8,
     current_bg: u8,
@@ -189,6 +196,10 @@ pub const VTerm = struct {
             .params = [_]u16{0} ** 16,
             .param_count = 0,
             .private_sequence = false,
+
+            .utf8_partial = undefined,
+            .utf8_partial_have = 0,
+            .utf8_partial_expected = 0,
 
             // Text attributes - NEW in Phase 2
             .current_fg = 7, // Default white
@@ -402,6 +413,21 @@ pub const VTerm = struct {
                 .Ground => {
                     // Check if this is a UTF-8 multi-byte character
                     if (byte >= 0x80) {
+                        if (self.utf8_partial_expected > 0) {
+                            // Continuation of a sequence split across write() calls.
+                            self.utf8_partial[self.utf8_partial_have] = byte;
+                            self.utf8_partial_have += 1;
+                            i += 1;
+                            if (self.utf8_partial_have == self.utf8_partial_expected) {
+                                const seq = self.utf8_partial[0..self.utf8_partial_expected];
+                                self.utf8_partial_expected = 0;
+                                self.utf8_partial_have = 0;
+                                const char = std.unicode.utf8Decode(seq) catch continue;
+                                self.putChar(char);
+                            }
+                            continue;
+                        }
+
                         // This is part of a UTF-8 sequence
                         const utf8_len = std.unicode.utf8ByteSequenceLength(byte) catch {
                             i += 1;
@@ -417,9 +443,19 @@ pub const VTerm = struct {
                             self.putChar(char);
                             i += utf8_len;
                         } else {
-                            i += 1;
+                            // The sequence's tail lies beyond this write();
+                            // stash what we have and finish on the next call.
+                            const avail = bytes.len - i;
+                            @memcpy(self.utf8_partial[0..avail], bytes[i..]);
+                            self.utf8_partial_have = @intCast(avail);
+                            self.utf8_partial_expected = @intCast(utf8_len);
+                            i = bytes.len;
                         }
                     } else {
+                        // An ASCII byte aborts any pending partial sequence —
+                        // the stream was invalid; drop the fragment.
+                        self.utf8_partial_expected = 0;
+                        self.utf8_partial_have = 0;
                         self.handleGround(byte);
                         i += 1;
                     }
