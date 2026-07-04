@@ -40,26 +40,52 @@ pub fn addCommandTests(
 
     const shared_modules = config.shared_modules;
 
-    // Discover the project's local plugins so the stub Context includes them:
-    // a command that reads `context.plugins.<id>` then compiles under test, and
-    // a runCommand test can drive that plugin's state via `.plugins`.
+    // Plugins visible to the command-test stub Context, so a command that reads
+    // `context.plugins.<id>` compiles and a runCommand test can drive it via
+    // `.plugins`. Two sources:
+    //   - the project's local plugins (src/plugins/, discovered);
+    //   - an in-memory `zcli_secrets` — so a command that uses secure storage is
+    //     unit-testable without touching the OS keychain (or linking a native
+    //     backend). The real keychain plugin is what the app links and runs; this
+    //     stands in only for `zig build test`.
+    const plugins_dir: ?[]const u8 =
+        if (@hasField(@TypeOf(config), "plugins_dir")) config.plugins_dir else null;
     const local_plugins: []const PluginInfo =
         if (config.plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
 
+    var stub_plugins = std.ArrayList(*std.Build.Module).empty;
+    defer stub_plugins.deinit(b.allocator);
+    for (local_plugins) |plugin| {
+        const pmod = b.addModule(b.fmt("cmdtest_plugin_{s}", .{plugin.name}), .{
+            // scanLocalPlugins always sets project_path for the plugins it returns.
+            .root_source_file = b.path(plugin.project_path.?),
+            .target = config.target,
+            .optimize = config.optimize,
+        });
+        pmod.addImport("zcli", zcli_module);
+        for (shared_modules) |sm| pmod.addImport(sm.name, sm.module);
+        stub_plugins.append(b.allocator, pmod) catch @panic("OOM");
+    }
+    stub_plugins.append(b.allocator, b.addModule("cmdtest_secrets_stub", .{
+        .root_source_file = zcli_dep.path("packages/core/src/plugins/zcli_secrets/test_backend.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+    })) catch @panic("OOM");
+
     // A stub `command_registry` module: commands reference
-    // `@import("command_registry").Context`, and a TestContext (over the local
-    // plugins) makes their execute() signatures callable from runCommand.
+    // `@import("command_registry").Context`, and a TestContext (over the plugins
+    // above) makes their execute() signatures callable from runCommand.
     var stub_aw = std.Io.Writer.Allocating.init(b.allocator);
     defer stub_aw.deinit();
     const w = &stub_aw.writer;
     w.writeAll("const zcli = @import(\"zcli\");\n") catch @panic("OOM");
-    for (local_plugins, 0..) |_, i| w.print("const plugin_{d} = @import(\"plugin_{d}\");\n", .{ i, i }) catch @panic("OOM");
+    for (stub_plugins.items, 0..) |_, i| w.print("const plugin_{d} = @import(\"plugin_{d}\");\n", .{ i, i }) catch @panic("OOM");
     w.writeAll("pub const Context = zcli.TestContext(&.{") catch @panic("OOM");
-    for (local_plugins, 0..) |_, i| {
+    for (stub_plugins.items, 0..) |_, i| {
         if (i != 0) w.writeAll(",") catch @panic("OOM");
         w.print(" plugin_{d}", .{i}) catch @panic("OOM");
     }
-    w.writeAll(if (local_plugins.len == 0) "});\n" else " });\n") catch @panic("OOM");
+    w.writeAll(" });\n") catch @panic("OOM");
 
     const wf = b.addWriteFiles();
     const stub_path = wf.add("command_registry.zig", b.dupe(stub_aw.written()));
@@ -69,19 +95,7 @@ pub fn addCommandTests(
         .optimize = config.optimize,
     });
     registry_stub.addImport("zcli", zcli_module);
-    // Wire each local plugin as a module the stub imports (with the same
-    // zcli + shared_modules a command gets, since a plugin may use them).
-    for (local_plugins, 0..) |plugin, i| {
-        const pmod = b.addModule(b.fmt("cmdtest_plugin_{d}", .{i}), .{
-            // scanLocalPlugins always sets project_path for the plugins it returns.
-            .root_source_file = b.path(plugin.project_path.?),
-            .target = config.target,
-            .optimize = config.optimize,
-        });
-        pmod.addImport("zcli", zcli_module);
-        for (shared_modules) |sm| pmod.addImport(sm.name, sm.module);
-        registry_stub.addImport(b.fmt("plugin_{d}", .{i}), pmod);
-    }
+    for (stub_plugins.items, 0..) |pmod, i| registry_stub.addImport(b.fmt("plugin_{d}", .{i}), pmod);
 
     const ctx = Ctx{
         .b = b,
