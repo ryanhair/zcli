@@ -883,8 +883,17 @@ test "isNewerVersion - edge cases" {
 }
 
 test "detectPlatform - allocator handling" {
-    // Test that detectPlatform properly uses the allocator
     const allocator = std.testing.allocator;
+
+    // Upgrade is not supported on Windows yet, even though releases ship
+    // Windows binaries — detectPlatform is the guard that tells the user so.
+    // Pin that behavior here; the actual support gap is tracked in issue #114.
+    if (builtin.os.tag == .windows) {
+        try std.testing.expectError(error.UnsupportedPlatform, detectPlatform(allocator));
+        return;
+    }
+
+    // Test that detectPlatform properly uses the allocator
     const platform = try detectPlatform(allocator);
     defer allocator.free(platform);
 

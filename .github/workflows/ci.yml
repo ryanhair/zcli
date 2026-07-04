@@ -72,11 +72,14 @@ jobs:
           ./zig-out/bin/zcli.exe --version
           ./zig-out/bin/zcli.exe --help
 
-      # Run the portable packages' unit tests natively (key parsing, ANSI, etc.).
-      # The PTY-based `testing` package is POSIX-only and excluded, so the full
-      # `zig build test` aggregate isn't used here.
+      # Run every package's unit tests natively — Windows is a shipped release
+      # target, so "builds on Windows" isn't enough. Steps are enumerated
+      # instead of using the full `zig build test` aggregate because the
+      # PTY-based `testing` package is POSIX-only (and the aggregate also
+      # rebuilds every subproject via subprocess, which the build job above
+      # already covers for the CLI).
       - name: Run portable unit tests
-        run: zig build test-terminal test-zinput
+        run: zig build test-core test-terminal test-vterm test-vterm_example test-zinput test-zprogress test-ztheme test-markdown_fmt
 
   secrets:
     name: zcli_secrets backend (${{ matrix.os }})
