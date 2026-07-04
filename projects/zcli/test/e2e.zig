@@ -1081,7 +1081,9 @@ test "a command's plugin state is testable via runCommand .plugins" {
     const proj_abs = try tmpSubdirAbs(a, tmp, "app");
     try pointDependencyAtLocalTree(proj, proj_abs);
 
-    // A plugin with state (a --verbose flag).
+    // A plugin with state (a --verbose flag). init doesn't scaffold src/plugins,
+    // so create it (writeFile doesn't make parent dirs).
+    try proj.createDir(io, "src/plugins", .default_dir);
     try proj.writeFile(io, .{
         .sub_path = "src/plugins/verbose.zig",
         .data =
