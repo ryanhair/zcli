@@ -175,6 +175,7 @@ const testing = @import("zcli-testing");
 test "help flag shows usage" {
     var result = try testing.runSubprocess(
         std.testing.allocator,
+        std.testing.io,
         "./zig-out/bin/myapp",
         &.{"--help"},
     );
@@ -188,6 +189,7 @@ test "help flag shows usage" {
 test "version flag" {
     var result = try testing.runSubprocess(
         std.testing.allocator,
+        std.testing.io,
         "./zig-out/bin/myapp",
         &.{"--version"},
     );
@@ -200,6 +202,7 @@ test "version flag" {
 test "unknown command shows suggestions" {
     var result = try testing.runSubprocess(
         std.testing.allocator,
+        std.testing.io,
         "./zig-out/bin/myapp",
         &.{"hlep"},
     );
@@ -233,6 +236,7 @@ Compare command output against saved golden files. Useful for verifying help tex
 test "help output matches snapshot" {
     var result = try testing.runSubprocess(
         std.testing.allocator,
+        std.testing.io,
         "./zig-out/bin/myapp",
         &.{"--help"},
     );

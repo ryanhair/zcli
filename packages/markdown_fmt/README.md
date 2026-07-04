@@ -52,8 +52,13 @@ All format specifiers are preserved: `{s}`, `{d}`, `{d:.2}`, `{x}`, etc.
 const std = @import("std");
 const md = @import("markdown_fmt");
 
-pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
+
     const fmt = md.formatter(stdout);
 
     // Headers
@@ -86,6 +91,9 @@ pub fn main() !void {
 
     // Semantic colors
     try fmt.write("<success>All tests passed!</success>\n", .{});
+
+    // Writers are buffered in Zig 0.16 — flush before exit.
+    try stdout.flush();
 }
 ````
 

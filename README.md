@@ -41,6 +41,16 @@ Deploying api to staging
 
 ---
 
+## Installing the zcli CLI
+
+```bash
+curl -fsSL https://zcli.sh/install.sh | sh
+```
+
+The `zcli` binary is the meta-CLI for working on zcli projects: `zcli init` scaffolds a new project, `add`/`rm`/`mv` manage commands and plugins, `tree` prints the command hierarchy, `dev` watches and rebuilds, `guide` teaches the framework's idioms, and `release` cuts releases. It's the fastest way to start — but the framework is an ordinary Zig dependency, so the manual setup below works too.
+
+---
+
 ## Quick Start
 
 ### 1. Add zcli to your project
@@ -80,10 +90,10 @@ pub fn build(b: *std.Build) !void {
     const zcli = @import("zcli");
     const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",
-        .plugins = &[_]zcli.PluginConfig{
-            .{ .name = "zcli_help", .path = "packages/core/src/plugins/zcli_help" },
-            .{ .name = "zcli_version", .path = "packages/core/src/plugins/zcli_version" },
-            .{ .name = "zcli_not_found", .path = "packages/core/src/plugins/zcli_not_found" },
+        .plugins = &.{
+            zcli.builtin(.help, .{}),
+            zcli.builtin(.version, .{}),
+            zcli.builtin(.not_found, .{}),
         },
         .app_name = "myapp",
         .app_description = "My CLI application",
@@ -98,13 +108,13 @@ pub fn build(b: *std.Build) !void {
 
 ```zig
 // src/main.zig
+const std = @import("std");
 const registry = @import("command_registry");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     var app = registry.init();
-    app.run(gpa.allocator()) catch |err| switch (err) {
+    app.run(init.gpa, init.io, init.environ_map, args) catch |err| switch (err) {
         error.CommandNotFound => std.process.exit(1),
         else => return err,
     };
@@ -206,7 +216,7 @@ pub const meta = .{ .description = "Manage users" };
 
 ## Plugins
 
-zcli ships with seven plugins. Add them in `build.zig`:
+zcli ships with eight plugins. Add them in `build.zig`:
 
 | Plugin | Provides | Default? |
 |--------|----------|----------|
@@ -216,6 +226,7 @@ zcli ships with seven plugins. Add them in `build.zig`:
 | **zcli_completions** | `completions generate/install/uninstall` for bash, zsh, fish | Optional |
 | **zcli_config** | Transparent config file loading (JSON, TOML, YAML) | Optional |
 | **zcli_output** | `--output` flag (json, table, plain) | Optional |
+| **zcli_secrets** | Opt-in credential storage in the OS keychain (get/set/delete) | Optional |
 | **zcli_github_upgrade** | `upgrade` command via GitHub releases | Optional |
 
 ### Plugin context data
@@ -258,12 +269,12 @@ The `zcli_config` plugin transparently loads option defaults from a config file.
 
 ```zig
 // In build.zig plugins:
-.{ .name = "zcli_config", .path = "packages/core/src/plugins/zcli_config" },
+zcli.builtin(.config, .{}),
 ```
 
 Config file discovery (by extension priority):
 1. `--config <path>` flag
-2. `./{app_name}.config.json` / `.toml` / `.yaml` / `.yml`
+2. `.{app_name}.config.json` / `.toml` / `.yaml` / `.yml` (in the current directory)
 3. `$XDG_CONFIG_HOME/{app_name}/config.json` / `.toml` / `.yaml` / `.yml`
 
 Values cascade: **CLI flags > command config > global config > struct defaults**.
@@ -361,23 +372,21 @@ All prompts fall back to line-based input when stdin is not a TTY. The `prefix` 
 ## Progress Indicators
 
 ```zig
-const zprogress = zcli.zprogress;
+const zprogress = zcli.zprogress;  // or @import("zprogress")
 
-// Spinner
-var spinner = zprogress.spinner(.{ .style = .dots });
-spinner.start("Loading...");
-// ... do work, call spinner.tick() in a loop ...
-spinner.succeed("Done!");      // ✔ Done!
-spinner.fail("Failed");        // ✖ Failed
-spinner.warn("Warning");       // ⚠ Warning
+// Spinner — indeterminate work
+var spinner = zprogress.spinner(io, .{ .style = .dots });
+spinner.start("Connecting to server...");
+spinner.setText("Uploading changes...");
+spinner.succeed("Synced successfully"); // or .fail() / .warn() / .info() / .stop()
 
-// Progress bar
-var bar = zprogress.progressBar(.{
-    .total = 100,
+// Progress bar — known total
+var bar = zprogress.progressBar(io, .{
+    .total = items.len,
     .show_eta = true,
-    .show_rate = true,
 });
-for (0..100) |i| {
+for (items, 0..) |item, i| {
+    process(item);
     bar.update(i + 1, null);
 }
 bar.finish();
@@ -390,9 +399,10 @@ bar.finish();
 ## Theming
 
 ```zig
-const ztheme = zcli.ztheme;
+const ztheme = zcli.ztheme;  // or @import("ztheme")
 
-var theme_ctx = ztheme.Theme.init(allocator);
+// In a zcli command you already have one: `context.theme`. Standalone:
+const theme_ctx = ztheme.Theme.init(init.environ_map, io);
 
 // Fluent API
 try ztheme.theme("Error").red().bold().render(writer, &theme_ctx);
@@ -453,10 +463,16 @@ test "deploy command" {
 ### Integration testing (subprocess)
 
 ```zig
+const std = @import("std");
 const testing = @import("zcli-testing");
 
 test "help flag" {
-    var result = try testing.runSubprocess(allocator, "./zig-out/bin/myapp", &.{"--help"});
+    var result = try testing.runSubprocess(
+        std.testing.allocator,
+        std.testing.io,
+        "./zig-out/bin/myapp",
+        &.{"--help"},
+    );
     defer result.deinit();
     try testing.expectExitCode(result, 0);
     try testing.expectContains(result.stdout, "USAGE:");
@@ -466,8 +482,9 @@ test "help flag" {
 ### Snapshot testing
 
 ```zig
-try testing.expectSnapshot(allocator, result.stdout, @src(), "help_output", .{});
-// Update: UPDATE_SNAPSHOTS=1 zig build test
+try testing.expectSnapshot(allocator, io, std.Io.Dir.cwd(), result.stdout, @src(), "help_output", .{});
+// Update snapshots by threading `.update = true` from a build option:
+// zig build test -Dupdate-snapshots
 ```
 
 ---
@@ -494,7 +511,7 @@ All packages work standalone — you can use `zinput`, `zprogress`, `ztheme`, or
 The [showcase](examples/showcase/) is a fully functional task tracker CLI that demonstrates every zcli feature:
 
 - **14 commands** with args, options, aliases, and nested groups
-- **Interactive prompts** — text, confirm, select, search, number, password, editor
+- **Interactive prompts** — text, confirm, select, search, number, editor
 - **Progress indicators** — spinners and progress bars
 - **Colored output** — status badges, themed formatting
 - **JSON persistence** — read/write tasks to disk

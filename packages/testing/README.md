@@ -26,7 +26,7 @@ The testing tiers ship with the zcli dependency — no separate dependency entry
 - **Unit**: `runCommand(Command, .{ .args = ..., .options = ... })` → `CommandResult` (`.stdout`, `.stderr`, `.success`, `.err`, `.term`)
 - **Integration**: `runSubprocess(allocator, io, exe_path, args)` → `Result` (`.stdout`, `.stderr`, `.exit_code`)
 - **Assertions**: `expectExitCode`, `expectExitCodeNot`, `expectContains`, `expectNotContains`, `expectEqualStrings`, `expectValidJson`, `expectStdoutEmpty`, `expectStderrEmpty`
-- **Snapshots**: `expectSnapshot(...)` against golden files, with `maskDynamicContent` (UUIDs, timestamps, addresses) and `stripAnsi`; update with `UPDATE_SNAPSHOTS=1`
+- **Snapshots**: `expectSnapshot(...)` against golden files, with `maskDynamicContent` (UUIDs, timestamps, addresses) and `stripAnsi`; update by threading `.update = true` from a build option (`zig build test -Dupdate-snapshots`)
 - **E2E**: `e2e.InteractiveScript` builder (`.expect`, `.send`, `.sendHidden`, `.sendControl`, `.sendSignal`, `.delay`, `.withTimeout`, `.optional`), executed by `e2e.runInteractive(...)` → `InteractiveResult` (`.exit_code`, `.output`, `.success`, `.transcript`); `runInteractiveDualMode` runs the same script with and without a PTY
 
 ## Quick taste
