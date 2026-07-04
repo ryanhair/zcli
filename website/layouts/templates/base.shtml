@@ -18,7 +18,7 @@
 <header class="nav">
     <div class="wrap">
         <a class="brand" href="$site.page('').link()">
-            <span class="glyph">z</span> zcli <span class="ver mono">v0.17.0</span>
+            <span class="glyph">z</span> zcli <span class="ver mono">v<span :text="$site.asset('site-data.json').ziggy().get('version')"></span></span>
         </a>
         <nav>
             <a href="$site.page('').link().suffix('#features')">Features</a>

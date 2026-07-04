@@ -26,6 +26,9 @@ jobs:
           mv zine website/zine
           chmod +x website/zine
 
+      - name: Sync site data from build.zig.zon
+        run: ./website/sync-site-data.sh
+
       - name: Build site
         working-directory: website
         run: ./zine release
