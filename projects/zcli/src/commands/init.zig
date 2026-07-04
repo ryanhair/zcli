@@ -76,12 +76,14 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // `.app_name = "{s}"`) and becomes the directory and executable name —
     // restrict it to identifier-safe characters up front rather than escaping
     // it into every context separately.
+    // For `init .` the name is a fact of the environment, not a typo — say so.
+    const name_origin: []const u8 = if (use_current_dir) " (taken from the current directory's name)" else "";
     if (project_name.len == 0 or std.ascii.isDigit(project_name[0])) {
-        return context.fail("Error: Invalid project name '{s}'\n  Names must be non-empty and must not start with a digit", .{project_name});
+        return context.fail("Error: Invalid project name '{s}'{s}\n  Names must be non-empty and must not start with a digit", .{ project_name, name_origin });
     }
     for (project_name) |c| {
         if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') {
-            return context.fail("Error: Invalid project name '{s}'\n  Use only letters, digits, '-' and '_'", .{project_name});
+            return context.fail("Error: Invalid project name '{s}'{s}\n  Use only letters, digits, '-' and '_'", .{ project_name, name_origin });
         }
     }
 
