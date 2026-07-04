@@ -171,6 +171,39 @@ test "init scaffolds a project with the expected files and wiring" {
     try expectContains(agents, "per-command arena");
 }
 
+test "init escapes free-text --description into a valid string literal" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--description", "say \"hi\"\\back" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The quote and backslash must be escaped — unescaped, the literal
+    // terminates early and the generated build.zig doesn't compile.
+    const build_zig = try readFile(proj, a, "build.zig");
+    try expectContains(build_zig, ".app_description = \"say \\\"hi\\\"\\\\back\"");
+}
+
+test "init rejects a project name that would break generated source" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "bad\"name" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "Invalid project name");
+    // Nothing half-created is left behind.
+    try testing.expect(!fileExists(tmp.dir, "bad\"name"));
+}
+
 test "init . scaffolds into the current directory" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

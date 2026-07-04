@@ -72,6 +72,19 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     } else try allocator.dupe(u8, args.name);
     defer allocator.free(project_name);
 
+    // The name lands in generated Zig/zon source (`.name = .{s}`,
+    // `.app_name = "{s}"`) and becomes the directory and executable name —
+    // restrict it to identifier-safe characters up front rather than escaping
+    // it into every context separately.
+    if (project_name.len == 0 or std.ascii.isDigit(project_name[0])) {
+        return context.fail("Error: Invalid project name '{s}'\n  Names must be non-empty and must not start with a digit", .{project_name});
+    }
+    for (project_name) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') {
+            return context.fail("Error: Invalid project name '{s}'\n  Use only letters, digits, '-' and '_'", .{project_name});
+        }
+    }
+
     // Create a sanitized identifier-safe version (replace dashes with underscores)
     const project_identifier = blk: {
         var sanitized = try allocator.alloc(u8, project_name.len);
@@ -82,8 +95,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     };
     defer allocator.free(project_identifier);
 
-    const app_description = options.description orelse "A CLI application built with zcli";
-    const app_version = options.version orelse "0.1.0";
+    // Free-text options are embedded in generated string literals — escape so
+    // `--description 'say "hi"'` scaffolds a project that still compiles
+    // instead of breaking (or injecting code into) build.zig / build.zig.zon.
+    const app_description = try escapeStringLiteral(allocator, options.description orelse "A CLI application built with zcli");
+    defer allocator.free(app_description);
+    const app_version = try escapeStringLiteral(allocator, options.version orelse "0.1.0");
+    defer allocator.free(app_version);
 
     // Validate the target directory before prompting or creating anything, so we
     // never leave a half-created project behind if validation fails or the user
@@ -447,6 +465,23 @@ const AgentsResult = enum { created, appended, refreshed };
 /// content: create the file if absent, replace the marker-delimited block if it
 /// exists (an idempotent re-run / upgrade), or append it if the file exists but
 /// has no zcli section yet.
+/// Render `s` escaped for the inside of a double-quoted Zig/zon string
+/// literal (same rule as the registry codegen's escapeStringLiteral).
+fn escapeStringLiteral(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    try std.zig.stringEscape(s, &aw.writer);
+    var al = aw.toArrayList();
+    return al.toOwnedSlice(allocator);
+}
+
+test "escapeStringLiteral escapes quotes, backslashes, and newlines" {
+    const allocator = std.testing.allocator;
+    const escaped = try escapeStringLiteral(allocator, "say \"hi\"\nback\\slash");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("say \\\"hi\\\"\\nback\\\\slash", escaped);
+}
+
 fn scaffoldAgentsMd(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !AgentsResult {
     const existing = dir.readFileAlloc(io, "AGENTS.md", allocator, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => {
