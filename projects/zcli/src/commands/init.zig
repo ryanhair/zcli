@@ -435,7 +435,7 @@ const agents_section = agents_begin ++
     \\6. File path = command path: `src/commands/foo/bar.zig` → `app foo bar`; a directory's
     \\   `index.zig` is the group landing; plugins live in `src/plugins/`.
     \\
-    \\`zcli guide` topics: structure, sharing, arena, output, prompts, http, secrets, plugins, testing.
+    \\`zcli guide` topics: structure, sharing, storage, arena, output, prompts, http, secrets, plugins, testing.
     \\
 ++ agents_end ++ "\n";
 
