@@ -46,9 +46,11 @@ pub fn build(b: *std.Build) !void {
 
     const exe = b.addExecutable(.{
         .name = "myapp",
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // Get zcli dependency
@@ -62,19 +64,17 @@ pub fn build(b: *std.Build) !void {
 
     // Build with plugins and command discovery
     const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
-        .commands_dir = "src/commands",  // Optional, defaults to "src/commands"
+        .commands_dir = "src/commands",
         .app_name = "myapp",
         .app_description = "My CLI application",
         // Note: Version is automatically read from build.zig.zon
         .plugins = &.{
-            .{ .name = "zcli_help", .path = "path/to/help/plugin" },
-            .{ .name = "zcli_version", .path = "path/to/version/plugin" },
-            .{ .name = "zcli_not_found", .path = "path/to/suggestions/plugin" },
+            zcli.builtin(.help, .{}),
+            zcli.builtin(.version, .{}),
+            zcli.builtin(.not_found, .{}),
         },
-        .global_options = .{
-            .verbose = .{ .short = 'v', .type = bool, .default = false, .help = "Enable verbose output" },
-            .config = .{ .short = 'c', .type = ?[]const u8, .help = "Config file path" },
-        },
+        // Global options (e.g. --verbose) are declared by plugins,
+        // not here — see the Global Options section.
     });
 
     exe.root_module.addImport("command_registry", cmd_registry);
@@ -203,26 +203,34 @@ framework performs no ambient `getenv`.
 The context provides access to system resources and framework features:
 
 ```zig
+// Generated per-app as ContextFor(plugins) — sketch of the real thing
+// (packages/core/src/context.zig):
 pub const Context = struct {
-    allocator: std.mem.Allocator,
-    io: IO,                           // stdout, stderr, stdin
-    environment: Environment,         // env vars, working directory
+    allocator: std.mem.Allocator,        // arena-per-command (ADR-0001)
+    io: std.Io,                          // the explicit-I/O entry point
+    environ: *const std.process.Environ.Map,
+    theme: zcli.ztheme.Theme,            // capability-detected theming
+
+    // App metadata (filled by the registry)
     app_name: []const u8,
     app_version: []const u8,
     app_description: []const u8,
-    command_path: ?[]const []const u8,  // Hierarchical command path
+
+    // Command execution context
+    command_path: []const []const u8,
     available_commands: []const []const []const u8,
 
-    // Global options access (planned)
-    globals: GlobalOptions,
+    // Structured detail for the most recent parse/routing error (onError hooks)
+    diagnostic: ?zcli.ZcliDiagnostic,
 
-    // Type-safe extension system (planned)
-    extensions: Extensions,
+    // Plugin introspection + type-safe per-plugin state
+    global_options: []const zcli.OptionInfo,
+    plugins: PluginData,                 // context.plugins.<plugin_id>
 
-    // Convenience methods
-    pub fn stdout(self: *@This()) std.fs.File.Writer { ... }
-    pub fn stderr(self: *@This()) std.fs.File.Writer { ... }
-    pub fn stdin(self: *@This()) std.fs.File.Reader { ... }
+    // Convenience accessors (buffered — flush before exiting early)
+    pub fn stdout(self: *Self) *std.Io.Writer { ... }
+    pub fn stderr(self: *Self) *std.Io.Writer { ... }
+    pub fn stdin(self: *Self) *std.Io.Reader { ... }
 };
 ```
 
@@ -571,9 +579,11 @@ pub fn build(b: *std.Build) !void {
 
     const exe = b.addExecutable(.{
         .name = "myapp",
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const zcli_dep = b.dependency("zcli", .{
@@ -602,14 +612,12 @@ pub fn build(b: *std.Build) !void {
 const std = @import("std");
 const registry = @import("command_registry");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    var app = registry.registry.init();
+    var app = registry.init();
 
-    app.run(allocator) catch |err| switch (err) {
+    app.run(init.gpa, init.io, init.environ_map, args) catch |err| switch (err) {
         error.CommandNotFound => {
             // Error was already handled by plugins or registry
             std.process.exit(1);
@@ -617,19 +625,6 @@ pub fn main() !void {
         else => return err,
     };
 }
-```
-
-**Alternative API for custom args:**
-
-```zig
-// If you need to provide custom arguments instead of using process.argsAlloc():
-const args = try std.process.argsAlloc(allocator);
-defer std.process.argsFree(allocator, args);
-
-app.run_with_args(allocator, args[1..]) catch |err| switch (err) {
-    error.CommandNotFound => std.process.exit(1),
-    else => return err,
-};
 ```
 
 ## 11. Plugin System
@@ -647,6 +642,9 @@ pub const global_options = [_]zcli.GlobalOption{
 // Lifecycle hooks (all optional). Plugins are compiled independently of the
 // host app, so hooks take `context: anytype` rather than a named Context type.
 pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !void { }
+pub fn preParse(context: anytype, args: []const []const u8) ![]const []const u8 { }
+pub fn transformArgs(context: anytype, args: []const []const u8) !zcli.TransformResult { }
+pub fn postParse(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
 pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
 pub fn postExecute(context: anytype, result: anytype) !void { }
 pub fn onError(context: anytype, err: anyerror) !bool { }

@@ -38,7 +38,7 @@ From this directory (`cd packages/core`):
 - `zig build test-secrets-live` — CI-only round-trip against the real OS keychain
 - `zig build benchmark` / `regression` — performance runs (ReleaseFast)
 
-From the repo root, `zig build test-core` runs this package's `test` step in-process.
+All of these also run from the repo root: `zig build test-core` aggregates the `test` step in-process, and `test-secrets`, `test-secrets-live`, `benchmark`, and `regression` are forwarded as root steps.
 
 ## Dependencies
 
