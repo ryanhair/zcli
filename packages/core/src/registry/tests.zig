@@ -19,6 +19,20 @@ const build_utils = @import("../build_utils.zig");
 // TEST HELPERS
 // ============================================================================
 
+/// Run the app with framework output captured — parse-error and group-help
+/// tests otherwise spill onto the real stderr of every passing test run.
+fn runQuiet(app: anytype, environ: *const std.process.Environ.Map, argv: []const []const u8) !void {
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
+    return app.executeWithStdio(testing.allocator, std.testing.io, environ, argv, &stdio);
+}
+
 fn createTestCommands(allocator: std.mem.Allocator) !types.DiscoveredCommands {
     var commands = types.DiscoveredCommands.init(allocator);
 
@@ -688,7 +702,7 @@ test "pure command group behavior: always shows help without error" {
 
     // Test 1: Pure command group without --help should show help and succeed
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"network"});
+    try runQuiet(&app, &test_environ, &.{"network"});
 
     // Should have triggered CommandNotFound -> help showing -> error handled
     try testing.expect(TestHelpPlugin.help_shown);
@@ -696,7 +710,7 @@ test "pure command group behavior: always shows help without error" {
 
     // Test 2: Pure command group with --help should also show help and succeed
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "network", "--help" });
+    try runQuiet(&app, &test_environ, &.{ "network", "--help" });
 
     // Should have triggered help showing (same behavior regardless of --help)
     try testing.expect(TestHelpPlugin.help_shown);
@@ -709,7 +723,7 @@ test "pure command group: subcommands execute normally" {
 
     // Subcommand should execute normally without help plugin intervention
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "network", "ls" });
+    try runQuiet(&app, &test_environ, &.{ "network", "ls" });
     try testing.expect(!TestHelpPlugin.command_found_error); // Should not hit CommandNotFound
 }
 
@@ -721,7 +735,7 @@ test "error handling: plugin returns true prevents error propagation" {
     // This tests the fix - when a plugin handles CommandNotFound by returning true,
     // the registry should not propagate the error
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"nonexistent"});
+    try runQuiet(&app, &test_environ, &.{"nonexistent"});
 
     // Plugin should have handled the error
     try testing.expect(TestHelpPlugin.command_found_error);
@@ -755,7 +769,7 @@ test "metadata-only group without a handling plugin reports CommandNotFound" {
     // group is not a success.
     try testing.expectError(
         error.CommandNotFound,
-        app.execute(testing.allocator, std.testing.io, &test_environ, &.{"group"}),
+        runQuiet(&app, &test_environ, &.{"group"}),
     );
 }
 
@@ -772,7 +786,7 @@ test "metadata-only group routes through onError so the help plugin can render i
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     TestHelpPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"group"});
+    try runQuiet(&app, &test_environ, &.{"group"});
     try testing.expect(TestHelpPlugin.command_found_error);
 }
 
@@ -832,7 +846,7 @@ test "successful execution reaches postExecute with success=true" {
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     PostExecuteCapturePlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"ok"});
+    try runQuiet(&app, &test_environ, &.{"ok"});
     try testing.expectEqual(@as(?bool, true), PostExecuteCapturePlugin.post_execute_success);
     try testing.expectEqual(@as(?anyerror, null), PostExecuteCapturePlugin.seen_error);
 }
@@ -845,7 +859,7 @@ test "handled execution error is suppressed and reaches postExecute with success
     PostExecuteCapturePlugin.reset();
     // onError handles error.Boom, so execute() must not propagate it — but
     // postExecute still observes the failure.
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"fail"});
+    try runQuiet(&app, &test_environ, &.{"fail"});
     try testing.expectEqual(@as(?anyerror, error.Boom), PostExecuteCapturePlugin.seen_error);
     try testing.expectEqual(@as(?bool, false), PostExecuteCapturePlugin.post_execute_success);
 }
@@ -911,7 +925,7 @@ test "plugin-only registry routes and executes a plugin command with slice field
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     SliceFieldPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "tagged", "a", "b" });
+    try runQuiet(&app, &test_environ, &.{ "tagged", "a", "b" });
 
     try testing.expect(SliceFieldPlugin.executed);
     try testing.expectEqual(@as(usize, 2), SliceFieldPlugin.tag_count);
@@ -1065,13 +1079,13 @@ test "parse errors run onError with context.diagnostic populated" {
 
     // Unknown option: the plugin sees the error AND the precise diagnostic.
     DiagnosticCapturePlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "--bogus" });
+    try runQuiet(&app, &test_environ, &.{ "ping", "--bogus" });
     try testing.expectEqual(@as(?anyerror, error.OptionUnknown), DiagnosticCapturePlugin.captured_err);
     try testing.expectEqualStrings("bogus", DiagnosticCapturePlugin.captured.?.OptionUnknown.option_name);
 
     // Invalid value: same pipeline, different diagnostic payload.
     DiagnosticCapturePlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "--count", "lots" });
+    try runQuiet(&app, &test_environ, &.{ "ping", "--count", "lots" });
     try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), DiagnosticCapturePlugin.captured_err);
     try testing.expectEqualStrings("lots", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("count", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.option_name);
@@ -1161,7 +1175,7 @@ test "global options: full type set converts and dispatches" {
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "5", "--ratio", "1.5", "--label", "hi", "-v", "ping" });
+    try runQuiet(&app, &test_environ, &.{ "--level", "5", "--ratio", "1.5", "--label", "hi", "-v", "ping" });
     try testing.expectEqual(@as(i64, 5), TypedGlobalsPlugin.level);
     try testing.expectEqual(@as(f64, 1.5), TypedGlobalsPlugin.ratio);
     try testing.expectEqualStrings("hi", TypedGlobalsPlugin.label);
@@ -1175,13 +1189,13 @@ test "global options: short options take values (no more assume-boolean)" {
     const test_environ = std.process.Environ.Map.init(testing.allocator);
 
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "-l", "7", "ping" });
+    try runQuiet(&app, &test_environ, &.{ "-l", "7", "ping" });
     try testing.expectEqual(@as(i64, 7), TypedGlobalsPlugin.level);
     try testing.expect(TypedGlobalsPlugin.command_ran);
 
     // Negative values pass the shared next-token rule.
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "-5", "ping" });
+    try runQuiet(&app, &test_environ, &.{ "--level", "-5", "ping" });
     try testing.expectEqual(@as(i64, -5), TypedGlobalsPlugin.level);
 }
 
@@ -1192,7 +1206,7 @@ test "global options: boolean bundles are all-or-nothing" {
 
     // All chars are boolean globals: both dispatch.
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "-vd", "ping" });
+    try runQuiet(&app, &test_environ, &.{ "-vd", "ping" });
     try testing.expect(TypedGlobalsPlugin.verbose);
     try testing.expect(TypedGlobalsPlugin.debug);
     try testing.expect(TypedGlobalsPlugin.command_ran);
@@ -1201,7 +1215,7 @@ test "global options: boolean bundles are all-or-nothing" {
     // (which reports it, instead of the old behavior: consuming the token
     // and silently dropping the unknown chars).
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "-vx" });
+    try runQuiet(&app, &test_environ, &.{ "ping", "-vx" });
     try testing.expectEqual(@as(?anyerror, error.OptionUnknown), TypedGlobalsPlugin.captured_err);
     try testing.expect(!TypedGlobalsPlugin.command_ran);
 }
@@ -1213,18 +1227,18 @@ test "global options: missing and invalid values produce diagnostics" {
 
     // Value missing at end of argv.
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{"--level"});
+    try runQuiet(&app, &test_environ, &.{"--level"});
     try testing.expectEqual(@as(?anyerror, error.OptionMissingValue), TypedGlobalsPlugin.captured_err);
     try testing.expectEqualStrings("level", TypedGlobalsPlugin.captured_diag.?.OptionMissingValue.option_name);
 
     // Next token is a flag, not a value.
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "--verbose" });
+    try runQuiet(&app, &test_environ, &.{ "--level", "--verbose" });
     try testing.expectEqual(@as(?anyerror, error.OptionMissingValue), TypedGlobalsPlugin.captured_err);
 
     // Unparseable value.
     TypedGlobalsPlugin.reset();
-    try app.execute(testing.allocator, std.testing.io, &test_environ, &.{ "--level", "abc", "ping" });
+    try runQuiet(&app, &test_environ, &.{ "--level", "abc", "ping" });
     try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), TypedGlobalsPlugin.captured_err);
     try testing.expectEqualStrings("abc", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("i64", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.expected_type);

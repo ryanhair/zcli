@@ -176,7 +176,15 @@ pub fn init(config: Config) type {
             const target_version = if (args.version) |v|
                 try allocator.dupe(u8, v)
             else
-                try fetchLatestVersion(allocator, context.io, plugin_config.repo, context.app_name, api_timeout);
+                fetchLatestVersion(allocator, context.io, plugin_config.repo, context.app_name, api_timeout) catch |err| switch (err) {
+                    // Render the two "GitHub answered, but unusably" cases here,
+                    // where we have a context — selectVersion is a pure helper
+                    // and must not print (its old std.debug.print bypassed
+                    // stream overrides and violated invariant #3).
+                    error.NoMatchingRelease => return context.fail("Error: No releases found with tag prefix '{s}-v'\nExpected tag format: {s}-v<version> (e.g., {s}-v1.0.0)", .{ context.app_name, context.app_name, context.app_name }),
+                    error.UnexpectedResponse => return context.fail("Error: Unexpected response from the GitHub releases API (expected a JSON array of releases)", .{}),
+                    else => return err,
+                };
             defer allocator.free(target_version);
 
             if (options.check) {
@@ -407,7 +415,6 @@ fn selectVersion(allocator: std.mem.Allocator, body: []const u8, cli_name: []con
 
     // An array is expected; an object usually means a GitHub error response.
     if (parsed.value != .array) {
-        std.debug.print("Error: Expected JSON array of releases, got: {s}\n", .{@tagName(parsed.value)});
         return error.UnexpectedResponse;
     }
 
@@ -426,8 +433,6 @@ fn selectVersion(allocator: std.mem.Allocator, body: []const u8, cli_name: []con
         }
     }
 
-    std.debug.print("Error: No releases found with tag prefix '{s}'\n", .{tag_prefix});
-    std.debug.print("Expected tag format: {s}<version> (e.g., {s}1.0.0)\n", .{ tag_prefix, tag_prefix });
     return error.NoMatchingRelease;
 }
 

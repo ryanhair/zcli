@@ -449,6 +449,16 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         }
 
         pub fn execute(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
+            var stdio: zcli.Stdio = undefined;
+            stdio.init(io);
+            return self.executeWithStdio(allocator, io, environ, args, &stdio);
+        }
+
+        /// Like `execute`, but with a caller-provided standard-stream holder.
+        /// Tests use this to capture or silence framework output via
+        /// `Stdio.stdout_override`/`stderr_override` — without it, pipeline-
+        /// level tests spill parse errors onto the real stderr.
+        pub fn executeWithStdio(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8, stdio: *zcli.Stdio) !void {
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
@@ -471,9 +481,6 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
 
             const plugin_command_info_list = command_info;
 
-            // Create the standard-stream holder and finalize before passing to Context
-            var stdio: zcli.Stdio = undefined;
-            stdio.init(io);
             defer stdio.flush();
 
             // Arena-per-command allocator: everything the command and framework
@@ -487,7 +494,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             var context = Context{
                 .allocator = arena.allocator(),
                 .io = io,
-                .stdio = &stdio,
+                .stdio = stdio,
                 .environ = environ,
                 .theme = zcli.ztheme.Theme.init(environ, io),
                 .app_name = config.app_name,

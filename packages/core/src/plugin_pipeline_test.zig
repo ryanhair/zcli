@@ -51,7 +51,18 @@ fn run(comptime App: type, argv: []const []const u8) !void {
     var app = App.init();
     // Empty environment; mirrors registry.zig's own tests (no deinit needed).
     const environ = std.process.Environ.Map.init(testing.allocator);
-    try app.execute(testing.allocator, std.testing.io, &environ, argv);
+    // Capture framework output: these tests exercise parse failures and group
+    // help, which otherwise spill onto the real stderr of every passing
+    // `zig build test` run.
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
+    try app.executeWithStdio(testing.allocator, std.testing.io, &environ, argv, &stdio);
 }
 
 const test_config = zcli.Config{
@@ -653,7 +664,7 @@ test "pipeline: ContextData flows default -> hook mutation -> command -> deinit"
 // ---------------------------------------------------------------------------
 // Pipeline robustness against adversarial input
 //
-// security_test.zig and fuzz_test.zig feed malicious input to the parsers in
+// security_test.zig and property_test.zig feed malicious input to the parsers in
 // isolation. These push it through the *whole* `app.execute` pipeline — global
 // option scanning, value consumption, routing — which has its own arg handling
 // the parser-only tests never exercise. The contract: adversarial input is

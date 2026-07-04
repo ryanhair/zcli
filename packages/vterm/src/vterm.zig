@@ -8,7 +8,7 @@ const PositionModule = @import("position.zig");
 pub const Cell = CellModule.Cell;
 pub const Position = PositionModule.Position;
 
-// Phase 4: Testing API structures
+// Testing API structures
 pub const TerminalState = struct {
     content: []u8, // All text as single string
     cursor: Position,
@@ -19,7 +19,7 @@ pub const TerminalState = struct {
     }
 };
 
-// Phase 3: Input generation types
+// Input generation types
 pub const Key = union(enum) {
     char: u8, // ASCII character input only
     arrow_up,
@@ -59,11 +59,11 @@ pub fn charWidth(codepoint: u21) u8 {
     return if (DisplayWidth.codePointWidth(codepoint) == 2) 2 else 1;
 }
 
-// Parser state for Phase 2
+// Parser state
 const ParserState = enum {
-    Ground, // Normal text input
-    Escape, // After ESC (0x1B)
-    CSI, // After ESC[ - collecting parameters
+    ground, // Normal text input
+    escape, // After ESC (0x1B)
+    csi, // After ESC[ - collecting parameters
 };
 
 // Scrollback position info
@@ -93,7 +93,7 @@ pub const VTerm = struct {
     // Cursor state (viewport-relative)
     cursor: Position,
 
-    // Parser state - NEW in Phase 2
+    // Parser state
     parser_state: ParserState,
     params: [16]u16, // Parameter buffer (fixed size for simplicity)
     param_count: u8,
@@ -106,14 +106,14 @@ pub const VTerm = struct {
     utf8_partial_have: u8,
     utf8_partial_expected: u8,
 
-    // Current text attributes - NEW in Phase 2
+    // Current text attributes
     current_fg: u8,
     current_bg: u8,
     current_bold: bool,
     current_italic: bool,
     current_underline: bool,
 
-    // Terminal modes - NEW in Phase 2
+    // Terminal modes
     alt_screen: bool,
     cursor_visible: bool,
 
@@ -191,8 +191,8 @@ pub const VTerm = struct {
             .viewport_offset = 0,
             .cursor = Position.init(0, 0),
 
-            // Parser state - NEW in Phase 2
-            .parser_state = .Ground,
+            // Parser state
+            .parser_state = .ground,
             .params = [_]u16{0} ** 16,
             .param_count = 0,
             .private_sequence = false,
@@ -201,14 +201,14 @@ pub const VTerm = struct {
             .utf8_partial_have = 0,
             .utf8_partial_expected = 0,
 
-            // Text attributes - NEW in Phase 2
+            // Text attributes
             .current_fg = 7, // Default white
             .current_bg = 0, // Default black
             .current_bold = false,
             .current_italic = false,
             .current_underline = false,
 
-            // Terminal modes - NEW in Phase 2
+            // Terminal modes
             .alt_screen = false,
             .cursor_visible = true,
         };
@@ -396,7 +396,7 @@ pub const VTerm = struct {
         self.cursor.y = @min(self.cursor.y, new_height - 1);
     }
 
-    // ===== Phase 2: Parser Implementation =====
+    // ===== Parser Implementation =====
 
     // Main parsing interface
     pub fn write(self: *VTerm, bytes: []const u8) void {
@@ -410,7 +410,7 @@ pub const VTerm = struct {
             const byte = bytes[i];
 
             switch (self.parser_state) {
-                .Ground => {
+                .ground => {
                     // Check if this is a UTF-8 multi-byte character
                     if (byte >= 0x80) {
                         if (self.utf8_partial_expected > 0) {
@@ -460,11 +460,11 @@ pub const VTerm = struct {
                         i += 1;
                     }
                 },
-                .Escape => {
+                .escape => {
                     self.handleEscape(byte);
                     i += 1;
                 },
-                .CSI => {
+                .csi => {
                     self.handleCSI(byte);
                     i += 1;
                 },
@@ -474,7 +474,7 @@ pub const VTerm = struct {
 
     fn handleGround(self: *VTerm, byte: u8) void {
         switch (byte) {
-            0x1B => self.parser_state = .Escape, // ESC
+            0x1B => self.parser_state = .escape, // ESC
             '\r' => self.cursor.x = 0, // Carriage return
             '\n' => { // Line feed
                 self.cursor.x = 0; // Move to start of next line
@@ -508,7 +508,7 @@ pub const VTerm = struct {
         switch (byte) {
             '[' => {
                 // Start CSI sequence
-                self.parser_state = .CSI;
+                self.parser_state = .csi;
                 // Reset parameters
                 self.params = [_]u16{0} ** 16;
                 self.param_count = 0;
@@ -516,7 +516,7 @@ pub const VTerm = struct {
             },
             else => {
                 // Invalid character, abort sequence
-                self.parser_state = .Ground;
+                self.parser_state = .ground;
             },
         }
     }
@@ -542,18 +542,18 @@ pub const VTerm = struct {
             0x40...0x7E => {
                 // Final character - execute command if supported, otherwise ignore
                 self.executeCSI(byte);
-                self.parser_state = .Ground;
+                self.parser_state = .ground;
             },
             else => {
                 // Truly invalid character (control char, etc), abort sequence
                 // For characters outside the CSI final byte range, process as ground
                 if (byte < 0x40) {
                     // Control or parameter characters appearing at wrong time - abort and process
-                    self.parser_state = .Ground;
+                    self.parser_state = .ground;
                     self.handleGround(byte);
                 } else {
                     // Other invalid sequences - just abort without processing
-                    self.parser_state = .Ground;
+                    self.parser_state = .ground;
                 }
             },
         }
@@ -761,7 +761,7 @@ pub const VTerm = struct {
         }
     }
 
-    // ===== Phase 3: Input Generation =====
+    // ===== Input Generation =====
 
     pub fn inputKey(self: *VTerm, key: Key) []const u8 {
         _ = self; // VTerm not needed for key generation, kept for API consistency
@@ -820,7 +820,7 @@ pub const VTerm = struct {
         };
     }
 
-    // ===== Phase 4: Testing API =====
+    // ===== Testing API =====
 
     pub fn captureState(self: *VTerm, allocator: Allocator) !TerminalState {
         const content = try self.getAllText(allocator);

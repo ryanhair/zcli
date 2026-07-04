@@ -14,7 +14,7 @@ The zcli framework itself: argument/option parsing, the command registry and exe
 | `src/http.zig` | HTTP client with safe defaults (TLS verification, timeouts, bounded bodies, credential-header stripping on redirect) |
 | `src/build_utils/` | Build-time pipeline: command discovery, registry source generation, module wiring, `generate()` coordination, `addCommandTests` |
 | `src/diagnostic_errors.zig`, `src/logging.zig` | Error taxonomy and build/runtime logging |
-| `src/security_test.zig`, `src/fuzz_test.zig` | Security and fuzz suites (part of `zig build test`) |
+| `src/security_test.zig`, `src/property_test.zig` | Security and randomized-property suites (part of `zig build test`) |
 
 ## Build-time API (what consumers call from build.zig)
 
