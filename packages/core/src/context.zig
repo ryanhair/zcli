@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const zcli = @import("zcli.zig");
+const identifier = @import("identifier.zig");
 
 /// Field name in `context.plugins` for a plugin's ContextData: its
 /// `plugin_id` with every non-identifier character replaced by '_'.
@@ -27,7 +28,9 @@ pub fn pluginFieldName(comptime Plugin: type) [:0]const u8 {
         var result_idx: usize = 0;
         for (id) |c| {
             if (result_idx >= result.len - 1) break;
-            result[result_idx] = if (std.ascii.isAlphanumeric(c) or c == '_') c else '_';
+            // Shared rule (identifier.zig) — build-time codegen sanitizes
+            // plugin/module names with the same function.
+            result[result_idx] = identifier.sanitizeChar(c);
             result_idx += 1;
         }
         result[result_idx] = 0;

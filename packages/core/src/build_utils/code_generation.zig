@@ -1,5 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
+const identifier = @import("../identifier.zig");
+const module_names = @import("module_names.zig");
 
 const PluginInfo = types.PluginInfo;
 const DiscoveredCommands = types.DiscoveredCommands;
@@ -53,7 +55,7 @@ fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
         if (cmd_info.command_type != .leaf) {
             // Generate import for optional group with index file
             if (cmd_info.command_type == .optional_group) {
-                const module_name = try std.fmt.allocPrint(commands.allocator, "{s}_index", .{cmd_name});
+                const module_name = try module_names.indexModuleName(commands.allocator, cmd_name);
                 defer commands.allocator.free(module_name);
 
                 try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
@@ -61,11 +63,8 @@ fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
             // Generate imports for subcommands
             try generateGroupImports(writer, cmd_name, &cmd_info);
         } else {
-            const module_name = if (std.mem.eql(u8, cmd_name, "test"))
-                "cmd_test"
-            else
-                try std.fmt.allocPrint(commands.allocator, "cmd_{s}", .{cmd_name});
-            defer if (!std.mem.eql(u8, cmd_name, "test")) commands.allocator.free(module_name);
+            const module_name = try module_names.leafModuleName(commands.allocator, cmd_name);
+            defer commands.allocator.free(module_name);
 
             try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
         }
@@ -83,24 +82,7 @@ fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const Comma
 
             if (subcmd_info.command_type == .optional_group) {
                 // Generate import for optional group with index file
-                var module_name_parts = std.ArrayList([]const u8).empty;
-                defer module_name_parts.deinit(subcommands.allocator);
-
-                for (subcmd_info.path) |part| {
-                    const sanitized_part = try sanitizeIdentifier(subcommands.allocator, part);
-                    defer subcommands.allocator.free(sanitized_part);
-                    try module_name_parts.append(subcommands.allocator, try subcommands.allocator.dupe(u8, sanitized_part));
-                }
-
-                const module_name = try std.mem.join(subcommands.allocator, "_", module_name_parts.items);
-                defer {
-                    for (module_name_parts.items) |part| {
-                        subcommands.allocator.free(part);
-                    }
-                    subcommands.allocator.free(module_name);
-                }
-
-                const module_name_with_index = try std.fmt.allocPrint(subcommands.allocator, "{s}_index", .{module_name});
+                const module_name_with_index = try module_names.pathIndexModuleName(subcommands.allocator, subcmd_info.path);
                 defer subcommands.allocator.free(module_name_with_index);
 
                 try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name_with_index, module_name_with_index });
@@ -111,23 +93,10 @@ fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const Comma
                 // Pure groups have no imports, just recurse
                 try generateGroupImports(writer, subcmd_name, &subcmd_info);
             } else {
-                // Generate module name from full command path to match module_creation.zig
-                var module_name_parts = std.ArrayList([]const u8).empty;
-                defer module_name_parts.deinit(subcommands.allocator);
-
-                for (subcmd_info.path) |part| {
-                    const sanitized_part = try sanitizeIdentifier(subcommands.allocator, part);
-                    defer subcommands.allocator.free(sanitized_part);
-                    try module_name_parts.append(subcommands.allocator, try subcommands.allocator.dupe(u8, sanitized_part));
-                }
-
-                const module_name = try std.mem.join(subcommands.allocator, "_", module_name_parts.items);
-                defer {
-                    for (module_name_parts.items) |part| {
-                        subcommands.allocator.free(part);
-                    }
-                    subcommands.allocator.free(module_name);
-                }
+                // Module name from the full command path — same derivation
+                // module_creation.zig uses, via module_names.
+                const module_name = try module_names.pathModuleName(subcommands.allocator, subcmd_info.path);
+                defer subcommands.allocator.free(module_name);
 
                 try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
             }
@@ -255,7 +224,7 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
         if (cmd_info.command_type != .leaf) {
             // Register optional group with index file as a command
             if (cmd_info.command_type == .optional_group) {
-                const module_name = try std.fmt.allocPrint(allocator, "{s}_index", .{cmd_name});
+                const module_name = try module_names.indexModuleName(allocator, cmd_name);
                 defer allocator.free(module_name);
 
                 const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
@@ -268,11 +237,8 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
             // Register subcommands
             try generateGroupRegistrations(writer, cmd_name, &cmd_info, allocator);
         } else {
-            const module_name = if (std.mem.eql(u8, cmd_name, "test"))
-                "cmd_test"
-            else
-                try std.fmt.allocPrint(allocator, "cmd_{s}", .{cmd_name});
-            defer if (!std.mem.eql(u8, cmd_name, "test")) allocator.free(module_name);
+            const module_name = try module_names.leafModuleName(allocator, cmd_name);
+            defer allocator.free(module_name);
 
             // Use the actual command path from CommandInfo (it's now an array)
             const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
@@ -295,24 +261,7 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
 
             if (subcmd_info.command_type == .optional_group) {
                 // Register the optional group itself
-                var module_name_parts = std.ArrayList([]const u8).empty;
-                defer module_name_parts.deinit(allocator);
-
-                for (subcmd_info.path) |part| {
-                    const sanitized_part = try sanitizeIdentifier(allocator, part);
-                    defer allocator.free(sanitized_part);
-                    try module_name_parts.append(allocator, try allocator.dupe(u8, sanitized_part));
-                }
-
-                const module_name = try std.mem.join(allocator, "_", module_name_parts.items);
-                defer {
-                    for (module_name_parts.items) |part| {
-                        allocator.free(part);
-                    }
-                    allocator.free(module_name);
-                }
-
-                const module_name_with_index = try std.fmt.allocPrint(allocator, "{s}_index", .{module_name});
+                const module_name_with_index = try module_names.pathIndexModuleName(allocator, subcmd_info.path);
                 defer allocator.free(module_name_with_index);
 
                 const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
@@ -328,23 +277,10 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
                 // Pure groups are not registered, just recurse
                 try generateGroupRegistrations(writer, subcmd_name, &subcmd_info, allocator);
             } else {
-                // Generate module name from full command path to match module_creation.zig
-                var module_name_parts = std.ArrayList([]const u8).empty;
-                defer module_name_parts.deinit(allocator);
-
-                for (subcmd_info.path) |part| {
-                    const sanitized_part = try sanitizeIdentifier(allocator, part);
-                    defer allocator.free(sanitized_part);
-                    try module_name_parts.append(allocator, try allocator.dupe(u8, sanitized_part));
-                }
-
-                const module_name = try std.mem.join(allocator, "_", module_name_parts.items);
-                defer {
-                    for (module_name_parts.items) |part| {
-                        allocator.free(part);
-                    }
-                    allocator.free(module_name);
-                }
+                // Module name from the full command path — same derivation
+                // module_creation.zig uses, via module_names.
+                const module_name = try module_names.pathModuleName(allocator, subcmd_info.path);
+                defer allocator.free(module_name);
 
                 // Use the actual command path from the CommandInfo (it's now an array)
                 const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
@@ -368,17 +304,11 @@ fn generatePluginRegistrations(writer: anytype, plugins: []const PluginInfo, all
     }
 }
 
-/// Convert plugin name to valid Zig variable name (replace hyphens with
-/// underscores). Always returns an allocation the caller owns — the previous
-/// `catch plugin_name` swallowed OOM and emitted the unsanitized name.
+/// Convert a plugin name to a valid Zig variable name. Uses the shared
+/// identifier rule (identifier.zig) — the same one context.pluginFieldName
+/// applies to plugin ids at comptime.
 fn pluginVarName(allocator: std.mem.Allocator, plugin_name: []const u8) ![]u8 {
-    return std.mem.replaceOwned(u8, allocator, plugin_name, "-", "_");
-}
-
-/// Sanitize command name to valid Zig identifier (replace hyphens with
-/// underscores). Always returns an allocation the caller owns.
-fn sanitizeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    return std.mem.replaceOwned(u8, allocator, name, "-", "_");
+    return identifier.sanitize(allocator, plugin_name);
 }
 
 // ============================================================================
