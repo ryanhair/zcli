@@ -11,7 +11,23 @@ pub const ztheme = @import("ztheme");
 pub const markdown_fmt = @import("markdown_fmt");
 pub const zprogress = @import("zprogress");
 pub const zinput = @import("zinput");
-pub const serde = @import("serde");
+
+/// Config-file deserialization shims for the zcli_config plugin. Plugin
+/// modules import only "zcli", so the plugin cannot depend on serde directly;
+/// these two functions are the entire surface it needs. serde itself is an
+/// internal dependency — re-exporting its whole API here would make a
+/// third-party crate part of zcli's public contract.
+pub const config_parse = struct {
+    const serde = @import("serde");
+
+    pub fn fromToml(comptime T: type, allocator: std.mem.Allocator, content: []const u8) !T {
+        return serde.toml.fromSlice(T, allocator, content);
+    }
+
+    pub fn fromYaml(comptime T: type, allocator: std.mem.Allocator, content: []const u8) !T {
+        return serde.yaml.fromSlice(T, allocator, content);
+    }
+};
 
 /// HTTP client with safe defaults (TLS verification on, bounded response body)
 /// over `std.http.Client`. See http.zig.
