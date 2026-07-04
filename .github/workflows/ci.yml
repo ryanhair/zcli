@@ -176,8 +176,12 @@ jobs:
         run: zig build build-examples
 
   e2e:
-    name: zcli end-to-end tests
-    runs-on: ubuntu-latest
+    name: zcli end-to-end tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -188,7 +192,22 @@ jobs:
           version: 0.16.0
 
       # Runs the built zcli binary against throwaway temp projects, including a
-      # tier that scaffolds a project and builds it against the local tree.
+      # tier that scaffolds a project and builds it against the local tree, and
+      # an interactive tier that drives prompts through a real PTY. The PTY
+      # harness is POSIX-only, so this runs on both Linux and macOS to cover
+      # both kernels' PTY behavior (the harness has caught macOS-specific bugs:
+      # its 4 KiB PTY buffer, EIO-on-close semantics).
+      #
+      # The interactive tests degrade to a skip — not a failure — where PTY
+      # allocation is denied, so a green run could silently lose that coverage;
+      # grep the log to prove the PTY tier actually ran.
       - name: Run e2e tests
         working-directory: projects/zcli
-        run: zig build e2e
+        shell: bash
+        run: |
+          set -eo pipefail
+          zig build e2e 2>&1 | tee e2e.log
+          if grep -q "runInteractive unavailable" e2e.log; then
+            echo "ERROR: interactive PTY tests were skipped (PTY allocation unavailable)"
+            exit 1
+          fi
