@@ -165,7 +165,7 @@ pub fn build(b: *std.Build) !void {
 
     // End-to-end tests: run the built binary against temp projects. Kept out of
     // the `test` step because the build-and-run tier compiles zcli from source
-    // and is slow. See test/e2e.zig and .context/e2e-test-plan.md.
+    // and is slow. See test/e2e.zig.
     const e2e_options = b.addOptions();
     e2e_options.addOption([]const u8, "zcli_exe", b.getInstallPath(.bin, "zcli"));
     e2e_options.addOption([]const u8, "repo_root", b.path("../..").getPath(b));
