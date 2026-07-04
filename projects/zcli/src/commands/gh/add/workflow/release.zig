@@ -20,9 +20,7 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
     const cwd = std.Io.Dir.cwd();
     const io = context.io;
     cwd.access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     // Create .github/workflows directory
