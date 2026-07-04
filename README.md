@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addImport("zcli", zcli_module);
 
     const zcli = @import("zcli");
-    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .plugins = &.{
             zcli.builtin(.help, .{}),
@@ -421,7 +421,7 @@ Generate markdown, man pages, or HTML documentation from your command metadata â
 
 ```zig
 // In build.zig, after generate():
-zcli.generateDocs(b, cmd_registry, zcli_dep, zcli_module, .{
+zcli.generateDocs(b, cmd_registry, zcli_dep, .{
     .formats = &.{ "markdown", "man", "html" },
     .output_dir = "docs",
 });

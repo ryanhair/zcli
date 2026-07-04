@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) !void {
         .{ .name = "store", .module = store_module },
     };
 
-    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .plugins = &.{
             zcli.builtin(.help, .{}),
@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
 
-    _ = zcli.addCommandTests(b, zcli_dep, zcli_module, .{
+    _ = zcli.addCommandTests(b, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,
         .optimize = optimize,

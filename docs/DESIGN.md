@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addImport("zcli", zcli_module);
 
     // Build with plugins and command discovery
-    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .app_name = "myapp",
         .app_description = "My CLI application",
@@ -594,7 +594,7 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addImport("zcli", zcli_module);
 
     // zcli build integration
-    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .app_name = "myapp",
         .app_description = "My awesome CLI app",
@@ -665,7 +665,7 @@ pub const commands = struct {
 Plugins are registered in build.zig:
 
 ```zig
-const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
     .plugins = &.{
         zcli.builtin(.help, .{}),
         zcli.builtin(.not_found, .{}),

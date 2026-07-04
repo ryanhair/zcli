@@ -20,9 +20,9 @@ The zcli framework itself: argument/option parsing, the command registry and exe
 
 Re-exported through the zcli package root — `const zcli = @import("zcli");`:
 
-- `generate(b, exe, zcli_dep, zcli_module, config: GenerateConfig) !*Module` — discover commands, generate the registry
-- `generateDocs(b, registry, zcli_dep, zcli_module, config: DocsConfig)` — markdown/man/html docs on every build
-- `addCommandTests(b, zcli_dep, zcli_module, config: CommandTestsConfig)` — per-command unit-test wiring
+- `generate(b, exe, zcli_dep, config: GenerateConfig) !*Module` — discover commands, generate the registry
+- `generateDocs(b, registry, zcli_dep, config: DocsConfig)` — markdown/man/html docs on every build
+- `addCommandTests(b, zcli_dep, config: CommandTestsConfig)` — per-command unit-test wiring
 - `builtin(tag, config)` — register a shipped plugin by tag
 - Types: `GenerateConfig`, `DocsConfig`, `CommandTestsConfig`, `PluginConfig`, `SharedModule`
 

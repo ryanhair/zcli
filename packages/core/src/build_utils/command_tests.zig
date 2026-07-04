@@ -33,9 +33,9 @@ const PluginInfo = types.PluginInfo;
 pub fn addCommandTests(
     b: *std.Build,
     zcli_dep: *std.Build.Dependency,
-    zcli_module: *std.Build.Module,
     config: types.CommandTestsConfig,
 ) *std.Build.Step {
+    const zcli_module = zcli_dep.module("zcli");
     const test_step = b.step("test", "Run command unit tests");
 
     const shared_modules = config.shared_modules;

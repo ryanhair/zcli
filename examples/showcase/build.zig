@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) !void {
 
     const zcli = @import("zcli");
 
-    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .plugins = &.{
             zcli.builtin(.help, .{}),
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) !void {
 
     exe.root_module.addImport("command_registry", cmd_registry);
 
-    zcli.generateDocs(b, cmd_registry, zcli_dep, zcli_module, .{
+    zcli.generateDocs(b, cmd_registry, zcli_dep, .{
         .formats = &.{ "markdown", "html" },
         .output_dir = "docs",
     });
@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) !void {
 
     // Per-command unit tests (the scaffolded-project idiom): compiles each
     // command file as its own test root so its `test` blocks run.
-    _ = zcli.addCommandTests(b, zcli_dep, zcli_module, .{
+    _ = zcli.addCommandTests(b, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,
         .optimize = optimize,
