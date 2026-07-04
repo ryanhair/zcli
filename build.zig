@@ -109,8 +109,10 @@ pub fn build(b: *std.Build) void {
         const print_start = b.addSystemCommand(&.{"echo"});
         print_start.addArg(b.fmt("\n==> Running tests for {s} ({s})", .{ project.name, project.path }));
 
-        // Run the test step from the subproject directory
-        const project_test_run = b.addSystemCommand(&.{"zig"});
+        // Run the test step from the subproject directory. b.graph.zig_exe is
+        // the compiler running THIS build — a bare "zig" from PATH can resolve
+        // to a different toolchain under version managers like mise.
+        const project_test_run = b.addSystemCommand(&.{b.graph.zig_exe});
         project_test_run.addArgs(&.{ "build", "test" });
         project_test_run.setCwd(b.path(project.path));
         project_test_run.step.dependOn(&print_start.step);
@@ -146,7 +148,7 @@ pub fn build(b: *std.Build) void {
         const example_build_step = b.step(b.fmt("build-{s}", .{example.name}), b.fmt("Build {s} example", .{example.name}));
 
         // Run the build for this example
-        const example_build_run = b.addSystemCommand(&.{"zig"});
+        const example_build_run = b.addSystemCommand(&.{b.graph.zig_exe});
         example_build_run.addArgs(&.{"build"});
         example_build_run.setCwd(b.path(example.path));
 
@@ -166,7 +168,7 @@ pub fn build(b: *std.Build) void {
         const cli_build_step = b.step(b.fmt("build-{s}", .{cli.name}), b.fmt("Build {s} CLI", .{cli.name}));
 
         // Run the build for this CLI
-        const cli_build_run = b.addSystemCommand(&.{"zig"});
+        const cli_build_run = b.addSystemCommand(&.{b.graph.zig_exe});
         cli_build_run.addArgs(&.{"build"});
         cli_build_run.setCwd(b.path(cli.path));
 

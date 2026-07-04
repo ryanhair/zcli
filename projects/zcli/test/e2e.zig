@@ -1313,10 +1313,16 @@ test "interactive: add command drives the wizard and echoes typed input" {
         &.{ zcli_exe, "add", "command" },
         script,
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
-    ) catch |err| {
-        // PTY allocation can be denied in some sandboxes; don't fail the suite.
-        std.debug.print("runInteractive unavailable: {any}\n", .{err});
-        return;
+    ) catch |err| switch (err) {
+        // PTY allocation can be denied in some sandboxes; skip rather than fail
+        // (CI greps the log for this line and fails if the tier silently
+        // skipped). Every other error is a real harness/test failure — a
+        // catch-all here made harness bugs read as skips.
+        error.PtyAllocationFailed => {
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
     };
     defer result.deinit();
 
@@ -1363,10 +1369,16 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
         &.{ zcli_exe, "add", "command" },
         script,
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
-    ) catch |err| {
-        // PTY allocation can be denied in some sandboxes; don't fail the suite.
-        std.debug.print("runInteractive unavailable: {any}\n", .{err});
-        return;
+    ) catch |err| switch (err) {
+        // PTY allocation can be denied in some sandboxes; skip rather than fail
+        // (CI greps the log for this line and fails if the tier silently
+        // skipped). Every other error is a real harness/test failure — a
+        // catch-all here made harness bugs read as skips.
+        error.PtyAllocationFailed => {
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
     };
     defer result.deinit();
 
@@ -1406,10 +1418,16 @@ test "interactive: init's plugin multi-select toggles an opt-in plugin" {
         &.{ zcli_exe, "init", "myapp" },
         script,
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 30000 },
-    ) catch |err| {
-        // PTY allocation can be denied in some sandboxes; don't fail the suite.
-        std.debug.print("runInteractive unavailable: {any}\n", .{err});
-        return;
+    ) catch |err| switch (err) {
+        // PTY allocation can be denied in some sandboxes; skip rather than fail
+        // (CI greps the log for this line and fails if the tier silently
+        // skipped). Every other error is a real harness/test failure — a
+        // catch-all here made harness bugs read as skips.
+        error.PtyAllocationFailed => {
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
     };
     defer result.deinit();
 
