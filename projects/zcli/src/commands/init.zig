@@ -106,17 +106,14 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         }
 
         if (has_visible_files) {
-            try stderr.print("Error: Current directory is not empty\n", .{});
-            try stderr.print("Tip: only hidden files and an existing AGENTS.md are allowed\n", .{});
-            return error.DirectoryNotEmpty;
+            return context.fail("Error: Current directory is not empty\nTip: only hidden files and an existing AGENTS.md are allowed", .{});
         }
 
         try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
     } else {
         // Check if directory already exists (access succeeds => the path exists).
         if (cwd.access(io, args.name, .{})) |_| {
-            try stderr.print("Error: Directory '{s}' already exists\n", .{args.name});
-            return error.PathAlreadyExists;
+            return context.fail("Error: Directory '{s}' already exists", .{args.name});
         } else |err| switch (err) {
             error.FileNotFound => {}, // Good, directory doesn't exist
             else => return err,

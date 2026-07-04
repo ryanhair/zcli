@@ -35,22 +35,17 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const arena = arena_state.allocator();
 
     const io = context.io;
-    const stderr = context.stderr();
 
     std.Io.Dir.cwd().access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     if (args.names.len == 0) {
-        try stderr.print("Error: name at least one argument to remove\n", .{});
-        return error.MissingName;
+        return context.fail("Error: name at least one argument to remove", .{});
     }
 
     const parts = spec.parsePath(arena, args.command) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{args.command});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid command path: '{s}'", .{args.command});
     };
     const file_path = try spec.buildFilePath(arena, parts);
 
@@ -58,14 +53,12 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const names = try arena.alloc([]const u8, args.names.len);
     for (args.names, 0..) |raw, i| {
         names[i] = spec.normalizeName(arena, raw) catch |err| {
-            try stderr.print("Error: Invalid argument name '{s}': {s}\n", .{ raw, @errorName(err) });
-            return err;
+            return context.fail("Error: Invalid argument name '{s}': {s}", .{ raw, @errorName(err) });
         };
     }
 
     const raw = std.Io.Dir.cwd().readFileAlloc(io, file_path, arena, .limited(max_source_bytes)) catch {
-        try stderr.print("Error: Command not found: {s}\n", .{file_path});
-        return error.CommandNotFound;
+        return context.fail("Error: Command not found: {s}", .{file_path});
     };
     var source = try arena.dupeZ(u8, raw);
 
@@ -73,13 +66,13 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     // (Removal only relaxes ordering constraints, so no re-validation is needed.)
     const missing = try splice.missingFields(arena, source, "Args", names);
     if (missing.len > 0) {
-        try stderr.print("Error: {s} has no argument named ", .{file_path});
+        var msg = std.Io.Writer.Allocating.init(arena);
+        try msg.writer.print("Error: {s} has no argument named ", .{file_path});
         for (missing, 0..) |m, i| {
-            if (i > 0) try stderr.print(", ", .{});
-            try stderr.print("'{s}'", .{m});
+            if (i > 0) try msg.writer.print(", ", .{});
+            try msg.writer.print("'{s}'", .{m});
         }
-        try stderr.print("\n", .{});
-        return error.FieldNotFound;
+        return context.fail("{s}", .{msg.written()});
     }
 
     for (names) |name| {

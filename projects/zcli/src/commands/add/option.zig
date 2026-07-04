@@ -62,37 +62,38 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     // Preflight: must be inside a zcli project.
     std.Io.Dir.cwd().access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     const parts = spec.parsePath(arena, args.command) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{args.command});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid command path: '{s}'", .{args.command});
     };
     const file_path = try spec.buildFilePath(arena, parts);
 
     const name = spec.normalizeName(arena, args.name) catch |err| {
-        try stderr.print("Error: Invalid option name '{s}': {s}\n", .{ args.name, @errorName(err) });
-        return err;
+        return context.fail("Error: Invalid option name '{s}': {s}", .{ args.name, @errorName(err) });
     };
 
-    const opt = try buildSpec(arena, stderr, name, options);
+    // buildSpec prints the specific problem to stderr; its validation failures
+    // are user mistakes, so exit cleanly (no trace). Anything else is unexpected.
+    const opt = buildSpec(arena, stderr, name, options) catch |err| switch (err) {
+        error.MissingType,
+        error.ContradictoryFlags,
+        error.UnsupportedArrayElement,
+        error.BadShort,
+        error.MissingDefault,
+        => return error.CommandFailed,
+        else => return err,
+    };
 
     // Read the target command's source (NUL-terminated for the AST parser).
     const raw = std.Io.Dir.cwd().readFileAlloc(io, file_path, arena, .limited(max_source_bytes)) catch {
-        try stderr.print("Error: Command not found: {s}\n", .{file_path});
-        try stderr.print("Create it first with `zcli add command {s}`\n", .{args.command});
-        return error.CommandNotFound;
+        return context.fail("Error: Command not found: {s}\nCreate it first with `zcli add command {s}`", .{ file_path, args.command });
     };
     const source = try arena.dupeZ(u8, raw);
 
     const updated = splice.insertOption(arena, source, opt) catch |err| switch (err) {
-        splice.SpliceError.DuplicateField => {
-            try stderr.print("Error: {s} already has an option named '{s}'\n", .{ file_path, name });
-            return err;
-        },
+        splice.SpliceError.DuplicateField => return context.fail("Error: {s} already has an option named '{s}'", .{ file_path, name }),
         else => {
             try stderr.print("Error: could not edit {s}: {s}\n", .{ file_path, @errorName(err) });
             return err;

@@ -42,13 +42,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const arena = arena_state.allocator();
 
     const io = context.io;
-    const stderr = context.stderr();
 
     // Preflight: must be inside a zcli project.
     std.Io.Dir.cwd().access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     // Interactive on a TTY, classic skeleton when piped. Args and options are
@@ -66,24 +63,19 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 // ---------------------------------------------------------------------------
 
 fn skeleton(arena: std.mem.Allocator, context: *Context, args: Args, options: Options) !void {
-    const stderr = context.stderr();
     const io = context.io;
 
     const raw_path = args.path orelse {
-        try stderr.print("Error: A command path is required when input is not interactive\n", .{});
-        try stderr.print("Usage: zcli add command <path> [--description \"...\"]\n", .{});
-        return error.MissingCommandPath;
+        return context.fail("Error: A command path is required when input is not interactive\nUsage: zcli add command <path> [--description \"...\"]", .{});
     };
 
     const parts = parsePath(arena, raw_path) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{raw_path});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid command path: '{s}'", .{raw_path});
     };
 
     const file_path = try buildFilePath(arena, parts);
     if (generate.fileExists(io, file_path)) {
-        try stderr.print("Error: Command already exists: {s}\n", .{file_path});
-        return error.CommandAlreadyExists;
+        return context.fail("Error: Command already exists: {s}", .{file_path});
     }
 
     const description = options.description orelse "TODO: Add description";

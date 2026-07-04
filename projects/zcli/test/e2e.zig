@@ -334,6 +334,8 @@ test "add command outside a project fails clearly" {
     defer r.deinit();
     try testing.expect(r.exit_code != 0);
     try expectContains(r.stderr, "Not in a zcli project");
+    // A user mistake exits cleanly via context.fail() — no raw error trace.
+    try testing.expect(std.mem.indexOf(u8, r.stderr, "error: NotInZcliProject") == null);
 }
 
 test "unknown option prints the diagnostic message, exits 1, no error trace" {

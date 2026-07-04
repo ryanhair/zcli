@@ -37,17 +37,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const arena = arena_state.allocator();
 
     const io = context.io;
-    const stderr = context.stderr();
 
     std.Io.Dir.cwd().access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     const parts = spec.parsePath(arena, args.path) catch {
-        try stderr.print("Error: Invalid group path: '{s}'\n", .{args.path});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid group path: '{s}'", .{args.path});
     };
 
     // A group is a directory of subcommands, described by its index.zig.
@@ -56,8 +52,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     const cwd = std.Io.Dir.cwd();
     if (fileExists(io, index_path)) {
-        try stderr.print("Error: group already described: {s}\n", .{index_path});
-        return error.GroupAlreadyExists;
+        return context.fail("Error: group already described: {s}", .{index_path});
     }
 
     // Create the group directory (and any missing parents).
