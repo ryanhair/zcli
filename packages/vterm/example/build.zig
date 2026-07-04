@@ -4,10 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Import vterm module
-    const vterm_mod = b.createModule(.{
-        .root_source_file = b.path("../src/vterm.zig"),
-    });
+    // vterm as a proper dependency (see build.zig.zon), so its own module
+    // wiring (the zg DisplayWidth data) comes along instead of being
+    // hand-rolled here and drifting.
+    const vterm_dep = b.dependency("vterm", .{ .target = target, .optimize = optimize });
+    const vterm_mod = vterm_dep.module("vterm");
 
     // Build the example CLI application
     const exe = b.addExecutable(.{
