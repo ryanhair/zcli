@@ -123,15 +123,17 @@ const Version = struct {
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
-    var stderr = context.stderr();
 
     const io = context.io;
     // 0. Validate this is a zcli-based project (not the zcli repo itself)
-    try validateZcliProject(allocator, io, stderr);
+    try validateZcliProject(allocator, io, context);
 
     // 1. Parse CLI name from build.zig.zon
     stdout.print("→ Reading build.zig.zon...\n", .{}) catch {};
-    const cli_name = try parseCliName(allocator, io);
+    const cli_name = parseCliName(allocator, io) catch |err| switch (err) {
+        error.NameNotFound => return context.fail("Error: Could not find .name field in build.zig.zon\n  Expected format: .name = \"myapp\" or .name = .myapp", .{}),
+        else => return err,
+    };
     defer allocator.free(cli_name);
     stdout.print("  CLI name: {s}\n", .{cli_name}) catch {};
 
@@ -160,35 +162,29 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                     const initial_version = if (is_bump_type)
                         Version{ .major = 0, .minor = 1, .patch = 0 }
                     else
-                        try Version.parse(args.version);
+                        Version.parse(args.version) catch return context.fail("✗ Invalid version format: {s}\n  Version must be in format: MAJOR.MINOR.PATCH (e.g., 0.1.0)", .{args.version});
                     break :blk initial_version;
                 }
 
                 try stdout.print("Create initial release tag? [Y/n]: ", .{});
                 const response = readLine(allocator, io) catch |read_err| {
-                    if (read_err == error.InputTooLong) {
-                        try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
-                        return error.InputTooLong;
-                    }
+                    if (read_err == error.InputTooLong)
+                        return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
                     return read_err;
                 };
                 defer allocator.free(response);
                 const trimmed = std.mem.trim(u8, response, " \t\r\n");
 
                 if (std.mem.eql(u8, trimmed, "n") or std.mem.eql(u8, trimmed, "N")) {
-                    try stderr.print("\nTo create manually:\n", .{});
-                    try stderr.print("  git tag -a {s}-v0.1.0 -m \"Initial release\"\n", .{cli_name});
-                    return err;
+                    return context.fail("\nTo create manually:\n  git tag -a {s}-v0.1.0 -m \"Initial release\"", .{cli_name});
                 }
 
                 // If user provided explicit version, use it; otherwise prompt
                 const version_to_use = if (is_bump_type) blk2: {
                     try stdout.print("  Initial version (default: 0.1.0): ", .{});
                     const version_input = readLine(allocator, io) catch |read_err| {
-                        if (read_err == error.InputTooLong) {
-                            try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
-                            return error.InputTooLong;
-                        }
+                        if (read_err == error.InputTooLong)
+                            return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
                         return read_err;
                     };
                     defer allocator.free(version_input);
@@ -196,10 +192,8 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                     break :blk2 if (initial_version_str.len == 0) "0.1.0" else initial_version_str;
                 } else args.version;
 
-                const initial_version = Version.parse(version_to_use) catch |parse_err| {
-                    try stderr.print("✗ Invalid version format: {s}\n", .{version_to_use});
-                    try stderr.print("  Version must be in format: MAJOR.MINOR.PATCH (e.g., 0.1.0)\n", .{});
-                    return parse_err;
+                const initial_version = Version.parse(version_to_use) catch {
+                    return context.fail("✗ Invalid version format: {s}\n  Version must be in format: MAJOR.MINOR.PATCH (e.g., 0.1.0)", .{version_to_use});
                 };
 
                 try stdout.print("\n  Creating initial tag {s}-v{s}...\n", .{ cli_name, version_to_use });
@@ -230,7 +224,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         {
             break :blk current_version.bump(args.version);
         } else {
-            break :blk try Version.parse(args.version);
+            break :blk Version.parse(args.version) catch return context.fail("✗ Invalid version format: {s}\n  Version must be in format: MAJOR.MINOR.PATCH (e.g., 0.1.0)", .{args.version});
         }
     };
 
@@ -250,8 +244,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         defer allocator.free(status_result);
 
         if (status_result.len > 0) {
-            try stderr.print("✗ Working tree is not clean. Commit or stash changes first.\n", .{});
-            return error.DirtyWorkingTree;
+            return context.fail("✗ Working tree is not clean. Commit or stash changes first.", .{});
         }
         stdout.print("  ✓ Working tree is clean\n", .{}) catch {};
 
@@ -261,8 +254,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 
         const current_branch = std.mem.trim(u8, branch_result, "\n ");
         if (!std.mem.eql(u8, current_branch, options.branch)) {
-            try stderr.print("✗ Not on branch '{s}' (currently on '{s}')\n", .{ options.branch, current_branch });
-            return error.WrongBranch;
+            return context.fail("✗ Not on branch '{s}' (currently on '{s}')", .{ options.branch, current_branch });
         }
         stdout.print("  ✓ On branch: {s}\n", .{current_branch}) catch {};
     }
@@ -274,8 +266,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
             stdout.print("  (dry-run: would run 'zig build test')\n", .{}) catch {};
         } else {
             _ = runCommand(allocator, io, &.{ "zig", "build", "test" }) catch |err| {
-                try stderr.print("✗ Tests failed: {}\n", .{err});
-                return error.TestsFailed;
+                return context.fail("✗ Tests failed: {}", .{err});
             };
             stdout.print("  ✓ All tests passed\n", .{}) catch {};
         }
@@ -299,10 +290,8 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     if (options.message == null and !options.@"dry-run") {
         stdout.print("\nContinue with release {s}-v{s}? [Y/n]: ", .{ cli_name, new_version_str }) catch {};
         const response = readLine(allocator, io) catch |read_err| {
-            if (read_err == error.InputTooLong) {
-                try stderr.print("✗ Input too long (max {d} characters)\n", .{MAX_INPUT_LENGTH});
-                return error.InputTooLong;
-            }
+            if (read_err == error.InputTooLong)
+                return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
             return read_err;
         };
         defer allocator.free(response);
@@ -415,13 +404,11 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 
 /// Validate that this is a zcli-based CLI project (not the zcli framework itself)
 /// Checks that build.zig.zon has zcli as a dependency
-fn validateZcliProject(allocator: std.mem.Allocator, io: std.Io, stderr: anytype) !void {
+fn validateZcliProject(allocator: std.mem.Allocator, io: std.Io, context: anytype) !void {
     const zon_path = "build.zig.zon";
 
-    const file = std.Io.Dir.cwd().openFile(io, zon_path, .{}) catch |err| {
-        try stderr.print("✗ Error: Could not open {s}: {}\n", .{ zon_path, err });
-        try stderr.print("  Make sure you're running this command from a project root directory.\n", .{});
-        return err;
+    const file = std.Io.Dir.cwd().openFile(io, zon_path, .{}) catch {
+        return context.fail("✗ Error: Could not open {s}\n  Make sure you're running this command from a project root directory.", .{zon_path});
     };
     defer file.close(io);
 
@@ -447,16 +434,16 @@ fn validateZcliProject(allocator: std.mem.Allocator, io: std.Io, stderr: anytype
     }
 
     if (!has_zcli_dependency) {
-        try stderr.print("✗ Error: This doesn't appear to be a zcli-based CLI project.\n", .{});
-        try stderr.print("\n", .{});
-        try stderr.print("  The 'release' command is for releasing zcli-based CLI applications.\n", .{});
-        try stderr.print("  It requires zcli as a dependency in build.zig.zon.\n", .{});
-        try stderr.print("\n", .{});
-        try stderr.print("  If you're working on the zcli framework itself, use the workflow:\n", .{});
-        try stderr.print("    cd projects/zcli\n", .{});
-        try stderr.print("    zcli release <version>\n", .{});
-        try stderr.print("\n", .{});
-        return error.NotAZcliProject;
+        return context.fail(
+            \\✗ Error: This doesn't appear to be a zcli-based CLI project.
+            \\
+            \\  The 'release' command is for releasing zcli-based CLI applications.
+            \\  It requires zcli as a dependency in build.zig.zon.
+            \\
+            \\  If you're working on the zcli framework itself, use the workflow:
+            \\    cd projects/zcli
+            \\    zcli release <version>
+        , .{});
     }
 }
 
@@ -506,8 +493,7 @@ fn parseCliName(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
         }
     }
 
-    std.debug.print("Error: Could not find .name field in {s}\n", .{zon_path});
-    std.debug.print("Expected format: .name = \"myapp\" or .name = .myapp\n", .{});
+    // The message is rendered by the caller via context.fail (see execute).
     return error.NameNotFound;
 }
 
