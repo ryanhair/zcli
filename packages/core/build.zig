@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
     // Integration and edge case tests
     const integration_test_files = [_][]const u8{
         "src/system_validation_test.zig",
-        // "src/build_integration_test.zig", // Needs rework for 0.16 *Build-based discoverCommands
+        "src/build_integration_test.zig",
     };
 
     // Security and fuzzing test files (separate category due to different requirements)

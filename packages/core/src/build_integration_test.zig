@@ -1,448 +1,254 @@
+//! Integration tests for build-time command discovery and registry generation:
+//! real temp directory trees pushed through `discoverInDir` (the shared core
+//! both the build and `zcli tree` use), and the discovered structures pushed
+//! through `generateComptimeRegistrySource`.
+//!
+//! Discovery and codegen work from file *names and structure* only — neither
+//! reads file contents — so command files here are one-line placeholders.
+
 const std = @import("std");
-const build_utils = @import("build_utils.zig");
 const command_discovery = @import("build_utils/command_discovery.zig");
+const code_generation = @import("build_utils/code_generation.zig");
 const types = @import("build_utils/types.zig");
 
-/// Integration tests for the build system command discovery and registry generation.
-/// These tests verify that the build-time code generation works correctly across
-/// various command structures and edge cases.
+const testing = std.testing;
 
-// Test helper to create temporary command directories
-const TestDir = struct {
-    dir: std.testing.TmpDir,
-    path: []const u8,
-    allocator: std.mem.Allocator,
+const placeholder = "pub fn execute() void {}";
 
-    fn init(allocator: std.mem.Allocator) !TestDir {
-        var tmp_dir = std.testing.tmpDir(.{});
-        const path = try tmp_dir.dir.realpathAlloc(allocator, ".");
-        return TestDir{
-            .dir = tmp_dir,
-            .path = path,
-            .allocator = allocator,
+/// Write `sub_path`, creating any missing parent directories.
+fn writeNested(dir: std.Io.Dir, io: std.Io, sub_path: []const u8, data: []const u8) !void {
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, sub_path, i, '/')) |slash| {
+        dir.createDir(io, sub_path[0..slash], .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
         };
+        i = slash + 1;
     }
+    try dir.writeFile(io, .{ .sub_path = sub_path, .data = data });
+}
 
-    fn deinit(self: *TestDir) void {
-        self.allocator.free(self.path);
-        self.dir.cleanup();
-    }
+fn discover(tmp: *std.testing.TmpDir) !command_discovery.DiscoveredCommands {
+    const io = testing.io;
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+    return command_discovery.discoverInDir(testing.allocator, io, dir);
+}
 
-    fn createFile(self: *TestDir, relative_path: []const u8, content: []const u8) !void {
-        // Create parent directories if needed
-        if (std.fs.path.dirname(relative_path)) |dirname| {
-            try self.dir.dir.makePath(dirname);
-        }
-
-        const file = try self.dir.dir.createFile(relative_path, .{});
-        defer file.close();
-        try file.writeAll(content);
-    }
+const test_config = types.BuildConfig{
+    .commands_dir = "", // not used by code generation
+    .plugins_dir = null,
+    .plugins = null,
+    .app_name = "testapp",
+    .app_version = "1.0.0",
+    .app_description = "Test CLI application",
 };
 
 test "build integration: basic command discovery" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Create a simple command structure
-    try test_dir.createFile("hello.zig",
-        \\const zcli = @import("zcli");
-        \\
-        \\pub const Args = struct {
-        \\    name: []const u8,
-        \\};
-        \\
-        \\pub fn execute(args: Args, options: struct{}, context: *zcli.Context) !void {
-        \\    try context.stdout().print("Hello, {s}!\n", .{args.name});
-        \\}
-    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "hello.zig", .data = placeholder });
+    try tmp.dir.writeFile(io, .{ .sub_path = "version.zig", .data = placeholder });
 
-    try test_dir.createFile("version.zig",
-        \\const zcli = @import("zcli");
-        \\
-        \\pub fn execute(args: struct{}, options: struct{}, context: *zcli.Context) !void {
-        \\    try context.stdout().print("v1.0.0\n", .{});
-        \\}
-    );
-
-    // Test command discovery
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
 
-    // Verify commands were discovered
-    try std.testing.expect(discovered.root.contains("hello"));
-    try std.testing.expect(discovered.root.contains("version"));
-    try std.testing.expectEqual(@as(u32, 2), discovered.root.count());
+    try testing.expect(discovered.root.contains("hello"));
+    try testing.expect(discovered.root.contains("version"));
+    try testing.expectEqual(@as(u32, 2), discovered.root.count());
 }
 
 test "build integration: nested command groups" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Create nested command structure
-    try test_dir.createFile("users/index.zig",
-        \\const zcli = @import("zcli");
-        \\pub fn execute(args: struct{}, options: struct{}, context: *zcli.Context) !void {
-        \\    try context.stdout().print("User management\n", .{});
-        \\}
-    );
+    try writeNested(tmp.dir, io, "users/index.zig", placeholder);
+    try writeNested(tmp.dir, io, "users/list.zig", placeholder);
+    try writeNested(tmp.dir, io, "users/create.zig", placeholder);
+    try writeNested(tmp.dir, io, "users/permissions/list.zig", placeholder);
 
-    try test_dir.createFile("users/list.zig",
-        \\const zcli = @import("zcli");
-        \\pub fn execute(args: struct{}, options: struct{}, context: *zcli.Context) !void {
-        \\    try context.stdout().print("Listing users\n", .{});
-        \\}
-    );
-
-    try test_dir.createFile("users/create.zig",
-        \\const zcli = @import("zcli");
-        \\pub const Args = struct { name: []const u8 };
-        \\pub fn execute(args: Args, options: struct{}, context: *zcli.Context) !void {
-        \\    try context.stdout().print("Creating user: {s}\n", .{args.name});
-        \\}
-    );
-
-    // Add deeply nested structure
-    try test_dir.createFile("users/permissions/list.zig",
-        \\const zcli = @import("zcli");
-        \\pub fn execute(args: struct{}, options: struct{}, context: *zcli.Context) !void {
-        \\    try context.stdout().print("Listing permissions\n", .{});
-        \\}
-    );
-
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
 
-    // Verify top-level groups
-    try std.testing.expect(discovered.root.contains("users"));
-    try std.testing.expectEqual(@as(u32, 1), discovered.root.count());
+    try testing.expect(discovered.root.contains("users"));
+    try testing.expectEqual(@as(u32, 1), discovered.root.count());
 
-    // Verify users group structure
+    // index.zig is the group's default command, not a subcommand.
     const users_group = discovered.root.get("users").?;
-    try std.testing.expect(users_group.command_type != .leaf);
-    // index.zig is no longer a subcommand - it's the group's default command
-    try std.testing.expect(!users_group.subcommands.?.contains("index"));
-    try std.testing.expect(users_group.subcommands.?.contains("list"));
-    try std.testing.expect(users_group.subcommands.?.contains("create"));
-    try std.testing.expect(users_group.subcommands.?.contains("permissions"));
-    try std.testing.expectEqual(@as(u32, 3), users_group.subcommands.?.count());
+    try testing.expect(users_group.command_type == .optional_group);
+    try testing.expect(!users_group.subcommands.?.contains("index"));
+    try testing.expect(users_group.subcommands.?.contains("list"));
+    try testing.expect(users_group.subcommands.?.contains("create"));
+    try testing.expect(users_group.subcommands.?.contains("permissions"));
+    try testing.expectEqual(@as(u32, 3), users_group.subcommands.?.count());
 
-    // Verify nested permissions group
+    // The nested group has no index.zig -> pure group.
     const permissions_group = users_group.subcommands.?.get("permissions").?;
-    try std.testing.expect(permissions_group.command_type != .leaf);
-    try std.testing.expect(permissions_group.subcommands.?.contains("list"));
-    try std.testing.expectEqual(@as(u32, 1), permissions_group.subcommands.?.count());
+    try testing.expect(permissions_group.command_type == .pure_group);
+    try testing.expect(permissions_group.subcommands.?.contains("list"));
+    try testing.expectEqual(@as(u32, 1), permissions_group.subcommands.?.count());
 }
 
-test "build integration: command name validation" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
+test "build integration: invalid and hidden names are skipped" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Create files with valid and invalid names
-    try test_dir.createFile("valid-name.zig", "pub fn execute() !void {}");
-    try test_dir.createFile("valid_name.zig", "pub fn execute() !void {}");
-    try test_dir.createFile("ValidName123.zig", "pub fn execute() !void {}");
+    try tmp.dir.writeFile(io, .{ .sub_path = "valid-name.zig", .data = placeholder });
+    try tmp.dir.writeFile(io, .{ .sub_path = "valid_name.zig", .data = placeholder });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ValidName123.zig", .data = placeholder });
 
-    // Invalid names that should be skipped
-    try test_dir.createFile("invalid name.zig", "pub fn execute() !void {}"); // space
-    try test_dir.createFile("invalid@name.zig", "pub fn execute() !void {}"); // special char
-    try test_dir.createFile("../traverse.zig", "pub fn execute() !void {}"); // path traversal
-    try test_dir.createFile(".hidden.zig", "pub fn execute() !void {}"); // hidden file
+    try tmp.dir.writeFile(io, .{ .sub_path = "invalid name.zig", .data = placeholder }); // space
+    try tmp.dir.writeFile(io, .{ .sub_path = "invalid@name.zig", .data = placeholder }); // special char
+    try tmp.dir.writeFile(io, .{ .sub_path = ".hidden.zig", .data = placeholder }); // hidden file
+    try tmp.dir.writeFile(io, .{ .sub_path = "_helper.zig", .data = placeholder }); // helper convention
 
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
 
-    // Only valid names should be discovered
-    try std.testing.expect(discovered.root.contains("valid-name"));
-    try std.testing.expect(discovered.root.contains("valid_name"));
-    try std.testing.expect(discovered.root.contains("ValidName123"));
+    try testing.expect(discovered.root.contains("valid-name"));
+    try testing.expect(discovered.root.contains("valid_name"));
+    try testing.expect(discovered.root.contains("ValidName123"));
 
-    // Invalid names should be skipped
-    try std.testing.expect(!discovered.root.contains("invalid name"));
-    try std.testing.expect(!discovered.root.contains("invalid@name"));
-    try std.testing.expect(!discovered.root.contains("../traverse"));
-    try std.testing.expect(!discovered.root.contains(".hidden"));
+    try testing.expect(!discovered.root.contains("invalid name"));
+    try testing.expect(!discovered.root.contains("invalid@name"));
+    try testing.expect(!discovered.root.contains(".hidden"));
+    try testing.expect(!discovered.root.contains("_helper"));
 
-    try std.testing.expectEqual(@as(u32, 3), discovered.root.count());
+    try testing.expectEqual(@as(u32, 3), discovered.root.count());
 }
 
 test "build integration: empty directories and edge cases" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Create empty directory structure
-    try test_dir.dir.dir.makeDir("empty_group");
-    try test_dir.dir.dir.makeDir("group_with_subdirs");
-    try test_dir.dir.dir.makePath("group_with_subdirs/empty_subdir");
+    try tmp.dir.createDir(io, "empty_group", .default_dir);
+    try tmp.dir.createDir(io, "group_with_subdirs", .default_dir);
+    try writeNested(tmp.dir, io, "group_with_subdirs/empty_subdir/.keep", "");
 
-    // Group with only index file
-    try test_dir.createFile("index_only/index.zig", "pub fn execute() !void {}");
+    try writeNested(tmp.dir, io, "index_only/index.zig", placeholder);
+    try writeNested(tmp.dir, io, "no_index/subcmd.zig", placeholder);
 
-    // Group with no index but with subcommands
-    try test_dir.createFile("no_index/subcmd.zig", "pub fn execute() !void {}");
-
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
 
-    // Empty directories should not be included
-    try std.testing.expect(!discovered.root.contains("empty_group"));
-    try std.testing.expect(!discovered.root.contains("group_with_subdirs"));
-
-    // Groups with content should be included
-    try std.testing.expect(discovered.root.contains("index_only"));
-    try std.testing.expect(discovered.root.contains("no_index"));
+    // Directories with no commands anywhere below them are not groups.
+    try testing.expect(!discovered.root.contains("empty_group"));
+    try testing.expect(!discovered.root.contains("group_with_subdirs"));
 
     const index_only = discovered.root.get("index_only").?;
-    try std.testing.expect(index_only.command_type != .leaf);
-    // index.zig is no longer a subcommand - it's the group's default command
-    try std.testing.expect(!index_only.subcommands.?.contains("index"));
+    try testing.expect(index_only.command_type == .optional_group);
+    try testing.expect(!index_only.subcommands.?.contains("index"));
 
     const no_index = discovered.root.get("no_index").?;
-    try std.testing.expect(no_index.command_type != .leaf);
-    try std.testing.expect(no_index.subcommands.?.contains("subcmd"));
-    try std.testing.expect(!no_index.subcommands.?.contains("index"));
+    try testing.expect(no_index.command_type == .pure_group);
+    try testing.expect(no_index.subcommands.?.contains("subcmd"));
 }
 
 test "build integration: maximum nesting depth" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Create nested structure within allowed depth
-    const within_depth_path = "level1/level2/level3/level4/level5/cmd.zig";
-    try test_dir.createFile(within_depth_path, "pub fn execute() !void {}");
+    // Within the depth limit (6): discovered.
+    try writeNested(tmp.dir, io, "level1/level2/level3/level4/level5/cmd.zig", placeholder);
+    // Beyond the limit: the whole chain ends up empty and is dropped.
+    try writeNested(tmp.dir, io, "deep/l1/l2/l3/l4/l5/l6/l7/ignored.zig", placeholder);
 
-    // Create structure within the max depth boundary
-    const max_depth_path = "a/b/c/d/e/boundary.zig";
-    try test_dir.createFile(max_depth_path, "pub fn execute() !void {}");
-
-    // Try to create structure beyond max depth (should be ignored)
-    const beyond_depth_path = "deep/l1/l2/l3/l4/l5/l6/l7/ignored.zig";
-    try test_dir.createFile(beyond_depth_path, "pub fn execute() !void {}");
-
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
 
-    // Should discover the structure within allowed depth
-    try std.testing.expect(discovered.root.contains("level1"));
-    try std.testing.expect(discovered.root.contains("a"));
+    try testing.expect(discovered.root.contains("level1"));
+    try testing.expect(!discovered.root.contains("deep"));
 
-    // Should NOT discover the structure beyond max depth
-    try std.testing.expect(!discovered.root.contains("deep"));
-
-    // Navigate to verify we can reach the command at level5
+    // The command at level5 is reachable through the group chain.
     var current = discovered.root.get("level1").?;
-    try std.testing.expect(current.command_type != .leaf);
-    try std.testing.expect(current.subcommands.?.contains("level2"));
-
     current = current.subcommands.?.get("level2").?;
-    try std.testing.expect(current.command_type != .leaf);
-    try std.testing.expect(current.subcommands.?.contains("level3"));
-
-    // Should be able to reach level5 where our command is
     current = current.subcommands.?.get("level3").?;
     current = current.subcommands.?.get("level4").?;
     current = current.subcommands.?.get("level5").?;
-    try std.testing.expect(current.subcommands.?.contains("cmd"));
+    try testing.expect(current.subcommands.?.contains("cmd"));
 }
 
-const code_generation = @import("build_utils/code_generation.zig");
+test "build integration: registry source generation from a discovered tree" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-test "build integration: registry source generation" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
+    try tmp.dir.writeFile(io, .{ .sub_path = "hello.zig", .data = placeholder });
+    try writeNested(tmp.dir, io, "users/list.zig", placeholder);
 
-    // Create a simple command structure for registry generation
-    try test_dir.createFile("hello.zig",
-        \\const zcli = @import("zcli");
-        \\
-        \\pub const Args = struct { name: []const u8 };
-        \\pub const Options = struct { loud: bool = false };
-        \\
-        \\pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-        \\    const greeting = if (options.loud) "HELLO" else "Hello";
-        \\    try context.stdout().print("{s}, {s}!\n", .{greeting, args.name});
-        \\}
-    );
-
-    try test_dir.createFile("users/list.zig",
-        \\const zcli = @import("zcli");
-        \\
-        \\pub const Options = struct { format: enum { json, table } = .table };
-        \\
-        \\pub fn execute(args: struct{}, options: Options, context: *zcli.Context) !void {
-        \\    try context.stdout().print("Listing users in {s} format\n", .{@tagName(options.format)});
-        \\}
-    );
-
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
 
-    // Generate registry source
-    const config = types.BuildConfig{
-        .commands_dir = "", // Not used in code generation
-        .plugins_dir = null,
-        .plugins = null,
-        .app_name = "testapp",
-        .app_version = "1.0.0",
-        .app_description = "Test CLI application",
-    };
+    const source = try code_generation.generateComptimeRegistrySource(testing.allocator, discovered, test_config, &.{});
+    defer testing.allocator.free(source);
 
-    // Call the new function with no plugins
-    const registry_source = try code_generation.generateComptimeRegistrySource(allocator, discovered, config, &.{});
-    defer allocator.free(registry_source);
+    // App metadata constants.
+    try testing.expect(std.mem.indexOf(u8, source, "pub const app_name = \"testapp\"") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "pub const app_version = \"1.0.0\"") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "Test CLI application") != null);
 
-    // Verify the generated source contains expected elements
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const app_name = \"testapp\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const app_version = \"1.0.0\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "Test CLI application") != null);
+    // Registry shape and exports.
+    try testing.expect(std.mem.indexOf(u8, source, "const RegistryType = zcli.Registry.init") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "pub const Context = RegistryType.Context;") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "pub fn init() RegistryType") != null);
 
-    // Verify new comptime registry format
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "const RegistryType = zcli.Registry.init") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".build();") != null);
-
-    // Verify registry exports
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub const Context = RegistryType.Context;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "pub fn init() RegistryType") != null);
-
-    // Note: The new comptime registry approach doesn't need cleanup functions
-
-    // The new comptime registry approach handles memory management differently
+    // Both commands are registered, the nested one by its full path.
+    try testing.expect(std.mem.indexOf(u8, source, ".register(\"hello\", cmd_hello)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".register(\"users list\"") != null);
 }
 
-test "build integration: special command names" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
+test "build integration: a Zig-keyword command name is registered" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Test command with name that's a Zig keyword
-    try test_dir.createFile("test.zig", "pub fn execute() !void {}");
+    try tmp.dir.writeFile(io, .{ .sub_path = "test.zig", .data = placeholder });
 
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
 
-    try std.testing.expect(discovered.root.contains("test"));
+    try testing.expect(discovered.root.contains("test"));
 
-    // Generate registry to verify special name handling
-    const config = types.BuildConfig{
-        .commands_dir = "", // Not used in code generation
-        .plugins_dir = null,
-        .plugins = null,
-        .app_name = "testapp",
-        .app_version = "1.0.0",
-        .app_description = "Test CLI",
-    };
+    const source = try code_generation.generateComptimeRegistrySource(testing.allocator, discovered, test_config, &.{});
+    defer testing.allocator.free(source);
 
-    // Call the new function with no plugins
-    const registry_source = try code_generation.generateComptimeRegistrySource(allocator, discovered, config, &.{});
-    defer allocator.free(registry_source);
-
-    // Verify that 'test' command is properly registered in new format
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, "cmd_test") != null);
-    try std.testing.expect(std.mem.indexOf(u8, registry_source, ".register(\"test\", cmd_test)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".register(\"test\", cmd_test)") != null);
 }
 
-test "build integration: isValidCommandName function" {
-    // Test the validation function directly
-    try std.testing.expect(command_discovery.isValidCommandName("hello"));
-    try std.testing.expect(command_discovery.isValidCommandName("hello-world"));
-    try std.testing.expect(command_discovery.isValidCommandName("hello_world"));
-    try std.testing.expect(command_discovery.isValidCommandName("hello123"));
-    try std.testing.expect(command_discovery.isValidCommandName("UPPERCASE"));
-    try std.testing.expect(command_discovery.isValidCommandName("Mixed-Case_123"));
+test "build integration: discovery and generation scale to many commands" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Invalid names
-    try std.testing.expect(!command_discovery.isValidCommandName(""));
-    try std.testing.expect(!command_discovery.isValidCommandName("../traverse"));
-    try std.testing.expect(!command_discovery.isValidCommandName("hello/world"));
-    try std.testing.expect(!command_discovery.isValidCommandName("hello\\world"));
-    try std.testing.expect(!command_discovery.isValidCommandName(".hidden"));
-    try std.testing.expect(!command_discovery.isValidCommandName("hello world"));
-    try std.testing.expect(!command_discovery.isValidCommandName("hello@world"));
-    try std.testing.expect(!command_discovery.isValidCommandName("hello$world"));
-    try std.testing.expect(!command_discovery.isValidCommandName("hello;rm -rf"));
-}
-
-test "build integration: error handling for invalid paths" {
-    const allocator = std.testing.allocator;
-
-    // Test with non-existent directory
-    const result = command_discovery.discoverCommands(allocator, "/nonexistent/directory/path");
-    try std.testing.expectError(error.FileNotFound, result);
-
-    // Test with path traversal attempt
-    const traversal_result = command_discovery.discoverCommands(allocator, "../../../etc");
-    try std.testing.expectError(error.InvalidPath, traversal_result);
-}
-
-test "build integration: performance with many commands" {
-    const allocator = std.testing.allocator;
-    var test_dir = try TestDir.init(allocator);
-    defer test_dir.deinit();
-
+    // Correctness at scale only — no wall-clock assertions, which are flaky by
+    // construction on shared CI runners.
     const num_commands = 100;
-    const command_template =
-        \\const zcli = @import("zcli");
-        \\pub fn execute(args: struct{{}}, options: struct{{}}, context: *zcli.Context) !void {{
-        \\    try context.stdout().print("Command {}\n", .{{{}}});
-        \\}}
-    ;
-
-    // Create many commands
     var i: u32 = 0;
     while (i < num_commands) : (i += 1) {
-        const filename = try std.fmt.allocPrint(allocator, "cmd{}.zig", .{i});
-        defer allocator.free(filename);
-
-        const content = try std.fmt.allocPrint(allocator, command_template, .{ i, i });
-        defer allocator.free(content);
-
-        try test_dir.createFile(filename, content);
+        var name_buf: [32]u8 = undefined;
+        const filename = try std.fmt.bufPrint(&name_buf, "cmd{d}.zig", .{i});
+        try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = placeholder });
     }
 
-    // Measure discovery performance
-    const start_time = std.time.nanoTimestamp();
-    var discovered = try command_discovery.discoverCommands(allocator, test_dir.path);
+    var discovered = try discover(&tmp);
     defer discovered.deinit();
-    const discovery_time = std.time.nanoTimestamp() - start_time;
 
-    // Verify all commands were discovered
-    try std.testing.expectEqual(@as(u32, num_commands), discovered.root.count());
+    try testing.expectEqual(@as(u32, num_commands), discovered.root.count());
 
-    // Discovery should complete within reasonable time (adjust threshold as needed)
-    const max_discovery_time_ns = 100_000_000; // 100ms
-    try std.testing.expect(discovery_time < max_discovery_time_ns);
+    const source = try code_generation.generateComptimeRegistrySource(testing.allocator, discovered, test_config, &.{});
+    defer testing.allocator.free(source);
 
-    // Measure registry generation performance
-    const gen_start_time = std.time.nanoTimestamp();
-    const config = types.BuildConfig{
-        .commands_dir = "", // Not used in code generation
-        .plugins_dir = null,
-        .plugins = null,
-        .app_name = "perftest",
-        .app_version = "1.0.0",
-        .app_description = "Performance test CLI",
-    };
-
-    // Call the new function with no plugins
-    const registry_source = try code_generation.generateComptimeRegistrySource(allocator, discovered, config, &.{});
-    defer allocator.free(registry_source);
-    const generation_time = std.time.nanoTimestamp() - gen_start_time;
-
-    // Registry generation should also complete within reasonable time
-    const max_generation_time_ns = 200_000_000; // 200ms
-    try std.testing.expect(generation_time < max_generation_time_ns);
-
-    // Verify generated source contains all commands
     i = 0;
     while (i < num_commands) : (i += 1) {
-        const search_pattern = try std.fmt.allocPrint(allocator, ".register(\"cmd{}\", cmd_cmd{})", .{ i, i });
-        defer allocator.free(search_pattern);
-        try std.testing.expect(std.mem.indexOf(u8, registry_source, search_pattern) != null);
+        var pat_buf: [64]u8 = undefined;
+        const pattern = try std.fmt.bufPrint(&pat_buf, ".register(\"cmd{d}\", cmd_cmd{d})", .{ i, i });
+        try testing.expect(std.mem.indexOf(u8, source, pattern) != null);
     }
 }
