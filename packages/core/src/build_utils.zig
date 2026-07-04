@@ -15,6 +15,7 @@ pub const PluginConfig = @import("build_utils/types.zig").PluginConfig;
 // reference the submodules so their tests are collected.
 test {
     _ = @import("build_utils/types.zig");
+    _ = @import("build_utils/discovery_types.zig");
     _ = @import("build_utils/command_discovery.zig");
     _ = @import("build_utils/code_generation.zig");
     _ = @import("build_utils/main.zig");

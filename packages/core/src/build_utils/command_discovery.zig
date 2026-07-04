@@ -1,9 +1,10 @@
 const std = @import("std");
 const logging = @import("../logging.zig");
-const types = @import("types.zig");
+const types = @import("discovery_types.zig");
 
 // Re-exported so runtime consumers (e.g. the `zcli tree` tool) can name the
-// types returned by discovery without reaching into build_utils/types.
+// types returned by discovery. discovery_types.zig is runtime-safe — the
+// std.Build-only build_utils/types.zig never enters the runtime module graph.
 pub const CommandInfo = types.CommandInfo;
 pub const CommandType = types.CommandType;
 pub const DiscoveredCommands = types.DiscoveredCommands;

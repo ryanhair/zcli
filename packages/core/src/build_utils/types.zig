@@ -1,8 +1,17 @@
 const std = @import("std");
 
 // ============================================================================
-// SHARED TYPES - Used across build utility modules
+// BUILD-TIME TYPES - Used across build utility modules
+//
+// Everything here may reference std.Build. The runtime-safe discovery types
+// (CommandType/CommandInfo/DiscoveredCommands) live in discovery_types.zig and
+// are re-exported below for build-time convenience — runtime code imports
+// discovery_types.zig (via command_discovery) and never this file.
 // ============================================================================
+
+pub const CommandType = @import("discovery_types.zig").CommandType;
+pub const CommandInfo = @import("discovery_types.zig").CommandInfo;
+pub const DiscoveredCommands = @import("discovery_types.zig").DiscoveredCommands;
 
 /// Information about a plugin (local or external)
 pub const PluginInfo = struct {
@@ -16,73 +25,6 @@ pub const PluginInfo = struct {
     /// the project-relative source path, resolved with `b.path`. Null for
     /// framework built-ins, which live in the zcli package (`zcli_dep.path`).
     project_path: ?[]const u8 = null,
-};
-
-/// Command type classification
-pub const CommandType = enum {
-    /// Leaf command - regular .zig file that can have Args and Options
-    leaf,
-    /// Pure command group - directory without index.zig, always shows help
-    pure_group,
-    /// Optional command group - directory with index.zig, can execute but no Args allowed
-    optional_group,
-};
-
-/// Information about a discovered command
-pub const CommandInfo = struct {
-    name: []const u8,
-    path: []const []const u8, // Array of command path components
-    file_path: []const u8, // Filesystem path for module loading
-    command_type: CommandType,
-    hidden: bool = false, // Whether this command should be hidden from help/completions
-    subcommands: ?std.StringHashMap(CommandInfo),
-
-    pub fn deinit(self: *CommandInfo, allocator: std.mem.Allocator) void {
-        // Free allocated strings
-        allocator.free(self.name);
-        allocator.free(self.file_path);
-        // Free path components
-        for (self.path) |component| {
-            allocator.free(component);
-        }
-        allocator.free(self.path);
-
-        // Free subcommands if they exist
-        if (self.subcommands) |*subcmds| {
-            var iterator = subcmds.iterator();
-            while (iterator.next()) |entry| {
-                // Free subcommand keys
-                allocator.free(entry.key_ptr.*);
-                // Free subcommand values
-                entry.value_ptr.deinit(allocator);
-            }
-            subcmds.deinit();
-        }
-    }
-};
-
-/// Container for all discovered commands
-pub const DiscoveredCommands = struct {
-    allocator: std.mem.Allocator,
-    root: std.StringHashMap(CommandInfo),
-
-    pub fn init(allocator: std.mem.Allocator) DiscoveredCommands {
-        return DiscoveredCommands{
-            .allocator = allocator,
-            .root = std.StringHashMap(CommandInfo).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *DiscoveredCommands) void {
-        var iterator = self.root.iterator();
-        while (iterator.next()) |entry| {
-            // Free the HashMap key (allocated string)
-            self.allocator.free(entry.key_ptr.*);
-            // Free the command info
-            entry.value_ptr.deinit(self.allocator);
-        }
-        self.root.deinit();
-    }
 };
 
 /// Shared module that should be available to all commands
