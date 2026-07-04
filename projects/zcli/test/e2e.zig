@@ -208,30 +208,60 @@ test "init . scaffolds into the current directory" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "." });
+    // `init .` derives the project name from the directory name, and tmpDir's
+    // random name can start with a digit (rejected by name validation) — run
+    // inside a stable, valid-named subdirectory.
+    try tmp.dir.createDir(io, "myapp", .default_dir);
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+
+    var r = try run(proj, &.{ zcli_exe, "init", "." });
     defer r.deinit();
     try expectOk(r);
 
-    try testing.expect(fileExists(tmp.dir, "build.zig"));
-    try testing.expect(fileExists(tmp.dir, "src/commands/hello.zig"));
+    try testing.expect(fileExists(proj, "build.zig"));
+    try testing.expect(fileExists(proj, "src/commands/hello.zig"));
+}
+
+test "init . rejects a directory name that can't be a project name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A leading digit can't become the zon `.name` enum literal; the error
+    // must say the name came from the directory, not leave the user guessing.
+    try tmp.dir.createDir(io, "7wonders", .default_dir);
+    var proj = try tmp.dir.openDir(io, "7wonders", .{});
+    defer proj.close(io);
+
+    var r = try run(proj, &.{ zcli_exe, "init", "." });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "Invalid project name");
+    try expectContains(r.stderr, "current directory");
+    try testing.expect(!fileExists(proj, "build.zig"));
 }
 
 test "init . appends to a pre-existing AGENTS.md instead of refusing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    // Stable subdirectory: see "init . scaffolds into the current directory".
+    try tmp.dir.createDir(io, "myapp", .default_dir);
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+
     // A directory whose only visible file is the user's own AGENTS.md — init
     // treats it as appendable, not a conflict (ADR-0008).
-    try tmp.dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "# House rules\n\nRun the linter.\n" });
+    try proj.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "# House rules\n\nRun the linter.\n" });
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "." });
+    var r = try run(proj, &.{ zcli_exe, "init", "." });
     defer r.deinit();
     try expectOk(r);
-    try testing.expect(fileExists(tmp.dir, "build.zig"));
+    try testing.expect(fileExists(proj, "build.zig"));
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const agents = try readFile(tmp.dir, arena.allocator(), "AGENTS.md");
+    const agents = try readFile(proj, arena.allocator(), "AGENTS.md");
     try expectContains(agents, "# House rules"); // user content preserved
     try expectContains(agents, "Run the linter.");
     try expectContains(agents, "<!-- zcli:begin -->"); // zcli section appended
