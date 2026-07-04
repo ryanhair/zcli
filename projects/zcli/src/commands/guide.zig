@@ -352,10 +352,18 @@ const topics = [_]Topic{
         \\  }
         \\
         \\`r` also exposes `.stderr`, `.err`, and `.term` (a virtual terminal for
-        \\asserting on rendered color/layout). Pass plugin types as the second arg to
-        \\populate context.plugins. A command that fails with `context.fail(...)` is
-        \\assertable too — `!r.success`, `r.err.? == error.CommandFailed`, and the
-        \\message in `r.stderr` — because it returns an error instead of exiting.
+        \\asserting on rendered color/layout). A command that reads a plugin's state
+        \\via `context.plugins.<id>` is testable directly — set that state with
+        \\`.plugins` (the project's plugins are already in scope; pass `&.{}`):
+        \\
+        \\  var r = try zcli_testing.runCommand(@This(), &.{}, .{
+        \\      .args = .{ .name = "Ada" },
+        \\      .plugins = .{ .verbose = .{ .enabled = true } },
+        \\  });
+        \\
+        \\A command that fails with `context.fail(...)` is assertable too —
+        \\`!r.success`, `r.err.? == error.CommandFailed`, and the message in
+        \\`r.stderr` — because it returns an error instead of exiting.
         \\
         \\runCommand runs execute() in-process against the real filesystem and the
         \\real cwd — it captures I/O, not the disk. A command that reads or writes

@@ -1072,6 +1072,83 @@ test "a shared module reaches both commands and their tests" {
     }
 }
 
+test "a command's plugin state is testable via runCommand .plugins" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "app", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const proj_abs = try tmpSubdirAbs(a, tmp, "app");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // A plugin with state (a --verbose flag). init doesn't scaffold src/plugins,
+    // so create it (writeFile doesn't make parent dirs).
+    try proj.createDir(io, "src/plugins", .default_dir);
+    try proj.writeFile(io, .{
+        .sub_path = "src/plugins/verbose.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\pub const plugin_id = "verbose";
+        \\pub const ContextData = struct { enabled: bool = false };
+        \\pub const global_options = [_]zcli.GlobalOption{
+        \\    zcli.option("verbose", bool, .{ .short = 'v', .default = false, .description = "Verbose" }),
+        \\};
+        \\pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !void {
+        \\    if (std.mem.eql(u8, name, "verbose")) context.plugins.verbose.enabled = value;
+        \\}
+        \\
+        ,
+    });
+
+    // A command that reads `context.plugins.verbose` UNGUARDED, with a test that
+    // drives that state via `.plugins`. Compiles only if addCommandTests made the
+    // stub Context plugin-aware; passes only if runCommand set the plugin state.
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/greet.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\const Context = @import("command_registry").Context;
+        \\pub const meta = .{ .description = "greet" };
+        \\pub const Args = struct { name: []const u8 };
+        \\pub const Options = struct {};
+        \\pub fn execute(args: Args, _: Options, context: *Context) !void {
+        \\    if (context.plugins.verbose.enabled)
+        \\        try context.stderr().print("[verbose] greeting {s}\n", .{args.name});
+        \\    try context.stdout().print("Hello, {s}!\n", .{args.name});
+        \\}
+        \\test "greet: --verbose drives the diagnostic" {
+        \\    const zcli_testing = @import("zcli-testing");
+        \\    var r = try zcli_testing.runCommand(@This(), &.{}, .{
+        \\        .args = .{ .name = "Ada" },
+        \\        .plugins = .{ .verbose = .{ .enabled = true } },
+        \\    });
+        \\    defer r.deinit();
+        \\    try std.testing.expect(r.success);
+        \\    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "[verbose] greeting Ada") != null);
+        \\}
+        \\
+        ,
+    });
+
+    {
+        var r = try run(proj, &.{ "zig", "build", "test" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+}
+
 // ============================================================================
 // Layer 2 — interactive (PTY) tests
 // ============================================================================
