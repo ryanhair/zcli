@@ -162,16 +162,14 @@ fn applyJsonObject(comptime OptionsType: type, options: *OptionsType, obj: std.j
 }
 
 fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, _: []const []const u8) void {
-    // Parse TOML directly into the options struct type using serde
-    const serde = zcli.serde;
-    const parsed = serde.toml.fromSlice(OptionsType, allocator, content) catch return;
+    // Parse TOML directly into the options struct type (via zcli.config_parse)
+    const parsed = zcli.config_parse.fromToml(OptionsType, allocator, content) catch return;
     applyNonDefaults(OptionsType, options, parsed);
 }
 
 fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, _: *ContextData, _: []const []const u8) void {
-    // Parse YAML directly into the options struct type using serde
-    const serde = zcli.serde;
-    const parsed = serde.yaml.fromSlice(OptionsType, allocator, content) catch return;
+    // Parse YAML directly into the options struct type (via zcli.config_parse)
+    const parsed = zcli.config_parse.fromYaml(OptionsType, allocator, content) catch return;
     applyNonDefaults(OptionsType, options, parsed);
 }
 
