@@ -263,6 +263,26 @@ test "runCommand with a required (no-default) arg" {
     try std.testing.expectEqualStrings("hello Ada\n", result.stdout);
 }
 
+test "runCommand captures context.fail as a failure with the message" {
+    const TestCommand = struct {
+        pub const Args = struct { name: []const u8 };
+        pub const Options = struct {};
+
+        pub fn execute(args: Args, _: Options, context: anytype) !void {
+            return context.fail("no such thing: {s}", .{args.name});
+        }
+    };
+
+    var result = try runCommand(TestCommand, &.{}, .{ .args = .{ .name = "widget" } });
+    defer result.deinit();
+
+    // context.fail() is a returned error, not a process exit — so a unit test
+    // can assert on it: the command failed, and its message reached stderr.
+    try std.testing.expect(!result.success);
+    try std.testing.expectEqual(error.CommandFailed, result.err.?);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "no such thing: widget") != null);
+}
+
 test "runCommand with plugin data" {
     const MockPlugin = struct {
         pub const plugin_id = "mock";

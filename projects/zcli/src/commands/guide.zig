@@ -41,8 +41,8 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const stderr = context.stderr();
     try stderr.print("Unknown guide topic: '{s}'\n\n", .{requested});
     try printTopicList(stderr);
-    // A mistyped topic is a plain user error — exit non-zero without dumping a
-    // Zig stack trace (which returning the error would).
+    // We've already printed the full topic list as guidance, so exit non-zero
+    // cleanly here rather than returning an error on top of that help.
     context.exit(1);
 }
 
@@ -88,9 +88,14 @@ const topics = [_]Topic{
         \\  src/commands/users/index.zig   → the "users" group landing (empty Args)
         \\  src/plugins/<name>.zig         → an auto-discovered plugin
         \\
-        \\A command file declares `meta`, `Args`, `Options`, and `execute`. Change
-        \\structure with the scaffolder — it does the multi-site edits (struct field +
-        \\meta entry + arg ordering) correctly — not by hand:
+        \\A command file declares `meta`, `Args`, `Options`, and `execute`. `execute`
+        \\returns `!void`, so returning an error fails the command with a non-zero
+        \\exit. For a failure the user should read, `return context.fail("no note:
+        \\{s}", .{name})` — it prints your message and exits cleanly (no `error:
+        \\Name`, no stack trace). A plain `return error.X` is for unexpected bugs:
+        \\its name and Debug-only trace aid debugging. Change structure with the
+        \\scaffolder — it does the multi-site edits (struct field + meta entry + arg
+        \\ordering) correctly — not by hand:
         \\
         \\  zcli add command <path>        zcli rm command <path>       zcli mv <from> <to>
         \\  zcli add arg <cmd> <name>      zcli add option <cmd> <name>
@@ -339,7 +344,9 @@ const topics = [_]Topic{
         \\
         \\`r` also exposes `.stderr`, `.err`, and `.term` (a virtual terminal for
         \\asserting on rendered color/layout). Pass plugin types as the second arg to
-        \\populate context.plugins.
+        \\populate context.plugins. A command that fails with `context.fail(...)` is
+        \\assertable too — `!r.success`, `r.err.? == error.CommandFailed`, and the
+        \\message in `r.stderr` — because it returns an error instead of exiting.
         \\
         \\runCommand runs execute() in-process against the real filesystem and the
         \\real cwd — it captures I/O, not the disk. A command that reads or writes

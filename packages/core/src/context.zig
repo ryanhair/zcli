@@ -186,5 +186,19 @@ pub fn ContextFor(comptime plugins: []const type) type {
             self.stdio.flush();
             std.process.exit(code);
         }
+
+        /// Fail the command with a friendly, user-facing message: print `fmt`
+        /// (formatted with `args`) to stderr, then return `error.CommandFailed`.
+        /// zcli reports that as a clean non-zero exit — just your message, no
+        /// `error: CommandFailed` line and no stack trace, in every build mode.
+        ///
+        /// Use it for expected failures a user should see ("no such note"), and
+        /// `return` it directly: `return context.fail("no note: {s}", .{name});`.
+        /// For an *unexpected* failure, return a plain error instead — its name
+        /// and Debug-only trace are what you want while debugging.
+        pub fn fail(self: *Self, comptime fmt: []const u8, args: anytype) error{CommandFailed} {
+            self.stderr().print(fmt ++ "\n", args) catch {};
+            return error.CommandFailed;
+        }
     };
 }
