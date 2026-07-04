@@ -186,12 +186,15 @@ fn generatePluginRegistry(
 /// your build():
 ///
 /// ```zig
-/// const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{ ... });
+/// const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{ ... });
 /// ```
 ///
 /// The version is always read from the project's build.zig.zon — single
-/// source of truth, so there is no version field to pass.
-pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, config: GenerateConfig) GenerateError!*std.Build.Module {
+/// source of truth, so there is no version field to pass. The zcli module is
+/// derived from `zcli_dep` (it is always `zcli_dep.module("zcli")`) for the
+/// same reason.
+pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Build.Dependency, config: GenerateConfig) GenerateError!*std.Build.Module {
+    const zcli_module = zcli_dep.module("zcli");
     const app_version = readVersionFromZon(b);
 
     // Convert plugin configs to PluginInfo array
@@ -246,15 +249,16 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
 ///
 /// ```zig
 /// // Single format (default: markdown)
-/// zcli.generateDocs(b, cmd_registry, zcli_dep, zcli_module, .{});
+/// zcli.generateDocs(b, cmd_registry, zcli_dep, .{});
 ///
 /// // Multiple formats — each gets its own subdirectory
-/// zcli.generateDocs(b, cmd_registry, zcli_dep, zcli_module, .{
+/// zcli.generateDocs(b, cmd_registry, zcli_dep, .{
 ///     .formats = &.{ "markdown", "man" },
 ///     .output_dir = "docs",
 /// });
 /// ```
-pub fn generateDocs(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, zcli_module: *std.Build.Module, config: DocsConfig) void {
+pub fn generateDocs(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, config: DocsConfig) void {
+    const zcli_module = zcli_dep.module("zcli");
     const doc_exe = b.addExecutable(.{
         .name = "zcli-doc-gen",
         .root_module = b.createModule(.{

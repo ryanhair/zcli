@@ -258,7 +258,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    }};
         \\
         \\    // Generate command registry with built-in plugins
-        \\    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{{
+        \\    const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{{
         \\        .commands_dir = "src/commands",
         \\        // Local plugins in src/plugins/ are auto-discovered (add with
         \\        // `zcli add plugin <name>`). Harmless when the directory is absent.
@@ -285,7 +285,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    // blocks use `zcli-testing`'s runCommand (bundled with the zcli
         \\    // dependency, so no extra dependency is needed). `zcli add command`
         \\    // scaffolds a starting test alongside each new command.
-        \\    _ = zcli.addCommandTests(b, zcli_dep, zcli_module, .{{
+        \\    _ = zcli.addCommandTests(b, zcli_dep, .{{
         \\        .commands_dir = "src/commands",
         \\        .target = target,
         \\        .optimize = optimize,
