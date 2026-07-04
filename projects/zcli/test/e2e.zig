@@ -469,7 +469,8 @@ test "guide lists topics and embeds the canonical example source" {
         try expectContains(r.stdout, "std.json.fmt(notes");
     }
 
-    // An unknown topic fails (non-zero) with the topic list, no stack trace.
+    // An unknown topic fails (non-zero) and prints the topic list as guidance,
+    // exiting cleanly rather than leaking a raw `error:` line.
     {
         var r = try run(tmp.dir, &.{ zcli_exe, "guide", "nope" });
         defer r.deinit();

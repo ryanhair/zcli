@@ -21,9 +21,10 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     if (store.find(notes, args.title)) |note| {
         try context.stdout().print("{s}\n", .{note.body});
     } else {
-        // A missing note is a plain user error: report it and exit non-zero,
-        // rather than returning an error (which would print a Zig stack trace).
-        try context.stderr().print("No note titled '{s}'\n", .{args.title});
-        context.exit(1);
+        // Returning an error is the normal way to fail a command: zcli exits
+        // non-zero and reports it. The stack trace is Debug-only — a release
+        // build just prints `error: NoteNotFound`. (Want a custom message and
+        // exit code instead? Print it, then call context.exit(code).)
+        return error.NoteNotFound;
     }
 }

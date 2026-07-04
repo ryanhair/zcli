@@ -41,8 +41,8 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const stderr = context.stderr();
     try stderr.print("Unknown guide topic: '{s}'\n\n", .{requested});
     try printTopicList(stderr);
-    // A mistyped topic is a plain user error — exit non-zero without dumping a
-    // Zig stack trace (which returning the error would).
+    // We've already printed the full topic list as guidance, so exit non-zero
+    // cleanly here rather than returning an error on top of that help.
     context.exit(1);
 }
 
@@ -88,9 +88,13 @@ const topics = [_]Topic{
         \\  src/commands/users/index.zig   → the "users" group landing (empty Args)
         \\  src/plugins/<name>.zig         → an auto-discovered plugin
         \\
-        \\A command file declares `meta`, `Args`, `Options`, and `execute`. Change
-        \\structure with the scaffolder — it does the multi-site edits (struct field +
-        \\meta entry + arg ordering) correctly — not by hand:
+        \\A command file declares `meta`, `Args`, `Options`, and `execute`. `execute`
+        \\returns `!void`: return any error to fail the command with a non-zero exit —
+        \\that's the normal way to fail, and the stack trace you see is Debug-only
+        \\(release builds just print `error: Name`). Call `context.exit(code)` when you
+        \\want to print your own message and choose the code. Change structure with the
+        \\scaffolder — it does the multi-site edits (struct field + meta entry + arg
+        \\ordering) correctly — not by hand:
         \\
         \\  zcli add command <path>        zcli rm command <path>       zcli mv <from> <to>
         \\  zcli add arg <cmd> <name>      zcli add option <cmd> <name>
