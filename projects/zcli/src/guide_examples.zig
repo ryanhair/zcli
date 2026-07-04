@@ -10,3 +10,4 @@ pub const repostat_repo = @embedFile("repostat/repo.zig");
 pub const ghauth_login = @embedFile("ghauth/login.zig");
 pub const ghauth_whoami = @embedFile("ghauth/whoami.zig");
 pub const notes_store = @embedFile("notes/store.zig");
+pub const notes_verbose_plugin = @embedFile("notes/verbose.zig");

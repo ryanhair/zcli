@@ -23,3 +23,6 @@ Data is persisted to `notes.json` in the current directory.
   `generate()` and `addCommandTests()`. See `zcli guide sharing`.
 - **The arena** — commands load into `context.allocator` and never free; the
   per-command arena reclaims it. See `zcli guide arena`.
+- **A plugin** — `src/plugins/verbose.zig` (auto-discovered) adds a global
+  `--verbose` flag via `plugin_id` + `ContextData` + `global_options` +
+  `handleGlobalOption`. Embedded into `zcli guide plugins`.
