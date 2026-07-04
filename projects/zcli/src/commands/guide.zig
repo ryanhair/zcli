@@ -89,10 +89,11 @@ const topics = [_]Topic{
         \\  src/plugins/<name>.zig         → an auto-discovered plugin
         \\
         \\A command file declares `meta`, `Args`, `Options`, and `execute`. `execute`
-        \\returns `!void`: return any error to fail the command with a non-zero exit —
-        \\that's the normal way to fail, and the stack trace you see is Debug-only
-        \\(release builds just print `error: Name`). Call `context.exit(code)` when you
-        \\want to print your own message and choose the code. Change structure with the
+        \\returns `!void`, so returning an error fails the command with a non-zero
+        \\exit. For a failure the user should read, `return context.fail("no note:
+        \\{s}", .{name})` — it prints your message and exits cleanly (no `error:
+        \\Name`, no stack trace). A plain `return error.X` is for unexpected bugs:
+        \\its name and Debug-only trace aid debugging. Change structure with the
         \\scaffolder — it does the multi-site edits (struct field + meta entry + arg
         \\ordering) correctly — not by hand:
         \\
@@ -343,7 +344,9 @@ const topics = [_]Topic{
         \\
         \\`r` also exposes `.stderr`, `.err`, and `.term` (a virtual terminal for
         \\asserting on rendered color/layout). Pass plugin types as the second arg to
-        \\populate context.plugins.
+        \\populate context.plugins. A command that fails with `context.fail(...)` is
+        \\assertable too — `!r.success`, `r.err.? == error.CommandFailed`, and the
+        \\message in `r.stderr` — because it returns an error instead of exiting.
         \\
         \\runCommand runs execute() in-process against the real filesystem and the
         \\real cwd — it captures I/O, not the disk. A command that reads or writes

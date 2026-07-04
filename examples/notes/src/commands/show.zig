@@ -21,10 +21,10 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     if (store.find(notes, args.title)) |note| {
         try context.stdout().print("{s}\n", .{note.body});
     } else {
-        // Returning an error is the normal way to fail a command: zcli exits
-        // non-zero and reports it. The stack trace is Debug-only — a release
-        // build just prints `error: NoteNotFound`. (Want a custom message and
-        // exit code instead? Print it, then call context.exit(code).)
-        return error.NoteNotFound;
+        // Fail with a message the user should see. context.fail prints it and
+        // exits non-zero cleanly — no `error: Name`, no stack trace. (A plain
+        // `return error.X` is for unexpected bugs, where the name and Debug
+        // trace help you debug.)
+        return context.fail("No note titled '{s}'", .{args.title});
     }
 }

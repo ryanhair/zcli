@@ -104,9 +104,19 @@ fn isReportedCliError(err: anyerror) bool {
         error.ArgumentInvalidValue,
         error.ArgumentTooMany,
         error.ResourceLimitExceeded,
+        // A command that failed via context.fail() already printed its own
+        // user-facing message; exit non-zero without the name/trace.
+        error.CommandFailed,
         => true,
         else => false,
     };
+}
+
+test "isReportedCliError: context.fail's error exits cleanly, unexpected errors don't" {
+    try std.testing.expect(isReportedCliError(error.CommandFailed));
+    try std.testing.expect(isReportedCliError(error.ArgumentMissingRequired));
+    // An unexpected failure keeps its name + trace (propagated, not swallowed).
+    try std.testing.expect(!isReportedCliError(error.OutOfMemory));
 }
 
 /// Build an alias path by replacing the last component with the alias name
@@ -779,13 +789,13 @@ fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const Comma
         /// Convenient run method that handles process args, io, and environment
         pub fn run(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
             self.execute(allocator, io, environ, if (args.len > 0) args[1..] else args) catch |err| {
-                // CLI-entry semantics: parse/routing failures were already
-                // reported to the user (diagnostic rendering, a plugin, or
-                // the framework fallback message) — exit(1) without letting
-                // the raw error trace follow the friendly message. Anything
-                // else is a real command failure; propagate it so the trace
-                // aids debugging. Library/test callers who want the error
-                // itself use execute() directly.
+                // CLI-entry semantics: some failures already showed the user a
+                // message — parse/routing diagnostics, a plugin, the framework
+                // fallback, or a command's own context.fail(). Exit(1) without
+                // letting a raw error trace follow that friendly message.
+                // Anything else is an unexpected failure; propagate it so the
+                // name and trace aid debugging. Library/test callers who want
+                // the error itself use execute() directly.
                 if (isReportedCliError(err)) std.process.exit(1);
                 return err;
             };
