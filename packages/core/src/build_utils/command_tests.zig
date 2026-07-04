@@ -9,10 +9,12 @@
 const std = @import("std");
 const types = @import("types.zig");
 const command_discovery = @import("command_discovery.zig");
+const plugin_system = @import("plugin_system.zig");
 
 const DiscoveredCommands = types.DiscoveredCommands;
 const CommandInfo = types.CommandInfo;
 const SharedModule = types.SharedModule;
+const PluginInfo = types.PluginInfo;
 
 /// Create a `test` step that unit-tests every discovered command file.
 ///
@@ -39,21 +41,50 @@ pub fn addCommandTests(
     const shared_modules: []const SharedModule =
         if (@hasField(@TypeOf(config), "shared_modules")) config.shared_modules else &.{};
 
+    // Discover the project's local plugins so the stub Context includes them:
+    // a command that reads `context.plugins.<id>` then compiles under test, and
+    // a runCommand test can drive that plugin's state via `.plugins`.
+    const plugins_dir: ?[]const u8 =
+        if (@hasField(@TypeOf(config), "plugins_dir")) config.plugins_dir else null;
+    const local_plugins: []const PluginInfo =
+        if (plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
+
     // A stub `command_registry` module: commands reference
-    // `@import("command_registry").Context`, and a TestContext makes their
-    // execute() signatures callable from runCommand.
+    // `@import("command_registry").Context`, and a TestContext (over the local
+    // plugins) makes their execute() signatures callable from runCommand.
+    var stub_aw = std.Io.Writer.Allocating.init(b.allocator);
+    defer stub_aw.deinit();
+    const w = &stub_aw.writer;
+    w.writeAll("const zcli = @import(\"zcli\");\n") catch @panic("OOM");
+    for (local_plugins, 0..) |_, i| w.print("const plugin_{d} = @import(\"plugin_{d}\");\n", .{ i, i }) catch @panic("OOM");
+    w.writeAll("pub const Context = zcli.TestContext(&.{") catch @panic("OOM");
+    for (local_plugins, 0..) |_, i| {
+        if (i != 0) w.writeAll(",") catch @panic("OOM");
+        w.print(" plugin_{d}", .{i}) catch @panic("OOM");
+    }
+    w.writeAll(if (local_plugins.len == 0) "});\n" else " });\n") catch @panic("OOM");
+
     const wf = b.addWriteFiles();
-    const stub_path = wf.add("command_registry.zig",
-        \\const zcli = @import("zcli");
-        \\pub const Context = zcli.TestContext(&.{});
-        \\
-    );
+    const stub_path = wf.add("command_registry.zig", b.dupe(stub_aw.written()));
     const registry_stub = b.addModule("command_registry_test_stub", .{
         .root_source_file = stub_path,
         .target = config.target,
         .optimize = config.optimize,
     });
     registry_stub.addImport("zcli", zcli_module);
+    // Wire each local plugin as a module the stub imports (with the same
+    // zcli + shared_modules a command gets, since a plugin may use them).
+    for (local_plugins, 0..) |plugin, i| {
+        const pmod = b.addModule(b.fmt("cmdtest_plugin_{d}", .{i}), .{
+            // scanLocalPlugins always sets project_path for the plugins it returns.
+            .root_source_file = b.path(plugin.project_path.?),
+            .target = config.target,
+            .optimize = config.optimize,
+        });
+        pmod.addImport("zcli", zcli_module);
+        for (shared_modules) |sm| pmod.addImport(sm.name, sm.module);
+        registry_stub.addImport(b.fmt("plugin_{d}", .{i}), pmod);
+    }
 
     const ctx = Ctx{
         .b = b,

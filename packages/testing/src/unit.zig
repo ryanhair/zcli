@@ -69,18 +69,42 @@ fn fieldAttrs(comptime T: type) std.builtin.Type.StructField.Attributes {
     return .{ .default_value_ptr = default_ptr };
 }
 
-/// The `config` parameter type for `runCommand`, tailored to `Command` so that
-/// `args`/`options` are only optional-to-pass when default-constructible.
-fn RunConfig(comptime Command: type) type {
+/// The Context type a `runCommand` builds for `Command`. When `Command.execute`
+/// takes a concrete `context: *Context` (a scaffolded command), that exact
+/// Context is used — so the project's plugins are already in scope and a test
+/// can set their state via `.plugins`. When execute takes `context: anytype`, a
+/// fresh `TestContext(plugins)` is built from the passed plugin list instead.
+fn ContextTypeFor(comptime Command: type, comptime plugins: []const type) type {
+    return contextParamType(Command) orelse zcli.TestContext(plugins);
+}
+
+/// The concrete type behind `execute`'s context parameter, or null when it is
+/// generic (`anytype`).
+fn contextParamType(comptime Command: type) ?type {
+    const params = @typeInfo(@TypeOf(Command.execute)).@"fn".params;
+    const param = params[params.len - 1].type orelse return null;
+    return switch (@typeInfo(param)) {
+        .pointer => |ptr| ptr.child,
+        else => param,
+    };
+}
+
+/// The `config` parameter type for `runCommand`, tailored to `Command`: `args`/
+/// `options` are only optional-to-pass when default-constructible, and `plugins`
+/// sets the command's plugin state (`.plugins = .{ .verbose = .{ .enabled = true } }`).
+fn RunConfig(comptime Command: type, comptime plugins: []const type) type {
     const default_alloc: std.mem.Allocator = std.testing.allocator;
-    const names = [_][]const u8{ "args", "options", "allocator" };
-    const types = [_]type{ Command.Args, Command.Options, std.mem.Allocator };
+    const PluginData = @FieldType(ContextTypeFor(Command, plugins), "plugins");
+    const default_plugins: PluginData = .{};
+    const names = [_][]const u8{ "args", "options", "allocator", "plugins" };
+    const field_types = [_]type{ Command.Args, Command.Options, std.mem.Allocator, PluginData };
     const attrs = [_]std.builtin.Type.StructField.Attributes{
         fieldAttrs(Command.Args),
         fieldAttrs(Command.Options),
         .{ .default_value_ptr = &default_alloc },
+        .{ .default_value_ptr = &default_plugins },
     };
-    return @Struct(.auto, null, &names, &types, &attrs);
+    return @Struct(.auto, null, &names, &field_types, &attrs);
 }
 
 /// Run a command's execute() function in-process with captured I/O.
@@ -95,7 +119,7 @@ fn RunConfig(comptime Command: type) type {
 pub fn runCommand(
     comptime Command: type,
     comptime plugins: []const type,
-    config: RunConfig(Command),
+    config: RunConfig(Command, plugins),
 ) !CommandResult {
     const allocator = config.allocator;
     const args = config.args;
@@ -122,15 +146,17 @@ pub fn runCommand(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    // Create context with plugins (empty environment; commands that read env
-    // vars should take them as options instead)
+    // Build the command's own Context (so a scaffolded command's project plugins
+    // are in scope), with an empty environment; commands that read env vars
+    // should take them as options instead.
     const test_environ = std.process.Environ.Map.init(allocator);
-    const Ctx = zcli.TestContext(plugins);
+    const Ctx = ContextTypeFor(Command, plugins);
     var context = Ctx{
         .allocator = arena.allocator(),
         .io = std.testing.io,
         .stdio = &stdio,
         .environ = &test_environ,
+        .plugins = config.plugins,
     };
     defer context.deinit();
 
@@ -308,6 +334,39 @@ test "runCommand with plugin data" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("disabled\n", result.stdout);
+}
+
+test "runCommand sets plugin state for a command with a concrete context" {
+    // A scaffolded command takes a concrete `context: *Context` whose plugins
+    // come from the project (the command_registry stub). runCommand derives that
+    // Context from the command, so the plugin field is in scope and a test drives
+    // it via `.plugins` — no `@hasField` guard needed.
+    const FlagPlugin = struct {
+        pub const plugin_id = "flag";
+        pub const ContextData = struct { on: bool = false };
+    };
+    const Ctx = zcli.TestContext(&.{FlagPlugin});
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            try context.stdout().writeAll(if (context.plugins.flag.on) "flag on\n" else "flag off\n");
+        }
+    };
+
+    // Default: the plugin's ContextData default (pass `&.{}` — Context is derived).
+    {
+        var r = try runCommand(TestCommand, &.{}, .{});
+        defer r.deinit();
+        try std.testing.expectEqualStrings("flag off\n", r.stdout);
+    }
+    // Set the plugin state via `.plugins`.
+    {
+        var r = try runCommand(TestCommand, &.{}, .{ .plugins = .{ .flag = .{ .on = true } } });
+        defer r.deinit();
+        try std.testing.expectEqualStrings("flag on\n", r.stdout);
+    }
 }
 
 test "runCommand vterm contains text" {

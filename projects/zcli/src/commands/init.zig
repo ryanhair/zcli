@@ -270,6 +270,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\        .commands_dir = "src/commands",
         \\        .target = target,
         \\        .optimize = optimize,
+        \\        .plugins_dir = "src/plugins",
         \\        .shared_modules = &shared_modules,
         \\    }});
         \\}}
