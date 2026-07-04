@@ -8,7 +8,7 @@
 //! const testing = @import("testing");
 //!
 //! test "add command" {
-//!     var result = try testing.runCommand(AddCommand, &.{}, .{
+//!     var result = try testing.runCommand(AddCommand, .{
 //!         .args = .{ .name = "widget" },
 //!         .options = .{ .verbose = true },
 //!     });
@@ -69,13 +69,17 @@ fn fieldAttrs(comptime T: type) std.builtin.Type.StructField.Attributes {
     return .{ .default_value_ptr = default_ptr };
 }
 
-/// The Context type a `runCommand` builds for `Command`. When `Command.execute`
-/// takes a concrete `context: *Context` (a scaffolded command), that exact
-/// Context is used — so the project's plugins are already in scope and a test
-/// can set their state via `.plugins`. When execute takes `context: anytype`, a
-/// fresh `TestContext(plugins)` is built from the passed plugin list instead.
-fn ContextTypeFor(comptime Command: type, comptime plugins: []const type) type {
-    return contextParamType(Command) orelse zcli.TestContext(plugins);
+/// The Context type a `runCommand` builds for `Command`, derived from the
+/// concrete `context: *Context` parameter of `Command.execute` (a scaffolded
+/// command). The project's plugins are already in scope on that Context, so a
+/// test can set their state via `.plugins`. A `context: anytype` command has no
+/// recoverable Context type and cannot be tested this way.
+fn ContextTypeFor(comptime Command: type) type {
+    return contextParamType(Command) orelse @compileError(
+        "runCommand needs a command with a concrete `context: *Context` (a scaffolded command); " ++
+            "`context: anytype` commands can't be tested this way — give it a concrete " ++
+            "`*zcli.TestContext(&.{...})`.",
+    );
 }
 
 /// The concrete type behind `execute`'s context parameter, or null when it is
@@ -92,9 +96,9 @@ fn contextParamType(comptime Command: type) ?type {
 /// The `config` parameter type for `runCommand`, tailored to `Command`: `args`/
 /// `options` are only optional-to-pass when default-constructible, and `plugins`
 /// sets the command's plugin state (`.plugins = .{ .verbose = .{ .enabled = true } }`).
-fn RunConfig(comptime Command: type, comptime plugins: []const type) type {
+fn RunConfig(comptime Command: type) type {
     const default_alloc: std.mem.Allocator = std.testing.allocator;
-    const PluginData = @FieldType(ContextTypeFor(Command, plugins), "plugins");
+    const PluginData = @FieldType(ContextTypeFor(Command), "plugins");
     const default_plugins: PluginData = .{};
     const names = [_][]const u8{ "args", "options", "allocator", "plugins" };
     const field_types = [_]type{ Command.Args, Command.Options, std.mem.Allocator, PluginData };
@@ -109,8 +113,9 @@ fn RunConfig(comptime Command: type, comptime plugins: []const type) type {
 
 /// Run a command's execute() function in-process with captured I/O.
 ///
-/// The command module must have Args, Options, and execute declarations.
-/// Plugins can be provided to populate context.plugins.
+/// The command must have Args, Options, and an `execute` taking a concrete
+/// `context: *Context` — the Context (with the project's plugins) is derived
+/// from it. Set plugin state via `.plugins = .{ .<id> = .{ ... } }`.
 ///
 /// Pass `.args`/`.options` to drive the command. They may be omitted only
 /// when the command's Args/Options are default-constructible (every field has
@@ -118,8 +123,7 @@ fn RunConfig(comptime Command: type, comptime plugins: []const type) type {
 /// `.args`/`.options` or the call fails to compile with "missing struct field".
 pub fn runCommand(
     comptime Command: type,
-    comptime plugins: []const type,
-    config: RunConfig(Command, plugins),
+    config: RunConfig(Command),
 ) !CommandResult {
     const allocator = config.allocator;
     const args = config.args;
@@ -150,7 +154,7 @@ pub fn runCommand(
     // are in scope), with an empty environment; commands that read env vars
     // should take them as options instead.
     const test_environ = std.process.Environ.Map.init(allocator);
-    const Ctx = ContextTypeFor(Command, plugins);
+    const Ctx = ContextTypeFor(Command);
     var context = Ctx{
         .allocator = arena.allocator(),
         .io = std.testing.io,
@@ -193,17 +197,18 @@ pub fn runCommand(
 
 // Tests
 test "runCommand captures stdout" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
 
-        pub fn execute(_: Args, _: Options, context: anytype) !void {
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
             const writer = context.stdout();
             try writer.writeAll("hello world\n");
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{});
+    var result = try runCommand(TestCommand, .{});
     defer result.deinit();
 
     try std.testing.expectEqualStrings("hello world\n", result.stdout);
@@ -212,17 +217,18 @@ test "runCommand captures stdout" {
 }
 
 test "runCommand captures stderr" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
 
-        pub fn execute(_: Args, _: Options, context: anytype) !void {
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
             const writer = context.stderr();
             try writer.writeAll("error occurred\n");
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{});
+    var result = try runCommand(TestCommand, .{});
     defer result.deinit();
 
     try std.testing.expect(result.stdout.len == 0);
@@ -230,16 +236,17 @@ test "runCommand captures stderr" {
 }
 
 test "runCommand captures error" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
 
-        pub fn execute(_: Args, _: Options, _: anytype) !void {
+        pub fn execute(_: Args, _: Options, _: *Ctx) !void {
             return error.TestError;
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{});
+    var result = try runCommand(TestCommand, .{});
     defer result.deinit();
 
     try std.testing.expect(!result.success);
@@ -248,6 +255,7 @@ test "runCommand captures error" {
 }
 
 test "runCommand passes args and options" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {
             name: []const u8 = "default",
@@ -256,13 +264,13 @@ test "runCommand passes args and options" {
             count: u32 = 1,
         };
 
-        pub fn execute(args: Args, options: Options, context: anytype) !void {
+        pub fn execute(args: Args, options: Options, context: *Ctx) !void {
             const writer = context.stdout();
             try writer.print("{s}: {d}\n", .{ args.name, options.count });
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{
+    var result = try runCommand(TestCommand, .{
         .args = .{ .name = "widget" },
         .options = .{ .count = 5 },
     });
@@ -272,34 +280,36 @@ test "runCommand passes args and options" {
 }
 
 test "runCommand with a required (no-default) arg" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {
             name: []const u8,
         };
         pub const Options = struct {};
 
-        pub fn execute(args: Args, _: Options, context: anytype) !void {
+        pub fn execute(args: Args, _: Options, context: *Ctx) !void {
             try context.stdout().print("hello {s}\n", .{args.name});
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{ .args = .{ .name = "Ada" } });
+    var result = try runCommand(TestCommand, .{ .args = .{ .name = "Ada" } });
     defer result.deinit();
 
     try std.testing.expectEqualStrings("hello Ada\n", result.stdout);
 }
 
 test "runCommand captures context.fail as a failure with the message" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct { name: []const u8 };
         pub const Options = struct {};
 
-        pub fn execute(args: Args, _: Options, context: anytype) !void {
+        pub fn execute(args: Args, _: Options, context: *Ctx) !void {
             return context.fail("no such thing: {s}", .{args.name});
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{ .args = .{ .name = "widget" } });
+    var result = try runCommand(TestCommand, .{ .args = .{ .name = "widget" } });
     defer result.deinit();
 
     // context.fail() is a returned error, not a process exit — so a unit test
@@ -317,11 +327,12 @@ test "runCommand with plugin data" {
         };
     };
 
+    const Ctx = zcli.TestContext(&.{MockPlugin});
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
 
-        pub fn execute(_: Args, _: Options, context: anytype) !void {
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
             if (context.plugins.mock.enabled) {
                 try context.stdout().writeAll("enabled\n");
             } else {
@@ -330,7 +341,7 @@ test "runCommand with plugin data" {
         }
     };
 
-    var result = try runCommand(TestCommand, &.{MockPlugin}, .{});
+    var result = try runCommand(TestCommand, .{});
     defer result.deinit();
 
     try std.testing.expectEqualStrings("disabled\n", result.stdout);
@@ -355,31 +366,32 @@ test "runCommand sets plugin state for a command with a concrete context" {
         }
     };
 
-    // Default: the plugin's ContextData default (pass `&.{}` — Context is derived).
+    // Default: the plugin's ContextData default (Context is derived).
     {
-        var r = try runCommand(TestCommand, &.{}, .{});
+        var r = try runCommand(TestCommand, .{});
         defer r.deinit();
         try std.testing.expectEqualStrings("flag off\n", r.stdout);
     }
     // Set the plugin state via `.plugins`.
     {
-        var r = try runCommand(TestCommand, &.{}, .{ .plugins = .{ .flag = .{ .on = true } } });
+        var r = try runCommand(TestCommand, .{ .plugins = .{ .flag = .{ .on = true } } });
         defer r.deinit();
         try std.testing.expectEqualStrings("flag on\n", r.stdout);
     }
 }
 
 test "runCommand vterm contains text" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
 
-        pub fn execute(_: Args, _: Options, context: anytype) !void {
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
             try context.stdout().writeAll("Hello World\n");
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{});
+    var result = try runCommand(TestCommand, .{});
     defer result.deinit();
 
     try std.testing.expect(result.term.containsText("Hello World"));
@@ -391,11 +403,12 @@ test "runCommand arena reclaims allocations for a command that never frees" {
     // context.allocator and never call free. runCommand uses
     // std.testing.allocator, which panics on leak, so this test fails if the
     // arena is removed. See docs/adr/0001-arena-per-command-allocator.md.
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
 
-        pub fn execute(_: Args, _: Options, context: anytype) !void {
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
             // Several allocations of different sizes, none freed.
             var i: usize = 0;
             while (i < 8) : (i += 1) {
@@ -407,7 +420,7 @@ test "runCommand arena reclaims allocations for a command that never frees" {
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{});
+    var result = try runCommand(TestCommand, .{});
     defer result.deinit();
 
     try std.testing.expect(result.success);
@@ -415,16 +428,17 @@ test "runCommand arena reclaims allocations for a command that never frees" {
 }
 
 test "runCommand vterm detects ANSI formatting" {
+    const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
 
-        pub fn execute(_: Args, _: Options, context: anytype) !void {
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
             try context.stdout().writeAll("\x1b[1mBold text\x1b[0m\n");
         }
     };
 
-    var result = try runCommand(TestCommand, &.{}, .{});
+    var result = try runCommand(TestCommand, .{});
     defer result.deinit();
 
     // VTerm parses ANSI — text is there without escape codes

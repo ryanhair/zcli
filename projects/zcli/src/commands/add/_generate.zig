@@ -138,7 +138,7 @@ fn writeTestBlock(w: *std.Io.Writer, parts: []const []const u8) !void {
         \\" {
         \\    // Scaffolded smoke test — replace with real assertions. Example:
         \\    //   const zcli_testing = @import("zcli-testing");
-        \\    //   var r = try zcli_testing.runCommand(@This(), &.{}, .{});
+        \\    //   var r = try zcli_testing.runCommand(@This(), .{});
         \\    //   defer r.deinit();
         \\    //   try std.testing.expect(r.success);
         \\    // For a command with arguments, pass them via the config's args field.
@@ -246,7 +246,7 @@ test "generateSource: empty command is the minimal skeleton" {
     // always compiles and passes, and `zig build test` discovers it.
     try expectContains(src, "test \"ping\" {");
     try expectContains(src, "_ = @This();");
-    try expectContains(src, "runCommand(@This()"); // the example pattern in the comment
+    try expectContains(src, "runCommand(@This(), .{});"); // the 2-arg example pattern in the comment
 }
 
 test "generateSource: multiple is independent of element type" {

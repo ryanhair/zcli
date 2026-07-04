@@ -951,7 +951,7 @@ test "scaffolded commands are unit-testable via zig build test" {
         \\}
         \\test "hi runs via runCommand" {
         \\    const zcli_testing = @import("zcli-testing");
-        \\    var r = try zcli_testing.runCommand(@This(), &.{}, .{});
+        \\    var r = try zcli_testing.runCommand(@This(), .{});
         \\    defer r.deinit();
         \\    try std.testing.expect(r.success);
         \\    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "hi there") != null);
@@ -1056,7 +1056,7 @@ test "a shared module reaches both commands and their tests" {
         \\}
         \\test "greet uses the shared store module" {
         \\    const zcli_testing = @import("zcli-testing");
-        \\    var r = try zcli_testing.runCommand(@This(), &.{}, .{ .args = .{ .name = "Ada" } });
+        \\    var r = try zcli_testing.runCommand(@This(), .{ .args = .{ .name = "Ada" } });
         \\    defer r.deinit();
         \\    try std.testing.expect(r.success);
         \\    try std.testing.expect(std.mem.indexOf(u8, r.stdout, store.tag()) != null);
@@ -1130,7 +1130,7 @@ test "a command's plugin state is testable via runCommand .plugins" {
         \\}
         \\test "greet: --verbose drives the diagnostic" {
         \\    const zcli_testing = @import("zcli-testing");
-        \\    var r = try zcli_testing.runCommand(@This(), &.{}, .{
+        \\    var r = try zcli_testing.runCommand(@This(), .{
         \\        .args = .{ .name = "Ada" },
         \\        .plugins = .{ .verbose = .{ .enabled = true } },
         \\    });
