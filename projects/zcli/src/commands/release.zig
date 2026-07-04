@@ -108,15 +108,14 @@ const Version = struct {
         return try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
     }
 
-    fn bump(self: Version, bump_type: []const u8) Version {
-        if (std.mem.eql(u8, bump_type, "major")) {
-            return .{ .major = self.major + 1, .minor = 0, .patch = 0 };
-        } else if (std.mem.eql(u8, bump_type, "minor")) {
-            return .{ .major = self.major, .minor = self.minor + 1, .patch = 0 };
-        } else if (std.mem.eql(u8, bump_type, "patch")) {
-            return .{ .major = self.major, .minor = self.minor, .patch = self.patch + 1 };
-        }
-        return self;
+    const BumpType = enum { major, minor, patch };
+
+    fn bump(self: Version, bump_type: BumpType) Version {
+        return switch (bump_type) {
+            .major => .{ .major = self.major + 1, .minor = 0, .patch = 0 },
+            .minor => .{ .major = self.major, .minor = self.minor + 1, .patch = 0 },
+            .patch => .{ .major = self.major, .minor = self.minor, .patch = self.patch + 1 },
+        };
     }
 };
 
@@ -125,20 +124,24 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     var stdout = context.stdout();
 
     const io = context.io;
+
+    // "major"/"minor"/"patch" selects a bump; anything else is an explicit version.
+    const bump_type = std.meta.stringToEnum(Version.BumpType, args.version);
+
     // 0. Validate this is a zcli-based project (not the zcli repo itself)
     try validateZcliProject(allocator, io, context);
 
     // 1. Parse CLI name from build.zig.zon
-    stdout.print("→ Reading build.zig.zon...\n", .{}) catch {};
+    try stdout.print("→ Reading build.zig.zon...\n", .{});
     const cli_name = parseCliName(allocator, io) catch |err| switch (err) {
         error.NameNotFound => return context.fail("Error: Could not find .name field in build.zig.zon\n  Expected format: .name = \"myapp\" or .name = .myapp", .{}),
         else => return err,
     };
     defer allocator.free(cli_name);
-    stdout.print("  CLI name: {s}\n", .{cli_name}) catch {};
+    try stdout.print("  CLI name: {s}\n", .{cli_name});
 
     // 2. Get current version from git tags (or create initial tag)
-    stdout.print("\n→ Detecting current version...\n", .{}) catch {};
+    try stdout.print("\n→ Detecting current version...\n", .{});
 
     // Track if this is an initial release
     var is_initial_release = false;
@@ -152,9 +155,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                 try stdout.print("  No tags found - this appears to be a new project.\n\n", .{});
 
                 // Check if user provided an explicit version (not a bump type)
-                const is_bump_type = std.mem.eql(u8, args.version, "major") or
-                    std.mem.eql(u8, args.version, "minor") or
-                    std.mem.eql(u8, args.version, "patch");
+                const is_bump_type = bump_type != null;
 
                 if (options.@"dry-run") {
                     try stdout.print("(dry-run: would prompt to create initial release tag)\n", .{});
@@ -167,6 +168,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                 }
 
                 try stdout.print("Create initial release tag? [Y/n]: ", .{});
+                try stdout.flush(); // the prompt must reach the terminal before we block on stdin
                 const response = readLine(allocator, io) catch |read_err| {
                     if (read_err == error.InputTooLong)
                         return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
@@ -182,6 +184,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                 // If user provided explicit version, use it; otherwise prompt
                 const version_to_use = if (is_bump_type) blk2: {
                     try stdout.print("  Initial version (default: 0.1.0): ", .{});
+                    try stdout.flush(); // the prompt must reach the terminal before we block on stdin
                     const version_input = readLine(allocator, io) catch |read_err| {
                         if (read_err == error.InputTooLong)
                             return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
@@ -211,18 +214,15 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     const new_version = blk: {
         // For initial releases, use the version as-is (no bumping needed)
         if (is_initial_release) {
-            stdout.print("  Initial version: {s}\n\n", .{current_version_str}) catch {};
+            try stdout.print("  Initial version: {s}\n\n", .{current_version_str});
             break :blk current_version;
         }
 
         // For subsequent releases, show current and calculate new
-        stdout.print("  Current version: {s}\n", .{current_version_str}) catch {};
+        try stdout.print("  Current version: {s}\n", .{current_version_str});
 
-        if (std.mem.eql(u8, args.version, "major") or
-            std.mem.eql(u8, args.version, "minor") or
-            std.mem.eql(u8, args.version, "patch"))
-        {
-            break :blk current_version.bump(args.version);
+        if (bump_type) |bt| {
+            break :blk current_version.bump(bt);
         } else {
             break :blk Version.parse(args.version) catch return context.fail("✗ Invalid version format: {s}\n  Version must be in format: MAJOR.MINOR.PATCH (e.g., 0.1.0)", .{args.version});
         }
@@ -232,63 +232,76 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     defer allocator.free(new_version_str);
 
     if (!is_initial_release) {
-        stdout.print("  New version: {s}\n\n", .{new_version_str}) catch {};
+        try stdout.print("  New version: {s}\n\n", .{new_version_str});
     }
 
     // 4. Safety checks
     if (!options.@"skip-checks") {
-        stdout.print("→ Running safety checks...\n", .{}) catch {};
+        try stdout.print("→ Running safety checks...\n", .{});
 
         // Check working tree is clean
-        const status_result = try runCommand(allocator, io, &.{ "git", "status", "--porcelain" });
+        const status_result = try captureOrFail(allocator, io, context, &.{ "git", "status", "--porcelain" });
         defer allocator.free(status_result);
 
         if (status_result.len > 0) {
             return context.fail("✗ Working tree is not clean. Commit or stash changes first.", .{});
         }
-        stdout.print("  ✓ Working tree is clean\n", .{}) catch {};
+        try stdout.print("  ✓ Working tree is clean\n", .{});
 
         // Check current branch
-        const branch_result = try runCommand(allocator, io, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
+        const branch_result = try captureOrFail(allocator, io, context, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
         defer allocator.free(branch_result);
 
         const current_branch = std.mem.trim(u8, branch_result, "\n ");
         if (!std.mem.eql(u8, current_branch, options.branch)) {
             return context.fail("✗ Not on branch '{s}' (currently on '{s}')", .{ options.branch, current_branch });
         }
-        stdout.print("  ✓ On branch: {s}\n", .{current_branch}) catch {};
+        try stdout.print("  ✓ On branch: {s}\n", .{current_branch});
     }
 
     // 4. Run tests
     if (!options.@"skip-tests") {
-        stdout.print("\n→ Running tests...\n", .{}) catch {};
+        try stdout.print("\n→ Running tests...\n", .{});
         if (options.@"dry-run") {
-            stdout.print("  (dry-run: would run 'zig build test')\n", .{}) catch {};
+            try stdout.print("  (dry-run: would run 'zig build test')\n", .{});
         } else {
-            _ = runCommand(allocator, io, &.{ "zig", "build", "test" }) catch |err| {
-                return context.fail("✗ Tests failed: {}", .{err});
-            };
-            stdout.print("  ✓ All tests passed\n", .{}) catch {};
+            const test_result = try runCommand(allocator, io, &.{ "zig", "build", "test" });
+            defer test_result.deinit(allocator);
+            if (!test_result.success) {
+                const detail = std.mem.trim(u8, if (test_result.stderr.len > 0) test_result.stderr else test_result.stdout, " \t\r\n");
+                return context.fail("✗ Tests failed:\n{s}", .{detail});
+            }
+            try stdout.print("  ✓ All tests passed\n", .{});
         }
     }
 
     // 5. Get release notes
-    stdout.print("\n→ Preparing release notes...\n", .{}) catch {};
+    try stdout.print("\n→ Preparing release notes...\n", .{});
     const release_notes = if (options.message) |msg|
         try allocator.dupe(u8, msg)
     else if (options.@"dry-run")
         try allocator.dupe(u8, "(dry-run: would open editor for release notes)")
-    else if (is_initial_release)
-        try getInitialReleaseNotes(allocator, io, context.environ, new_version_str)
-    else
-        try getReleaseNotes(allocator, io, context.environ, cli_name, current_version_str, new_version_str);
+    else blk: {
+        const template = if (is_initial_release)
+            try initialNotesTemplate(allocator, new_version_str)
+        else
+            try changesNotesTemplate(allocator, io, cli_name, current_version_str, new_version_str);
+        defer allocator.free(template);
+
+        try stdout.flush(); // the editor inherits the terminal — our output must land first
+        break :blk editReleaseNotes(allocator, io, context.environ, template) catch |err| switch (err) {
+            error.EditorFailed => return context.fail("✗ Editor exited with non-zero status", .{}),
+            else => return err,
+        };
+    };
     defer allocator.free(release_notes);
 
-    stdout.print("\nRelease notes:\n{s}\n", .{release_notes}) catch {};
+    try stdout.print("\nRelease notes:\n{s}\n", .{release_notes});
 
     // 5.5. Confirm release (unless using --message flag or dry-run)
     if (options.message == null and !options.@"dry-run") {
-        stdout.print("\nContinue with release {s}-v{s}? [Y/n]: ", .{ cli_name, new_version_str }) catch {};
+        try stdout.print("\nContinue with release {s}-v{s}? [Y/n]: ", .{ cli_name, new_version_str });
+        try stdout.flush(); // the prompt must reach the terminal before we block on stdin
         const response = readLine(allocator, io) catch |read_err| {
             if (read_err == error.InputTooLong)
                 return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
@@ -305,30 +318,30 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     }
 
     // 6. Update build.zig.zon with new version
-    stdout.print("\n→ Updating build.zig.zon to v{s}...\n", .{new_version_str}) catch {};
+    try stdout.print("\n→ Updating build.zig.zon to v{s}...\n", .{new_version_str});
     if (options.@"dry-run") {
-        stdout.print("  (dry-run: would update build.zig.zon)\n", .{}) catch {};
+        try stdout.print("  (dry-run: would update build.zig.zon)\n", .{});
     } else {
         try updateBuildZonVersion(allocator, io, new_version_str);
-        stdout.print("  ✓ build.zig.zon updated\n", .{}) catch {};
+        try stdout.print("  ✓ build.zig.zon updated\n", .{});
 
         // Commit the version bump
-        stdout.print("\n→ Committing version bump...\n", .{}) catch {};
+        try stdout.print("\n→ Committing version bump...\n", .{});
         const commit_msg = try std.fmt.allocPrint(allocator, "Bump version to {s}", .{new_version_str});
         defer allocator.free(commit_msg);
 
-        _ = try runCommand(allocator, io, &.{ "git", "add", "build.zig.zon" });
-        _ = try runCommand(allocator, io, &.{ "git", "commit", "-m", commit_msg });
-        stdout.print("  ✓ Changes committed\n", .{}) catch {};
+        try runOrFail(allocator, io, context, &.{ "git", "add", "build.zig.zon" });
+        try runOrFail(allocator, io, context, &.{ "git", "commit", "-m", commit_msg });
+        try stdout.print("  ✓ Changes committed\n", .{});
     }
 
     // 7. Create annotated tag
     const tag_name = try std.fmt.allocPrint(allocator, "{s}-v{s}", .{ cli_name, new_version_str });
     defer allocator.free(tag_name);
 
-    stdout.print("\n→ Creating annotated tag {s}...\n", .{tag_name}) catch {};
+    try stdout.print("\n→ Creating annotated tag {s}...\n", .{tag_name});
     if (options.@"dry-run") {
-        stdout.print("  (dry-run: would create tag)\n", .{}) catch {};
+        try stdout.print("  (dry-run: would create tag)\n", .{});
     } else {
         var tag_cmd = std.ArrayList([]const u8).empty;
         defer tag_cmd.deinit(allocator);
@@ -341,39 +354,39 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         try tag_cmd.append(allocator, "-m");
         try tag_cmd.append(allocator, release_notes);
 
-        _ = try runCommand(allocator, io, tag_cmd.items);
-        stdout.print("  ✓ Tag created\n", .{}) catch {};
+        try runOrFail(allocator, io, context, tag_cmd.items);
+        try stdout.print("  ✓ Tag created\n", .{});
     }
 
     // 8. Push commit and tag
     if (!options.@"no-push") {
-        stdout.print("\n→ Pushing to origin...\n", .{}) catch {};
+        try stdout.print("\n→ Pushing to origin...\n", .{});
         if (options.@"dry-run") {
-            stdout.print("  (dry-run: would push commit and tag)\n", .{}) catch {};
+            try stdout.print("  (dry-run: would push commit and tag)\n", .{});
         } else {
             // Push the commit first
-            _ = try runCommand(allocator, io, &.{ "git", "push" });
+            try runOrFail(allocator, io, context, &.{ "git", "push" });
             // Then push the tag
-            _ = try runCommand(allocator, io, &.{ "git", "push", "origin", tag_name });
-            stdout.print("  ✓ Commit and tag pushed successfully\n", .{}) catch {};
+            try runOrFail(allocator, io, context, &.{ "git", "push", "origin", tag_name });
+            try stdout.print("  ✓ Commit and tag pushed successfully\n", .{});
         }
     }
 
     // 9. Success message
-    stdout.print("\n", .{}) catch {};
+    try stdout.print("\n", .{});
     if (options.@"dry-run") {
-        stdout.print("✓ Dry-run complete! No changes were made.\n", .{}) catch {};
+        try stdout.print("✓ Dry-run complete! No changes were made.\n", .{});
     } else {
-        stdout.print("✓ Release {s} created! 🎉\n", .{tag_name}) catch {};
-        stdout.print("\nNext steps:\n", .{}) catch {};
-        stdout.print("  • GitHub Actions will build release binaries\n", .{}) catch {};
+        try stdout.print("✓ Release {s} created! 🎉\n", .{tag_name});
+        try stdout.print("\nNext steps:\n", .{});
+        try stdout.print("  • GitHub Actions will build release binaries\n", .{});
 
         // Try to get repo URL
-        if (runCommand(allocator, io, &.{ "git", "config", "--get", "remote.origin.url" })) |url| {
-            defer allocator.free(url);
-            const clean_url = std.mem.trim(u8, url, "\n ");
+        if (runCommand(allocator, io, &.{ "git", "config", "--get", "remote.origin.url" })) |url_result| {
+            defer url_result.deinit(allocator);
+            const clean_url = std.mem.trim(u8, url_result.stdout, "\n ");
             // Convert git@github.com:user/repo.git to https://github.com/user/repo
-            if (std.mem.indexOf(u8, clean_url, "github.com")) |_| {
+            if (url_result.success and std.mem.indexOf(u8, clean_url, "github.com") != null) {
                 var repo_url = std.ArrayList(u8).empty;
                 defer repo_url.deinit(allocator);
 
@@ -396,7 +409,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                     try repo_url.appendSlice(allocator, path_clean);
                 }
 
-                stdout.print("  • View release: {s}/releases/tag/{s}\n", .{ repo_url.items, tag_name }) catch {};
+                try stdout.print("  • View release: {s}/releases/tag/{s}\n", .{ repo_url.items, tag_name });
             }
         } else |_| {}
     }
@@ -407,12 +420,10 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 fn validateZcliProject(allocator: std.mem.Allocator, io: std.Io, context: anytype) !void {
     const zon_path = "build.zig.zon";
 
-    const file = std.Io.Dir.cwd().openFile(io, zon_path, .{}) catch {
-        return context.fail("✗ Error: Could not open {s}\n  Make sure you're running this command from a project root directory.", .{zon_path});
+    const content = std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return context.fail("✗ Error: Could not open {s}\n  Make sure you're running this command from a project root directory.", .{zon_path}),
     };
-    defer file.close(io);
-
-    const content = try std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
     // Check if this has zcli as a dependency (indicating it's a zcli-based project)
@@ -449,16 +460,7 @@ fn validateZcliProject(allocator: std.mem.Allocator, io: std.Io, context: anytyp
 
 /// Parse CLI name from build.zig.zon
 fn parseCliName(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
-    const zon_path = "build.zig.zon";
-
-    const file = std.Io.Dir.cwd().openFile(io, zon_path, .{}) catch |err| {
-        std.debug.print("Error: Could not open {s}: {}\n", .{ zon_path, err });
-        std.debug.print("Make sure you're running this command from the project root directory.\n", .{});
-        return err;
-    };
-    defer file.close(io);
-
-    const content = try std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024));
+    const content = try std.Io.Dir.cwd().readFileAlloc(io, "build.zig.zon", allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
     // Find the .name line
@@ -501,10 +503,6 @@ fn parseCliName(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
 fn updateBuildZonVersion(allocator: std.mem.Allocator, io: std.Io, new_version: []const u8) !void {
     const zon_path = "build.zig.zon";
 
-    // Read current file
-    const file = try std.Io.Dir.cwd().openFile(io, zon_path, .{});
-    defer file.close(io);
-
     const content = try std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
@@ -543,13 +541,11 @@ fn getCurrentVersion(allocator: std.mem.Allocator, io: std.Io, cli_name: []const
     const tag_pattern = try std.fmt.allocPrint(allocator, "{s}-v*", .{cli_name});
     defer allocator.free(tag_pattern);
 
-    const result = runCommand(allocator, io, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", tag_pattern }) catch |err| {
-        if (err == error.CommandFailed) return error.NoTags;
-        return err;
-    };
-    defer allocator.free(result);
+    const result = try runCommand(allocator, io, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", tag_pattern });
+    defer result.deinit(allocator);
+    if (!result.success) return error.NoTags;
 
-    const tag = std.mem.trim(u8, result, "\n ");
+    const tag = std.mem.trim(u8, result.stdout, "\n ");
 
     // Strip the "{cli_name}-" prefix to get just the version
     const prefix = try std.fmt.allocPrint(allocator, "{s}-", .{cli_name});
@@ -563,19 +559,8 @@ fn getCurrentVersion(allocator: std.mem.Allocator, io: std.Io, cli_name: []const
     return try Version.parse(version_str);
 }
 
-fn getInitialReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map, version: []const u8) ![]const u8 {
-    // Create temporary file with template for initial release
-    const tmp_dir = "/tmp/zcli";
-
-    const cwd_dir = std.Io.Dir.cwd();
-    cwd_dir.createDirPath(io, tmp_dir) catch {};
-    var dir = try cwd_dir.openDir(io, tmp_dir, .{});
-    defer dir.close(io);
-
-    const tmp_file_path = try std.fmt.allocPrint(allocator, "{s}/RELEASE_NOTES.txt", .{tmp_dir});
-    defer allocator.free(tmp_file_path);
-
-    const template = try std.fmt.allocPrint(
+fn initialNotesTemplate(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
         allocator,
         \\Release v{s}
         \\
@@ -593,54 +578,28 @@ fn getInitialReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*c
     ,
         .{version},
     );
-    defer allocator.free(template);
-
-    const file = try dir.createFile(io, "RELEASE_NOTES.txt", .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, template);
-
-    // Spawn editor
-    const editor_env = if (environ) |env| env.get("VISUAL") orelse env.get("EDITOR") orelse "vim" else "vim";
-    var editor_child = try std.process.spawn(io, .{
-        .argv = &.{ editor_env, "RELEASE_NOTES.txt" },
-        .cwd = .{ .dir = dir },
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    });
-    const editor_term = try editor_child.wait(io);
-    if (editor_term != .exited or editor_term.exited != 0) {
-        std.debug.print("Error: Editor exited with non-zero status\n", .{});
-        return error.EditorFailed;
-    }
-
-    const content = try dir.readFileAlloc(io, "RELEASE_NOTES.txt", allocator, .limited(1024 * 1024));
-    return content;
 }
 
-fn getReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map, cli_name: []const u8, current_version: []const u8, new_version: []const u8) ![]const u8 {
+fn changesNotesTemplate(allocator: std.mem.Allocator, io: std.Io, cli_name: []const u8, current_version: []const u8, new_version: []const u8) ![]u8 {
     // Generate commit log since last tag. Plain argv like every other git
     // call in this file — no shell, so a tag name is never interpreted (and
     // the pretty format needs no quoting gymnastics).
     const tag_range = try std.fmt.allocPrint(allocator, "{s}-v{s}..HEAD", .{ cli_name, current_version });
     defer allocator.free(tag_range);
 
-    const commits = runCommand(allocator, io, &.{ "git", "log", tag_range, "--oneline", "--pretty=format:- %s" }) catch
-        try allocator.dupe(u8, "");
+    const commits: []const u8 = blk: {
+        const result = runCommand(allocator, io, &.{ "git", "log", tag_range, "--oneline", "--pretty=format:- %s" }) catch
+            break :blk try allocator.dupe(u8, "");
+        if (!result.success) {
+            result.deinit(allocator);
+            break :blk try allocator.dupe(u8, "");
+        }
+        allocator.free(result.stderr);
+        break :blk result.stdout;
+    };
     defer allocator.free(commits);
 
-    // Create temporary file with template
-    const tmp_dir = "/tmp/zcli";
-
-    const cwd_dir = std.Io.Dir.cwd();
-    cwd_dir.createDirPath(io, tmp_dir) catch {};
-    var dir = try cwd_dir.openDir(io, tmp_dir, .{});
-    defer dir.close(io);
-
-    const tmp_file_path = try std.fmt.allocPrint(allocator, "{s}/RELEASE_NOTES.txt", .{tmp_dir});
-    defer allocator.free(tmp_file_path);
-
-    const template = try std.fmt.allocPrint(
+    return std.fmt.allocPrint(
         allocator,
         \\Release v{s}
         \\
@@ -656,51 +615,145 @@ fn getReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*const st
     ,
         .{ new_version, commits },
     );
-    defer allocator.free(template);
+}
 
-    const file = try dir.createFile(io, "RELEASE_NOTES.txt", .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, template);
+const notes_file_name = "RELEASE_NOTES.txt";
+const scratch_dir_permissions: std.Io.Dir.Permissions = @enumFromInt(0o700);
+const scratch_name_len = ".zcli-release-".len + 16;
 
-    const editor_env = if (environ) |env| env.get("VISUAL") orelse env.get("EDITOR") orelse "vim" else "vim";
+fn randomScratchName(io: std.Io, buf: *[scratch_name_len]u8) []const u8 {
+    var random_bytes: [8]u8 = undefined;
+    io.random(&random_bytes);
+    const hex = std.fmt.bytesToHex(&random_bytes, .lower);
+    return std.fmt.bufPrint(buf, ".zcli-release-{s}", .{hex}) catch unreachable;
+}
+
+/// Write `template` to a notes file, open $VISUAL/$EDITOR on it, and return
+/// the edited content. The file feeds the (possibly signed) tag message, so
+/// it lives in a randomly-named 0700 scratch directory in the project root —
+/// never a predictable shared path like /tmp/zcli, which another local user
+/// could pre-plant or tamper with between write and read.
+fn editReleaseNotes(allocator: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map, template: []const u8) ![]u8 {
+    const cwd_dir = std.Io.Dir.cwd();
+
+    var scratch_name_buf: [scratch_name_len]u8 = undefined;
+    const scratch_name = randomScratchName(io, &scratch_name_buf);
+    try cwd_dir.createDir(io, scratch_name, scratch_dir_permissions);
+    defer cwd_dir.deleteTree(io, scratch_name) catch {};
+    var dir = try cwd_dir.openDir(io, scratch_name, .{});
+    defer dir.close(io);
+
+    {
+        const file = try dir.createFile(io, notes_file_name, .{ .exclusive = true });
+        defer file.close(io);
+        try file.writeStreamingAll(io, template);
+    }
+
+    const editor = if (environ) |env| env.get("VISUAL") orelse env.get("EDITOR") orelse "vim" else "vim";
     var editor_child = try std.process.spawn(io, .{
-        .argv = &.{ editor_env, "RELEASE_NOTES.txt" },
+        .argv = &.{ editor, notes_file_name },
         .cwd = .{ .dir = dir },
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
     });
     const editor_term = try editor_child.wait(io);
-    if (editor_term != .exited or editor_term.exited != 0) {
-        std.debug.print("Error: Editor exited with non-zero status\n", .{});
-        return error.EditorFailed;
-    }
+    if (editor_term != .exited or editor_term.exited != 0) return error.EditorFailed;
 
-    const content = try dir.readFileAlloc(io, "RELEASE_NOTES.txt", allocator, .limited(1024 * 1024));
-    return content;
+    return dir.readFileAlloc(io, notes_file_name, allocator, .limited(1024 * 1024));
 }
 
-fn runCommand(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]const u8 {
+const RunResult = struct {
+    stdout: []u8,
+    stderr: []u8,
+    success: bool,
+
+    fn deinit(self: RunResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+const max_command_output = 1024 * 1024;
+const stderr_capture_cap = 64 * 1024;
+
+/// Read the child's stderr to EOF into `dest`, discarding overflow. Runs
+/// concurrently with the stdout drain, so it must not allocate: the
+/// per-command arena is not threadsafe. Truncation is fine — stderr is only
+/// used for diagnostics.
+fn drainStderr(io: std.Io, file: std.Io.File, dest: []u8) usize {
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    const n = reader.interface.readSliceShort(dest) catch return 0;
+    _ = reader.interface.discardRemaining() catch {};
+    return n;
+}
+
+/// Spawn `argv` (no shell) and capture stdout and stderr. Errors only for
+/// spawn/read failures; a non-zero exit is reported via `success` so callers
+/// still get the child's stderr for diagnostics.
+fn runCommand(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !RunResult {
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .stdout = .pipe,
         .stderr = .pipe,
     });
 
+    // Both pipes must drain simultaneously: a child that fills one while we
+    // block reading the other to EOF deadlocks (`zig build test` easily
+    // exceeds the pipe buffer on stderr). On a single-threaded blocking Io,
+    // fall back to sequential drains — the pre-existing behavior.
+    var stderr_capture: [stderr_capture_cap]u8 = undefined;
+    var stderr_future: ?std.Io.Future(usize) =
+        io.concurrent(drainStderr, .{ io, child.stderr.?, &stderr_capture }) catch null;
+
     var stdout_buf: [4096]u8 = undefined;
-    var stderr_buf: [4096]u8 = undefined;
     var stdout_reader = child.stdout.?.reader(io, &stdout_buf);
-    var stderr_reader = child.stderr.?.reader(io, &stderr_buf);
-    const stdout_data = stdout_reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch return error.CommandFailed;
-    _ = stderr_reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch {};
+    const stdout_data = stdout_reader.interface.allocRemaining(allocator, .limited(max_command_output)) catch |err| {
+        // Keep both pipes draining so the child can exit and the concurrent
+        // stderr drain reaches EOF, then reap before propagating.
+        _ = stdout_reader.interface.discardRemaining() catch {};
+        if (stderr_future) |*f| _ = f.await(io);
+        child.kill(io);
+        return err;
+    };
+    errdefer allocator.free(stdout_data);
+
+    const stderr_len = if (stderr_future) |*f|
+        f.await(io)
+    else
+        drainStderr(io, child.stderr.?, &stderr_capture);
+
+    const stderr_data = try allocator.dupe(u8, stderr_capture[0..stderr_len]);
+    errdefer allocator.free(stderr_data);
 
     const term = try child.wait(io);
-    if (term != .exited or term.exited != 0) {
-        allocator.free(stdout_data);
-        return error.CommandFailed;
-    }
+    return .{
+        .stdout = stdout_data,
+        .stderr = stderr_data,
+        .success = term == .exited and term.exited == 0,
+    };
+}
 
-    return stdout_data;
+/// Run a command that must succeed, returning its stdout (caller frees). On
+/// non-zero exit, renders the child's stderr through `context.fail`.
+fn captureOrFail(allocator: std.mem.Allocator, io: std.Io, context: anytype, argv: []const []const u8) ![]u8 {
+    const result = try runCommand(allocator, io, argv);
+    if (result.success) {
+        allocator.free(result.stderr);
+        return result.stdout;
+    }
+    defer result.deinit(allocator);
+
+    const command_line = try std.mem.join(allocator, " ", argv);
+    defer allocator.free(command_line);
+    const detail = std.mem.trim(u8, if (result.stderr.len > 0) result.stderr else result.stdout, " \t\r\n");
+    return context.fail("✗ `{s}` failed:\n{s}", .{ command_line, detail });
+}
+
+/// `captureOrFail` for commands whose stdout is not needed.
+fn runOrFail(allocator: std.mem.Allocator, io: std.Io, context: anytype, argv: []const []const u8) !void {
+    allocator.free(try captureOrFail(allocator, io, context, argv));
 }
 
 // ============================================================================
@@ -754,13 +807,13 @@ test "Version.format - formats correctly" {
 
 test "Version.bump - major" {
     const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
-    const v2 = v1.bump("major");
+    const v2 = v1.bump(.major);
     try testing.expectEqual(@as(u32, 2), v2.major);
     try testing.expectEqual(@as(u32, 0), v2.minor);
     try testing.expectEqual(@as(u32, 0), v2.patch);
 
     const v3 = Version{ .major = 0, .minor = 5, .patch = 10 };
-    const v4 = v3.bump("major");
+    const v4 = v3.bump(.major);
     try testing.expectEqual(@as(u32, 1), v4.major);
     try testing.expectEqual(@as(u32, 0), v4.minor);
     try testing.expectEqual(@as(u32, 0), v4.patch);
@@ -768,13 +821,13 @@ test "Version.bump - major" {
 
 test "Version.bump - minor" {
     const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
-    const v2 = v1.bump("minor");
+    const v2 = v1.bump(.minor);
     try testing.expectEqual(@as(u32, 1), v2.major);
     try testing.expectEqual(@as(u32, 3), v2.minor);
     try testing.expectEqual(@as(u32, 0), v2.patch);
 
     const v3 = Version{ .major = 0, .minor = 0, .patch = 10 };
-    const v4 = v3.bump("minor");
+    const v4 = v3.bump(.minor);
     try testing.expectEqual(@as(u32, 0), v4.major);
     try testing.expectEqual(@as(u32, 1), v4.minor);
     try testing.expectEqual(@as(u32, 0), v4.patch);
@@ -782,24 +835,16 @@ test "Version.bump - minor" {
 
 test "Version.bump - patch" {
     const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
-    const v2 = v1.bump("patch");
+    const v2 = v1.bump(.patch);
     try testing.expectEqual(@as(u32, 1), v2.major);
     try testing.expectEqual(@as(u32, 2), v2.minor);
     try testing.expectEqual(@as(u32, 4), v2.patch);
 
     const v3 = Version{ .major = 0, .minor = 0, .patch = 0 };
-    const v4 = v3.bump("patch");
+    const v4 = v3.bump(.patch);
     try testing.expectEqual(@as(u32, 0), v4.major);
     try testing.expectEqual(@as(u32, 0), v4.minor);
     try testing.expectEqual(@as(u32, 1), v4.patch);
-}
-
-test "Version.bump - invalid bump type returns unchanged" {
-    const v1 = Version{ .major = 1, .minor = 2, .patch = 3 };
-    const v2 = v1.bump("invalid");
-    try testing.expectEqual(@as(u32, 1), v2.major);
-    try testing.expectEqual(@as(u32, 2), v2.minor);
-    try testing.expectEqual(@as(u32, 3), v2.patch);
 }
 
 test "parseCliName - quoted string format" {
@@ -937,18 +982,12 @@ test "parseCliName - missing name field" {
 }
 
 test "bump type detection" {
-    // Test that we can correctly identify bump types vs explicit versions
-    const is_major = std.mem.eql(u8, "major", "major");
-    const is_minor = std.mem.eql(u8, "minor", "minor");
-    const is_patch = std.mem.eql(u8, "patch", "patch");
-    const is_version = !std.mem.eql(u8, "1.2.3", "major") and
-        !std.mem.eql(u8, "1.2.3", "minor") and
-        !std.mem.eql(u8, "1.2.3", "patch");
-
-    try testing.expect(is_major);
-    try testing.expect(is_minor);
-    try testing.expect(is_patch);
-    try testing.expect(is_version);
+    // Bump keywords map to BumpType; anything else is an explicit version.
+    try testing.expectEqual(Version.BumpType.major, std.meta.stringToEnum(Version.BumpType, "major").?);
+    try testing.expectEqual(Version.BumpType.minor, std.meta.stringToEnum(Version.BumpType, "minor").?);
+    try testing.expectEqual(Version.BumpType.patch, std.meta.stringToEnum(Version.BumpType, "patch").?);
+    try testing.expect(std.meta.stringToEnum(Version.BumpType, "1.2.3") == null);
+    try testing.expect(std.meta.stringToEnum(Version.BumpType, "Major") == null);
 }
 
 test "tag name format with CLI name prefix" {
@@ -1016,19 +1055,19 @@ test "Version.bump - all bump types reset lower components" {
     const v = Version{ .major = 5, .minor = 10, .patch = 15 };
 
     // Major bump resets minor and patch
-    const v_major = v.bump("major");
+    const v_major = v.bump(.major);
     try testing.expectEqual(@as(u32, 6), v_major.major);
     try testing.expectEqual(@as(u32, 0), v_major.minor);
     try testing.expectEqual(@as(u32, 0), v_major.patch);
 
     // Minor bump resets patch
-    const v_minor = v.bump("minor");
+    const v_minor = v.bump(.minor);
     try testing.expectEqual(@as(u32, 5), v_minor.major);
     try testing.expectEqual(@as(u32, 11), v_minor.minor);
     try testing.expectEqual(@as(u32, 0), v_minor.patch);
 
     // Patch bump doesn't reset anything
-    const v_patch = v.bump("patch");
+    const v_patch = v.bump(.patch);
     try testing.expectEqual(@as(u32, 5), v_patch.major);
     try testing.expectEqual(@as(u32, 10), v_patch.minor);
     try testing.expectEqual(@as(u32, 16), v_patch.patch);
@@ -1096,4 +1135,30 @@ test "tag name format - validates pattern" {
     try testing.expect(std.mem.indexOf(u8, tag_name, cli_name) != null);
     try testing.expect(std.mem.indexOf(u8, tag_name, "-v") != null);
     try testing.expect(std.mem.indexOf(u8, tag_name, version) != null);
+}
+
+test "randomScratchName - hidden, fixed-length, unpredictable" {
+    var buf_a: [scratch_name_len]u8 = undefined;
+    var buf_b: [scratch_name_len]u8 = undefined;
+    const a = randomScratchName(std.testing.io, &buf_a);
+    const b = randomScratchName(std.testing.io, &buf_b);
+
+    try testing.expectEqual(scratch_name_len, a.len);
+    try testing.expect(std.mem.startsWith(u8, a, ".zcli-release-"));
+    try testing.expect(!std.mem.eql(u8, a, b));
+}
+
+test "runCommand - captures stdout and surfaces failure stderr" {
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    const ok = try runCommand(allocator, io, &.{ "git", "--version" });
+    defer ok.deinit(allocator);
+    try testing.expect(ok.success);
+    try testing.expect(std.mem.startsWith(u8, ok.stdout, "git version"));
+
+    const bad = try runCommand(allocator, io, &.{ "git", "cat-file", "-p", "not-a-real-object" });
+    defer bad.deinit(allocator);
+    try testing.expect(!bad.success);
+    try testing.expect(bad.stderr.len > 0);
 }
