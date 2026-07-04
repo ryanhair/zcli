@@ -93,13 +93,13 @@
     <div class="verify">
       <h4>Verify the install</h4>
 <pre><span class="pr" style="color:var(--accent)">$</span> myapp --version
-<span class="ok">myapp 0.1.0  ·  built with zcli v0.17.0</span></pre>
+<span class="ok">myapp 0.1.0  ·  built with zcli v<span :text="$site.asset('site-data.json').ziggy().get('version')"></span></span></pre>
     </div>
 
     <div class="grid">
       <div class="req"><div class="l">Requires</div><div class="v"><b>Zig 0.16.0</b> or newer</div></div>
       <div class="req"><div class="l">License</div><div class="v"><b>MIT</b> — © 2025 Ryan Hair</div></div>
-      <div class="req"><div class="l">Latest</div><div class="v"><b>v0.17.0</b></div></div>
+      <div class="req"><div class="l">Latest</div><div class="v"><b>v<span :text="$site.asset('site-data.json').ziggy().get('version')"></span></b></div></div>
     </div>
 
     <div style="text-align:center;margin:56px 0 96px;">

@@ -10,6 +10,7 @@ test_io
 examples/showcase/tasks.json
 /website/zine
 /website/public
+/website/assets/site-data.json
 **/CLAUDE.md
 docs/internal/
 **/docs/html/

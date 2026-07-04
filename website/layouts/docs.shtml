@@ -68,7 +68,7 @@
         <section id="start">
           <h1>Documentation</h1>
           <p class="sub">A batteries-included framework for building command-line interfaces in Zig. Drop <code>.zig</code> files in a directory and get a fully-featured CLI — with command discovery and routing wired up at compile time for zero-cost dispatch.</p>
-          <div class="callout"><b>Requires</b> Zig 0.16.0 or newer. zcli is currently v0.17.0 and MIT licensed.</div>
+          <div class="callout"><b>Requires</b> Zig 0.16.0 or newer. zcli is currently v<span :text="$site.asset('site-data.json').ziggy().get('version')"></span> and MIT licensed.</div>
         </section>
 
         <!-- ============ FAST PATH ============ -->
