@@ -471,6 +471,16 @@ test "guide lists topics and embeds the canonical example source" {
         try expectContains(r.stdout, "std.json.fmt(notes");
     }
 
+    // And `plugins`, embedding examples/notes/src/plugins/verbose.zig — the full
+    // plugin anatomy (plugin_id + ContextData + global_options + handler).
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "guide", "plugins" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "pub const plugin_id");
+        try expectContains(r.stdout, "pub fn handleGlobalOption");
+    }
+
     // An unknown topic fails (non-zero) and prints the topic list as guidance,
     // exiting cleanly rather than leaking a raw `error:` line.
     {

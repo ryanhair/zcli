@@ -38,6 +38,9 @@ pub fn build(b: *std.Build) void {
             zcli.builtin(.version, .{}),
             zcli.builtin(.not_found, .{}),
         },
+        // Local plugins in src/plugins/ are auto-discovered (src/plugins/verbose.zig
+        // adds a global --verbose flag). See `zcli guide plugins`.
+        .plugins_dir = "src/plugins",
         .shared_modules = &shared_modules,
         .app_name = "notes",
         .app_description = "A tiny note keeper (a JSON-file persistence example)",

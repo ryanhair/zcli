@@ -322,7 +322,16 @@ const topics = [_]Topic{
         \\Scaffold one with `zcli add plugin <name>` — the generated stub wires one
         \\working hook and comments the full catalog with exact signatures.
         \\
-        ,
+        \\A plugin can also carry state and add global flags. Declare `plugin_id`
+        \\and a `ContextData` struct (default every field); the framework gives it a
+        \\slot at `context.plugins.<plugin_id>` for the run that any command reads —
+        \\`if (context.plugins.verbose.enabled) ...`. Add a global flag with
+        \\`global_options` + `handleGlobalOption`; the handler fires during parsing,
+        \\before preExecute and the command, so the flag is set by the time they run.
+        \\
+        \\Worked example — examples/notes/src/plugins/verbose.zig:
+        \\
+        ++ "\n" ++ examples.notes_verbose_plugin,
     },
     .{
         .name = "testing",

@@ -49,6 +49,9 @@ pub fn build(b: *std.Build) void {
     guide_examples_module.addAnonymousImport("notes/store.zig", .{
         .root_source_file = b.path("../../examples/notes/src/store.zig"),
     });
+    guide_examples_module.addAnonymousImport("notes/verbose.zig", .{
+        .root_source_file = b.path("../../examples/notes/src/plugins/verbose.zig"),
+    });
 
     // Create the executable
     const exe = b.addExecutable(.{
