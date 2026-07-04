@@ -662,13 +662,14 @@ pub const commands = struct {
 
 **Plugin Registration:**
 
-Plugins are registered in build.zig and processed in order:
+Plugins are registered in build.zig:
 
 ```zig
 const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .plugins = &.{
-        .{ .name = "zcli_help", .path = "path/to/plugin" },      // First priority
-        .{ .name = "zcli_not_found", .path = "path/to/plugin" }, // Second priority
+        zcli.builtin(.help, .{}),
+        zcli.builtin(.not_found, .{}),
+        .{ .name = "my_plugin", .path = "src/plugins/my_plugin" }, // handrolled
     },
     // ... other config
 });
@@ -676,7 +677,7 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
 
 **Plugin Execution Order:**
 
-1. Plugins execute in registration order (no priority system)
+1. Plugins are sorted by priority at compile time — a plugin may declare `pub const priority: i32` (default 50); higher values run first, and ties keep registration order
 2. All `handleGlobalOption` hooks called for each global option
 3. All `preExecute` hooks called before command execution
 4. Command executes

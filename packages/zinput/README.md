@@ -33,7 +33,8 @@ exe.root_module.addImport("zinput", zinput_dep.module("zinput"));
 ```zig
 const zinput = @import("zinput");
 
-// Free-form text (returns owned ?[]const u8; null when the user submits nothing)
+// Free-form text (returns an owned []u8 — caller frees; empty submit returns
+// the default if set, otherwise an empty string)
 const title = try zinput.text(writer, reader, allocator, .{
     .message = "Task title:",
 });

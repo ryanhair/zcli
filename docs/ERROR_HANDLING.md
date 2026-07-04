@@ -20,19 +20,34 @@ pub const ZcliError = error{
     ArgumentMissingRequired,
     ArgumentInvalidValue,
     ArgumentTooMany,
-    
+
     // Option parsing errors
     OptionUnknown,
     OptionMissingValue,
     OptionInvalidValue,
     OptionBooleanWithValue,
     OptionDuplicate,
-    
-    // System errors
-    OutOfMemory,
-    
+
     // Command routing errors
     CommandNotFound,
+    SubcommandNotFound,
+
+    // Build-time errors
+    BuildCommandDiscoveryFailed,
+    BuildRegistryGenerationFailed,
+    BuildOutOfMemory,
+
+    // System errors
+    SystemOutOfMemory,
+    SystemFileNotFound,
+    SystemAccessDenied,
+
+    // Special cases
+    HelpRequested,
+    VersionRequested,
+
+    // Resource limits
+    ResourceLimitExceeded,
 };
 ```
 
@@ -52,8 +67,10 @@ When errors occur, zcli provides detailed diagnostic information through the `Zc
 Parse positional arguments into a struct:
 
 ```zig
-pub fn parseArgs(comptime ArgsType: type, args: []const []const u8) ZcliError!ArgsType
+pub fn parseArgs(comptime ArgsType: type, args: []const []const u8, diag: ?*?ZcliDiagnostic) ZcliError!ArgsType
 ```
+
+The final `diag` parameter is an optional out-parameter: pass `null` if you only need the error, or a `*?ZcliDiagnostic` to capture rich context about the failure (see [Diagnostic-Driven Error Messages](#diagnostic-driven-error-messages) below).
 
 **Example:**
 ```zig
@@ -62,7 +79,7 @@ const Args = struct {
     count: u32 = 1,
 };
 
-const parsed = parseArgs(Args, &.{"Alice", "42"}) catch |err| switch (err) {
+const parsed = parseArgs(Args, &.{"Alice", "42"}, null) catch |err| switch (err) {
     error.ArgumentMissingRequired => {
         std.debug.print("Missing required argument\n", .{});
         return;
@@ -86,6 +103,7 @@ pub fn parseOptions(
     comptime OptionsType: type,
     allocator: std.mem.Allocator,
     args: []const []const u8,
+    diag: ?*?ZcliDiagnostic,
 ) ZcliError!OptionsResult(OptionsType)
 ```
 
@@ -97,7 +115,7 @@ const Options = struct {
     files: [][]const u8 = &.{},
 };
 
-const result = parseOptions(Options, allocator, args) catch |err| switch (err) {
+const result = parseOptions(Options, allocator, args, null) catch |err| switch (err) {
     error.OptionUnknown => {
         std.debug.print("Unknown option provided\n", .{});
         return;
@@ -118,7 +136,7 @@ defer cleanupOptions(Options, result.options, allocator);
 ### Basic Pattern
 
 ```zig
-const parsed = parseOptions(Options, allocator, args) catch |err| {
+const parsed = parseOptions(Options, allocator, args, null) catch |err| {
     std.debug.print("Parse error: {}\n", .{err});
     std.process.exit(1);
 };
@@ -128,7 +146,7 @@ defer cleanupOptions(Options, parsed.options, allocator);
 ### Detailed Error Handling
 
 ```zig
-const parsed = parseOptions(Options, allocator, args) catch |err| switch (err) {
+const parsed = parseOptions(Options, allocator, args, null) catch |err| switch (err) {
     error.OptionUnknown => {
         std.debug.print("Unknown option. Run with --help for usage.\n", .{});
         std.process.exit(2);
@@ -141,13 +159,43 @@ const parsed = parseOptions(Options, allocator, args) catch |err| switch (err) {
         std.debug.print("Missing required argument. Run with --help for usage.\n", .{});
         std.process.exit(2);
     },
-    error.OutOfMemory => return error.OutOfMemory,
+    error.SystemOutOfMemory => return error.SystemOutOfMemory,
     else => {
         std.debug.print("Unexpected error: {}\n", .{err});
         std.process.exit(1);
     },
 };
 ```
+
+### Diagnostic-Driven Error Messages
+
+The `catch`-and-switch patterns above only know *which* error occurred. To tell the user *what* went wrong — which option, what value, what was expected — pass a diagnostic out-parameter and format it with `formatDiagnostic`:
+
+```zig
+var diag: ?zcli.ZcliDiagnostic = null;
+const result = parseOptions(Options, allocator, args, &diag) catch {
+    if (diag) |d| {
+        const msg = try zcli.formatDiagnostic(d, allocator);
+        defer allocator.free(msg);
+        std.debug.print("{s}\n", .{msg});
+    }
+    std.process.exit(2);
+};
+defer cleanupOptions(Options, result.options, allocator);
+```
+
+The formatted messages carry the full context, for example:
+
+```
+Missing required argument 'name' at position 1. Expected type: []const u8
+Invalid value 'abc' for option '--count'. Expected type: u32
+Boolean option '--verbose' does not accept a value (got 'yes')
+Unknown option '--verbos'
+Did you mean:
+  --verbose
+```
+
+`OptionUnknown` and `CommandNotFound` diagnostics include "did you mean?" suggestions computed by edit distance. This is exactly how the framework produces its own error output — commands get it for free.
 
 ## Framework Integration
 
@@ -157,7 +205,9 @@ When using the zcli framework, error handling is automatic:
 
 ```zig
 // In your command's execute function
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+const Context = @import("command_registry").Context;
+
+pub fn execute(args: Args, options: Options, context: *Context) !void {
     // args and options are already parsed and validated
     // Any parsing errors were handled by the framework
     try context.stdout().print("Hello, {s}!\n", .{args.name});
@@ -175,8 +225,9 @@ The framework automatically:
 Commands can return errors which will be handled by the framework:
 
 ```zig
-pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
-    const file = std.fs.cwd().openFile(args.filename, .{}) catch |err| switch (err) {
+pub fn execute(args: Args, options: Options, context: *Context) !void {
+    const io = context.io;
+    const file = std.Io.Dir.cwd().openFile(io, args.filename, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             try context.stderr().print("Error: File '{s}' not found\n", .{args.filename});
             return;
@@ -187,8 +238,8 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
         },
         else => return err, // Let framework handle unexpected errors
     };
-    defer file.close();
-    
+    defer file.close(io);
+
     // Process file...
 }
 ```
@@ -200,7 +251,7 @@ pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
 When using `parseOptions` directly, always clean up array options:
 
 ```zig
-const result = try parseOptions(Options, allocator, args);
+const result = try parseOptions(Options, allocator, args, null);
 defer cleanupOptions(Options, result.options, allocator);
 ```
 
@@ -225,9 +276,15 @@ Error contexts are lightweight and don't require explicit cleanup.
 
 ### Complete Command-Line Parser
 
+For standalone parsing outside the framework, the unified entry point re-exported at the package root is `zcli.parseCommandLine` — it handles positionals and options together in a single pass:
+
 ```zig
 const std = @import("std");
 const zcli = @import("zcli");
+
+const Args = struct {
+    input: []const u8,
+};
 
 const Options = struct {
     verbose: bool = false,
@@ -235,38 +292,33 @@ const Options = struct {
     threads: u32 = 1,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-    
-    const result = zcli.parseOptions(Options, allocator, args[1..]) catch |err| switch (err) {
-        error.OptionUnknown => {
-            std.debug.print("Unknown option. Use --help for usage information.\n", .{});
-            std.process.exit(2);
-        },
-        error.OptionInvalidValue => {
-            std.debug.print("Invalid option value provided.\n", .{});
-            std.process.exit(2);
-        },
-        error.OutOfMemory => return error.OutOfMemory,
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    var diag: ?zcli.ZcliDiagnostic = null;
+    const result = zcli.parseCommandLine(Args, Options, null, allocator, init.environ_map, args[1..], &diag) catch |err| switch (err) {
+        error.SystemOutOfMemory => return error.SystemOutOfMemory,
         else => {
-            std.debug.print("Parse error: {}\n", .{err});
-            std.process.exit(1);
+            if (diag) |d| {
+                const msg = try zcli.formatDiagnostic(d, allocator);
+                defer allocator.free(msg);
+                std.debug.print("{s}\n", .{msg});
+            } else {
+                std.debug.print("Parse error: {}\n", .{err});
+            }
+            std.process.exit(2);
         },
     };
-    defer zcli.cleanupOptions(Options, result.options, allocator);
-    
+    defer result.deinit();
+
     if (result.options.verbose) {
         std.debug.print("Verbose mode enabled\n", .{});
     }
     if (result.options.output) |output| {
         std.debug.print("Output: {s}\n", .{output});
     }
-    std.debug.print("Threads: {}\n", .{result.options.threads});
+    std.debug.print("Input: {s}, threads: {}\n", .{ result.args.input, result.options.threads });
 }
 ```
 
