@@ -151,7 +151,7 @@ Plugins are integrated in `build.zig`:
 ```zig
 const zcli_build = @import("zcli");
 
-const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .commands_dir = "src/commands",
     .plugins = &[_]zcli_build.PluginConfig{
         .{ .name = "zcli_help", .path = "packages/core/src/plugins/zcli_help" },

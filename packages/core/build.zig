@@ -247,8 +247,11 @@ fn addTestRun(
     return b.addRunArtifact(tests);
 }
 
-// Re-export build utilities for both backwards compatibility and new plugin features
+// Re-export the build utilities that make up the consumer-facing build API
 pub const BuildConfig = types.BuildConfig;
+pub const GenerateConfig = types.GenerateConfig;
+pub const DocsConfig = types.DocsConfig;
+pub const CommandTestsConfig = types.CommandTestsConfig;
 pub const PluginConfig = types.PluginConfig;
 pub const Builtin = types.Builtin;
 pub const builtin = types.builtin;
@@ -256,7 +259,7 @@ pub const SharedModule = types.SharedModule;
 pub const CommandConfig = types.CommandConfig;
 pub const CommandModule = types.CommandModule;
 pub const CommandModuleConfig = types.CommandModuleConfig;
-pub const ExternalPluginBuildConfig = types.ExternalPluginBuildConfig;
+pub const GenerateError = main.GenerateError;
 pub const generate = main.generate;
 pub const generateDocs = main.generateDocs;
 pub const addCommandTests = @import("src/build_utils/command_tests.zig").addCommandTests;

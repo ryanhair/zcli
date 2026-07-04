@@ -149,7 +149,7 @@ Hello, World!
                 <div class="code-head"><span class="fname">build.zig</span><span class="lang">zig</span></div>
 <pre><span class="kw">const</span> std = <span class="at">@import</span>(<span class="str">"std"</span>);
 
-<span class="kw">pub fn</span> <span class="fn">build</span>(b: *std.Build) <span class="kw">void</span> {
+<span class="kw">pub fn</span> <span class="fn">build</span>(b: *std.Build) <span class="kw">!void</span> {
     <span class="kw">const</span> target = b.<span class="fn">standardTargetOptions</span>(.{});
     <span class="kw">const</span> optimize = b.<span class="fn">standardOptimizeOption</span>(.{});
 
@@ -169,7 +169,7 @@ Hello, World!
     exe.root_module.<span class="fn">addImport</span>(<span class="str">"zcli"</span>, zcli_module);
 
     <span class="kw">const</span> zcli = <span class="at">@import</span>(<span class="str">"zcli"</span>);
-    <span class="kw">const</span> cmd_registry = zcli.<span class="fn">generate</span>(b, exe, zcli_dep, zcli_module, .{
+    <span class="kw">const</span> cmd_registry = <span class="kw">try</span> zcli.<span class="fn">generate</span>(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = <span class="str">"src/commands"</span>,
         .plugins = &.{
             zcli.<span class="fn">builtin</span>(.help, .{}),

@@ -34,12 +34,11 @@ pub fn addCommandTests(
     b: *std.Build,
     zcli_dep: *std.Build.Dependency,
     zcli_module: *std.Build.Module,
-    config: anytype,
+    config: types.CommandTestsConfig,
 ) *std.Build.Step {
     const test_step = b.step("test", "Run command unit tests");
 
-    const shared_modules: []const SharedModule =
-        if (@hasField(@TypeOf(config), "shared_modules")) config.shared_modules else &.{};
+    const shared_modules = config.shared_modules;
 
     // Plugins visible to the command-test stub Context, so a command that reads
     // `context.plugins.<id>` compiles and a runCommand test can drive it via
@@ -49,10 +48,8 @@ pub fn addCommandTests(
     //     unit-testable without touching the OS keychain (or linking a native
     //     backend). The real keychain plugin is what the app links and runs; this
     //     stands in only for `zig build test`.
-    const plugins_dir: ?[]const u8 =
-        if (@hasField(@TypeOf(config), "plugins_dir")) config.plugins_dir else null;
     const local_plugins: []const PluginInfo =
-        if (plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
+        if (config.plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
 
     var stub_plugins = std.ArrayList(*std.Build.Module).empty;
     defer stub_plugins.deinit(b.allocator);

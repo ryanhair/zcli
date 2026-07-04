@@ -184,14 +184,6 @@ pub const Builtin = enum {
     }
 };
 
-fn BuiltinPlugin(comptime Config: type) type {
-    return struct {
-        name: []const u8,
-        path: []const u8,
-        config: Config,
-    };
-}
-
 /// Register a built-in plugin in a `generate()` plugins list. Pass `.{}` as the
 /// config for plugins that take none:
 ///
@@ -202,19 +194,86 @@ fn BuiltinPlugin(comptime Config: type) type {
 ///     .{ .name = "my_plugin", .path = "src/plugins/my_plugin" }, // handrolled
 /// },
 /// ```
-pub fn builtin(comptime tag: Builtin, comptime config: anytype) BuiltinPlugin(@TypeOf(config)) {
+///
+/// The config struct is rendered to the plugin's `.init(.{ ... })` call at
+/// comptime, so every plugins-list entry is a plain `PluginConfig` and the
+/// whole `generate()` config stays an ordinary typed struct.
+pub fn builtin(comptime tag: Builtin, comptime config: anytype) PluginConfig {
     return .{
         .name = tag.pluginName(),
         .path = tag.pluginPath(),
-        .config = config,
+        .init = comptime initString(config),
     };
 }
 
-/// External plugin build configuration
-pub const ExternalPluginBuildConfig = struct {
+/// Comptime-render a plugin config struct as the `.init(.{ ... })` code the
+/// generated registry applies to the plugin. An empty config means no init
+/// call at all (null).
+fn initString(comptime config: anytype) ?[]const u8 {
+    const T = @TypeOf(config);
+    const fields = switch (@typeInfo(T)) {
+        .@"struct" => |s| s.fields,
+        else => @compileError("plugin config must be a struct, got: " ++ @typeName(T)),
+    };
+    if (fields.len == 0) return null;
+
+    comptime var out: []const u8 = ".init(.{";
+    inline for (fields, 0..) |field, i| {
+        if (i > 0) out = out ++ ", ";
+        out = out ++ "." ++ field.name ++ " = ";
+        const value = @field(config, field.name);
+        out = out ++ switch (@typeInfo(field.type)) {
+            .pointer => |ptr_info| blk: {
+                const is_string = switch (@typeInfo(ptr_info.child)) {
+                    .int => |int_info| int_info.bits == 8 and int_info.signedness == .unsigned,
+                    .array => |arr_info| arr_info.child == u8,
+                    else => false,
+                };
+                if (!is_string) @compileError("Unsupported pointer type in plugin config: " ++ @typeName(field.type));
+                break :blk std.fmt.comptimePrint("\"{s}\"", .{value});
+            },
+            .bool => std.fmt.comptimePrint("{}", .{value}),
+            .int, .comptime_int => std.fmt.comptimePrint("{d}", .{value}),
+            else => @compileError("Unsupported type in plugin config: " ++ @typeName(field.type)),
+        };
+    }
+    return out ++ "})";
+}
+
+/// Configuration for `generate()` — the project-facing build entry point.
+/// `app_version` is deliberately absent: the version always comes from the
+/// project's build.zig.zon (single source of truth).
+pub const GenerateConfig = struct {
     commands_dir: []const u8,
-    plugins: []const PluginConfig,
     app_name: []const u8,
-    app_version: []const u8,
     app_description: []const u8,
+    /// Explicitly registered plugins (see `builtin()` for the shipped ones).
+    /// Optional: a project may rely solely on `plugins_dir` discovery.
+    plugins: []const PluginConfig = &.{},
+    /// Directory scanned for the consuming project's local plugins (ADR-0006).
+    /// Null → no local scan; a missing directory is harmless.
+    plugins_dir: ?[]const u8 = null,
+    shared_modules: ?[]const SharedModule = null,
+    command_configs: ?[]const CommandConfig = null,
+};
+
+/// Configuration for `generateDocs()`.
+pub const DocsConfig = struct {
+    /// Formats to generate; each gets its own subdirectory under `output_dir`.
+    formats: []const []const u8 = &.{"markdown"},
+    output_dir: []const u8 = "docs",
+};
+
+/// Configuration for `addCommandTests()` (the scaffolded-project unit-test
+/// idiom: each command file compiled as its own test root).
+pub const CommandTestsConfig = struct {
+    commands_dir: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    /// The same list passed to `generate()`, so command imports resolve
+    /// identically under test.
+    shared_modules: []const SharedModule = &.{},
+    /// The same `plugins_dir` passed to `generate()`, so the stub Context
+    /// includes the project's local plugins.
+    plugins_dir: ?[]const u8 = null,
 };

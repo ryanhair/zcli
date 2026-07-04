@@ -60,7 +60,7 @@ Deploying api to staging
 ```zig
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("zcli", zcli_module);
 
     const zcli = @import("zcli");
-    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",
         .plugins = &[_]zcli.PluginConfig{
             .{ .name = "zcli_help", .path = "packages/core/src/plugins/zcli_help" },

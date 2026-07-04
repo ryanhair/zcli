@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "store", .module = store_module },
     };
 
-    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",
         .plugins = &.{
             zcli.builtin(.help, .{}),
