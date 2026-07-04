@@ -88,7 +88,7 @@ fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const Comma
 
                 for (subcmd_info.path) |part| {
                     const sanitized_part = try sanitizeIdentifier(subcommands.allocator, part);
-                    defer if (sanitized_part.ptr != part.ptr) subcommands.allocator.free(sanitized_part);
+                    defer subcommands.allocator.free(sanitized_part);
                     try module_name_parts.append(subcommands.allocator, try subcommands.allocator.dupe(u8, sanitized_part));
                 }
 
@@ -117,7 +117,7 @@ fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const Comma
 
                 for (subcmd_info.path) |part| {
                     const sanitized_part = try sanitizeIdentifier(subcommands.allocator, part);
-                    defer if (sanitized_part.ptr != part.ptr) subcommands.allocator.free(sanitized_part);
+                    defer subcommands.allocator.free(sanitized_part);
                     try module_name_parts.append(subcommands.allocator, try subcommands.allocator.dupe(u8, sanitized_part));
                 }
 
@@ -139,7 +139,7 @@ fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const Comma
 fn generatePluginImports(writer: anytype, plugins: []const PluginInfo, allocator: std.mem.Allocator) !void {
     for (plugins) |plugin_info| {
         const plugin_var_name = try pluginVarName(allocator, plugin_info.name);
-        defer if (plugin_var_name.ptr != plugin_info.name.ptr) allocator.free(plugin_var_name);
+        defer allocator.free(plugin_var_name);
 
         if (plugin_info.init) |init_code| {
             // Plugin has initialization code - call it on import
@@ -154,8 +154,27 @@ fn generatePluginImports(writer: anytype, plugins: []const PluginInfo, allocator
     }
 }
 
+/// Render `s` escaped for the inside of a double-quoted Zig string literal.
+/// App metadata comes from build.zig and command paths from the filesystem —
+/// a quote, backslash, or newline in them must not break out of (or inject
+/// code after) the generated literal.
+fn escapeStringLiteral(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    try std.zig.stringEscape(s, &aw.writer);
+    var al = aw.toArrayList();
+    return al.toOwnedSlice(allocator);
+}
+
 /// Generate the simple comptime registry
 fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config: BuildConfig, plugins: []const PluginInfo, allocator: std.mem.Allocator) !void {
+    const app_name = try escapeStringLiteral(allocator, config.app_name);
+    defer allocator.free(app_name);
+    const app_version = try escapeStringLiteral(allocator, config.app_version);
+    defer allocator.free(app_version);
+    const app_description = try escapeStringLiteral(allocator, config.app_description);
+    defer allocator.free(app_description);
+
     // Generate the registry type (private)
     try writer.print(
         \\const RegistryType = zcli.Registry.init(.{{
@@ -163,7 +182,7 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
         \\    .app_version = "{s}",
         \\    .app_description = "{s}",
         \\}})
-    , .{ config.app_name, config.app_version, config.app_description });
+    , .{ app_name, app_version, app_description });
 
     // Register commands
     try generateCommandRegistrations(writer, commands, allocator);
@@ -187,7 +206,7 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
         \\    return RegistryType.init();
         \\}}
         \\
-    , .{ config.app_name, config.app_version, config.app_description });
+    , .{ app_name, app_version, app_description });
 }
 
 /// Generate metadata for pure command groups
@@ -212,7 +231,9 @@ fn generatePureGroupsFromMap(writer: anytype, command_map: *const std.StringHash
             try writer.writeAll("    &.{");
             for (cmd_info.path, 0..) |component, idx| {
                 if (idx > 0) try writer.writeAll(", ");
-                try writer.print("\"{s}\"", .{component});
+                const component_lit = try escapeStringLiteral(allocator, component);
+                defer allocator.free(component_lit);
+                try writer.print("\"{s}\"", .{component_lit});
             }
             try writer.writeAll("},\n");
         }
@@ -239,8 +260,10 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
 
                 const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
                 defer allocator.free(command_path_str);
+                const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
+                defer allocator.free(command_path_lit);
 
-                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name });
+                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name });
             }
             // Register subcommands
             try generateGroupRegistrations(writer, cmd_name, &cmd_info, allocator);
@@ -254,8 +277,10 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
             // Use the actual command path from CommandInfo (it's now an array)
             const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
             defer allocator.free(command_path_str);
+            const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
+            defer allocator.free(command_path_lit);
 
-            try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name });
+            try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name });
         }
     }
 }
@@ -275,7 +300,7 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
 
                 for (subcmd_info.path) |part| {
                     const sanitized_part = try sanitizeIdentifier(allocator, part);
-                    defer if (sanitized_part.ptr != part.ptr) allocator.free(sanitized_part);
+                    defer allocator.free(sanitized_part);
                     try module_name_parts.append(allocator, try allocator.dupe(u8, sanitized_part));
                 }
 
@@ -292,8 +317,10 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
 
                 const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
                 defer allocator.free(command_path_str);
+                const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
+                defer allocator.free(command_path_lit);
 
-                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name_with_index });
+                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name_with_index });
 
                 // Also recurse for its subcommands
                 try generateGroupRegistrations(writer, subcmd_name, &subcmd_info, allocator);
@@ -307,7 +334,7 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
 
                 for (subcmd_info.path) |part| {
                     const sanitized_part = try sanitizeIdentifier(allocator, part);
-                    defer if (sanitized_part.ptr != part.ptr) allocator.free(sanitized_part);
+                    defer allocator.free(sanitized_part);
                     try module_name_parts.append(allocator, try allocator.dupe(u8, sanitized_part));
                 }
 
@@ -322,8 +349,10 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
                 // Use the actual command path from the CommandInfo (it's now an array)
                 const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
                 defer allocator.free(command_path_str);
+                const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
+                defer allocator.free(command_path_lit);
 
-                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_str, module_name });
+                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name });
             }
         }
     }
@@ -333,20 +362,23 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
 fn generatePluginRegistrations(writer: anytype, plugins: []const PluginInfo, allocator: std.mem.Allocator) !void {
     for (plugins) |plugin_info| {
         const plugin_var_name = try pluginVarName(allocator, plugin_info.name);
-        defer if (plugin_var_name.ptr != plugin_info.name.ptr) allocator.free(plugin_var_name);
+        defer allocator.free(plugin_var_name);
 
         try writer.print("\n    .registerPlugin({s})", .{plugin_var_name});
     }
 }
 
-/// Convert plugin name to valid Zig variable name (replace hyphens with underscores)
-fn pluginVarName(allocator: std.mem.Allocator, plugin_name: []const u8) ![]const u8 {
-    return std.mem.replaceOwned(u8, allocator, plugin_name, "-", "_") catch plugin_name;
+/// Convert plugin name to valid Zig variable name (replace hyphens with
+/// underscores). Always returns an allocation the caller owns — the previous
+/// `catch plugin_name` swallowed OOM and emitted the unsanitized name.
+fn pluginVarName(allocator: std.mem.Allocator, plugin_name: []const u8) ![]u8 {
+    return std.mem.replaceOwned(u8, allocator, plugin_name, "-", "_");
 }
 
-/// Sanitize command name to valid Zig identifier (replace hyphens with underscores)
-fn sanitizeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
-    return std.mem.replaceOwned(u8, allocator, name, "-", "_") catch name;
+/// Sanitize command name to valid Zig identifier (replace hyphens with
+/// underscores). Always returns an allocation the caller owns.
+fn sanitizeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return std.mem.replaceOwned(u8, allocator, name, "-", "_");
 }
 
 // ============================================================================
@@ -392,6 +424,33 @@ const PluginTestHelper = struct {
         });
     }
 };
+
+test "app metadata is escaped into valid string literals" {
+    const allocator = std.testing.allocator;
+
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = &.{},
+        .app_name = "my-app",
+        .app_version = "1.0.0",
+        .app_description = "say \"hi\"\nback\\slash",
+    };
+
+    const source = try generateComptimeRegistrySource(allocator, commands, config, &.{});
+    defer allocator.free(source);
+
+    // Quote, newline, and backslash must all be escaped inside the literal —
+    // an unescaped one terminates the string and injects the rest as code.
+    try std.testing.expect(std.mem.indexOf(u8, source, ".app_description = \"say \\\"hi\\\"\\nback\\\\slash\",") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "\"say \"hi\"") == null);
+}
 
 test "plugin registry generation with imports" {
     const allocator = std.testing.allocator;
