@@ -107,6 +107,14 @@ pub fn build(b: *std.Build) void {
         .{ .name = "zinput", .path = "packages/zinput" },
         .{ .name = "ztheme", .path = "packages/ztheme" },
         .{ .name = "zcli", .path = "projects/zcli" },
+        // The example apps and the vterm demo have test steps of their own
+        // (addCommandTests / the demo's vterm-consumer suite); running them
+        // here is what keeps them from silently rotting.
+        .{ .name = "showcase", .path = "examples/showcase" },
+        .{ .name = "repostat", .path = "examples/repostat" },
+        .{ .name = "ghauth", .path = "examples/ghauth" },
+        .{ .name = "notes", .path = "examples/notes" },
+        .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 
     // Canonical example CLIs (ADR-0004): first-class, CI-compiled artifacts that

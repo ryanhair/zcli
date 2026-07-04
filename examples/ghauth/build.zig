@@ -41,4 +41,12 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
+
+    // Per-command unit tests (the scaffolded-project idiom): compiles each
+    // command file as its own test root so its `test` blocks run.
+    _ = zcli.addCommandTests(b, zcli_dep, zcli_module, .{
+        .commands_dir = "src/commands",
+        .target = target,
+        .optimize = optimize,
+    });
 }
