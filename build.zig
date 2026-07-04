@@ -70,6 +70,16 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&pkg_test.step);
     }
 
+    // Forward core's specialized steps so they run from the repo root too.
+    // They are deliberately NOT part of the aggregate `test`: the secrets
+    // steps link native libraries / touch the OS keychain (ADR-0003), and the
+    // performance runs build ReleaseFast.
+    for ([_][]const u8{ "test-secrets", "test-secrets-live", "benchmark", "regression" }) |name| {
+        const core_step = core_dep.builder.top_level_steps.get(name) orelse
+            std.debug.panic("core package does not define a '{s}' step", .{name});
+        b.step(name, core_step.description).dependOn(&core_step.step);
+    }
+
     const ProjectInfo = struct {
         name: []const u8,
         path: []const u8,

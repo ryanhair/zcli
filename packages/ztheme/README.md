@@ -40,13 +40,15 @@ exe.root_module.addImport("ztheme", ztheme.module("ztheme"));
 const std = @import("std");
 const ztheme = @import("ztheme");
 
-pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
 
     // Initialize theme context with automatic detection
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    const theme_ctx = ztheme.Theme.init(allocator);
+    const theme_ctx = ztheme.Theme.init(init.environ_map, io);
 
     // Basic coloring
     try ztheme.theme("Error: ").red().bold().render(stdout, &theme_ctx);
@@ -54,15 +56,18 @@ pub fn main() !void {
 
     // Semantic styling
     try ztheme.theme("Success!").success().render(stdout, &theme_ctx);
-    try stdout.print("\n", .{});
+    try stdout.writeAll("\n");
 
     // RGB colors (true color terminals)
     try ztheme.theme("Custom color").rgb(255, 100, 50).render(stdout, &theme_ctx);
-    try stdout.print("\n", .{});
+    try stdout.writeAll("\n");
 
     // Background colors
     try ztheme.theme("Highlighted").onYellow().black().render(stdout, &theme_ctx);
-    try stdout.print("\n", .{});
+    try stdout.writeAll("\n");
+
+    // Writers are buffered in Zig 0.16 — flush before exit.
+    try stdout.flush();
 }
 ```
 
@@ -193,8 +198,10 @@ const styled = ztheme.theme("Critical Error!")
 
 ZTheme automatically detects terminal capabilities:
 
+In a zcli command you already have one: `context.theme`. Standalone:
+
 ```zig
-const theme_ctx = ztheme.Theme.init(allocator);
+const theme_ctx = ztheme.Theme.init(init.environ_map, io);
 
 // Check capabilities
 if (theme_ctx.supportsColor()) { ... }
@@ -218,10 +225,10 @@ std.debug.print("Terminal: {s}\n", .{theme_ctx.capabilityString()});
 
 ```zig
 // Force specific capability
-const theme_ctx = ztheme.Theme.initWithCapability(.true_color);
+const theme_ctx = ztheme.Theme.initWithCapability(.true_color, io);
 
 // Force color output (override TTY detection)
-const theme_ctx = ztheme.Theme.initForced(allocator, true);
+const theme_ctx = ztheme.Theme.initForced(init.environ_map, io, true);
 ```
 
 ### Environment Detection
@@ -279,7 +286,7 @@ zig build test
 
 ## Examples
 
-See [examples/ztheme](../../examples/ztheme) for a complete demo application showcasing all ZTheme features.
+See [examples/showcase](../../examples/showcase/) — its commands use ztheme's semantic roles throughout (via `context.theme`).
 
 ## License
 
