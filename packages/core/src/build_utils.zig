@@ -9,7 +9,7 @@
 
 pub const main = @import("build_utils/main.zig");
 pub const generate = main.generate;
-pub const PluginConfig = @import("build_utils/types.zig").ExternalPluginBuildConfig.PluginConfig;
+pub const PluginConfig = @import("build_utils/types.zig").PluginConfig;
 
 // This file is the build-utils test root (see build.zig core_test_files):
 // reference the submodules so their tests are collected.

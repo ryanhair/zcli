@@ -202,7 +202,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const build_content = try std.fmt.allocPrint(allocator,
         \\const std = @import("std");
         \\
-        \\pub fn build(b: *std.Build) void {{
+        \\pub fn build(b: *std.Build) !void {{
         \\    const target = b.standardTargetOptions(.{{}});
         \\    const optimize = b.standardOptimizeOption(.{{}});
         \\
@@ -238,7 +238,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    }};
         \\
         \\    // Generate command registry with built-in plugins
-        \\    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{{
+        \\    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{{
         \\        .commands_dir = "src/commands",
         \\        // Local plugins in src/plugins/ are auto-discovered (add with
         \\        // `zcli add plugin <name>`). Harmless when the directory is absent.
@@ -247,7 +247,6 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\{s}        }},
         \\        .shared_modules = &shared_modules,
         \\        .app_name = "{s}",
-        \\        .app_version = "{s}",
         \\        .app_description = "{s}",
         \\    }});
         \\
@@ -275,7 +274,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    }});
         \\}}
         \\
-    , .{ project_name, plugins_block, project_name, app_version, app_description });
+    , .{ project_name, plugins_block, project_name, app_description });
     defer allocator.free(build_content);
 
     var build_file = try project_dir.createFile(io, "build.zig", .{});

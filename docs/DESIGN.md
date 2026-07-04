@@ -40,7 +40,7 @@ Since Zig's comptime cannot access the filesystem, zcli provides a build functio
 const std = @import("std");
 const zcli = @import("zcli");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("zcli", zcli_module);
 
     // Build with plugins and command discovery
-    const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+    const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
         .commands_dir = "src/commands",  // Optional, defaults to "src/commands"
         .app_name = "myapp",
         .app_description = "My CLI application",
@@ -232,7 +232,7 @@ Global options are defined when calling `zcli.generate()` in your build.zig. The
 
 ```zig
 // In build.zig
-const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .global_options = .{
         .verbose = .{ .short = 'v', .type = bool, .default = false, .help = "Enable verbose output" },
         .config = .{ .short = 'c', .type = ?[]const u8, .help = "Config file path" },
@@ -566,7 +566,7 @@ Run 'myapp users list --help' to see available options.
 const std = @import("std");
 const zcli = @import("zcli");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -669,7 +669,7 @@ pub const commands = struct {
 Plugins are registered in build.zig and processed in order:
 
 ```zig
-const cmd_registry = zcli.generate(b, exe, zcli_dep, zcli_module, .{
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, zcli_module, .{
     .plugins = &.{
         .{ .name = "zcli_help", .path = "path/to/plugin" },      // First priority
         .{ .name = "zcli_not_found", .path = "path/to/plugin" }, // Second priority

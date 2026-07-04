@@ -34,20 +34,17 @@ pub fn addCommandTests(
     b: *std.Build,
     zcli_dep: *std.Build.Dependency,
     zcli_module: *std.Build.Module,
-    config: anytype,
+    config: types.CommandTestsConfig,
 ) *std.Build.Step {
     const test_step = b.step("test", "Run command unit tests");
 
-    const shared_modules: []const SharedModule =
-        if (@hasField(@TypeOf(config), "shared_modules")) config.shared_modules else &.{};
+    const shared_modules = config.shared_modules;
 
     // Discover the project's local plugins so the stub Context includes them:
     // a command that reads `context.plugins.<id>` then compiles under test, and
     // a runCommand test can drive that plugin's state via `.plugins`.
-    const plugins_dir: ?[]const u8 =
-        if (@hasField(@TypeOf(config), "plugins_dir")) config.plugins_dir else null;
     const local_plugins: []const PluginInfo =
-        if (plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
+        if (config.plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
 
     // A stub `command_registry` module: commands reference
     // `@import("command_registry").Context`, and a TestContext (over the local
