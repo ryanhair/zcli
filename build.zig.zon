@@ -4,19 +4,20 @@
     .fingerprint = 0x927117ca001313d0,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        // NOTE: the v1.0.3 release tag of serde.zig ships a build.zig.zon that still
-        // declares `.version = "1.0.1"` (upstream forgot to bump it), so Zig's content
-        // hash is labeled `serde-1.0.1-…` even though the URL points at v1.0.3. This is
-        // correct and intentional — do NOT "fix" the label to 1.0.3; the hash would no
-        // longer match the fetched tarball and the build would fail.
-        .serde = .{
-            .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.3.tar.gz",
-            .hash = "serde-1.0.1-1DszT9VLCwAjuQh0WSq-dIfZ-6Gq8edODuhwF9gfsxld",
-        },
-        .zg = .{
-            .url = "https://codeberg.org/atman/zg/archive/v0.16.2.tar.gz",
-            .hash = "zg-0.16.2-oGqU3HqftgI6rwFS90ypwfjgToH8Pz829OKuFURlm773",
-        },
+        // The packages that make up the framework. Each is a standalone Zig
+        // package owning its own module wiring and third-party deps (serde and
+        // zg are declared where they are used); the root build.zig is a thin
+        // umbrella that re-exports their modules and aggregates their test
+        // steps in-process.
+        .zcli_core = .{ .path = "packages/core" },
+        .testing = .{ .path = "packages/testing" },
+        .vterm = .{ .path = "packages/vterm" },
+        .vterm_example = .{ .path = "packages/vterm/example" },
+        .markdown_fmt = .{ .path = "packages/markdown_fmt" },
+        .terminal = .{ .path = "packages/terminal" },
+        .zinput = .{ .path = "packages/zinput" },
+        .zprogress = .{ .path = "packages/zprogress" },
+        .ztheme = .{ .path = "packages/ztheme" },
     },
     .paths = .{
         "build.zig",
