@@ -19,6 +19,16 @@ pub fn build(b: *std.Build) void {
     testing_mod.addImport("zcli", zcli_dep.module("zcli"));
     testing_mod.addImport("vterm", vterm_dep.module("vterm"));
 
+    // Expose the PTY-based interactive harness (e2e.zig) as its own module.
+    // It is std-only — no zcli/vterm — so CLI projects can drive a real TTY in
+    // their e2e tests without pulling in the rest of the testing tier. The
+    // root package re-exports this as `testing_e2e`.
+    _ = b.addModule("e2e", .{
+        .root_source_file = b.path("src/e2e.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create tests
     const test_mod = b.addModule("test-testing", .{
         .root_source_file = b.path("src/main.zig"),
@@ -35,9 +45,6 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_main_tests.step);
-
-    // Install the module (for use by other packages)
-    b.installArtifact(main_tests);
 }
 
 // Re-export build utilities for use in other build.zig files

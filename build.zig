@@ -4,144 +4,98 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Create ztheme module
-    const ztheme_module = b.addModule("ztheme", .{
-        .root_source_file = b.path("packages/ztheme/src/ztheme.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // Every package under packages/ is a standalone Zig package that owns its
+    // own module wiring; the root is a thin umbrella over them. b.dependency
+    // runs each package's build.zig inside this build's graph — one shared
+    // cache, and -Dtarget/-Doptimize propagate — and the graph-level dependency
+    // cache dedups shared subtrees, so e.g. core's, zinput's and zprogress's
+    // `ztheme` all resolve to the same module instance, compiled once.
+    const core_dep = b.dependency("zcli_core", .{ .target = target, .optimize = optimize });
+    const testing_dep = b.dependency("testing", .{ .target = target, .optimize = optimize });
+    const vterm_dep = b.dependency("vterm", .{ .target = target, .optimize = optimize });
+    const vterm_example_dep = b.dependency("vterm_example", .{ .target = target, .optimize = optimize });
+    const markdown_fmt_dep = b.dependency("markdown_fmt", .{ .target = target, .optimize = optimize });
+    const terminal_dep = b.dependency("terminal", .{ .target = target, .optimize = optimize });
+    const zinput_dep = b.dependency("zinput", .{ .target = target, .optimize = optimize });
+    const zprogress_dep = b.dependency("zprogress", .{ .target = target, .optimize = optimize });
+    const ztheme_dep = b.dependency("ztheme", .{ .target = target, .optimize = optimize });
 
-    // Create markdown_fmt module
-    const markdown_fmt_module = b.addModule("markdown_fmt", .{
-        .root_source_file = b.path("packages/markdown_fmt/src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    markdown_fmt_module.addImport("ztheme", ztheme_module);
+    // The public module surface of the zcli package — what consumers (external
+    // projects, the examples, projects/zcli) get from `zcli_dep.module("...")`.
+    // Aliased from the owning packages rather than re-declared here, so each
+    // module's wiring lives in exactly one place: its package's build.zig.
+    expose(b, "zcli", core_dep.module("zcli"));
+    expose(b, "ztheme", ztheme_dep.module("ztheme"));
+    expose(b, "markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+    expose(b, "terminal", terminal_dep.module("terminal"));
+    expose(b, "zprogress", zprogress_dep.module("zprogress"));
+    expose(b, "zinput", zinput_dep.module("zinput"));
+    // The unit-testing tier for scaffolded projects (see `zcli.addCommandTests`):
+    // in-process command execution plus vterm-rendered assertions. Lazy — costs
+    // nothing unless a consumer imports it.
+    expose(b, "zcli_testing", testing_dep.module("testing"));
+    // The PTY-based interactive test harness alone (std-only), for CLI projects
+    // that drive a real TTY in their e2e tests.
+    expose(b, "testing_e2e", testing_dep.module("e2e"));
+    // vterm itself is deliberately not exposed: it left the public umbrella
+    // surface (scope decision), and consumers reach its assertions through
+    // zcli_testing.
 
-    // Unicode display-width/grapheme data (used by terminal's wrap.zig).
-    const zg_dep = b.dependency("zg", .{ .target = target, .optimize = optimize });
+    // Create main test step that runs all tests
+    const test_step = b.step("test", "Run all tests across all subprojects");
 
-    // Create terminal module
-    const terminal_module = b.addModule("terminal", .{
-        .root_source_file = b.path("packages/terminal/src/terminal.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    terminal_module.addImport("Graphemes", zg_dep.module("Graphemes"));
+    // The packages test in-process: depend on the `test` step each package's
+    // own build.zig defines. (`builder.top_level_steps` is how a parent
+    // reaches a dependency's named steps.) The vterm example is included
+    // here because it depends on packages/vterm, not on this root package.
+    const test_packages = [_]struct {
+        name: []const u8,
+        dep: *std.Build.Dependency,
+    }{
+        .{ .name = "core", .dep = core_dep },
+        .{ .name = "testing", .dep = testing_dep },
+        .{ .name = "vterm", .dep = vterm_dep },
+        .{ .name = "markdown_fmt", .dep = markdown_fmt_dep },
+        .{ .name = "zprogress", .dep = zprogress_dep },
+        .{ .name = "terminal", .dep = terminal_dep },
+        .{ .name = "zinput", .dep = zinput_dep },
+        .{ .name = "ztheme", .dep = ztheme_dep },
+        .{ .name = "vterm_example", .dep = vterm_example_dep },
+    };
+    for (test_packages) |pkg| {
+        const pkg_test = pkg.dep.builder.top_level_steps.get("test") orelse
+            std.debug.panic("package '{s}' does not define a 'test' step", .{pkg.name});
+        const project_test_step = b.step(b.fmt("test-{s}", .{pkg.name}), b.fmt("Run tests for {s}", .{pkg.name}));
+        project_test_step.dependOn(&pkg_test.step);
+        test_step.dependOn(&pkg_test.step);
+    }
 
-    // Create zprogress module
-    const zprogress_module = b.addModule("zprogress", .{
-        .root_source_file = b.path("packages/zprogress/src/zprogress.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    zprogress_module.addImport("ztheme", ztheme_module);
-    zprogress_module.addImport("terminal", terminal_module);
-
-    // Create zinput module
-    const zinput_module = b.addModule("zinput", .{
-        .root_source_file = b.path("packages/zinput/src/zinput.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    zinput_module.addImport("terminal", terminal_module);
-    zinput_module.addImport("ztheme", ztheme_module);
-
-    // Expose the PTY-based interactive test harness (testing/e2e.zig) as a
-    // consumable module so CLI projects can write interactive regression tests.
-    // Only e2e.zig is exposed (it's std-only); the rest of the testing package
-    // pulls in zcli/vterm and isn't needed for driving a TTY.
-    _ = b.addModule("testing_e2e", .{
-        .root_source_file = b.path("packages/testing/src/e2e.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Third-party serialization module
-    const serde_dep = b.dependency("serde", .{ .target = target, .optimize = optimize });
-
-    // Export the zcli module from core package for external projects
-    const zcli_module = b.addModule("zcli", .{
-        .root_source_file = b.path("packages/core/src/zcli.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    zcli_module.addImport("ztheme", ztheme_module);
-    zcli_module.addImport("markdown_fmt", markdown_fmt_module);
-    zcli_module.addImport("zprogress", zprogress_module);
-    zcli_module.addImport("zinput", zinput_module);
-    zcli_module.addImport("serde", serde_dep.module("serde"));
-
-    // Expose the unit-testing tier (packages/testing — `runCommand`, assertions)
-    // from the zcli dependency, so scaffolded projects can unit-test their
-    // commands with no extra dependency (see `zcli.addCommandTests`). Lazy: costs
-    // nothing unless a consumer imports it. Needs zcli + vterm (VTerm assertions).
-    const vterm_module = b.addModule("vterm", .{
-        .root_source_file = b.path("packages/vterm/src/vterm.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    vterm_module.addImport("DisplayWidth", zg_dep.module("DisplayWidth"));
-    const zcli_testing_module = b.addModule("zcli_testing", .{
-        .root_source_file = b.path("packages/testing/src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    zcli_testing_module.addImport("zcli", zcli_module);
-    zcli_testing_module.addImport("vterm", vterm_module);
-
-    // Define the project directories that have tests
     const ProjectInfo = struct {
         name: []const u8,
         path: []const u8,
     };
 
+    // The example CLIs and projects/zcli depend on this root package itself
+    // (`.zcli = .{ .path = "../.." }`), so they cannot be b.dependency'd from
+    // here — that would be a package cycle. They build and test as
+    // subprocesses instead, which is also what makes them canonical (ADR-0004):
+    // they exercise the exact path an external consumer takes through this
+    // package, including its manifest and module exports.
     const test_projects = [_]ProjectInfo{
-        .{ .name = "core", .path = "packages/core" },
-        .{ .name = "testing", .path = "packages/testing" },
-        .{ .name = "vterm", .path = "packages/vterm" },
-        .{ .name = "markdown_fmt", .path = "packages/markdown_fmt" },
-        .{ .name = "zprogress", .path = "packages/zprogress" },
-        .{ .name = "terminal", .path = "packages/terminal" },
-        .{ .name = "zinput", .path = "packages/zinput" },
-        .{ .name = "ztheme", .path = "packages/ztheme" },
         .{ .name = "zcli", .path = "projects/zcli" },
-        // The example apps and the vterm demo have test steps of their own
-        // (addCommandTests / the demo's vterm-consumer suite); running them
-        // here is what keeps them from silently rotting.
         .{ .name = "showcase", .path = "examples/showcase" },
         .{ .name = "repostat", .path = "examples/repostat" },
         .{ .name = "ghauth", .path = "examples/ghauth" },
         .{ .name = "notes", .path = "examples/notes" },
-        .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
-
-    // Canonical example CLIs (ADR-0004): first-class, CI-compiled artifacts that
-    // are simultaneously the examples, the idiom source, and the drift-detector —
-    // a breaking framework change breaks `zig build build-examples` (run in CI),
-    // forcing the examples (and the context derived from them) back up to date.
-    const example_projects = [_]ProjectInfo{
-        .{ .name = "showcase", .path = "examples/showcase" },
-        .{ .name = "repostat", .path = "examples/repostat" },
-        .{ .name = "ghauth", .path = "examples/ghauth" },
-        .{ .name = "notes", .path = "examples/notes" },
-        .{ .name = "vterm_example", .path = "packages/vterm/example" },
-    };
-
-    const cli_projects = [_]ProjectInfo{
-        .{ .name = "zcli", .path = "projects/zcli" },
-    };
-
-    // Create main test step that runs all tests
-    const test_step = b.step("test", "Run all tests across all subprojects");
 
     // Add tests for each project that has them
     for (test_projects) |project| {
         // Create individual test step for this project
         const project_test_step = b.step(b.fmt("test-{s}", .{project.name}), b.fmt("Run tests for {s}", .{project.name}));
 
-        // Print a message before running tests for this project
+        // Print a message before running tests for this project, since the
+        // subprocess output is otherwise unattributed.
         const print_start = b.addSystemCommand(&.{"echo"});
         print_start.addArg(b.fmt("\n==> Running tests for {s} ({s})", .{ project.name, project.path }));
 
@@ -160,6 +114,20 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&print_success.step);
     }
 
+    // Canonical example CLIs (ADR-0004): first-class, CI-compiled artifacts that
+    // are simultaneously the examples, the idiom source, and the drift-detector —
+    // a breaking framework change breaks `zig build build-examples` (run in CI),
+    // forcing the examples (and the context derived from them) back up to date.
+    // (The vterm example's demo executable is built here too; only its test
+    // suite runs in-process above.)
+    const example_projects = [_]ProjectInfo{
+        .{ .name = "showcase", .path = "examples/showcase" },
+        .{ .name = "repostat", .path = "examples/repostat" },
+        .{ .name = "ghauth", .path = "examples/ghauth" },
+        .{ .name = "notes", .path = "examples/notes" },
+        .{ .name = "vterm_example", .path = "packages/vterm/example" },
+    };
+
     // Create build step for examples
     const build_examples_step = b.step("build-examples", "Build all example projects");
 
@@ -175,6 +143,10 @@ pub fn build(b: *std.Build) void {
         example_build_step.dependOn(&example_build_run.step);
         build_examples_step.dependOn(&example_build_run.step);
     }
+
+    const cli_projects = [_]ProjectInfo{
+        .{ .name = "zcli", .path = "projects/zcli" },
+    };
 
     // Create build step for CLI projects
     const build_cli_step = b.step("build-cli", "Build all CLI tool projects");
@@ -204,13 +176,24 @@ pub fn build(b: *std.Build) void {
     install_step.dependOn(build_examples_step);
 }
 
-// Re-export build utilities from core package for external projects
+/// Re-export a module owned by one of the packages under `name` on this
+/// package, so `zcli_dep.module(name)` resolves for consumers. This is what
+/// `b.addModule` does minus creating a new module.
+fn expose(b: *std.Build, name: []const u8, module: *std.Build.Module) void {
+    b.modules.put(b.graph.arena, b.dupe(name), module) catch @panic("OOM");
+}
+
+// Re-export build utilities from core package for external projects.
 // When external projects do `const zcli = @import("zcli");` in their build.zig,
-// they're importing this root build.zig from the tarball/git archive.
-pub const generate = @import("packages/core/build.zig").generate;
-pub const generateDocs = @import("packages/core/build.zig").generateDocs;
-pub const addCommandTests = @import("packages/core/build.zig").addCommandTests;
-pub const PluginConfig = @import("packages/core/build.zig").PluginConfig;
-pub const Builtin = @import("packages/core/build.zig").Builtin;
-pub const builtin = @import("packages/core/build.zig").builtin;
-pub const SharedModule = @import("packages/core/build.zig").SharedModule;
+// they're importing this root build.zig from the tarball/git archive — and this
+// file reaches core's build.zig the same way, as the `zcli_core` dependency's
+// build module (a source-path @import would clash with core also being a
+// package: a file can only belong to one module).
+const zcli_core = @import("zcli_core");
+pub const generate = zcli_core.generate;
+pub const generateDocs = zcli_core.generateDocs;
+pub const addCommandTests = zcli_core.addCommandTests;
+pub const PluginConfig = zcli_core.PluginConfig;
+pub const Builtin = zcli_core.Builtin;
+pub const builtin = zcli_core.builtin;
+pub const SharedModule = zcli_core.SharedModule;
