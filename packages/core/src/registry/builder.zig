@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("../zcli.zig");
+const plugin_types = @import("../plugin_types.zig");
 
 const paths = @import("paths.zig");
 const compiled = @import("compiled.zig");
@@ -97,6 +98,9 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
             new_plugins ++ [_]type{Plugin},
         ) {
             _ = self;
+            // Backstop against silently-dead misspelled hooks (exact-name
+            // detection has no diagnostics of its own).
+            comptime plugin_types.validatePlugin(Plugin);
             return RegistryBuilder(
                 config,
                 commands,

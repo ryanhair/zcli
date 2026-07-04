@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const module_names = @import("module_names.zig");
 const command_config_lookup = @import("command_config_lookup.zig");
 
 const PluginInfo = types.PluginInfo;
@@ -54,7 +55,7 @@ pub fn createDiscoveredModules(
         if (cmd_info.command_type != .leaf) {
             // Create module for optional group with index file
             if (cmd_info.command_type == .optional_group) {
-                const module_name = b.fmt("{s}_index", .{cmd_name});
+                const module_name = module_names.indexModuleName(b.allocator, cmd_name) catch @panic("OOM");
                 const full_path = b.fmt("{s}/{s}", .{ commands_dir, cmd_info.file_path });
                 const cmd_module = b.addModule(module_name, .{
                     .root_source_file = b.path(full_path),
@@ -78,10 +79,7 @@ pub fn createDiscoveredModules(
             // Create modules for subcommands
             createGroupModules(b, registry_module, zcli_module, cmd_name, &cmd_info, commands_dir, shared_modules, command_configs);
         } else {
-            const module_name = if (std.mem.eql(u8, cmd_name, "test"))
-                "cmd_test"
-            else
-                b.fmt("cmd_{s}", .{cmd_name});
+            const module_name = module_names.leafModuleName(b.allocator, cmd_name) catch @panic("OOM");
 
             const full_path = b.fmt("{s}/{s}", .{ commands_dir, cmd_info.file_path });
             const cmd_module = b.addModule(module_name, .{
@@ -121,17 +119,9 @@ fn createGroupModules(
             const subcmd_info = entry.value_ptr.*;
 
             if (subcmd_info.command_type == .optional_group) {
-                // Create module for nested optional group
-                var module_name_parts = std.ArrayList([]const u8).empty;
-                defer module_name_parts.deinit(b.allocator);
-
-                for (subcmd_info.path) |part| {
-                    const sanitized_part = std.mem.replaceOwned(u8, b.allocator, part, "-", "_") catch part;
-                    module_name_parts.append(b.allocator, sanitized_part) catch unreachable;
-                }
-
-                const module_name = std.mem.join(b.allocator, "_", module_name_parts.items) catch unreachable;
-                const module_name_with_index = b.fmt("{s}_index", .{module_name});
+                // Create module for nested optional group — same derivation
+                // code_generation.zig emits imports with, via module_names.
+                const module_name_with_index = module_names.pathIndexModuleName(b.allocator, subcmd_info.path) catch @panic("OOM");
 
                 const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.file_path });
                 const cmd_module = b.addModule(module_name_with_index, .{
@@ -156,17 +146,10 @@ fn createGroupModules(
                 // Pure groups have no module, just recurse
                 createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules, command_configs);
             } else {
-                // Generate module name from the full command path to handle nested directories
-                // This ensures unique module names even for deeply nested commands
-                var module_name_parts = std.ArrayList([]const u8).empty;
-                defer module_name_parts.deinit(b.allocator);
-
-                for (subcmd_info.path) |part| {
-                    const sanitized_part = std.mem.replaceOwned(u8, b.allocator, part, "-", "_") catch part;
-                    module_name_parts.append(b.allocator, sanitized_part) catch unreachable;
-                }
-
-                const module_name = std.mem.join(b.allocator, "_", module_name_parts.items) catch unreachable;
+                // Module name from the full command path (unique even for
+                // deeply nested commands) — same derivation code_generation.zig
+                // emits imports with, via module_names.
+                const module_name = module_names.pathModuleName(b.allocator, subcmd_info.path) catch @panic("OOM");
 
                 const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.file_path });
                 const cmd_module = b.addModule(module_name, .{

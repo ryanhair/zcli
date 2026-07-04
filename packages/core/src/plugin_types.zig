@@ -220,6 +220,106 @@ pub fn getPriority(comptime T: type) i32 {
     return 50;
 }
 
+/// The lifecycle hooks detected by exact name above. Kept next to the has*
+/// functions so a new hook is added to both or the validator complains about
+/// nothing.
+const hook_names = [_][]const u8{
+    "transformArgs",
+    "handleGlobalOption",
+    "preParse",
+    "postParse",
+    "preExecute",
+    "postExecute",
+    "onError",
+};
+
+/// Non-hook decl names that are part of the plugin contract (never flagged).
+const contract_names = hook_names ++ [_][]const u8{
+    "global_options",
+    "commands",
+    "priority",
+    "plugin_id",
+    "ContextData",
+    "deinitContextData",
+    "init",
+};
+
+/// Comptime backstop against silently-dead hooks. Hooks are detected by exact
+/// name (`@hasDecl`), so a typo'd hook — `preExeucte` — compiles fine and
+/// simply never fires. Called by Registry.registerPlugin: any *function* decl
+/// whose name is within edit distance 2 of a hook (but isn't one) is rejected
+/// with a pointer at the hook it resembles.
+pub fn validatePlugin(comptime Plugin: type) void {
+    comptime {
+        if (@typeInfo(Plugin) != .@"struct") return;
+        for (@typeInfo(Plugin).@"struct".decls) |decl| {
+            if (isContractName(decl.name)) continue;
+            // Only functions can be hooks; consts near a hook name are inert.
+            if (@typeInfo(@TypeOf(@field(Plugin, decl.name))) != .@"fn") continue;
+            for (hook_names) |hook| {
+                // Cheap length gate before the DP — comptime branch quota.
+                const len_diff = if (decl.name.len > hook.len) decl.name.len - hook.len else hook.len - decl.name.len;
+                if (len_diff > 2) continue;
+                if (editDistance(decl.name, hook) <= 2) {
+                    @compileError("plugin function '" ++ decl.name ++ "' looks like a misspelling of the lifecycle hook '" ++ hook ++
+                        "' and would never be called — hooks are detected by exact name. Fix the spelling, or rename the function away from the hook.");
+                }
+            }
+        }
+    }
+}
+
+fn isContractName(comptime name: []const u8) bool {
+    for (contract_names) |contract| {
+        if (std.mem.eql(u8, name, contract)) return true;
+    }
+    return false;
+}
+
+/// Comptime Levenshtein distance (names here are short; the DP is tiny).
+fn editDistance(comptime a: []const u8, comptime b: []const u8) usize {
+    comptime {
+        var prev: [b.len + 1]usize = undefined;
+        for (0..b.len + 1) |j| prev[j] = j;
+        for (a, 0..) |ca, i| {
+            var curr: [b.len + 1]usize = undefined;
+            curr[0] = i + 1;
+            for (b, 0..) |cb, j| {
+                const cost: usize = if (ca == cb) 0 else 1;
+                curr[j + 1] = @min(@min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
+            }
+            prev = curr;
+        }
+        return prev[b.len];
+    }
+}
+
+test "editDistance catches the classic transposition typo" {
+    comptime {
+        std.debug.assert(editDistance("preExeucte", "preExecute") == 2);
+        std.debug.assert(editDistance("postExecute", "preExecute") == 3);
+        std.debug.assert(editDistance("preExecute", "preExecute") == 0);
+        std.debug.assert(editDistance("onErorr", "onError") == 2);
+    }
+}
+
+test "validatePlugin accepts a well-formed plugin with helpers" {
+    const Plugin = struct {
+        pub const plugin_id = "valid_plugin";
+        pub const priority = 10;
+        pub fn preExecute(context: anytype, args: anytype) !?@TypeOf(args) {
+            _ = context;
+            return args;
+        }
+        // A helper far from any hook name must not be flagged.
+        pub fn isHelpRequested(context: anytype) bool {
+            _ = context;
+            return false;
+        }
+    };
+    comptime validatePlugin(Plugin);
+}
+
 // ============================================================================
 // Plugin Registry Entry
 // ============================================================================
