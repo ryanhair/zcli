@@ -53,7 +53,7 @@ Grades at audit time: Architecture A-, Docs/DX A-, Testing B+, Security B, Zig p
 
 ## Build / CI / test — remaining
 
-- [ ] 35. **Re-enable `build_integration_test.zig`** — disabled at `packages/core/build.zig:74` ("needs rework for 0.16 *Build-based discoverCommands").
+- [x] 35. **Re-enable `build_integration_test.zig`** *(rewritten against discoverInDir + std.Io.Dir tmp trees and re-wired; dropped: the isValidCommandName near-duplicate, the untestable *Build path-validation test, and the flaky wall-clock assertions — the 100-command scale test keeps its correctness checks)* — disabled at `packages/core/build.zig:74` ("needs rework for 0.16 *Build-based discoverCommands").
 - [ ] 36. **Orphaned example tests** — `packages/vterm/example/tests/cli_test.zig` (20 tests) and showcase command tests have test steps but root only builds examples (`build.zig:129-142`).
 - [ ] 37. **e2e on macOS in CI** — the PTY harness works on macOS but the e2e job is ubuntu-only (`ci.yml:64-80`).
 - [ ] 38. **release.yml uses deprecated setup-zig action** — `goto-bus-stop/setup-zig@v2` vs ci.yml's `mlugg/setup-zig@v2`.
