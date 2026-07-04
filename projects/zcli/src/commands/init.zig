@@ -402,10 +402,15 @@ const agents_section = agents_begin ++
     \\
     \\## Building this CLI with zcli
     \\
+    \\**Start here: before writing or changing any code, run `zcli guide`.** It is the
+    \\version-matched source of truth for how to do everything in this project —
+    \\persistence, testing, errors, plugins, HTTP, and more. Reach for it first: don't
+    \\hand-roll what it documents, and don't read zcli's own source — `zcli guide
+    \\<topic>` has the worked, compile-checked example.
+    \\
     \\This project is built with [zcli](https://github.com/ryanhair/zcli): its command
-    \\structure *is* the files under `src/commands/`. For version-matched API detail and
-    \\worked examples, run **`zcli guide`** (and `zcli guide <topic>`) — it always matches
-    \\the exact zcli this project builds against.
+    \\structure *is* the files under `src/commands/`. `zcli guide` always matches the
+    \\exact zcli this project builds against.
     \\
     \\**The loop**
     \\
