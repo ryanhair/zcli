@@ -348,3 +348,360 @@ fn pluginVarName(allocator: std.mem.Allocator, plugin_name: []const u8) ![]const
 fn sanitizeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     return std.mem.replaceOwned(u8, allocator, name, "-", "_") catch name;
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+// Test helper for creating plugin structures
+// Test helper for creating plugin structures
+const PluginTestHelper = struct {
+    allocator: std.mem.Allocator,
+    plugins: std.ArrayList(PluginInfo),
+
+    fn init(allocator: std.mem.Allocator) PluginTestHelper {
+        return .{
+            .allocator = allocator,
+            .plugins = std.ArrayList(PluginInfo).empty,
+        };
+    }
+
+    fn deinit(self: *PluginTestHelper) void {
+        for (self.plugins.items) |plugin_info| {
+            self.allocator.free(plugin_info.name);
+            self.allocator.free(plugin_info.import_name);
+        }
+        self.plugins.deinit(self.allocator);
+    }
+
+    fn addLocal(self: *PluginTestHelper, name: []const u8, import_name: []const u8) !void {
+        try self.plugins.append(self.allocator, .{
+            .name = try self.allocator.dupe(u8, name),
+            .import_name = try self.allocator.dupe(u8, import_name),
+            .is_local = true,
+            .dependency = null,
+        });
+    }
+
+    fn addExternal(self: *PluginTestHelper, name: []const u8) !void {
+        try self.plugins.append(self.allocator, .{
+            .name = try self.allocator.dupe(u8, name),
+            .import_name = try self.allocator.dupe(u8, name),
+            .is_local = false,
+            .dependency = null, // In real scenario, this would be from b.lazyDependency
+        });
+    }
+};
+
+test "plugin registry generation with imports" {
+    const allocator = std.testing.allocator;
+    var test_plugins = PluginTestHelper.init(allocator);
+    defer test_plugins.deinit();
+
+    try test_plugins.addLocal("logger", "plugins/logger");
+    try test_plugins.addExternal("zcli-auth");
+
+    // Create mock discovered commands
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = test_plugins.plugins.items,
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    // Generate registry source
+    const source = try generateComptimeRegistrySource(
+        allocator,
+        commands,
+        config,
+        test_plugins.plugins.items,
+    );
+    defer allocator.free(source);
+
+    // Verify generated content includes plugin imports
+    try std.testing.expect(std.mem.indexOf(u8, source, "const logger = @import(\"plugins/logger\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const zcli_auth = @import(\"zcli-auth\");") != null);
+
+    // Verify new comptime registry Context generation
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = RegistryType.Context;") != null);
+
+    // Verify registry generation (replaces pipeline generation)
+    try std.testing.expect(std.mem.indexOf(u8, source, "const RegistryType = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
+    // Note: In the new comptime approach, plugins are registered and called through the registry
+    // rather than generating complex pipeline code
+}
+
+test "plugin name sanitization for imports" {
+    const allocator = std.testing.allocator;
+    var test_plugins = PluginTestHelper.init(allocator);
+    defer test_plugins.deinit();
+
+    // Add plugin with dash in name (should be converted to underscore)
+    try test_plugins.addExternal("zcli-help");
+    try test_plugins.addExternal("my-custom-plugin");
+
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = test_plugins.plugins.items,
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    const source = try generateComptimeRegistrySource(
+        allocator,
+        commands,
+        config,
+        test_plugins.plugins.items,
+    );
+    defer allocator.free(source);
+
+    // Verify dashes are converted to underscores in variable names
+    try std.testing.expect(std.mem.indexOf(u8, source, "const zcli_help = @import(\"zcli-help\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const my_custom_plugin = @import(\"my-custom-plugin\");") != null);
+}
+
+test "Context extension generation" {
+    const allocator = std.testing.allocator;
+    var test_plugins = PluginTestHelper.init(allocator);
+    defer test_plugins.deinit();
+
+    try test_plugins.addLocal("auth", "plugins/auth");
+    try test_plugins.addLocal("logger", "plugins/logger");
+
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = test_plugins.plugins.items,
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    const source = try generateComptimeRegistrySource(
+        allocator,
+        commands,
+        config,
+        test_plugins.plugins.items,
+    );
+    defer allocator.free(source);
+
+    // Verify plugins are registered with the registry
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(auth)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(logger)") != null);
+
+    // Verify new init function signature
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub fn init() RegistryType") != null);
+
+    // Note: The new registry approach doesn't need a deinit function
+}
+
+test "pipeline composition ordering" {
+    const allocator = std.testing.allocator;
+    var test_plugins = PluginTestHelper.init(allocator);
+    defer test_plugins.deinit();
+
+    // Order matters - last plugin wraps first
+    try test_plugins.addLocal("plugin1", "plugins/plugin1");
+    try test_plugins.addLocal("plugin2", "plugins/plugin2");
+    try test_plugins.addLocal("plugin3", "plugins/plugin3");
+
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = test_plugins.plugins.items,
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    const source = try generateComptimeRegistrySource(
+        allocator,
+        commands,
+        config,
+        test_plugins.plugins.items,
+    );
+    defer allocator.free(source);
+
+    // In the new approach, verify plugins are registered in the correct order
+    const plugin1_pos = std.mem.indexOf(u8, source, ".registerPlugin(plugin1)").?;
+    const plugin2_pos = std.mem.indexOf(u8, source, ".registerPlugin(plugin2)").?;
+    const plugin3_pos = std.mem.indexOf(u8, source, ".registerPlugin(plugin3)").?;
+
+    // They should appear in the order they were added
+    try std.testing.expect(plugin1_pos < plugin2_pos);
+    try std.testing.expect(plugin2_pos < plugin3_pos);
+}
+
+test "Commands struct with plugin commands" {
+    const allocator = std.testing.allocator;
+    var test_plugins = PluginTestHelper.init(allocator);
+    defer test_plugins.deinit();
+
+    try test_plugins.addLocal("auth", "plugins/auth");
+    try test_plugins.addExternal("zcli-help");
+
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    // Add a native command
+    var hello_path = try allocator.alloc([]const u8, 1);
+    hello_path[0] = try allocator.dupe(u8, "hello");
+
+    const hello_cmd = CommandInfo{
+        .name = try allocator.dupe(u8, "hello"),
+        .path = hello_path,
+        .file_path = try allocator.dupe(u8, "src/commands/hello.zig"),
+        .command_type = .leaf,
+        .subcommands = null,
+    };
+    try commands.root.put(try allocator.dupe(u8, "hello"), hello_cmd);
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = test_plugins.plugins.items,
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    const source = try generateComptimeRegistrySource(
+        allocator,
+        commands,
+        config,
+        test_plugins.plugins.items,
+    );
+    defer allocator.free(source);
+
+    // Verify commands are registered with the registry (new approach)
+    try std.testing.expect(std.mem.indexOf(u8, source, "const cmd_hello = @import(\"cmd_hello\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".register(\"hello\", cmd_hello)") != null);
+
+    // Verify plugins are also registered (combined approach)
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(auth)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(zcli_help)") != null);
+
+    // Verify registry is built
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
+
+    // Note: The new registry approach handles command discovery differently
+}
+
+test "empty plugin list handling" {
+    const allocator = std.testing.allocator;
+
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = null, // No plugins
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    const source = try generateComptimeRegistrySource(
+        allocator,
+        commands,
+        config,
+        &.{}, // Empty plugin array
+    );
+    defer allocator.free(source);
+
+    // Should still generate valid code with no plugins
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = RegistryType.Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const RegistryType = zcli.Registry.init") != null);
+
+    // Registry should build successfully even with no plugins
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
+}
+
+test "generated code structure validation" {
+    const allocator = std.testing.allocator;
+
+    // Create test plugin info
+    var plugins = std.ArrayList(PluginInfo).empty;
+    defer plugins.deinit(allocator);
+
+    try plugins.append(allocator, .{
+        .name = try allocator.dupe(u8, "test-plugin"),
+        .import_name = try allocator.dupe(u8, "plugins/test"),
+        .is_local = true,
+        .dependency = null,
+    });
+    defer allocator.free(plugins.items[0].name);
+    defer allocator.free(plugins.items[0].import_name);
+
+    // Create empty commands for simplicity
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(CommandInfo).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = "src/plugins",
+        .plugins = plugins.items,
+        .app_name = "testapp",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    // Generate registry source
+    const source = try generateComptimeRegistrySource(
+        allocator,
+        commands,
+        config,
+        plugins.items,
+    );
+    defer allocator.free(source);
+
+    // Validate key structures are present in new registry format
+    try std.testing.expect(std.mem.indexOf(u8, source, "pub const Context = RegistryType.Context;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const RegistryType = zcli.Registry.init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
+
+    // Verify plugins are registered
+    try std.testing.expect(std.mem.indexOf(u8, source, ".registerPlugin(") != null);
+
+    // Validate plugin is referenced
+    try std.testing.expect(std.mem.indexOf(u8, source, "test_plugin") != null);
+}
