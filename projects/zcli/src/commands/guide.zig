@@ -361,6 +361,9 @@ const topics = [_]Topic{
         \\      .plugins = .{ .verbose = .{ .enabled = true } },
         \\  });
         \\
+        \\Each `.plugins` field name is the plugin's `plugin_id` (here `.verbose`),
+        \\and its value is that plugin's `ContextData`.
+        \\
         \\A command that fails with `context.fail(...)` is assertable too —
         \\`!r.success`, `r.err.? == error.CommandFailed`, and the message in
         \\`r.stderr` — because it returns an error instead of exiting.
