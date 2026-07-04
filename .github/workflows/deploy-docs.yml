@@ -20,8 +20,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download Zine
+        # Verify before executing: this job holds the Cloudflare token and
+        # publishes install.sh, and GitHub release assets are mutable — a
+        # swapped tarball must fail the build, not run. Update the hash
+        # alongside the version when bumping Zine.
         run: |
           curl -fsSL -o zine.tar.xz https://github.com/kristoff-it/zine/releases/download/v0.11.3/x86_64-linux-musl.tar.xz
+          echo "c25e5372b8a5d2759f2b7e581aefb90c8019ff0056a230a97efe3c8edab3bc19  zine.tar.xz" | sha256sum -c -
           tar -xf zine.tar.xz
           mv zine website/zine
           chmod +x website/zine
