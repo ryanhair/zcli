@@ -293,6 +293,10 @@ const topics = [_]Topic{
         \\(reading an env var, an OAuth device-code exchange, ...) is your own command
         \\code (ADR-0003).
         \\
+        \\Testing: `runCommand` swaps an in-memory keychain for `zig build test`, so a
+        \\command that stores/reads secrets is unit-testable and its tests never touch
+        \\the real OS keychain (see `zcli guide testing`).
+        \\
         \\Worked example — examples/ghauth/src/commands/login.zig:
         \\
         ++ "\n" ++ examples.ghauth_login ++

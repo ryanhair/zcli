@@ -1149,6 +1149,63 @@ test "a command's plugin state is testable via runCommand .plugins" {
     }
 }
 
+test "a command that uses zcli_secrets is runCommand-testable without the keychain" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "app", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpSubdirAbs(arena.allocator(), tmp, "app");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // A command that reads a secret via the *builtin* zcli_secrets plugin, with
+    // a co-located test. addCommandTests wires an in-memory zcli_secrets into the
+    // test stub, so this compiles and its runCommand test runs without the real
+    // OS keychain (and without a native link) — even though secrets is a builtin,
+    // not a local src/plugins/ plugin. Before that, `context.plugins.zcli_secrets`
+    // didn't exist in the stub and the test wouldn't compile.
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/reveal.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\const Context = @import("command_registry").Context;
+        \\pub const meta = .{ .description = "reveal a stored secret" };
+        \\pub const Args = struct { name: []const u8 };
+        \\pub const Options = struct {};
+        \\pub fn execute(args: Args, _: Options, context: *Context) !void {
+        \\    const secret = (try context.plugins.zcli_secrets.get(context, args.name)) orelse
+        \\        return context.fail("no secret named '{s}'", .{args.name});
+        \\    try context.stdout().print("{s}\n", .{secret});
+        \\}
+        \\test "reveal: missing secret fails cleanly" {
+        \\    const zcli_testing = @import("zcli-testing");
+        \\    var r = try zcli_testing.runCommand(@This(), .{ .args = .{ .name = "absent" } });
+        \\    defer r.deinit();
+        \\    try std.testing.expect(!r.success);
+        \\    try std.testing.expect(r.err.? == error.CommandFailed);
+        \\    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "no secret named 'absent'") != null);
+        \\}
+        \\
+        ,
+    });
+
+    {
+        var r = try run(proj, &.{ "zig", "build", "test" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+}
+
 // ============================================================================
 // Layer 2 — interactive (PTY) tests
 // ============================================================================
