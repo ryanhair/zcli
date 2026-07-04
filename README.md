@@ -433,7 +433,7 @@ Test commands directly without compiling a binary:
 const testing = @import("zcli-testing");
 
 test "deploy command" {
-    var result = try testing.runCommand(DeployCommand, &.{}, .{
+    var result = try testing.runCommand(DeployCommand, .{
         .args = .{ .service = "api" },
         .options = .{ .env = "staging" },
     });

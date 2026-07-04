@@ -345,7 +345,7 @@ const topics = [_]Topic{
         \\
         \\  test "greet: says hello" {
         \\      const zcli_testing = @import("zcli-testing");
-        \\      var r = try zcli_testing.runCommand(@This(), &.{}, .{ .args = .{ .name = "Ada" } });
+        \\      var r = try zcli_testing.runCommand(@This(), .{ .args = .{ .name = "Ada" } });
         \\      defer r.deinit();
         \\      try std.testing.expect(r.success);
         \\      try std.testing.expectEqualStrings("Hello, Ada!\n", r.stdout);
@@ -354,9 +354,9 @@ const topics = [_]Topic{
         \\`r` also exposes `.stderr`, `.err`, and `.term` (a virtual terminal for
         \\asserting on rendered color/layout). A command that reads a plugin's state
         \\via `context.plugins.<id>` is testable directly — set that state with
-        \\`.plugins` (the project's plugins are already in scope; pass `&.{}`):
+        \\`.plugins` (the project's plugins are already in scope):
         \\
-        \\  var r = try zcli_testing.runCommand(@This(), &.{}, .{
+        \\  var r = try zcli_testing.runCommand(@This(), .{
         \\      .args = .{ .name = "Ada" },
         \\      .plugins = .{ .verbose = .{ .enabled = true } },
         \\  });
@@ -375,7 +375,7 @@ const topics = [_]Topic{
         \\      const io = std.testing.io;
         \\      std.Io.Dir.cwd().deleteFile(io, "tasks.json") catch {};        // start clean
         \\      defer std.Io.Dir.cwd().deleteFile(io, "tasks.json") catch {};  // and don't leak it
-        \\      var r = try zcli_testing.runCommand(@This(), &.{}, .{ .args = .{ .title = "Buy milk" } });
+        \\      var r = try zcli_testing.runCommand(@This(), .{ .args = .{ .title = "Buy milk" } });
         \\      defer r.deinit();
         \\      try std.testing.expect(r.success);
         \\  }

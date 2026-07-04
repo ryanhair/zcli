@@ -42,7 +42,7 @@ const testing = @import("zcli-testing");
 const add = @import("commands/add.zig");
 
 test "add command prints confirmation" {
-    var result = try testing.runCommand(add, &.{}, .{
+    var result = try testing.runCommand(add, .{
         .args = .{ .name = "widget" },
         .options = .{ .verbose = false },
     });
@@ -54,7 +54,7 @@ test "add command prints confirmation" {
 }
 
 test "add command fails on empty name" {
-    var result = try testing.runCommand(add, &.{}, .{
+    var result = try testing.runCommand(add, .{
         .args = .{ .name = "" },
         .options = .{},
     });
@@ -67,33 +67,32 @@ test "add command fails on empty name" {
 
 ### Testing with plugins
 
-If your command accesses plugin data through `context.plugins`, pass the plugins to `runCommand`:
+A command takes a concrete `context: *Context` (the type `zcli add command` scaffolds), and `runCommand` derives that Context from the command — so your project's plugins are already in scope. If your command reads plugin data through `context.plugins`, set that state directly with `.plugins`:
 
 ```zig
-const zcli_output = @import("zcli_output");
-
 test "command respects output mode" {
-    var result = try testing.runCommand(list, &.{zcli_output}, .{
+    var result = try testing.runCommand(list, .{
         .args = .{},
         .options = .{},
+        .plugins = .{ .output = .{ .mode = .json } },
     });
     defer result.deinit();
 
-    // Plugin data starts at defaults (output_mode = .table)
+    // Omit `.plugins` to run against each plugin's ContextData defaults.
     try std.testing.expect(result.success);
 }
 ```
 
 ### API reference
 
-**`testing.runCommand(Command, plugins, config)`**
+**`testing.runCommand(Command, config)`**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `Command` | `type` (comptime) | The command module with `Args`, `Options`, `execute` |
-| `plugins` | `[]const type` (comptime) | Plugins to register (for `context.plugins` access) |
+| `Command` | `type` (comptime) | The command module with `Args`, `Options`, and an `execute` taking a concrete `context: *Context` |
 | `config.args` | `Command.Args` | Positional arguments to pass |
 | `config.options` | `Command.Options` | Option values to pass |
+| `config.plugins` | derived from `Context` | Initial plugin state, e.g. `.{ .verbose = .{ .enabled = true } }`; defaults to each plugin's `ContextData` defaults |
 | `config.allocator` | `std.mem.Allocator` | Defaults to `std.testing.allocator` |
 
 **Returns `CommandResult`:**
@@ -114,7 +113,7 @@ The `result.term` field is a virtual terminal that has processed all ANSI escape
 
 ```zig
 test "status shows green checkmark" {
-    var result = try testing.runCommand(StatusCommand, &.{}, .{});
+    var result = try testing.runCommand(StatusCommand, .{});
     defer result.deinit();
 
     // Check rendered text (ANSI codes stripped)
