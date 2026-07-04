@@ -28,17 +28,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // The dependency imports every zcli-sourced module needs — the main module
+    // and each test module below get exactly this set.
+    const dep_imports = [_]TestDep{
+        .{ .name = "ztheme", .module = ztheme_dep.module("ztheme") },
+        .{ .name = "markdown_fmt", .module = markdown_fmt_dep.module("markdown_fmt") },
+        .{ .name = "zprogress", .module = zprogress_dep.module("zprogress") },
+        .{ .name = "zinput", .module = zinput_dep.module("zinput") },
+        .{ .name = "serde", .module = serde_dep.module("serde") },
+    };
+
     // Main zcli module that will be exposed to users
     const zcli_module = b.addModule("zcli", .{
         .root_source_file = b.path("src/zcli.zig"),
         .target = target,
         .optimize = optimize,
     });
-    zcli_module.addImport("ztheme", ztheme_dep.module("ztheme"));
-    zcli_module.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
-    zcli_module.addImport("zprogress", zprogress_dep.module("zprogress"));
-    zcli_module.addImport("zinput", zinput_dep.module("zinput"));
-    zcli_module.addImport("serde", serde_dep.module("serde"));
+    for (dep_imports) |dep| zcli_module.addImport(dep.name, dep.module);
 
     // Build utilities module for build.zig files
     _ = b.addModule("build_utils", .{
@@ -53,7 +59,6 @@ pub fn build(b: *std.Build) void {
     const test_plugins_step = b.step("test-plugins", "Run plugin tests only");
     const test_security_step = b.step("test-security", "Run security tests only");
     const test_sequential_step = b.step("test-seq", "Run tests sequentially (avoids conflicts)");
-    const test_debug_step = b.step("test-debug", "Debug test hanging issue");
     const test_secrets_step = b.step("test-secrets", "Run zcli_secrets tests (plugin surface + host backend compile/link)");
     const test_secrets_live_step = b.step("test-secrets-live", "Round-trip the host's native secrets backend against the real OS keychain (CI)");
 
@@ -84,59 +89,20 @@ pub fn build(b: *std.Build) void {
 
     // Add core tests
     for (core_test_files) |test_file| {
-        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
-            .root_source_file = b.path(test_file),
-            .target = target,
-            .optimize = optimize,
-        });
-        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
-        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
-        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
-        test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("serde", serde_dep.module("serde"));
-        const tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        const run_tests = b.addRunArtifact(tests);
+        const run_tests = addTestRun(b, "test-", test_file, target, optimize, &dep_imports);
         test_core_step.dependOn(&run_tests.step);
         test_step.dependOn(&run_tests.step);
     }
 
     // Add integration tests (parallel execution)
     for (integration_test_files) |test_file| {
-        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
-            .root_source_file = b.path(test_file),
-            .target = target,
-            .optimize = optimize,
-        });
-        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
-        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
-        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
-        test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("serde", serde_dep.module("serde"));
-        const tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        const run_tests = b.addRunArtifact(tests);
+        const run_tests = addTestRun(b, "test-", test_file, target, optimize, &dep_imports);
         test_step.dependOn(&run_tests.step);
     }
 
     // Add security tests (parallel execution)
     for (security_test_files) |test_file| {
-        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
-            .root_source_file = b.path(test_file),
-            .target = target,
-            .optimize = optimize,
-        });
-        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
-        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
-        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
-        test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("serde", serde_dep.module("serde"));
-        const tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        const run_tests = b.addRunArtifact(tests);
+        const run_tests = addTestRun(b, "test-", test_file, target, optimize, &dep_imports);
         test_security_step.dependOn(&run_tests.step);
         test_step.dependOn(&run_tests.step);
     }
@@ -148,22 +114,9 @@ pub fn build(b: *std.Build) void {
         "src/plugin_github_upgrade_test.zig",
         "src/plugin_pipeline_test.zig",
     };
+    const plugin_test_imports = [_]TestDep{.{ .name = "zcli", .module = zcli_module }} ++ dep_imports;
     for (feature_plugin_test_files) |test_file| {
-        const test_mod = b.addModule(b.fmt("test-{s}", .{test_file}), .{
-            .root_source_file = b.path(test_file),
-            .target = target,
-            .optimize = optimize,
-        });
-        test_mod.addImport("zcli", zcli_module);
-        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
-        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
-        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
-        test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("serde", serde_dep.module("serde"));
-        const tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        const run_tests = b.addRunArtifact(tests);
+        const run_tests = addTestRun(b, "test-", test_file, target, optimize, &plugin_test_imports);
         test_plugins_step.dependOn(&run_tests.step);
         test_step.dependOn(&run_tests.step);
     }
@@ -230,21 +183,7 @@ pub fn build(b: *std.Build) void {
     var previous_step: ?*std.Build.Step = null;
 
     for (all_test_files) |test_file| {
-        const test_mod = b.addModule(b.fmt("seq-test-{s}", .{test_file}), .{
-            .root_source_file = b.path(test_file),
-            .target = target,
-            .optimize = optimize,
-        });
-        test_mod.addImport("ztheme", ztheme_dep.module("ztheme"));
-        test_mod.addImport("markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
-        test_mod.addImport("zprogress", zprogress_dep.module("zprogress"));
-        test_mod.addImport("zinput", zinput_dep.module("zinput"));
-        test_mod.addImport("serde", serde_dep.module("serde"));
-        const sequential_tests = b.addTest(.{
-            .root_module = test_mod,
-        });
-        const sequential_run_tests = b.addRunArtifact(sequential_tests);
-
+        const sequential_run_tests = addTestRun(b, "seq-test-", test_file, target, optimize, &dep_imports);
         if (previous_step) |prev| {
             sequential_run_tests.step.dependOn(prev);
         }
@@ -254,18 +193,6 @@ pub fn build(b: *std.Build) void {
     if (previous_step) |final_step| {
         test_sequential_step.dependOn(final_step);
     }
-
-    // Debug step - test just one potentially problematic file
-    const debug_mod = b.addModule("debug-test", .{
-        .root_source_file = b.path("src/benchmark.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const debug_test = b.addTest(.{
-        .root_module = debug_mod,
-    });
-    const run_debug_test = b.addRunArtifact(debug_test);
-    test_debug_step.dependOn(&run_debug_test.step);
 
     // Benchmark step
     const benchmark_exe = b.addExecutable(.{
@@ -295,6 +222,29 @@ pub fn build(b: *std.Build) void {
     run_regression.addArg("--regression");
     const regression_step = b.step("regression", "Run performance regression tests");
     regression_step.dependOn(&run_regression.step);
+}
+
+/// A named module import shared by the test modules below.
+const TestDep = struct { name: []const u8, module: *std.Build.Module };
+
+/// Create a test module for `test_file` with the given imports, compile it,
+/// and return its run step for the caller to wire into steps.
+fn addTestRun(
+    b: *std.Build,
+    name_prefix: []const u8,
+    test_file: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    deps: []const TestDep,
+) *std.Build.Step.Run {
+    const test_mod = b.addModule(b.fmt("{s}{s}", .{ name_prefix, test_file }), .{
+        .root_source_file = b.path(test_file),
+        .target = target,
+        .optimize = optimize,
+    });
+    for (deps) |dep| test_mod.addImport(dep.name, dep.module);
+    const tests = b.addTest(.{ .root_module = test_mod });
+    return b.addRunArtifact(tests);
 }
 
 // Re-export build utilities for both backwards compatibility and new plugin features
