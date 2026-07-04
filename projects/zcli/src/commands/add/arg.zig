@@ -59,44 +59,54 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     // Preflight: must be inside a zcli project.
     std.Io.Dir.cwd().access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     const parts = spec.parsePath(arena, args.command) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{args.command});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid command path: '{s}'", .{args.command});
     };
     const file_path = try spec.buildFilePath(arena, parts);
 
     const name = spec.normalizeName(arena, args.name) catch |err| {
-        try stderr.print("Error: Invalid argument name '{s}': {s}\n", .{ args.name, @errorName(err) });
-        return err;
+        return context.fail("Error: Invalid argument name '{s}': {s}", .{ args.name, @errorName(err) });
     };
 
-    const arg = try buildSpec(arena, stderr, name, options);
-    const anchor = try resolveAnchor(arena, stderr, options);
+    // buildSpec / resolveAnchor print the specific problem; their validation
+    // failures are user mistakes, so exit cleanly (no trace).
+    const arg = buildSpec(arena, stderr, name, options) catch |err| switch (err) {
+        error.MissingType,
+        error.ContradictoryFlags,
+        error.PositionalMultipleMustBeString,
+        => return error.CommandFailed,
+        else => return err,
+    };
+    const anchor = resolveAnchor(arena, stderr, options) catch |err| switch (err) {
+        error.ContradictoryFlags => return error.CommandFailed,
+        else => return err,
+    };
 
     // Read the target command's source (NUL-terminated for the AST parser).
     const raw = std.Io.Dir.cwd().readFileAlloc(io, file_path, arena, .limited(max_source_bytes)) catch {
-        try stderr.print("Error: Command not found: {s}\n", .{file_path});
-        try stderr.print("Create it first with `zcli add command {s}`\n", .{args.command});
-        return error.CommandNotFound;
+        return context.fail("Error: Command not found: {s}\nCreate it first with `zcli add command {s}`", .{ file_path, args.command });
     };
     const source = try arena.dupeZ(u8, raw);
 
     // Validate placement against the real file before touching it: duplicate
     // name, unknown anchor, and the ordering rules (required-before-optional,
-    // `multiple` last).
+    // `multiple` last). validateOrder prints the specific problem; all its
+    // failures are user mistakes, so exit cleanly (no trace).
     const existing = try splice.fieldShapes(arena, source, "Args");
-    try validateOrder(arena, stderr, file_path, existing, arg, anchor);
+    validateOrder(arena, stderr, file_path, existing, arg, anchor) catch |err| switch (err) {
+        splice.SpliceError.DuplicateField,
+        splice.SpliceError.AnchorNotFound,
+        error.MultipleNotLast,
+        error.BadArgOrder,
+        => return error.CommandFailed,
+        else => return err,
+    };
 
     const updated = splice.insertArg(arena, source, arg, anchor) catch |err| switch (err) {
-        splice.SpliceError.DuplicateField => {
-            try stderr.print("Error: {s} already has an argument named '{s}'\n", .{ file_path, name });
-            return err;
-        },
+        splice.SpliceError.DuplicateField => return context.fail("Error: {s} already has an argument named '{s}'", .{ file_path, name }),
         else => {
             try stderr.print("Error: could not edit {s}: {s}\n", .{ file_path, @errorName(err) });
             return err;

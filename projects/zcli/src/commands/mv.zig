@@ -33,42 +33,33 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const arena = arena_state.allocator();
 
     const io = context.io;
-    const stderr = context.stderr();
     const cwd = std.Io.Dir.cwd();
 
     cwd.access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     const from_parts = spec.parsePath(arena, args.from) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{args.from});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid command path: '{s}'", .{args.from});
     };
     const to_parts = spec.parsePath(arena, args.to) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{args.to});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid command path: '{s}'", .{args.to});
     };
 
     const from_file = try spec.buildFilePath(arena, from_parts);
     if (!exists(io, from_file)) {
         if (exists(io, try fs.groupPath(arena, from_parts))) {
-            try stderr.print("Error: '{s}' is a command group; move its subcommands individually\n", .{args.from});
-            return error.IsAGroup;
+            return context.fail("Error: '{s}' is a command group; move its subcommands individually", .{args.from});
         }
-        try stderr.print("Error: Command not found: {s}\n", .{from_file});
-        return error.CommandNotFound;
+        return context.fail("Error: Command not found: {s}", .{from_file});
     }
 
     const to_file = try spec.buildFilePath(arena, to_parts);
     if (exists(io, to_file)) {
-        try stderr.print("Error: Destination already exists: {s}\n", .{to_file});
-        return error.CommandAlreadyExists;
+        return context.fail("Error: Destination already exists: {s}", .{to_file});
     }
     if (exists(io, try fs.groupPath(arena, to_parts))) {
-        try stderr.print("Error: Destination is a command group: {s}\n", .{args.to});
-        return error.CommandAlreadyExists;
+        return context.fail("Error: Destination is a command group: {s}", .{args.to});
     }
 
     // Create any parent group directories the destination needs.

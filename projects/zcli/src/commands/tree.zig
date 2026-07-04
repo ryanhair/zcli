@@ -41,9 +41,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     // source (metadata). Must be iterable for the discovery walk.
     var dir = std.Io.Dir.cwd().openDir(io, commands_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
-            const stderr = context.stderr();
-            try stderr.print("No '{s}' directory found. Run this from a zcli project root.\n", .{commands_dir});
-            context.exit(1); // flushes buffered output before exiting
+            return context.fail("No '{s}' directory found. Run this from a zcli project root.", .{commands_dir});
         },
         else => return err,
     };

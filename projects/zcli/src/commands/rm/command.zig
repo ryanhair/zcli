@@ -30,18 +30,14 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const arena = arena_state.allocator();
 
     const io = context.io;
-    const stderr = context.stderr();
     const cwd = std.Io.Dir.cwd();
 
     cwd.access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     const parts = spec.parsePath(arena, args.path) catch {
-        try stderr.print("Error: Invalid command path: '{s}'\n", .{args.path});
-        return error.InvalidCommandPath;
+        return context.fail("Error: Invalid command path: '{s}'", .{args.path});
     };
 
     const file_path = try spec.buildFilePath(arena, parts);
@@ -49,11 +45,9 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         // A group directory is not removed here — that would delete its
         // subcommands (and any index.zig) wholesale. Ask for the leaf files.
         if (exists(io, try fs.groupPath(arena, parts))) {
-            try stderr.print("Error: '{s}' is a command group; remove its subcommands first\n", .{args.path});
-            return error.IsAGroup;
+            return context.fail("Error: '{s}' is a command group; remove its subcommands first", .{args.path});
         }
-        try stderr.print("Error: Command not found: {s}\n", .{file_path});
-        return error.CommandNotFound;
+        return context.fail("Error: Command not found: {s}", .{file_path});
     }
 
     try cwd.deleteFile(io, file_path);

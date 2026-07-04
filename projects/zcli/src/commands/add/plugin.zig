@@ -37,26 +37,21 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const arena = arena_state.allocator();
 
     const io = context.io;
-    const stderr = context.stderr();
     const cwd = std.Io.Dir.cwd();
 
     cwd.access(io, "src/commands", .{}) catch {
-        try stderr.print("Error: Not in a zcli project directory\n", .{});
-        try stderr.print("Run this command from the root of your zcli project (where build.zig is)\n", .{});
-        return error.NotInZcliProject;
+        return context.fail("Error: Not in a zcli project directory\nRun this command from the root of your zcli project (where build.zig is)", .{});
     };
 
     const name = spec.normalizeName(arena, args.name) catch |err| {
-        try stderr.print("Error: Invalid plugin name '{s}': {s}\n", .{ args.name, @errorName(err) });
-        return err;
+        return context.fail("Error: Invalid plugin name '{s}': {s}", .{ args.name, @errorName(err) });
     };
 
     // Single-file plugin, matching `add command`'s default (the directory form
     // `plugins/<name>/plugin.zig` remains available for plugins that grow).
     const file_path = try std.fmt.allocPrint(arena, "src/plugins/{s}.zig", .{name});
     if (fileExists(io, file_path)) {
-        try stderr.print("Error: plugin already exists: {s}\n", .{file_path});
-        return error.PluginAlreadyExists;
+        return context.fail("Error: plugin already exists: {s}", .{file_path});
     }
 
     cwd.createDir(io, "src/plugins", .default_dir) catch |err| switch (err) {
