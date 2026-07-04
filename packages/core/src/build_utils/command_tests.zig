@@ -48,8 +48,6 @@ pub fn addCommandTests(
     //     unit-testable without touching the OS keychain (or linking a native
     //     backend). The real keychain plugin is what the app links and runs; this
     //     stands in only for `zig build test`.
-    const plugins_dir: ?[]const u8 =
-        if (@hasField(@TypeOf(config), "plugins_dir")) config.plugins_dir else null;
     const local_plugins: []const PluginInfo =
         if (config.plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
 
