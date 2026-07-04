@@ -19,4 +19,5 @@ test {
     _ = @import("build_utils/code_generation.zig");
     _ = @import("build_utils/main.zig");
     _ = @import("build_utils/module_creation.zig");
+    _ = @import("build_utils/plugin_system.zig");
 }

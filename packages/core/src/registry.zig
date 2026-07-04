@@ -6,11 +6,6 @@ const types = @import("build_utils/types.zig");
 const zcli = @import("zcli.zig");
 const testing = std.testing;
 
-// Re-export for convenience
-pub const PluginResult = plugin_types.PluginResult;
-pub const OptionEvent = plugin_types.OptionEvent;
-pub const ErrorEvent = plugin_types.ErrorEvent;
-
 /// Split a path string into components at compile time
 fn splitPath(comptime path: []const u8) []const []const u8 {
     comptime {
