@@ -1441,3 +1441,130 @@ test "interactive: init's plugin multi-select toggles an opt-in plugin" {
     try expectContains(build_zig, "zcli.builtin(.not_found");
     try expectContains(build_zig, "zcli.builtin(.completions");
 }
+
+// ============================================================================
+// Layer 2 — `dev` watch/rebuild loop (long-running; driven over a PTY)
+// ============================================================================
+
+/// A file write performed mid-script via InteractiveScript.action — the side
+/// channel that drives `dev`. Unlike the wizard tests, `dev` reacts to file
+/// changes, not stdin, so the harness pokes the watched tree between `expect`s.
+/// The callback runs on the harness thread after the preceding `expect` matched,
+/// so the write is ordered strictly after the state that step proved (e.g. the
+/// watcher is armed once "watching src/" has appeared).
+const DevWrite = struct {
+    dir: std.Io.Dir,
+    path: []const u8,
+    data: []const u8,
+
+    fn run(context: ?*anyopaque) void {
+        const self: *DevWrite = @ptrCast(@alignCast(context.?));
+        self.dir.writeFile(io, .{ .sub_path = self.path, .data = self.data }) catch {};
+    }
+};
+
+// A valid hello.zig printing a chosen greeting. Each rebuild in the test below
+// uses a UNIQUE greeting so its `expect` waits for that specific cycle to finish
+// rather than matching an identical earlier line still in the cumulative buffer.
+fn helloPrinting(comptime greeting: []const u8) []const u8 {
+    return "const Context = @import(\"command_registry\").Context;\n" ++
+        "pub const meta = .{ .description = \"Say hello to someone\" };\n" ++
+        "pub const Args = struct { name: []const u8 };\n" ++
+        "pub const Options = struct {};\n" ++
+        "pub fn execute(args: Args, _: Options, context: *Context) !void {\n" ++
+        "    try context.stdout().print(\"" ++ greeting ++ ", {s}!\\n\", .{args.name});\n" ++
+        "}\n";
+}
+
+test "dev outside a project fails with a clear message" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // No src/ dir → dev refuses before arming the watcher and exits on its own,
+    // so the blocking `run` helper suffices (no long-running loop to escape).
+    var r = try run(tmp.dir, &.{ zcli_exe, "dev" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "No 'src' directory found");
+}
+
+test "dev builds, runs the app, restarts on change, survives a failed build, and recovers" {
+    if (builtin.os.tag == .windows) return;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "demo", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const proj_abs = try tmpSubdirAbs(a, tmp, "demo");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // The change source for each cycle. `dev` watches src/ recursively, so
+    // rewriting the compiled hello.zig triggers a rebuild; a parse error makes a
+    // rebuild fail on purpose (the watcher must survive it and recover).
+    const path = "src/commands/hello.zig";
+    var to_hola = DevWrite{ .dir = proj, .path = path, .data = helloPrinting("Hola") };
+    var to_broken = DevWrite{
+        .dir = proj,
+        .path = path,
+        .data = "// Intentionally invalid Zig so `zig build` fails — the dev watcher\n" ++
+            "// must survive this and rebuild cleanly once the file is fixed.\n" ++
+            "pub fn execute( <<< not valid zig\n",
+    };
+    var to_recovered = DevWrite{ .dir = proj, .path = path, .data = helloPrinting("Recovered") };
+
+    // Every `expect` after the arm targets a greeting (or the failure line) that
+    // appears exactly once, so each waits for its own rebuild rather than the
+    // repeated "change detected"/"build succeeded" framing shared by all cycles.
+    var script = harness.InteractiveScript.init(testing.allocator);
+    defer script.deinit();
+    _ = script
+        .expect("watching src/").withTimeout(20000)
+        .expect("Hello, World!").withTimeout(240000) // initial (cold) build + run
+        .action(DevWrite.run, &to_hola)
+        .expect("Hola, World!").withTimeout(120000) // rebuild + restart
+        .action(DevWrite.run, &to_broken)
+        .expect("build failed").withTimeout(120000) // a cycle the watcher survives
+        .action(DevWrite.run, &to_recovered)
+        .expect("Recovered, World!").withTimeout(120000) // recovery proves survival
+        .sendSignal(.SIGINT); // dev never exits on its own — stop the loop
+
+    var result = harness.runInteractive(
+        testing.allocator,
+        io,
+        &.{ zcli_exe, "dev", "--", "hello", "World" },
+        script,
+        // A PTY (not pipes) merges dev's stderr status lines with the app's
+        // stdout onto one stream, so "build failed" is captured alongside the
+        // greetings. total_timeout is a ceiling only — the run ends as soon as
+        // the last expect matches and SIGINT lands.
+        .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 600000 },
+    ) catch |err| switch (err) {
+        // PTY allocation can be denied in some sandboxes; skip rather than fail
+        // (CI greps the log for this line). Every other error is a real failure.
+        error.PtyAllocationFailed => {
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
+    };
+    defer result.deinit();
+
+    // The whole loop ran end to end: the app was built and run, rebuilt and
+    // restarted on an edit, a broken edit failed the build without tearing down
+    // the watcher, and a fix rebuilt-and-reran — each proven by a once-only line.
+    try expectContains(result.output, "Hello, World!");
+    try expectContains(result.output, "Hola, World!");
+    try expectContains(result.output, "build failed");
+    try expectContains(result.output, "Recovered, World!");
+}

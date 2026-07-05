@@ -504,6 +504,14 @@ pub const InteractionStep = struct {
     exact_match: bool = false,
     /// Whether this step is optional (won't fail if not matched)
     optional: bool = false,
+    /// A callback to run at this point in the script — for driving a process
+    /// through something other than its stdin (e.g. mutating a watched file to
+    /// trigger `zcli dev`'s rebuild). Runs synchronously on the harness thread,
+    /// so any preceding `expect` has already matched: the effect is ordered
+    /// after the state that step proved.
+    action: ?*const fn (context: ?*anyopaque) void = null,
+    /// Opaque context passed to `action` (a pointer to test-owned state).
+    action_context: ?*anyopaque = null,
 };
 
 /// Builder for creating interactive test scripts
@@ -593,6 +601,17 @@ pub const InteractiveScript = struct {
     /// Expect prompt and send password
     pub fn expectAndSendPassword(self: *InteractiveScript, prompt: []const u8, password: []const u8) *InteractiveScript {
         return self.expect(prompt).sendHidden(password);
+    }
+
+    /// Run a callback at this point in the script. Use it to drive a process
+    /// through a side channel — e.g. touch a file that a watcher is watching —
+    /// between `expect`/`send` steps. `context` is passed back to the callback.
+    pub fn action(self: *InteractiveScript, callback: *const fn (context: ?*anyopaque) void, context: ?*anyopaque) *InteractiveScript {
+        self.steps.append(self.allocator, .{
+            .action = callback,
+            .action_context = context,
+        }) catch @panic("OOM");
+        return self;
     }
 
     /// Add a delay (for testing timing-sensitive interactions)
@@ -912,8 +931,16 @@ pub fn runInteractive(
             sleepMs(io, 100);
         }
 
-        // Pure delay steps.
-        if (step.expect == null and step.send == null and step.signal == null and step.timeout_ms > 0) {
+        if (step.action) |callback| {
+            callback(step.action_context);
+            if (transcript_buffer) |*tb| {
+                try transcriptPrint(tb, allocator, "Ran action\n", .{});
+            }
+        }
+
+        // Pure delay steps (an action step carries the default timeout_ms but is
+        // not a delay — don't sleep on it).
+        if (step.expect == null and step.send == null and step.signal == null and step.action == null and step.timeout_ms > 0) {
             sleepMs(io, step.timeout_ms);
         }
 
