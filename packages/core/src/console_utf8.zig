@@ -15,7 +15,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const UINT = std.os.windows.UINT;
-const BOOL = std.os.windows.BOOL;
 
 /// Code page identifier for UTF-8 (see the Win32 "Code Page Identifiers" list).
 const CP_UTF8: UINT = 65001;
@@ -55,11 +54,14 @@ pub fn enable() State {
 
 // Zig 0.16's `std.os.windows` exposes none of the console code-page functions,
 // so declare the four needed. `GetConsole*CP` return the code page (0 if the
-// process has no console); `SetConsole*CP` return a BOOL (0 on failure). Only
-// referenced inside the Windows-gated blocks above, so this links nowhere else.
+// process has no console); `SetConsole*CP` return a BOOL (0 on failure) — typed
+// as `c_int` to match the other kernel32 externs in this repo (backend_windows)
+// and to compare directly against 0, which `std.os.windows.BOOL` doesn't allow.
+// Only referenced inside the Windows-gated blocks above, so this links nowhere
+// else.
 const win = struct {
     extern "kernel32" fn GetConsoleCP() callconv(.winapi) UINT;
-    extern "kernel32" fn SetConsoleCP(wCodePageID: UINT) callconv(.winapi) BOOL;
+    extern "kernel32" fn SetConsoleCP(wCodePageID: UINT) callconv(.winapi) c_int;
     extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) UINT;
-    extern "kernel32" fn SetConsoleOutputCP(wCodePageID: UINT) callconv(.winapi) BOOL;
+    extern "kernel32" fn SetConsoleOutputCP(wCodePageID: UINT) callconv(.winapi) c_int;
 };
