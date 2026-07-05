@@ -1289,8 +1289,6 @@ test "a command that uses zcli_secrets is runCommand-testable without the keycha
 // ============================================================================
 
 test "interactive: add command drives the wizard and echoes typed input" {
-    if (builtin.os.tag == .windows) return;
-
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try makeProjectDirs(tmp.dir);
@@ -1353,8 +1351,6 @@ test "interactive: add command drives the wizard and echoes typed input" {
 }
 
 test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
-    if (builtin.os.tag == .windows) return;
-
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try makeProjectDirs(tmp.dir);
@@ -1406,8 +1402,6 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
 }
 
 test "interactive: init's plugin multi-select toggles an opt-in plugin" {
-    if (builtin.os.tag == .windows) return;
-
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1504,6 +1498,8 @@ test "dev outside a project fails with a clear message" {
 }
 
 test "dev builds, runs the app, restarts on change, survives a failed build, and recovers" {
+    // ConPTY drives interactive prompts on Windows now, but `zcli dev`'s native
+    // fs-watch loop isn't Windows-ready yet — keep this one POSIX-only.
     if (builtin.os.tag == .windows) return;
 
     var tmp = testing.tmpDir(.{});

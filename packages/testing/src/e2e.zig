@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const conpty = @import("conpty.zig");
 
 /// Interactive testing support for CLIs that require user input.
 ///
@@ -779,18 +780,164 @@ pub const InteractiveError = error{
     NoSavedSettings,
 } || std.mem.Allocator.Error;
 
+/// Outcome of running the script's steps, before teardown.
+const ScriptOutcome = struct { success: bool, steps_executed: usize };
+
+/// POSIX session the step driver talks to: the PTY/pipe fds plus the child pid,
+/// behind the same pollRead/writeAll/sendSignal surface the Windows session
+/// exposes. Keeps `driveScriptSteps` platform-neutral.
+const PosixSession = struct {
+    read_fd: posix.fd_t,
+    write_fd: posix.fd_t,
+    child_id: ?posix.pid_t,
+
+    // Bare `pollRead`/`writeAll` resolve to the file-scope helpers, not these
+    // methods (methods are only reachable through `self.`/the type name).
+    fn pollRead(self: *PosixSession, buf: []u8, timeout_ms: i32) usize {
+        return pollFd(self.read_fd, buf, timeout_ms);
+    }
+    fn writeAll(self: *PosixSession, bytes: []const u8) error{WriteFailed}!void {
+        return writeFd(self.write_fd, bytes);
+    }
+    fn sendSignal(self: *PosixSession, sig: Signal) void {
+        if (self.child_id) |pid| {
+            posix.kill(pid, toPosixSig(sig)) catch |err| {
+                std.log.warn("Failed to send signal {any} to process: {any}", .{ sig, err });
+            };
+        }
+    }
+};
+
+/// Windows session: wraps a conpty.ConPtySession and maps the harness's Signal
+/// enum onto ConPTY operations. conpty.zig stays free of e2e types (it can't
+/// import this file), so the mapping lives here.
+const WindowsSession = struct {
+    inner: *conpty.ConPtySession,
+
+    fn pollRead(self: *WindowsSession, buf: []u8, timeout_ms: i32) usize {
+        return self.inner.pollRead(buf, timeout_ms);
+    }
+    fn writeAll(self: *WindowsSession, bytes: []const u8) error{WriteFailed}!void {
+        return self.inner.writeAll(bytes);
+    }
+    fn sendSignal(self: *WindowsSession, sig: Signal) void {
+        switch (sig) {
+            // ConPTY delivers a Ctrl+C typed into its input as a console
+            // interrupt to the child, the same as the POSIX SIGINT.
+            .SIGINT => self.inner.writeAll("\x03") catch {},
+            .SIGTERM, .SIGQUIT, .SIGHUP => self.inner.signalTerm(),
+            else => {}, // SIGWINCH/SIGTSTP/... have no ConPTY analogue here
+        }
+    }
+};
+
+/// Run the script's expect/send/signal/action steps against `session`. Shared
+/// by the POSIX and Windows drivers, which differ only in how they spawn the
+/// child and tear it down. `start_time` is the driver's overall start, so the
+/// total-timeout budget spans spawn + steps consistently on both platforms.
+fn driveScriptSteps(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    session: anytype,
+    script: InteractiveScript,
+    config: InteractiveConfig,
+    start_time: i64,
+    output_buffer: *std.ArrayList(u8),
+    input_buffer: *std.ArrayList(u8),
+    transcript_buffer: ?*std.ArrayList(u8),
+) InteractiveError!ScriptOutcome {
+    var steps_executed: usize = 0;
+    var script_success = true;
+
+    for (script.steps.items, 0..) |step, step_index| {
+        if (transcript_buffer) |tb| {
+            try transcriptPrint(tb, allocator, "[Step {d}] ", .{step_index + 1});
+        }
+
+        if (step.expect) |expected| {
+            const found = try waitForOutput(
+                allocator,
+                io,
+                session,
+                expected,
+                step.timeout_ms,
+                step.exact_match,
+                output_buffer,
+                transcript_buffer,
+            );
+
+            if (!found and !step.optional) {
+                script_success = false;
+                break;
+            }
+
+            if (transcript_buffer) |tb| {
+                if (found) {
+                    try transcriptPrint(tb, allocator, "\u{2713} Expected: \"{s}\"\n", .{expected});
+                } else {
+                    try transcriptPrint(tb, allocator, "\u{2717} Expected: \"{s}\" (optional: {any})\n", .{ expected, step.optional });
+                }
+            }
+        }
+
+        if (step.send) |input| {
+            const ok = sendInput(
+                allocator,
+                session,
+                input,
+                step.input_type,
+                input_buffer,
+                transcript_buffer,
+                config.echo_input,
+            ) catch false;
+
+            if (!ok) {
+                script_success = false;
+                break;
+            }
+        }
+
+        if (step.signal) |sig| {
+            session.sendSignal(sig);
+            if (transcript_buffer) |tb| {
+                try transcriptPrint(tb, allocator, "Sent signal: {any}\n", .{sig});
+            }
+            sleepMs(io, 100);
+        }
+
+        if (step.action) |callback| {
+            callback(step.action_context);
+            if (transcript_buffer) |tb| {
+                try transcriptPrint(tb, allocator, "Ran action\n", .{});
+            }
+        }
+
+        // Pure delay steps (an action step carries the default timeout_ms but is
+        // not a delay — don't sleep on it).
+        if (step.expect == null and step.send == null and step.signal == null and step.action == null and step.timeout_ms > 0) {
+            sleepMs(io, step.timeout_ms);
+        }
+
+        steps_executed += 1;
+
+        const elapsed = nowMs(io) - start_time;
+        if (elapsed > config.total_timeout_ms) {
+            script_success = false;
+            break;
+        }
+    }
+
+    return .{ .success = script_success, .steps_executed = steps_executed };
+}
+
 /// Run an interactive test script against a command.
 ///
 /// `io` is required for spawning the child and waiting on it; the byte-level I/O
-/// with the child uses raw posix.poll/read/write so it can poll with timeouts.
+/// with the child polls with timeouts (posix.poll/read/write on POSIX,
+/// PeekNamedPipe/ReadFile/WriteFile through the ConPTY session on Windows).
 ///
-/// POSIX-only for now: driving a child through a real terminal here uses a PTY +
-/// termios + poll, which have no Windows equivalent in this file yet (a ConPTY
-/// backend is the planned follow-up). On Windows this returns
-/// error.UnsupportedPlatform — the comptime switch keeps the POSIX
-/// implementation from being analyzed there — so the interactive e2e tiers skip
-/// accordingly. The non-interactive tiers never touch this harness and run on
-/// Windows unchanged.
+/// A comptime switch picks the platform driver so each one's OS-specific spawn
+/// and teardown is only analyzed where it applies.
 pub fn runInteractive(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -799,7 +946,7 @@ pub fn runInteractive(
     config: InteractiveConfig,
 ) InteractiveError!InteractiveResult {
     return switch (builtin.os.tag) {
-        .windows => InteractiveError.UnsupportedPlatform,
+        .windows => runInteractiveWindows(allocator, io, command, script, config),
         else => runInteractivePosix(allocator, io, command, script, config),
     };
 }
@@ -889,90 +1036,20 @@ fn runInteractivePosix(
     const read_fd: posix.fd_t = if (pty_manager) |*pty| pty.master_fd else child.stdout.?.handle;
     const write_fd: posix.fd_t = if (pty_manager) |*pty| pty.master_fd else child.stdin.?.handle;
 
-    var steps_executed: usize = 0;
-    var script_success = true;
-
-    for (script.steps.items, 0..) |step, step_index| {
-        if (transcript_buffer) |*tb| {
-            try transcriptPrint(tb, allocator, "[Step {d}] ", .{step_index + 1});
-        }
-
-        if (step.expect) |expected| {
-            const found = try waitForOutput(
-                allocator,
-                io,
-                read_fd,
-                expected,
-                step.timeout_ms,
-                step.exact_match,
-                &output_buffer,
-                if (transcript_buffer) |*tb| tb else null,
-            );
-
-            if (!found and !step.optional) {
-                script_success = false;
-                break;
-            }
-
-            if (transcript_buffer) |*tb| {
-                if (found) {
-                    try transcriptPrint(tb, allocator, "\u{2713} Expected: \"{s}\"\n", .{expected});
-                } else {
-                    try transcriptPrint(tb, allocator, "\u{2717} Expected: \"{s}\" (optional: {any})\n", .{ expected, step.optional });
-                }
-            }
-        }
-
-        if (step.send) |input| {
-            const ok = sendInput(
-                allocator,
-                write_fd,
-                input,
-                step.input_type,
-                &input_buffer,
-                if (transcript_buffer) |*tb| tb else null,
-                config.echo_input,
-            ) catch false;
-
-            if (!ok) {
-                script_success = false;
-                break;
-            }
-        }
-
-        if (step.signal) |sig| {
-            if (child.id) |pid| {
-                posix.kill(pid, toPosixSig(sig)) catch |err| {
-                    std.log.warn("Failed to send signal {any} to process: {any}", .{ sig, err });
-                };
-            }
-            if (transcript_buffer) |*tb| {
-                try transcriptPrint(tb, allocator, "Sent signal: {any}\n", .{sig});
-            }
-            sleepMs(io, 100);
-        }
-
-        if (step.action) |callback| {
-            callback(step.action_context);
-            if (transcript_buffer) |*tb| {
-                try transcriptPrint(tb, allocator, "Ran action\n", .{});
-            }
-        }
-
-        // Pure delay steps (an action step carries the default timeout_ms but is
-        // not a delay — don't sleep on it).
-        if (step.expect == null and step.send == null and step.signal == null and step.action == null and step.timeout_ms > 0) {
-            sleepMs(io, step.timeout_ms);
-        }
-
-        steps_executed += 1;
-
-        const elapsed = nowMs(io) - start_time;
-        if (elapsed > config.total_timeout_ms) {
-            script_success = false;
-            break;
-        }
-    }
+    var session = PosixSession{ .read_fd = read_fd, .write_fd = write_fd, .child_id = child.id };
+    const outcome = try driveScriptSteps(
+        allocator,
+        io,
+        &session,
+        script,
+        config,
+        start_time,
+        &output_buffer,
+        &input_buffer,
+        if (transcript_buffer) |*tb| tb else null,
+    );
+    var script_success = outcome.success;
+    const steps_executed = outcome.steps_executed;
 
     // Close the write side to signal EOF to the child.
     if (!using_pty) {
@@ -1056,9 +1133,119 @@ fn runInteractivePosix(
     };
 }
 
+/// Windows driver: spawn the command into a ConPTY and drive the same script
+/// through the shared step loop. Only the spawn and teardown differ from the
+/// POSIX path. Pipe mode (allocate_pty = false) isn't wired up here yet, since
+/// the interactive e2e tiers all drive real terminals.
+fn runInteractiveWindows(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    command: []const []const u8,
+    script: InteractiveScript,
+    config: InteractiveConfig,
+) InteractiveError!InteractiveResult {
+    if (command.len == 0) return InteractiveError.InvalidScript;
+    if (!config.allocate_pty) return InteractiveError.UnsupportedPlatform;
+
+    const start_time = nowMs(io);
+
+    var output_buffer: std.ArrayList(u8) = .empty;
+    defer output_buffer.deinit(allocator);
+    try output_buffer.ensureTotalCapacity(allocator, config.buffer_size);
+
+    var input_buffer: std.ArrayList(u8) = .empty;
+    defer input_buffer.deinit(allocator);
+
+    var transcript_buffer: ?std.ArrayList(u8) = if (config.save_transcript) .empty else null;
+    defer if (transcript_buffer) |*tb| tb.deinit(allocator);
+
+    const rows: u16 = if (config.terminal_size) |s| s.rows else 24;
+    const cols: u16 = if (config.terminal_size) |s| s.cols else 80;
+
+    var env_copy = config.env;
+    const environ_map: ?*const std.process.Environ.Map = if (env_copy) |*e| e else null;
+
+    var cp = conpty.ConPtySession.spawn(allocator, command, environ_map, config.cwd, rows, cols) catch |err| {
+        std.log.warn("ConPTY spawn failed: {any}", .{err});
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => InteractiveError.PtyAllocationFailed,
+        };
+    };
+    defer cp.deinit(allocator);
+
+    var session = WindowsSession{ .inner = &cp };
+    const outcome = try driveScriptSteps(
+        allocator,
+        io,
+        &session,
+        script,
+        config,
+        start_time,
+        &output_buffer,
+        &input_buffer,
+        if (transcript_buffer) |*tb| tb else null,
+    );
+    var script_success = outcome.success;
+    const steps_executed = outcome.steps_executed;
+
+    // Signal EOF on the child's stdin; kill a still-blocked child on failure.
+    cp.closeInput();
+    if (!script_success) cp.signalTerm();
+
+    // Drain remaining output until the child exits or the deadline passes —
+    // the ConPTY analogue of the POSIX drainUntilHup: read everything that's
+    // available before honoring exit, so a final burst isn't lost.
+    var exit_code: u8 = 1;
+    var temp_buffer: [4096]u8 = undefined;
+    while (true) {
+        const n = cp.pollRead(&temp_buffer, 50);
+        if (n > 0) {
+            try output_buffer.appendSlice(allocator, temp_buffer[0..n]);
+            continue;
+        }
+        if (cp.waitExit(0)) |code| {
+            exit_code = code;
+            break;
+        }
+        const elapsed: u64 = @intCast(nowMs(io) - start_time);
+        if (elapsed > config.total_timeout_ms) {
+            script_success = false;
+            cp.signalTerm();
+            exit_code = cp.waitExit(2000) orelse 1;
+            break;
+        }
+    }
+
+    const duration_ms: u64 = @intCast(nowMs(io) - start_time);
+
+    if (config.save_transcript and config.transcript_path != null) {
+        if (transcript_buffer) |*tb| {
+            if (std.Io.Dir.cwd().createFile(io, config.transcript_path.?, .{})) |file| {
+                var f = file;
+                defer f.close(io);
+                f.writeStreamingAll(io, tb.items) catch {};
+            } else |err| {
+                std.log.warn("Failed to save transcript: {any}", .{err});
+            }
+        }
+    }
+
+    return InteractiveResult{
+        .exit_code = exit_code,
+        .output = try output_buffer.toOwnedSlice(allocator),
+        .input = try input_buffer.toOwnedSlice(allocator),
+        .success = script_success and exit_code == 0,
+        .steps_executed = steps_executed,
+        .duration_ms = duration_ms,
+        .transcript = if (transcript_buffer) |*tb| try tb.toOwnedSlice(allocator) else null,
+        .allocator = allocator,
+    };
+}
+
 /// Read once from `fd` with a poll timeout. Returns the number of bytes read,
 /// 0 on EOF/timeout/closed-PTY. Never blocks longer than `timeout_ms`.
-fn pollRead(fd: posix.fd_t, buf: []u8, timeout_ms: i32) usize {
+fn pollFd(fd: posix.fd_t, buf: []u8, timeout_ms: i32) usize {
     var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
     const ready = posix.poll(&fds, timeout_ms) catch return 0;
     if (ready == 0) return 0; // timeout
@@ -1074,7 +1261,7 @@ fn pollRead(fd: posix.fd_t, buf: []u8, timeout_ms: i32) usize {
 fn waitForOutput(
     allocator: std.mem.Allocator,
     io: std.Io,
-    fd: posix.fd_t,
+    session: anytype,
     expected: []const u8,
     timeout_ms: u32,
     exact_match: bool,
@@ -1089,7 +1276,7 @@ fn waitForOutput(
         if (elapsed > timeout_ms) return false;
 
         const remaining: i32 = @intCast(@max(@as(i64, 0), @as(i64, timeout_ms) - elapsed));
-        const bytes_read = pollRead(fd, &temp_buffer, @min(remaining, 50));
+        const bytes_read = session.pollRead(&temp_buffer, @min(remaining, 50));
         if (bytes_read == 0) continue;
 
         try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
@@ -1109,19 +1296,19 @@ fn waitForOutput(
 /// Send input to the process.
 fn sendInput(
     allocator: std.mem.Allocator,
-    fd: posix.fd_t,
+    session: anytype,
     input: []const u8,
     input_type: InputType,
     input_buffer: *std.ArrayList(u8),
     transcript_buffer: ?*std.ArrayList(u8),
     echo_input: bool,
 ) InteractiveError!bool {
-    writeAll(fd, input) catch return false;
+    session.writeAll(input) catch return false;
     try input_buffer.appendSlice(allocator, input);
 
     // Add newline for text input (unless it's a control sequence or already ends with one).
     if (input_type == .text and !std.mem.endsWith(u8, input, "\n")) {
-        writeAll(fd, "\n") catch return false;
+        session.writeAll("\n") catch return false;
         try input_buffer.append(allocator, '\n');
     }
 
@@ -1137,7 +1324,7 @@ fn sendInput(
     return true;
 }
 
-fn writeAll(fd: posix.fd_t, bytes: []const u8) error{WriteFailed}!void {
+fn writeFd(fd: posix.fd_t, bytes: []const u8) error{WriteFailed}!void {
     var index: usize = 0;
     while (index < bytes.len) {
         const rc = posix.system.write(fd, bytes[index..].ptr, bytes.len - index);
@@ -1203,7 +1390,7 @@ fn drainOutput(
         const elapsed = nowMs(io) - start_time;
         if (elapsed > timeout_ms) break;
 
-        const bytes_read = pollRead(fd, &temp_buffer, 50);
+        const bytes_read = pollFd(fd, &temp_buffer, 50);
         if (bytes_read == 0) {
             idle_polls += 1;
             if (idle_polls >= 3) break;
