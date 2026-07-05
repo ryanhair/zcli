@@ -1189,13 +1189,16 @@ fn runInteractiveWindows(
     var script_success = outcome.success;
     const steps_executed = outcome.steps_executed;
 
-    // Signal EOF on the child's stdin; kill a still-blocked child on failure.
-    cp.closeInput();
+    // Kill a still-blocked child if the script itself failed.
     if (!script_success) cp.signalTerm();
 
-    // Drain remaining output until the child exits or the deadline passes —
-    // the ConPTY analogue of the POSIX drainUntilHup: read everything that's
-    // available before honoring exit, so a final burst isn't lost.
+    // Drain output until the child exits on its own or the deadline passes —
+    // the ConPTY analogue of the POSIX drainUntilHup, and like it we keep the
+    // input open throughout. A wizard's exit sequence can still read from the
+    // terminal (e.g. a cursor-position report, which ConPTY answers on the
+    // input channel); closing input early would wedge that read and the child
+    // would never finish. deinit() closes the input as final cleanup. Read all
+    // available bytes before honoring exit so a final burst isn't lost.
     var exit_code: u8 = 1;
     var temp_buffer: [4096]u8 = undefined;
     while (true) {
