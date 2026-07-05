@@ -31,6 +31,7 @@ const COORD = extern struct { X: i16, Y: i16 };
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
 const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
+const STARTF_USESTDHANDLES: DWORD = 0x00000100;
 const WAIT_OBJECT_0: DWORD = 0;
 
 /// STARTUPINFOW + attribute-list pointer. Not in std.os.windows.
@@ -148,6 +149,15 @@ pub const ConPtySession = struct {
         var si = std.mem.zeroes(STARTUPINFOEXW);
         si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
         si.lpAttributeList = attr;
+        // Load-bearing when the parent's own stdio is redirected (e.g. the test
+        // runner pipes our stdout): without STARTF_USESTDHANDLES, Windows has a
+        // legacy hack that duplicates the parent's redirected handles into a
+        // console child even with bInheritHandles=FALSE, so the child's stdin
+        // becomes our pipe instead of the pseudoconsole and GetConsoleMode (its
+        // isatty) fails. Setting the flag with the hStd* handles left null
+        // suppresses that and lets the pseudoconsole's handles win.
+        // See microsoft/terminal discussion #15814.
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
 
         const env_ptr: ?*anyopaque = if (env_block) |b| @ptrCast(b.ptr) else null;
         const cwd_ptr: ?[*:0]const u16 = if (cwd_w) |w| w.ptr else null;
