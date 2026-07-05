@@ -81,10 +81,10 @@ pub fn build(b: *std.Build) void {
         "src/build_integration_test.zig",
     };
 
-    // Security and fuzzing test files (separate category due to different requirements)
+    // Security and randomized-property test files (separate category due to different requirements)
     const security_test_files = [_][]const u8{
         "src/security_test.zig",
-        "src/fuzz_test.zig",
+        "src/property_test.zig",
     };
 
     // Add core tests

@@ -5,18 +5,23 @@ const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
 
 // ============================================================================
-// Fuzzing Infrastructure for zcli Security Testing
+// Randomized property tests for zcli parser security
+//
+// Deliberately NOT called fuzzing: every run uses a fixed seed, so these are
+// deterministic bounded-random property/stability tests — they explore the
+// same inputs every time and serve as a CI smoke over hostile input shapes.
+// Coverage-guided fuzzing via `std.testing.fuzz` is future work.
 // ============================================================================
 
-/// Test structures for fuzzing
-const FuzzTestArgs = struct {
+/// Test structures for the randomized property tests
+const PropertyTestArgs = struct {
     name: []const u8,
     count: ?u32 = null,
     file: ?[]const u8 = null,
     enabled: bool = false,
 };
 
-const FuzzTestOptions = struct {
+const PropertyTestOptions = struct {
     output: []const u8 = "stdout",
     files: []const []const u8 = &.{},
     count: u32 = 0,
@@ -26,10 +31,10 @@ const FuzzTestOptions = struct {
     verbose: bool = false,
 };
 
-/// Fuzzing test framework
-pub const FuzzTesting = struct {
-    /// Fuzz command-line argument parsing with random inputs
-    pub fn fuzzArgumentParsing(random: std.Random, iterations: usize, allocator: std.mem.Allocator) !void {
+/// Randomized property-test framework
+pub const PropertyTesting = struct {
+    /// Exercise command-line argument parsing with seeded random inputs
+    pub fn checkArgumentParsing(random: std.Random, iterations: usize, allocator: std.mem.Allocator) !void {
         var successful_parses: usize = 0;
         var failed_parses: usize = 0;
         const crashes: usize = 0;
@@ -63,7 +68,7 @@ pub const FuzzTesting = struct {
             }
 
             // Test that random input doesn't crash the parser
-            if (args_parser.parseArgs(FuzzTestArgs, args.items, null)) |_| {
+            if (args_parser.parseArgs(PropertyTestArgs, args.items, null)) |_| {
                 successful_parses += 1;
             } else |_| {
                 failed_parses += 1;
@@ -71,7 +76,7 @@ pub const FuzzTesting = struct {
         }
 
         // Report statistics
-        std.log.info("Fuzz results: {} successful, {} failed, {} crashes out of {} iterations", .{
+        std.log.info("Argument property results: {} successful, {} failed, {} crashes out of {} iterations", .{
             successful_parses,
             failed_parses,
             crashes,
@@ -82,8 +87,8 @@ pub const FuzzTesting = struct {
         try testing.expect(crashes < iterations / 100); // Less than 1% crash rate
     }
 
-    /// Fuzz option parsing with random inputs
-    pub fn fuzzOptionParsing(random: std.Random, iterations: usize, allocator: std.mem.Allocator) !void {
+    /// Exercise option parsing with seeded random inputs
+    pub fn checkOptionParsing(random: std.Random, iterations: usize, allocator: std.mem.Allocator) !void {
         var successful_parses: usize = 0;
         var failed_parses: usize = 0;
         var memory_errors: usize = 0;
@@ -142,7 +147,7 @@ pub const FuzzTesting = struct {
             }
 
             // Test option parsing
-            const result = options_parser.parseOptions(FuzzTestOptions, allocator, args.items, null) catch |err| switch (err) {
+            const result = options_parser.parseOptions(PropertyTestOptions, allocator, args.items, null) catch |err| switch (err) {
                 zcli.ZcliError.SystemOutOfMemory => {
                     memory_errors += 1;
                     continue;
@@ -153,12 +158,12 @@ pub const FuzzTesting = struct {
                 },
             };
 
-            options_parser.cleanupOptions(FuzzTestOptions, result.options, allocator);
+            options_parser.cleanupOptions(PropertyTestOptions, result.options, allocator);
             successful_parses += 1;
         }
 
         // Report statistics
-        std.log.info("Option fuzz results: {} successful, {} failed, {} memory errors out of {} iterations", .{
+        std.log.info("Option property results: {} successful, {} failed, {} memory errors out of {} iterations", .{
             successful_parses,
             failed_parses,
             memory_errors,
@@ -169,8 +174,8 @@ pub const FuzzTesting = struct {
         try testing.expect(memory_errors < iterations); // All memory errors should be handled
     }
 
-    /// Fuzz with malicious patterns specifically
-    pub fn fuzzMaliciousPatterns(random: std.Random, iterations: usize, allocator: std.mem.Allocator) !void {
+    /// Exercise the parsers with malicious patterns specifically
+    pub fn checkMaliciousPatterns(random: std.Random, iterations: usize, allocator: std.mem.Allocator) !void {
         const malicious_templates = [_][]const u8{
             "$({})", // Command substitution
             "`{}`", // Backtick command substitution
@@ -206,7 +211,7 @@ pub const FuzzTesting = struct {
             // Test argument parsing
             const args = [_][]const u8{malicious_input};
 
-            if (args_parser.parseArgs(FuzzTestArgs, &args, null)) |parsed| {
+            if (args_parser.parseArgs(PropertyTestArgs, &args, null)) |parsed| {
                 // If it parsed, verify it's treated as literal string
                 try testing.expectEqualStrings(malicious_input, parsed.name);
 
@@ -229,7 +234,7 @@ pub const FuzzTesting = struct {
             }
         }
 
-        std.log.info("Malicious pattern fuzz: {} dangerous parses, {} safe rejections", .{
+        std.log.info("Malicious pattern results: {} dangerous parses, {} safe rejections", .{
             dangerous_parses,
             safe_rejections,
         });
@@ -243,7 +248,7 @@ pub const FuzzTesting = struct {
     /// stability check — `testing.allocator` catches leaks and any crash/UB fails
     /// the test. It deliberately does not assert wall-clock budgets: those only
     /// measure the CI runner's load, not the parser, and were flaky in CI.
-    pub fn fuzzPerformanceStress(random: std.Random, allocator: std.mem.Allocator) !void {
+    pub fn checkPerformanceStress(random: std.Random, allocator: std.mem.Allocator) !void {
         // Many small parses.
         const small_iterations = 10000;
         for (0..small_iterations) |_| {
@@ -251,7 +256,7 @@ pub const FuzzTesting = struct {
             defer allocator.free(arg);
 
             const args = [_][]const u8{arg};
-            _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
+            _ = args_parser.parseArgs(PropertyTestArgs, &args, null) catch {};
         }
 
         // A few large parses.
@@ -261,7 +266,7 @@ pub const FuzzTesting = struct {
             defer allocator.free(arg);
 
             const args = [_][]const u8{arg};
-            _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
+            _ = args_parser.parseArgs(PropertyTestArgs, &args, null) catch {};
         }
     }
 };
@@ -276,46 +281,46 @@ fn generateRandomString(random: std.Random, allocator: std.mem.Allocator, len: u
 }
 
 // ============================================================================
-// Specialized Fuzzing Tests
+// Specialized randomized property tests
 // ============================================================================
 
-test "fuzz: basic argument parsing stability" {
+test "property: basic argument parsing stability" {
     var prng = std.Random.DefaultPrng.init(12345);
     const random = prng.random();
     const allocator = testing.allocator;
 
-    try FuzzTesting.fuzzArgumentParsing(random, 1000, allocator);
+    try PropertyTesting.checkArgumentParsing(random, 1000, allocator);
 }
 
-test "fuzz: option parsing stability" {
+test "property: option parsing stability" {
     var prng = std.Random.DefaultPrng.init(54321);
     const random = prng.random();
     const allocator = testing.allocator;
 
-    try FuzzTesting.fuzzOptionParsing(random, 500, allocator);
+    try PropertyTesting.checkOptionParsing(random, 500, allocator);
 }
 
-test "fuzz: malicious pattern handling" {
+test "property: malicious pattern handling" {
     var prng = std.Random.DefaultPrng.init(11111);
     const random = prng.random();
     const allocator = testing.allocator;
 
-    try FuzzTesting.fuzzMaliciousPatterns(random, 200, allocator);
+    try PropertyTesting.checkMaliciousPatterns(random, 200, allocator);
 }
 
-test "fuzz: performance stress testing" {
+test "property: performance stress testing" {
     var prng = std.Random.DefaultPrng.init(99999);
     const random = prng.random();
     const allocator = testing.allocator;
 
-    try FuzzTesting.fuzzPerformanceStress(random, allocator);
+    try PropertyTesting.checkPerformanceStress(random, allocator);
 }
 
 // ============================================================================
-// Edge Case Fuzzing
+// Edge-case property tests
 // ============================================================================
 
-test "fuzz: unicode and encoding edge cases" {
+test "property: unicode and encoding edge cases" {
     var prng = std.Random.DefaultPrng.init(88888);
     const random = prng.random();
     const allocator = testing.allocator;
@@ -346,11 +351,11 @@ test "fuzz: unicode and encoding edge cases" {
         const args = [_][]const u8{valid_string};
 
         // Should handle Unicode without crashing
-        _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
+        _ = args_parser.parseArgs(PropertyTestArgs, &args, null) catch {};
     }
 }
 
-test "fuzz: memory boundary conditions" {
+test "property: memory boundary conditions" {
     const allocator = testing.allocator;
 
     // Test various memory boundary conditions
@@ -370,7 +375,7 @@ test "fuzz: memory boundary conditions" {
         const args = [_][]const u8{test_string};
 
         // Should handle various sizes without boundary errors
-        const result = args_parser.parseArgs(FuzzTestArgs, &args, null) catch |err| switch (err) {
+        const result = args_parser.parseArgs(PropertyTestArgs, &args, null) catch |err| switch (err) {
             zcli.ZcliError.SystemOutOfMemory => continue, // Acceptable
             else => return err,
         };
@@ -381,8 +386,8 @@ test "fuzz: memory boundary conditions" {
     }
 }
 
-test "fuzz: concurrent parsing stress" {
-    // Test that parsing is thread-safe by running concurrent fuzz tests
+test "property: concurrent parsing stress" {
+    // Test that parsing is thread-safe by running concurrent randomized parses
     const allocator = testing.allocator;
 
     // Run multiple parsing operations "concurrently" (simulated)
@@ -396,7 +401,7 @@ test "fuzz: concurrent parsing stress" {
             defer allocator.free(test_string);
 
             const args = [_][]const u8{test_string};
-            _ = args_parser.parseArgs(FuzzTestArgs, &args, null) catch {};
+            _ = args_parser.parseArgs(PropertyTestArgs, &args, null) catch {};
         }
     }
 }
@@ -405,7 +410,7 @@ test "fuzz: concurrent parsing stress" {
 // Regression Testing for Known Issues
 // ============================================================================
 
-test "fuzz: regression tests for past vulnerabilities" {
+test "property: regression tests for past vulnerabilities" {
     // Test specific inputs that might have caused issues in the past
     const regression_inputs = [_][]const u8{
         "A" ** 1000, // Large buffer
@@ -423,7 +428,7 @@ test "fuzz: regression tests for past vulnerabilities" {
         const args = [_][]const u8{input};
 
         // Should not crash or behave unexpectedly
-        const result = args_parser.parseArgs(FuzzTestArgs, &args, null) catch |err| switch (err) {
+        const result = args_parser.parseArgs(PropertyTestArgs, &args, null) catch |err| switch (err) {
             zcli.ZcliError.SystemOutOfMemory => continue, // Acceptable
             else => {
                 std.log.warn("Regression test failed for input: {any}, error: {}", .{ input, err });
