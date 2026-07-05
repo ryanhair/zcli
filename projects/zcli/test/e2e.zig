@@ -81,6 +81,12 @@ fn run(cwd: std.Io.Dir, argv: []const []const u8) !RunResult {
 }
 
 fn fileExists(dir: std.Io.Dir, path: []const u8) bool {
+    // Windows rejects these characters in a path at the syscall layer with
+    // OBJECT_NAME_INVALID, which Zig surfaces as an unrecoverable panic rather
+    // than a catchable error. A name containing one can't exist, so treat it as
+    // absent instead of handing it to access(). (POSIX allows them, e.g. the
+    // `bad"name` project-name rejection test, where access just reports ENOENT.)
+    if (builtin.os.tag == .windows and std.mem.indexOfAny(u8, path, "<>\"|?*") != null) return false;
     dir.access(io, path, .{}) catch return false;
     return true;
 }
@@ -621,6 +627,10 @@ fn pointDependencyAtLocalTree(proj: std.Io.Dir, proj_abs: []const u8) !void {
 
     // from/to are absolute, so cwd/environ are unused.
     const rel = try std.fs.path.relative(a, "", null, proj_abs, repo_root);
+    // build.zig.zon paths use forward slashes on every platform. On Windows the
+    // relative path comes back with backslashes, which would be invalid escape
+    // sequences once embedded in the generated Zig string literal below.
+    std.mem.replaceScalar(u8, rel, '\\', '/');
 
     const orig = try readFile(proj, a, "build.zig.zon");
     const dep_start = std.mem.indexOf(u8, orig, ".dependencies") orelse return error.NoDependenciesBlock;
