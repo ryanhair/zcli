@@ -783,7 +783,28 @@ pub const InteractiveError = error{
 ///
 /// `io` is required for spawning the child and waiting on it; the byte-level I/O
 /// with the child uses raw posix.poll/read/write so it can poll with timeouts.
+///
+/// POSIX-only for now: driving a child through a real terminal here uses a PTY +
+/// termios + poll, which have no Windows equivalent in this file yet (a ConPTY
+/// backend is the planned follow-up). On Windows this returns
+/// error.UnsupportedPlatform — the comptime switch keeps the POSIX
+/// implementation from being analyzed there — so the interactive e2e tiers skip
+/// accordingly. The non-interactive tiers never touch this harness and run on
+/// Windows unchanged.
 pub fn runInteractive(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    command: []const []const u8,
+    script: InteractiveScript,
+    config: InteractiveConfig,
+) InteractiveError!InteractiveResult {
+    return switch (builtin.os.tag) {
+        .windows => InteractiveError.UnsupportedPlatform,
+        else => runInteractivePosix(allocator, io, command, script, config),
+    };
+}
+
+fn runInteractivePosix(
     allocator: std.mem.Allocator,
     io: std.Io,
     command: []const []const u8,
@@ -1223,59 +1244,65 @@ pub fn runInteractiveDualMode(
 // ============================================================================
 
 test "PtyManager initialization and cleanup" {
-    const allocator = std.testing.allocator;
+    // PtyManager is POSIX-only (PTY + termios + ioctl). The comptime block keeps
+    // its body from being analyzed on Windows, where those symbols don't exist.
+    if (builtin.os.tag != .windows) {
+        const allocator = std.testing.allocator;
 
-    var pty = PtyManager.init(allocator) catch |err| {
-        if (err == error.FileNotFound or err == error.AccessDenied) {
-            return;
-        }
-        return err;
-    };
-    defer pty.deinit();
+        var pty = PtyManager.init(allocator) catch |err| {
+            if (err == error.FileNotFound or err == error.AccessDenied) {
+                return;
+            }
+            return err;
+        };
+        defer pty.deinit();
 
-    try std.testing.expect(pty.master_fd != -1);
-    try std.testing.expect(pty.slave_fd != -1);
-    try std.testing.expect(pty.slave_name != null);
+        try std.testing.expect(pty.master_fd != -1);
+        try std.testing.expect(pty.slave_fd != -1);
+        try std.testing.expect(pty.slave_name != null);
+    }
 }
 
 test "PtyManager terminal settings" {
-    const allocator = std.testing.allocator;
+    if (builtin.os.tag != .windows) {
+        const allocator = std.testing.allocator;
 
-    if (builtin.os.tag == .windows) return;
+        // No controlling terminal → PTY operations may not work; skip.
+        if (!isFdTty(std.Io.File.stdin().handle)) return;
 
-    // No controlling terminal → PTY operations may not work; skip.
-    if (!isFdTty(std.Io.File.stdin().handle)) return;
+        var pty = PtyManager.init(allocator) catch {
+            return;
+        };
+        defer pty.deinit();
 
-    var pty = PtyManager.init(allocator) catch {
-        return;
-    };
-    defer pty.deinit();
-
-    try std.testing.expect(pty.master_fd != -1);
-    try std.testing.expect(pty.slave_fd != -1);
+        try std.testing.expect(pty.master_fd != -1);
+        try std.testing.expect(pty.slave_fd != -1);
+    }
 }
 
 test "PtyManager window size control" {
-    const allocator = std.testing.allocator;
+    if (builtin.os.tag != .windows) {
+        const allocator = std.testing.allocator;
 
-    var pty = PtyManager.init(allocator) catch |err| {
-        if (err == error.FileNotFound or err == error.AccessDenied) {
+        var pty = PtyManager.init(allocator) catch |err| {
+            if (err == error.FileNotFound or err == error.AccessDenied) {
+                return;
+            }
+            return err;
+        };
+        defer pty.deinit();
+
+        pty.setWindowSize(24, 80) catch {
             return;
-        }
-        return err;
-    };
-    defer pty.deinit();
+        };
 
-    pty.setWindowSize(24, 80) catch {
-        return;
-    };
+        const size = pty.getWindowSize() catch {
+            return;
+        };
 
-    const size = pty.getWindowSize() catch {
-        return;
-    };
-
-    try std.testing.expect(size.row == 24);
-    try std.testing.expect(size.col == 80);
+        try std.testing.expect(size.row == 24);
+        try std.testing.expect(size.col == 80);
+    }
 }
 
 test "runInteractive drives a command over pipes" {
@@ -1414,21 +1441,23 @@ test "InteractiveResult structure" {
 }
 
 test "createPtyFallback functionality" {
-    const allocator = std.testing.allocator;
+    if (builtin.os.tag != .windows) {
+        const allocator = std.testing.allocator;
 
-    const result = createPtyFallback(allocator) catch |err| {
-        std.log.err("PTY fallback creation failed: {any}", .{err});
-        return;
-    };
-    defer {
-        closeFd(result.master);
-        closeFd(result.slave);
-        allocator.free(result.slave_name);
+        const result = createPtyFallback(allocator) catch |err| {
+            std.log.err("PTY fallback creation failed: {any}", .{err});
+            return;
+        };
+        defer {
+            closeFd(result.master);
+            closeFd(result.slave);
+            allocator.free(result.slave_name);
+        }
+
+        try std.testing.expect(result.master != -1);
+        try std.testing.expect(result.slave != -1);
+        try std.testing.expectEqualStrings("/dev/pts/fake", result.slave_name);
     }
-
-    try std.testing.expect(result.master != -1);
-    try std.testing.expect(result.slave != -1);
-    try std.testing.expectEqualStrings("/dev/pts/fake", result.slave_name);
 }
 
 test "error handling in InteractiveError" {
@@ -1443,55 +1472,55 @@ test "error handling in InteractiveError" {
 }
 
 test "signal forwarding functionality" {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag != .windows) {
+        const allocator = std.testing.allocator;
 
-    const allocator = std.testing.allocator;
+        var pty_manager = PtyManager.init(allocator) catch {
+            return;
+        };
+        defer pty_manager.deinit();
 
-    var pty_manager = PtyManager.init(allocator) catch {
-        return;
-    };
-    defer pty_manager.deinit();
+        // Invalid PID is rejected.
+        const invalid_result = pty_manager.forwardSignal(-1, .SIGTERM);
+        try std.testing.expectError(error.InvalidPid, invalid_result);
 
-    // Invalid PID is rejected.
-    const invalid_result = pty_manager.forwardSignal(-1, .SIGTERM);
-    try std.testing.expectError(error.InvalidPid, invalid_result);
+        try pty_manager.setupSignalForwarding(1); // init always exists
 
-    try pty_manager.setupSignalForwarding(1); // init always exists
-
-    try pty_manager.setWindowSize(25, 80);
-    pty_manager.synchronizeWindowSize(1) catch |err| {
-        std.log.info("Window size sync failed as expected in test: {any}", .{err});
-    };
+        try pty_manager.setWindowSize(25, 80);
+        pty_manager.synchronizeWindowSize(1) catch |err| {
+            std.log.info("Window size sync failed as expected in test: {any}", .{err});
+        };
+    }
 }
 
 test "terminal capability detection" {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag != .windows) {
+        const allocator = std.testing.allocator;
 
-    const allocator = std.testing.allocator;
-
-    var pty_manager = PtyManager.init(allocator) catch {
-        var null_pty = PtyManager{
-            .allocator = allocator,
-            .master_fd = -1,
+        var pty_manager = PtyManager.init(allocator) catch {
+            var null_pty = PtyManager{
+                .allocator = allocator,
+                .master_fd = -1,
+            };
+            const caps = null_pty.detectTerminalCapabilities();
+            try std.testing.expect(!caps.has_pty);
+            try std.testing.expect(!caps.supports_window_size);
+            try std.testing.expect(!caps.supports_termios);
+            return;
         };
-        const caps = null_pty.detectTerminalCapabilities();
-        try std.testing.expect(!caps.has_pty);
-        try std.testing.expect(!caps.supports_window_size);
-        try std.testing.expect(!caps.supports_termios);
-        return;
-    };
-    defer pty_manager.deinit();
+        defer pty_manager.deinit();
 
-    const caps = pty_manager.detectTerminalCapabilities();
-    try std.testing.expect(caps.has_pty);
+        const caps = pty_manager.detectTerminalCapabilities();
+        try std.testing.expect(caps.has_pty);
 
-    _ = caps.supports_window_size;
-    _ = caps.supports_termios;
-    _ = caps.supports_raw_mode;
-    _ = caps.supports_echo_control;
-    _ = caps.supports_line_buffering;
+        _ = caps.supports_window_size;
+        _ = caps.supports_termios;
+        _ = caps.supports_raw_mode;
+        _ = caps.supports_echo_control;
+        _ = caps.supports_line_buffering;
 
-    pty_manager.autoAdjustWindowSize() catch |err| {
-        std.log.info("Auto window size adjustment failed as expected in test: {any}", .{err});
-    };
+        pty_manager.autoAdjustWindowSize() catch |err| {
+            std.log.info("Auto window size adjustment failed as expected in test: {any}", .{err});
+        };
+    }
 }

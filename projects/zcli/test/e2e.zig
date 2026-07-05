@@ -27,6 +27,11 @@ const fixtures_dir = build_options.fixtures_dir;
 // Harness
 // ============================================================================
 
+// The scaffolded demo binary path. `zig build` emits `demo.exe` on Windows and
+// `demo` elsewhere; the suffix is empty on POSIX, so this is a no-op there.
+const exe_ext = if (builtin.os.tag == .windows) ".exe" else "";
+const demo_bin = "./zig-out/bin/demo" ++ exe_ext;
+
 const RunResult = struct {
     stdout: []u8,
     stderr: []u8,
@@ -668,11 +673,11 @@ test "scaffolded project builds, runs, and round-trips add command" {
         defer r.deinit();
         try expectOk(r);
     }
-    try testing.expect(fileExists(proj, "zig-out/bin/demo"));
+    try testing.expect(fileExists(proj, "zig-out/bin/demo" ++ exe_ext));
 
     // The example command runs as generated.
     {
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "hello", "World" });
+        var r = try run(proj, &.{ demo_bin, "hello", "World" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "Hello, World!");
@@ -680,7 +685,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
 
     // Help lists the discovered command (the help plugin writes to stderr).
     {
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "--help" });
+        var r = try run(proj, &.{ demo_bin, "--help" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stderr, "hello");
@@ -698,7 +703,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
     }
     {
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "ping" });
+        var r = try run(proj, &.{ demo_bin, "ping" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement ping");
@@ -736,7 +741,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
     }
     {
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "ping", "-c", "3", "--loud", "--tags", "a", "--tags", "b" });
+        var r = try run(proj, &.{ demo_bin, "ping", "-c", "3", "--loud", "--tags", "a", "--tags", "b" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement ping");
@@ -805,7 +810,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
     {
         // required + optional + variadic positionals, short flag, enum, multiple option.
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "users", "create", "alice@example.com", "5", "x", "y", "-v", "--format", "json", "--ports", "8080", "--ports", "9090" });
+        var r = try run(proj, &.{ demo_bin, "users", "create", "alice@example.com", "5", "x", "y", "-v", "--format", "json", "--ports", "8080", "--ports", "9090" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement users create");
@@ -840,7 +845,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
     {
         // The removed --ports/--note flags are gone; the trimmed command still runs.
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "users", "create", "alice@example.com", "x", "y", "-v", "--format", "json" });
+        var r = try run(proj, &.{ demo_bin, "users", "create", "alice@example.com", "x", "y", "-v", "--format", "json" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement users create");
@@ -865,14 +870,14 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
     {
         // The group runs on its own (landing execute)...
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "server" });
+        var r = try run(proj, &.{ demo_bin, "server" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement server");
     }
     {
         // ...and dispatches to its subcommand.
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "server", "status" });
+        var r = try run(proj, &.{ demo_bin, "server", "status" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement server status");
@@ -912,7 +917,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
     }
     {
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "hello", "World" });
+        var r = try run(proj, &.{ demo_bin, "hello", "World" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "Hello, World!");
@@ -943,7 +948,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
     {
         // The moved command runs at its new path (its execute() travelled intact).
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "tools", "scratch" });
+        var r = try run(proj, &.{ demo_bin, "tools", "scratch" });
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement scratch");
@@ -963,7 +968,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
     {
         // The removed command no longer resolves.
-        var r = try run(proj, &.{ "./zig-out/bin/demo", "tools", "scratch" });
+        var r = try run(proj, &.{ demo_bin, "tools", "scratch" });
         defer r.deinit();
         try testing.expect(r.exit_code != 0);
     }
