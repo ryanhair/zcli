@@ -1368,12 +1368,18 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
     // the old byte-oriented one popped a single byte, leaving invalid UTF-8
     // ("Caf\xC3" + "e") in the generated file. See the wizard test above for the
     // settle-delay rationale.
+    //
+    // The é is typed and then erased, so the two are split by a settle delay: a
+    // real PTY streams every byte (the transient "Café" echo is always captured),
+    // but ConPTY emits screen-diff frames and would coalesce the type-then-erase
+    // into just the final "Cafe" — the pause lets it flush a frame while "Café"
+    // is still on screen, so the live-echo assertion below holds on both backends.
     const settle_ms = 400;
     var script = harness.InteractiveScript.init(testing.allocator);
     defer script.deinit();
     _ = script
         .expect("Command path:").delay(settle_ms).send("greet")
-        .expect("Description:").delay(settle_ms).sendRaw("Caf\xc3\xa9\x7fe\r")
+        .expect("Description:").delay(settle_ms).sendRaw("Caf\xc3\xa9").delay(settle_ms).sendRaw("\x7fe\r")
         .expect("Add a positional argument?").delay(settle_ms).sendRaw("n")
         .expect("Add an option?").delay(settle_ms).sendRaw("n")
         .expect("What next?").delay(settle_ms).sendRaw("\r");
