@@ -4,6 +4,7 @@ const option_utils = @import("../options/utils.zig");
 const plugin_types = @import("../plugin_types.zig");
 const zcli = @import("../zcli.zig");
 
+const console_utf8 = @import("../console_utf8.zig");
 const paths = @import("paths.zig");
 const builder = @import("builder.zig");
 const comptimeJoinPath = paths.comptimeJoinPath;
@@ -559,6 +560,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
 
         /// Convenient run method that handles process args, io, and environment
         pub fn run(self: *Self, allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
+            // Windows consoles default to a legacy code page, so without this a
+            // typed multibyte character arrives mangled and printed UTF-8 shows
+            // as mojibake. Switch to UTF-8 for the run and restore on the way
+            // out; a no-op on POSIX. `std.process.exit` skips deferred restores,
+            // so the reported-error path below restores explicitly.
+            const console = console_utf8.enable();
+            defer console.restore();
             self.execute(allocator, io, environ, if (args.len > 0) args[1..] else args) catch |err| {
                 // CLI-entry semantics: some failures already showed the user a
                 // message — parse/routing diagnostics, a plugin, the framework
@@ -567,7 +575,10 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 // Anything else is an unexpected failure; propagate it so the
                 // name and trace aid debugging. Library/test callers who want
                 // the error itself use execute() directly.
-                if (isReportedCliError(err)) std.process.exit(1);
+                if (isReportedCliError(err)) {
+                    console.restore();
+                    std.process.exit(1);
+                }
                 return err;
             };
         }
