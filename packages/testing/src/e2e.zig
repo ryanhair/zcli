@@ -822,10 +822,15 @@ const WindowsSession = struct {
     }
     fn sendSignal(self: *WindowsSession, sig: Signal) void {
         switch (sig) {
-            // ConPTY delivers a Ctrl+C typed into its input as a console
-            // interrupt to the child, the same as the POSIX SIGINT.
-            .SIGINT => self.inner.writeAll("\x03") catch {},
-            .SIGTERM, .SIGQUIT, .SIGHUP => self.inner.signalTerm(),
+            // Windows has no real SIGINT, and a host-injected Ctrl+C (`\x03`
+            // written into the ConPTY input) only becomes a CTRL_C_EVENT for a
+            // child that reads console input — a child blocked elsewhere (e.g.
+            // `zcli dev` waiting on its watcher) never consumes the byte and so
+            // never sees the interrupt. Every signal a test sends here means
+            // "stop this process now, I've captured what I need," so map them
+            // all to a forced terminate, which is deterministic regardless of
+            // what the child is doing.
+            .SIGINT, .SIGTERM, .SIGQUIT, .SIGHUP => self.inner.signalTerm(),
             else => {}, // SIGWINCH/SIGTSTP/... have no ConPTY analogue here
         }
     }
