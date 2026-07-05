@@ -12,20 +12,30 @@ pub const markdown_fmt = @import("markdown_fmt");
 pub const zprogress = @import("zprogress");
 pub const zinput = @import("zinput");
 
-/// Config-file deserialization shims for the zcli_config plugin. Plugin
-/// modules import only "zcli", so the plugin cannot depend on serde directly;
-/// these two functions are the entire surface it needs. serde itself is an
-/// internal dependency — re-exporting its whole API here would make a
-/// third-party crate part of zcli's public contract.
+/// Config-file parsing shims for the zcli_config plugin. Plugin modules import
+/// only "zcli", so the plugin cannot depend on serde directly; this is the
+/// entire surface it needs. serde itself is an internal dependency —
+/// re-exporting its whole API here would make a third-party crate part of
+/// zcli's public contract.
+///
+/// These parse into serde's *dynamic* trees rather than a target struct, so the
+/// plugin can walk a command path (nested tables/mappings) before applying
+/// values — matching how the JSON path uses `std.json.Value`.
 pub const config_parse = struct {
     const serde = @import("serde");
 
-    pub fn fromToml(comptime T: type, allocator: std.mem.Allocator, content: []const u8) !T {
-        return serde.toml.fromSlice(T, allocator, content);
+    /// Dynamic (untyped) TOML tree — a `StringArrayHashMap` of `TomlValue`.
+    pub const TomlTable = serde.toml.Table;
+    pub const TomlValue = serde.toml.Value;
+    /// Dynamic (untyped) YAML value; a document root is the `.mapping` variant.
+    pub const YamlValue = serde.yaml.Value;
+
+    pub fn parseToml(allocator: std.mem.Allocator, content: []const u8) !TomlTable {
+        return serde.toml.parse(allocator, content);
     }
 
-    pub fn fromYaml(comptime T: type, allocator: std.mem.Allocator, content: []const u8) !T {
-        return serde.yaml.fromSlice(T, allocator, content);
+    pub fn parseYaml(allocator: std.mem.Allocator, content: []const u8) !YamlValue {
+        return serde.yaml.parseValue(allocator, content);
     }
 };
 
