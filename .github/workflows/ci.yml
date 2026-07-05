@@ -184,7 +184,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -196,21 +196,27 @@ jobs:
 
       # Runs the built zcli binary against throwaway temp projects, including a
       # tier that scaffolds a project and builds it against the local tree, and
-      # an interactive tier that drives prompts through a real PTY. The PTY
-      # harness is POSIX-only, so this runs on both Linux and macOS to cover
-      # both kernels' PTY behavior (the harness has caught macOS-specific bugs:
-      # its 4 KiB PTY buffer, EIO-on-close semantics).
+      # an interactive tier that drives prompts through a real PTY.
       #
-      # The interactive tests degrade to a skip — not a failure — where PTY
-      # allocation is denied, so a green run could silently lose that coverage;
-      # grep the log to prove the PTY tier actually ran.
+      # The interactive PTY harness is POSIX-only (no Windows ConPTY backend
+      # yet), so Linux and macOS cover both kernels' PTY behavior (the harness
+      # has caught macOS-specific bugs: its 4 KiB PTY buffer, EIO-on-close
+      # semantics). On Windows the interactive tier self-skips
+      # (runInteractive → UnsupportedPlatform); the non-interactive and
+      # scaffold-and-build tiers still run, exercising path handling, the
+      # .exe suffix, and the `zig build` subprocess flow natively.
+      #
+      # On POSIX the interactive tests degrade to a skip — not a failure — where
+      # PTY allocation is denied, so a green run could silently lose that
+      # coverage; grep the log to prove the PTY tier actually ran. That guard is
+      # POSIX-only: on Windows the tier is intentionally absent, not skipped.
       - name: Run e2e tests
         working-directory: projects/zcli
         shell: bash
         run: |
           set -eo pipefail
           zig build e2e 2>&1 | tee e2e.log
-          if grep -q "runInteractive unavailable" e2e.log; then
+          if [ "$RUNNER_OS" != "Windows" ] && grep -q "runInteractive unavailable" e2e.log; then
             echo "ERROR: interactive PTY tests were skipped (PTY allocation unavailable)"
             exit 1
           fi
