@@ -1508,10 +1508,9 @@ test "dev outside a project fails with a clear message" {
 }
 
 test "dev builds, runs the app, restarts on change, survives a failed build, and recovers" {
-    // ConPTY drives interactive prompts on Windows now, but `zcli dev`'s native
-    // fs-watch loop isn't Windows-ready yet — keep this one POSIX-only.
-    if (builtin.os.tag == .windows) return;
-
+    // Runs on Windows too: nightwatch's Windows backend (ReadDirectoryChangesW)
+    // drives the watch, and the harness maps the closing SIGINT onto a ConPTY
+    // Ctrl+C that stops the loop.
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
