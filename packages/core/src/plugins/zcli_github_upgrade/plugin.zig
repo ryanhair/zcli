@@ -225,7 +225,11 @@ pub fn init(config: Config) type {
             // Detect platform
             const platform = try detectPlatform(allocator);
             defer allocator.free(platform);
-            const binary_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ context.app_name, platform });
+            // Windows release assets carry the .exe extension
+            // (e.g. zcli-x86_64-windows.exe). The download URL, checksum
+            // lookup, smoke test, and install all key off this one name.
+            const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+            const binary_name = try std.fmt.allocPrint(allocator, "{s}-{s}{s}", .{ context.app_name, platform, exe_suffix });
             defer allocator.free(binary_name);
 
             // Resolve the executable's location up front: the download goes
@@ -475,9 +479,10 @@ fn detectPlatform(allocator: std.mem.Allocator) ![]const u8 {
     const os = switch (builtin.os.tag) {
         .linux => "linux",
         .macos => "macos",
+        .windows => "windows",
         else => {
             std.debug.print("Error: Unsupported operating system: {s}\n", .{@tagName(builtin.os.tag)});
-            std.debug.print("Supported platforms: linux, macos\n", .{});
+            std.debug.print("Supported platforms: linux, macos, windows\n", .{});
             return error.UnsupportedPlatform;
         },
     };
@@ -674,45 +679,67 @@ fn testBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, binary_
     if (term != .exited) return error.NewBinaryFailedToRun;
 }
 
-/// Atomically replace `target_path` (an absolute path, or a path within `dir`)
-/// with the binary at `new_binary_path` (within `dir`), keeping the old binary
-/// safe at every step:
-/// 1. Back up the current target to `{target}.backup` (best-effort).
-/// 2. Copy the new binary to `{target}.new`, mark it executable.
-/// 3. Atomically rename `{target}.new` over the target (atomic on Unix when on
-///    the same filesystem — a crash mid-swap leaves the original intact).
-/// 4. Remove the backup on success.
+/// Replace `target_path` (an absolute path, or a path within `dir`) with the
+/// binary at `new_binary_path` (within `dir`), keeping the old binary safe at
+/// every step. The strategy differs by platform because Windows will not let
+/// you overwrite the image of a *running* executable — only rename it aside:
+///
+/// Common prologue: copy the new binary to `{target}.new` and (on Unix) mark it
+/// executable, so a failure before the swap never touches the live binary.
+///
+/// Unix: back up the target to `{target}.backup` (best-effort), then a single
+/// atomic rename of `{target}.new` over the target does the swap (atomic on the
+/// same filesystem — a crash mid-swap leaves the original binary intact), then
+/// remove the backup.
+///
+/// Windows: the running .exe can't be overwritten or deleted, but it CAN be
+/// renamed. So rename the target to `{target}.backup` (moving the live image
+/// out of the way), then rename `{target}.new` into its place. The backup is
+/// the still-mapped old image — the OS won't let us delete it until this
+/// process exits, so cleanup is best-effort and the next upgrade's rename
+/// simply replaces it.
 ///
 /// Takes the directory and paths as parameters so the swap can be exercised
 /// against temp files instead of the live executable.
 fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, new_binary_path: []const u8, target_path: []const u8) !void {
-    // Step 1+2: Back up the current binary (best-effort — nice-to-have).
     const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{target_path});
     defer allocator.free(backup_path);
-    dir.copyFile(target_path, dir, backup_path, io, .{}) catch |err| {
-        std.debug.print("Warning: Failed to create backup: {}\n", .{err});
-    };
-
-    // Step 3: Copy the new binary alongside the target.
     const temp_path = try std.fmt.allocPrint(allocator, "{s}.new", .{target_path});
     defer allocator.free(temp_path);
+
+    // Prologue: stage the new binary alongside the target, executable (Unix).
     try dir.copyFile(new_binary_path, dir, temp_path, io, .{});
     errdefer dir.deleteFile(io, temp_path) catch {};
-
-    // Step 4: Make it executable (Unix only - Windows uses .exe extension).
     if (builtin.os.tag != .windows) {
         const temp_file = try dir.openFile(io, temp_path, .{});
         defer temp_file.close(io);
         try temp_file.setPermissions(io, .executable_file);
     }
 
-    // Step 5: Atomically swap the new binary over the old one.
-    try dir.rename(temp_path, dir, target_path, io);
+    if (builtin.os.tag == .windows) {
+        // Move the live image aside (allowed even while running), then move the
+        // new binary into place. rename() replaces any unlocked stale backup.
+        try dir.rename(target_path, dir, backup_path, io);
+        errdefer dir.rename(backup_path, dir, target_path, io) catch {};
+        try dir.rename(temp_path, dir, target_path, io);
 
-    // Step 6: Clean up the backup on success (kept on error for recovery).
-    dir.deleteFile(io, backup_path) catch |err| {
-        std.debug.print("Note: Backup kept at {s} (cleanup error: {})\n", .{ backup_path, err });
-    };
+        // The old image stays mapped until this process exits, so it can't be
+        // deleted now — leave it; the next upgrade's rename overwrites it.
+        dir.deleteFile(io, backup_path) catch {};
+    } else {
+        // Back up the current binary (best-effort — nice-to-have).
+        dir.copyFile(target_path, dir, backup_path, io, .{}) catch |err| {
+            std.debug.print("Warning: Failed to create backup: {}\n", .{err});
+        };
+
+        // Atomically swap the new binary over the old one.
+        try dir.rename(temp_path, dir, target_path, io);
+
+        // Clean up the backup on success (kept on error for recovery).
+        dir.deleteFile(io, backup_path) catch |err| {
+            std.debug.print("Note: Backup kept at {s} (cleanup error: {})\n", .{ backup_path, err });
+        };
+    }
 }
 
 // ============================================================================
@@ -885,14 +912,6 @@ test "isNewerVersion - edge cases" {
 test "detectPlatform - allocator handling" {
     const allocator = std.testing.allocator;
 
-    // Upgrade is not supported on Windows yet, even though releases ship
-    // Windows binaries — detectPlatform is the guard that tells the user so.
-    // Pin that behavior here; the actual support gap is tracked in issue #114.
-    if (builtin.os.tag == .windows) {
-        try std.testing.expectError(error.UnsupportedPlatform, detectPlatform(allocator));
-        return;
-    }
-
     // Test that detectPlatform properly uses the allocator
     const platform = try detectPlatform(allocator);
     defer allocator.free(platform);
@@ -903,12 +922,16 @@ test "detectPlatform - allocator handling" {
     // Platform should contain a hyphen (arch-os format)
     try std.testing.expect(std.mem.indexOf(u8, platform, "-") != null);
 
-    // Platform should be one of the expected formats
+    // Platform should be one of the expected formats. Windows is included now
+    // that self-upgrade supports it (issue #114) — releases ship
+    // zcli-{x86_64,aarch64}-windows.exe and detectPlatform maps to them.
     const valid_platforms = [_][]const u8{
         "x86_64-linux",
         "aarch64-linux",
         "x86_64-macos",
         "aarch64-macos",
+        "x86_64-windows",
+        "aarch64-windows",
     };
 
     var found = false;
@@ -1124,6 +1147,28 @@ test "replaceBinaryAt - swaps in the new binary and removes the backup" {
     const src = try tmp.dir.readFileAlloc(io, "downloaded", a, .limited(1024));
     defer a.free(src);
     try std.testing.expectEqualStrings("NEW-BINARY-CONTENT", src);
+}
+
+test "replaceBinaryAt - a stale backup from a prior upgrade does not block the swap" {
+    // A previous upgrade may have left a {target}.backup behind (on Windows the
+    // old image can't be deleted while the replaced process is still running).
+    // The next upgrade must still succeed: rename() replaces the unlocked stale
+    // backup. This exercises the Windows rename-aside branch on the Windows CI
+    // runner (test-core) as well as the Unix path elsewhere.
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "current", .data = "OLD-BINARY" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "current.backup", .data = "STALE-BACKUP" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "downloaded", .data = "NEW-BINARY-CONTENT" });
+
+    try replaceBinaryAt(a, io, tmp.dir, "downloaded", "current");
+
+    const got = try tmp.dir.readFileAlloc(io, "current", a, .limited(1024));
+    defer a.free(got);
+    try std.testing.expectEqualStrings("NEW-BINARY-CONTENT", got);
 }
 
 test "replaceBinaryAt - a missing new binary leaves the target untouched" {
