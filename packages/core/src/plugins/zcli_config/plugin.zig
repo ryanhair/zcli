@@ -81,21 +81,26 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
 }
 
 /// Called by the registry after CLI option parsing.
-/// Applies config values scoped to the current command, plus global values.
-/// Config structure:
+/// Applies config values scoped to the current command, plus global values,
+/// identically for JSON, TOML, and YAML. Top-level keys are global (apply to
+/// every command); keys nested under the command path are command-scoped and
+/// take precedence over global. In JSON that looks like:
 ///   { "output": "json",            // global — applies to all commands
 ///     "list": { "all": true } }    // scoped — applies only to "list" command
+/// and the equivalent TOML `[list]` table / YAML `list:` mapping.
+/// Precedence: CLI flag > command-scoped config > global config > struct default.
 pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType) void {
     const data = &context.plugins.zcli_config;
     const content = data.raw_content orelse return;
     const format = data.format orelse return;
 
-    // Build command name from path (e.g., ["sprint", "create"] -> "sprint create")
+    // Command path segments, e.g. ["sprint", "create"]; used to locate the
+    // command-scoped section within the config tree.
     const cmd_path = context.command_path;
 
     switch (format) {
         .json => applyFromJsonScoped(OptionsType, options, content, context.allocator, data, cmd_path),
-        .toml => applyFromTomlScoped(OptionsType, options, content, context.allocator, cmd_path),
+        .toml => applyFromTomlScoped(OptionsType, options, content, context.allocator, data, cmd_path),
         .yaml => applyFromYamlScoped(OptionsType, options, content, context.allocator, data, cmd_path),
     }
 }
@@ -109,11 +114,13 @@ fn applyFromJsonScoped(comptime OptionsType: type, options: *OptionsType, conten
     if (parsed.value != .object) return;
     const obj = parsed.value.object;
 
-    // Apply global values (top-level keys that match option fields)
-    applyJsonObject(OptionsType, options, obj);
-
-    // Apply command-scoped values by traversing nested objects matching command path
-    // e.g., {"sprint": {"create": {"verbose": true}}} for path ["sprint", "create"]
+    // Precedence: command-scoped > global > struct default (CLI already wins,
+    // since a field set on the CLI no longer equals its default). Apply the more
+    // specific command scope FIRST so the global pass can only fill fields it
+    // left untouched.
+    //
+    // Command scope: traverse nested objects matching the command path,
+    // e.g. {"sprint": {"create": {"verbose": true}}} for path ["sprint", "create"].
     if (cmd_path.len > 0) {
         var current = obj;
         for (cmd_path) |segment| {
@@ -126,6 +133,9 @@ fn applyFromJsonScoped(comptime OptionsType: type, options: *OptionsType, conten
             applyJsonObject(OptionsType, options, current);
         }
     }
+
+    // Global values (top-level keys that match option fields).
+    applyJsonObject(OptionsType, options, obj);
 }
 
 fn applyJsonObject(comptime OptionsType: type, options: *OptionsType, obj: std.json.ObjectMap) void {
@@ -161,40 +171,98 @@ fn applyJsonObject(comptime OptionsType: type, options: *OptionsType, obj: std.j
     }
 }
 
-fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, _: []const []const u8) void {
-    // Parse TOML directly into the options struct type (via zcli.config_parse)
-    const parsed = zcli.config_parse.fromToml(OptionsType, allocator, content) catch return;
-    applyNonDefaults(OptionsType, options, parsed);
+fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, data: *ContextData, cmd_path: []const []const u8) void {
+    // Parse into a dynamic table tree and keep it alive via an arena — applied
+    // string values point into it, mirroring the JSON path.
+    const arena = allocator.create(std.heap.ArenaAllocator) catch return;
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    const table = zcli.config_parse.parseToml(arena.allocator(), content) catch {
+        arena.deinit();
+        allocator.destroy(arena);
+        return;
+    };
+    data._parse_arena = arena;
+
+    // Command scope first, then global — see applyFromJsonScoped for the ordering
+    // rationale. e.g. [sprint.create] \n verbose = true  for path ["sprint", "create"].
+    if (cmd_path.len > 0) {
+        var current = table;
+        for (cmd_path) |segment| {
+            if (current.get(segment)) |val| {
+                if (val == .table) {
+                    current = val.table;
+                } else break;
+            } else break;
+        } else {
+            applyDynamicMap(OptionsType, options, current);
+        }
+    }
+
+    // Global values (top-level keys that match option fields).
+    applyDynamicMap(OptionsType, options, table);
 }
 
-fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, _: *ContextData, _: []const []const u8) void {
-    // Parse YAML directly into the options struct type (via zcli.config_parse)
-    const parsed = zcli.config_parse.fromYaml(OptionsType, allocator, content) catch return;
-    applyNonDefaults(OptionsType, options, parsed);
+fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, allocator: std.mem.Allocator, data: *ContextData, cmd_path: []const []const u8) void {
+    const arena = allocator.create(std.heap.ArenaAllocator) catch return;
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    const root = zcli.config_parse.parseYaml(arena.allocator(), content) catch {
+        arena.deinit();
+        allocator.destroy(arena);
+        return;
+    };
+    data._parse_arena = arena;
+
+    if (root != .mapping) return;
+    const map = root.mapping;
+
+    // Command scope first, then global — see applyFromJsonScoped for the ordering
+    // rationale. e.g. sprint: \n create: \n verbose: true  for path ["sprint", "create"].
+    if (cmd_path.len > 0) {
+        var current = map;
+        for (cmd_path) |segment| {
+            if (current.get(segment)) |val| {
+                if (val == .mapping) {
+                    current = val.mapping;
+                } else break;
+            } else break;
+        } else {
+            applyDynamicMap(OptionsType, options, current);
+        }
+    }
+
+    // Global values (top-level keys that match option fields).
+    applyDynamicMap(OptionsType, options, map);
 }
 
-fn yamlParseBool(raw: []const u8) ?bool {
-    if (std.mem.eql(u8, raw, "true") or std.mem.eql(u8, raw, "True") or std.mem.eql(u8, raw, "yes") or std.mem.eql(u8, raw, "on")) return true;
-    if (std.mem.eql(u8, raw, "false") or std.mem.eql(u8, raw, "False") or std.mem.eql(u8, raw, "no") or std.mem.eql(u8, raw, "off")) return false;
-    return null;
-}
-
-/// Copy fields from source to dest where source differs from compile-time defaults.
-/// This ensures config values only override struct defaults, not CLI-provided values.
-fn applyNonDefaults(comptime T: type, dest: *T, source: T) void {
-    const info = @typeInfo(T);
+/// Apply a serde dynamic map (a TOML `Table` or YAML `Mapping`) onto option
+/// fields. Both value unions name their scalar tags identically
+/// (`boolean`/`integer`/`string`), so one function serves both formats. Only
+/// fields still at their struct default are touched, so CLI-provided values win.
+fn applyDynamicMap(comptime OptionsType: type, options: *OptionsType, map: anytype) void {
+    const info = @typeInfo(OptionsType);
     if (info != .@"struct") return;
 
     inline for (info.@"struct".fields) |field| {
-        if (field.default_value_ptr) |default_ptr| {
-            const default: *const field.type = @ptrCast(@alignCast(default_ptr));
-            const dest_val = @field(dest, field.name);
-            // Only apply config if dest still has the struct default
-            // (meaning CLI didn't set it)
-            if (std.meta.eql(dest_val, default.*)) {
-                const src_val = @field(source, field.name);
-                if (!std.meta.eql(src_val, default.*)) {
-                    @field(dest, field.name) = src_val;
+        if (map.get(field.name)) |value| {
+            const should_apply = if (field.default_value_ptr) |default_ptr| blk: {
+                const default: *const field.type = @ptrCast(@alignCast(default_ptr));
+                const dest_val = @field(options, field.name);
+                break :blk std.meta.eql(dest_val, default.*);
+            } else true;
+
+            if (should_apply) {
+                if (field.type == bool) {
+                    if (value == .boolean) @field(options, field.name) = value.boolean;
+                } else if (field.type == []const u8) {
+                    if (value == .string) @field(options, field.name) = value.string;
+                } else if (field.type == u32 or field.type == i32 or field.type == u64 or field.type == i64) {
+                    if (value == .integer) @field(options, field.name) = @intCast(value.integer);
+                } else if (field.type == ?[]const u8) {
+                    if (value == .string) @field(options, field.name) = value.string;
+                } else if (field.type == ?u32 or field.type == ?i32 or field.type == ?u64 or field.type == ?i64) {
+                    if (value == .integer) @field(options, field.name) = @intCast(value.integer);
+                } else if (field.type == ?bool) {
+                    if (value == .boolean) @field(options, field.name) = value.boolean;
                 }
             }
         }
@@ -278,14 +346,18 @@ test "detectFormat" {
 }
 
 test "findConfigFile: returns null when no config exists" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
     var allocated = false;
-    const result = findConfigFile(std.testing.allocator, "nonexistent_xyz", null, &allocated);
+    const result = findConfigFile(std.testing.allocator, std.testing.io, &environ, "nonexistent_xyz", null, &allocated);
     try std.testing.expect(result == null);
 }
 
 test "findConfigFile: custom path returns null for missing file" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
     var allocated = false;
-    const result = findConfigFile(std.testing.allocator, "test", "/nonexistent/path.json", &allocated);
+    const result = findConfigFile(std.testing.allocator, std.testing.io, &environ, "test", "/nonexistent/path.json", &allocated);
     try std.testing.expect(result == null);
 }
 
@@ -299,42 +371,6 @@ test "ContextData defaults" {
 test "deinitContextData: safe on empty data" {
     var data = ContextData{};
     deinitContextData(&data, std.testing.allocator);
-}
-
-test "applyNonDefaults: applies config values" {
-    const Opts = struct {
-        verbose: bool = false,
-        count: u32 = 1,
-        name: []const u8 = "default",
-    };
-
-    var dest = Opts{};
-    const source = Opts{ .verbose = true, .count = 5, .name = "default" };
-
-    applyNonDefaults(Opts, &dest, source);
-
-    try std.testing.expect(dest.verbose == true); // changed from default
-    try std.testing.expectEqual(@as(u32, 5), dest.count); // changed from default
-    try std.testing.expectEqualStrings("default", dest.name); // same as default, not changed
-}
-
-test "applyNonDefaults: preserves CLI values" {
-    const Opts = struct {
-        verbose: bool = false,
-        count: u32 = 1,
-    };
-
-    // Simulate: CLI set verbose=true, config has count=10
-    var dest = Opts{ .verbose = true, .count = 1 };
-    const source = Opts{ .verbose = false, .count = 10 };
-
-    applyNonDefaults(Opts, &dest, source);
-
-    // verbose was changed from default by CLI — config should NOT override it
-    // But our logic checks if dest == default, and dest.verbose = true != default false
-    // So config won't touch it. Correct!
-    try std.testing.expect(dest.verbose == true);
-    try std.testing.expectEqual(@as(u32, 10), dest.count); // config applied
 }
 
 test "applyJsonObject: parses and applies" {
@@ -504,4 +540,159 @@ test "applyFromJsonScoped: unrelated command section ignored" {
         arena.deinit();
         allocator.destroy(arena);
     }
+}
+
+// --- TOML command scoping (mirrors the JSON cases above) ---
+
+test "applyFromTomlScoped: applies global values" {
+    const Opts = struct {
+        output: []const u8 = "text",
+        all: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    const content = "output = \"json\"\nall = true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{};
+
+    applyFromTomlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    try std.testing.expectEqualStrings("json", opts.output);
+    try std.testing.expect(opts.all == true);
+}
+
+test "applyFromTomlScoped: applies command-scoped values and override" {
+    const Opts = struct {
+        output: []const u8 = "text",
+        all: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    // Global output=json; the [list] table overrides it and sets all=true.
+    const content = "output = \"json\"\n[list]\noutput = \"table\"\nall = true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{"list"};
+
+    applyFromTomlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    // Command-scoped value wins over global (applied second).
+    try std.testing.expectEqualStrings("table", opts.output);
+    try std.testing.expect(opts.all == true);
+}
+
+test "applyFromTomlScoped: nested command path" {
+    const Opts = struct {
+        verbose: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    // Nested table: [sprint.create] verbose = true
+    const content = "[sprint.create]\nverbose = true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{ "sprint", "create" };
+
+    applyFromTomlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    try std.testing.expect(opts.verbose == true);
+}
+
+test "applyFromTomlScoped: unrelated command section ignored" {
+    const Opts = struct {
+        all: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    // [delete] should not apply to the "list" command.
+    const content = "[delete]\nall = true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{"list"};
+
+    applyFromTomlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    try std.testing.expect(opts.all == false);
+}
+
+// --- YAML command scoping (mirrors the JSON cases above) ---
+
+test "applyFromYamlScoped: applies global values" {
+    const Opts = struct {
+        output: []const u8 = "text",
+        all: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    const content = "output: json\nall: true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{};
+
+    applyFromYamlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    try std.testing.expectEqualStrings("json", opts.output);
+    try std.testing.expect(opts.all == true);
+}
+
+test "applyFromYamlScoped: applies command-scoped values and override" {
+    const Opts = struct {
+        output: []const u8 = "text",
+        all: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    // Global output=json; the "list" mapping overrides it and sets all=true.
+    const content = "output: json\nlist:\n  output: table\n  all: true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{"list"};
+
+    applyFromYamlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    try std.testing.expectEqualStrings("table", opts.output);
+    try std.testing.expect(opts.all == true);
+}
+
+test "applyFromYamlScoped: nested command path" {
+    const Opts = struct {
+        verbose: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    // Nested mapping: sprint: { create: { verbose: true } }
+    const content = "sprint:\n  create:\n    verbose: true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{ "sprint", "create" };
+
+    applyFromYamlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    try std.testing.expect(opts.verbose == true);
+}
+
+test "applyFromYamlScoped: unrelated command section ignored" {
+    const Opts = struct {
+        all: bool = false,
+    };
+
+    const allocator = std.testing.allocator;
+    // "delete" should not apply to the "list" command.
+    const content = "delete:\n  all: true\n";
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const cmd_path = [_][]const u8{"list"};
+
+    applyFromYamlScoped(Opts, &opts, content, allocator, &data, &cmd_path);
+
+    try std.testing.expect(opts.all == false);
 }
