@@ -1289,8 +1289,6 @@ test "a command that uses zcli_secrets is runCommand-testable without the keycha
 // ============================================================================
 
 test "interactive: add command drives the wizard and echoes typed input" {
-    if (builtin.os.tag == .windows) return;
-
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try makeProjectDirs(tmp.dir);
@@ -1353,6 +1351,11 @@ test "interactive: add command drives the wizard and echoes typed input" {
 }
 
 test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
+    // ConPTY delivers console input through the child's input codepage, which
+    // isn't UTF-8 by default, so a typed `é` round-trips as U+FFFD under the
+    // ConPTY harness. Making this pass needs zcli to set the console input
+    // codepage to UTF-8 on Windows — a product change, tracked separately from
+    // the harness. The ASCII prompt tests already cover the ConPTY path.
     if (builtin.os.tag == .windows) return;
 
     var tmp = testing.tmpDir(.{});
@@ -1406,8 +1409,6 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
 }
 
 test "interactive: init's plugin multi-select toggles an opt-in plugin" {
-    if (builtin.os.tag == .windows) return;
-
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1504,6 +1505,8 @@ test "dev outside a project fails with a clear message" {
 }
 
 test "dev builds, runs the app, restarts on change, survives a failed build, and recovers" {
+    // ConPTY drives interactive prompts on Windows now, but `zcli dev`'s native
+    // fs-watch loop isn't Windows-ready yet — keep this one POSIX-only.
     if (builtin.os.tag == .windows) return;
 
     var tmp = testing.tmpDir(.{});
