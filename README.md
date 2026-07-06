@@ -547,6 +547,15 @@ The `zcli` meta-CLI scaffolds new projects: `zcli init myproject`
 
 ---
 
+## Built with zcli
+
+- **[zcli](projects/zcli)** — the meta-CLI is itself a zcli app: `init`, `add`, `mv`, `rm`, `tree`, `dev`, `guide`, and `release` are files in its `commands/` directory, and it runs on the framework's own plugins (help, completions, "did you mean?", GitHub self-upgrade).
+- **[tasks](examples/showcase)** — the showcase task tracker from the demo above.
+
+Building something with zcli? Open a PR to add it here.
+
+---
+
 ## How does zcli compare?
 
 Zig already has good CLI libraries — the difference is the level they operate at.
