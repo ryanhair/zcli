@@ -186,9 +186,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 - `bool` and `?bool` are **flags** — they parse by presence and never take a
   value. Each auto-generates a `--no-<flag>` that sets it `false`, so a
   `bool = true` default can be turned off and `?bool` is a true three-state flag
-  (absent → `null`, `--flag` → `true`, `--no-flag` → `false`). `--no-<flag>` is
-  accepted but hidden from `--help`. A boolean may appear at most once; repeating
-  it (including `--flag` together with `--no-flag`) is an error.
+  (absent → `null`, `--flag` → `true`, `--no-flag` → `false`). A boolean may appear
+  at most once; repeating it (including `--flag` together with `--no-flag`) is an
+  error. `--help` lists the useful spelling: `--flag` for a default-`false` flag,
+  `--no-flag` for a default-`true` flag; the other is accepted but hidden.
 - Two compile-time guards keep the above coherent: a boolean field's name may not
   start with `no_` (it would collide with a `--no-` negation), and an optional
   field must default to `null` (that `null` is the "not passed" state; use a

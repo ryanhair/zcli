@@ -110,6 +110,9 @@ pub const FieldInfo = struct {
     // Metadata for help generation
     short: ?u8 = null,
     description: ?[]const u8 = null,
+    /// A boolean flag that defaults to `true`. Help renders its `--no-<name>`
+    /// negation (the useful spelling) instead of the redundant positive form.
+    default_true: bool = false,
 };
 
 /// Information about command module structure for plugin introspection

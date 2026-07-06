@@ -813,12 +813,18 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         if (@hasField(@TypeOf(field_meta), "description")) description = field_meta.description;
                     }
                 }
+                const default_true = comptime blk: {
+                    if (field.type != bool) break :blk false;
+                    if (field.default_value_ptr) |dp| break :blk @as(*const bool, @ptrCast(@alignCast(dp))).*;
+                    break :blk false;
+                };
                 try field_list.append(allocator, zcli.FieldInfo{
                     .name = field.name,
                     .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                     .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
                     .short = short,
                     .description = description,
+                    .default_true = default_true,
                 });
             }
             return field_list.toOwnedSlice(allocator);

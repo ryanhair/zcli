@@ -32,10 +32,12 @@ boolean flag an auto-generated `--no-<flag>` negation.**
 - Negation is **long-form only** (`--no-flag`); short flags have no negation.
   `--no-flag=value` is rejected like `--flag=value`. Negation is built from the
   option's *effective* name, so it respects a custom `meta.options.<field>.name`.
-- `--no-flag` is **accepted but hidden from `--help`** and from generated shell
-  completions. Help and completions iterate the declared struct fields; negation is
-  synthesized only in the parser and never materialized as a field, so it is
-  invisible by construction, not by a suppression flag.
+- Help shows a boolean by its **useful spelling**: a default-`false` flag lists
+  `--flag`, and a default-`true` flag lists `--no-flag` (long-form only — turning it
+  off is the only meaningful action, and re-asserting the default is not). The other
+  spelling is accepted but hidden. Generated shell completions currently list the
+  positive form only. Negation is synthesized in the parser and never materialized as
+  a struct field; help derives the default-`true` case from `FieldInfo.default_true`.
 - **A boolean may appear at most once.** Repeating it — `--flag --flag`,
   `--no-flag --no-flag`, or the contradictory `--flag --no-flag` (which share the
   field's occurrence count) — is `OptionDuplicate`. There is no meaningful reason to

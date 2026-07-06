@@ -50,7 +50,7 @@ pub const meta = .{
     .options = .{
         .@"dry-run" = .{ .description = "Preview changes without executing" },
         .@"skip-tests" = .{ .description = "Skip running tests before release" },
-        .push = .{ .description = "Push commit and tag to remote (on by default; pass --no-push to create the tag but not push)" },
+        .push = .{ .description = "Create the tag but don't push to remote" },
         .@"skip-checks" = .{ .description = "Skip safety checks (clean working tree, branch verification)" },
         .sign = .{ .description = "Sign the tag with GPG" },
         .message = .{ .description = "Release message (if not provided, editor will open)" },
@@ -68,7 +68,7 @@ pub const Options = struct {
     @"dry-run": bool = false,
     /// Skip running tests before release
     @"skip-tests": bool = false,
-    /// Push commit and tag to remote (on by default; --no-push creates the tag but skips pushing)
+    /// Whether to push the commit and tag (default true; help surfaces `--no-push`)
     push: bool = true,
     /// Skip safety checks (clean working tree, branch verification)
     @"skip-checks": bool = false,
