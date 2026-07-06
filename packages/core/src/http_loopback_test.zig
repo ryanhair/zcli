@@ -1,5 +1,5 @@
 //! Real-socket loopback integration tests for `http.Client`, isolated into
-//! their own test binary.
+//! their own test binary (built ReleaseSafe — see below and build.zig).
 //!
 //! These drive the full request path against a localhost HTTP server on an
 //! ephemeral port — the only way to exercise `request()` end to end, including
@@ -13,11 +13,14 @@
 //!      and the OS returns STATUS_CONNECTION_REFUSED (NTSTATUS 0xc0000236). Zig
 //!      0.16's std has no switch arm mapping that status in `netConnectIpWindows`
 //!      (Threaded.zig), so a perfectly normal connection-refused falls through
-//!      to `windows.unexpectedStatus()`, which unconditionally dumps a stack
-//!      trace to stderr. The winning connection still succeeds, so the tests
-//!      pass — but the trace is pure noise. Disabling `unexpected_error_tracing`
-//!      for this one binary silences that false positive without hiding genuine
-//!      unexpected-status diagnostics anywhere else.
+//!      to `windows.unexpectedStatus()`, which dumps a stack trace to stderr
+//!      whenever `std.options.unexpected_error_tracing` is on. The winning
+//!      connection still succeeds, so the tests pass — but the trace is pure
+//!      noise. That option's default is `mode == .Debug`, and a test binary's
+//!      root is the injected test runner (so a `std_options` override in this
+//!      file would be ignored). build.zig therefore compiles this one binary
+//!      ReleaseSafe, which flips the default off while keeping safety checks —
+//!      silencing the false positive without hiding it in any other binary.
 
 const std = @import("std");
 const testing = std.testing;
@@ -27,11 +30,6 @@ const Client = http.Client;
 const Status = http.Status;
 const Error = http.Error;
 const Header = http.Header;
-
-/// Silence std's stack-trace dump for `STATUS_CONNECTION_REFUSED`, which Zig
-/// 0.16 mislabels as an "unexpected" NTSTATUS on the Windows loopback connect
-/// path. See the module doc comment above. Scoped to this test binary only.
-pub const std_options: std.Options = .{ .unexpected_error_tracing = false };
 
 /// Accept exactly one connection and reply with `body`, then close. Runs
 /// concurrently with the client under test.

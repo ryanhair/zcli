@@ -66,8 +66,23 @@ pub fn build(b: *std.Build) void {
     const core_test_files = [_][]const u8{
         "src/zcli.zig", // Main entry point - imports args, options, errors, execution, etc.
         "src/build_utils.zig", // Standalone utility (has its own tests)
-        "src/http_loopback_test.zig", // Real-socket http.Client tests, isolated to one binary
     };
+
+    // Real-socket http.Client tests live in their own binary, built ReleaseSafe.
+    // Two reasons: (1) isolated here, the loopback round-trips run once instead
+    // of riding into every zcli-importing test binary; (2) on Windows the
+    // loopback connect intermittently loses a concurrent dial and the OS returns
+    // STATUS_CONNECTION_REFUSED, which std 0.16 fails to map in
+    // netConnectIpWindows and dumps as a noisy "unexpected NTSTATUS" stack trace.
+    // That tracing is gated on `std.options.unexpected_error_tracing`, whose
+    // default is `mode == .Debug` — and a test binary's root is the test runner
+    // (so a `std_options` override in the test file is ignored). Building this
+    // one binary ReleaseSafe flips the default off while keeping safety checks,
+    // silencing the false positive without hiding it in any other binary.
+    {
+        const run_tests = addTestRun(b, "test-", "src/http_loopback_test.zig", target, .ReleaseSafe, &dep_imports);
+        test_step.dependOn(&run_tests.step);
+    }
 
     // NOTE: A previous `plugin_test_files` list referenced five src/plugin_*_test.zig
     // files that were dropped in the monorepo refactor (commit 0aa79f7) and never
