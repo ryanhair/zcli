@@ -463,8 +463,12 @@ Change structure with the scaffolder, not by hand:
           <div class="transcript">
 <span class="t-you">you:</span> add a "users create" command that takes a name and an --admin flag
 <span class="t-agent">agent:</span> <span class="t-cmd">zcli tree --show-options</span>
-<span class="t-agent">agent:</span> <span class="t-cmd">zcli add command users/create --arg '{"name":"name","type":"[]const u8"}' --option '{"name":"admin","type":"bool","short":"a"}'</span>
+<span class="t-agent">agent:</span> <span class="t-cmd">zcli add command users/create --description "Create a user"</span>
 <span class="t-ok">  ✔</span> Created src/commands/users/create.zig
+<span class="t-agent">agent:</span> <span class="t-cmd">zcli add arg users/create name --type []const u8</span>
+<span class="t-ok">  ✔</span> Added argument 'name' to src/commands/users/create.zig
+<span class="t-agent">agent:</span> <span class="t-cmd">zcli add option users/create admin --type bool --default false --short a</span>
+<span class="t-ok">  ✔</span> Added option --admin to src/commands/users/create.zig
 <span class="t-agent">agent:</span> <span class="t-mut">writes execute() body freeform</span>
 <span class="t-agent">agent:</span> <span class="t-cmd">zig build test</span>
 <span class="t-ok">  ✓</span> All tests passed

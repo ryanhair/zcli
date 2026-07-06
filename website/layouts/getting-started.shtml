@@ -335,13 +335,12 @@ HELLO, Alice!<span class="cursor"></span></pre>
     </div>
 
     <div class="alt" style="margin-top:30px;">
-      <h4>Scaffold args &amp; options in one shot</h4>
-      <p>Skip the stub editing — describe the arguments and options inline and zcli generates the full typed structs for you.</p>
+      <h4>Add args &amp; options to a command</h4>
+      <p>Args and options are their own scaffolders — <code>zcli add arg</code> and <code>zcli add option</code> splice a typed field into an existing command's struct in place, so you don't hand-edit the boilerplate.</p>
       <div class="cmdbox">
-        <pre><span class="pr">$</span> zcli add command deploy \
-    <span class="fl">--arg</span> '{"name":"service","type":"[]const u8"}' \
-    <span class="fl">--option</span> '{"name":"env","type":"[]const u8","short":"e","default":"production"}'</pre>
-        <button onclick="cp(this,'zcli add command deploy --arg \'{&quot;name&quot;:&quot;service&quot;,&quot;type&quot;:&quot;[]const u8&quot;}\' --option \'{&quot;name&quot;:&quot;env&quot;,&quot;type&quot;:&quot;[]const u8&quot;,&quot;short&quot;:&quot;e&quot;,&quot;default&quot;:&quot;production&quot;}\'')">copy</button>
+        <pre><span class="pr">$</span> zcli add arg deploy service <span class="fl">--type</span> []const u8
+<span class="pr">$</span> zcli add option deploy env <span class="fl">--type</span> []const u8 <span class="fl">--short</span> e <span class="fl">--nullable</span></pre>
+        <button onclick="cp(this,'zcli add arg deploy service --type []const u8\nzcli add option deploy env --type []const u8 --short e --nullable')">copy</button>
       </div>
     </div>
   </article>
