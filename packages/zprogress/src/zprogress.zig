@@ -7,14 +7,14 @@
 //! ```zig
 //! const zprogress = @import("zprogress");
 //!
-//! // Spinner for indeterminate progress
-//! var spinner = zprogress.spinner(.{});
+//! // Spinner for indeterminate progress — animates itself until finished
+//! var spinner = zprogress.spinner(io, .{});
 //! spinner.start("Loading...");
 //! // ... do work ...
 //! spinner.succeed("Done!");
 //!
 //! // Progress bar for known totals
-//! var bar = zprogress.progressBar(.{ .total = 100 });
+//! var bar = zprogress.progressBar(io, .{ .total = 100 });
 //! for (0..100) |i| {
 //!     bar.update(i + 1, null);
 //! }
@@ -105,7 +105,9 @@ pub fn Spinner(comptime WriterType: type) type {
         frame_index: usize,
         is_tty: bool,
         active: bool,
-        last_update: i64,
+        /// Guards message/frame_index/active and all writes while animating.
+        mutex: std.Io.Mutex,
+        animation: ?std.Io.Future(void),
 
         /// Initialize a new spinner
         pub fn init(writer: WriterType, io: std.Io, config: SpinnerConfig) Self {
@@ -117,41 +119,63 @@ pub fn Spinner(comptime WriterType: type) type {
                 .frame_index = 0,
                 .is_tty = detectTTY(),
                 .active = false,
-                .last_update = 0,
+                .mutex = .init,
+                .animation = null,
             };
         }
 
-        /// Start the spinner with an optional message
+        /// Start the spinner with a message. On a TTY this spawns a background
+        /// task that animates the spinner until a finish method is called, so
+        /// the spinner must not be moved or copied after `start`. If the `Io`
+        /// implementation cannot run the animation concurrently, the spinner
+        /// degrades to a static frame.
         pub fn start(self: *Self, message: []const u8) void {
             self.message = message;
             self.active = true;
             self.frame_index = 0;
-            self.last_update = @intCast(@divTrunc(std.Io.Clock.Timestamp.now(self.io, .awake).raw.nanoseconds, std.time.ns_per_ms));
 
             if (self.is_tty and self.config.hide_cursor) {
                 self.writeAll("\x1b[?25l"); // Hide cursor
             }
 
             self.render();
+
+            if (self.is_tty) {
+                self.animation = self.io.concurrent(animate, .{self}) catch null;
+            }
         }
 
         /// Update the spinner message
         pub fn setText(self: *Self, message: []const u8) void {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
             self.message = message;
+            if (self.active) self.render();
         }
 
-        /// Advance the spinner animation (call this in a loop or timer)
-        pub fn tick(self: *Self) void {
-            if (!self.active) return;
-
-            const now: i64 = @intCast(@divTrunc(std.Io.Clock.Timestamp.now(self.io, .awake).raw.nanoseconds, std.time.ns_per_ms));
-            const interval_val: i64 = @intCast(self.config.style.interval());
-
-            if (now - self.last_update >= interval_val) {
-                const style_frames = self.config.style.frames();
-                self.frame_index = (self.frame_index + 1) % style_frames.len;
-                self.last_update = now;
+        /// Background task: advance and redraw the spinner every frame
+        /// interval until a finish method cancels it.
+        fn animate(self: *Self) void {
+            const interval_ns = self.config.style.interval() * std.time.ns_per_ms;
+            while (true) {
+                self.io.sleep(.{ .nanoseconds = interval_ns }, .awake) catch return;
+                self.mutex.lockUncancelable(self.io);
+                defer self.mutex.unlock(self.io);
+                if (!self.active) return;
+                self.frame_index = (self.frame_index + 1) % self.config.style.frames().len;
                 self.render();
+            }
+        }
+
+        /// Deactivate and reap the animation task. After this returns the
+        /// caller has exclusive use of the writer.
+        fn stopAnimation(self: *Self) void {
+            self.mutex.lockUncancelable(self.io);
+            self.active = false;
+            self.mutex.unlock(self.io);
+            if (self.animation) |*future| {
+                future.cancel(self.io);
+                self.animation = null;
             }
         }
 
@@ -195,7 +219,7 @@ pub fn Spinner(comptime WriterType: type) type {
         }
 
         fn finishWithColor(self: *Self, symbol: []const u8, color: ztheme.Color, message: []const u8) void {
-            self.active = false;
+            self.stopAnimation();
 
             if (self.is_tty) {
                 self.writeAll("\r\x1b[K"); // Clear line
@@ -220,10 +244,11 @@ pub fn Spinner(comptime WriterType: type) type {
                 self.writeAll(message);
                 self.writeAll("\n");
             }
+            flushWriter(self.writer);
         }
 
         fn finishPlain(self: *Self, symbol: []const u8, message: []const u8) void {
-            self.active = false;
+            self.stopAnimation();
 
             if (self.is_tty) {
                 self.writeAll("\r\x1b[K");
@@ -241,29 +266,30 @@ pub fn Spinner(comptime WriterType: type) type {
                 self.writeAll(message);
                 self.writeAll("\n");
             }
+            flushWriter(self.writer);
         }
 
         fn stopAndClear(self: *Self) void {
-            self.active = false;
+            self.stopAnimation();
 
             if (self.is_tty) {
                 self.writeAll("\r\x1b[K"); // Clear line
                 if (self.config.hide_cursor) {
                     self.writeAll("\x1b[?25h"); // Show cursor
                 }
+                flushWriter(self.writer);
             }
         }
 
         fn render(self: *Self) void {
             if (!self.is_tty) {
-                // Non-TTY: don't animate, just show static message on first render
-                if (self.frame_index == 0) {
-                    self.writeAll(self.config.prefix);
-                    self.writeAll("- ");
-                    self.writeAll(self.message);
-                    self.writeAll(self.config.suffix);
-                    self.writeAll("\n");
-                }
+                // Non-TTY: no animation; print a plain status line per message
+                self.writeAll(self.config.prefix);
+                self.writeAll("- ");
+                self.writeAll(self.message);
+                self.writeAll(self.config.suffix);
+                self.writeAll("\n");
+                flushWriter(self.writer);
                 return;
             }
 
@@ -290,6 +316,7 @@ pub fn Spinner(comptime WriterType: type) type {
             self.writeAll(" ");
             self.writeAll(self.message);
             self.writeAll(self.config.suffix);
+            flushWriter(self.writer);
         }
     };
 }
@@ -383,6 +410,7 @@ pub fn ProgressBar(comptime WriterType: type) type {
             } else {
                 self.writeAll("\n");
             }
+            flushWriter(self.writer);
         }
 
         /// Finish with a custom message
@@ -493,6 +521,7 @@ pub fn ProgressBar(comptime WriterType: type) type {
             if (!self.is_tty) {
                 self.writeAll("\n");
             }
+            flushWriter(self.writer);
         }
     };
 }
@@ -516,6 +545,15 @@ fn formatDuration(secs: u64, buf: []u8) []const u8 {
 fn detectTTY() bool {
     // Use direct handle check without io
     return terminal.isStdoutTty();
+}
+
+/// Flush a writer if it supports flushing. Works with both pointer and value writer types.
+fn flushWriter(writer: anytype) void {
+    const W = @TypeOf(writer);
+    const T = if (@typeInfo(W) == .pointer) @typeInfo(W).pointer.child else W;
+    if (@hasDecl(T, "flush")) {
+        writer.flush() catch {};
+    }
 }
 
 // Thread-local buffer for stdout writer
@@ -574,6 +612,42 @@ test "spinner initialization" {
     const s = Spinner(@TypeOf(&writer)).init(&writer, std.testing.io, .{});
     try std.testing.expect(!s.active);
     try std.testing.expectEqual(@as(usize, 0), s.frame_index);
+}
+
+test "spinner animates and finishes on a TTY" {
+    var output: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = Spinner(@TypeOf(&writer)).init(&writer, std.testing.io, .{});
+    s.is_tty = true; // force the TTY path; the fixed writer captures ANSI output
+
+    s.start("working");
+    s.setText("still working");
+    s.succeed("done");
+
+    try std.testing.expect(!s.active);
+    try std.testing.expect(s.animation == null);
+    const written = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "working") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\x1b[?25h") != null); // cursor restored
+}
+
+test "spinner prints status lines when not a TTY" {
+    var output: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = Spinner(@TypeOf(&writer)).init(&writer, std.testing.io, .{});
+    s.is_tty = false;
+
+    s.start("connecting");
+    s.setText("uploading");
+    s.succeed("synced");
+
+    const written = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "- connecting\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "- uploading\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, " synced\n") != null);
 }
 
 test "progress bar initialization" {
