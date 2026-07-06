@@ -101,7 +101,7 @@
     <div>
       <div class="eyebrow">CLI framework · Zig 0.16+</div>
       <h1>Your folder structure <span class="amber">is</span> your CLI.</h1>
-      <p class="lead">zcli is a batteries-included framework for command-line tools in Zig. Add a <code class="mono">.zig</code> file, get a command. Help text, completions, "did you mean?", prompts, progress bars, and docs — wired up at compile time for zero-cost dispatch.</p>
+      <p class="lead">The compiler is your argument parser. zcli is a batteries-included framework for building polished command-line apps in Zig: drop a <code class="mono">.zig</code> file in <code class="mono">commands/</code> and it becomes a command — help text, shell completions, "did you mean?", and typed argument parsing generated at compile time. One dependency, one self-contained binary.</p>
       <div class="cta">
         <a class="btn primary" href="$site.page('docs').link()">Get started →</a>
         <a class="btn ghost" href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener">Star on GitHub</a>
