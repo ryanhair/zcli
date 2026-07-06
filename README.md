@@ -6,7 +6,7 @@
 
 A batteries-included framework for building command-line interfaces in Zig. Drop `.zig` files in a directory and get a fully-featured CLI — help text, completions, error suggestions, interactive prompts, progress bars, and documentation — with command discovery and routing wired up at compile time for zero-cost dispatch.
 
-![Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner](examples/showcase/demo.gif)
+<img alt="Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner" src="examples/showcase/demo.gif" width="600" />
 
 ## Features
 
