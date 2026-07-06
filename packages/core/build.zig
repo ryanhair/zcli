@@ -66,6 +66,7 @@ pub fn build(b: *std.Build) void {
     const core_test_files = [_][]const u8{
         "src/zcli.zig", // Main entry point - imports args, options, errors, execution, etc.
         "src/build_utils.zig", // Standalone utility (has its own tests)
+        "src/http_loopback_test.zig", // Real-socket http.Client tests, isolated to one binary
     };
 
     // NOTE: A previous `plugin_test_files` list referenced five src/plugin_*_test.zig
