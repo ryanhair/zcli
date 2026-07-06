@@ -151,10 +151,11 @@ jobs:
         with:
           version: 0.16.0
 
-      # The `ghauth` example opts into zcli_secrets, whose Linux backend links
-      # libsecret at build time (ADR-0003). Compiling the examples therefore
-      # needs the dev headers on Linux; macOS/Windows keychains link nothing.
-      - name: Install Secret Service deps (for the ghauth example)
+      # The `ghauth` and `oauth-device` examples opt into zcli_secrets, whose
+      # Linux backend links libsecret at build time (ADR-0003). Compiling the
+      # examples therefore needs the dev headers on Linux; macOS/Windows
+      # keychains link nothing.
+      - name: Install Secret Service deps (for the zcli_secrets examples)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsecret-1-dev libglib2.0-dev
