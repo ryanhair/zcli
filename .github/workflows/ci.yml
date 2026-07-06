@@ -25,9 +25,11 @@ jobs:
 
   # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
   # ship in lockstep and MUST declare the same version — the CLI's `--version`
-  # reads its own zon, the website + library tag read the root's. The release
-  # automation bumps both together; this guards the manual path from drifting
-  # them apart, which would otherwise ship a mislabelled binary silently.
+  # reads its own zon, the website + library tag read the root's. The README's
+  # Quick Start pins the dependency to the release tag, so it must carry the
+  # same version too. The release automation bumps all three together; this
+  # guards the manual path from drifting them apart, which would otherwise
+  # ship a mislabelled binary or a stale install instruction silently.
   version-sync:
     name: version consistency
     runs-on: ubuntu-latest
@@ -35,20 +37,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Versions match across build.zig.zon files
+      - name: Versions match across build.zig.zon files and README
         shell: bash
         run: |
           extract() { grep -m1 -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'; }
           root=$(extract build.zig.zon)
           cli=$(extract projects/zcli/build.zig.zon)
+          readme=$(grep -m1 -oE '/zcli/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           echo "root build.zig.zon:          $root"
           echo "projects/zcli/build.zig.zon: $cli"
-          if [ -z "$root" ] || [ -z "$cli" ]; then
-            echo "::error::could not read a version from one of the build.zig.zon files"
+          echo "README.md dependency tag:    $readme"
+          if [ -z "$root" ] || [ -z "$cli" ] || [ -z "$readme" ]; then
+            echo "::error::could not read a version from one of the build.zig.zon files or the README dependency tag"
             exit 1
           fi
-          if [ "$root" != "$cli" ]; then
-            echo "::error::version drift: root=$root cli=$cli — both build.zig.zon files must declare the same version"
+          if [ "$root" != "$cli" ] || [ "$root" != "$readme" ]; then
+            echo "::error::version drift: root=$root cli=$cli readme=$readme — the build.zig.zon files and the README dependency tag must all declare the same version"
             exit 1
           fi
 

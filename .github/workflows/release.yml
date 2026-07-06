@@ -69,6 +69,11 @@ jobs:
               grep -q "\.version = \"$VERSION\"" "$f" || { echo "::error::failed to bump $f"; exit 1; }
             done
 
+            # Keep the README Quick Start's pinned dependency tag on the
+            # release being cut (the version-sync CI job enforces this).
+            sed -i -E "s|(/zcli/archive/refs/tags/v)[0-9]+\.[0-9]+\.[0-9]+(\.tar\.gz)|\1$VERSION\2|" README.md
+            grep -q "refs/tags/v$VERSION.tar.gz" README.md || { echo "::error::failed to bump README.md"; exit 1; }
+
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -am "Bump version to $VERSION"
