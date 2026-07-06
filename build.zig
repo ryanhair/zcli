@@ -96,6 +96,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "showcase", .path = "examples/showcase" },
         .{ .name = "repostat", .path = "examples/repostat" },
         .{ .name = "ghauth", .path = "examples/ghauth" },
+        .{ .name = "oauth-device", .path = "examples/oauth-device" },
         .{ .name = "notes", .path = "examples/notes" },
     };
 
@@ -136,6 +137,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "showcase", .path = "examples/showcase" },
         .{ .name = "repostat", .path = "examples/repostat" },
         .{ .name = "ghauth", .path = "examples/ghauth" },
+        .{ .name = "oauth-device", .path = "examples/oauth-device" },
         .{ .name = "notes", .path = "examples/notes" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };

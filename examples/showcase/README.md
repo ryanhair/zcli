@@ -1,8 +1,9 @@
 # showcase — the kitchen-sink example
 
 A fully functional task tracker CLI (`tasks`) that exercises every zcli
-feature in one app. Where [notes](../notes/), [repostat](../repostat/), and
-[ghauth](../ghauth/) each teach one idiom, this is the tour.
+feature in one app. Where [notes](../notes/), [repostat](../repostat/),
+[ghauth](../ghauth/), and [oauth-device](../oauth-device/) each teach one
+idiom, this is the tour.
 
 ```
 $ tasks init          # interactive project wizard
