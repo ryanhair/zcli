@@ -139,12 +139,17 @@ pub fn build(b: *std.Build) void {
             s.dependOn(&run_plugin_tests.step);
         }
 
-        // The native backend source file for the host OS (null → an unsupported
-        // OS, where registering the plugin is a compile error, so there is no
-        // backend to test here).
+        // The native backend source file for the host OS (null → no backend to
+        // test here). Two cases yield null: an unsupported OS, where registering
+        // the plugin is a compile error; and a musl-linux target, where the Linux
+        // backend links libsecret (glibc) and `linkSecretsBackend` would panic.
+        // The panic must not fire here — this test wiring runs during build-graph
+        // construction for EVERY target, so leaving the musl case in would break
+        // any `zig build` of a downstream musl binary (e.g. the CLI's own
+        // static-musl release build), even one that never registers the plugin.
         const native_backend_file: ?[]const u8 = switch (target.result.os.tag) {
             .macos => "src/plugins/zcli_secrets/keychain_macos.zig",
-            .linux => "src/plugins/zcli_secrets/secret_service_linux.zig",
+            .linux => if (target.result.abi.isMusl()) null else "src/plugins/zcli_secrets/secret_service_linux.zig",
             .windows => "src/plugins/zcli_secrets/credential_manager_windows.zig",
             else => null,
         };
