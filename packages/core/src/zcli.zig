@@ -110,9 +110,15 @@ pub const FieldInfo = struct {
     // Metadata for help generation
     short: ?u8 = null,
     description: ?[]const u8 = null,
-    /// A boolean flag that defaults to `true`. Help renders its `--no-<name>`
-    /// negation (the useful spelling) instead of the redundant positive form.
-    default_true: bool = false,
+    /// The field's type as a string (`@typeName`), e.g. `"bool"`, `"?bool"`,
+    /// `"u32"`, `"[]const u8"`. A descriptor, not a Zig `type` — FieldInfo stays a
+    /// plain runtime value.
+    type_name: []const u8 = "",
+    /// The field's declared default rendered to a string (`"true"`, `"8080"`,
+    /// `"info"`, …), or `null` when it has no scalar default. Together with
+    /// `type_name` this lets a consumer decide presentation — e.g. help shows a
+    /// default-`true` boolean by its `--no-` negation.
+    default_value: ?[]const u8 = null,
 };
 
 /// Information about command module structure for plugin introspection

@@ -37,7 +37,9 @@ boolean flag an auto-generated `--no-<flag>` negation.**
   off is the only meaningful action, and re-asserting the default is not). The other
   spelling is accepted but hidden. Generated shell completions currently list the
   positive form only. Negation is synthesized in the parser and never materialized as
-  a struct field; help derives the default-`true` case from `FieldInfo.default_true`.
+  a struct field; help derives the default-`true` case from the neutral
+  `FieldInfo.type_name` + `FieldInfo.default_value` descriptors (a bool whose rendered
+  default is `"true"`), not a bespoke presentation flag.
 - **A boolean may appear at most once.** Repeating it — `--flag --flag`,
   `--no-flag --no-flag`, or the contradictory `--flag --no-flag` (which share the
   field's occurrence count) — is `OptionDuplicate`. There is no meaningful reason to

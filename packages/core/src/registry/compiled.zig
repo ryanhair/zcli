@@ -813,10 +813,16 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         if (@hasField(@TypeOf(field_meta), "description")) description = field_meta.description;
                     }
                 }
-                const default_true = comptime blk: {
-                    if (field.type != bool) break :blk false;
-                    if (field.default_value_ptr) |dp| break :blk @as(*const bool, @ptrCast(@alignCast(dp))).*;
-                    break :blk false;
+                const default_value: ?[]const u8 = comptime blk: {
+                    const dp = field.default_value_ptr orelse break :blk null;
+                    const dv = @as(*const field.type, @ptrCast(@alignCast(dp))).*;
+                    break :blk switch (field_type_info) {
+                        .bool => if (dv) "true" else "false",
+                        .int, .comptime_int, .float, .comptime_float => std.fmt.comptimePrint("{d}", .{dv}),
+                        .@"enum" => @tagName(dv),
+                        .pointer => |p| if (p.size == .slice and p.child == u8) dv else null,
+                        else => null, // optionals default to null; arrays have no scalar default
+                    };
                 };
                 try field_list.append(allocator, zcli.FieldInfo{
                     .name = field.name,
@@ -824,7 +830,8 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
                     .short = short,
                     .description = description,
-                    .default_true = default_true,
+                    .type_name = @typeName(field.type),
+                    .default_value = default_value,
                 });
             }
             return field_list.toOwnedSlice(allocator);

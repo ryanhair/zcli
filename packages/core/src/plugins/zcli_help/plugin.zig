@@ -749,13 +749,16 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
         // negation, so that (long-form only, no short) is the spelling we show —
         // the positive form would just re-assert the default. Other flags render
         // their positive name and short as usual.
+        const negated = std.mem.eql(u8, field_info.type_name, "bool") and
+            field_info.default_value != null and
+            std.mem.eql(u8, field_info.default_value.?, "true");
         var negated_name_buf: [67]u8 = undefined;
-        const option_name = if (field_info.default_true) blk: {
+        const option_name = if (negated) blk: {
             @memcpy(negated_name_buf[0..3], "no-");
             @memcpy(negated_name_buf[3..][0..dashed.len], dashed);
             break :blk negated_name_buf[0 .. 3 + dashed.len];
         } else dashed;
-        const short = if (field_info.default_true) null else field_info.short;
+        const short = if (negated) null else field_info.short;
 
         // Use description from metadata, fallback to field name
         const description = field_info.description orelse field_info.name;
@@ -820,8 +823,8 @@ test "help never renders auto-generated --no- negation flags" {
     const module_info = zcli.CommandModuleInfo{
         .has_options = true,
         .options_fields = &.{
-            .{ .name = "verbose", .is_optional = false, .is_array = false, .short = 'v', .description = "Verbose output" },
-            .{ .name = "color", .is_optional = false, .is_array = false, .short = 'c', .default_true = true, .description = "Disable color" },
+            .{ .name = "verbose", .is_optional = false, .is_array = false, .short = 'v', .type_name = "bool", .default_value = "false", .description = "Verbose output" },
+            .{ .name = "color", .is_optional = false, .is_array = false, .short = 'c', .type_name = "bool", .default_value = "true", .description = "Disable color" },
         },
     };
 
