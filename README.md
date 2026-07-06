@@ -66,7 +66,7 @@ zcli targets **stable Zig** — no nightly required. `main` and the latest relea
 | `main`, v0.18.0 and later | 0.16.0 |
 | v0.14.0 – v0.17.0 | 0.15.1 |
 
-Each release is tagged twice: `vX.Y.Z` is the framework library — the tag to use in your `build.zig.zon` — and `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries that `install.sh` downloads. The two ship in lockstep with the same version number.
+Each release is tagged twice: `vX.Y.Z` is the framework library — the tag to use in your `build.zig.zon` — and `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries that `install.sh` downloads. The two ship in lockstep with the same version number. Release history and the versioning policy live in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
