@@ -100,7 +100,11 @@ fn castLen(len: usize) !u32 {
 /// Retrieve a secret. Returns `null` if no item exists for this service+account.
 /// The returned bytes are owned by `allocator` (copied out of the Keychain's
 /// own buffer, which is freed before returning).
-pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) !?[]const u8 {
+///
+/// `io` and `environ` are part of the uniform backend interface (the Linux
+/// backend shells out and needs them); the Keychain FFI does not, so they are
+/// ignored here.
+pub fn get(allocator: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8) !?[]const u8 {
     var password_len: u32 = 0;
     var password_data: ?*anyopaque = null;
 
@@ -129,7 +133,7 @@ pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) 
 /// place; otherwise a new item is added. The `allocator` is unused here (the
 /// Keychain C API is length-based); it is in the signature so every native
 /// backend shares one interface.
-pub fn set(_: std.mem.Allocator, service: []const u8, name: []const u8, value: []const u8) !void {
+pub fn set(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8, value: []const u8) !void {
     const value_len = try castLen(value.len);
     const status = SecKeychainAddGenericPassword(
         null,
@@ -165,7 +169,7 @@ pub fn set(_: std.mem.Allocator, service: []const u8, name: []const u8, value: [
 
 /// Remove a secret. Succeeds (no-op) if no item exists. `allocator` is unused
 /// (see `set`), present for interface parity across native backends.
-pub fn delete(_: std.mem.Allocator, service: []const u8, name: []const u8) !void {
+pub fn delete(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8) !void {
     var item: SecKeychainItemRef = null;
     const find = SecKeychainFindGenericPassword(
         null,

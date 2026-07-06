@@ -34,7 +34,7 @@ From this directory (`cd packages/core`):
 
 - `zig build test` — everything below except the secrets/native and benchmark steps
 - `zig build test-core` / `test-plugins` / `test-security` — focused slices
-- `zig build test-secrets` — compiles **and links** the host OS secrets backend (needs libsecret dev packages on Linux)
+- `zig build test-secrets` — compiles the host OS secrets backend + its unit tests (links a keychain lib on macOS/Windows; Linux shells out, so it links nothing — ADR-0010)
 - `zig build test-secrets-live` — CI-only round-trip against the real OS keychain
 - `zig build benchmark` / `regression` — performance runs (ReleaseFast)
 

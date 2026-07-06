@@ -140,16 +140,12 @@ pub fn build(b: *std.Build) void {
         }
 
         // The native backend source file for the host OS (null → no backend to
-        // test here). Two cases yield null: an unsupported OS, where registering
-        // the plugin is a compile error; and a musl-linux target, where the Linux
-        // backend links libsecret (glibc) and `linkSecretsBackend` would panic.
-        // The panic must not fire here — this test wiring runs during build-graph
-        // construction for EVERY target, so leaving the musl case in would break
-        // any `zig build` of a downstream musl binary (e.g. the CLI's own
-        // static-musl release build), even one that never registers the plugin.
+        // test here, i.e. an unsupported OS where registering the plugin is a
+        // compile error). The Linux backend shells out rather than linking, so
+        // it builds for gnu and musl alike — no musl carve-out needed (ADR-0010).
         const native_backend_file: ?[]const u8 = switch (target.result.os.tag) {
             .macos => "src/plugins/zcli_secrets/keychain_macos.zig",
-            .linux => if (target.result.abi.isMusl()) null else "src/plugins/zcli_secrets/secret_service_linux.zig",
+            .linux => "src/plugins/zcli_secrets/linux.zig",
             .windows => "src/plugins/zcli_secrets/credential_manager_windows.zig",
             else => null,
         };
@@ -177,6 +173,12 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             });
             main.linkSecretsBackend(live_mod, target.result);
+            // The live test reads the real process environment via libc's
+            // `std.c.environ` to build a context for the shell-out backend (0.16
+            // otherwise exposes it only through `std.process.Init`). This links
+            // libc into the CI-only *test* binary, not the plugin — the shipped
+            // Linux backend stays libc-free.
+            live_mod.link_libc = true;
             const live_tests = b.addTest(.{ .root_module = live_mod });
             const run_live_tests = b.addRunArtifact(live_tests);
             test_secrets_live_step.dependOn(&run_live_tests.step);

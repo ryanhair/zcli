@@ -18,33 +18,22 @@ const DocsConfig = types.DocsConfig;
 pub const GenerateError = error{CommandDiscoveryFailed};
 
 /// Link the native libraries the `zcli_secrets` plugin's backend needs for
-/// `target`. macOS: Security + CoreFoundation frameworks. Linux: libsecret-1 +
-/// glib-2.0 (over libc). Windows: advapi32. Any other OS has no secure backend —
-/// registering the plugin there is a compile error in the plugin source — so
-/// nothing is linked. Exposed so the plugin's own test targets can link exactly
-/// the same way a registered app does.
+/// `target`. macOS: Security + CoreFoundation frameworks. Windows: advapi32.
+/// Linux links **nothing**: its backend reaches the Secret Service (via
+/// `secret-tool`) or `pass` by shelling out at runtime, not by linking, so a
+/// Linux build stays static and works on musl too (ADR-0010). Any other OS has
+/// no secure backend — registering the plugin there is a compile error in the
+/// plugin source. Exposed so the plugin's own test targets can link exactly the
+/// same way a registered app does.
 pub fn linkSecretsBackend(module: *std.Build.Module, target: std.Target) void {
     switch (target.os.tag) {
         .macos => {
             module.linkFramework("Security", .{});
             module.linkFramework("CoreFoundation", .{});
         },
-        .linux => {
-            // libsecret/glib are glibc-based, so a musl target — zcli's flagship
-            // static-single-binary case — cannot link them. Fail with a legible
-            // message instead of a cryptic linker/pkg-config error, mirroring the
-            // plugin's own unsupported-OS @compileError.
-            if (target.abi.isMusl()) std.debug.panic(
-                "zcli_secrets: the Linux Secret Service backend links libsecret " ++
-                    "(glibc), which is incompatible with a musl target ({s}). Build " ++
-                    "with a gnu ABI (e.g. -Dtarget=x86_64-linux-gnu), or do not " ++
-                    "register the plugin for musl.",
-                .{@tagName(target.abi)},
-            );
-            module.link_libc = true;
-            module.linkSystemLibrary("secret-1", .{});
-            module.linkSystemLibrary("glib-2.0", .{});
-        },
+        // Linux shells out (secret-tool / pass) — no library to link, and no
+        // musl incompatibility.
+        .linux => {},
         .windows => {
             module.linkSystemLibrary("advapi32", .{});
         },
