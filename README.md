@@ -547,6 +547,27 @@ The `zcli` meta-CLI scaffolds new projects: `zcli init myproject`
 
 ---
 
+## How does zcli compare?
+
+Zig already has good CLI libraries — the difference is the level they operate at.
+
+[zig-clap](https://github.com/Hejsil/zig-clap) is an argument parser, and the lightest of the three. You describe flags in a comptime help-text DSL and get typed results back. It deliberately stays out of the framework business — parsing and help text are in scope, and the rest of the CLI is yours to build. If flag parsing is all you need, it's a great choice.
+
+[zli](https://github.com/xcaeser/zli) is a batteries-included framework built around a runtime builder: each command is constructed with `Command.init(...)`, wired up with `addCommand`, its flags registered with `addFlag` and read inside the handler by name — `ctx.flag("verbose", bool)`. The command tree is assembled when the program starts.
+
+zcli moves that work to the filesystem and the compiler. The directory tree *is* the command tree — `commands/users/create.zig` is `myapp users create` — discovered at build time, with routing generated as ordinary Zig code. Arguments and options are plain structs, so the parser is generated for your exact types: an unknown flag or a wrong type is a compile error, not a runtime lookup. And the batteries extend past parsing into the whole terminal experience: shell completions, interactive prompts, progress indicators, theming, config files, plugins, and a virtual-terminal test harness.
+
+| | zig-clap | zli | zcli |
+|---|----------|-----|------|
+| Scope | argument parser | CLI framework | CLI framework |
+| Commands defined by | manual dispatch | runtime builder | files on disk, discovered at build time |
+| Flags are | comptime DSL → typed result | registered at runtime, read by name | struct fields, checked at compile time |
+| Beyond parsing | help text | help, version, spinners | help, completions, prompts, progress, theming, config files, plugins, testing tools |
+
+If you want one dependency that covers the whole terminal experience, that's the niche zcli aims to fill.
+
+---
+
 ## License
 
 MIT
