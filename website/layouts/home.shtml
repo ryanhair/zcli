@@ -112,7 +112,7 @@
       </div>
       <div class="chips">
         <span class="chip"><b>0</b> runtime reflection</span>
-        <span class="chip"><b>7</b> built-in plugins</span>
+        <span class="chip"><b><span :text="$site.asset('site-data.json').ziggy().get('plugin_count')"></span></b> built-in plugins</span>
         <span class="chip"><b>8</b> prompt types</span>
         <span class="chip">MIT licensed</span>
       </div>

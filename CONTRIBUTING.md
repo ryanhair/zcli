@@ -15,8 +15,8 @@ packages/    the framework, as standalone Zig packages
   testing/     the three-tier testing framework
 projects/zcli/   the zcli meta-CLI (init/add/rm/mv/tree/dev/release/…)
 examples/        canonical example CLIs (ADR-0004: compiled in CI, drift detectors)
-docs/            DESIGN.md, BUILD.md, TESTING.md, adr/
-website/         zcli.dev (built with Zine, not zig build — deployed by .github/workflows/deploy-docs.yml)
+docs/            user reference (COMMANDS, PLUGINS, TESTING) + internals (DESIGN, BUILD, ERROR_HANDLING), adr/
+website/         zcli.sh (built with Zine, not zig build — deployed by .github/workflows/deploy-docs.yml)
 ```
 
 Each package under `packages/` builds and tests standalone (`cd packages/<name> && zig build test`). The root `build.zig` is a thin umbrella: it re-exports the packages' modules as the `zcli` dependency surface and aggregates their test steps in-process.
@@ -52,5 +52,7 @@ zig build test
 
 - [docs/DESIGN.md](docs/DESIGN.md) — how the framework fits together
 - [docs/BUILD.md](docs/BUILD.md) — the build-time codegen pipeline
+- [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) — the error model and diagnostics
 - [docs/TESTING.md](docs/TESTING.md) — the three testing tiers and when to use each
+- [docs/COMMANDS.md](docs/COMMANDS.md) / [docs/PLUGINS.md](docs/PLUGINS.md) — the user-facing reference the README links to
 - [docs/adr/](docs/adr/) — why things are the way they are
