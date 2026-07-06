@@ -39,3 +39,14 @@ Run it:
 zig build
 ./zig-out/bin/tasks --help
 ```
+
+## Demo recording
+
+`demo.gif` (embedded in the root README) is recorded from this app with
+[VHS](https://github.com/charmbracelet/vhs) — a real terminal running the
+real binary, driven by the script in `demo.tape` against the
+`demo-seed.json` fixture. To re-record after changing the CLI:
+
+```
+zig build && vhs demo.tape
+```
