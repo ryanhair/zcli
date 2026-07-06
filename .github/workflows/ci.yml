@@ -188,10 +188,9 @@ jobs:
       #
       # The interactive terminal harness runs on all three OSes: POSIX uses a PTY
       # (the harness has caught macOS-specific bugs: its 4 KiB PTY buffer,
-      # EIO-on-close semantics), Windows uses a ConPTY. The `zcli dev` interactive
-      # tier stays POSIX-only for now (its native fs-watch loop isn't
-      # Windows-ready), but the prompt-driven tiers exercise the terminal stack
-      # on every platform.
+      # EIO-on-close semantics), Windows uses a ConPTY. Every interactive tier —
+      # including `zcli dev`'s watch/rebuild loop (nightwatch's ReadDirectoryChangesW
+      # backend) — exercises the terminal stack on every platform.
       #
       # The interactive tests degrade to a skip — not a failure — where the
       # pseudo-terminal can't be allocated, so a green run could silently lose
