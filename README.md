@@ -1,5 +1,9 @@
 # zcli
 
+[![CI](https://github.com/ryanhair/zcli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ryanhair/zcli/actions/workflows/ci.yml)
+[![Zig 0.16.0](https://img.shields.io/badge/zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/download/)
+[![Release](https://img.shields.io/github/v/release/ryanhair/zcli?filter=v*)](https://github.com/ryanhair/zcli/releases)
+
 A batteries-included framework for building command-line interfaces in Zig. Drop `.zig` files in a directory and get a fully-featured CLI — help text, completions, error suggestions, interactive prompts, progress bars, and documentation — with command discovery and routing wired up at compile time for zero-cost dispatch.
 
 ![Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner](examples/showcase/demo.gif)
@@ -53,19 +57,28 @@ The `zcli` binary is the meta-CLI for working on zcli projects: `zcli init` scaf
 
 ---
 
+## Zig version support
+
+zcli targets **stable Zig** — no nightly required. `main` and the latest release are built and tested against Zig 0.16.0 on Linux, macOS, and Windows in CI on every commit.
+
+| zcli | Zig |
+|------|-----|
+| `main`, v0.18.0 and later | 0.16.0 |
+| v0.14.0 – v0.17.0 | 0.15.1 |
+
+Each release is tagged twice: `vX.Y.Z` is the framework library — the tag to use in your `build.zig.zon` — and `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries that `install.sh` downloads. The two ship in lockstep with the same version number.
+
+---
+
 ## Quick Start
 
 ### 1. Add zcli to your project
 
-```zig
-// build.zig.zon
-.dependencies = .{
-    .zcli = .{
-        .url = "https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz",
-        .hash = "...",  // zig build will tell you the correct hash
-    },
-},
+```bash
+zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.19.0.tar.gz
 ```
+
+This pins the release in your `build.zig.zon` with an immutable hash. To track the development branch instead, fetch `.../archive/refs/heads/main.tar.gz` — its hash changes with every commit, so re-run the command to update.
 
 ### 2. Set up build.zig
 
