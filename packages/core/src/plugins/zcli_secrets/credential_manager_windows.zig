@@ -79,7 +79,11 @@ fn makeTarget(allocator: std.mem.Allocator, service: []const u8, name: []const u
 
 /// Retrieve a secret. Returns `null` if no matching credential exists. The
 /// returned bytes are owned by `allocator`.
-pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) !?[]const u8 {
+///
+/// `io` and `environ` are part of the uniform backend interface (the Linux
+/// backend shells out and needs them); the Credential Manager FFI does not, so
+/// they are ignored here.
+pub fn get(allocator: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8) !?[]const u8 {
     const target = try makeTarget(allocator, service, name);
     defer allocator.free(target);
 
@@ -97,7 +101,7 @@ pub fn get(allocator: std.mem.Allocator, service: []const u8, name: []const u8) 
 
 /// Store (or overwrite) a secret. `CredWriteW` overwrites an existing
 /// credential with the same target, so no separate update path is needed.
-pub fn set(allocator: std.mem.Allocator, service: []const u8, name: []const u8, value: []const u8) !void {
+pub fn set(allocator: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8, value: []const u8) !void {
     if (value.len > CRED_MAX_CREDENTIAL_BLOB_SIZE) return Error.SecretTooLarge;
 
     const target = try makeTarget(allocator, service, name);
@@ -120,7 +124,7 @@ pub fn set(allocator: std.mem.Allocator, service: []const u8, name: []const u8, 
 }
 
 /// Remove a secret. Succeeds (no-op) if no matching credential exists.
-pub fn delete(allocator: std.mem.Allocator, service: []const u8, name: []const u8) !void {
+pub fn delete(allocator: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8) !void {
     const target = try makeTarget(allocator, service, name);
     defer allocator.free(target);
 

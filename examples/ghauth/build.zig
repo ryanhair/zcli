@@ -25,8 +25,9 @@ pub fn build(b: *std.Build) !void {
             zcli.builtin(.version, .{}),
             zcli.builtin(.not_found, .{}),
             // Opt in to credential storage. Enabling it here is what makes
-            // `context.plugins.zcli_secrets` available and links the OS keychain
-            // backend (Keychain / Secret Service / Credential Manager). ADR-0003.
+            // `context.plugins.zcli_secrets` available and wires the OS secure
+            // store backend (macOS Keychain / Windows Credential Manager linked;
+            // Linux shells out to Secret Service or pass). ADR-0003, ADR-0010.
             zcli.builtin(.secrets, .{}),
         },
         .app_name = "ghauth",

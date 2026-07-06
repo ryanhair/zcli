@@ -14,12 +14,16 @@
 //! Run locally with, from `packages/core`: `zig build test-secrets-live`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const plugin = @import("plugin.zig");
 
 /// Minimal stand-in for the framework Context — the plugin's storage methods
-/// only read `allocator` and `app_name` off it.
+/// read `allocator`, `app_name`, and (for the Linux shell-out backend) `io` and
+/// `environ` off it.
 const MockContext = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
     app_name: []const u8,
 };
 
@@ -30,7 +34,26 @@ const name = "token";
 
 test "public API round-trips set / get / overwrite / delete via ContextData" {
     const a = std.testing.allocator;
-    var ctx = MockContext{ .allocator = a, .app_name = service };
+
+    // The Linux backend shells out to secret-tool / pass / gpg, which need the
+    // real process environment (session bus, HOME, gpg-agent) that CI set up.
+    // 0.16 exposes the environment only via `std.process.Init` (unavailable in a
+    // test) or the libc `std.c.environ`, so this CI-only test links libc to read
+    // it (see build.zig). On macOS/Windows the keychain backends ignore
+    // `environ`, so an empty map on Windows is fine.
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    if (builtin.os.tag != .windows) {
+        var i: usize = 0;
+        while (std.c.environ[i]) |entry| : (i += 1) {
+            const pair = std.mem.span(entry); // "KEY=VALUE"
+            const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+            if (eq == 0) continue;
+            try env.put(pair[0..eq], pair[eq + 1 ..]);
+        }
+    }
+
+    var ctx = MockContext{ .allocator = a, .io = std.testing.io, .environ = &env, .app_name = service };
     var data: plugin.ContextData = .{};
 
     // Start from a clean slate even if a prior aborted run left an entry.
@@ -53,8 +76,8 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
         try std.testing.expectEqualStrings("second-value", v);
     }
 
-    // A value with an embedded NUL and a high byte — the reason libsecret's
-    // backend base64-wraps values; must round-trip byte-for-byte everywhere.
+    // A value with an embedded NUL and a high byte — the reason the shell-out
+    // backends base64-wrap values; must round-trip byte-for-byte everywhere.
     const binary = [_]u8{ 'a', 0x00, 'b', 0xff, 0x0a };
     try data.set(&ctx, name, &binary);
     {

@@ -62,9 +62,10 @@ unchanged.
   `GITHUB_CLIENT_ID`, rejected token) is a clean one-line message and a non-zero
   exit, no stack trace.
 
-> Enabling `zcli_secrets` links a native keychain library (libsecret on Linux;
-> nothing extra on macOS/Windows). That's the opt-in cost ADR-0003 keeps off
-> projects that don't store secrets.
+> Enabling `zcli_secrets` links a native keychain library on macOS/Windows and,
+> on Linux, shells out to `secret-tool` or `pass` at runtime (ADR-0010) — the
+> binary stays static. That's the opt-in cost ADR-0003 keeps off projects that
+> don't store secrets.
 
 ## Run it
 

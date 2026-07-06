@@ -278,8 +278,9 @@ const topics = [_]Topic{
         .body =
         \\secrets — zcli_secrets (opt-in)
         \\
-        \\Enable it in build.zig with `zcli.builtin(.secrets, .{})` (this links the OS
-        \\keychain backend — Keychain / Secret Service / Credential Manager). Then
+        \\Enable it in build.zig with `zcli.builtin(.secrets, .{})` (this wires the OS
+        \\secure store — macOS Keychain / Windows Credential Manager linked; on Linux
+        \\it shells out to Secret Service or pass, so the binary stays static). Then
         \\store, read, and delete an opaque credential — never a plaintext file — via
         \\the context, no import:
         \\

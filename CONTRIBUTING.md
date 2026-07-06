@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Zig 0.16.0** (`minimum_zig_version` in build.zig.zon; [mise](https://mise.jdx.dev/) users get it from `.tool-versions`)
-- No other toolchain requirements — the terminal stack is libc-free on POSIX, and Windows is supported. The one exception: `zig build test-secrets` on Linux needs libsecret dev packages (see [ADR-0003](docs/adr/0003-secrets-as-opt-in-plugin.md)); the default `test` step deliberately stays lib-free.
+- No other toolchain requirements — the terminal stack is libc-free on POSIX, and Windows is supported. The secrets plugin's Linux backend shells out to `secret-tool` / `pass` rather than linking (see [ADR-0010](docs/adr/0010-linux-secrets-shell-out-and-pass.md)), so `zig build test-secrets` needs no dev packages; its live round-trip (CI-only) needs those tools installed at runtime.
 
 ## Repository layout
 

@@ -118,21 +118,22 @@ jobs:
         with:
           version: 0.16.0
 
-      # Linux needs libsecret + glib to LINK the Secret Service backend, plus
-      # gnome-keyring + dbus to provide a running Secret Service for the live
-      # round-trip. macOS (Keychain) and Windows (Credential Manager) need
-      # nothing installed — the store is always available for the runner user.
-      - name: Install Secret Service deps (Linux)
+      # The Linux backend shells out — it links nothing (ADR-0010) — so no dev
+      # headers are needed. The live round-trip exercises BOTH runtime backends,
+      # so install the tools for each: gnome-keyring + dbus + secret-tool for the
+      # Secret Service path, and pass + gnupg for the pass path. macOS (Keychain)
+      # and Windows (Credential Manager) need nothing installed.
+      - name: Install secret backend tools (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libsecret-1-dev libglib2.0-dev gnome-keyring dbus libsecret-tools
+            gnome-keyring dbus libsecret-tools pass gnupg
 
-      # Compile + link the host's native backend. This is the link-time half of
-      # ADR-0003's opt-in guarantee — it proves the backend links against the
-      # platform library — and it does NOT touch the real credential store.
-      - name: Compile + link native backend
+      # Compile the host's native backend and run its unit tests. On Linux this
+      # is now a pure compile (no library to link — ADR-0010); it does NOT touch
+      # any real credential store.
+      - name: Compile native backend
         working-directory: packages/core
         run: zig build test-secrets
 
@@ -144,11 +145,14 @@ jobs:
         working-directory: packages/core
         run: zig build test-secrets-live
 
-      # On Linux the Secret Service must be brought up first: a private session
-      # bus (dbus-run-session) with an unlocked gnome-keyring registering
-      # org.freedesktop.secrets. Recipe mirrors GNOME/libsecret's own headless
-      # test setup.
-      - name: Live round-trip (Linux Secret Service)
+      # On Linux both runtime backends are exercised, each forced explicitly via
+      # ZCLI_SECRETS_BACKEND so the run is deterministic (and the override path is
+      # covered too).
+      #
+      # Secret Service path: bring up a private session bus (dbus-run-session)
+      # with an unlocked gnome-keyring registering org.freedesktop.secrets, so
+      # `secret-tool` has a service. Recipe mirrors GNOME's own headless setup.
+      - name: Live round-trip (Linux Secret Service via secret-tool)
         if: runner.os == 'Linux'
         working-directory: packages/core
         shell: bash
@@ -169,8 +173,26 @@ jobs:
               sleep 1
             done
             [ -n "$ready" ] || { echo "ERROR: org.freedesktop.secrets never came up"; exit 1; }
-            zig build test-secrets-live
+            ZCLI_SECRETS_BACKEND=secret-service zig build test-secrets-live
           '
+
+      # pass path: a throwaway, passphrase-less GPG key in an isolated GNUPGHOME
+      # (loopback pinentry so nothing prompts), and an isolated password store.
+      # No session bus is needed — this is the headless case pass exists to serve.
+      - name: Live round-trip (Linux pass)
+        if: runner.os == 'Linux'
+        working-directory: packages/core
+        shell: bash
+        run: |
+          set -e
+          export GNUPGHOME="$(mktemp -d)"
+          export PASSWORD_STORE_DIR="$(mktemp -d)"
+          printf 'allow-loopback-pinentry\n' > "$GNUPGHOME/gpg-agent.conf"
+          printf 'pinentry-mode loopback\n'  > "$GNUPGHOME/gpg.conf"
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --quick-generate-key 'zcli CI <ci@zcli.invalid>' default default never
+          pass init 'zcli CI <ci@zcli.invalid>'
+          ZCLI_SECRETS_BACKEND=pass zig build test-secrets-live
 
   examples:
     name: canonical examples compile
@@ -185,14 +207,10 @@ jobs:
           version: 0.16.0
 
       # The `ghauth` and `oauth-device` examples opt into zcli_secrets, whose
-      # Linux backend links libsecret at build time (ADR-0003). Compiling the
-      # examples therefore needs the dev headers on Linux; macOS/Windows
-      # keychains link nothing.
-      - name: Install Secret Service deps (for the zcli_secrets examples)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libsecret-1-dev libglib2.0-dev
-
+      # Linux backend now shells out at runtime instead of linking libsecret
+      # (ADR-0010) — so compiling the examples needs no dev headers on any
+      # platform.
+      #
       # The canonical example CLIs are the idiom source AND the drift-detector
       # (ADR-0004): compiling them here means a framework change that breaks the
       # documented idioms fails CI, rather than silently rotting the examples

@@ -9,28 +9,31 @@
 //!
 //! ## Why a plugin, not core
 //!
-//! A real OS keychain needs dynamic linking (macOS `Security.framework`, Linux
-//! Secret Service, Windows Credential Manager). Linking that into *every* CLI
-//! would break zcli's static single-binary (libc-free musl) property. So this
-//! ships as an opt-in plugin: the native-linking cost is paid only by apps that
-//! register it. A CLI that never registers `zcli_secrets` stays fully static.
+//! A real secure store needs platform machinery that would otherwise burden
+//! *every* CLI: macOS and Windows dynamically link a system library
+//! (`Security.framework`, `advapi32`), and Linux shells out to a helper binary
+//! at runtime. Forcing any of that on CLIs that never store a secret would
+//! compromise zcli's static single-binary (libc-free musl) property. So this
+//! ships as an opt-in plugin: the cost is paid only by apps that register it.
+//! A CLI that never registers `zcli_secrets` stays fully static.
 //!
 //! ## Backend selection
 //!
-//! The backend is a real OS keychain, chosen at compile time from the target OS.
-//! Registering the plugin is what pulls in that platform's native-library
-//! linking.
+//! The backend is a real secure store, chosen at compile time from the target
+//! OS. Registering the plugin is what pulls in that platform's machinery.
 //!
 //! - **macOS** → the OS Keychain (`keychain_macos.zig`; `Security` +
 //!   `CoreFoundation`).
-//! - **Linux** → the Secret Service via libsecret (`secret_service_linux.zig`;
-//!   `libsecret-1` + glib, over D-Bus).
+//! - **Linux** → the Secret Service (via `secret-tool`) or `pass`, selected at
+//!   *runtime* (`linux.zig`). It shells out rather than linking libsecret, so
+//!   Linux secrets no longer break a musl build, and `pass` covers headless
+//!   environments the Secret Service can't. See ADR-0010.
 //! - **Windows** → the Credential Manager (`credential_manager_windows.zig`;
 //!   `advapi32`).
 //!
-//! There is deliberately **no fallback**. Credentials belong in an OS-encrypted
-//! keychain, not a plaintext file; so registering this plugin for any other
-//! target is a **compile-time error** rather than a silent, insecure store.
+//! There is deliberately **no fallback**. Credentials belong in an encrypted
+//! store, not a plaintext file; so registering this plugin for any other target
+//! is a **compile-time error** rather than a silent, insecure store.
 //!
 //! ## Key and value constraints
 //!
@@ -65,28 +68,30 @@ const builtin = @import("builtin");
 
 pub const plugin_id = "zcli_secrets";
 
-/// Which OS keychain backend this target uses.
-const Backend = enum { keychain, secret_service, credential_manager };
+/// Which secure store backend this target uses.
+const Backend = enum { keychain, linux, credential_manager };
 
 const active_backend: Backend = switch (builtin.os.tag) {
     .macos => .keychain,
-    .linux => .secret_service,
+    .linux => .linux,
     .windows => .credential_manager,
     else => @compileError(
         "zcli_secrets has no secure keychain backend for this target OS (" ++
             @tagName(builtin.os.tag) ++
-            "). Supported: macOS (Keychain), Linux (Secret Service), Windows " ++
-            "(Credential Manager). Credentials are not stored in a plaintext " ++
-            "file fallback — remove the plugin for this target, or add a " ++
-            "keychain backend for it.",
+            "). Supported: macOS (Keychain), Linux (Secret Service or pass), " ++
+            "Windows (Credential Manager). Credentials are not stored in a " ++
+            "plaintext file fallback — remove the plugin for this target, or add " ++
+            "a keychain backend for it.",
     ),
 };
 
 /// The native backend module for this target. Only the selected switch prong is
 /// evaluated at compile time, so a build never imports a backend for another OS.
+/// The Linux backend is a runtime dispatcher over Secret Service / `pass`; macOS
+/// and Windows are direct keychain FFI.
 const native = switch (active_backend) {
     .keychain => @import("keychain_macos.zig"),
-    .secret_service => @import("secret_service_linux.zig"),
+    .linux => @import("linux.zig"),
     .credential_manager => @import("credential_manager_windows.zig"),
 };
 
@@ -123,20 +128,20 @@ pub const ContextData = struct {
     /// so they are freed when the command returns; free earlier if desired.
     pub fn get(_: *ContextData, context: anytype, name: []const u8) !?[]const u8 {
         try validateName(name);
-        return native.get(context.allocator, context.app_name, name);
+        return native.get(context.allocator, context.io, context.environ, context.app_name, name);
     }
 
     /// Store (or overwrite) a secret. The value is copied; the caller retains
     /// ownership of the passed slice.
     pub fn set(_: *ContextData, context: anytype, name: []const u8, value: []const u8) !void {
         try validateName(name);
-        return native.set(context.allocator, context.app_name, name, value);
+        return native.set(context.allocator, context.io, context.environ, context.app_name, name, value);
     }
 
     /// Remove a secret. A no-op (success) if it does not exist.
     pub fn delete(_: *ContextData, context: anytype, name: []const u8) !void {
         try validateName(name);
-        return native.delete(context.allocator, context.app_name, name);
+        return native.delete(context.allocator, context.io, context.environ, context.app_name, name);
     }
 };
 

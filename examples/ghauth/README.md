@@ -33,9 +33,10 @@ What it demonstrates:
 - **Graceful states** — clear errors for "no `$GITHUB_TOKEN`", "not logged in",
   and a rejected (401) token.
 
-> Enabling `zcli_secrets` links a native keychain library (libsecret on Linux;
-> nothing extra on macOS/Windows). That's the opt-in cost ADR-0003 keeps off
-> projects that don't store secrets.
+> Enabling `zcli_secrets` links a native keychain library on macOS/Windows and,
+> on Linux, shells out to `secret-tool` or `pass` at runtime (ADR-0010) — the
+> binary stays static. That's the opt-in cost ADR-0003 keeps off projects that
+> don't store secrets.
 
 Run it:
 
