@@ -23,6 +23,35 @@ jobs:
       - name: Check formatting
         run: zig fmt --check packages projects examples build.zig
 
+  # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
+  # ship in lockstep and MUST declare the same version — the CLI's `--version`
+  # reads its own zon, the website + library tag read the root's. The release
+  # automation bumps both together; this guards the manual path from drifting
+  # them apart, which would otherwise ship a mislabelled binary silently.
+  version-sync:
+    name: version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Versions match across build.zig.zon files
+        shell: bash
+        run: |
+          extract() { grep -m1 -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'; }
+          root=$(extract build.zig.zon)
+          cli=$(extract projects/zcli/build.zig.zon)
+          echo "root build.zig.zon:          $root"
+          echo "projects/zcli/build.zig.zon: $cli"
+          if [ -z "$root" ] || [ -z "$cli" ]; then
+            echo "::error::could not read a version from one of the build.zig.zon files"
+            exit 1
+          fi
+          if [ "$root" != "$cli" ]; then
+            echo "::error::version drift: root=$root cli=$cli — both build.zig.zon files must declare the same version"
+            exit 1
+          fi
+
   test:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -5,19 +5,112 @@ on:
     tags:
       - "*-v*"  # CLI releases (e.g., zcli-v0.9.0)
       - "v*"    # Library releases (e.g., v0.9.0)
+  # One-button release: pick a version, CI bumps both build.zig.zon files,
+  # commits to main, tags v<version> + zcli-v<version>, and publishes — all in
+  # this same run. Manual tag pushes above still work as a fallback.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version, semver only (e.g. 0.20.0). Bumps both build.zig.zon files, tags, and publishes the CLI + library release."
+        required: true
+        type: string
 
 # Only the jobs that publish get write access.
 permissions:
   contents: read
 
 jobs:
+  # Resolves what this run should do — for a tag push, read the tag; for a
+  # manual dispatch, perform the version bump + tag push here so the build and
+  # publish jobs below run against a real tag in this same run. (A tag pushed by
+  # GITHUB_TOKEN would NOT trigger a second workflow run, which is exactly why
+  # the bump lives inside the release run instead of a separate cutter.)
+  setup:
+    name: Resolve release plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      do_cli: ${{ steps.plan.outputs.do_cli }}
+      do_lib: ${{ steps.plan.outputs.do_lib }}
+      ref: ${{ steps.plan.outputs.ref }}
+      cli_tag: ${{ steps.plan.outputs.cli_tag }}
+      lib_version: ${{ steps.plan.outputs.lib_version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Full history + tags so the dispatch path can commit to main and
+          # detect an already-used version.
+          fetch-depth: 0
+
+      - name: Plan
+        id: plan
+        shell: bash
+        run: |
+          set -eo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version must be semver like 0.20.0 (got '$VERSION')"
+              exit 1
+            fi
+            if git rev-parse -q --verify "refs/tags/zcli-v$VERSION" >/dev/null \
+              || git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+              echo "::error::a tag for $VERSION already exists — pick a new version"
+              exit 1
+            fi
+
+            # Bump the top-level .version field in both manifests. The anchored
+            # 4-space indent avoids the commented ".version" mention in the root
+            # manifest's dependency notes.
+            for f in build.zig.zon projects/zcli/build.zig.zon; do
+              sed -i -E "s/^([[:space:]]*)\.version = \"[0-9]+\.[0-9]+\.[0-9]+\"/\1.version = \"$VERSION\"/" "$f"
+              grep -q "\.version = \"$VERSION\"" "$f" || { echo "::error::failed to bump $f"; exit 1; }
+            done
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Bump version to $VERSION"
+            git push origin HEAD:main
+            git tag "v$VERSION"
+            git tag "zcli-v$VERSION"
+            git push origin "v$VERSION" "zcli-v$VERSION"
+
+            echo "do_cli=true" >> "$GITHUB_OUTPUT"
+            echo "do_lib=true" >> "$GITHUB_OUTPUT"
+            echo "ref=zcli-v$VERSION" >> "$GITHUB_OUTPUT"
+            echo "cli_tag=zcli-v$VERSION" >> "$GITHUB_OUTPUT"
+            echo "lib_version=$VERSION" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+            case "$TAG" in
+              zcli-v*)
+                echo "do_cli=true" >> "$GITHUB_OUTPUT"
+                echo "do_lib=false" >> "$GITHUB_OUTPUT"
+                echo "cli_tag=$TAG" >> "$GITHUB_OUTPUT"
+                ;;
+              v*)
+                echo "do_cli=false" >> "$GITHUB_OUTPUT"
+                echo "do_lib=true" >> "$GITHUB_OUTPUT"
+                echo "lib_version=${TAG#v}" >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo "::error::unrecognized tag '$TAG'"
+                exit 1
+                ;;
+            esac
+          fi
+
   # Nothing enforces that a tag points at a commit that passed CI, so the
   # release gates on the same unit + e2e coverage CI runs. A bad tag must
   # fail here, not ship.
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: startsWith(github.ref, 'refs/tags/zcli-v')
+    needs: setup
+    if: needs.setup.outputs.do_cli == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -25,6 +118,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -53,9 +148,8 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    needs: test
-    # Only build binaries for CLI releases (zcli-v*)
-    if: startsWith(github.ref, 'refs/tags/zcli-v')
+    needs: [setup, test]
+    if: needs.setup.outputs.do_cli == 'true'
     strategy:
       matrix:
         include:
@@ -83,6 +177,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -134,9 +230,8 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
-    # Run for CLI releases (after build completes)
-    if: startsWith(github.ref, 'refs/tags/zcli-v')
+    needs: [setup, build]
+    if: needs.setup.outputs.do_cli == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,6 +239,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -167,6 +264,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          tag_name: ${{ needs.setup.outputs.cli_tag }}
           files: release/*
           generate_release_notes: true
           draft: false
@@ -176,8 +274,8 @@ jobs:
 
   library-release:
     name: Create Library Release
-    # Run for library releases (v* tags)
-    if: startsWith(github.ref, 'refs/tags/v') && !startsWith(github.ref, 'refs/tags/zcli-v')
+    needs: setup
+    if: needs.setup.outputs.do_lib == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -185,26 +283,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Extract version from tag
-        id: version
-        run: |
-          TAG=${GITHUB_REF#refs/tags/v}
-          echo "version=$TAG" >> $GITHUB_OUTPUT
-          echo "Library version: $TAG"
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
 
       - name: Generate release notes
         id: notes
         run: |
           cat > release-notes.md << 'EOF'
-          # zcli Framework v${{ steps.version.outputs.version }}
+          # zcli Framework v${{ needs.setup.outputs.lib_version }}
 
           This is the zcli framework library release. Use this version in your `build.zig.zon`:
 
           ```zig
           .dependencies = .{
               .zcli = .{
-                  .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v${{ steps.version.outputs.version }}.tar.gz",
+                  .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v${{ needs.setup.outputs.lib_version }}.tar.gz",
                   .hash = "<hash-will-be-shown-by-zig-fetch>",
               },
           },
@@ -239,8 +332,9 @@ jobs:
       - name: Create Library Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          tag_name: v${{ needs.setup.outputs.lib_version }}
           body_path: release-notes.md
-          name: zcli Framework v${{ steps.version.outputs.version }}
+          name: zcli Framework v${{ needs.setup.outputs.lib_version }}
           draft: false
           prerelease: false
         env:
