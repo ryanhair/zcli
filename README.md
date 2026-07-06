@@ -4,22 +4,23 @@
 [![Zig 0.16.0](https://img.shields.io/badge/zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/download/)
 [![Release](https://img.shields.io/github/v/release/ryanhair/zcli?filter=v*)](https://github.com/ryanhair/zcli/releases)
 
-A batteries-included framework for building command-line interfaces in Zig. Drop `.zig` files in a directory and get a fully-featured CLI — help text, completions, error suggestions, interactive prompts, progress bars, and documentation — with command discovery and routing wired up at compile time for zero-cost dispatch.
+**The filesystem is your command tree. The compiler is your argument parser.**
+
+zcli is a batteries-included framework for building polished command-line apps in Zig. Drop a `.zig` file in `commands/` and it becomes a command — help text, shell completions, typo suggestions, and typed argument parsing are generated at compile time. One dependency, one self-contained binary.
 
 <img alt="Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner" src="examples/showcase/demo.gif" width="600" />
 
-## Features
+## Your CLI is a directory
 
-- Create files in `commands/` folder to add commands. Create folders to add subcommands.
-- Define arguments and options as Zig structs — type-safe parsing at compile time.
-- Auto-generated `--help`, `--version`, shell completions, and "did you mean?" suggestions.
-- Transparent config file loading from JSON, TOML, or YAML with per-command scoping.
-- Interactive prompts — text, confirm, select, multi-select, password, search, number, editor.
-- Progress indicators — spinners (9 styles) and progress bars with ETA.
-- Theming with semantic colors that adapt to terminal capabilities.
-- Documentation generation — markdown, man pages, and HTML from command metadata.
-- Plugin system with lifecycle hooks, global options, and build-time configuration.
-- Zero-cost dispatch — commands are discovered and routing is generated at build time (no reflection or runtime filesystem scanning). Argument parsing is type-checked via comptime introspection and runs at invocation.
+```
+src/commands/
+├── deploy.zig            → myapp deploy
+└── users/
+    ├── create.zig        → myapp users create
+    └── list.zig          → myapp users list
+```
+
+A command is one file: a `meta` block for help text, two structs, and an `execute` function.
 
 ```zig
 // src/commands/deploy.zig
@@ -45,44 +46,40 @@ $ myapp deploy api --env staging
 Deploying api to staging
 ```
 
----
+No routing tables, no builder calls, no registration. Commands are discovered at build time and routing is generated as ordinary Zig code — the parser is built for your exact structs, so reading an option that doesn't exist is a compile error, and a mistyped command gets a "did you mean?" at runtime.
 
-## Installing the zcli CLI
+Variadic args, option types, typed `context`, aliases, and command groups: [docs/COMMANDS.md](docs/COMMANDS.md).
+
+## Quick start
 
 ```bash
-curl -fsSL https://zcli.sh/install.sh | sh
+curl -fsSL https://zcli.sh/install.sh | sh    # install the zcli CLI
+zcli init myapp && cd myapp
+zig build
+./zig-out/bin/myapp hello World --loud
 ```
 
-The `zcli` binary is the meta-CLI for working on zcli projects: `zcli init` scaffolds a new project, `add`/`rm`/`mv` manage commands and plugins, `tree` prints the command hierarchy, `dev` watches and rebuilds, `guide` teaches the framework's idioms, and `release` cuts releases. It's the fastest way to start — but the framework is an ordinary Zig dependency, so the manual setup below works too.
+```
+HELLO, World!
+```
 
----
+The scaffolded binary already has `--help`, `--version`, and typo suggestions wired up. From there, `zcli add command users/create` adds commands, `zcli dev` watches and rebuilds, `zcli tree` prints the command hierarchy, and `zcli guide` teaches the framework's idioms (to you or your coding agent).
 
-## Zig version support
+The framework itself is an ordinary Zig dependency — the meta-CLI is optional:
 
-zcli targets **stable Zig** — no nightly required. `main` and the latest release are built and tested against Zig 0.16.0 on Linux, macOS, and Windows in CI on every commit.
+<details>
+<summary><strong>Manual setup</strong> — add zcli to an existing project</summary>
 
-| zcli | Zig |
-|------|-----|
-| `main`, v0.18.0 and later | 0.16.0 |
-| v0.14.0 – v0.17.0 | 0.15.1 |
-
-Each release is tagged twice: `vX.Y.Z` is the framework library — the tag to use in your `build.zig.zon` — and `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries that `install.sh` downloads. The two ship in lockstep with the same version number. Release history and the versioning policy live in [CHANGELOG.md](CHANGELOG.md).
-
----
-
-## Quick Start
-
-### 1. Add zcli to your project
+Pin the release in your `build.zig.zon` with an immutable hash:
 
 ```bash
 zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.19.0.tar.gz
 ```
 
-This pins the release in your `build.zig.zon` with an immutable hash. To track the development branch instead, fetch `.../archive/refs/heads/main.tar.gz` — its hash changes with every commit, so re-run the command to update.
-
-### 2. Set up build.zig
+To track the development branch instead, fetch `.../archive/refs/heads/main.tar.gz` — its hash changes with every commit, so re-run the command to update.
 
 ```zig
+// build.zig
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
@@ -119,8 +116,6 @@ pub fn build(b: *std.Build) !void {
 }
 ```
 
-### 3. Create main.zig and your first command
-
 ```zig
 // src/main.zig
 const std = @import("std");
@@ -152,254 +147,67 @@ $ zig build && ./zig-out/bin/myapp hello world
 Hello, world!
 ```
 
----
+</details>
 
-## Commands
+## What's in the box
 
-Commands are `.zig` files in your commands directory. The file path becomes the command path:
+**Files are commands.** Build-time discovery, zero-cost dispatch, comptime-checked args and options, aliases, nested groups — plus auto-generated help, version, shell completions, and "did you mean?" suggestions.
 
-```
-src/commands/
-├── init.zig              → myapp init
-├── deploy.zig            → myapp deploy
-└── users/
-    ├── create.zig        → myapp users create
-    └── list.zig          → myapp users list
-```
+**The whole terminal toolkit.** Eight interactive prompts (text, confirm, select, multi-select, password, search, number, editor), spinners and progress bars with ETA, semantic theming that adapts to terminal capabilities, markdown-to-terminal rendering. Every piece is a standalone package that works without the framework.
 
-### Command structure
+**Production polish for free.** Config files (JSON/TOML/YAML) with per-command scoping, secrets in the OS keychain, self-upgrade from GitHub releases, man/HTML/markdown doc generation on every build, and a virtual-terminal test harness that can assert "this output is green and bold."
 
-Every command has up to four exports:
+## Why zcli?
 
-```zig
-const zcli = @import("zcli");
-// Name your app's generated context type for full editor autocomplete on `context`.
-const Context = @import("command_registry").Context;
+Zig already has good CLI libraries — the difference is the level they operate at.
 
-pub const meta = .{
-    .description = "Add files to the index",
-    .examples = &.{ "add file.txt", "add --all" },
-    .args = .{ .files = "Files to add" },
-    .options = .{
-        .all = .{ .short = 'a', .description = "Add all files" },
-    },
-    .aliases = &.{ "a" },
-};
+[zig-clap](https://github.com/Hejsil/zig-clap) is an argument parser, and the lightest of the three: describe flags in a comptime help-text DSL, get typed results back, build the rest of the CLI yourself. If flag parsing is all you need, it's a great choice. [zli](https://github.com/xcaeser/zli) is a batteries-included framework built around a runtime builder: commands are constructed with `Command.init(...)`, wired up with `addCommand`, flags registered with `addFlag` and read by name — the command tree is assembled when the program starts.
 
-pub const Args = struct {
-    files: []const []const u8,          // variadic: captures remaining args
-};
+zcli moves that work to the filesystem and the compiler. The directory tree *is* the command tree, discovered at build time with routing generated as ordinary Zig code. Arguments and options are plain structs, so the parser is generated for your exact types. And the batteries extend past parsing into the whole terminal experience.
 
-pub const Options = struct {
-    all: bool = false,                  // --all / -a (flag)
-    output: []const u8 = "text",        // --output <value>
-    count: u32 = 1,                     // --count <number>
-    verbose: ?bool = null,              // optional flag
-};
+| | zig-clap | zli | zcli |
+|---|----------|-----|------|
+| Scope | argument parser | CLI framework | CLI framework |
+| Commands defined by | manual dispatch | runtime builder | files on disk, discovered at build time |
+| Flags are | comptime DSL → typed result | registered at runtime, read by name | struct fields, checked at compile time |
+| Beyond parsing | help text | help, version, spinners | help, completions, prompts, progress, theming, config files, plugins, testing tools |
 
-pub fn execute(args: Args, options: Options, context: *Context) !void {
-    // context.stdout(), context.stderr(), context.allocator, context.theme,
-    // context.plugins.<plugin_id>, etc. — all typed and autocompletable.
-}
-```
+If you want one dependency that covers the whole terminal experience, that's the niche zcli aims to fill.
 
-#### Typing `context`
+## Interactive prompts
 
-`Context` is generated per-app from your config and plugin set, so it carries a
-typed field for every plugin's data (`context.plugins.<plugin_id>`). You can type
-the parameter two ways:
-
-- **`context: *Context`** (above) — import `@import("command_registry").Context`.
-  Best for app-local commands: full autocomplete, go-to-definition, and errors at
-  the definition site. There's no import cycle — `Context` depends only on your
-  config and plugins, not on the command files.
-- **`context: anytype`** — portable across apps with no editor hints. Use this for
-  reusable/library commands and inside plugin hooks (a plugin is compiled
-  independently of the app that hosts it).
-
-### Command groups
-
-Add an `index.zig` to give a directory a description:
+Eight prompt types with arrow-key navigation, live filtering, and unicode-correct editing. Every prompt falls back to plain line input when stdin isn't a TTY, so scripts and pipes keep working.
 
 ```zig
-// src/commands/users/index.zig
-pub const meta = .{ .description = "Manage users" };
-// No execute — running "myapp users" shows subcommands
-```
+const zinput = zcli.zinput;  // or standalone: @import("zinput")
 
----
-
-## Plugins
-
-zcli ships with eight plugins. Add them in `build.zig`:
-
-| Plugin | Provides | Default? |
-|--------|----------|----------|
-| **zcli_help** | `--help` / `-h`, auto-generated help text | Yes |
-| **zcli_version** | `--version` / `-V` | Yes |
-| **zcli_not_found** | "Did you mean?" suggestions for typos | Yes |
-| **zcli_completions** | `completions generate/install/uninstall` for bash, zsh, fish | Optional |
-| **zcli_config** | Transparent config file loading (JSON, TOML, YAML) | Optional |
-| **zcli_output** | `--output` flag (json, table, plain) | Optional |
-| **zcli_secrets** | Opt-in credential storage in the OS keychain (get/set/delete) | Optional |
-| **zcli_github_upgrade** | `upgrade` command via GitHub releases | Optional |
-
-### Plugin context data
-
-Plugins store data in `context.plugins.{plugin_id}`:
-
-```zig
-// In a command, check if help was requested
-if (context.plugins.zcli_help.help_requested) { ... }
-```
-
-### Writing plugins
-
-```zig
-pub const plugin_id = "my_plugin";
-pub const ContextData = struct { enabled: bool = false };
-
-pub const global_options = [_]zcli.GlobalOption{
-    zcli.option("verbose", bool, .{ .short = 'v', .default = false }),
-};
-
-pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !void {
-    // Store option values in context.plugins.my_plugin
-}
-
-pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
-    // Run before every command. Return null to stop execution.
-    return args;
-}
-
-pub fn onError(context: anytype, err: anyerror) !bool {
-    // Handle errors. Return true if handled.
-    return false;
-}
-```
-
-### Config file plugin
-
-The `zcli_config` plugin transparently loads option defaults from a config file. Supports JSON, TOML, and YAML — no changes to command code required.
-
-```zig
-// In build.zig plugins:
-zcli.builtin(.config, .{}),
-```
-
-Config file discovery (by extension priority):
-1. `--config <path>` flag
-2. `.{app_name}.config.json` / `.toml` / `.yaml` / `.yml` (in the current directory)
-3. `$XDG_CONFIG_HOME/{app_name}/config.json` / `.toml` / `.yaml` / `.yml`
-
-Values cascade: **CLI flags > command config > global config > struct defaults**.
-
-```json
-// .myapp.config.json
-{
-  "output": "json",         // global — applies to all commands
-  "list": {                 // scoped — applies only to "list" command
-    "all": true
-  }
-}
-```
-
-```toml
-# .myapp.config.toml
-output = "json"
-
-[list]
-all = true
-```
-
-```yaml
-# .myapp.config.yaml
-output: json
-list:
-  all: true
-```
-
----
-
-## Interactive Prompts
-
-The `zinput` package provides 8 prompt types. Works standalone — no zcli dependency required.
-
-```zig
-const zinput = zcli.zinput;  // or @import("zinput")
-
-// Text input
 const name = try zinput.text(writer, reader, allocator, .{
     .message = "Project name:",
     .default = "my-project",
 });
 
-// Confirmation
-const ok = try zinput.confirm(writer, reader, .{
-    .message = "Continue?",
-    .default = true,
-});
-
-// Single selection (arrow keys + enter)
 const idx = try zinput.select(writer, reader, .{
     .message = "Framework:",
     .choices = &.{ "express", "fastify", "koa" },
 });
 
-// Multi-selection (space to toggle, enter to confirm)
-const features = try zinput.multiSelect(writer, reader, allocator, .{
-    .message = "Features:",
-    .choices = &.{ "typescript", "eslint", "prettier" },
-    .defaults = &.{ true, true, false },
-});
-
-// Password (masked input)
 const pw = try zinput.password(writer, reader, allocator, .{
     .message = "Token:",
 });
-
-// Search (type to filter, arrow keys to navigate)
-const pkg = try zinput.search(writer, reader, allocator, .{
-    .message = "Package:",
-    .choices = &.{ "express", "fastify", "koa", "hapi", "nest" },
-});
-
-// Number (with validation)
-const port = try zinput.number(writer, reader, .{
-    .message = "Port:",
-    .default = 3000,
-    .min = 1,
-    .max = 65535,
-});
-
-// Editor (launches $EDITOR)
-const msg = try zinput.editor(writer, reader, allocator, .{
-    .message = "Commit message:",
-    .default = "feat: ",
-    .extension = ".md",
-});
 ```
 
-All prompts fall back to line-based input when stdin is not a TTY. The `prefix` field (default `"? "`) is configurable on all types.
+Also: `confirm`, `multiSelect`, `search` (type-to-filter), `number` (range-validated), and `editor` (opens `$EDITOR`). Full API in [packages/zinput](packages/zinput/).
 
----
-
-## Progress Indicators
+## Progress indicators
 
 ```zig
-const zprogress = zcli.zprogress;  // or @import("zprogress")
+const zprogress = zcli.zprogress;  // or standalone: @import("zprogress")
 
-// Spinner — indeterminate work
 var spinner = zprogress.spinner(io, .{ .style = .dots });
 spinner.start("Connecting to server...");
-spinner.setText("Uploading changes...");
-spinner.succeed("Synced successfully"); // or .fail() / .warn() / .info() / .stop()
+spinner.succeed("Synced successfully"); // or .fail() / .warn() / .info()
 
-// Progress bar — known total
-var bar = zprogress.progressBar(io, .{
-    .total = items.len,
-    .show_eta = true,
-});
+var bar = zprogress.progressBar(io, .{ .total = items.len, .show_eta = true });
 for (items, 0..) |item, i| {
     process(item);
     bar.update(i + 1, null);
@@ -407,52 +215,45 @@ for (items, 0..) |item, i| {
 bar.finish();
 ```
 
-9 spinner styles: `dots`, `dots2`, `dots3`, `line`, `arrow`, `bounce`, `clock`, `moon`, `simple`. Auto-disables animations when not a TTY. Symbols adapt to terminal unicode support.
-
----
+Nine spinner styles; animations auto-disable when not a TTY, symbols adapt to unicode support. Details in [packages/zprogress](packages/zprogress/).
 
 ## Theming
 
 ```zig
-const ztheme = zcli.ztheme;  // or @import("ztheme")
+const ztheme = zcli.ztheme;  // or standalone: @import("ztheme")
 
-// In a zcli command you already have one: `context.theme`. Standalone:
+// In a zcli command you already have one: context.theme. Standalone:
 const theme_ctx = ztheme.Theme.init(init.environ_map, io);
 
-// Fluent API
 try ztheme.theme("Error").red().bold().render(writer, &theme_ctx);
 try ztheme.theme("Success").success().render(writer, &theme_ctx);
-
-// Semantic roles: success, err, warning, info, muted, command, flag, path, value, code, header, link
 ```
 
-Adapts to terminal capabilities: true color, 256 color, 16 color, or no color (respects `NO_COLOR`).
+Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Full API in [packages/ztheme](packages/ztheme/).
 
----
+## Config files
 
-## Documentation Generation
+The `zcli_config` plugin transparently loads option defaults from JSON, TOML, or YAML — zero changes to command code. Values cascade: **CLI flags > command config > global config > struct defaults**.
 
-Generate markdown, man pages, or HTML documentation from your command metadata — automatically on every build:
-
-```zig
-// In build.zig, after generate():
-zcli.generateDocs(b, cmd_registry, zcli_dep, .{
-    .formats = &.{ "markdown", "man", "html" },
-    .output_dir = "docs",
-});
+```json
+// .myapp.config.json
+{
+  "output": "json",         // global — applies to all commands
+  "list": { "all": true }   // scoped — applies only to "myapp list"
+}
 ```
 
-Run `zig build` and docs appear in `docs/markdown/`, `docs/man/`, `docs/html/`. Single format goes directly into the output dir. HTML includes a styled, dark-mode-aware static site with navigation.
+Discovery order and formats in [docs/PLUGINS.md](docs/PLUGINS.md#config-file-plugin).
 
----
+## Plugins
+
+Cross-cutting features are plugins, added in one line of `build.zig`: help, version, "did you mean?", shell completions (bash/zsh/fish), config files, `--output` formatting (json/table/plain), OS-keychain secrets, and self-upgrade via GitHub releases all ship in the box. Plugins hook the command lifecycle, register global options, expose typed data as `context.plugins.<id>`, and can ship commands of their own.
+
+The full list and a guide to writing your own: [docs/PLUGINS.md](docs/PLUGINS.md).
 
 ## Testing
 
-zcli provides three tiers of testing. See [docs/TESTING.md](docs/TESTING.md) for full documentation.
-
-### Unit testing (in-process)
-
-Test commands directly without compiling a binary:
+Test commands in-process against a virtual terminal — assert on colors and formatting, not escape codes:
 
 ```zig
 const testing = @import("zcli-testing");
@@ -464,88 +265,39 @@ test "deploy command" {
     });
     defer result.deinit();
 
-    // Assert on raw text
     try std.testing.expectEqualStrings("Deploying api to staging\n", result.stdout);
-
-    // Assert on rendered terminal (colors, formatting)
     try std.testing.expect(result.term.containsText("Deploying"));
     try std.testing.expect(result.term.hasAttribute(0, 0, .bold));
 }
 ```
 
-`result.term` is a virtual terminal ([vterm](packages/vterm/)) that parses ANSI codes — test colors, bold/italic, cursor position, and formatted output.
+`result.term` is a real ANSI-parsing terminal emulator ([vterm](packages/vterm/)). Two more tiers — subprocess integration tests and snapshot tests — are covered in [docs/TESTING.md](docs/TESTING.md).
 
-### Integration testing (subprocess)
+## Documentation generation
 
-```zig
-const std = @import("std");
-const testing = @import("zcli-testing");
-
-test "help flag" {
-    var result = try testing.runSubprocess(
-        std.testing.allocator,
-        std.testing.io,
-        "./zig-out/bin/myapp",
-        &.{"--help"},
-    );
-    defer result.deinit();
-    try testing.expectExitCode(result, 0);
-    try testing.expectContains(result.stdout, "USAGE:");
-}
-```
-
-### Snapshot testing
+Generate markdown, man pages, or HTML documentation from your command metadata — automatically on every build:
 
 ```zig
-try testing.expectSnapshot(allocator, io, std.Io.Dir.cwd(), result.stdout, @src(), "help_output", .{});
-// Update snapshots by threading `.update = true` from a build option:
-// zig build test -Dupdate-snapshots
+// In build.zig, after generate():
+zcli.generateDocs(b, cmd_registry, zcli_dep, .{
+    .formats = &.{ "markdown", "man", "html" },
+    .output_dir = "docs",
+});
 ```
 
----
-
-## Packages
-
-| Package | Description |
-|---------|-------------|
-| **core** | Command discovery, argument parsing, plugin system, registry |
-| **zinput** | Interactive prompts (text, confirm, select, password, search, number, editor) |
-| **zprogress** | Spinners and progress bars |
-| **ztheme** | Terminal theming with semantic colors and capability detection |
-| **markdown_fmt** | Markdown-to-terminal formatting with semantic tags |
-| **terminal** | Raw mode, key reading, cursor control, unicode detection |
-| **vterm** | Virtual terminal emulator for testing ANSI output |
-| **testing** | Subprocess runner, assertions, snapshot testing, e2e harness |
-
-All packages work standalone — you can use `zinput`, `zprogress`, `ztheme`, or `terminal` in any Zig project without the zcli framework.
-
----
+The HTML output is a styled, dark-mode-aware static site with navigation.
 
 ## Example
 
-The [showcase](examples/showcase/) is a fully functional task tracker CLI that demonstrates every zcli feature:
-
-- **14 commands** with args, options, aliases, and nested groups
-- **Interactive prompts** — text, confirm, select, search, number, editor
-- **Progress indicators** — spinners and progress bars
-- **Colored output** — status badges, themed formatting
-- **JSON persistence** — read/write tasks to disk
-- **Config file** — per-command defaults via `.tasks.config.json`
-- **Shell completions**, **doc generation**, **help**, and **error suggestions**
+The [showcase](examples/showcase/) is a fully functional task tracker CLI — the app in the demo GIF above — that exercises every zcli feature: 14 commands with nested groups and aliases, every prompt type, spinners and progress bars, themed output, JSON persistence, config files, completions, and doc generation.
 
 ```bash
 cd examples/showcase && zig build
 ./zig-out/bin/tasks init          # Interactive project wizard
-./zig-out/bin/tasks add "My task" # Add via flags
-./zig-out/bin/tasks add           # Add interactively
+./zig-out/bin/tasks add           # Add a task interactively
 ./zig-out/bin/tasks list          # Colored task list
-./zig-out/bin/tasks search        # Search with filtering
-./zig-out/bin/tasks sync          # Spinner demo
+./zig-out/bin/tasks search        # Live search with filtering
 ```
-
-The `zcli` meta-CLI scaffolds new projects: `zcli init myproject`
-
----
 
 ## Built with zcli
 
@@ -554,28 +306,31 @@ The `zcli` meta-CLI scaffolds new projects: `zcli init myproject`
 
 Building something with zcli? Open a PR to add it here.
 
----
+## Packages
 
-## How does zcli compare?
+| Package | Description |
+|---------|-------------|
+| [**core**](packages/core/) | Command discovery, argument parsing, plugin system, registry |
+| [**zinput**](packages/zinput/) | Interactive prompts (text, confirm, select, password, search, number, editor) |
+| [**zprogress**](packages/zprogress/) | Spinners and progress bars |
+| [**ztheme**](packages/ztheme/) | Terminal theming with semantic colors and capability detection |
+| [**markdown_fmt**](packages/markdown_fmt/) | Markdown-to-terminal formatting with semantic tags |
+| [**terminal**](packages/terminal/) | Raw mode, key reading, cursor control, unicode detection |
+| [**vterm**](packages/vterm/) | Virtual terminal emulator for testing ANSI output |
+| [**testing**](packages/testing/) | Subprocess runner, assertions, snapshot testing, e2e harness |
 
-Zig already has good CLI libraries — the difference is the level they operate at.
+All packages work standalone — use `zinput`, `zprogress`, `ztheme`, or `terminal` in any Zig project without the framework.
 
-[zig-clap](https://github.com/Hejsil/zig-clap) is an argument parser, and the lightest of the three. You describe flags in a comptime help-text DSL and get typed results back. It deliberately stays out of the framework business — parsing and help text are in scope, and the rest of the CLI is yours to build. If flag parsing is all you need, it's a great choice.
+## Zig version support
 
-[zli](https://github.com/xcaeser/zli) is a batteries-included framework built around a runtime builder: each command is constructed with `Command.init(...)`, wired up with `addCommand`, its flags registered with `addFlag` and read inside the handler by name — `ctx.flag("verbose", bool)`. The command tree is assembled when the program starts.
+zcli targets **stable Zig** — no nightly required. `main` and the latest release are built and tested against Zig 0.16.0 on Linux, macOS, and Windows in CI on every commit.
 
-zcli moves that work to the filesystem and the compiler. The directory tree *is* the command tree — `commands/users/create.zig` is `myapp users create` — discovered at build time, with routing generated as ordinary Zig code. Arguments and options are plain structs, so the parser is generated for your exact types: an unknown flag or a wrong type is a compile error, not a runtime lookup. And the batteries extend past parsing into the whole terminal experience: shell completions, interactive prompts, progress indicators, theming, config files, plugins, and a virtual-terminal test harness.
+| zcli | Zig |
+|------|-----|
+| `main`, v0.18.0 and later | 0.16.0 |
+| v0.14.0 – v0.17.0 | 0.15.1 |
 
-| | zig-clap | zli | zcli |
-|---|----------|-----|------|
-| Scope | argument parser | CLI framework | CLI framework |
-| Commands defined by | manual dispatch | runtime builder | files on disk, discovered at build time |
-| Flags are | comptime DSL → typed result | registered at runtime, read by name | struct fields, checked at compile time |
-| Beyond parsing | help text | help, version, spinners | help, completions, prompts, progress, theming, config files, plugins, testing tools |
-
-If you want one dependency that covers the whole terminal experience, that's the niche zcli aims to fill.
-
----
+Each release is tagged twice: `vX.Y.Z` is the framework library — the tag for your `build.zig.zon` — and `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries that `install.sh` downloads. The two ship in lockstep. Release history and the versioning policy live in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
