@@ -284,7 +284,7 @@ test "nested pure command groups" {
 
 // Test structures for compile-time validation
 const ValidOptionalGroup = struct {
-    pub const Args = zcli.NoArgs;
+    pub const Args = struct {};
     pub const Options = struct {
         verbose: bool = false,
     };
@@ -295,7 +295,7 @@ const InvalidOptionalGroup = struct {
     pub const Args = struct {
         name: []const u8, // This should fail validation!
     };
-    pub const Options = zcli.NoOptions;
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, _: *zcli.Context) !void {}
 };
 
@@ -438,8 +438,8 @@ const RootCommand = struct {
         .description = "Root command",
     };
 
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
 
     pub fn execute(_: Args, _: Options, context: anytype) !void {
         try context.io.stdout.print("root executed\n", .{});
@@ -652,8 +652,8 @@ const NetworkLs = struct {
     pub const meta = .{
         .description = "List networks",
     };
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, context: anytype) !void {
         // Test command - no output needed
         _ = context;
@@ -791,16 +791,16 @@ test "metadata-only group routes through onError so the help plugin can render i
 }
 
 const OkCommand = struct {
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, context: anytype) !void {
         _ = context;
     }
 };
 
 const FailingCommand = struct {
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, context: anytype) !void {
         _ = context;
         return error.Boom;
@@ -995,8 +995,8 @@ const AliasTestCommand = struct {
         .description = "Test command with aliases",
         .aliases = &.{ "alias1", "alias2" },
     };
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, _: *zcli.Context) !void {}
 };
 
@@ -1004,8 +1004,8 @@ const NoAliasTestCommand = struct {
     pub const meta = .{
         .description = "Test command without aliases",
     };
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, _: *zcli.Context) !void {}
 };
 

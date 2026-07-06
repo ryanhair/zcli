@@ -78,8 +78,8 @@ const test_config = zcli.Config{
 const Greet = struct {
     var executed = false;
     pub const meta = .{ .description = "greet" };
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, _: anytype) !void {
         executed = true;
     }
@@ -88,8 +88,8 @@ const Greet = struct {
 const Checkout = struct {
     var executed = false;
     pub const meta = .{ .description = "checkout" };
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, _: anytype) !void {
         executed = true;
     }
@@ -99,7 +99,7 @@ const Echo = struct {
     var last: []const u8 = "";
     pub const meta = .{ .description = "echo" };
     pub const Args = struct { word: []const u8 };
-    pub const Options = zcli.NoOptions;
+    pub const Options = struct {};
     pub fn execute(args: Args, _: Options, _: anytype) !void {
         last = args.word;
     }
@@ -107,8 +107,8 @@ const Echo = struct {
 
 const Fail = struct {
     pub const meta = .{ .description = "fail" };
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, _: anytype) !void {
         return error.Boom;
     }
@@ -441,16 +441,16 @@ const PluginCmdProvider = struct {
         pub const pgreet = struct {
             var executed = false;
             pub const meta = .{ .description = "plugin greet" };
-            pub const Args = zcli.NoArgs;
-            pub const Options = zcli.NoOptions;
+            pub const Args = struct {};
+            pub const Options = struct {};
             pub fn execute(_: Args, _: Options, _: anytype) !void {
                 executed = true;
             }
         };
         pub const pfail = struct {
             pub const meta = .{ .description = "plugin fail" };
-            pub const Args = zcli.NoArgs;
-            pub const Options = zcli.NoOptions;
+            pub const Args = struct {};
+            pub const Options = struct {};
             pub fn execute(_: Args, _: Options, _: anytype) !void {
                 return error.Boom;
             }
@@ -463,7 +463,7 @@ const PluginCmdProvider = struct {
                 var last: []const u8 = "";
                 pub const meta = .{ .description = "nested plugin command" };
                 pub const Args = struct { name: []const u8 };
-                pub const Options = zcli.NoOptions;
+                pub const Options = struct {};
                 pub fn execute(args: Args, _: Options, _: anytype) !void {
                     last = args.name;
                 }
@@ -637,8 +637,8 @@ const StatefulPlugin = struct {
 const ReadState = struct {
     var seen: ?u32 = null;
     pub const meta = .{ .description = "read plugin state" };
-    pub const Args = zcli.NoArgs;
-    pub const Options = zcli.NoOptions;
+    pub const Args = struct {};
+    pub const Options = struct {};
     pub fn execute(_: Args, _: Options, context: anytype) !void {
         seen = context.plugins.stateful.count;
         context.plugins.stateful.count += 10;

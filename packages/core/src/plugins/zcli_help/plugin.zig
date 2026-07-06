@@ -486,7 +486,7 @@ pub const commands = struct {
             command: ?[]const u8 = null,
         };
 
-        pub const Options = zcli.NoOptions;
+        pub const Options = struct {};
 
         pub const meta = .{
             .description = "Show help for commands",

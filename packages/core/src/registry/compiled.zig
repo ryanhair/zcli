@@ -872,8 +872,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 return error.CommandNotFound;
             }
 
-            const ArgsType = if (@hasDecl(Module, "Args")) Module.Args else struct {};
-            const OptionsType = if (@hasDecl(Module, "Options")) Module.Options else struct {};
+            // Reached only after the `!@hasDecl(Module, "execute")` early return
+            // above, and `validateCommand` requires an executable command to
+            // declare both — so `Args`/`Options` are guaranteed present here.
+            const ArgsType = Module.Args;
+            const OptionsType = Module.Options;
             const cmd_meta = if (@hasDecl(Module, "meta")) Module.meta else null;
 
             // A regular command that declares no positionals but got a
