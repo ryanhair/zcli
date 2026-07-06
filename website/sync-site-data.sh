@@ -5,7 +5,8 @@
 # (Zine parses JSON as a Ziggy document).
 #
 # Currently sourced:
-#   version <- root build.zig.zon `.version`
+#   version      <- root build.zig.zon `.version`
+#   plugin_count <- number of plugin directories in packages/core/src/plugins
 # Add more fields here as they're needed (pulled from wherever their source of truth is).
 #
 # Runs automatically in CI (deploy-docs.yml) before `zine release`; run it
@@ -23,9 +24,18 @@ if [ -z "$version" ]; then
   exit 1
 fi
 
+plugins_dir="$script_dir/../packages/core/src/plugins"
+plugin_count=$(find "$plugins_dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d '[:space:]')
+
+if [ "$plugin_count" -eq 0 ]; then
+  echo "sync-site-data: found no plugin directories in $plugins_dir" >&2
+  exit 1
+fi
+
 cat > "$out" <<EOF
 {
-  "version": "$version"
+  "version": "$version",
+  "plugin_count": "$plugin_count"
 }
 EOF
-echo "sync-site-data: wrote version $version to $out"
+echo "sync-site-data: wrote version $version, plugin_count $plugin_count to $out"
