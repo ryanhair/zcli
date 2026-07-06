@@ -551,6 +551,43 @@ fn loopbackUrl(port: u16) ![]u8 {
     return std.fmt.allocPrint(testing.allocator, "http://127.0.0.1:{d}/", .{port});
 }
 
+/// True for the transient connect failure these loopback tests race into on
+/// Windows: the client occasionally dials the ephemeral port a hair before the
+/// server task reaches `accept()`, and the OS answers the SYN with a RST
+/// (STATUS_CONNECTION_REFUSED, NTSTATUS 0xc0000236). Zig 0.16's std has no
+/// switch arm mapping that status, so it surfaces as the generic
+/// `error.Unexpected` (after dumping a stack trace) rather than
+/// `error.ConnectionRefused` — both are treated as transient here.
+fn isTransientConnectError(err: anyerror) bool {
+    return switch (err) {
+        error.ConnectionRefused, error.Unexpected => true,
+        else => false,
+    };
+}
+
+/// Drive a request against the loopback server, retrying only the initial
+/// connect race described on `isTransientConnectError`. A refused SYN never
+/// establishes a connection, so the server's pending `accept()` is untouched
+/// and re-issuing the request is safe. Non-transient errors — including the
+/// ones several of these tests assert on — pass straight through.
+fn loopbackRequest(
+    client: *Client,
+    method: Method,
+    url: []const u8,
+    options: RequestOptions,
+) !Response {
+    var attempts: u8 = 0;
+    while (true) : (attempts += 1) {
+        return client.request(method, url, options) catch |err| {
+            if (attempts < 20 and isTransientConnectError(err)) {
+                testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
+                continue;
+            }
+            return err;
+        };
+    }
+}
+
 test "GET over loopback returns the status and body" {
     const io = testing.io;
 
@@ -569,7 +606,7 @@ test "GET over loopback returns the status and body" {
     const url = try loopbackUrl(port);
     defer testing.allocator.free(url);
 
-    var response = try client.get(url);
+    var response = try loopbackRequest(&client, .GET, url, .{});
     defer response.deinit();
 
     try testing.expectEqual(Status.ok, response.status);
@@ -595,7 +632,7 @@ test "a response larger than the cap fails with ResponseTooLarge" {
     const url = try loopbackUrl(port);
     defer testing.allocator.free(url);
 
-    try testing.expectError(Error.ResponseTooLarge, client.get(url));
+    try testing.expectError(Error.ResponseTooLarge, loopbackRequest(&client, .GET, url, .{}));
 }
 
 /// Accept one connection and answer with a redirect to `location` (with
@@ -671,7 +708,7 @@ test "credential headers survive a same-host redirect" {
     const url = try loopbackUrl(port);
     defer testing.allocator.free(url);
 
-    var response = try client.request(.GET, url, .{ .headers = &redirect_test_headers });
+    var response = try loopbackRequest(&client, .GET, url, .{ .headers = &redirect_test_headers });
     defer response.deinit();
 
     try testing.expectEqual(Status.ok, response.status);
@@ -701,7 +738,7 @@ test "credential headers are stripped when a redirect crosses hosts" {
     const url = try loopbackUrl(port);
     defer testing.allocator.free(url);
 
-    var response = try client.request(.GET, url, .{ .headers = &redirect_test_headers });
+    var response = try loopbackRequest(&client, .GET, url, .{ .headers = &redirect_test_headers });
     defer response.deinit();
 
     try testing.expectEqual(Status.ok, response.status);
@@ -747,7 +784,7 @@ test "a redirect loop fails with TooManyRedirects" {
     var client = Client.init(testing.allocator, io, .{});
     defer client.deinit();
 
-    try testing.expectError(Error.TooManyRedirects, client.get(url));
+    try testing.expectError(Error.TooManyRedirects, loopbackRequest(&client, .GET, url, .{}));
 }
 
 test "a request that outlives its timeout fails with error.Timeout" {
@@ -770,5 +807,5 @@ test "a request that outlives its timeout fails with error.Timeout" {
     const url = try loopbackUrl(port);
     defer testing.allocator.free(url);
 
-    try testing.expectError(Error.Timeout, client.get(url));
+    try testing.expectError(Error.Timeout, loopbackRequest(&client, .GET, url, .{}));
 }
