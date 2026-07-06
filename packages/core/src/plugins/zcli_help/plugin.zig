@@ -791,6 +791,36 @@ test "help plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "isHelpRequested"));
 }
 
+test "help never renders auto-generated --no- negation flags" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // A command with two boolean flags. The parser accepts `--no-verbose` /
+    // `--no-color`, but help must only list the declared, positive spellings —
+    // negation is synthesized in the parser and never materialized here.
+    const module_info = zcli.CommandModuleInfo{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "verbose", .is_optional = false, .is_array = false, .short = 'v', .description = "Verbose output" },
+            .{ .name = "color", .is_optional = false, .is_array = false, .description = "Colorize output" },
+        },
+    };
+
+    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    defer allocator.free(help);
+
+    try std.testing.expect(std.mem.indexOf(u8, help, "--verbose") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--no-verbose") == null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--no-color") == null);
+}
+
 // Note: Integration tests for handleGlobalOption and help command execution
 // require a compiled registry with this plugin registered. See integration tests.
 

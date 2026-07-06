@@ -176,6 +176,14 @@ pub fn isBooleanType(comptime T: type) bool {
     return T == bool;
 }
 
+/// Check if a type is a boolean *flag* — a field that parses by presence, not by
+/// consuming a value. Both `bool` (two-state) and `?bool` (three-state, with `null`
+/// for "unset") are flags: `--flag` sets true, the auto-generated `--no-flag` sets
+/// false, and an absent flag keeps its default (false / null respectively).
+pub fn isBooleanFlag(comptime T: type) bool {
+    return T == bool or T == ?bool;
+}
+
 /// Check if a type is an array type (for accumulating values)
 /// Returns true for arrays like [][]const u8, []i32, etc.
 /// Returns false for strings like []const u8
@@ -515,6 +523,16 @@ test "isBooleanType function" {
     try std.testing.expect(!isBooleanType(?bool));
 }
 
+test "isBooleanFlag function" {
+    // Both plain and optional bool are flags (presence-based, negatable).
+    try std.testing.expect(isBooleanFlag(bool));
+    try std.testing.expect(isBooleanFlag(?bool));
+    // Everything else takes a value.
+    try std.testing.expect(!isBooleanFlag(u8));
+    try std.testing.expect(!isBooleanFlag(?u16));
+    try std.testing.expect(!isBooleanFlag([]const u8));
+}
+
 test "isArrayType function" {
     try std.testing.expect(isArrayType([][]const u8));
     try std.testing.expect(isArrayType([]i32));
@@ -546,6 +564,21 @@ fn customNameFor(comptime meta: anytype, comptime field_name: []const u8) ?[]con
     return field_meta.name;
 }
 
+/// The effective long flag name for a field: the custom `meta.options.<field>.name`
+/// if declared, otherwise the field name with underscores turned into dashes. This
+/// is the exact string that appears after `--` on the command line, and the base
+/// that `--no-<name>` negation is built from.
+pub fn effectiveLongName(comptime meta: anytype, comptime field_name: []const u8) []const u8 {
+    if (comptime customNameFor(meta, field_name)) |custom| return custom;
+    const dashed = comptime blk: {
+        var buf: [field_name.len]u8 = undefined;
+        for (field_name, 0..) |c, i| buf[i] = if (c == '_') '-' else c;
+        const frozen = buf;
+        break :blk frozen;
+    };
+    return &dashed;
+}
+
 /// Does the argv long-option name `option_name` address the field
 /// `field_name`? A field with a custom `meta.options.<field>.name` matches
 /// ONLY that custom name; otherwise the field matches both its literal name
@@ -555,16 +588,23 @@ pub fn longNameMatchesField(
     comptime field_name: []const u8,
     option_name: []const u8,
 ) bool {
-    if (comptime customNameFor(meta, field_name)) |custom| {
-        return std.mem.eql(u8, custom, option_name);
+    if (comptime customNameFor(meta, field_name)) |_| {
+        return std.mem.eql(u8, comptime effectiveLongName(meta, field_name), option_name);
     }
-    const dashed = comptime blk: {
-        var buf: [field_name.len]u8 = undefined;
-        for (field_name, 0..) |c, i| buf[i] = if (c == '_') '-' else c;
-        const frozen = buf;
-        break :blk frozen;
-    };
-    return std.mem.eql(u8, field_name, option_name) or std.mem.eql(u8, &dashed, option_name);
+    return std.mem.eql(u8, field_name, option_name) or
+        std.mem.eql(u8, comptime effectiveLongName(meta, field_name), option_name);
+}
+
+/// Does the argv long-option name `option_name` address the *negation* of the
+/// boolean flag `field_name` — i.e. is it `no-<effective long name>`? Callers gate
+/// this on `isBooleanFlag`; only boolean flags have a negation form.
+pub fn negatedLongNameMatchesField(
+    comptime meta: anytype,
+    comptime field_name: []const u8,
+    option_name: []const u8,
+) bool {
+    if (!std.mem.startsWith(u8, option_name, "no-")) return false;
+    return std.mem.eql(u8, comptime effectiveLongName(meta, field_name), option_name[3..]);
 }
 
 /// The short flag character for a field: `meta.options.<field>.short` when
@@ -590,7 +630,7 @@ pub fn longOptionTakesValue(
 ) ?bool {
     inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
         if (longNameMatchesField(meta, field.name, option_name)) {
-            return field.type != bool;
+            return !isBooleanFlag(field.type);
         }
     }
     return null;
@@ -604,7 +644,7 @@ pub fn shortOptionTakesValue(
 ) ?bool {
     inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
         if (shortCharForField(meta, field.name) == char) {
-            return field.type != bool;
+            return !isBooleanFlag(field.type);
         }
     }
     return null;
@@ -623,6 +663,24 @@ test "longNameMatchesField accepts both spellings without custom name" {
     try std.testing.expect(longNameMatchesField(null, "output_file", "output_file"));
     try std.testing.expect(longNameMatchesField(null, "output_file", "output-file"));
     try std.testing.expect(!longNameMatchesField(null, "output_file", "output"));
+}
+
+test "effectiveLongName resolves custom-or-dashed" {
+    try std.testing.expectEqualStrings("dry-run", effectiveLongName(null, "dry_run"));
+    try std.testing.expectEqualStrings("verbose", effectiveLongName(null, "verbose"));
+    const meta = .{ .options = .{ .dry_run = .{ .name = "pretend" } } };
+    try std.testing.expectEqualStrings("pretend", effectiveLongName(meta, "dry_run"));
+}
+
+test "negatedLongNameMatchesField matches only the no- form" {
+    // Dashed field name: `dry_run` negates as `--no-dry-run`.
+    try std.testing.expect(negatedLongNameMatchesField(null, "dry_run", "no-dry-run"));
+    try std.testing.expect(!negatedLongNameMatchesField(null, "dry_run", "dry-run"));
+    try std.testing.expect(!negatedLongNameMatchesField(null, "dry_run", "no-dry_run"));
+    // Custom name: negation is built from the effective name only.
+    const meta = .{ .options = .{ .fast = .{ .name = "cache" } } };
+    try std.testing.expect(negatedLongNameMatchesField(meta, "fast", "no-cache"));
+    try std.testing.expect(!negatedLongNameMatchesField(meta, "fast", "no-fast"));
 }
 
 test "takes-value resolution matches parser semantics" {

@@ -177,7 +177,13 @@ pub fn parseOptionsWithMeta(
         } else if (@typeInfo(field.type) == .optional) {
             @field(result, field.name) = null;
         } else if (field.type == bool) {
-            @field(result, field.name) = false;
+            // Respect a declared default (`bool = true`); absent flag → default,
+            // or false when none is declared. `--no-<flag>` is how a default-true
+            // bool is set back to false.
+            @field(result, field.name) = if (field.default_value_ptr) |default_ptr|
+                @as(*const bool, @ptrCast(@alignCast(default_ptr))).*
+            else
+                false;
         } else if (comptime type_utils.hasDefaultValue(OptionsType, field.name)) {
             // Set the default value from the type definition
             if (field.default_value_ptr) |default_ptr| {
@@ -313,6 +319,7 @@ fn convertLongOptionError(err: anyerror) ZcliError {
         error.MissingOptionValue => ZcliError.OptionMissingValue,
         error.InvalidOptionValue => ZcliError.OptionInvalidValue,
         error.BooleanOptionWithValue => ZcliError.OptionBooleanWithValue,
+        error.DuplicateOption => ZcliError.OptionDuplicate,
         error.OutOfMemory => ZcliError.SystemOutOfMemory,
         // The helpers' error sets are hand-listed above; anything new must be
         // mapped (and given a diagnostic) rather than silently misclassified.
@@ -327,6 +334,7 @@ fn convertShortOptionError(err: anyerror) ZcliError {
         error.MissingOptionValue => ZcliError.OptionMissingValue,
         error.InvalidOptionValue => ZcliError.OptionInvalidValue,
         error.BooleanOptionWithValue => ZcliError.OptionBooleanWithValue,
+        error.DuplicateOption => ZcliError.OptionDuplicate,
         error.OutOfMemory => ZcliError.SystemOutOfMemory,
         // See convertLongOptionError: map new helper errors explicitly.
         else => ZcliError.OptionInvalidValue,
@@ -436,12 +444,11 @@ fn parseLongOptions(
         if (matches) {
             found = true;
 
-            // Track usage count for duplicate detection (use field name for tracking)
-            const count = option_counts.get(field.name) orelse 0;
-            try option_counts.put(field.name, count + 1);
-
-            // Handle boolean flags
-            if (comptime utils.isBooleanType(field.type)) {
+            // Handle boolean flags (bool and ?bool): presence sets true. These
+            // never take a value and may appear at most once (a repeated boolean —
+            // including the contradictory `--flag --no-flag` pair, which shares this
+            // field's count — is a usage error, not last-wins).
+            if (comptime utils.isBooleanFlag(field.type)) {
                 if (option_value != null) {
                     if (diag) |d| d.* = .{ .OptionBooleanWithValue = .{
                         .option_name = option_name,
@@ -450,9 +457,21 @@ fn parseLongOptions(
                     } };
                     return error.BooleanOptionWithValue;
                 }
+                if ((option_counts.get(field.name) orelse 0) >= 1) {
+                    if (diag) |d| d.* = .{ .OptionDuplicate = .{
+                        .option_name = option_name,
+                        .is_short = false,
+                    } };
+                    return error.DuplicateOption;
+                }
+                try option_counts.put(field.name, 1);
                 @field(result, field.name) = true;
                 return 1;
             }
+
+            // Track usage count for duplicate detection (use field name for tracking)
+            const count = option_counts.get(field.name) orelse 0;
+            try option_counts.put(field.name, count + 1);
 
             // Get the value
             const value = blk: {
@@ -493,6 +512,31 @@ fn parseLongOptions(
 
             // Return number of arguments consumed
             return if (option_value != null) 1 else 2;
+        } else if (comptime utils.isBooleanFlag(field.type)) {
+            // Not the positive name — is it the auto-generated `--no-<flag>`
+            // negation? Only boolean flags have one. It sets the field false and,
+            // like the positive form, takes no value and must not repeat.
+            if (utils.negatedLongNameMatchesField(meta, field.name, option_name)) {
+                found = true;
+                if (option_value != null) {
+                    if (diag) |d| d.* = .{ .OptionBooleanWithValue = .{
+                        .option_name = option_name,
+                        .is_short = false,
+                        .provided_value = option_value.?,
+                    } };
+                    return error.BooleanOptionWithValue;
+                }
+                if ((option_counts.get(field.name) orelse 0) >= 1) {
+                    if (diag) |d| d.* = .{ .OptionDuplicate = .{
+                        .option_name = option_name,
+                        .is_short = false,
+                    } };
+                    return error.DuplicateOption;
+                }
+                try option_counts.put(field.name, 1);
+                @field(result, field.name) = false;
+                return 1;
+            }
         }
     }
 
@@ -545,7 +589,7 @@ fn parseShortOptionsWithMeta(
 
             if (matches) {
                 char_field_found = true;
-                char_is_boolean = comptime utils.isBooleanType(field.type);
+                char_is_boolean = comptime utils.isBooleanFlag(field.type);
                 break;
             }
         }
@@ -557,7 +601,7 @@ fn parseShortOptionsWithMeta(
 
     if (all_boolean and options_part.len > 1) {
         // Parse as bundled boolean flags
-        for (options_part) |char| {
+        for (options_part, 0..) |char, ci| {
             inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
                 _ = i; // Unused for boolean flags
                 const expected_char = comptime utils.shortCharForField(meta, field.name);
@@ -565,10 +609,15 @@ fn parseShortOptionsWithMeta(
                 const matches = expected_char == char;
 
                 if (matches) {
-                    if (comptime utils.isBooleanType(field.type)) {
-                        // Track usage count
-                        const count = option_counts.get(field.name) orelse 0;
-                        try option_counts.put(field.name, count + 1);
+                    if (comptime utils.isBooleanFlag(field.type)) {
+                        if ((option_counts.get(field.name) orelse 0) >= 1) {
+                            if (diag) |d| d.* = .{ .OptionDuplicate = .{
+                                .option_name = options_part[ci .. ci + 1],
+                                .is_short = true,
+                            } };
+                            return error.DuplicateOption;
+                        }
+                        try option_counts.put(field.name, 1);
                         @field(result, field.name) = true;
                     }
                     break;
@@ -590,14 +639,22 @@ fn parseShortOptionsWithMeta(
             if (matches) {
                 char_found = true;
 
-                // Track usage count for duplicate detection
-                const count = option_counts.get(field.name) orelse 0;
-                try option_counts.put(field.name, count + 1);
-
-                if (comptime utils.isBooleanType(field.type)) {
+                if (comptime utils.isBooleanFlag(field.type)) {
+                    if ((option_counts.get(field.name) orelse 0) >= 1) {
+                        if (diag) |d| d.* = .{ .OptionDuplicate = .{
+                            .option_name = options_part[0..1],
+                            .is_short = true,
+                        } };
+                        return error.DuplicateOption;
+                    }
+                    try option_counts.put(field.name, 1);
                     @field(result, field.name) = true;
                     return 1;
                 } else {
+                    // Track usage count for duplicate detection
+                    const count = option_counts.get(field.name) orelse 0;
+                    try option_counts.put(field.name, count + 1);
+
                     // Value-taking option
                     var value: []const u8 = undefined;
                     var consumed: usize = 1;
@@ -862,19 +919,145 @@ test "parseOptions optional types" {
     }
 }
 
+test "negation flags set booleans false" {
+    const TestOptions = struct {
+        verbose: bool = false,
+        color: bool = true,
+    };
+    const allocator = std.testing.allocator;
+
+    // --no-verbose sets a default-false bool false (redundant but allowed);
+    // leaves other fields at their defaults.
+    {
+        const args = [_][]const u8{"--no-verbose"};
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expect(!parsed.options.verbose);
+        try std.testing.expect(parsed.options.color);
+    }
+    // --no-color flips a default-true bool to false (the only way to reach it).
+    {
+        const args = [_][]const u8{"--no-color"};
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expect(!parsed.options.color);
+    }
+    // Positive forms still set true.
+    {
+        const args = [_][]const u8{ "--verbose", "--color" };
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expect(parsed.options.verbose);
+        try std.testing.expect(parsed.options.color);
+    }
+}
+
+test "optional bool is a three-state flag" {
+    const TestOptions = struct {
+        verbose: ?bool = null,
+    };
+    const allocator = std.testing.allocator;
+
+    // Absent -> null.
+    {
+        const args = [_][]const u8{};
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expectEqual(@as(?bool, null), parsed.options.verbose);
+    }
+    // --verbose -> true.
+    {
+        const args = [_][]const u8{"--verbose"};
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expectEqual(@as(?bool, true), parsed.options.verbose);
+    }
+    // --no-verbose -> false.
+    {
+        const args = [_][]const u8{"--no-verbose"};
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expectEqual(@as(?bool, false), parsed.options.verbose);
+    }
+    // A ?bool is a flag, not a value option: a following `false` is a positional
+    // (skipped, GNU-style), not consumed as the flag's value.
+    {
+        const args = [_][]const u8{ "--verbose", "false" };
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expectEqual(@as(?bool, true), parsed.options.verbose);
+    }
+}
+
+test "repeated boolean is a duplicate error" {
+    const TestOptions = struct {
+        verbose: bool = false,
+    };
+    const allocator = std.testing.allocator;
+
+    const cases = [_][]const []const u8{
+        &.{ "--verbose", "--verbose" }, // positive twice
+        &.{ "--no-verbose", "--no-verbose" }, // negation twice
+        &.{ "--verbose", "--no-verbose" }, // contradictory
+        &.{ "--no-verbose", "--verbose" }, // contradictory, reversed
+        &.{ "-v", "-v" }, // short, separate
+        &.{"-vv"}, // short, bundled
+    };
+    for (cases) |args| {
+        try std.testing.expectError(ZcliError.OptionDuplicate, parseOptions(TestOptions, allocator, args, null));
+    }
+}
+
+test "negation flag rejects an attached value" {
+    const TestOptions = struct {
+        verbose: bool = false,
+    };
+    const allocator = std.testing.allocator;
+    const args = [_][]const u8{"--no-verbose=true"};
+    try std.testing.expectError(ZcliError.OptionBooleanWithValue, parseOptions(TestOptions, allocator, &args, null));
+}
+
+test "negation does not apply to value options" {
+    const TestOptions = struct {
+        output: []const u8 = "text",
+    };
+    const allocator = std.testing.allocator;
+    // `--no-output` is not a flag negation (output takes a value) and no field is
+    // named `no_output`, so it is simply unknown.
+    const args = [_][]const u8{ "--no-output", "x" };
+    try std.testing.expectError(ZcliError.OptionUnknown, parseOptions(TestOptions, allocator, &args, null));
+}
+
+test "negation respects custom option names" {
+    const TestOptions = struct {
+        fast: bool = true,
+    };
+    const meta = .{
+        .options = .{
+            .fast = .{ .name = "cache" },
+        },
+    };
+    const allocator = std.testing.allocator;
+
+    // Negation is built from the effective (custom) name: --no-cache.
+    {
+        const args = [_][]const u8{"--no-cache"};
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
+        try std.testing.expect(!parsed.options.fast);
+    }
+    // The field-name spelling is shadowed by the custom name, so is its negation.
+    {
+        const args = [_][]const u8{"--no-fast"};
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null));
+    }
+}
+
 test "parseOptions dash to underscore conversion" {
     const TestOptions = struct {
-        no_color: bool = false,
+        dry_run: bool = false,
         log_level: []const u8 = "info",
         max_retries: u32 = 3,
     };
 
     const allocator = std.testing.allocator;
 
-    const args = [_][]const u8{ "--no-color", "--log-level", "debug", "--max-retries", "5" };
+    const args = [_][]const u8{ "--dry-run", "--log-level", "debug", "--max-retries", "5" };
     const parsed = try parseOptions(TestOptions, allocator, &args, null);
 
-    try std.testing.expect(parsed.options.no_color);
+    try std.testing.expect(parsed.options.dry_run);
     try std.testing.expectEqualStrings("debug", parsed.options.log_level);
     try std.testing.expectEqual(@as(u32, 5), parsed.options.max_retries);
 }
@@ -1138,8 +1321,8 @@ fn optionExpectsValue(comptime OptionsType: type, comptime meta: anytype, option
         } else field.name;
 
         if (std.mem.eql(u8, actual_name, option_name)) {
-            // Boolean options don't expect values
-            return field.type != bool;
+            // Boolean flags (bool and ?bool) don't expect values
+            return !utils.isBooleanFlag(field.type);
         }
     }
     return false;
@@ -1157,7 +1340,7 @@ fn shortOptionExpectsValue(comptime OptionsType: type, comptime meta: anytype, o
                 const field_meta = @field(options_meta, field.name);
                 if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
                     if (field_meta.short == option_char) {
-                        return field.type != bool;
+                        return !utils.isBooleanFlag(field.type);
                     }
                 }
             }
@@ -1165,7 +1348,7 @@ fn shortOptionExpectsValue(comptime OptionsType: type, comptime meta: anytype, o
 
         // Default: first character of field name
         if (field.name.len > 0 and field.name[0] == option_char) {
-            return field.type != bool;
+            return !utils.isBooleanFlag(field.type);
         }
     }
     return false;

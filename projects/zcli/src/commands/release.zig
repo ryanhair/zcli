@@ -50,7 +50,7 @@ pub const meta = .{
     .options = .{
         .@"dry-run" = .{ .description = "Preview changes without executing" },
         .@"skip-tests" = .{ .description = "Skip running tests before release" },
-        .@"no-push" = .{ .description = "Create tag but don't push to remote" },
+        .push = .{ .description = "Push commit and tag to remote (on by default; pass --no-push to create the tag but not push)" },
         .@"skip-checks" = .{ .description = "Skip safety checks (clean working tree, branch verification)" },
         .sign = .{ .description = "Sign the tag with GPG" },
         .message = .{ .description = "Release message (if not provided, editor will open)" },
@@ -68,8 +68,8 @@ pub const Options = struct {
     @"dry-run": bool = false,
     /// Skip running tests before release
     @"skip-tests": bool = false,
-    /// Create tag but don't push to remote
-    @"no-push": bool = false,
+    /// Push commit and tag to remote (on by default; --no-push creates the tag but skips pushing)
+    push: bool = true,
     /// Skip safety checks (clean working tree, branch verification)
     @"skip-checks": bool = false,
     /// Sign the tag with GPG
@@ -359,7 +359,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     }
 
     // 8. Push commit and tag
-    if (!options.@"no-push") {
+    if (options.push) {
         try stdout.print("\n→ Pushing to origin...\n", .{});
         if (options.@"dry-run") {
             try stdout.print("  (dry-run: would push commit and tag)\n", .{});
