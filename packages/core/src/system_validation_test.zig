@@ -185,7 +185,9 @@ test "system validation: registry type creation" {
 
     const SimpleCommand = struct {
         pub const meta = .{ .description = "Simple command" };
-        pub fn execute(args: struct {}, options: struct {}, context: *zcli.Context) !void {
+        pub const Args = struct {};
+        pub const Options = struct {};
+        pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -196,7 +198,8 @@ test "system validation: registry type creation" {
     const ArgsCommand = struct {
         pub const meta = .{ .description = "Command with args" };
         pub const Args = struct { name: []const u8 };
-        pub fn execute(args: Args, options: struct {}, context: *zcli.Context) !void {
+        pub const Options = struct {};
+        pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -206,8 +209,9 @@ test "system validation: registry type creation" {
 
     const OptionsCommand = struct {
         pub const meta = .{ .description = "Command with options" };
+        pub const Args = struct {};
         pub const Options = struct { verbose: bool = false };
-        pub fn execute(args: struct {}, options: Options, context: *zcli.Context) !void {
+        pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
             _ = args;
             _ = options;
             _ = context;
@@ -263,7 +267,9 @@ test "system validation: plugin interface compilation" {
     };
 
     const SimpleCommand = struct {
-        pub fn execute(_: struct {}, _: struct {}, _: anytype) !void {}
+        pub const Args = struct {};
+        pub const Options = struct {};
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
     };
 
     const TestRegistry = registry.Registry.init(.{

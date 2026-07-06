@@ -5,7 +5,6 @@ const command_parser = @import("command_parser.zig");
 pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
-const type_utils = @import("type_utils.zig");
 const option_utils = @import("options/utils.zig");
 pub const ztheme = @import("ztheme");
 pub const markdown_fmt = @import("markdown_fmt");
@@ -64,10 +63,6 @@ pub const ParsedArgs = plugin_types.ParsedArgs;
 pub const GlobalOptionsResult = plugin_types.GlobalOptionsResult;
 pub const PluginEntry = plugin_types.PluginEntry;
 pub const option = plugin_types.option;
-
-// Re-export standard empty types
-pub const NoArgs = type_utils.NoArgs;
-pub const NoOptions = type_utils.NoOptions;
 
 // ============================================================================
 // Context for Command Execution
@@ -266,16 +261,43 @@ fn commandContext(comptime path: []const u8) []const u8 {
 /// author (or an AI agent) can act on, not a template error buried deep in the
 /// framework.
 ///
-/// Checks that `Args`/`Options` are structs and the `meta` block is well-formed
-/// (delegated to `validateMeta`). The `execute` signature is intentionally *not*
-/// asserted here: a command's `execute` typically takes `context: *Context`,
-/// and `Context` is a projection of the very registry being built — reaching for
-/// `@TypeOf(execute)` at registration time forms a comptime dependency loop.
-/// A wrong `execute` shape still fails the build at the framework's own call
-/// site, pointing at the author's file.
+/// Requires that any command with an `execute` declares `Args` and `Options`,
+/// checks that `Args`/`Options` are structs, and checks the `meta` block is
+/// well-formed (delegated to `validateMeta`). The `execute` signature is
+/// intentionally *not* asserted here: a command's `execute` typically takes
+/// `context: *Context`, and `Context` is a projection of the very registry
+/// being built — reaching for `@TypeOf(execute)` at registration time forms a
+/// comptime dependency loop. A wrong `execute` shape still fails the build at
+/// the framework's own call site, pointing at the author's file.
 pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
     @setEvalBranchQuota(10000);
     const loc = commandContext(path);
+
+    // The command contract is declaration-driven: zcli reads a command's
+    // `Args`/`Options` *declarations* to build parsing and dispatch — it never
+    // inspects `execute`'s parameter types (see above). So a runnable command
+    // (one that declares `execute`) MUST declare both, even when empty. Naming
+    // a type in the signature, e.g. `execute(_: struct {}, ...)`, is not a
+    // declaration and leaves the contract undefined. Metadata-only command
+    // groups have no `execute` and are exempt — they never parse arguments.
+    if (@hasDecl(Module, "execute")) {
+        if (!@hasDecl(Module, "Args")) {
+            @compileError(loc ++ "missing `pub const Args`. zcli reads a command's positional " ++
+                "arguments from its `Args` declaration, not from `execute`'s parameters — writing " ++
+                "`execute(_: struct {}, ...)` names a type but declares nothing. Add a declaration:\n" ++
+                "    pub const Args = struct {};                     // no positional arguments\n" ++
+                "    pub const Args = struct { name: []const u8 };   // one required positional\n" ++
+                "and refer to it in execute: `execute(args: Args, ...)`.");
+        }
+        if (!@hasDecl(Module, "Options")) {
+            @compileError(loc ++ "missing `pub const Options`. zcli reads a command's flags from " ++
+                "its `Options` declaration, not from `execute`'s parameters — writing " ++
+                "`execute(_, _: struct {}, ...)` names a type but declares nothing. Add a declaration:\n" ++
+                "    pub const Options = struct {};                         // no flags\n" ++
+                "    pub const Options = struct { verbose: bool = false };  // one --verbose flag\n" ++
+                "and refer to it in execute: `execute(_, options: Options, ...)`.");
+        }
+    }
 
     const ArgsType = if (@hasDecl(Module, "Args")) Module.Args else struct {};
     const OptionsType = if (@hasDecl(Module, "Options")) Module.Options else struct {};
@@ -616,8 +638,8 @@ test "global options with different types" {
     };
 
     const TestCommand = struct {
-        pub const Args = NoArgs;
-        pub const Options = NoOptions;
+        pub const Args = struct {};
+        pub const Options = struct {};
 
         pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
@@ -662,8 +684,8 @@ test "global options short flags" {
     };
 
     const TestCommand = struct {
-        pub const Args = NoArgs;
-        pub const Options = NoOptions;
+        pub const Args = struct {};
+        pub const Options = struct {};
 
         pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
@@ -709,7 +731,7 @@ test "commands inherit global options" {
     };
 
     const TestCommand = struct {
-        pub const Args = NoArgs;
+        pub const Args = struct {};
         pub const Options = struct {
             local: bool = false,
         };
@@ -764,8 +786,8 @@ test "global option defaults" {
     };
 
     const TestCommand = struct {
-        pub const Args = NoArgs;
-        pub const Options = NoOptions;
+        pub const Args = struct {};
+        pub const Options = struct {};
 
         pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
@@ -822,8 +844,8 @@ test "multiple plugins with global options" {
     };
 
     const TestCommand = struct {
-        pub const Args = NoArgs;
-        pub const Options = NoOptions;
+        pub const Args = struct {};
+        pub const Options = struct {};
 
         pub fn execute(args: Args, options: Options, context: anytype) !void {
             _ = args;
