@@ -48,8 +48,8 @@
   .nextlinks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
   .nextlinks a { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; transition: border-color .15s; }
   .nextlinks a:hover { border-color: var(--accent); }
-  .nextlinks .k { font-family: var(--mono); font-size: 12px; color: var(--accent); }
-  .nextlinks .t { color: var(--fg); font-size: 15px; margin-top: 4px; }
+  .nextlinks .k { display: block; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .nextlinks .t { display: block; color: var(--fg); font-size: 15px; margin-top: 4px; }
   @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .toc { display: none; } .two, .nextlinks { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -91,7 +91,7 @@
               <tr><td class="name">zcli_completions</td><td class="desc">Generate & install completions for bash, zsh, fish</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_config</td><td class="desc">Transparent config loading — JSON, TOML, YAML, per-command scoping</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_output</td><td class="desc"><code>--output</code> flag — json, table, plain</td><td><span class="badge opt">optional</span></td></tr>
-              <tr><td class="name">zcli_secrets</td><td class="desc">Opt-in credential storage in the OS keychain — get, set, delete</td><td><span class="badge opt">optional</span></td></tr>
+              <tr><td class="name">zcli_secrets</td><td class="desc">OS-keychain credential storage — macOS Keychain, Linux Secret Service, Windows Credential Manager</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_github_upgrade</td><td class="desc"><code>upgrade</code> command via GitHub releases</td><td><span class="badge opt">optional</span></td></tr>
             </tbody>
           </table>
@@ -120,7 +120,7 @@
           </div>
           <div class="code">
             <div class="code-head"><span class="fname">build.zig — all three together</span><span class="lang">zig</span></div>
-<pre><span class="kw">const</span> cmd_registry = <span class="kw">try</span> zcli.<span class="fn">generate</span>(b, exe, zcli_dep, zcli_module, .{
+<pre><span class="kw">const</span> cmd_registry = zcli.<span class="fn">generate</span>(b, exe, zcli_dep, zcli_module, .{
     .commands_dir = <span class="str">"src/commands"</span>,
 
     <span class="cm">// Auto-discover everything in your own plugins folder</span>

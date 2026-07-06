@@ -1,0 +1,156 @@
+<extend template="base.shtml">
+
+<head id="head">
+<style>
+  .why-body { padding-bottom: 24px; }
+  .why-body section { max-width: 880px; }
+  .why-body h2 { font-size: 28px; margin-bottom: 14px; }
+  .why-body p.p { color: var(--muted); font-size: 16px; line-height: 1.7; margin-bottom: 16px; max-width: 72ch; }
+  .why-body p.p b { color: var(--fg); font-weight: 600; }
+  .why-body h3 { font-size: 18px; margin: 30px 0 10px; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+</style>
+</head>
+
+<main id="main">
+<div class="wrap why-body">
+  <div class="why-hero">
+    <div class="eyebrow" style="display:inline-block;">Why zcli</div>
+    <h1>Comptime over runtime. Conventions over registration.</h1>
+    <p class="lead">Zig already has good CLI libraries — the difference is the level they operate at. Here's the philosophy, an honest comparison, and every measured number behind the "batteries-included" claim.</p>
+    <div class="why-nav">
+      <a href="#philosophy">Philosophy</a>
+      <a href="#comparison">Comparison</a>
+      <a href="#numbers">Numbers</a>
+      <a href="#stability">Stability</a>
+    </div>
+  </div>
+
+  <!-- PHILOSOPHY -->
+  <section id="philosophy" style="padding-top:64px;">
+    <h2>Philosophy</h2>
+    <p class="p"><b>Comptime over runtime.</b> The command tree, the argument parser, and the routing table are all generated at build time from your files and your structs. There's no filesystem scan at startup, no reflection, no registry object built on every run — the binary that ships already knows its own shape.</p>
+    <p class="p"><b>Conventions over registration.</b> A file in <code class="mono">commands/</code> is a command. A folder is a group. There's no <code class="mono">addCommand()</code> call to forget, no builder chain to keep in sync with the file that implements it — the two can't drift apart because they're the same artifact.</p>
+    <p class="p"><b>Batteries with opt-out.</b> Every package — <code class="mono">zinput</code>, <code class="mono">zprogress</code>, <code class="mono">ztheme</code>, <code class="mono">terminal</code>, <code class="mono">vterm</code> — works standalone, with no dependency on the framework. Use the whole thing, or take one package and leave the rest.</p>
+    <p class="p"><b>Stable Zig only.</b> zcli targets Zig 0.16.0 — the current stable release, no nightly required. That's a deliberate constraint: a framework you can't build tomorrow because it tracked a moving target isn't actually batteries-included.</p>
+  </section>
+
+  <!-- COMPARISON -->
+  <section id="comparison" style="padding-top:64px;border-top:1px solid var(--border);">
+    <h2>Comparison</h2>
+    <p class="p"><a href="https://github.com/Hejsil/zig-clap" target="_blank" rel="noopener" style="color:var(--accent);">zig-clap</a> is an argument parser, and the lightest of the three: describe flags in a comptime help-text DSL, get typed results back, build the rest of the CLI yourself. <b>If flag parsing is all you need, it's a great choice.</b> <a href="https://github.com/xcaeser/zli" target="_blank" rel="noopener" style="color:var(--accent);">zli</a> is a batteries-included framework built around a runtime builder: commands are constructed with <code class="mono">Command.init(...)</code>, wired up with <code class="mono">addCommand</code>, flags registered with <code class="mono">addFlag</code> and read by name.</p>
+    <p class="p">zcli moves that work to the filesystem and the compiler. The directory tree <em>is</em> the command tree, discovered at build time with routing generated as ordinary Zig code. And the batteries extend past parsing into the whole terminal experience.</p>
+
+    <div class="table-scroll">
+    <table class="cmp-table">
+      <thead><tr><th>&nbsp;</th><th>zig-clap</th><th>zli</th><th class="zcli-col">zcli</th></tr></thead>
+      <tbody>
+        <tr><td class="hl">Scope</td><td>argument parser</td><td>CLI framework</td><td class="zcli-col hl">CLI framework</td></tr>
+        <tr><td class="hl">Commands defined by</td><td>manual dispatch</td><td>runtime builder</td><td class="zcli-col hl">files on disk, discovered at build time</td></tr>
+        <tr><td class="hl">Flags are</td><td>comptime DSL → typed result</td><td>registered at runtime, read by name</td><td class="zcli-col hl">struct fields, checked at compile time</td></tr>
+        <tr><td class="hl">Beyond parsing</td><td>help text</td><td>help, version, spinners</td><td class="zcli-col hl">help, completions, prompts, progress, theming, config files, plugins, testing tools</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>At the code level</h3>
+    <p class="p">The difference isn't abstract — it shows up in how you read an option value.</p>
+    <div class="contrast">
+      <div class="code">
+        <div class="code-head"><span class="fname">zli — runtime lookup</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> verbose = ctx.<span class="fn">flag</span>(<span class="str">"verbose"</span>, <span class="fn">bool</span>);
+<span class="cm">// string key, looked up at runtime;</span>
+<span class="cm">// a typo compiles and returns a default</span></pre>
+      </div>
+      <div class="code" style="border-color:rgba(247,164,29,0.28);">
+        <div class="code-head"><span class="fname">zcli — struct field</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> Options = <span class="kw">struct</span> {
+    verbose: <span class="fn">bool</span> = <span class="num">false</span>,
+};
+<span class="cm">// options.verbose — a typo is a</span>
+<span class="cm">// compile error, not a silent default</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- NUMBERS -->
+  <section id="numbers" style="padding-top:64px;border-top:1px solid var(--border);">
+    <h2>Numbers</h2>
+    <p class="p">Every figure below is measured against zcli v0.19.0, built from the <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener" style="color:var(--accent);">showcase</a> and a minimal hello-world command. Expand a row for the exact commands used.</p>
+
+    <table class="num-table">
+      <tbody>
+        <tr>
+          <td class="metric">Hello-world binary, <code class="mono">ReleaseSmall</code></td>
+          <td class="value">215 KB</td>
+        </tr>
+        <tr><td colspan="2" style="border:none;padding:0 0 14px;">
+          <details class="repro"><summary>reproduce</summary>
+<pre>$ zcli init hello --description "hello world"
+$ cd hello && zig build -Doptimize=ReleaseSmall
+$ ls -la zig-out/bin/hello</pre>
+          </details>
+        </td></tr>
+
+        <tr>
+          <td class="metric">Static musl binary, same command, <code class="mono">x86_64-linux-musl</code></td>
+          <td class="value">195 KB</td>
+        </tr>
+        <tr><td colspan="2" style="border:none;padding:0 0 14px;">
+          <details class="repro"><summary>reproduce</summary>
+<pre>$ zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall
+$ file zig-out/bin/hello   # statically linked</pre>
+          </details>
+        </td></tr>
+
+        <tr>
+          <td class="metric">macOS runtime dependencies</td>
+          <td class="value">libSystem only</td>
+        </tr>
+        <tr><td colspan="2" style="border:none;padding:0 0 14px;">
+          <details class="repro"><summary>reproduce</summary>
+<pre>$ otool -L zig-out/bin/hello</pre>
+          </details>
+        </td></tr>
+
+        <tr>
+          <td class="metric">ANSI escape sequences emitted with <code class="mono">NO_COLOR=1</code></td>
+          <td class="value">0</td>
+        </tr>
+        <tr><td colspan="2" style="border:none;padding:0 0 14px;">
+          <details class="repro"><summary>reproduce</summary>
+<pre>$ NO_COLOR=1 zig-out/bin/hello --help | grep -c $'\x1b'</pre>
+          </details>
+        </td></tr>
+
+        <tr>
+          <td class="metric">CI matrix</td>
+          <td class="value">3 OSes, every commit</td>
+        </tr>
+        <tr><td colspan="2" style="border:none;padding:0;">
+          <details class="repro"><summary>reproduce</summary>
+<pre>Linux, macOS, and Windows — unit tests + full e2e suite,
+including the interactive tier via a ConPTY backend on Windows.
+See .github/workflows/ci.yml</pre>
+          </details>
+        </td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- STABILITY -->
+  <section id="stability" style="padding-top:64px;border-top:1px solid var(--border);padding-bottom:80px;">
+    <h2>Stability</h2>
+    <p class="p">zcli targets <b>stable Zig</b> — no nightly required. <code class="mono">main</code> and the latest release are built and tested against the current stable Zig on Linux, macOS, and Windows in CI on every commit.</p>
+    <table class="zig-table">
+      <thead><tr><th>zcli</th><th>Zig</th></tr></thead>
+      <tbody>
+        <tr><td class="zcli-v">main, v0.18.0 and later</td><td>0.16.0</td></tr>
+        <tr><td class="zcli-v">v0.14.0 – v0.17.0</td><td>0.15.1</td></tr>
+      </tbody>
+    </table>
+    <p class="p" style="margin-top:20px;">Each release is tagged twice: <code class="mono">vX.Y.Z</code> is the framework library — the tag for your <code class="mono">build.zig.zon</code> — and <code class="mono">zcli-vX.Y.Z</code> carries the prebuilt meta-CLI binaries that <code class="mono">install.sh</code> downloads. The two ship in lockstep, tags are immutable once cut, and CI enforces the version pin doesn't drift silently between them.</p>
+    <a class="btn ghost" href="$site.page('changelog').link().suffix('#versioning')" style="margin-top:6px;display:inline-flex;">Versioning policy →</a>
+  </section>
+</div>
+</main>

@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Documentation",
-.description = "Getting started with zcli: scaffold a project with zcli init, then learn commands, args & options, plugins, config, prompts, and progress.",
+.description = "zcli documentation: quick start, commands, prompts, progress & theming, config files, plugins, testing, docs generation, the meta-CLI, and building with AI agents.",
 .date = @date("2025-01-01"),
 .author = "Ryan Hair",
 .layout = "docs.shtml",
