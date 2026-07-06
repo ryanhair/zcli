@@ -294,5 +294,5 @@ details.repro pre { margin-top: 8px; font-family: var(--mono); font-size: 12.5px
 .tier-table td { padding: 11px 14px; border-bottom: 1px solid var(--border); color: var(--muted); vertical-align: top; }
 .tier-table td.tier { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
 
-.transcript { background: #0a0b0e; border: 1px solid var(--border2); border-radius: 10px; padding: 18px 20px; font-family: var(--mono); font-size: 13px; line-height: 1.85; color: var(--muted); overflow-x: auto; }
+.transcript { background: #0a0b0e; border: 1px solid var(--border2); border-radius: 10px; padding: 18px 20px; font-family: var(--mono); font-size: 13px; line-height: 1.85; color: var(--muted); white-space: pre-wrap; overflow-x: auto; }
 .transcript .t-agent { color: var(--cyan); } .transcript .t-cmd { color: var(--accent); } .transcript .t-ok { color: var(--green); } .transcript .t-you { color: var(--fg); }
