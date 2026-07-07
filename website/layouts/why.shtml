@@ -38,7 +38,7 @@
   <!-- COMPARISON -->
   <section id="comparison" style="padding-top:64px;border-top:1px solid var(--border);">
     <h2>Comparison</h2>
-    <p class="p"><a href="https://github.com/Hejsil/zig-clap" target="_blank" rel="noopener" style="color:var(--accent);">zig-clap</a> is an argument parser, and the lightest of the three: describe flags in a comptime help-text DSL, get typed results back, build the rest of the CLI yourself. <b>If flag parsing is all you need, it's a great choice.</b> <a href="https://github.com/xcaeser/zli" target="_blank" rel="noopener" style="color:var(--accent);">zli</a> is a batteries-included framework built around a runtime builder: commands are constructed with <code class="mono">Command.init(...)</code>, wired up with <code class="mono">addCommand</code>, flags registered with <code class="mono">addFlag</code> and read by name.</p>
+    <p class="p"><a href="https://github.com/Hejsil/zig-clap" target="_blank" rel="noopener">zig-clap</a> is an argument parser, and the lightest of the three: describe flags in a comptime help-text DSL, get typed results back, build the rest of the CLI yourself. <b>If flag parsing is all you need, it's a great choice.</b> <a href="https://github.com/xcaeser/zli" target="_blank" rel="noopener">zli</a> is a batteries-included framework built around a runtime builder: commands are constructed with <code class="mono">Command.init(...)</code>, wired up with <code class="mono">addCommand</code>, flags registered with <code class="mono">addFlag</code> and read by name.</p>
     <p class="p">zcli moves that work to the filesystem and the compiler. The directory tree <em>is</em> the command tree, discovered at build time with routing generated as ordinary Zig code. And the batteries extend past parsing into the whole terminal experience.</p>
 
     <div class="table-scroll">
@@ -76,7 +76,7 @@
   <!-- NUMBERS -->
   <section id="numbers" style="padding-top:64px;border-top:1px solid var(--border);">
     <h2>Numbers</h2>
-    <p class="p">Every figure below is measured against zcli v0.19.0, built from the <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener" style="color:var(--accent);">showcase</a> and a minimal hello-world command. Expand a row for the exact commands used.</p>
+    <p class="p">Every figure below is measured against zcli v0.19.0, built from the <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">showcase</a> and a minimal hello-world command. Expand a row for the exact commands used.</p>
 
     <table class="num-table">
       <tbody>

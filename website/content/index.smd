@@ -1,7 +1,7 @@
 ---
 .title = "zcli — your folder structure is your CLI",
 .description = "zcli is a batteries-included framework for command-line tools in Zig. Files become commands, folders become groups, structs become type-checked flags — routing generated at build time.",
-.date = @date("2025-01-01"),
+.date = @date("2026-07-05"),
 .author = "Ryan Hair",
 .layout = "home.shtml",
 ---

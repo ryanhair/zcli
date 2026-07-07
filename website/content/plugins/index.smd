@@ -1,7 +1,7 @@
 ---
 .title = "zcli — Plugins",
 .description = "zcli plugins: the built-in defaults, enabling them, auto-discovery with plugins_dir, build-time configuration, and writing your own plugins.",
-.date = @date("2025-01-01"),
+.date = @date("2026-07-05"),
 .author = "Ryan Hair",
 .layout = "plugins.shtml",
 ---

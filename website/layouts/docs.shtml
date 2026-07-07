@@ -91,7 +91,7 @@
           <p>Install the meta-CLI, scaffold a project, add a command. That's the whole loop.</p>
 
           <div class="step"><span class="n">1</span><h2>Install the zcli CLI</h2></div>
-          <p>See the <a href="$site.page('install').link()" style="color:var(--accent)">install page</a> for every option, including shell completions.</p>
+          <p>See the <a href="$site.page('install').link()">install page</a> for every option, including shell completions.</p>
           <div class="code">
             <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
 <pre><span class="c-prompt">$</span> <span class="c-cmd">curl</span> -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</pre>
@@ -125,7 +125,7 @@ Creating new zcli project: myapp
   <span class="c-cmd">deploy</span>   Deploy your application
   <span class="c-cmd">hello</span>    Say hello</pre>
           </div>
-          <p>Add more commands the same way — jump to <a href="#commands" style="color:var(--accent)">Commands</a> for the file-path rules, or <a href="#ai-agents" style="color:var(--accent)">AI agents</a> if a coding agent is driving.</p>
+          <p>Add more commands the same way — jump to <a href="#commands">Commands</a> for the file-path rules, or <a href="#ai-agents">AI agents</a> if a coding agent is driving.</p>
 
           <details class="manual" style="margin-top:24px;">
             <summary><span class="chev">›</span><span class="lbl">Manual setup — wiring build.zig by hand <small>— skip if zcli init worked</small></span></summary>
@@ -349,7 +349,7 @@ all = <span class="num">true</span></pre>
     }
 }</pre>
           </div>
-          <p>Hooks take <code>context: anytype</code> — a plugin is compiled <em>into</em> the registry, so it can't name the concrete <code>Context</code> type your commands import. Full hook list, build-time config, and plugin-provided commands: see the full <a href="$site.page('plugins').link()" style="color:var(--accent);">plugins guide</a>.</p>
+          <p>Hooks take <code>context: anytype</code> — a plugin is compiled <em>into</em> the registry, so it can't name the concrete <code>Context</code> type your commands import. Full hook list, build-time config, and plugin-provided commands: see the full <a href="$site.page('plugins').link()">plugins guide</a>.</p>
         </section>
 
         <!-- ============ TESTING ============ -->
@@ -378,7 +378,7 @@ all = <span class="num">true</span></pre>
     <span class="kw">try</span> std.testing.<span class="fn">expect</span>(result.term.<span class="fn">containsText</span>(<span class="str">"Deploying"</span>));
     <span class="kw">try</span> std.testing.<span class="fn">expect</span>(result.term.<span class="fn">hasAttribute</span>(<span class="num">0</span>, <span class="num">0</span>, .bold));</pre>
           </div>
-          <p><code>result.term</code> is a real ANSI-parsing terminal emulator — assert a cell is bold at row 0, check a foreground color, or match a wildcard pattern across the rendered screen. No other Zig CLI library ships this. Full API and the integration/e2e tiers: see <a href="https://github.com/ryanhair/zcli/blob/main/docs/TESTING.md" target="_blank" rel="noopener" style="color:var(--accent);">docs/TESTING.md</a>.</p>
+          <p><code>result.term</code> is a real ANSI-parsing terminal emulator — assert a cell is bold at row 0, check a foreground color, or match a wildcard pattern across the rendered screen. No other Zig CLI library ships this. Full API and the integration/e2e tiers: see <a href="https://github.com/ryanhair/zcli/blob/main/docs/TESTING.md" target="_blank" rel="noopener">docs/TESTING.md</a>.</p>
         </section>
 
         <!-- ============ DOCS GENERATION ============ -->

@@ -12,11 +12,11 @@
 <div class="wrap cl-body">
   <div class="eyebrow" style="display:inline-block;">Changelog</div>
   <h1>Every release, newest first.</h1>
-  <p class="lead">All notable changes to zcli, rendered from <a href="https://github.com/ryanhair/zcli/blob/main/CHANGELOG.md" target="_blank" rel="noopener" style="color:var(--accent);">CHANGELOG.md</a> in the repo — that file stays the single source of truth.</p>
+  <p class="lead">All notable changes to zcli, rendered from <a href="https://github.com/ryanhair/zcli/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a> in the repo — that file stays the single source of truth.</p>
 
   <div id="versioning" class="chglog-policy" style="margin-top:32px;">
     <b>Versioning policy</b>
-    zcli follows <a href="https://semver.org" target="_blank" rel="noopener" style="color:var(--accent);">semver</a>. Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target <b>stable Zig</b> — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice, in lockstep: <code class="mono">vX.Y.Z</code> is the framework library (the tag for your <code class="mono">build.zig.zon</code>), <code class="mono">zcli-vX.Y.Z</code> carries the prebuilt meta-CLI binaries.
+    zcli follows <a href="https://semver.org" target="_blank" rel="noopener">semver</a>. Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target <b>stable Zig</b> — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice, in lockstep: <code class="mono">vX.Y.Z</code> is the framework library (the tag for your <code class="mono">build.zig.zon</code>), <code class="mono">zcli-vX.Y.Z</code> carries the prebuilt meta-CLI binaries.
   </div>
 
   <table class="zig-table" style="margin-top:28px;">
