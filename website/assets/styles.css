@@ -4,6 +4,7 @@
   --surface:  #14161b;
   --surface2: #1a1d24;
   --fg:       #e7e9ee;
+  --fg-soft:  #c9cdd6;   /* long-form body copy — brighter than --muted so articles don't read washed out */
   --muted:    #9298a4;
   --faint:    #838b98;   /* lifted from #646a76 to clear 4.5:1 on --bg for small labels */
   --border:   rgba(255, 255, 255, 0.08);
