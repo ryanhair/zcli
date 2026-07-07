@@ -1031,6 +1031,11 @@ test "root zcli_theme declaration themes help output" {
         try testing.expect(std.mem.indexOf(u8, r.stderr, "\x1b[") == null);
     }
 
+    // The PTY harness needs an absolute binary path: ConPTY's CreateProcessW
+    // resolves a relative command-line path against the parent's cwd, not the
+    // child's `cwd`.
+    const demo_abs = try std.fs.path.join(a, &.{ proj_abs, "zig-out", "bin", "demo" ++ exe_ext });
+
     // Under a PTY in a truecolor-capable environment, help renders command
     // names in the custom palette color.
     {
@@ -1039,6 +1044,10 @@ test "root zcli_theme declaration themes help output" {
         try env.put("TERM", "xterm-256color");
         try env.put("COLORTERM", "truecolor"); // truecolor signal (POSIX)
         try env.put("WT_SESSION", "1"); // truecolor signal (Windows/ConPTY)
+        // A replaced environment must still carry SystemRoot on Windows —
+        // process startup and console plumbing consult it, and dropping it is
+        // a classic source of child-process failures.
+        if (builtin.os.tag == .windows) try env.put("SystemRoot", "C:\\Windows");
 
         var script = harness.InteractiveScript.init(testing.allocator);
         defer script.deinit();
@@ -1047,7 +1056,7 @@ test "root zcli_theme declaration themes help output" {
         var result = harness.runInteractive(
             testing.allocator,
             io,
-            &.{ demo_bin, "--help" },
+            &.{ demo_abs, "--help" },
             script,
             .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
         ) catch |err| switch (err) {
@@ -1072,6 +1081,7 @@ test "root zcli_theme declaration themes help output" {
         try env.put("COLORTERM", "truecolor");
         try env.put("WT_SESSION", "1");
         try env.put("NO_COLOR", "1");
+        if (builtin.os.tag == .windows) try env.put("SystemRoot", "C:\\Windows");
 
         var script = harness.InteractiveScript.init(testing.allocator);
         defer script.deinit();
@@ -1080,7 +1090,7 @@ test "root zcli_theme declaration themes help output" {
         var result = harness.runInteractive(
             testing.allocator,
             io,
-            &.{ demo_bin, "--help" },
+            &.{ demo_abs, "--help" },
             script,
             .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
         ) catch |err| switch (err) {
