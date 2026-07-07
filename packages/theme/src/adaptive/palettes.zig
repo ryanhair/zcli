@@ -29,7 +29,8 @@ pub const RGB = struct {
     /// Convert to basic 16-color ANSI code (approximated)
     fn toAnsi16(comptime self: RGB) []const u8 {
         const ansi_code = comptime approximateRgbToAnsi16(self.r, self.g, self.b);
-        return comptime std.fmt.comptimePrint("\x1b[{d}m", .{30 + (ansi_code % 8)});
+        const sgr_code = if (ansi_code < 8) 30 + @as(u16, ansi_code) else 90 + @as(u16, ansi_code - 8);
+        return comptime std.fmt.comptimePrint("\x1b[{d}m", .{sgr_code});
     }
 
     /// Convert to 256-color ANSI code (approximated)
@@ -127,45 +128,28 @@ pub const SemanticPalette = struct {
     }
 };
 
-/// Get the color for a semantic role using our carefully designed palette
+/// Get the color for a semantic role using the default palette
 pub fn getSemanticColor(role: SemanticRole) Color {
     const rgb = getSemanticRGB(role);
     return rgb.toColor();
 }
 
-/// Get the RGB color for a semantic role using our carefully designed palette
+/// Get the RGB color for a semantic role using the default palette
 pub fn getSemanticRGB(role: SemanticRole) RGB {
-    return getPaletteColor(role);
-}
-
-/// Our carefully designed semantic color palette
-/// These colors are chosen to be vibrant, distinctive, and accessible
-fn getPaletteColor(role: SemanticRole) RGB {
-    return switch (role) {
-        // Core 5 - High contrast, WCAG AA compliant colors
-        .success => RGB{ .r = 76, .g = 217, .b = 100 }, // Bright green - universally recognized for success
-        .err => RGB{ .r = 255, .g = 105, .b = 97 }, // Bright coral red - stands out for errors
-        .warning => RGB{ .r = 255, .g = 206, .b = 84 }, // Bright amber - perfect for warnings
-        .info => RGB{ .r = 116, .g = 169, .b = 250 }, // Light blue - calm and informative
-        .muted => RGB{ .r = 156, .g = 163, .b = 175 }, // Subtle gray - for less important text
-
-        // CLI-specific roles
-        .command => RGB{ .r = 64, .g = 224, .b = 208 }, // Turquoise - distinctive for commands
-        .flag => RGB{ .r = 218, .g = 112, .b = 214 }, // Orchid - stands out for flags
-        .path => RGB{ .r = 100, .g = 221, .b = 221 }, // Light cyan - classic for file paths
-        .value => RGB{ .r = 124, .g = 252, .b = 0 }, // Lawn green - emphasizes values
-        .code => RGB{ .r = 168, .g = 136, .b = 248 }, // Purple - inline code snippets
-        .header => RGB{ .r = 255, .g = 255, .b = 255 }, // White - clean headers
-        .link => RGB{ .r = 135, .g = 206, .b = 250 }, // Light sky blue - traditional link color
-
-        // Hierarchy
-        .primary => RGB{ .r = 255, .g = 255, .b = 255 }, // White - primary content
-        .secondary => RGB{ .r = 189, .g = 189, .b = 189 }, // Light gray - secondary content
-        .accent => RGB{ .r = 0, .g = 255, .b = 255 }, // Cyan - brand/accent color
-    };
+    return (SemanticPalette{}).getColor(role);
 }
 
 const testing = std.testing;
+
+test "RGB toAnsi16 preserves bright colors" {
+    // Regression test: bright approximations (8-15) used to be folded back
+    // into the dim 30-37 range, losing the bright bit.
+    const bright = comptime (RGB{ .r = 76, .g = 217, .b = 100 }).toAnsi16(); // bright green
+    try testing.expectEqualStrings("\x1b[92m", bright);
+
+    const dim = comptime (RGB{ .r = 0, .g = 100, .b = 0 }).toAnsi16(); // dark green
+    try testing.expectEqualStrings("\x1b[32m", dim);
+}
 
 test "semantic color palette" {
     // Test semantic colors

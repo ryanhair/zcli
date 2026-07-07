@@ -213,9 +213,10 @@ pub fn Spinner(comptime WriterType: type) type {
             self.writer.writeAll(data) catch {};
         }
 
-        fn colorSequence(color: theme.Color) []const u8 {
+        /// Write the color's escape sequence; returns true if one was written
+        fn writeColor(self: *Self, color: theme.Color) bool {
             const style = theme.Style{ .foreground = color };
-            return style.sequenceForCapability(.ansi_16);
+            return style.writeSequence(self.writer, .ansi_16) catch false;
         }
 
         fn finishWithColor(self: *Self, symbol: []const u8, color: theme.Color, message: []const u8) void {
@@ -223,12 +224,9 @@ pub fn Spinner(comptime WriterType: type) type {
 
             if (self.is_tty) {
                 self.writeAll("\r\x1b[K"); // Clear line
-                const seq = colorSequence(color);
-                if (seq.len > 0) {
-                    self.writeAll(seq);
-                }
+                const wrote_color = self.writeColor(color);
                 self.writeAll(symbol);
-                if (seq.len > 0) {
+                if (wrote_color) {
                     self.writeAll("\x1b[0m");
                 }
                 self.writeAll(" ");
@@ -303,12 +301,9 @@ pub fn Spinner(comptime WriterType: type) type {
             self.writeAll(self.config.prefix);
 
             // Write colored spinner frame
-            const color_seq = colorSequence(self.config.color);
-            if (color_seq.len > 0) {
-                self.writeAll(color_seq);
-            }
+            const wrote_color = self.writeColor(self.config.color);
             self.writeAll(frame);
-            if (color_seq.len > 0) {
+            if (wrote_color) {
                 self.writeAll("\x1b[0m");
             }
 
