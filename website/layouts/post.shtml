@@ -1,0 +1,36 @@
+<extend template="base.shtml">
+
+<head id="head">
+	<style>
+		.blog-body { max-width: 720px; padding: 64px 0 96px; }
+		.blog-body h1 { font-size: clamp(30px,4vw,42px); }
+		.post-meta { font-family: var(--mono); font-size: 12.5px; color: var(--faint); margin: 10px 0 34px; }
+		.post p { color: var(--muted); font-size: 16.5px; line-height: 1.75; margin-bottom: 18px; }
+		.post ul { margin-bottom: 18px; }
+		.post ul li { font-weight: bold; }
+		.post h2 { font-size: 24px; margin: 40px 0 12px; }
+		.post a { color: var(--accent); }
+		.post code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
+		.post pre { margin: 16px 0 22px; padding: 18px; background: #0d0e12; border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; }
+		.post pre code { background: none; border: none; padding: 0; font-size: 13px; line-height: 1.7; color: #cfd3da; }
+		.post-nav { display: flex; justify-content: space-between; gap: 16px; margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 13px; }
+		.post-nav a { color: var(--accent); }
+	</style>
+</head>
+
+<main id="main">
+	<div class="wrap blog-body">
+		<div class="eyebrow" style="display:inline-block;"><a href="$site.page('blog').link()" style="color:inherit;">Blog</a></div>
+		<h1 style="margin-top:14px;" :text="$page.title"></h1>
+		<div class="post-meta"><span :text="$page.date.format('January 2, 2006')"></span>
+		· <span :text="$page.author"></span></div>
+
+		<article class="post" :html="$page.content()"></article>
+
+		<nav class="post-nav">
+			<div :if="$page.prevPage?()"><a href="$if.link()">← <span :text="$if.title"></span></a></div>
+			<div :if="$page.nextPage?()"><a href="$if.link()"><span :text="$if.title"></span>
+			→</a></div>
+		</nav>
+	</div>
+</main>

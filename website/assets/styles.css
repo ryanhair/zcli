@@ -139,6 +139,18 @@ h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.08; }
 .code pre { margin: 0; padding: 18px 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: #cfd3da; }
 .code .kw { color: #d98cff; } .code .str { color: #9ece6a; } .code .fn { color: var(--cyan); } .code .cm { color: var(--faint); font-style: italic; } .code .at { color: var(--accent); } .code .num { color: #ff9e64; }
 
+/* Zine (tree-sitter) syntax highlighting — SuperMD fenced code blocks in blog posts.
+   NB: Zine's Zig grammar tags plain identifiers with `constant`/`type`/`variable` too,
+   so only the unambiguous classes get colors; identifiers stay the default. */
+.post pre code .keyword, .post pre code .keyword_modifier, .post pre code .keyword_type,
+.post pre code .keyword_function, .post pre code .keyword_exception { color: #d98cff; }
+.post pre code .string, .post pre code .string_escape { color: #9ece6a; }
+.post pre code .type_builtin { color: var(--cyan); }
+.post pre code .function, .post pre code .function_call, .post pre code .function_builtin { color: var(--cyan); }
+.post pre code .number, .post pre code .boolean { color: #ff9e64; }
+.post pre code .comment { color: var(--faint); font-style: italic; }
+.post pre code .operator, .post pre code .punctuation_delimiter, .post pre code .punctuation_bracket { color: #8b92a5; }
+
 /* ---------- sections ---------- */
 section { padding: 92px 0; border-top: 1px solid var(--border); }
 .sec-head { max-width: 62ch; margin-bottom: 48px; }

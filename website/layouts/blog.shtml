@@ -1,50 +1,33 @@
 <extend template="base.shtml">
 
 <head id="head">
-<style>
-  .blog-body { max-width: 720px; padding: 64px 0 96px; }
-  .blog-body h1 { font-size: clamp(30px,4vw,42px); }
-  .post-meta { font-family: var(--mono); font-size: 12.5px; color: var(--faint); margin: 10px 0 34px; }
-  .post p { color: var(--muted); font-size: 16.5px; line-height: 1.75; margin-bottom: 18px; }
-  .post h2 { font-size: 24px; margin: 40px 0 12px; }
-  .post code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
-  .post .code { margin: 16px 0 22px; }
-</style>
+	<style>
+		.blog-body { max-width: 720px; padding: 64px 0 96px; }
+		.blog-body h1 { font-size: clamp(30px,4vw,42px); }
+		.post-list { margin-top: 40px; display: flex; flex-direction: column; gap: 8px; }
+		.post-list a.entry { display: block; padding: 22px 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; transition: border-color .15s; }
+		.post-list a.entry:hover { border-color: var(--accent); }
+		.post-list .t { color: var(--fg); font-size: 18px; font-weight: 600; }
+		.post-list .d { font-family: var(--mono); font-size: 12.5px; color: var(--faint); margin-top: 6px; }
+		.post-list .s { color: var(--muted); font-size: 14.5px; margin-top: 10px; line-height: 1.6; }
+		.rss-link { font-family: var(--mono); font-size: 12.5px; color: var(--faint); margin-top: 28px; display: inline-block; }
+		.rss-link:hover { color: var(--accent); }
+	</style>
 </head>
 
 <main id="main">
-<div class="wrap blog-body">
-  <div class="eyebrow" style="display:inline-block;">Blog</div>
-  <h1 style="margin-top:14px;">Introducing zcli: your folder structure is your CLI</h1>
-  <div class="post-meta">2026-07-05 · Ryan Hair</div>
+	<div class="wrap blog-body">
+		<div class="eyebrow" style="display:inline-block;">Blog</div>
+		<h1 style="margin-top:14px;">Release notes & deep-dives.</h1>
 
-  <article class="post" id="introducing-zcli">
-    <p>I kept writing the same argument-parsing boilerplate for every command-line tool I built in Zig, then re-wiring a registry every time a command moved. zcli is the framework I wanted: drop a <code>.zig</code> file in <code>commands/</code>, and it's a command — discovered at build time, routed with zero runtime cost, and type-checked by the compiler instead of by hand.</p>
+		<div class="post-list" :loop="$page.subpages()">
+			<a class="entry" href="$loop.it.link()">
+				<div class="t" :text="$loop.it.title"></div>
+				<div class="d" :text="$loop.it.date.format('January 2, 2006')"></div>
+				<div class="s" :text="$loop.it.description"></div>
+			</a>
+		</div>
 
-    <h2>The idea</h2>
-    <p>A command is one file, up to four exports: <code>meta</code> for help text, <code>Args</code> and <code>Options</code> as plain structs, and an <code>execute</code> function. There's no builder chain to keep in sync, no registry to forget to update — the file <em>is</em> the command.</p>
-    <div class="code">
-      <div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
-<pre><span class="kw">pub const</span> meta = .{ .description = <span class="str">"Deploy your application"</span> };
-<span class="kw">pub const</span> Args = <span class="kw">struct</span> { service: []<span class="kw">const</span> <span class="fn">u8</span> };
-<span class="kw">pub const</span> Options = <span class="kw">struct</span> { env: []<span class="kw">const</span> <span class="fn">u8</span> = <span class="str">"production"</span> };
-
-<span class="kw">pub fn</span> <span class="fn">execute</span>(args: Args, options: Options, context: <span class="kw">anytype</span>) !<span class="kw">void</span> {
-    <span class="kw">try</span> context.<span class="fn">stdout</span>().<span class="fn">print</span>(<span class="str">"Deploying {s} to {s}\n"</span>, .{ args.service, options.env });
-}</pre>
-    </div>
-
-    <h2>What v0.19.0 adds</h2>
-    <p>This release is hardening and tooling: <code>zcli add/rm/mv</code> restructure command files in place via an AST splice engine, <code>zcli guide</code> gives your editor — or your coding agent — a version-matched reference, and the <code>zcli_secrets</code> plugin stores credentials in the OS keychain instead of a plaintext config file. Windows joined the first CI tier, and two audit passes closed 50+ findings across the parse pipeline and the PTY test harness. Full detail in the <a href="$site.page('changelog').link().suffix('#v0-19-0')" style="color:var(--accent);">changelog</a>.</p>
-
-    <h2>Try it</h2>
-    <div class="code">
-      <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
-<pre><span class="c-prompt">$</span> <span class="c-cmd">curl</span> -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh
-<span class="c-prompt">$</span> <span class="c-cmd">zcli</span> init myapp && <span class="c-cmd">cd</span> myapp && zig build
-<span class="c-prompt">$</span> ./zig-out/bin/myapp hello World</pre>
-    </div>
-    <p>It's MIT licensed, targets stable Zig 0.16.0, and the <a href="$site.page('why').link().suffix('#comparison')" style="color:var(--accent);">comparison to zig-clap and zli</a> is on the site if you're weighing options. Issues and PRs welcome on <a href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener" style="color:var(--accent);">GitHub</a>.</p>
-  </article>
-</div>
+		<a class="rss-link" href="$page.alternative('rss').link()">RSS feed ↗</a>
+	</div>
 </main>
