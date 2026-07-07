@@ -76,7 +76,7 @@
   <!-- NUMBERS -->
   <section id="numbers" style="padding-top:64px;border-top:1px solid var(--border);">
     <h2>Numbers</h2>
-    <p class="p">Every figure below is measured against zcli v0.19.0, built from the <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">showcase</a> and a minimal hello-world command. Expand a row for the exact commands used.</p>
+    <p class="p">Every figure below is measured against zcli v0.19.0, built from the <a href="https://github.com/ryanhair/zcli/tree/main/examples/tasks" target="_blank" rel="noopener">showcase</a> and a minimal hello-world command. Expand a row for the exact commands used.</p>
 
     <table class="num-table">
       <tbody>

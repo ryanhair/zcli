@@ -26,7 +26,7 @@ Each package under `packages/` builds and tests standalone (`cd packages/<name> 
 From the repo root:
 
 - `zig build test` — the whole battery: every package's suite plus the meta-CLI's and every example's tests
-- `zig build test-<name>` — one subproject (`test-core`, `test-terminal`, `test-zinput`, `test-showcase`, …)
+- `zig build test-<name>` — one subproject (`test-core`, `test-terminal`, `test-zinput`, `test-tasks`, …)
 - `zig build build-examples` / `build-cli` — compile the examples / the zcli binary
 - `cd projects/zcli && zig build e2e` — the meta-CLI's end-to-end suite (scaffolds real projects in temp dirs and drives the binary through a PTY; slow, not part of `test`)
 - `zig build test-secrets` — compile+link the host's native secrets backend (forwarded from `packages/core`, like `benchmark`/`regression`; not part of `test`)

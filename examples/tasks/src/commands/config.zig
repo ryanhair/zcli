@@ -15,7 +15,7 @@ pub const Options = struct {};
 /// The file the `zcli_config` plugin reads to seed command-option defaults.
 const CONFIG_FILE = ".tasks.config.json";
 
-/// Mirrors the showcase config schema. `add` and `list` are command-scoped:
+/// Mirrors the `tasks` config schema. `add` and `list` are command-scoped:
 /// the zcli_config plugin applies them as defaults for `tasks add` / `tasks list`.
 const Config = struct {
     output: []const u8 = "text",

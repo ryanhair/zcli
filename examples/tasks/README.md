@@ -1,4 +1,4 @@
-# showcase — the kitchen-sink example
+# tasks — the kitchen-sink example
 
 A fully functional task tracker CLI (`tasks`) that exercises every zcli
 feature in one app. Where [notes](../notes/), [repostat](../repostat/),

@@ -1,5 +1,5 @@
-# zcli README demo — records the showcase `tasks` app.
-# Run from examples/showcase: vhs demo.tape
+# zcli README demo — records the `tasks` showcase app.
+# Run from examples/tasks: vhs demo.tape
 
 Output demo.gif
 

@@ -50,7 +50,7 @@ for (items, 0..) |item, i| {
 bar.finish();
 ```
 
-See [examples/showcase](../../examples/showcase/) (`sync`, `import` commands) for these running in a real CLI.
+See [examples/tasks](../../examples/tasks/) (`sync`, `import` commands) for these running in a real CLI.
 
 ## Dependencies
 

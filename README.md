@@ -8,7 +8,7 @@
 
 zcli is a batteries-included framework for building polished command-line apps in Zig. Drop a `.zig` file in `commands/` and it becomes a command — help text, shell completions, typo suggestions, and typed argument parsing are generated at compile time. One dependency, one self-contained binary.
 
-<img alt="Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner" src="examples/showcase/demo.gif" width="600" />
+<img alt="Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner" src="examples/tasks/demo.gif" width="600" />
 
 ## Your CLI is a directory
 
@@ -289,10 +289,10 @@ The HTML output is a styled, dark-mode-aware static site with navigation.
 
 ## Example
 
-The [showcase](examples/showcase/) is a fully functional task tracker CLI — the app in the demo GIF above — that exercises every zcli feature: 14 commands with nested groups and aliases, every prompt type, spinners and progress bars, themed output, JSON persistence, config files, completions, and doc generation.
+The [showcase](examples/tasks/) is a fully functional task tracker CLI — the app in the demo GIF above — that exercises every zcli feature: 14 commands with nested groups and aliases, every prompt type, spinners and progress bars, themed output, JSON persistence, config files, completions, and doc generation.
 
 ```bash
-cd examples/showcase && zig build
+cd examples/tasks && zig build
 ./zig-out/bin/tasks init          # Interactive project wizard
 ./zig-out/bin/tasks add           # Add a task interactively
 ./zig-out/bin/tasks list          # Colored task list
@@ -302,7 +302,7 @@ cd examples/showcase && zig build
 ## Built with zcli
 
 - **[zcli](projects/zcli)** — the meta-CLI is itself a zcli app: `init`, `add`, `mv`, `rm`, `tree`, `dev`, `guide`, and `release` are files in its `commands/` directory, and it runs on the framework's own plugins (help, completions, "did you mean?", GitHub self-upgrade).
-- **[tasks](examples/showcase)** — the showcase task tracker from the demo above.
+- **[tasks](examples/tasks)** — the showcase task tracker from the demo above.
 
 Building something with zcli? Open a PR to add it here.
 
