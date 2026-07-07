@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>zcli blog</title>
+    <link :text="$site.host_url.suffix($page.link())"></link>
+    <description :text="$page.description"></description>
+    <item :loop="$page.subpages()">
+      <title :text="$loop.it.title"></title>
+      <link :text="$site.host_url.suffix($loop.it.link())"></link>
+      <guid :text="$site.host_url.suffix($loop.it.link())"></guid>
+      <pubDate :text="$loop.it.date.formatHTTP()"></pubDate>
+      <description :text="$loop.it.content()"></description>
+    </item>
+  </channel>
+</rss>

@@ -1,7 +1,15 @@
 ---
 .title = "zcli — Blog",
-.description = "zcli release notes and deep-dives. First post: introducing zcli — your folder structure is your CLI.",
-.date = @date("2025-01-01"),
+.description = "zcli release notes and deep-dives.",
+.date = @date("2026-07-05T00:00:00"),
 .author = "Ryan Hair",
 .layout = "blog.shtml",
+.alternatives = [
+    {
+        .name = "rss",
+        .layout = "rss.xml",
+        .output = "index.xml",
+        .type = "application/rss+xml",
+    },
+],
 ---

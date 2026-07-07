@@ -1,0 +1,48 @@
+---
+.title = "Introducing zcli: fast, slim and typesafe command-line tools in Zig",
+.description = "Why zcli exists: drop a .zig file in commands/ and it's a command — discovered at build time, routed with zero runtime cost, type-checked by the compiler.",
+.date = @date("2026-07-07"),
+.author = "Ryan Hair",
+.layout = "post.shtml",
+---
+
+I've always loved building command-line tools. I have often joined developer experience teams because I love creating great developer tooling. I love crafting a really great user experience for customers, but I think my _favorite_ customers are other developers. Developer tooling has always been a passion of mine, and I've always looked for ways to improve the developer experience. With most of the companies I've worked for, I have found that there are common utilities that are spread across different repos, random collections of scripts scattered between codebases, or even scripts that live directly on developer machines, which get shared organically, copied from one user's machine to another. One of my passions has been to collect those tools, dig in to figure out what problem the scripts are trying to _solve_, and build a CLI shaped around the very best solutions, tailored to the products and processes of the company.
+
+Along the way, I've tried a lot of different CLI frameworks. I built a company-wide CLI in Node using Pastel and Ink. We had a lot of frontend engineers, and the idea that they could possibly contribute, since Ink uses React, was appealing. I really loved the simplicity that came from building a CLI from a folder structure: to me, it was an elegant mapping that made sense. Create a folder, add a JS file with a function as the default export, and that function returns a React component. To me, it was incredibly elegant. It was also very heavy.
+
+I've always held a strong belief that we've accepted too much bloat for the simplicity that a high-level language like JS affords us. I get it. JavaScript and TypeScript are two of my most loved languages, and I've probably spent more time with them than any other. It hurts, though, when I see that we've accepted that 40MB is the _floor_ on the size of a CLI built with JS. It makes sense, we're packaging an entire _runtime_, one that is built to do all _sorts_ of things, and we package it up to run a set of scripts. Most have dependencies, and in the JS ecosystem that means _transitive_ dependencies. Honestly, most CLIs don't need this.
+
+It also hurts _speed_. Having to load an entire JS runtime, then have that runtime parse JS files, takes _time_. Yes, we're only talking hundreds of milliseconds, but I've learned that perceived time in a CLI _matters_. There's a thin line between a CLI not feeling responsive, and it doesn't take long to cross that line.
+
+It feels like we've accepted this. A _lot_ of AI tooling, especially CLIs, are being written in JS. Again, I understand when there are so many fantastic libraries and frameworks already built, but they come at a cost: bloated binaries, slower load times, and, for long-lived tasks, high memory usage.
+
+I have had a dream, for quite a while, of building a CLI framework to solve a lot of these issues. I've really enjoyed watching Zig grow, and have felt for a long time that it sits right at the intersection of simplicity and performance. After a lot of iterating on design and UX, `zcli` was born.
+
+There were two core design principles I decided on when architecting `zcli`:
+
+**Wherever possible, have only one way to do things, and**  
+**Everything that _can_ be done at compile time _should_ be.**
+
+Zig was a perfect language for this. Users can define a command tree, as complex as they want, and the router for it is automatically built, at comptime. This means a router doesn't need to be built and loaded when the CLI starts up. Arg and option parsing is determined at comptime. When an option is passed, it goes to machinery that was optimized at comptime exactly _for that option_. Using structs to define the inputs (args and options), we could specify _exactly_ what we want from the user, layering on top of Zig's powerful type system.
+
+Following the principle of a single way to do things led to choices that some may not agree with. That's fine, I completely understand, there were certain features I had to actively decide _against_ in order to keep the zcli patterns simple. For example, `Args` and `Options` must be defined if you define the `execute` function. If you don't it's not a runtime error, it's a _compile time_ error (core principle 2). To some, that may seem a bit heavy-handed, not being able to just import and use a struct from another file. (side note - you can still do that, you just have to specify `pub const Args = YourExternalType` so it's defined in your file). The benefits, to me, outweigh the slight cons. Having a structure that is followed consistently means less guessing. Errors are also much easier to design and can cleanly inform the user when something is wrong.
+
+I'm pretty happy with the result. I'm sure it's going to have some growing pains: being a batteries-included framework means there's a _lot_ of surface area, and with a lot of surface area, there will be issues. I feel confident in the structure, and building the `zcli` CLI on _top_ of this, as the first use case of the framework itself, has made me more confident.
+
+So, what does this look like in practice? Here's an example file:
+
+```zig
+pub const meta = .{ .description = "Deploy your application" };
+pub const Args = struct { service: []const u8 };
+pub const Options = struct { env: []const u8 = "development" };
+
+pub fn execute(args: Args, options: Options, context: anytype) !void {
+    try context.stdout().print("Deploying {s} to {s}\n", .{ args.service, options.env });
+}
+```
+
+## Enabling LLM generation
+
+One of my recent goals was to make it easier for LLM generation of CLIs. I understand people have _very strong opinions_ on this, and while I respect that, I want to make it easy for those who have a need for a CLI to be able to generate one cleanly. The benefit to following "one way to do things" _also_ leads to LLMs being able to more easily reason about and iterate on CLI code. Overall, zcli makes it surprisingly easy to get a small, portable CLI that does what you need, without disk space and memory bloat, and with about as snappy performance as possible.
+
+zcli is MIT licensed, targets stable Zig 0.16.0, and the [comparison to zig-clap and zli]($link.page('why').unsafeRef('comparison')) is on the site if you're weighing options. Issues and PRs welcome on [GitHub](https://github.com/ryanhair/zcli).
