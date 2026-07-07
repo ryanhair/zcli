@@ -1,7 +1,0 @@
----
-.title = "zcli — Changelog",
-.description = "Every zcli release, newest first, with the versioning policy and Zig support table. Rendered from CHANGELOG.md in the repo.",
-.date = @date("2025-01-01"),
-.author = "Ryan Hair",
-.layout = "changelog.shtml",
----
