@@ -66,6 +66,10 @@ if [ -z "$latest_date" ]; then
   exit 1
 fi
 
+# The directory may not exist on a fresh checkout: the generated index.smd is
+# the only thing in it, and git doesn't track empty directories.
+mkdir -p "$(dirname "$changelog_out")"
+
 cat > "$changelog_out" <<EOF
 ---
 .title = "zcli — Changelog",

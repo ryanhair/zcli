@@ -75,7 +75,7 @@
 },</pre>
           <button onclick="cp(this,'.zcli = .{ .url = &quot;https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz&quot;, .hash = &quot;...&quot; },')">copy</button>
         </div>
-        <p style="font-size:13.5px;">Then follow steps 2 & 3 in the <a href="$site.page('docs').link().suffix('#quick-start')" style="color:var(--accent)">docs</a> to wire up <code class="mono">zcli.generate</code>.</p>
+        <p style="font-size:13.5px;">Then follow steps 2 & 3 in the <a href="$site.page('docs').link().suffix('#quick-start')">docs</a> to wire up <code class="mono">zcli.generate</code>.</p>
       </div>
 
       <!-- SOURCE -->
