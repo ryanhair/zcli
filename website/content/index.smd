@@ -1,6 +1,6 @@
 ---
-.title = "zcli — batteries-included CLI framework for Zig",
-.description = "The filesystem is your command tree. The compiler is your argument parser. Drop a .zig file in commands/ and it becomes a command — help, completions, typo suggestions, and typed parsing generated at compile time.",
+.title = "zcli — your folder structure is your CLI",
+.description = "zcli is a batteries-included framework for command-line tools in Zig. Files become commands, folders become groups, structs become type-checked flags — routing generated at build time.",
 .date = @date("2025-01-01"),
 .author = "Ryan Hair",
 .layout = "home.shtml",

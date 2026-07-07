@@ -1,0 +1,105 @@
+<extend template="base.shtml">
+
+<head id="head">
+<style>
+  .cl-body { max-width: 800px; padding: 64px 0 96px; }
+  .cl-body h1 { font-size: clamp(30px,4vw,42px); }
+  .cl-body .lead { color: var(--muted); font-size: 17px; margin-top: 14px; max-width: 68ch; }
+</style>
+</head>
+
+<main id="main">
+<div class="wrap cl-body">
+  <div class="eyebrow" style="display:inline-block;">Changelog</div>
+  <h1>Every release, newest first.</h1>
+  <p class="lead">All notable changes to zcli, rendered from <a href="https://github.com/ryanhair/zcli/blob/main/CHANGELOG.md" target="_blank" rel="noopener" style="color:var(--accent);">CHANGELOG.md</a> in the repo — that file stays the single source of truth.</p>
+
+  <div id="versioning" class="chglog-policy" style="margin-top:32px;">
+    <b>Versioning policy</b>
+    zcli follows <a href="https://semver.org" target="_blank" rel="noopener" style="color:var(--accent);">semver</a>. Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target <b>stable Zig</b> — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice, in lockstep: <code class="mono">vX.Y.Z</code> is the framework library (the tag for your <code class="mono">build.zig.zon</code>), <code class="mono">zcli-vX.Y.Z</code> carries the prebuilt meta-CLI binaries.
+  </div>
+
+  <table class="zig-table" style="margin-top:28px;">
+    <thead><tr><th>zcli</th><th>Zig</th></tr></thead>
+    <tbody>
+      <tr><td class="zcli-v">main, v0.18.0 and later</td><td>0.16.0</td></tr>
+      <tr><td class="zcli-v">v0.14.0 – v0.17.0</td><td>0.15.1</td></tr>
+    </tbody>
+  </table>
+
+  <!-- v0.19.0 -->
+  <article class="release" id="v0-19-0">
+    <div class="release-head">
+      <h2>v0.19.0</h2>
+      <span class="date">2026-07-05</span>
+      <span class="tag minor">stable Zig 0.16.0</span>
+    </div>
+    <p class="release-summary">Hardening and tooling release. Requires Zig 0.16.0.</p>
+
+    <h3>Added</h3>
+    <ul>
+      <li><b>Command-authoring tools in the meta-CLI</b>: <code class="mono">zcli add option/arg/group/plugin</code> and <code class="mono">zcli mv</code>/<code class="mono">zcli rm</code> restructure command files in place via an AST splice engine — no JSON blobs, no regeneration.</li>
+      <li><b><code class="mono">zcli guide</code></b> — version-matched, topic-based reference for the framework's idioms; <code class="mono">zcli init</code> scaffolds an <code class="mono">AGENTS.md</code> that points AI agents at it.</li>
+      <li><b><code class="mono">zcli_secrets</code> plugin</b> — opt-in credential storage in the OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager), no plaintext fallback.</li>
+      <li>HTTP client with safe defaults over <code class="mono">std.http.Client</code> (credential headers stripped on cross-origin redirects), plus a canonical <code class="mono">ghauth</code> example showing the secrets + auth idiom.</li>
+      <li>Arena-per-command allocator for <code class="mono">execute()</code>, and <code class="mono">context.fail()</code> for friendly, stack-trace-free command errors.</li>
+      <li>Windows joins the first tier: unit tests and the full e2e suite (interactive tier via a ConPTY backend) run on Windows CI, <code class="mono">upgrade</code> self-replaces correctly on Windows, and the console is put into UTF-8 mode so multibyte I/O round-trips.</li>
+    </ul>
+    <h3>Fixed</h3>
+    <ul>
+      <li>Two full-repo audit passes burned down 50+ findings: memory leaks in the parse pipeline, a PTY-harness deadlock, vterm out-of-bounds on resize, comptime build errors that now name the offending command, config command-scoping applied to TOML/YAML (was JSON-only), and legible errors instead of <code class="mono">exit(1)</code> throughout the build API.</li>
+    </ul>
+    <h3>Changed</h3>
+    <ul>
+      <li><code class="mono">generate()</code>/<code class="mono">generateDocs()</code>/<code class="mono">addCommandTests()</code> take typed configs and derive the zcli module themselves.</li>
+      <li>The 2,460-line registry was split into focused submodules; zcli no longer re-exports all of serde.</li>
+      <li>Releases are gated on the full test suite (including native Windows), and CI actions are pinned to SHAs.</li>
+    </ul>
+  </article>
+
+  <!-- v0.18.0 -->
+  <article class="release" id="v0-18-0">
+    <div class="release-head">
+      <h2>v0.18.0</h2>
+      <span class="date">2026-06-30</span>
+      <span class="tag breaking">breaking</span>
+    </div>
+    <p class="release-summary">The Zig 0.16 release — the largest since the project started. <b>Breaking: requires Zig 0.16.0</b> (the new <code class="mono">std.Io</code> model).</p>
+
+    <h3>Added</h3>
+    <ul>
+      <li><b><code class="mono">zcli dev</code></b> — watches your source and rebuilds on change, with restart-on-change for a running binary (native fs events via kqueue/inotify/FSEvents).</li>
+      <li><b><code class="mono">zcli tree</code></b> — prints the command hierarchy, sharing the framework's own discovery logic.</li>
+      <li>Interactive wizard for <code class="mono">zcli add command</code>, plus declarative flags for scripted use.</li>
+      <li>Interactive prompts (text, confirm, select, multi-select, password, search, number, editor), config file support for TOML and YAML with per-command scoping, and command aliases.</li>
+      <li>Apps can name their generated <code class="mono">Context</code> type for full editor autocomplete in commands.</li>
+      <li>End-to-end test suite for the meta-CLI; docs website; Windows console backend and a libc-free terminal stack (fully static musl builds on Linux).</li>
+    </ul>
+    <h3>Changed</h3>
+    <ul>
+      <li>The monolithic interactive package was split into focused, standalone packages: <code class="mono">zinput</code>, <code class="mono">terminal</code>, <code class="mono">vterm</code>, <code class="mono">zprogress</code>, <code class="mono">ztheme</code>.</li>
+      <li><code class="mono">vterm</code> was removed from zcli's public re-exports — it's a testing tool, available directly.</li>
+      <li><code class="mono">zcli.builtin(.help, .{})</code> shortcut for enabling built-in plugins.</li>
+    </ul>
+  </article>
+
+  <!-- v0.14.0 – v0.17.0 -->
+  <article class="release" id="v0-14-0">
+    <div class="release-head">
+      <h2>v0.14.0 – v0.17.0</h2>
+      <span class="date">2025-10-23 to 2025-11-21</span>
+      <span class="tag minor">stable Zig 0.15.1</span>
+    </div>
+    <p class="release-summary">Zig 0.15.1 era. Windows support landed (v0.15.0), <code class="mono">std.posix.getenv</code> was dropped for portability, repeated short options for array types were fixed, commands gained support for C dependencies and command-specific imports (v0.16.0), and a completions memory leak was fixed.</p>
+  </article>
+
+  <!-- v0.1.0 – v0.13.1 -->
+  <article class="release" id="v0-1-0">
+    <div class="release-head">
+      <h2>v0.1.0 – v0.13.1</h2>
+      <span class="date">2025-10-09 to 2025-10-19</span>
+    </div>
+    <p class="release-summary">The foundation, built in ten days: build-time command discovery and routing, the plugin system (help, version, not-found, completions, config, output, upgrade), shell completions, hidden commands, shared modules, the <code class="mono">zcli</code> meta-CLI with <code class="mono">init</code>/<code class="mono">release</code>/<code class="mono">upgrade</code>, and the <code class="mono">curl | sh</code> install script. The dual-tag release scheme (<code class="mono">v*</code> library / <code class="mono">zcli-v*</code> CLI) was established at v0.11.0.</p>
+  </article>
+</div>
+</main>

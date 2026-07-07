@@ -1,0 +1,7 @@
+---
+.title = "zcli — Blog",
+.description = "zcli release notes and deep-dives. First post: introducing zcli — your folder structure is your CLI.",
+.date = @date("2025-01-01"),
+.author = "Ryan Hair",
+.layout = "blog.shtml",
+---

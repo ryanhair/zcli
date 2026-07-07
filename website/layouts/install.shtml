@@ -47,6 +47,7 @@
       <button class="tab" role="tab" aria-selected="true" data-t="script">Install script</button>
       <button class="tab" role="tab" aria-selected="false" data-t="pkg">Zig package</button>
       <button class="tab" role="tab" aria-selected="false" data-t="src">From source</button>
+      <button class="tab" role="tab" aria-selected="false" data-t="completions">Shell completions</button>
     </div>
 
     <div class="panels">
@@ -55,8 +56,8 @@
         <h3>Install script</h3>
         <p>Downloads the latest release binary for your platform and drops it in your install dir.</p>
         <div class="cmdbox">
-          <pre><span class="pr">$</span> curl -fsSL https://zcli.sh/install.sh | sh</pre>
-          <button onclick="cp(this,'curl -fsSL https://zcli.sh/install.sh | sh')">copy</button>
+          <pre><span class="pr">$</span> curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</pre>
+          <button onclick="cp(this,'curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh')">copy</button>
         </div>
         <p style="font-size:13.5px;">Requires <code class="mono" style="color:var(--accent)">curl</code>. The script reads the latest release from GitHub, verifies the checksum when available, and makes the binary executable.</p>
       </div>
@@ -74,7 +75,7 @@
 },</pre>
           <button onclick="cp(this,'.zcli = .{ .url = &quot;https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz&quot;, .hash = &quot;...&quot; },')">copy</button>
         </div>
-        <p style="font-size:13.5px;">Then follow steps 2 & 3 in the <a href="$site.page('docs').link().suffix('#manual')" style="color:var(--accent)">docs</a> to wire up <code class="mono">zcli.generate</code>.</p>
+        <p style="font-size:13.5px;">Then follow steps 2 & 3 in the <a href="$site.page('docs').link().suffix('#quick-start')" style="color:var(--accent)">docs</a> to wire up <code class="mono">zcli.generate</code>.</p>
       </div>
 
       <!-- SOURCE -->
@@ -87,6 +88,17 @@
           <button onclick="cp(this,'git clone https://github.com/ryanhair/zcli.git && cd zcli && zig build')">copy</button>
         </div>
         <p style="font-size:13.5px;">Built artifacts land in <code class="mono">zig-out/bin/</code>. Requires Zig 0.16.0+.</p>
+      </div>
+
+      <!-- COMPLETIONS -->
+      <div class="panel" id="p-completions">
+        <h3>Shell completions</h3>
+        <p>Usually the first thing people want right after install — tab-complete commands, subcommands, and flags in bash, zsh, or fish.</p>
+        <div class="cmdbox">
+          <pre><span class="pr">$</span> myapp completions install</pre>
+          <button onclick="cp(this,'myapp completions install')">copy</button>
+        </div>
+        <p style="font-size:13.5px;">Detects your shell, writes the completion script to the right location, and prints the one line to add to your shell profile if it can't do it automatically. Requires the <code class="mono" style="color:var(--accent)">zcli_completions</code> plugin — on by default in a project scaffolded with <code class="mono" style="color:var(--accent)">zcli init</code>.</p>
       </div>
     </div>
 
@@ -103,7 +115,7 @@
     </div>
 
     <div style="text-align:center;margin:56px 0 96px;">
-      <a class="btn primary" href="$site.page('docs').link()">Read the getting-started guide →</a>
+      <a class="btn primary" href="$site.page('getting-started').link()">Read the getting-started guide →</a>
     </div>
   </div>
 
