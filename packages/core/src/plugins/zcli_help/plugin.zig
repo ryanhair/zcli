@@ -743,14 +743,29 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
             option_name_buf[i] = if (c == '_') '-' else c;
             i += 1;
         }
-        const option_name = option_name_buf[0..field_info.name.len];
+        const dashed = option_name_buf[0..field_info.name.len];
+
+        // A boolean flag that defaults to true is turned off with its `--no-`
+        // negation, so that (long-form only, no short) is the spelling we show —
+        // the positive form would just re-assert the default. Other flags render
+        // their positive name and short as usual.
+        const negated = std.mem.eql(u8, field_info.type_name, "bool") and
+            field_info.default_value != null and
+            std.mem.eql(u8, field_info.default_value.?, "true");
+        var negated_name_buf: [67]u8 = undefined;
+        const option_name = if (negated) blk: {
+            @memcpy(negated_name_buf[0..3], "no-");
+            @memcpy(negated_name_buf[3..][0..dashed.len], dashed);
+            break :blk negated_name_buf[0 .. 3 + dashed.len];
+        } else dashed;
+        const short = if (negated) null else field_info.short;
 
         // Use description from metadata, fallback to field name
         const description = field_info.description orelse field_info.name;
 
         // Calculate padding to align descriptions
         // Format: "    --option, -x" or "    --option"
-        const option_length = if (field_info.short) |_|
+        const option_length = if (short) |_|
             2 + option_name.len + 4 // "--name, -x"
         else
             2 + option_name.len; // "--name"
@@ -766,7 +781,7 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
         const padding = padding_buf[0..padding_needed];
 
         // Add long form first, then short form (consistent with --help, -h)
-        if (field_info.short) |short_char| {
+        if (short) |short_char| {
             try buf_fmt.write("    <flag>--{s}</flag>, <flag>-{c}</flag>{s} {s}\n", .{ option_name, short_char, padding, description });
         } else {
             try buf_fmt.write("    <flag>--{s}</flag>{s} {s}\n", .{ option_name, padding, description });
@@ -789,6 +804,39 @@ test "help plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "commands"));
     try std.testing.expect(@hasDecl(@This(), "ContextData"));
     try std.testing.expect(@hasDecl(@This(), "isHelpRequested"));
+}
+
+test "help never renders auto-generated --no- negation flags" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // `verbose` defaults false → help shows the positive `--verbose` (its hidden
+    // `--no-verbose` never appears). `color` defaults true → help shows the useful
+    // `--no-color` negation instead (long-form only, no short), never the redundant
+    // positive `--color`.
+    const module_info = zcli.CommandModuleInfo{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "verbose", .is_optional = false, .is_array = false, .short = 'v', .type_name = "bool", .default_value = "false", .description = "Verbose output" },
+            .{ .name = "color", .is_optional = false, .is_array = false, .short = 'c', .type_name = "bool", .default_value = "true", .description = "Disable color" },
+        },
+    };
+
+    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    defer allocator.free(help);
+
+    // default-false bool: positive shown, negation hidden.
+    try std.testing.expect(std.mem.indexOf(u8, help, "--verbose") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--no-verbose") == null);
+    // default-true bool: negation shown, positive hidden.
+    try std.testing.expect(std.mem.indexOf(u8, help, "--no-color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--color") == null);
 }
 
 // Note: Integration tests for handleGlobalOption and help command execution

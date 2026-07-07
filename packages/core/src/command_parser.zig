@@ -193,7 +193,12 @@ fn initializeDefaultOptions(comptime OptionsType: type) OptionsType {
         } else if (@typeInfo(field.type) == .optional) {
             @field(result, field.name) = null;
         } else if (field.type == bool) {
-            @field(result, field.name) = false;
+            // Respect a declared default (`bool = true`); absent flag → default,
+            // or false when none is declared. `--no-<flag>` sets it back to false.
+            @field(result, field.name) = if (field.default_value_ptr) |default_ptr|
+                @as(*const bool, @ptrCast(@alignCast(default_ptr))).*
+            else
+                false;
         } else if (field.default_value_ptr) |default_ptr| {
             const default_value: *const field.type = @ptrCast(@alignCast(default_ptr));
             @field(result, field.name) = default_value.*;

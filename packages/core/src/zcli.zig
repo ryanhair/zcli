@@ -110,6 +110,15 @@ pub const FieldInfo = struct {
     // Metadata for help generation
     short: ?u8 = null,
     description: ?[]const u8 = null,
+    /// The field's type as a string (`@typeName`), e.g. `"bool"`, `"?bool"`,
+    /// `"u32"`, `"[]const u8"`. A descriptor, not a Zig `type` — FieldInfo stays a
+    /// plain runtime value.
+    type_name: []const u8 = "",
+    /// The field's declared default rendered to a string (`"true"`, `"8080"`,
+    /// `"info"`, …), or `null` when it has no scalar default. Together with
+    /// `type_name` this lets a consumer decide presentation — e.g. help shows a
+    /// default-`true` boolean by its `--no-` negation.
+    default_value: ?[]const u8 = null,
 };
 
 /// Information about command module structure for plugin introspection
@@ -316,6 +325,7 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
     // an explicit default. Anything else would be read as undefined memory
     // when the flag isn't passed — required values belong in Args.
     if (@typeInfo(OptionsType) == .@"struct") {
+        const opts_meta = if (@hasDecl(Module, "meta")) Module.meta else null;
         inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
             const has_absent_value = field.type == bool or
                 @typeInfo(field.type) == .optional or
@@ -327,6 +337,33 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
                     "Give it a default (`" ++ field.name ++ ": " ++ @typeName(field.type) ++ " = ...`), " ++
                     "make it optional (`?" ++ @typeName(field.type) ++ "`), " ++
                     "or make it a required positional in `Args`.");
+            }
+
+            // A boolean flag's name must not begin with `no-`: every bool and
+            // `?bool` auto-generates a `--no-<name>` negation, so a `no_`-prefixed
+            // flag would collide with (and read as) another flag's negation.
+            if (option_utils.isBooleanFlag(field.type)) {
+                const eff = option_utils.effectiveLongName(opts_meta, field.name);
+                if (std.mem.startsWith(u8, eff, "no-")) {
+                    @compileError(loc ++ "boolean option '" ++ field.name ++ "' resolves to flag `--" ++
+                        eff ++ "`, which collides with the auto-generated `--no-…` negation. " ++
+                        "Name it positively (e.g. `" ++ eff[3..] ++ ": " ++ @typeName(field.type) ++
+                        "`) and pass `--" ++ eff ++ "` to disable it.");
+                }
+            }
+
+            // An optional option carries a third, "unset" state that config/env
+            // fill in — that state is `null`, and the parser initializes optionals
+            // to `null` *before* any declared default is read (so a non-null
+            // default would be silently discarded). Forbid it: optionals default
+            // to null; use a non-optional field with a default for a guaranteed value.
+            if (@typeInfo(field.type) == .optional and field.default_value_ptr != null) {
+                const dv: *const field.type = @ptrCast(@alignCast(field.default_value_ptr.?));
+                if (dv.* != null) {
+                    @compileError(loc ++ "optional option '" ++ field.name ++ "' has a non-null default. " ++
+                        "Optionals default to `null` (the \"unset\" state config/env fill in). " ++
+                        "Drop the default, or use a non-optional field with a default for a guaranteed value.");
+                }
             }
         }
     }

@@ -157,7 +157,7 @@ pub const Args = struct {
 
 // Named options (flags)
 pub const Options = struct {
-    limit: ?u32 = 10,
+    limit: u32 = 10,
     format: enum { json, table } = .table,
     verbose: bool = false,
 };
@@ -180,9 +180,20 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 **Options Rules:**
 
 - Every field must have a well-defined value when its flag is absent:
-  `bool` (defaults to `false`), optional (`null`), an accumulating array
-  (empty), or an explicit default value. This is enforced at compile time —
+  `bool` (its declared default, or `false`), optional (`null`), an accumulating
+  array (empty), or an explicit default value. This is enforced at compile time —
   required values belong in `Args`.
+- `bool` and `?bool` are **flags** — they parse by presence and never take a
+  value. Each auto-generates a `--no-<flag>` that sets it `false`, so a
+  `bool = true` default can be turned off and `?bool` is a true three-state flag
+  (absent → `null`, `--flag` → `true`, `--no-flag` → `false`). A boolean may appear
+  at most once; repeating it (including `--flag` together with `--no-flag`) is an
+  error. `--help` lists the useful spelling: `--flag` for a default-`false` flag,
+  `--no-flag` for a default-`true` flag; the other is accepted but hidden.
+- Two compile-time guards keep the above coherent: a boolean field's name may not
+  start with `no_` (it would collide with a `--no-` negation), and an optional
+  field must default to `null` (that `null` is the "not passed" state; use a
+  non-optional field with a default for a guaranteed value).
 
 **Environment Variable Fallbacks:**
 
@@ -339,7 +350,8 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 - Long options: `--option value` or `--option=value`
 - Short options: `-o value` or `-ovalue` (no space)
-- Boolean flags: `--verbose` (presence = true)
+- Boolean flags: `--verbose` (presence = true), `--no-verbose` (= false).
+  Negation is long-form only; short flags have no negation.
 
 **Short Option Bundling:**
 
