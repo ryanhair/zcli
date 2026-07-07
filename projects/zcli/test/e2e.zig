@@ -1101,7 +1101,11 @@ test "root zcli_theme declaration themes help output" {
             else => return err,
         };
         defer result.deinit();
-        try testing.expect(std.mem.indexOf(u8, result.output, "\x1b[") == null);
+        // Assert the theme's color is gone, not that the stream has zero
+        // escapes: ConPTY re-renders child output as VT screen-diff frames
+        // (cursor, positioning, resets), so escape-free PTY output is
+        // impossible on Windows even when the child writes plain text.
+        try testing.expect(std.mem.indexOf(u8, result.output, "38;2;255;99;71") == null);
     }
 }
 
