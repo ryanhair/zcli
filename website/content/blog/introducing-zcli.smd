@@ -20,8 +20,8 @@ I have had a dream, for quite a while, of building a CLI framework to solve a lo
 
 There were two core design principles I decided on when architecting `zcli`:
 
-**Wherever possible, have only one way to do things, and**  
-**Everything that _can_ be done at compile time _should_ be.**
+1. **Wherever possible, have only one way to do things**, and
+2. **Everything that _can_ be done at compile time _should_ be**.
 
 Zig was a perfect language for this. Users can define a command tree, as complex as they want, and the router for it is automatically built, at comptime. This means a router doesn't need to be built and loaded when the CLI starts up. Arg and option parsing is determined at comptime. When an option is passed, it goes to machinery that was optimized at comptime exactly _for that option_. Using structs to define the inputs (args and options), we could specify _exactly_ what we want from the user, layering on top of Zig's powerful type system.
 
