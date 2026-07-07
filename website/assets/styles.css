@@ -279,20 +279,18 @@ details.repro pre { margin-top: 8px; font-family: var(--mono); font-size: 12.5px
 /* ---------- /changelog/ page ---------- */
 .chglog-policy { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0; padding: 18px 22px; margin-bottom: 8px; color: var(--muted); font-size: 14.5px; line-height: 1.65; }
 .chglog-policy b { color: var(--fg); }
-.release { padding: 40px 0; border-top: 1px solid var(--border); scroll-margin-top: 84px; }
-.release:first-of-type { border-top: none; padding-top: 8px; }
-.release-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
-.release-head h2 { font-family: var(--mono); font-size: 22px; color: var(--fg); }
-.release-head .date { color: var(--faint); font-size: 13px; font-family: var(--mono); }
-.release-head .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; }
-.release-head .tag.breaking { color: var(--red); background: rgba(240,105,105,0.1); }
-.release-head .tag.minor { color: var(--green); background: rgba(87,201,122,0.1); }
-.release-summary { color: var(--muted); font-size: 15px; margin-bottom: 18px; max-width: 68ch; }
-.release h3 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); margin: 20px 0 8px; }
-.release ul { color: var(--muted); font-size: 14.5px; margin-left: 20px; }
-.release li { padding: 5px 0; line-height: 1.6; }
-.release li b { color: var(--fg); }
-.release code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
+/* The release list is markdown generated from CHANGELOG.md (see
+   website/sync-site-data.sh), so these rules style plain elements. */
+.chglog h2 { font-family: var(--mono); font-size: 22px; color: var(--fg); margin-top: 40px; padding-top: 40px; border-top: 1px solid var(--border); scroll-margin-top: 84px; }
+.chglog h2:first-child { border-top: none; margin-top: 8px; padding-top: 0; }
+.chglog h2 + p { color: var(--muted); font-size: 15px; margin: 8px 0 18px; max-width: 68ch; }
+.chglog p { color: var(--muted); font-size: 15px; line-height: 1.65; }
+.chglog h3 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); margin: 20px 0 8px; }
+.chglog ul { color: var(--muted); font-size: 14.5px; margin-left: 20px; }
+.chglog li { padding: 5px 0; line-height: 1.6; }
+.chglog li b, .chglog li strong { color: var(--fg); }
+.chglog a { color: var(--accent); }
+.chglog code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
 
 /* ---------- docs hub additions ---------- */
 .prompt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }

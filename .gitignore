@@ -11,6 +11,7 @@ examples/showcase/tasks.json
 /website/zine
 /website/public
 /website/assets/site-data.json
+/website/content/changelog/index.smd
 **/CLAUDE.md
 docs/internal/
 **/docs/html/
