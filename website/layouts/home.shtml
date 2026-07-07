@@ -194,7 +194,7 @@ Deploying api to staging<span class="cursor"></span></pre>
 			<div class="sec-head">
 				<div class="eyebrow">See it run</div>
 				<h2>A real recording, not a mockup.</h2>
-				<p>Every file in the <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">showcase task tracker</a>
+				<p>Every file in the <a href="https://github.com/ryanhair/zcli/tree/main/examples/tasks" target="_blank" rel="noopener">showcase task tracker</a>
 					on the left is a command — the recording on the right is that exact CLI running, with interactive prompts, a colored table, live search, and a spinner, captured from a real terminal with VHS. The <span class="mono" style="color:var(--accent)">highlighted</span>
 					files are the ones you see run.</p>
 			</div>
@@ -229,7 +229,7 @@ Deploying api to staging<span class="cursor"></span></pre>
 			</div>
 			<div class="rec-caption">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
-				Every frame is a real capture — the showcase lives in <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">examples/showcase</a>.
+				Every frame is a real capture — the showcase lives in <a href="https://github.com/ryanhair/zcli/tree/main/examples/tasks" target="_blank" rel="noopener">examples/tasks</a>.
 			</div>
 		</div>
 	</section>

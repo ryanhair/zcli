@@ -1,7 +1,7 @@
 .{
-    .name = .showcase,
+    .name = .tasks,
     .version = "0.1.0",
-    .fingerprint = 0x14b88cd024b0b887,
+    .fingerprint = 0x50586597bff204a6,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zcli = .{ .path = "../.." },

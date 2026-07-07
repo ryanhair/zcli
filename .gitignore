@@ -7,7 +7,7 @@ zig-pkg
 .claude/settings.local.json
 .claude/skills/
 test_io
-examples/showcase/tasks.json
+examples/tasks/tasks.json
 /website/zine
 /website/public
 /website/assets/site-data.json

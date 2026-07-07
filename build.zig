@@ -93,7 +93,7 @@ pub fn build(b: *std.Build) void {
     // package, including its manifest and module exports.
     const test_projects = [_]ProjectInfo{
         .{ .name = "zcli", .path = "projects/zcli" },
-        .{ .name = "showcase", .path = "examples/showcase" },
+        .{ .name = "tasks", .path = "examples/tasks" },
         .{ .name = "repostat", .path = "examples/repostat" },
         .{ .name = "ghauth", .path = "examples/ghauth" },
         .{ .name = "oauth-device", .path = "examples/oauth-device" },
@@ -134,7 +134,7 @@ pub fn build(b: *std.Build) void {
     // (The vterm example's demo executable is built here too; only its test
     // suite runs in-process above.)
     const example_projects = [_]ProjectInfo{
-        .{ .name = "showcase", .path = "examples/showcase" },
+        .{ .name = "tasks", .path = "examples/tasks" },
         .{ .name = "repostat", .path = "examples/repostat" },
         .{ .name = "ghauth", .path = "examples/ghauth" },
         .{ .name = "oauth-device", .path = "examples/oauth-device" },

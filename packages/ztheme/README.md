@@ -286,7 +286,7 @@ zig build test
 
 ## Examples
 
-See [examples/showcase](../../examples/showcase/) — its commands use ztheme's semantic roles throughout (via `context.theme`).
+See [examples/tasks](../../examples/tasks/) — its commands use ztheme's semantic roles throughout (via `context.theme`).
 
 ## License
 

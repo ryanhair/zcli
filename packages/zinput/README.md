@@ -59,7 +59,7 @@ const sure = try zinput.confirm(writer, reader, .{ .message = "Create it?" });
 
 The other prompt types follow the same shape: `password` (masked input), `multiSelect` (space toggles, returns owned indices), `search` (type-to-filter a list), and `editor` (opens `$EDITOR` for multiline text).
 
-See [examples/showcase](../../examples/showcase/) for every prompt in a working CLI.
+See [examples/tasks](../../examples/tasks/) for every prompt in a working CLI.
 
 ## Behavior notes
 

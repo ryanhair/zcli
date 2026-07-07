@@ -76,7 +76,7 @@ sequence. Each PR references the ADR carrying its rationale. Ordered by dependen
 **Phase 4 — Context layer (leg 3)** — depends on Phases 2–3 existing
 - [x] **PR: Canonical example CLIs + CI compile** (ADR-0004) — DONE (#66, #73). `examples/`
   compiled by the CI `examples` job (drift-detector); `repostat` (zcli.http idiom) and
-  `ghauth` (zcli_secrets + auth idiom) alongside the existing `showcase`.
+  `ghauth` (zcli_secrets + auth idiom) alongside the existing `tasks`.
 - [x] **PR: `zcli guide`** (ADR-0008) — DONE (#74). Topic-based (`structure`/`arena`/`output`/
   `prompts`/`http`/`secrets`/`plugins`/`testing`); the http/secrets topics `@embedFile` the
   real CI-compiled canonical examples (wired via a `guide_examples` module + `addAnonymousImport`,
