@@ -3,7 +3,7 @@ const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
 const progress = zcli.progress;
-const themed = zcli.theme.theme;
+const themed = zcli.theme.styled;
 
 pub const meta = .{
     .description = "Import tasks from a JSON file",

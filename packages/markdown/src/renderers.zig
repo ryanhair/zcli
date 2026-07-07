@@ -5,28 +5,27 @@ const semantic = @import("semantic.zig");
 const inline_parser = @import("inline_parser.zig");
 
 /// Render a header (# through ######)
-pub fn renderHeader(comptime level: usize, comptime content: []const u8, comptime palette: semantic.SemanticPalette, comptime capability: semantic.TerminalCapability) []const u8 {
+pub fn renderHeader(comptime level: usize, comptime content: []const u8, comptime palette: semantic.Palette, comptime capability: semantic.TerminalCapability) []const u8 {
     comptime {
         if (level < 1 or level > 6) @compileError("Header level must be 1-6");
 
-        const ANSI_BOLD = if (capability == .no_color) "" else "\x1b[1m";
         const ANSI_RESET = if (capability == .no_color) "" else "\x1b[0m";
 
         // Parse inline markdown in header content
         const raw_parsed = inline_parser.parseInline(content, palette, capability);
 
         // Header color
-        const color_code = palette.primary.toAnsi(capability);
+        const color_code = palette.header.sequenceComptime(capability);
 
         // Re-apply header formatting (color + bold) after any inline resets
-        const header_fmt = color_code ++ ANSI_BOLD;
+        const header_fmt = color_code;
         const parsed_content = inline_parser.reapplyAfterResets(raw_parsed, header_fmt, ANSI_RESET);
 
         // Different styling for different header levels
         switch (level) {
             1 => {
                 // H1: Bold + underline with ═
-                const header_line = color_code ++ ANSI_BOLD ++ parsed_content ++ ANSI_RESET;
+                const header_line = color_code ++ parsed_content ++ ANSI_RESET;
 
                 // Calculate visible width (approximate - count non-ANSI characters)
                 var visible_width: usize = 0;
@@ -46,7 +45,7 @@ pub fn renderHeader(comptime level: usize, comptime content: []const u8, comptim
             },
             2 => {
                 // H2: Bold + underline with ─
-                const header_line = color_code ++ ANSI_BOLD ++ parsed_content ++ ANSI_RESET;
+                const header_line = color_code ++ parsed_content ++ ANSI_RESET;
 
                 var visible_width: usize = 0;
                 for (content) |c| {
@@ -64,21 +63,21 @@ pub fn renderHeader(comptime level: usize, comptime content: []const u8, comptim
             },
             3 => {
                 // H3: Bold with ▸ prefix
-                return "\n" ++ color_code ++ "▸ " ++ ANSI_BOLD ++ parsed_content ++ ANSI_RESET ++ "\n";
+                return "\n" ++ color_code ++ "▸ " ++ parsed_content ++ ANSI_RESET ++ "\n";
             },
             else => {
                 // H4-H6: Just bold and colored
-                return "\n" ++ color_code ++ ANSI_BOLD ++ parsed_content ++ ANSI_RESET ++ "\n";
+                return "\n" ++ color_code ++ parsed_content ++ ANSI_RESET ++ "\n";
             },
         }
     }
 }
 
 /// Render a code block with border
-pub fn renderCodeBlock(comptime language: []const u8, comptime content: []const u8, comptime palette: semantic.SemanticPalette, comptime capability: semantic.TerminalCapability) []const u8 {
+pub fn renderCodeBlock(comptime language: []const u8, comptime content: []const u8, comptime palette: semantic.Palette, comptime capability: semantic.TerminalCapability) []const u8 {
     comptime {
         const ANSI_RESET = if (capability == .no_color) "" else "\x1b[0m";
-        const color_code = palette.code.toAnsi(capability);
+        const color_code = palette.code.sequenceComptime(capability);
 
         // Escape braces in content to prevent them being treated as format specifiers
         var escaped_content: []const u8 = "";
@@ -208,7 +207,7 @@ pub fn renderHorizontalRule(comptime width: usize) []const u8 {
 }
 
 /// Render an unordered list item
-pub fn renderUnorderedListItem(comptime level: usize, comptime content: []const u8, comptime palette: semantic.SemanticPalette, comptime capability: semantic.TerminalCapability) []const u8 {
+pub fn renderUnorderedListItem(comptime level: usize, comptime content: []const u8, comptime palette: semantic.Palette, comptime capability: semantic.TerminalCapability) []const u8 {
     comptime {
         const indent_size = level * 2;
         var indent: []const u8 = "";
@@ -223,7 +222,7 @@ pub fn renderUnorderedListItem(comptime level: usize, comptime content: []const 
 }
 
 /// Render an ordered list item
-pub fn renderOrderedListItem(comptime level: usize, comptime number: usize, comptime content: []const u8, comptime palette: semantic.SemanticPalette, comptime capability: semantic.TerminalCapability) []const u8 {
+pub fn renderOrderedListItem(comptime level: usize, comptime number: usize, comptime content: []const u8, comptime palette: semantic.Palette, comptime capability: semantic.TerminalCapability) []const u8 {
     comptime {
         const indent_size = level * 2;
         var indent: []const u8 = "";
@@ -239,10 +238,10 @@ pub fn renderOrderedListItem(comptime level: usize, comptime number: usize, comp
 }
 
 /// Render a blockquote
-pub fn renderBlockquote(comptime content: []const u8, comptime palette: semantic.SemanticPalette, comptime capability: semantic.TerminalCapability) []const u8 {
+pub fn renderBlockquote(comptime content: []const u8, comptime palette: semantic.Palette, comptime capability: semantic.TerminalCapability) []const u8 {
     comptime {
         const ANSI_RESET = if (capability == .no_color) "" else "\x1b[0m";
-        const color_code = palette.code.toAnsi(capability);
+        const color_code = palette.code.sequenceComptime(capability);
 
         const parsed_content = inline_parser.parseInline(content, palette, capability);
         return color_code ++ ">" ++ ANSI_RESET ++ " " ++ parsed_content ++ "\n";
@@ -250,7 +249,7 @@ pub fn renderBlockquote(comptime content: []const u8, comptime palette: semantic
 }
 
 /// Render a paragraph
-pub fn renderParagraph(comptime content: []const u8, comptime palette: semantic.SemanticPalette, comptime capability: semantic.TerminalCapability) []const u8 {
+pub fn renderParagraph(comptime content: []const u8, comptime palette: semantic.Palette, comptime capability: semantic.TerminalCapability) []const u8 {
     comptime {
         const parsed_content = inline_parser.parseInline(content, palette, capability);
         return parsed_content ++ "\n";
@@ -259,14 +258,15 @@ pub fn renderParagraph(comptime content: []const u8, comptime palette: semantic.
 
 // Tests
 test "render header" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime renderHeader(1, "Hello", palette, .true_color);
     try std.testing.expect(std.mem.indexOf(u8, result, "Hello") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1m") != null);
+    // The header role's full style (bold + white) is applied as one sequence
+    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1;38;2;255;255;255m") != null);
 }
 
 test "render code block" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime renderCodeBlock("zig", "const x = 42;", palette, .true_color);
     try std.testing.expect(std.mem.indexOf(u8, result, "zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "const x = 42;") != null);
@@ -280,32 +280,32 @@ test "render horizontal rule" {
 }
 
 test "render unordered list item" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime renderUnorderedListItem(0, "Item", palette, .true_color);
     try std.testing.expect(std.mem.indexOf(u8, result, "• Item") != null);
 }
 
 test "render ordered list item" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime renderOrderedListItem(0, 1, "First", palette, .true_color);
     try std.testing.expect(std.mem.indexOf(u8, result, "1. First") != null);
 }
 
 test "render blockquote" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime renderBlockquote("Quote", palette, .true_color);
     try std.testing.expect(std.mem.indexOf(u8, result, ">") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "Quote") != null);
 }
 
 test "render paragraph" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime renderParagraph("Text", palette, .true_color);
     try std.testing.expectEqualStrings("Text\n", result);
 }
 
 test "render header no color" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime renderHeader(1, "Hello", palette, .no_color);
     try std.testing.expect(std.mem.indexOf(u8, result, "Hello") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[") == null);

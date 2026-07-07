@@ -497,7 +497,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 .io = io,
                 .stdio = stdio,
                 .environ = environ,
-                .theme = zcli.theme.Theme.init(environ, io),
+                .theme = .{ .theme = zcli.appTheme(), .caps = zcli.theme.Capabilities.init(environ, io) },
                 .app_name = config.app_name,
                 .app_version = config.app_version,
                 .app_description = config.app_description,

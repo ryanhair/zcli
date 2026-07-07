@@ -1,8 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const themed = zcli.theme.theme;
-const Theme = zcli.theme.Theme;
+const themed = zcli.theme.styled;
+const ThemeContext = zcli.theme.ThemeContext;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -87,7 +87,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     try finish(context.stdout(), &context.theme, file_path, names.len);
 }
 
-fn finish(w: *std.Io.Writer, theme: *const Theme, file_path: []const u8, count: usize) !void {
+fn finish(w: *std.Io.Writer, theme: *const ThemeContext, file_path: []const u8, count: usize) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const plural: []const u8 = if (count == 1) "" else "s";

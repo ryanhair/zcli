@@ -1,8 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const themed = zcli.theme.theme;
-const Theme = zcli.theme.Theme;
+const themed = zcli.theme.styled;
+const ThemeContext = zcli.theme.ThemeContext;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -167,7 +167,7 @@ fn hasPluginsDir(arena: std.mem.Allocator, io: std.Io) bool {
     return std.mem.indexOf(u8, raw, "plugins_dir") != null;
 }
 
-fn finish(w: *std.Io.Writer, theme: *const Theme, file_path: []const u8, plugins_dir_wired: bool) !void {
+fn finish(w: *std.Io.Writer, theme: *const ThemeContext, file_path: []const u8, plugins_dir_wired: bool) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "\u{2714} Created plugin {s}", .{file_path}) catch "\u{2714} Created plugin";

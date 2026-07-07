@@ -216,7 +216,7 @@ const topics = [_]Topic{
         \\
         \\Color/styles via theme — it auto-disables on non-TTY and honors NO_COLOR,
         \\so output stays clean when piped or captured:
-        \\  const themed = zcli.theme.theme;
+        \\  const themed = zcli.theme.styled;
         \\  const theme = &context.theme;
         \\  try themed("done").success().render(context.stdout(), theme);
         \\  try themed(title).bold().render(context.stdout(), theme);

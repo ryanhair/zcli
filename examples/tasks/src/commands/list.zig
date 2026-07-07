@@ -2,7 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const themed = zcli.theme.theme;
+const themed = zcli.theme.styled;
 
 pub const meta = .{
     .description = "List all tasks",

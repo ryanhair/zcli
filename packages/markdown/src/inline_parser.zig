@@ -37,7 +37,7 @@ pub fn reapplyAfterResets(comptime content: []const u8, comptime format_code: []
 
 /// Parse inline markdown within a block of text
 /// Returns ANSI-formatted string with format specifiers preserved
-pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.SemanticPalette, comptime capability: semantic.TerminalCapability) []const u8 {
+pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Palette, comptime capability: semantic.TerminalCapability) []const u8 {
     comptime {
         const bold = if (capability == .no_color) "" else "\x1b[1m";
         const italic = if (capability == .no_color) "" else "\x1b[3m";
@@ -83,7 +83,7 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Sem
                     if (markdown[i] == '`') {
                         const content = markdown[start..i];
                         const code_color = palette.code;
-                        const code_ansi = code_color.toAnsi(capability);
+                        const code_ansi = code_color.sequenceComptime(capability);
 
                         // Escape braces in code content to prevent them being treated as format specifiers
                         var escaped_content: []const u8 = "";
@@ -290,73 +290,73 @@ const ANSI_STRIKETHROUGH = "\x1b[9m";
 const ANSI_RESET = "\x1b[0m";
 
 test "parse plain text" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("hello world", palette, .true_color);
     try std.testing.expectEqualStrings("hello world", result);
 }
 
 test "parse bold" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("**bold**", palette, .true_color);
     try std.testing.expectEqualStrings(ANSI_BOLD ++ "bold" ++ ANSI_RESET, result);
 }
 
 test "parse italic" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("*italic*", palette, .true_color);
     try std.testing.expectEqualStrings(ANSI_ITALIC ++ "italic" ++ ANSI_RESET, result);
 }
 
 test "parse dim" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("~dim~", palette, .true_color);
     try std.testing.expectEqualStrings(ANSI_DIM ++ "dim" ++ ANSI_RESET, result);
 }
 
 test "parse inline code" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("`code`", palette, .true_color);
-    const expected = comptime palette.code.toAnsi(.true_color) ++ "code" ++ ANSI_RESET;
+    const expected = comptime palette.code.sequenceComptime(.true_color) ++ "code" ++ ANSI_RESET;
     try std.testing.expectEqualStrings(expected, result);
 }
 
 test "parse strikethrough" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("~~strike~~", palette, .true_color);
     try std.testing.expectEqualStrings(ANSI_STRIKETHROUGH ++ "strike" ++ ANSI_RESET, result);
 }
 
 test "parse link" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("[text](https://example.com)", palette, .true_color);
     const expected = "\x1b]8;;https://example.com\x1b\\text\x1b]8;;\x1b\\";
     try std.testing.expectEqualStrings(expected, result);
 }
 
 test "parse escape sequences" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("\\*not bold\\*", palette, .true_color);
     try std.testing.expectEqualStrings("*not bold*", result);
 }
 
 test "preserve format specifiers" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("Value: **{s}**", palette, .true_color);
     const expected = "Value: " ++ ANSI_BOLD ++ "{s}" ++ ANSI_RESET;
     try std.testing.expectEqualStrings(expected, result);
 }
 
 test "mixed formatting" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("**bold** and *italic* and `code`", palette, .true_color);
     // Should contain all three ANSI codes
     try std.testing.expect(std.mem.indexOf(u8, result, ANSI_BOLD) != null);
     try std.testing.expect(std.mem.indexOf(u8, result, ANSI_ITALIC) != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null); // Code color
+    try std.testing.expect(std.mem.indexOf(u8, result, "38;2;") != null); // Code color
 }
 
 test "no color mode strips all ANSI" {
-    const palette = semantic.SemanticPalette{};
+    const palette = semantic.Palette{};
     const result = comptime parseInline("**bold** and `code`", palette, .no_color);
     try std.testing.expectEqualStrings("bold and code", result);
 }

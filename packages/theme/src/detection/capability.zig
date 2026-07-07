@@ -91,14 +91,14 @@ pub const TerminalCapability = enum {
     }
 };
 
-/// Theme context manages capability detection and color output decisions
-pub const Theme = struct {
+/// Capabilities context manages capability detection and color output decisions
+pub const Capabilities = struct {
     capability: TerminalCapability,
     is_tty: bool,
     color_enabled: bool,
 
     /// Initialize theme context with automatic detection
-    pub fn init(env: *const std.process.Environ.Map, io: std.Io) Theme {
+    pub fn init(env: *const std.process.Environ.Map, io: std.Io) Capabilities {
         const capability = TerminalCapability.detect(env);
         const is_tty = detectTTY(io);
 
@@ -110,7 +110,7 @@ pub const Theme = struct {
     }
 
     /// Initialize with explicit capability (for testing or forced modes)
-    pub fn initWithCapability(capability: TerminalCapability, io: std.Io) Theme {
+    pub fn initWithCapability(capability: TerminalCapability, io: std.Io) Capabilities {
         const is_tty = detectTTY(io);
         return .{
             .capability = capability,
@@ -120,7 +120,7 @@ pub const Theme = struct {
     }
 
     /// Initialize with forced color setting (override TTY detection)
-    pub fn initForced(env: *const std.process.Environ.Map, io: std.Io, force_color: bool) Theme {
+    pub fn initForced(env: *const std.process.Environ.Map, io: std.Io, force_color: bool) Capabilities {
         const capability = TerminalCapability.detect(env);
         const is_tty = detectTTY(io);
 
@@ -132,27 +132,27 @@ pub const Theme = struct {
     }
 
     /// Get the effective capability (accounting for color_enabled)
-    pub fn getCapability(self: *const Theme) TerminalCapability {
+    pub fn getCapability(self: *const Capabilities) TerminalCapability {
         return if (self.color_enabled) self.capability else .no_color;
     }
 
     /// Check if colors are supported at all
-    pub fn supportsColor(self: *const Theme) bool {
+    pub fn supportsColor(self: *const Capabilities) bool {
         return self.color_enabled;
     }
 
     /// Check if true color (24-bit RGB) is supported
-    pub fn supportsTrueColor(self: *const Theme) bool {
+    pub fn supportsTrueColor(self: *const Capabilities) bool {
         return self.color_enabled and self.capability == .true_color;
     }
 
     /// Check if 256-color palette is supported
-    pub fn supports256Color(self: *const Theme) bool {
+    pub fn supports256Color(self: *const Capabilities) bool {
         return self.color_enabled and (self.capability == .ansi_256 or self.capability == .true_color);
     }
 
     /// Get capability as string for debugging
-    pub fn capabilityString(self: *const Theme) []const u8 {
+    pub fn capabilityString(self: *const Capabilities) []const u8 {
         const effective = self.getCapability();
         return switch (effective) {
             .no_color => "no color",
@@ -176,7 +176,7 @@ test "capability detection basics" {
     try testing.expect(cap == .ansi_16);
 
     // Test theme initialization
-    const theme_ctx = Theme.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
+    const theme_ctx = Capabilities.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
     try testing.expect(@TypeOf(theme_ctx.capability) == TerminalCapability);
 
     // Test capability getter
@@ -184,7 +184,7 @@ test "capability detection basics" {
     try testing.expect(@TypeOf(effective) == TerminalCapability);
 
     // Test that disabled color always returns no_color
-    var disabled_theme = Theme{
+    var disabled_theme = Capabilities{
         .capability = .true_color,
         .is_tty = true,
         .color_enabled = false,
@@ -214,7 +214,7 @@ test "TTY detection" {
     try testing.expect(@TypeOf(is_tty) == bool);
 
     // Test theme includes TTY info
-    const theme_ctx = Theme.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
+    const theme_ctx = Capabilities.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
     try testing.expect(@TypeOf(theme_ctx.is_tty) == bool);
 }
 
@@ -253,28 +253,28 @@ test "capability range validation" {
     }
 }
 
-test "enhanced Theme context methods" {
+test "enhanced Capabilities context methods" {
     const testing = std.testing;
 
     // Test explicit capability initialization
-    const true_color_theme = Theme.initWithCapability(.true_color, std.testing.io);
+    const true_color_theme = Capabilities.initWithCapability(.true_color, std.testing.io);
     try testing.expect(true_color_theme.capability == .true_color);
     try testing.expect(true_color_theme.supportsTrueColor() == true_color_theme.color_enabled);
     try testing.expect(true_color_theme.supports256Color() == true_color_theme.color_enabled);
     try testing.expect(true_color_theme.supportsColor() == true_color_theme.color_enabled);
 
     // Test forced color mode
-    const forced_theme = Theme.initForced(&(std.process.Environ.Map.init(testing.allocator)), std.testing.io, true);
+    const forced_theme = Capabilities.initForced(&(std.process.Environ.Map.init(testing.allocator)), std.testing.io, true);
     try testing.expect(forced_theme.color_enabled == (forced_theme.capability != .no_color));
 
     // Test no-color theme
-    const no_color_theme = Theme.initWithCapability(.no_color, std.testing.io);
+    const no_color_theme = Capabilities.initWithCapability(.no_color, std.testing.io);
     try testing.expect(!no_color_theme.supportsColor());
     try testing.expect(!no_color_theme.supportsTrueColor());
     try testing.expect(!no_color_theme.supports256Color());
 
     // Test ANSI-16 theme
-    const ansi16_theme = Theme.initWithCapability(.ansi_16, std.testing.io);
+    const ansi16_theme = Capabilities.initWithCapability(.ansi_16, std.testing.io);
     try testing.expect(ansi16_theme.supportsColor() == ansi16_theme.color_enabled);
     try testing.expect(!ansi16_theme.supportsTrueColor());
     try testing.expect(!ansi16_theme.supports256Color());
@@ -283,11 +283,11 @@ test "enhanced Theme context methods" {
     try testing.expect(std.mem.eql(u8, no_color_theme.capabilityString(), "no color"));
 }
 
-test "Theme capability hierarchy" {
+test "Capabilities capability hierarchy" {
     const testing = std.testing;
 
     // True color should support all lower capabilities
-    const true_color = Theme.initWithCapability(.true_color, std.testing.io);
+    const true_color = Capabilities.initWithCapability(.true_color, std.testing.io);
     if (true_color.color_enabled) {
         try testing.expect(true_color.supportsTrueColor());
         try testing.expect(true_color.supports256Color());
@@ -295,7 +295,7 @@ test "Theme capability hierarchy" {
     }
 
     // 256-color should support color but not true color
-    const ansi256 = Theme.initWithCapability(.ansi_256, std.testing.io);
+    const ansi256 = Capabilities.initWithCapability(.ansi_256, std.testing.io);
     if (ansi256.color_enabled) {
         try testing.expect(!ansi256.supportsTrueColor());
         try testing.expect(ansi256.supports256Color());

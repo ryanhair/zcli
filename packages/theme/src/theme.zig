@@ -1,63 +1,52 @@
-//! theme - A powerful, zero-cost CLI theming system for Zig
+//! theme - a CLI design system for Zig
 //!
-//! Provides compile-time style generation, runtime terminal capability
-//! detection, and an intuitive fluent API for creating beautiful CLI output.
+//! A `Theme` is defined once per CLI: a palette maps semantic roles to
+//! styles, and component tokens (prompts, progress) reference those roles.
+//! Render paths consume a `ThemeContext`, which pairs the theme with the
+//! detected terminal capabilities and degrades output gracefully
+//! (true color -> 256 -> 16 -> plain).
 //!
 //! Basic usage:
 //! ```zig
 //! const theme = @import("theme");
 //!
-//! // Simple coloring
-//! try theme.theme("Error").red().bold().render(writer, &theme_ctx);
+//! // Semantic styling - resolved through the active palette at render time
+//! try theme.styled("Build passed").success().render(writer, &ctx);
 //!
-//! // RGB colors
-//! try theme.theme("Custom").rgb(255, 100, 50).render(writer, &theme_ctx);
-//!
-//! // Background colors
-//! try theme.theme("Highlighted").onYellow().black().render(writer, &theme_ctx);
+//! // Direct styling
+//! try theme.styled("Custom").rgb(255, 100, 50).bold().render(writer, &ctx);
 //! ```
 
 const std = @import("std");
 
-// Core theming types
+// Core styling types
 pub const Color = @import("core/color.zig").Color;
 pub const Style = @import("core/style.zig").Style;
 
-// Semantic theming
-pub const SemanticRole = @import("adaptive/semantic.zig").SemanticRole;
-pub const getSemanticColor = @import("adaptive/palettes.zig").getSemanticColor;
-pub const getSemanticRGB = @import("adaptive/palettes.zig").getSemanticRGB;
-pub const RGB = @import("adaptive/palettes.zig").RGB;
-pub const SemanticPalette = @import("adaptive/palettes.zig").SemanticPalette;
+// Theme definition: roles, palette, component tokens
+pub const SemanticRole = @import("definition.zig").SemanticRole;
+pub const Palette = @import("definition.zig").Palette;
+pub const StyleRef = @import("definition.zig").StyleRef;
+pub const PromptTheme = @import("definition.zig").PromptTheme;
+pub const ProgressTheme = @import("definition.zig").ProgressTheme;
+pub const Theme = @import("definition.zig").Theme;
+pub const default_theme = @import("definition.zig").default_theme;
+pub const ThemeContext = @import("definition.zig").ThemeContext;
 
 // Terminal detection and capability management
 pub const TerminalCapability = @import("detection/capability.zig").TerminalCapability;
-pub const Theme = @import("detection/capability.zig").Theme;
+pub const Capabilities = @import("detection/capability.zig").Capabilities;
 
 // Main API
-pub const Themed = @import("api/fluent.zig").Themed;
-pub const theme = @import("api/fluent.zig").theme;
-
-// Test API - simple function to verify structure
-pub fn version() []const u8 {
-    return "0.1.0";
-}
-
-test "theme module imports" {
-    // Basic smoke test to ensure all imports work
-    const testing = std.testing;
-    try testing.expect(version().len > 0);
-}
+pub const Styled = @import("api/fluent.zig").Styled;
+pub const styled = @import("api/fluent.zig").styled;
 
 // Import all submodule tests to run them together
 test {
     std.testing.refAllDecls(@import("core/color.zig"));
     std.testing.refAllDecls(@import("core/style.zig"));
     std.testing.refAllDecls(@import("detection/capability.zig"));
+    std.testing.refAllDecls(@import("definition.zig"));
     std.testing.refAllDecls(@import("api/fluent.zig"));
     std.testing.refAllDecls(@import("integration_test.zig"));
-    std.testing.refAllDecls(@import("adaptive/semantic.zig"));
-    std.testing.refAllDecls(@import("adaptive/semantic_test.zig"));
-    std.testing.refAllDecls(@import("adaptive/palettes.zig"));
-    std.testing.refAllDecls(@import("adaptive/palettes_test.zig"));
 }

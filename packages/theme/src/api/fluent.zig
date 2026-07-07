@@ -1,23 +1,27 @@
-//! Fluent API for intuitive theming with method chaining
+//! Fluent API for styling content with method chaining
 //!
 //! Provides the main developer interface with chainable methods like:
-//! theme("text").red().bold().underline()
+//! styled("text").red().bold().underline()
+//!
+//! Semantic methods (`.success()`, `.command()`, ...) tag the content with a
+//! role; the role is resolved to a concrete style at render time through the
+//! active ThemeContext, so a CLI's custom palette applies automatically.
 
 const std = @import("std");
 const Color = @import("../core/color.zig").Color;
 const Style = @import("../core/style.zig").Style;
-const Theme = @import("../detection/capability.zig").Theme;
-const TerminalCapability = @import("../detection/capability.zig").TerminalCapability;
-const SemanticRole = @import("../adaptive/semantic.zig").SemanticRole;
-const palettes = @import("../adaptive/palettes.zig");
+const definition = @import("../definition.zig");
+const SemanticRole = definition.SemanticRole;
+const ThemeContext = definition.ThemeContext;
 
-/// Generic themed wrapper that can style any content type
-pub fn Themed(comptime T: type) type {
+/// Generic styled wrapper that can style any content type
+pub fn Styled(comptime T: type) type {
     return struct {
         const Self = @This();
 
         content: T,
         style: Style = .{},
+        role: ?SemanticRole = null,
 
         // === Basic Colors ===
         /// Set foreground to black
@@ -260,91 +264,91 @@ pub fn Themed(comptime T: type) type {
             return self.withBgColor(.{ .indexed = index });
         }
 
-        // === Semantic Color Methods (Core 5) ===
-        /// Style for successful operations (adaptive green-ish)
+        // === Semantic Roles (Core 5) ===
+        // Roles are resolved against the active palette at render time, so a
+        // CLI's custom theme applies automatically. Explicit fluent settings
+        // override the role's style regardless of chain order.
+
+        /// Style for successful operations
         pub fn success(self: Self) Self {
-            return self.applySemantic(.success);
+            return self.withRole(.success);
         }
 
-        /// Style for errors and failures (adaptive red-ish)
+        /// Style for errors and failures
         pub fn err(self: Self) Self {
-            return self.applySemantic(.err);
+            return self.withRole(.err);
         }
 
-        /// Style for warnings and cautions (adaptive yellow-ish)
+        /// Style for warnings and cautions
         pub fn warning(self: Self) Self {
-            return self.applySemantic(.warning);
+            return self.withRole(.warning);
         }
 
-        /// Style for informational messages (adaptive blue-ish)
+        /// Style for informational messages
         pub fn info(self: Self) Self {
-            return self.applySemantic(.info);
+            return self.withRole(.info);
         }
 
-        /// Style for less important text (adaptive dimmed)
+        /// Style for less important text
         pub fn muted(self: Self) Self {
-            return self.applySemantic(.muted);
+            return self.withRole(.muted);
         }
 
-        // === Extended Semantic Methods ===
+        // === Extended Semantic Roles ===
         /// Style for command names (e.g., "git commit")
         pub fn command(self: Self) Self {
-            return self.applySemantic(.command);
+            return self.withRole(.command);
         }
 
         /// Style for flags and options (e.g., "--verbose")
         pub fn flag(self: Self) Self {
-            return self.applySemantic(.flag);
+            return self.withRole(.flag);
         }
 
         /// Style for file paths and directories
         pub fn path(self: Self) Self {
-            return self.applySemantic(.path);
+            return self.withRole(.path);
         }
 
         /// Style for values and user input
         pub fn value(self: Self) Self {
-            return self.applySemantic(.value);
+            return self.withRole(.value);
         }
 
         /// Style for inline code snippets
         pub fn code(self: Self) Self {
-            return self.applySemantic(.code);
+            return self.withRole(.code);
         }
 
         /// Style for section headers and titles
         pub fn header(self: Self) Self {
-            return self.applySemantic(.header);
+            return self.withRole(.header);
         }
 
         /// Style for URLs and clickable items
         pub fn link(self: Self) Self {
-            return self.applySemantic(.link);
+            return self.withRole(.link);
         }
 
-        /// Set semantic role for adaptive theming
+        /// Style with the theme's accent (brand) color
+        pub fn accent(self: Self) Self {
+            return self.withRole(.accent);
+        }
+
+        /// Set an arbitrary semantic role
         pub fn semanticRole(self: Self, role: SemanticRole) Self {
-            var new_style = self.style;
-            new_style.semantic_role = role;
-            return .{
-                .content = self.content,
-                .style = new_style,
-            };
+            return self.withRole(role);
         }
 
-        /// Render styled content to writer with capability-aware styling
-        pub fn render(self: Self, writer: anytype, theme_ctx: *const Theme) !void {
-            const capability = theme_ctx.getCapability();
+        /// Render styled content to writer, resolving the semantic role (if
+        /// any) through the active theme's palette
+        pub fn render(self: Self, writer: anytype, ctx: *const ThemeContext) !void {
+            const effective_style = if (self.role) |role|
+                ctx.resolve(role).merge(self.style)
+            else
+                self.style;
 
-            var effective_style = self.style;
-
-            // Apply semantic coloring if semantic role is present
-            if (effective_style.semantic_role) |role| {
-                effective_style.foreground = palettes.getSemanticColor(role);
-            }
-
-            // Apply starting style if any
-            const wrote_style = try effective_style.writeSequence(writer, capability);
+            const wrote_style = try effective_style.writeSequence(writer, ctx.capability());
 
             // Write the actual content
             const ContentType = @TypeOf(self.content);
@@ -370,78 +374,32 @@ pub fn Themed(comptime T: type) type {
             }
         }
 
-        /// Render with compile-time known capability for zero-cost styling
-        pub fn renderComptime(comptime self: Self, writer: anytype, comptime capability: TerminalCapability) !void {
-            const start_seq = comptime self.style.sequenceComptime(capability);
-
-            // Apply starting style if any
-            if (start_seq.len > 0) {
-                try writer.writeAll(start_seq);
-            }
-
-            // Write the actual content - use same logic as runtime render method
-            const ContentType = @TypeOf(self.content);
-            switch (@typeInfo(ContentType)) {
-                .pointer => |ptr_info| {
-                    if (ptr_info.child == u8) {
-                        try writer.writeAll(self.content);
-                    } else {
-                        try writer.print("{s}", .{self.content});
-                    }
-                },
-                .array => |arr_info| {
-                    if (arr_info.child == u8) {
-                        // Handle string literals like *[8:0]u8 from "CompTime"
-                        try writer.writeAll(&self.content);
-                    } else {
-                        try writer.print("{any}", .{self.content});
-                    }
-                },
-                else => try writer.print("{any}", .{self.content}),
-            }
-
-            // Reset styling if we applied any
-            if (start_seq.len > 0) {
-                try writer.writeAll("\x1B[0m");
-            }
-        }
-
         /// Get the styled content as a string (requires allocator)
-        pub fn toString(self: Self, allocator: std.mem.Allocator, theme_ctx: *const Theme) ![]u8 {
+        pub fn toString(self: Self, allocator: std.mem.Allocator, ctx: *const ThemeContext) ![]u8 {
             var aw: std.Io.Writer.Allocating = .init(allocator);
             defer aw.deinit();
-            try self.render(&aw.writer, theme_ctx);
+            try self.render(&aw.writer, ctx);
             return allocator.dupe(u8, aw.written());
         }
 
         /// Create a copy with different content but same styling
-        pub fn withContent(self: Self, new_content: anytype) Themed(@TypeOf(new_content)) {
+        pub fn withContent(self: Self, new_content: anytype) Styled(@TypeOf(new_content)) {
             return .{
                 .content = new_content,
                 .style = self.style,
+                .role = self.role,
             };
         }
 
         /// Reset all styling to default (keeping content)
         pub fn reset(self: Self) Self {
-            return .{
-                .content = self.content,
-                .style = .{},
-            };
+            return .{ .content = self.content };
         }
 
         /// Check if any styling is applied
         pub fn hasStyle(self: Self) bool {
             const s = self.style;
-            return s.foreground != null or s.background != null or s.bold or s.italic or s.underline or s.dim or s.strikethrough or s.reverse;
-        }
-
-        /// Clone the styled content
-        pub fn clone(self: Self) Self {
-            return .{
-                .content = self.content,
-                .style = self.style,
-            };
+            return self.role != null or s.foreground != null or s.background != null or s.bold or s.italic or s.underline or s.dim or s.strikethrough or s.reverse;
         }
 
         // Internal helper methods
@@ -451,6 +409,7 @@ pub fn Themed(comptime T: type) type {
             return .{
                 .content = self.content,
                 .style = new_style,
+                .role = self.role,
             };
         }
 
@@ -460,6 +419,7 @@ pub fn Themed(comptime T: type) type {
             return .{
                 .content = self.content,
                 .style = new_style,
+                .role = self.role,
             };
         }
 
@@ -467,63 +427,51 @@ pub fn Themed(comptime T: type) type {
             return .{
                 .content = self.content,
                 .style = self.style.with(style_mods),
+                .role = self.role,
             };
         }
 
-        fn applySemantic(self: Self, role: SemanticRole) Self {
-            var new_style = self.style;
-
-            // Apply semantic color
-            // The color is applied immediately using our carefully designed palette
-            new_style.foreground = palettes.getSemanticColor(role);
-
-            // Apply any default style attributes for this role
-            const default_style = role.getDefaultStyle();
-            if (default_style.bold) new_style.bold = true;
-            if (default_style.italic) new_style.italic = true;
-            if (default_style.dim) new_style.dim = true;
-
-            // Store the semantic role for later adaptive rendering
-            new_style.semantic_role = role;
-
+        fn withRole(self: Self, role: SemanticRole) Self {
             return .{
                 .content = self.content,
-                .style = new_style,
+                .style = self.style,
+                .role = role,
             };
         }
     };
 }
 
-/// Create a themed wrapper for any content
-pub fn theme(content: anytype) Themed(@TypeOf(content)) {
+/// Create a styled wrapper for any content
+pub fn styled(content: anytype) Styled(@TypeOf(content)) {
     return .{ .content = content };
 }
+
+const test_ctx = ThemeContext{
+    .caps = .{ .capability = .ansi_16, .is_tty = true, .color_enabled = true },
+};
 
 test "fluent API basics" {
     const testing = std.testing;
 
-    // Test theme creation
-    const themed_text = theme("Hello");
-    try testing.expect(std.mem.eql(u8, themed_text.content, "Hello"));
+    // Test styled creation
+    const styled_text = styled("Hello");
+    try testing.expect(std.mem.eql(u8, styled_text.content, "Hello"));
 
     // Test color chaining
-    const red_text = theme("Error").red();
+    const red_text = styled("Error").red();
     try testing.expect(red_text.style.foreground != null);
     try testing.expect(red_text.style.foreground.? == Color.red);
 
     // Test style chaining
-    const bold_red = theme("Error").red().bold();
+    const bold_red = styled("Error").red().bold();
     try testing.expect(bold_red.style.bold);
     try testing.expect(bold_red.style.foreground.? == Color.red);
 
     // Test render to buffer (basic)
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
-
-    const theme_ctx = Theme.init(&(std.process.Environ.Map.init(std.testing.allocator)), std.testing.io);
-    try theme("test").render(&aw.writer, &theme_ctx);
-
-    try testing.expect(aw.writer.end >= 4); // At least "test"
+    try styled("test").render(&aw.writer, &test_ctx);
+    try testing.expectEqualStrings("test", aw.written());
 }
 
 test "toString returns the styled content" {
@@ -531,42 +479,97 @@ test "toString returns the styled content" {
 
     // Regression test: toString used to render into one writer but return the
     // owned slice of a different, empty list — always producing "".
-    const theme_ctx = Theme{ .capability = .ansi_16, .is_tty = true, .color_enabled = true };
-    const result = try theme("hello").red().toString(testing.allocator, &theme_ctx);
+    const result = try styled("hello").red().toString(testing.allocator, &test_ctx);
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("\x1B[31mhello\x1B[0m", result);
+}
+
+test "semantic roles resolve through the active palette at render time" {
+    const testing = std.testing;
+
+    // Roles only tag; no eager style baking
+    const tagged = styled("ok").success();
+    try testing.expect(tagged.role == .success);
+    try testing.expect(tagged.style.foreground == null);
+
+    // Default palette: success is bold bright-ish green -> bold + color at ansi_16
+    {
+        var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer aw.deinit();
+        try tagged.render(&aw.writer, &test_ctx);
+        try testing.expectEqualStrings("\x1B[1;92mok\x1B[0m", aw.written());
+    }
+
+    // Custom palette: the same tagged value renders differently
+    const custom_theme = definition.Theme{
+        .palette = .{ .success = .{ .foreground = .blue } },
+    };
+    const custom_ctx = ThemeContext{
+        .theme = &custom_theme,
+        .caps = .{ .capability = .ansi_16, .is_tty = true, .color_enabled = true },
+    };
+    {
+        var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer aw.deinit();
+        try tagged.render(&aw.writer, &custom_ctx);
+        try testing.expectEqualStrings("\x1B[34mok\x1B[0m", aw.written());
+    }
+}
+
+test "explicit fluent settings override the role's style" {
+    const testing = std.testing;
+
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+
+    // success is green+bold in the default palette; explicit red wins,
+    // the role's bold is kept, explicit underline is added
+    try styled("x").success().red().underline().render(&aw.writer, &test_ctx);
+    try testing.expectEqualStrings("\x1B[1;4;31mx\x1B[0m", aw.written());
+}
+
+test "no color renders plain content even with a role" {
+    const testing = std.testing;
+
+    const no_color_ctx = ThemeContext{
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = false },
+    };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    try styled("plain").err().bold().render(&aw.writer, &no_color_ctx);
+    try testing.expectEqualStrings("plain", aw.written());
 }
 
 test "comprehensive color methods" {
     const testing = std.testing;
 
     // Test all basic colors
-    try testing.expect(theme("text").black().style.foreground.? == Color.black);
-    try testing.expect(theme("text").red().style.foreground.? == Color.red);
-    try testing.expect(theme("text").green().style.foreground.? == Color.green);
-    try testing.expect(theme("text").yellow().style.foreground.? == Color.yellow);
-    try testing.expect(theme("text").blue().style.foreground.? == Color.blue);
-    try testing.expect(theme("text").magenta().style.foreground.? == Color.magenta);
-    try testing.expect(theme("text").cyan().style.foreground.? == Color.cyan);
-    try testing.expect(theme("text").white().style.foreground.? == Color.white);
+    try testing.expect(styled("text").black().style.foreground.? == Color.black);
+    try testing.expect(styled("text").red().style.foreground.? == Color.red);
+    try testing.expect(styled("text").green().style.foreground.? == Color.green);
+    try testing.expect(styled("text").yellow().style.foreground.? == Color.yellow);
+    try testing.expect(styled("text").blue().style.foreground.? == Color.blue);
+    try testing.expect(styled("text").magenta().style.foreground.? == Color.magenta);
+    try testing.expect(styled("text").cyan().style.foreground.? == Color.cyan);
+    try testing.expect(styled("text").white().style.foreground.? == Color.white);
 
     // Test bright colors
-    try testing.expect(theme("text").brightRed().style.foreground.? == Color.bright_red);
-    try testing.expect(theme("text").brightGreen().style.foreground.? == Color.bright_green);
-    try testing.expect(theme("text").brightBlue().style.foreground.? == Color.bright_blue);
+    try testing.expect(styled("text").brightRed().style.foreground.? == Color.bright_red);
+    try testing.expect(styled("text").brightGreen().style.foreground.? == Color.bright_green);
+    try testing.expect(styled("text").brightBlue().style.foreground.? == Color.bright_blue);
 
     // Test aliases
-    try testing.expect(theme("text").gray().style.foreground.? == Color.bright_black);
-    try testing.expect(theme("text").grey().style.foreground.? == Color.bright_black);
+    try testing.expect(styled("text").gray().style.foreground.? == Color.bright_black);
+    try testing.expect(styled("text").grey().style.foreground.? == Color.bright_black);
 }
 
 test "advanced color methods" {
     const testing = std.testing;
 
     // Test RGB color
-    const rgb_themed = theme("rainbow").rgb(255, 128, 64);
-    try testing.expect(rgb_themed.style.foreground != null);
-    switch (rgb_themed.style.foreground.?) {
+    const rgb_styled = styled("rainbow").rgb(255, 128, 64);
+    try testing.expect(rgb_styled.style.foreground != null);
+    switch (rgb_styled.style.foreground.?) {
         .rgb => |rgb| {
             try testing.expect(rgb.r == 255);
             try testing.expect(rgb.g == 128);
@@ -576,17 +579,17 @@ test "advanced color methods" {
     }
 
     // Test hex color (compile-time)
-    const hex_themed = comptime theme("hex").hex("#FF8040");
-    try testing.expect(hex_themed.style.foreground != null);
-    switch (hex_themed.style.foreground.?) {
+    const hex_styled = comptime styled("hex").hex("#FF8040");
+    try testing.expect(hex_styled.style.foreground != null);
+    switch (hex_styled.style.foreground.?) {
         .hex => |hex| try testing.expect(std.mem.eql(u8, hex, "#FF8040")),
         else => try testing.expect(false), // Should be hex
     }
 
     // Test 256-color
-    const indexed_themed = theme("indexed").color256(196);
-    try testing.expect(indexed_themed.style.foreground != null);
-    switch (indexed_themed.style.foreground.?) {
+    const indexed_styled = styled("indexed").color256(196);
+    try testing.expect(indexed_styled.style.foreground != null);
+    switch (indexed_styled.style.foreground.?) {
         .indexed => |idx| try testing.expect(idx == 196),
         else => try testing.expect(false), // Should be indexed
     }
@@ -596,29 +599,29 @@ test "text style methods" {
     const testing = std.testing;
 
     // Test all text decorations
-    const styled = theme("fancy").bold().dim().italic().underline().strikethrough();
-    try testing.expect(styled.style.bold);
-    try testing.expect(styled.style.dim);
-    try testing.expect(styled.style.italic);
-    try testing.expect(styled.style.underline);
-    try testing.expect(styled.style.strikethrough);
+    const decorated = styled("fancy").bold().dim().italic().underline().strikethrough();
+    try testing.expect(decorated.style.bold);
+    try testing.expect(decorated.style.dim);
+    try testing.expect(decorated.style.italic);
+    try testing.expect(decorated.style.underline);
+    try testing.expect(decorated.style.strikethrough);
 }
 
 test "background color methods" {
     const testing = std.testing;
 
     // Test basic background colors
-    try testing.expect(theme("text").onRed().style.background.? == Color.red);
-    try testing.expect(theme("text").onBlue().style.background.? == Color.blue);
-    try testing.expect(theme("text").onGreen().style.background.? == Color.green);
+    try testing.expect(styled("text").onRed().style.background.? == Color.red);
+    try testing.expect(styled("text").onBlue().style.background.? == Color.blue);
+    try testing.expect(styled("text").onGreen().style.background.? == Color.green);
 
     // Test bright background colors
-    try testing.expect(theme("text").onBrightYellow().style.background.? == Color.bright_yellow);
-    try testing.expect(theme("text").onGray().style.background.? == Color.bright_black);
-    try testing.expect(theme("text").onGrey().style.background.? == Color.bright_black);
+    try testing.expect(styled("text").onBrightYellow().style.background.? == Color.bright_yellow);
+    try testing.expect(styled("text").onGray().style.background.? == Color.bright_black);
+    try testing.expect(styled("text").onGrey().style.background.? == Color.bright_black);
 
     // Test advanced background colors
-    const rgb_bg = theme("text").onRgb(100, 150, 200);
+    const rgb_bg = styled("text").onRgb(100, 150, 200);
     switch (rgb_bg.style.background.?) {
         .rgb => |rgb| {
             try testing.expect(rgb.r == 100);
@@ -628,7 +631,7 @@ test "background color methods" {
         else => try testing.expect(false),
     }
 
-    const indexed_bg = theme("text").onColor256(42);
+    const indexed_bg = styled("text").onColor256(42);
     switch (indexed_bg.style.background.?) {
         .indexed => |idx| try testing.expect(idx == 42),
         else => try testing.expect(false),
@@ -639,7 +642,7 @@ test "complex chaining and rendering" {
     const testing = std.testing;
 
     // Test complex chaining
-    const complex = theme("Complex Style")
+    const complex = styled("Complex Style")
         .brightRed()
         .onBlue()
         .bold()
@@ -655,53 +658,30 @@ test "complex chaining and rendering" {
     // Test rendering with different content types
     var aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer aw.deinit();
-
-    const theme_ctx = Theme{ .capability = .ansi_16, .is_tty = true, .color_enabled = true };
-
-    // Render string content
-    try theme("Hello").red().render(&aw.writer, &theme_ctx);
+    try styled("Hello").red().render(&aw.writer, &test_ctx);
     try testing.expect(aw.writer.end > 5); // Has styling + "Hello"
-}
-
-test "compile-time rendering optimization" {
-    const testing = std.testing;
-
-    // Test compile-time rendering
-    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer aw.deinit();
-
-    const styled = comptime theme("CompTime").red().bold();
-    try styled.renderComptime(&aw.writer, .ansi_16);
-
-    try testing.expect(aw.writer.end > 8); // Has styling + content + reset
 }
 
 test "generic interface utilities" {
     const testing = std.testing;
 
     // Test withContent (changing content type)
-    const original = theme("Hello").red().bold();
+    const original = styled("Hello").red().bold();
     const with_number = original.withContent(@as(i32, 42));
     try testing.expect(with_number.content == 42);
     try testing.expect(with_number.style.foreground.? == Color.red);
     try testing.expect(with_number.style.bold);
 
     // Test reset
-    const styled = theme("text").green().italic().underline();
-    const reset_styled = styled.reset();
+    const decorated = styled("text").green().italic().underline();
+    const reset_styled = decorated.reset();
     try testing.expect(std.mem.eql(u8, reset_styled.content, "text"));
     try testing.expect(!reset_styled.hasStyle());
 
     // Test hasStyle
-    try testing.expect(!theme("plain").hasStyle());
-    try testing.expect(theme("colored").red().hasStyle());
-    try testing.expect(theme("bold").bold().hasStyle());
-    try testing.expect(theme("bg").onBlue().hasStyle());
-
-    // Test clone
-    const original_themed = theme("original").cyan().bold();
-    const cloned = original_themed.clone();
-    try testing.expect(std.mem.eql(u8, cloned.content, original_themed.content));
-    try testing.expect(std.meta.eql(cloned.style.foreground.?, original_themed.style.foreground.?));
-    try testing.expect(cloned.style.bold == original_themed.style.bold);
+    try testing.expect(!styled("plain").hasStyle());
+    try testing.expect(styled("colored").red().hasStyle());
+    try testing.expect(styled("bold").bold().hasStyle());
+    try testing.expect(styled("bg").onBlue().hasStyle());
+    try testing.expect(styled("semantic").success().hasStyle());
 }
