@@ -343,16 +343,8 @@ pub fn Themed(comptime T: type) type {
                 effective_style.foreground = palettes.getSemanticColor(role);
             }
 
-            // Generate appropriate escape sequence for terminal capability
-            const start_seq = effective_style.sequenceForCapability(capability);
-
-            // Debug: check what sequence we got
-            // std.debug.print("Start sequence: '{s}' (len={})\n", .{ start_seq, start_seq.len });
-
             // Apply starting style if any
-            if (start_seq.len > 0) {
-                try writer.writeAll(start_seq);
-            }
+            const wrote_style = try effective_style.writeSequence(writer, capability);
 
             // Write the actual content
             const ContentType = @TypeOf(self.content);
@@ -373,7 +365,7 @@ pub fn Themed(comptime T: type) type {
             }
 
             // Reset styling if we applied any
-            if (start_seq.len > 0) {
+            if (wrote_style) {
                 try writer.writeAll("\x1B[0m");
             }
         }
@@ -416,10 +408,10 @@ pub fn Themed(comptime T: type) type {
 
         /// Get the styled content as a string (requires allocator)
         pub fn toString(self: Self, allocator: std.mem.Allocator, theme_ctx: *const Theme) ![]u8 {
-            var list: std.ArrayList(u8) = .empty;
-            var aw_render: std.Io.Writer.Allocating = .init(allocator);
-            try self.render(&aw_render.writer, theme_ctx);
-            return list.toOwnedSlice(allocator);
+            var aw: std.Io.Writer.Allocating = .init(allocator);
+            defer aw.deinit();
+            try self.render(&aw.writer, theme_ctx);
+            return allocator.dupe(u8, aw.written());
         }
 
         /// Create a copy with different content but same styling
@@ -532,6 +524,17 @@ test "fluent API basics" {
     try theme("test").render(&aw.writer, &theme_ctx);
 
     try testing.expect(aw.writer.end >= 4); // At least "test"
+}
+
+test "toString returns the styled content" {
+    const testing = std.testing;
+
+    // Regression test: toString used to render into one writer but return the
+    // owned slice of a different, empty list — always producing "".
+    const theme_ctx = Theme{ .capability = .ansi_16, .is_tty = true, .color_enabled = true };
+    const result = try theme("hello").red().toString(testing.allocator, &theme_ctx);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("\x1B[31mhello\x1B[0m", result);
 }
 
 test "comprehensive color methods" {

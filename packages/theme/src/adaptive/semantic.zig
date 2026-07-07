@@ -1,5 +1,3 @@
-const Color = @import("../core/color.zig").Color;
-
 /// Semantic roles for theming
 pub const SemanticRole = enum {
     // Core 5 - Most common CLI use cases
@@ -22,30 +20,6 @@ pub const SemanticRole = enum {
     primary, // Main content, most important
     secondary, // Supporting text, descriptions
     accent, // Brand highlights, emphasis
-
-    /// Get the default color for this semantic role
-    /// This is a simple mapping for now, will become adaptive later
-    pub fn getDefaultColor(self: SemanticRole) Color {
-        return switch (self) {
-            .success => .green,
-            .err => .red,
-            .warning => .yellow,
-            .info => .blue,
-            .muted => .bright_black, // Gray
-
-            .command => .bright_cyan,
-            .flag => .bright_magenta,
-            .path => .cyan,
-            .value => .bright_green,
-            .code => .bright_magenta,
-            .header => .bright_white,
-            .link => .bright_blue,
-
-            .primary => .white,
-            .secondary => .bright_white,
-            .accent => .bright_cyan,
-        };
-    }
 
     /// Get the style attributes for this semantic role
     /// Some roles may want bold, italic, etc. by default
