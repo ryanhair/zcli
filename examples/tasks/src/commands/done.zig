@@ -2,7 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Mark a task as complete",
@@ -23,7 +23,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         if (task.id == args.id) {
             task.status = .done;
             try store.save(allocator, context.io, data);
-            try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+            try themed("✔").success().render(context.stdout(), &context.theme);
             try context.stdout().print(" Task #{d} marked as done: {s}\n", .{ task.id, task.title });
             return;
         }

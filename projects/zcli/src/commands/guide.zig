@@ -141,7 +141,7 @@ const topics = [_]Topic{
         \\  const store = @import("store");
         \\
         \\A shared module can itself import zcli packages — e.g.
-        \\`store_module.addImport("ztheme", zcli_dep.module("ztheme"));`. For a
+        \\`store_module.addImport("theme", zcli_dep.module("theme"));`. For a
         \\complete shared module that persists data, see `zcli guide storage`.
         \\
         ,
@@ -214,12 +214,12 @@ const topics = [_]Topic{
         \\
         \\  try context.stdout().print("created {s}\n", .{name});
         \\
-        \\Color/styles via ztheme — it auto-disables on non-TTY and honors NO_COLOR,
+        \\Color/styles via theme — it auto-disables on non-TTY and honors NO_COLOR,
         \\so output stays clean when piped or captured:
-        \\  const ztheme = zcli.ztheme;
+        \\  const themed = zcli.theme.theme;
         \\  const theme = &context.theme;
-        \\  try ztheme.theme("done").success().render(context.stdout(), theme);
-        \\  try ztheme.theme(title).bold().render(context.stdout(), theme);
+        \\  try themed("done").success().render(context.stdout(), theme);
+        \\  try themed(title).bold().render(context.stdout(), theme);
         \\
         ,
     },
@@ -227,22 +227,22 @@ const topics = [_]Topic{
         .name = "prompts",
         .summary = "interactive input",
         .body =
-        \\prompts — interactive input with zinput (bundled)
+        \\prompts — interactive input with prompts (bundled)
         \\
         \\Each prompt takes the stdout writer and stdin reader; `text` also takes an
         \\allocator. On non-interactive stdin, handle the piped case yourself (e.g.
         \\fall back to a flag) rather than blocking.
         \\
-        \\  const zinput = zcli.zinput;
+        \\  const prompts = zcli.prompts;
         \\  const w = context.stdout();
         \\  const r = context.stdin();
         \\
-        \\  const name = try zinput.text(w, r, context.allocator, .{ .message = "Name:" });
-        \\  const ok   = try zinput.confirm(w, r, .{ .message = "Proceed?", .default = true });
-        \\  const idx  = try zinput.select(w, r, .{ .message = "Pick:", .choices = &.{ "a", "b" } });
-        \\  const pw   = try zinput.password(w, r, context.allocator, .{ .message = "Token:" }); // hidden
+        \\  const name = try prompts.text(w, r, context.allocator, .{ .message = "Name:" });
+        \\  const ok   = try prompts.confirm(w, r, .{ .message = "Proceed?", .default = true });
+        \\  const idx  = try prompts.select(w, r, .{ .message = "Pick:", .choices = &.{ "a", "b" } });
+        \\  const pw   = try prompts.password(w, r, context.allocator, .{ .message = "Token:" }); // hidden
         \\
-        \\Progress bars/spinners: `zcli.zprogress`.
+        \\Progress bars/spinners: `zcli.progress`.
         \\
         ,
     },

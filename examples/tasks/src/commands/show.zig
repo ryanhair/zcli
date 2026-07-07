@@ -2,7 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Show task details",
@@ -28,7 +28,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var head_buf: [32]u8 = undefined;
     const head = try std.fmt.bufPrint(&head_buf, "Task #{d}", .{task.id});
     try w.writeAll("\n  ");
-    try ztheme.theme(head).bold().render(w, theme);
+    try themed(head).bold().render(w, theme);
     try w.writeAll("\n\n");
     try w.print("  Title:    {s}\n", .{task.title});
     try w.writeAll("  Status:   ");

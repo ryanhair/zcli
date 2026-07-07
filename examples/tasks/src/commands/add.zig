@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Add a new task",
@@ -49,12 +49,12 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         const writer = context.stdout();
         const reader = context.stdin();
 
-        title_owned = try zinput.text(writer, reader, allocator, .{
+        title_owned = try prompts.text(writer, reader, allocator, .{
             .message = "Task title:",
         });
         title = title_owned.?;
 
-        const priority_idx = try zinput.select(writer, reader, .{
+        const priority_idx = try prompts.select(writer, reader, .{
             .message = "Priority:",
             .choices = &.{ "low", "medium", "high", "critical" },
         });
@@ -66,7 +66,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             else => .medium,
         };
 
-        const pts = try zinput.number(writer, reader, .{
+        const pts = try prompts.number(writer, reader, .{
             .message = "Story points:",
             .default = 1,
             .min = 0,
@@ -92,6 +92,6 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     data.next_id += 1;
     try store.save(allocator, context.io, data);
 
-    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try themed("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Added task #{d}: {s}\n", .{ new_task.id, title });
 }

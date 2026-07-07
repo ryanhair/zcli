@@ -1,7 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
+const Theme = zcli.theme.Theme;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -159,11 +160,11 @@ fn buildSpec(arena: std.mem.Allocator, stderr: *std.Io.Writer, name: []const u8,
     };
 }
 
-fn finish(w: *std.Io.Writer, theme: *const ztheme.Theme, file_path: []const u8, opt: spec.OptSpec) !void {
+fn finish(w: *std.Io.Writer, theme: *const Theme, file_path: []const u8, opt: spec.OptSpec) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const field = std.fmt.bufPrint(&buf, "\u{2714} Added option --{s} to {s}", .{ opt.name, file_path }) catch "\u{2714} Added option";
-    try ztheme.theme(field).success().render(w, theme);
+    try themed(field).success().render(w, theme);
     try w.writeAll("\n\n  Next steps\n");
     try w.print("    1. Read the option back with `zcli tree --show-options`\n", .{});
     try w.writeAll("    2. zig build\n");

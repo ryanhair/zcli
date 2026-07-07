@@ -1,8 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
-const ztheme = zcli.ztheme;
-const Theme = ztheme.Theme;
+const themed = zcli.theme.theme;
+const Theme = zcli.theme.Theme;
 
 // The framework's own command discovery — the same scan the build runs to
 // generate the registry. Reusing it keeps the tree in lockstep with what the
@@ -404,7 +404,7 @@ fn nodeSource(ast: *Ast, node: Ast.Node.Index) []const u8 {
 const Role = enum { plain, header, dim, group, leaf, marker, desc, flag };
 
 fn paint(writer: anytype, theme: *const Theme, text: []const u8, role: Role) !void {
-    const t = ztheme.theme(text);
+    const t = themed(text);
     switch (role) {
         .plain => try t.render(writer, theme),
         .header => try t.header().bold().render(writer, theme),

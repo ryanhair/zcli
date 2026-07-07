@@ -31,7 +31,7 @@
     <h2>Philosophy</h2>
     <p class="p"><b>Comptime over runtime.</b> The command tree, the argument parser, and the routing table are all generated at build time from your files and your structs. There's no filesystem scan at startup, no reflection, no registry object built on every run — the binary that ships already knows its own shape.</p>
     <p class="p"><b>Conventions over registration.</b> A file in <code class="mono">commands/</code> is a command. A folder is a group. There's no <code class="mono">addCommand()</code> call to forget, no builder chain to keep in sync with the file that implements it — the two can't drift apart because they're the same artifact.</p>
-    <p class="p"><b>Batteries with opt-out.</b> Every package — <code class="mono">zinput</code>, <code class="mono">zprogress</code>, <code class="mono">ztheme</code>, <code class="mono">terminal</code>, <code class="mono">vterm</code> — works standalone, with no dependency on the framework. Use the whole thing, or take one package and leave the rest.</p>
+    <p class="p"><b>Batteries with opt-out.</b> Every package — <code class="mono">prompts</code>, <code class="mono">progress</code>, <code class="mono">theme</code>, <code class="mono">terminal</code>, <code class="mono">vterm</code> — works standalone, with no dependency on the framework. Use the whole thing, or take one package and leave the rest.</p>
     <p class="p"><b>Stable Zig only.</b> zcli targets Zig 0.16.0 — the current stable release, no nightly required. That's a deliberate constraint: a framework you can't build tomorrow because it tracked a moving target isn't actually batteries-included.</p>
   </section>
 

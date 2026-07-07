@@ -95,8 +95,8 @@ then the context tail `examples → guide → AGENTS.md`. **Parallelizable early
 ## Deferred
 
 ### Un-bundle / evict the TUI libraries from zcli's public surface
-- **What:** Stop re-exporting `zinput` (prompts) and `zprogress` (progress bars) from the
-  public `zcli` module, and/or move `zinput`/`zprogress`/`vterm` into their own repositories
+- **What:** Stop re-exporting `prompts` (prompts) and `progress` (progress bars) from the
+  public `zcli` module, and/or move `prompts`/`progress`/`vterm` into their own repositories
   with independent release cadences.
 - **Why deferred:** "Batteries-included" is currently zcli's main differentiator vs. a bare
   "Cobra for Zig." Un-bundling trades that DX for positioning clarity, and (per the 2026-05-31

@@ -84,7 +84,7 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// command and plugin code should use those accessors and `io`, not this.
         stdio: *zcli.Stdio,
         environ: *const std.process.Environ.Map,
-        theme: zcli.ztheme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+        theme: zcli.theme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
 
         // App metadata; the registry fills these from its Config.
         app_name: []const u8 = "app",
@@ -119,7 +119,7 @@ pub fn ContextFor(comptime plugins: []const type) type {
                 .io = io,
                 .stdio = stdio,
                 .environ = env,
-                .theme = zcli.ztheme.Theme.init(env, io),
+                .theme = zcli.theme.Theme.init(env, io),
             };
         }
 

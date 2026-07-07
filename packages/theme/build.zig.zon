@@ -1,0 +1,14 @@
+.{
+    .name = .theme,
+    .fingerprint = 0x9775e708f554414c, // Changing this has security and trust implications.
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // No external dependencies - theme is a pure Zig library
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+    },
+}

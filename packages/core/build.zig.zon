@@ -36,10 +36,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .markdown_fmt = .{ .path = "../markdown_fmt" },
-        .ztheme = .{ .path = "../ztheme" },
-        .zprogress = .{ .path = "../zprogress" },
-        .zinput = .{ .path = "../zinput" },
+        .markdown = .{ .path = "../markdown" },
+        .theme = .{ .path = "../theme" },
+        .progress = .{ .path = "../progress" },
+        .prompts = .{ .path = "../prompts" },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding

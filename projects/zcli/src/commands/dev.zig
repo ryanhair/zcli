@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const nightwatch = @import("nightwatch");
 
-const ztheme = zcli.ztheme;
-const Theme = ztheme.Theme;
+const themed = zcli.theme.theme;
+const Theme = zcli.theme.Theme;
 
 pub const meta = .{
     .description = "Watch src/ and rebuild on change (optionally run a command)",
@@ -280,7 +280,7 @@ fn nap(io: std.Io, ms: u32) void {
 const Role = enum { header, info, ok, err, dim };
 
 fn paint(out: *std.Io.Writer, theme: *const Theme, text: []const u8, role: Role) !void {
-    const t = ztheme.theme(text);
+    const t = themed(text);
     switch (role) {
         .header => try t.header().bold().render(out, theme),
         .info => try t.info().render(out, theme),

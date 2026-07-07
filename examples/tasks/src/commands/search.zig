@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Search tasks by title",
@@ -36,7 +36,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const writer = context.stdout();
     const reader = context.stdin();
 
-    const idx = try zinput.search(writer, reader, allocator, .{
+    const idx = try prompts.search(writer, reader, allocator, .{
         .message = "Search tasks:",
         .choices = titles.items,
     });
@@ -47,7 +47,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     var head_buf: [32]u8 = undefined;
     const head = try std.fmt.bufPrint(&head_buf, "Task #{d}", .{task.id});
     try w.writeAll("\n  ");
-    try ztheme.theme(head).bold().render(w, theme);
+    try themed(head).bold().render(w, theme);
     try w.print(" — {s}\n  Status: ", .{task.title});
     try task.status.themed(task.status.label()).render(w, theme);
     try w.writeAll("  Priority: ");

@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Initialize a new task tracker project",
@@ -25,27 +25,27 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     } else |_| {}
 
     try writer.writeAll("\r\n  ");
-    try ztheme.theme("Project Setup").bold().render(writer, &context.theme);
+    try themed("Project Setup").bold().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 
-    const name = try zinput.text(writer, reader, allocator, .{
+    const name = try prompts.text(writer, reader, allocator, .{
         .message = "Project name:",
         .default = "my-project",
     });
     defer allocator.free(name);
 
-    const description = try zinput.text(writer, reader, allocator, .{
+    const description = try prompts.text(writer, reader, allocator, .{
         .message = "Description:",
     });
     defer allocator.free(description);
 
-    const method_idx = try zinput.select(writer, reader, .{
+    const method_idx = try prompts.select(writer, reader, .{
         .message = "Methodology:",
         .choices = &.{ "Kanban", "Scrum", "None" },
     });
     _ = method_idx;
 
-    const create_samples = try zinput.confirm(writer, reader, .{
+    const create_samples = try prompts.confirm(writer, reader, .{
         .message = "Create sample tasks?",
         .default = true,
     });
@@ -67,6 +67,6 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     try store.save(allocator, context.io, data);
 
     try writer.writeAll("\r\n  ");
-    try ztheme.theme("✔ Project initialized!").success().render(writer, &context.theme);
+    try themed("✔ Project initialized!").success().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 }

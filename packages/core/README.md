@@ -42,7 +42,7 @@ All of these also run from the repo root: `zig build test-core` aggregates the `
 
 ## Dependencies
 
-[`ztheme`](../ztheme/), [`markdown_fmt`](../markdown_fmt/), [`zprogress`](../zprogress/), [`zinput`](../zinput/) (sibling path deps), and [serde.zig](https://github.com/OrlovEvgeny/serde.zig) for config serialization.
+[`theme`](../theme/), [`markdown`](../markdown/), [`progress`](../progress/), [`prompts`](../prompts/) (sibling path deps), and [serde.zig](https://github.com/OrlovEvgeny/serde.zig) for config serialization.
 
 ## Deeper docs
 

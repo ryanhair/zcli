@@ -2,7 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "List all sprints",
@@ -23,7 +23,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     }
 
     try context.stdout().writeAll("\n  ");
-    try ztheme.theme("Sprints").bold().render(context.stdout(), &context.theme);
+    try themed("Sprints").bold().render(context.stdout(), &context.theme);
     try context.stdout().writeAll("\n\n");
     for (parsed.value.sprints, 1..) |sprint, i| {
         try context.stdout().print("  {d}. {s}\n", .{ i, sprint });

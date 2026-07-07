@@ -1,7 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
+const Theme = zcli.theme.Theme;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -56,11 +57,11 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     try finish(context.stdout(), &context.theme, file_path);
 }
 
-fn finish(w: *std.Io.Writer, theme: *const ztheme.Theme, file_path: []const u8) !void {
+fn finish(w: *std.Io.Writer, theme: *const Theme, file_path: []const u8) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "\u{2714} Removed {s}", .{file_path}) catch "\u{2714} Removed command";
-    try ztheme.theme(line).success().render(w, theme);
+    try themed(line).success().render(w, theme);
     try w.writeAll("\n");
 }
 

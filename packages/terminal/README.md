@@ -1,6 +1,6 @@
 # terminal
 
-Cross-platform terminal primitives for interactive Zig CLIs: raw mode, event-driven key reading with ANSI escape parsing, window size and resize detection, and grapheme-aware display-width measurement and wrapping. This is the foundation [`zinput`](../zinput/) and [`zprogress`](../zprogress/) are built on.
+Cross-platform terminal primitives for interactive Zig CLIs: raw mode, event-driven key reading with ANSI escape parsing, window size and resize detection, and grapheme-aware display-width measurement and wrapping. This is the foundation [`prompts`](../prompts/) and [`progress`](../progress/) are built on.
 
 ## Features
 
@@ -31,7 +31,7 @@ exe.root_module.addImport("terminal", terminal_dep.module("terminal"));
 
 ## Quick start
 
-An interactive read loop that survives resizes (this is how zinput's prompts are built):
+An interactive read loop that survives resizes (this is how prompts's prompts are built):
 
 ```zig
 const terminal = @import("terminal");

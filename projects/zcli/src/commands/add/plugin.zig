@@ -1,7 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
+const Theme = zcli.theme.Theme;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -166,17 +167,17 @@ fn hasPluginsDir(arena: std.mem.Allocator, io: std.Io) bool {
     return std.mem.indexOf(u8, raw, "plugins_dir") != null;
 }
 
-fn finish(w: *std.Io.Writer, theme: *const ztheme.Theme, file_path: []const u8, plugins_dir_wired: bool) !void {
+fn finish(w: *std.Io.Writer, theme: *const Theme, file_path: []const u8, plugins_dir_wired: bool) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "\u{2714} Created plugin {s}", .{file_path}) catch "\u{2714} Created plugin";
-    try ztheme.theme(line).success().render(w, theme);
+    try themed(line).success().render(w, theme);
 
     if (!plugins_dir_wired) {
         // The one residual build.zig case (ADR-0006): no plugins_dir to discover
         // through. Print the single line to add — not a multi-site splice.
         try w.writeAll("\n\n  ");
-        try ztheme.theme("Note: your build.zig has no plugins_dir, so this plugin won't be discovered.").warning().render(w, theme);
+        try themed("Note: your build.zig has no plugins_dir, so this plugin won't be discovered.").warning().render(w, theme);
         try w.writeAll("\n    Add `.plugins_dir = \"src/plugins\",` to the zcli.generate(...) call.\n");
     }
 

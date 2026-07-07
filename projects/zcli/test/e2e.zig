@@ -1302,7 +1302,7 @@ test "interactive: add command drives the wizard and echoes typed input" {
     // the bytes given, which is what the single-key confirm prompts need — a
     // trailing newline would otherwise be read as Enter by the *next* prompt.
     //
-    // The `delay` after each prompt is essential: zinput prints+flushes the
+    // The `delay` after each prompt is essential: prompts prints+flushes the
     // prompt *before* it enables raw mode, and `enableRawMode` uses a flushing
     // tcsetattr that discards any input already buffered in cooked mode. Sending
     // the instant the prompt appears would race that window and the keystroke

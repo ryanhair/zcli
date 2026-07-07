@@ -6,10 +6,10 @@ pub const plugin_types = @import("plugin_types.zig");
 pub const registry = @import("registry.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 const option_utils = @import("options/utils.zig");
-pub const ztheme = @import("ztheme");
-pub const markdown_fmt = @import("markdown_fmt");
-pub const zprogress = @import("zprogress");
-pub const zinput = @import("zinput");
+pub const theme = @import("theme");
+pub const markdown = @import("markdown");
+pub const progress = @import("progress");
+pub const prompts = @import("prompts");
 
 /// Config-file parsing shims for the zcli_config plugin. Plugin modules import
 /// only "zcli", so the plugin cannot depend on serde directly; this is the

@@ -7,19 +7,19 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Get dependencies
-    const ztheme_dep = b.dependency("ztheme", .{
+    const theme_dep = b.dependency("theme", .{
         .target = target,
         .optimize = optimize,
     });
-    const markdown_fmt_dep = b.dependency("markdown_fmt", .{
+    const markdown_dep = b.dependency("markdown", .{
         .target = target,
         .optimize = optimize,
     });
-    const zprogress_dep = b.dependency("zprogress", .{
+    const progress_dep = b.dependency("progress", .{
         .target = target,
         .optimize = optimize,
     });
-    const zinput_dep = b.dependency("zinput", .{
+    const prompts_dep = b.dependency("prompts", .{
         .target = target,
         .optimize = optimize,
     });
@@ -31,10 +31,10 @@ pub fn build(b: *std.Build) void {
     // The dependency imports every zcli-sourced module needs — the main module
     // and each test module below get exactly this set.
     const dep_imports = [_]TestDep{
-        .{ .name = "ztheme", .module = ztheme_dep.module("ztheme") },
-        .{ .name = "markdown_fmt", .module = markdown_fmt_dep.module("markdown_fmt") },
-        .{ .name = "zprogress", .module = zprogress_dep.module("zprogress") },
-        .{ .name = "zinput", .module = zinput_dep.module("zinput") },
+        .{ .name = "theme", .module = theme_dep.module("theme") },
+        .{ .name = "markdown", .module = markdown_dep.module("markdown") },
+        .{ .name = "progress", .module = progress_dep.module("progress") },
+        .{ .name = "prompts", .module = prompts_dep.module("prompts") },
         .{ .name = "serde", .module = serde_dep.module("serde") },
     };
 

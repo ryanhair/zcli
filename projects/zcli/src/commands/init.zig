@@ -1,7 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const zinput = zcli.zinput;
+const prompts = zcli.prompts;
 
 /// A built-in plugin the user can opt into during `init`. `tag` is the enum
 /// tag passed to `zcli.builtin(.<tag>, .{})` in the generated build.zig.
@@ -150,7 +150,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         choices[i] = choice.label;
         defaults[i] = choice.default;
     }
-    const selected = try zinput.multiSelect(stdout, context.stdin(), allocator, .{
+    const selected = try prompts.multiSelect(stdout, context.stdin(), allocator, .{
         .message = "Select built-in plugins to include:",
         .choices = &choices,
         .defaults = &defaults,
@@ -450,8 +450,8 @@ const agents_section = agents_begin ++
     \\   wiring, not structure.)
     \\3. Print through `context.stdout()` / `context.stderr()` — never `std.debug.print` or
     \\   a raw stdout handle.
-    \\4. Don't hand-roll terminal I/O — use `zinput` (prompts), `zprogress` (progress),
-    \\   `ztheme` (color).
+    \\4. Don't hand-roll terminal I/O — use `prompts` (interactive input), `progress`
+    \\   (bars/spinners), `theme` (color).
     \\5. Verify with `zig build` and `zig build test`. Run `zcli guide <topic>` for
     \\   version-matched API detail and worked examples.
     \\6. File path = command path: `src/commands/foo/bar.zig` → `app foo bar`; a directory's
