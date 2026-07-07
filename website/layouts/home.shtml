@@ -1,127 +1,133 @@
 <extend template="base.shtml">
 
 <head id="head">
-<style>
-  /* ---- page-specific ---- */
-  .hero { padding: 84px 0 88px; position: relative; overflow: hidden; }
-  .hero::before {
-    content: ""; position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
-    width: 900px; height: 520px; pointer-events: none;
-    background: radial-gradient(ellipse at center, rgba(247,164,29,0.13), transparent 68%);
-    filter: blur(8px);
-  }
-  .hero .wrap { position: relative; display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
-  .hero h1 { font-size: clamp(36px, 4.7vw, 52px); text-wrap: balance; }
-  .hero h1 .amber { color: var(--accent); }
-  .hero .lead { margin: 22px 0 30px; font-size: 19px; }
-  .hero .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-  .install-pill {
-    display: inline-flex; align-items: center; gap: 12px; margin-top: 26px;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
-    padding: 11px 12px 11px 16px; font-family: var(--mono); font-size: 13.5px; color: var(--fg);
-  }
-  .install-pill .dollar { color: var(--accent); }
-  .install-pill .copy { margin-left: 6px; border: 1px solid var(--border2); background: transparent; color: var(--muted);
-    border-radius: 6px; padding: 5px 9px; font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .15s; }
-  .install-pill .copy:hover { color: var(--accent); border-color: var(--accent); }
-
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 30px; }
-  .chip { font-family: var(--mono); font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
-  .chip b { color: var(--accent); font-weight: 600; }
-
-  /* feature grid */
-  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
-  .feat { background: var(--surface); padding: 26px 24px; display: block; transition: background .15s; }
-  a.feat:hover { background: var(--surface2); }
-  .feat .ic { width: 32px; height: 32px; color: var(--accent); margin-bottom: 14px; }
-  .feat h3 { font-size: 16.5px; margin-bottom: 8px; }
-  .feat p { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 10px; }
-  .feat .goto { font-family: var(--mono); font-size: 12px; color: var(--faint); }
-  a.feat:hover .goto { color: var(--accent); }
-
-  .sec-head { max-width: 62ch; margin-bottom: 44px; }
-
-  /* end CTA (class referenced by the design but not defined in the shared sheet) */
-  .endcta { text-align: center; }
-  .endcta h2 { font-size: clamp(30px, 4.5vw, 46px); margin-bottom: 18px; }
-  .endcta p { color: var(--muted); font-size: 18px; max-width: 52ch; margin: 0 auto 30px; }
-  .endcta .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-
-  /* recording frame (see-it-run) */
-  .recframe { background: #0a0b0e; border: 1px solid var(--border2); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
-  .recframe .term-bar { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: #111318; border-bottom: 1px solid var(--border); }
-  .recframe .term-bar .dot { width: 11px; height: 11px; border-radius: 50%; }
-  .recframe .term-bar .dot.r { background: #ff5f57; } .recframe .term-bar .dot.y { background: #febc2e; } .recframe .term-bar .dot.g { background: #28c840; }
-  .recframe .term-bar .ttl { margin-left: 8px; font-family: var(--mono); font-size: 12px; color: var(--faint); }
-  .recframe .demo-gif { display: block; width: 100%; height: auto; }
-  .rec-caption { display: flex; align-items: center; gap: 10px; margin-top: 16px; color: var(--muted); font-size: 14px; }
-  .rec-caption svg { width: 16px; height: 16px; color: var(--accent); flex: none; }
-  .rec-caption a { color: var(--accent); }
-
-  /* see-it-run: folder tree ↔ recording, side by side */
-  .runmap { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 20px; align-items: start; }
-  .runmap > * { min-width: 0; }
-  .runmap .tree { white-space: pre; overflow-x: auto; line-height: 1.85; color: var(--muted); }
-  .runmap .tree .dir { color: var(--cyan); }
-  .runmap .tree .hl { color: var(--accent); }
-  @media (max-width: 820px) { .runmap { grid-template-columns: 1fr; } }
-
-  /* inline code — match the docs page pill styling */
-  code.mono { font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
-
-  /* numbers strip — bottom-align the measured chips across the row */
-  .numstrip .ns-item { display: flex; flex-direction: column; align-items: flex-start; }
-  .numstrip .ns-item .ns-label { margin-bottom: 12px; }
-  .numstrip .ns-item .measured { margin-top: auto; }
-
-  /* Let grid children shrink so inner code blocks scroll instead of widening the page. */
-  .hero .wrap > *, .metateaser > *, .contrast > * { min-width: 0; }
-  .code, .term { max-width: 100%; }
-  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-
-  @media (max-width: 900px) {
-    .hero .wrap { grid-template-columns: 1fr; }
-    .features { grid-template-columns: 1fr 1fr; }
-  }
-  @media (max-width: 600px) {
-    .features { grid-template-columns: 1fr; }
-    .install-pill { flex-wrap: wrap; }
-  }
-</style>
+	<style>
+		/* ---- page-specific ---- */
+		.hero { padding: 84px 0 88px; position: relative; overflow: hidden; }
+		.hero::before {
+			content: ""; position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
+			width: 900px; height: 520px; pointer-events: none;
+			background: radial-gradient(ellipse at center, rgba(247,164,29,0.13), transparent 68%);
+			filter: blur(8px);
+		}
+		.hero .wrap { position: relative; display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
+		.hero h1 { font-size: clamp(36px, 4.7vw, 52px); text-wrap: balance; }
+		.hero h1 .amber { color: var(--accent); }
+		.hero .lead { margin: 22px 0 30px; font-size: 19px; }
+		.hero .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+		.install-pill {
+			display: inline-flex; align-items: center; gap: 12px; margin-top: 26px;
+			background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
+			padding: 11px 12px 11px 16px; font-family: var(--mono); font-size: 13.5px; color: var(--fg);
+		}
+		.install-pill .dollar { color: var(--accent); }
+		.install-pill .copy { margin-left: 6px; border: 1px solid var(--border2); background: transparent; color: var(--muted);
+		border-radius: 6px; padding: 5px 9px; font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .15s; }
+		.install-pill .copy:hover { color: var(--accent); border-color: var(--accent); }
+		
+		.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 30px; }
+		.chip { font-family: var(--mono); font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
+		.chip b { color: var(--accent); font-weight: 600; }
+		
+		/* feature grid */
+		.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+		.feat { background: var(--surface); padding: 26px 24px; display: block; transition: background .15s; }
+		a.feat:hover { background: var(--surface2); }
+		.feat .ic { width: 32px; height: 32px; color: var(--accent); margin-bottom: 14px; }
+		.feat h3 { font-size: 16.5px; margin-bottom: 8px; }
+		.feat p { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 10px; }
+		.feat .goto { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+		a.feat:hover .goto { color: var(--accent); }
+		
+		.sec-head { max-width: 62ch; margin-bottom: 44px; }
+		
+		/* end CTA (class referenced by the design but not defined in the shared sheet) */
+		.endcta { text-align: center; }
+		.endcta h2 { font-size: clamp(30px, 4.5vw, 46px); margin-bottom: 18px; }
+		.endcta p { color: var(--muted); font-size: 18px; max-width: 52ch; margin: 0 auto 30px; }
+		.endcta .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+		
+		/* recording frame (see-it-run) */
+		.recframe { background: #0a0b0e; border: 1px solid var(--border2); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
+		.recframe .term-bar { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: #111318; border-bottom: 1px solid var(--border); }
+		.recframe .term-bar .dot { width: 11px; height: 11px; border-radius: 50%; }
+		.recframe .term-bar .dot.r { background: #ff5f57; } .recframe .term-bar .dot.y { background: #febc2e; } .recframe .term-bar .dot.g { background: #28c840; }
+		.recframe .term-bar .ttl { margin-left: 8px; font-family: var(--mono); font-size: 12px; color: var(--faint); }
+		.recframe .demo-gif { display: block; width: 100%; height: auto; }
+		.rec-caption { display: flex; align-items: center; gap: 10px; margin-top: 16px; color: var(--muted); font-size: 14px; }
+		.rec-caption svg { width: 16px; height: 16px; color: var(--accent); flex: none; }
+		.rec-caption a { color: var(--accent); }
+		
+		/* see-it-run: folder tree ↔ recording, side by side */
+		.runmap { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 20px; align-items: start; }
+		.runmap > * { min-width: 0; }
+		.runmap .tree { white-space: pre; overflow-x: auto; line-height: 1.85; color: var(--muted); }
+		.runmap .tree .dir { color: var(--cyan); }
+		.runmap .tree .hl { color: var(--accent); }
+		@media (max-width: 820px) { .runmap { grid-template-columns: 1fr; } }
+		
+		/* inline code — match the docs page pill styling */
+		code.mono { font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
+		
+		/* numbers strip — bottom-align the measured chips across the row */
+		.numstrip .ns-item { display: flex; flex-direction: column; align-items: flex-start; }
+		.numstrip .ns-item .ns-label { margin-bottom: 12px; }
+		.numstrip .ns-item .measured { margin-top: auto; }
+		
+		/* Let grid children shrink so inner code blocks scroll instead of widening the page. */
+		.hero .wrap > *, .metateaser > *, .contrast > * { min-width: 0; }
+		.code, .term { max-width: 100%; }
+		.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+		
+		@media (max-width: 900px) {
+			.hero .wrap { grid-template-columns: 1fr; }
+			.features { grid-template-columns: 1fr 1fr; }
+		}
+		@media (max-width: 600px) {
+			.features { grid-template-columns: 1fr; }
+			.install-pill { flex-wrap: wrap; }
+		}
+	</style>
 </head>
 
 <main id="main">
 
-<!-- HERO -->
-<section class="hero" style="border-top:none;">
-  <div class="wrap">
-    <div>
-      <div class="eyebrow">CLI framework · Zig 0.16+</div>
-      <h1>Your folder structure <span class="amber">is</span> your CLI.</h1>
-      <p class="lead">Files become commands. Folders become subcommand groups. Structs become type-checked flags. Help text, completions, "did you mean?", prompts, progress bars, and docs — wired up at compile time for zero-cost dispatch.</p>
-      <div class="cta">
-        <a class="btn primary" href="$site.page('docs').link()">Get started →</a>
-        <a class="btn ghost" href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener">Star on GitHub</a>
-      </div>
-      <div class="install-pill">
-        <span><span class="dollar">$</span> curl -fsSL zcli.sh/install.sh | sh</span>
-        <button class="copy" onclick="copyInstall(this)">copy</button>
-      </div>
-      <div class="chips">
-        <span class="chip"><b>0</b> runtime reflection</span>
-        <span class="chip"><b><span :text="$site.asset('site-data.json').ziggy().get('plugin_count')"></span></b> built-in plugins</span>
-        <span class="chip"><b>8</b> prompt types</span>
-        <span class="chip"><b>215 KB</b> hello-world</span>
-      </div>
-    </div>
+	<!-- HERO -->
+	<section class="hero" style="border-top:none;">
+		<div class="wrap">
+			<div>
+				<div class="eyebrow">CLI framework · Zig 0.16+</div>
+				<h1>Your folder structure <span class="amber">is</span>
+					your CLI.</h1>
+				<p class="lead">Files become commands. Folders become subcommand groups. Structs become type-checked flags. Help text, completions, "did you mean?", prompts, progress bars, and docs — wired up at compile time for zero-cost dispatch.</p>
+				<div class="cta">
+					<a class="btn primary" href="$site.page('docs').link()">Get started →</a>
+					<a class="btn ghost" href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener">Star on GitHub</a>
+				</div>
+				<div class="install-pill">
+					<span><span class="dollar">$</span>
+					curl -fsSL zcli.sh/install.sh | sh</span>
+					<button class="copy" onclick="copyInstall(this)">copy</button>
+				</div>
+				<div class="chips">
+					<span class="chip"><b>0</b>
+					runtime reflection</span>
+					<span class="chip"><b><span :text="$site.asset('site-data.json').ziggy().get('plugin_count')"></span></b>
+					built-in plugins</span>
+					<span class="chip"><b>8</b>
+					prompt types</span>
+					<span class="chip"><b>215 KB</b>
+					hello-world</span>
+				</div>
+			</div>
 
-    <div class="term">
-      <div class="term-bar">
-        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-        <span class="ttl">myapp — zsh</span>
-      </div>
-      <div class="term-body">
-<pre><span class="c-prompt">$</span> <span class="c-cmd">myapp</span> deploy api <span class="c-flag">--env</span> staging
+			<div class="term">
+				<div class="term-bar">
+					<span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+					<span class="ttl">myapp — zsh</span>
+				</div>
+				<div class="term-body">
+					<pre><span class="c-prompt">$</span> <span class="c-cmd">myapp</span> deploy api <span class="c-flag">--env</span> staging
 Deploying api to staging
 
 <span class="c-prompt">$</span> <span class="c-cmd">myapp</span> dploy api
@@ -133,67 +139,69 @@ Deploying api to staging
   <span class="c-flag">-a, --admin</span>     Grant admin role
   <span class="c-flag">    --output</span>   json · table · plain
 <span class="c-ok">✔</span> generated from your command metadata<span class="cursor"></span></pre>
-      </div>
-    </div>
-  </div>
-</section>
+				</div>
+			</div>
+		</div>
+	</section>
 
-<!-- SIGNATURE COMPONENT: folder → CLI mapping -->
-<section id="mapping">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">How it actually works</div>
-      <h2>No routing table. No registration calls.</h2>
-      <p>Hover a file to see the command it becomes. Dispatch is generated Zig code — there's no runtime filesystem scan, no reflection, nothing to register by hand.</p>
-    </div>
+	<!-- SIGNATURE COMPONENT: folder → CLI mapping -->
+	<section id="mapping">
+		<div class="wrap">
+			<div class="sec-head">
+				<div class="eyebrow">How it actually works</div>
+				<h2>No routing table. No registration calls.</h2>
+				<p>Hover a file to see the command it becomes. Dispatch is generated Zig code — there's no runtime filesystem scan, no reflection, nothing to register by hand.</p>
+			</div>
 
-    <div class="foldermap" id="fm">
-      <div class="fm-tree">
-        <div class="fm-head">src/commands/</div>
-        <div class="fm-row on" data-cmd="deploy">
-          <span>├── <span class="fm-dir"></span>deploy.zig</span>
-        </div>
-        <div class="fm-row" data-cmd="init">
-          <span>├── init.zig</span>
-        </div>
-        <div class="fm-row" data-cmd="users">
-          <span>└── <span class="fm-dir">users/</span></span>
-        </div>
-        <div class="fm-row" data-cmd="users" style="padding-left:32px;">
-          <span>&nbsp;&nbsp;&nbsp;&nbsp;├── index.zig</span>
-        </div>
-        <div class="fm-row" data-cmd="create" style="padding-left:32px;">
-          <span>&nbsp;&nbsp;&nbsp;&nbsp;├── create.zig</span>
-        </div>
-        <div class="fm-row" data-cmd="list" style="padding-left:32px;">
-          <span>&nbsp;&nbsp;&nbsp;&nbsp;└── list.zig</span>
-        </div>
-      </div>
-      <div class="fm-term">
-        <div class="fm-head">resulting CLI</div>
-        <pre id="fm-out"><span class="c-prompt">$</span> <span class="c-cmd">myapp</span> deploy api <span class="c-flag">--env</span> staging
+			<div class="foldermap" id="fm">
+				<div class="fm-tree">
+					<div class="fm-head">src/commands/</div>
+					<div class="fm-row on" data-cmd="deploy">
+						<span>├── <span class="fm-dir"></span>deploy.zig</span>
+					</div>
+					<div class="fm-row" data-cmd="init">
+						<span>├── init.zig</span>
+					</div>
+					<div class="fm-row" data-cmd="users">
+						<span>└── <span class="fm-dir">users/</span></span>
+					</div>
+					<div class="fm-row" data-cmd="users" style="padding-left:32px;">
+						<span>&nbsp;&nbsp;&nbsp;&nbsp;├── index.zig</span>
+					</div>
+					<div class="fm-row" data-cmd="create" style="padding-left:32px;">
+						<span>&nbsp;&nbsp;&nbsp;&nbsp;├── create.zig</span>
+					</div>
+					<div class="fm-row" data-cmd="list" style="padding-left:32px;">
+						<span>&nbsp;&nbsp;&nbsp;&nbsp;└── list.zig</span>
+					</div>
+				</div>
+				<div class="fm-term">
+					<div class="fm-head">resulting CLI</div>
+					<pre id="fm-out"><span class="c-prompt">$</span> <span class="c-cmd">myapp</span> deploy api <span class="c-flag">--env</span> staging
 Deploying api to staging<span class="cursor"></span></pre>
-      </div>
-    </div>
-    <div class="foldermap-caption">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
-      No routing table. No registration calls. Dispatch is generated Zig code.
-    </div>
-  </div>
-</section>
+				</div>
+			</div>
+			<div class="foldermap-caption">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+				No routing table. No registration calls. Dispatch is generated Zig code.
+			</div>
+		</div>
+	</section>
 
-<!-- SEE IT RUN -->
-<section id="run">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">See it run</div>
-      <h2>A real recording, not a mockup.</h2>
-      <p>Every file in the <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">showcase task tracker</a> on the left is a command — the recording on the right is that exact CLI running, with interactive prompts, a colored table, live search, and a spinner, captured from a real terminal with VHS. The <span class="mono" style="color:var(--accent)">highlighted</span> files are the ones you see run.</p>
-    </div>
-    <div class="runmap">
-      <div class="code">
-        <div class="code-head"><span class="fname">tasks/src/commands/</span><span class="lang">tree</span></div>
-<pre class="tree">src/commands/
+	<!-- SEE IT RUN -->
+	<section id="run">
+		<div class="wrap">
+			<div class="sec-head">
+				<div class="eyebrow">See it run</div>
+				<h2>A real recording, not a mockup.</h2>
+				<p>Every file in the <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">showcase task tracker</a>
+					on the left is a command — the recording on the right is that exact CLI running, with interactive prompts, a colored table, live search, and a spinner, captured from a real terminal with VHS. The <span class="mono" style="color:var(--accent)">highlighted</span>
+					files are the ones you see run.</p>
+			</div>
+			<div class="runmap">
+				<div class="code">
+					<div class="code-head"><span class="fname">tasks/src/commands/</span><span class="lang">tree</span></div>
+					<pre class="tree">src/commands/
 ├── <span class="hl">add.zig</span>
 ├── config.zig
 ├── done.zig
@@ -210,34 +218,34 @@ Deploying api to staging<span class="cursor"></span></pre>
     ├── close.zig
     ├── create.zig
     └── list.zig</pre>
-      </div>
-      <div class="recframe">
-        <div class="term-bar">
-          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-          <span class="ttl">tasks — recorded with vhs</span>
-        </div>
-        <img class="demo-gif" src="$site.asset('demo.gif').link()" alt="Recording of the tasks showcase CLI: interactive prompts, a colored task table, live search filtering, and a spinner" width="900" height="560">
-      </div>
-    </div>
-    <div class="rec-caption">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
-      Every frame is a real capture — the showcase lives in <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">examples/showcase</a>.
-    </div>
-  </div>
-</section>
+				</div>
+				<div class="recframe">
+					<div class="term-bar">
+						<span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+						<span class="ttl">tasks — recorded with vhs</span>
+					</div>
+					<img class="demo-gif" src="$site.asset('demo.gif').link()" alt="Recording of the tasks showcase CLI: interactive prompts, a colored task table, live search filtering, and a spinner" width="900" height="560">
+				</div>
+			</div>
+			<div class="rec-caption">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
+				Every frame is a real capture — the showcase lives in <a href="https://github.com/ryanhair/zcli/tree/main/examples/showcase" target="_blank" rel="noopener">examples/showcase</a>.
+			</div>
+		</div>
+	</section>
 
-<!-- TYPE SAFETY -->
-<section id="typesafe">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">Type safety, demonstrated</div>
-      <h2>Wrong types never compile.</h2>
-      <p>Args and Options are plain Zig structs. Typo a field or reach for one that doesn't exist, and the build fails — naming the exact command file, not a runtime stack trace.</p>
-    </div>
-    <div class="contrast">
-      <div class="code">
-        <div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
-<pre><span class="kw">pub const</span> Options = <span class="kw">struct</span> {
+	<!-- TYPE SAFETY -->
+	<section id="typesafe">
+		<div class="wrap">
+			<div class="sec-head">
+				<div class="eyebrow">Type safety, demonstrated</div>
+				<h2>Wrong types never compile.</h2>
+				<p>Args and Options are plain Zig structs. Typo a field or reach for one that doesn't exist, and the build fails — naming the exact command file, not a runtime stack trace.</p>
+			</div>
+			<div class="contrast">
+				<div class="code">
+					<div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
+					<pre><span class="kw">pub const</span> Options = <span class="kw">struct</span> {
     env: []<span class="kw">const</span> <span class="fn">u8</span> = <span class="str">"production"</span>,
 };
 
@@ -245,122 +253,126 @@ Deploying api to staging<span class="cursor"></span></pre>
     <span class="kw">try</span> context.<span class="fn">stdout</span>().<span class="fn">print</span>(
         <span class="str">"target: {s}\n"</span>, .{ options.envv });
 }</pre>
-      </div>
-      <div class="errdemo">
-        <div class="code-head"><span class="fname">zig build</span><span class="lang">error</span></div>
-<pre><span class="e-file">commands/deploy.zig:6:52</span>: <span class="e-msg">error: no field named 'envv' in struct 'commands.deploy.Options'</span>
+				</div>
+				<div class="errdemo">
+					<div class="code-head"><span class="fname">zig build</span><span class="lang">error</span></div>
+					<pre><span class="e-file">commands/deploy.zig:6:52</span>: <span class="e-msg">error: no field named 'envv' in struct 'commands.deploy.Options'</span>
     try context.stdout().print("target: {s}\n", .{options.envv});
                                                            <span class="e-msg">^~~~</span>
 <span class="e-line">commands/deploy.zig:2:16</span>: <span class="e-hint">note: struct declared here</span>
 <span class="e-hint">note: did you mean 'env'?</span></pre>
-      </div>
-    </div>
-  </div>
-</section>
+				</div>
+			</div>
+		</div>
+	</section>
 
-<!-- FEATURES -->
-<section id="features">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">What you get</div>
-      <h2>Everything a polished CLI needs, none of the wiring.</h2>
-      <p>The boring-but-essential parts of a command-line tool, generated for you and type-checked at compile time.</p>
-    </div>
-    <div class="features">
-      <a class="feat" href="$site.page('docs').link().suffix('#commands')">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg>
-        <h3>File-based commands</h3>
-        <p>Create files in <code class="mono">commands/</code> to add commands; nest folders for subcommands. The path becomes the command.</p>
-        <span class="goto">→ docs</span>
-      </a>
-      <a class="feat" href="$site.page('docs').link().suffix('#options')">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
-        <h3>Type-safe parsing</h3>
-        <p>Define args & options as Zig structs. Parsing is checked via comptime introspection — wrong types never compile.</p>
-        <span class="goto">→ docs</span>
-      </a>
-      <a class="feat" href="$site.page('docs').link().suffix('#plugins')">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <h3>Did-you-mean</h3>
-        <p>Auto-generated <code class="mono">--help</code>, <code class="mono">--version</code>, shell completions, and typo suggestions out of the box.</p>
-        <span class="goto">→ docs</span>
-      </a>
-      <a class="feat" href="$site.page('docs').link().suffix('#prompts')">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v16M6 9l6-5 6 5"/><rect x="4" y="16" width="16" height="4" rx="1"/></svg>
-        <h3>Interactive prompts</h3>
-        <p>Text, confirm, select, multi-select, password, search, number, and editor — all falling back gracefully without a TTY.</p>
-        <span class="goto">→ docs</span>
-      </a>
-      <a class="feat" href="$site.page('docs').link().suffix('#progress')">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
-        <h3>Progress & spinners</h3>
-        <p>Nine spinner styles plus progress bars with ETA. Semantic colors adapt to your terminal's capabilities.</p>
-        <span class="goto">→ docs</span>
-      </a>
-      <a class="feat" href="$site.page('docs').link().suffix('#docsgen')">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h11l5 5v11H4z"/><path d="M14 4v5h5M8 13h8M8 17h8"/></svg>
-        <h3>Docs generation</h3>
-        <p>Emit markdown, man pages, and HTML straight from command metadata. Config loads transparently from JSON, TOML, or YAML.</p>
-        <span class="goto">→ docs</span>
-      </a>
-    </div>
-  </div>
-</section>
+	<!-- FEATURES -->
+	<section id="features">
+		<div class="wrap">
+			<div class="sec-head">
+				<div class="eyebrow">What you get</div>
+				<h2>Everything a polished CLI needs, none of the wiring.</h2>
+				<p>The boring-but-essential parts of a command-line tool, generated for you and type-checked at compile time.</p>
+			</div>
+			<div class="features">
+				<a class="feat" href="$site.page('docs').link().suffix('#commands')">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg>
+					<h3>File-based commands</h3>
+					<p>Create files in <code class="mono">commands/</code>
+						to add commands; nest folders for subcommands. The path becomes the command.</p>
+					<span class="goto">→ docs</span>
+				</a>
+				<a class="feat" href="$site.page('docs').link().suffix('#options')">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+					<h3>Type-safe parsing</h3>
+					<p>Define args & options as Zig structs. Parsing is checked via comptime introspection — wrong types never compile.</p>
+					<span class="goto">→ docs</span>
+				</a>
+				<a class="feat" href="$site.page('docs').link().suffix('#plugins')">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+					<h3>Did-you-mean</h3>
+					<p>Auto-generated <code class="mono">--help</code>, <code class="mono">--version</code>, shell completions, and typo suggestions out of the box.</p>
+					<span class="goto">→ docs</span>
+				</a>
+				<a class="feat" href="$site.page('docs').link().suffix('#prompts')">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v16M6 9l6-5 6 5"/><rect x="4" y="16" width="16" height="4" rx="1"/></svg>
+					<h3>Interactive prompts</h3>
+					<p>Text, confirm, select, multi-select, password, search, number, and editor — all falling back gracefully without a TTY.</p>
+					<span class="goto">→ docs</span>
+				</a>
+				<a class="feat" href="$site.page('docs').link().suffix('#progress')">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+					<h3>Progress & spinners</h3>
+					<p>Nine spinner styles plus progress bars with ETA. Semantic colors adapt to your terminal's capabilities.</p>
+					<span class="goto">→ docs</span>
+				</a>
+				<a class="feat" href="$site.page('docs').link().suffix('#docsgen')">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h11l5 5v11H4z"/><path d="M14 4v5h5M8 13h8M8 17h8"/></svg>
+					<h3>Docs generation</h3>
+					<p>Emit markdown, man pages, and HTML straight from command metadata. Config loads transparently from JSON, TOML, or YAML.</p>
+					<span class="goto">→ docs</span>
+				</a>
+			</div>
+		</div>
+	</section>
 
-<!-- NUMBERS STRIP -->
-<section id="numbers">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">Numbers, not adjectives</div>
-      <h2>What "batteries-included" costs you.</h2>
-    </div>
-    <div class="numstrip">
-      <div class="ns-item">
-        <div class="ns-val">215 KB</div>
-        <div class="ns-label">ReleaseSmall hello-world</div>
-        <a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
-      </div>
-      <div class="ns-item">
-        <div class="ns-val">195 KB</div>
-        <div class="ns-label">static musl binary</div>
-        <a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
-      </div>
-      <div class="ns-item">
-        <div class="ns-val">libSystem</div>
-        <div class="ns-label">only macOS runtime dep</div>
-        <a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
-      </div>
-      <div class="ns-item">
-        <div class="ns-val">0</div>
-        <div class="ns-label">ANSI escapes with NO_COLOR set</div>
-        <a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
-      </div>
-      <div class="ns-item">
-        <div class="ns-val">3 OSes</div>
-        <div class="ns-label">CI, every commit</div>
-        <a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
-      </div>
-    </div>
-  </div>
-</section>
+	<!-- NUMBERS STRIP -->
+	<section id="numbers">
+		<div class="wrap">
+			<div class="sec-head">
+				<div class="eyebrow">Numbers, not adjectives</div>
+				<h2>What "batteries-included" costs you.</h2>
+			</div>
+			<div class="numstrip">
+				<div class="ns-item">
+					<div class="ns-val">215 KB</div>
+					<div class="ns-label">ReleaseSmall hello-world</div>
+					<a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
+				</div>
+				<div class="ns-item">
+					<div class="ns-val">195 KB</div>
+					<div class="ns-label">static musl binary</div>
+					<a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
+				</div>
+				<div class="ns-item">
+					<div class="ns-val">libSystem</div>
+					<div class="ns-label">only macOS runtime dep</div>
+					<a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
+				</div>
+				<div class="ns-item">
+					<div class="ns-val">0</div>
+					<div class="ns-label">ANSI escapes with NO_COLOR set</div>
+					<a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
+				</div>
+				<div class="ns-item">
+					<div class="ns-val">3 OSes</div>
+					<div class="ns-label">CI, every commit</div>
+					<a class="measured" href="$site.page('why').link().suffix('#numbers')">✓ v0.19.0</a>
+				</div>
+			</div>
+		</div>
+	</section>
 
-<!-- META-CLI / AI TEASER -->
-<section id="meta">
-  <div class="wrap">
-    <div class="metateaser">
-      <div>
-        <div class="eyebrow">The meta-CLI</div>
-        <h2 style="font-size:clamp(26px,3.4vw,36px);margin-bottom:14px;">The tool that scaffolds your CLI is itself a zcli app.</h2>
-        <p style="color:var(--muted);font-size:16px;line-height:1.65;margin-bottom:14px;"><code class="mono">zcli init</code>, <code class="mono">zcli add command</code>, and <code class="mono">zcli dev</code> restructure your project without hand-editing struct fields or meta blocks. The same scaffolder writes an <code class="mono">AGENTS.md</code> for you — a version-matched reference at <code class="mono">zcli guide</code> that keeps AI coding agents from hallucinating stale APIs.</p>
-        <a class="btn ghost" href="$site.page('docs').link().suffix('#ai-agents')">AI agents & AGENTS.md →</a>
-      </div>
-      <div class="term">
-        <div class="term-bar">
-          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-          <span class="ttl">myapp — zsh</span>
-        </div>
-        <div class="term-body">
-<pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> init myapp
+	<!-- META-CLI / AI TEASER -->
+	<section id="meta">
+		<div class="wrap">
+			<div class="metateaser">
+				<div>
+					<div class="eyebrow">The meta-CLI</div>
+					<h2 style="font-size:clamp(26px,3.4vw,36px);margin-bottom:14px;">The tool that scaffolds your CLI is itself a zcli app.</h2>
+					<p style="color:var(--muted);font-size:16px;line-height:1.65;margin-bottom:14px;"><code class="mono">zcli init</code>, <code class="mono">zcli add command</code>, and <code class="mono">zcli dev</code>
+					restructure your project without hand-editing struct fields or meta blocks. The same scaffolder writes an <code class="mono">AGENTS.md</code>
+					for you — a version-matched reference at <code class="mono">zcli guide</code>
+					that keeps AI coding agents from hallucinating stale APIs.</p>
+					<a class="btn ghost" href="$site.page('docs').link().suffix('#ai-agents')">AI agents & AGENTS.md →</a>
+				</div>
+				<div class="term">
+					<div class="term-bar">
+						<span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+						<span class="ttl">myapp — zsh</span>
+					</div>
+					<div class="term-body">
+						<pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> init myapp
 <span class="c-ok">✓</span> Project 'myapp' created successfully!
 
 <span class="c-prompt">$</span> <span class="c-cmd">zcli</span> add command users/create
@@ -368,101 +380,104 @@ Deploying api to staging<span class="cursor"></span></pre>
 
 <span class="c-prompt">$</span> <span class="c-cmd">zcli</span> dev
 <span class="c-mut">watching src/ — rebuild on change…</span><span class="cursor"></span></pre>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+					</div>
+				</div>
+			</div>
+		</div>
+	</section>
 
-<!-- COMPARISON TEASER -->
-<section id="compare">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">Why not zig-clap, or zli?</div>
-      <h2>Three tools, three different jobs.</h2>
-    </div>
-    <div class="cmp-mini">
-      <div class="card">
-        <h4>zig-clap</h4>
-        <p>An argument parser, and the lightest of the three. If flag parsing is all you need, it's a great choice.</p>
-      </div>
-      <div class="card">
-        <h4>zli</h4>
-        <p>A batteries-included framework built around a runtime builder — commands assembled with <code class="mono">Command.init()</code> as the program starts.</p>
-      </div>
-      <div class="card">
-        <h4>zcli</h4>
-        <p>The directory tree <em>is</em> the command tree, discovered at build time. Batteries extend past parsing into the whole terminal experience.</p>
-      </div>
-    </div>
-    <div style="margin-top:22px;">
-      <a class="btn ghost" href="$site.page('why').link().suffix('#comparison')">Full comparison →</a>
-    </div>
-  </div>
-</section>
+	<!-- COMPARISON TEASER -->
+	<section id="compare">
+		<div class="wrap">
+			<div class="sec-head">
+				<div class="eyebrow">Why not zig-clap, or zli?</div>
+				<h2>Three tools, three different jobs.</h2>
+			</div>
+			<div class="cmp-mini">
+				<div class="card">
+					<h4>zig-clap</h4>
+					<p>An argument parser, and the lightest of the three. If flag parsing is all you need, it's a great choice.</p>
+				</div>
+				<div class="card">
+					<h4>zli</h4>
+					<p>A batteries-included framework built around a runtime builder — commands assembled with <code class="mono">Command.init()</code>
+						as the program starts.</p>
+				</div>
+				<div class="card">
+					<h4>zcli</h4>
+					<p>The directory tree <em>is</em>
+						the command tree, discovered at build time. Batteries extend past parsing into the whole terminal experience.</p>
+				</div>
+			</div>
+			<div style="margin-top:22px;">
+				<a class="btn ghost" href="$site.page('why').link().suffix('#comparison')">Full comparison →</a>
+			</div>
+		</div>
+	</section>
 
-<!-- BUILT WITH ZCLI -->
-<section id="builtwith-sec">
-  <div class="wrap">
-    <div class="sec-head">
-      <div class="eyebrow">Built with zcli</div>
-      <h2>Dogfooded, not just demoed.</h2>
-    </div>
-    <div class="builtwith">
-      <div class="bw">
-        <h4>zcli — the meta-CLI</h4>
-        <p><code class="mono">init</code>, <code class="mono">add</code>, <code class="mono">mv</code>, <code class="mono">rm</code>, <code class="mono">tree</code>, <code class="mono">dev</code>, <code class="mono">guide</code>, and <code class="mono">release</code> are files in its own <code class="mono">commands/</code> directory, running on the framework's own plugins.</p>
-      </div>
-      <div class="bw">
-        <h4>tasks — showcase app</h4>
-        <p>A fully functional task tracker: 14 commands, nested groups, every prompt type, themed output, config files, and doc generation.</p>
-      </div>
-      <div class="bw add">Your project here — open a PR</div>
-    </div>
-  </div>
-</section>
+	<!-- BUILT WITH ZCLI -->
+	<section id="builtwith-sec">
+		<div class="wrap">
+			<div class="sec-head">
+				<div class="eyebrow">Built with zcli</div>
+				<h2>Dogfooded, not just demoed.</h2>
+			</div>
+			<div class="builtwith">
+				<div class="bw">
+					<h4>zcli — the meta-CLI</h4>
+					<p><code class="mono">init</code>, <code class="mono">add</code>, <code class="mono">mv</code>, <code class="mono">rm</code>, <code class="mono">tree</code>, <code class="mono">dev</code>, <code class="mono">guide</code>, and <code class="mono">release</code>
+					are files in its own <code class="mono">commands/</code>
+					directory, running on the framework's own plugins.</p>
+				</div>
+				<div class="bw">
+					<h4>tasks — showcase app</h4>
+					<p>A fully functional task tracker: 14 commands, nested groups, every prompt type, themed output, config files, and doc generation.</p>
+				</div>
+				<div class="bw add">Your project here — open a PR</div>
+			</div>
+		</div>
+	</section>
 
-<!-- END CTA -->
-<section class="endcta">
-  <div class="wrap">
-    <div class="eyebrow" style="display:inline-block;">Ready in two minutes</div>
-    <h2>Stop wiring up arg parsers.</h2>
-    <p>Add zcli to <code class="mono">build.zig.zon</code>, drop a file in <code class="mono">commands/</code>, and run <code class="mono">zig build</code>. That's the whole onboarding.</p>
-    <div class="cta">
-      <a class="btn primary" href="$site.page('install').link()">Install zcli →</a>
-      <a class="btn ghost" href="$site.page('docs').link()">Read the docs</a>
-    </div>
-  </div>
-</section>
+	<!-- END CTA -->
+	<section class="endcta">
+		<div class="wrap">
+			<div class="eyebrow" style="display:inline-block;">Ready in two minutes</div>
+			<h2>Stop wiring up arg parsers.</h2>
+			<p>Add zcli to <code class="mono">build.zig.zon</code>, drop a file in <code class="mono">commands/</code>, and run <code class="mono">zig build</code>. That's the whole onboarding.</p>
+			<div class="cta">
+				<a class="btn primary" href="$site.page('install').link()">Install zcli →</a>
+				<a class="btn ghost" href="$site.page('docs').link()">Read the docs</a>
+			</div>
+		</div>
+	</section>
 
-<script>
-  function copyInstall(btn) {
-    navigator.clipboard.writeText("curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh").then(function () {
-      var old = btn.textContent; btn.textContent = "copied ✓"; btn.style.color = "var(--green)"; btn.style.borderColor = "var(--green)";
-      setTimeout(function () { btn.textContent = old; btn.style.color = ""; btn.style.borderColor = ""; }, 1600);
-    });
-  }
+	<script>
+		function copyInstall(btn) {
+			navigator.clipboard.writeText("curl -fsSL zcli.sh/install.sh | sh").then(function () {
+				var old = btn.textContent; btn.textContent = "copied ✓"; btn.style.color = "var(--green)"; btn.style.borderColor = "var(--green)";
+				setTimeout(function () { btn.textContent = old; btn.style.color = ""; btn.style.borderColor = ""; }, 1600);
+			});
+	}
 
-  /* folder → CLI mapping: hover a file, see the resulting CLI */
-  (function () {
-    var outputs = {
-      deploy: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> deploy api <span class="c-flag">--env</span> staging\nDeploying api to staging<span class="cursor"></span>',
-      init: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> init\nScaffolding new project…<span class="cursor"></span>',
-      users: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users\n<span class="c-mut">USAGE</span>  myapp users &lt;command&gt;\n  <span class="c-cmd">create</span>   Create a user\n  <span class="c-cmd">list</span>     List users<span class="c-mut"> · no execute() = shows subcommands</span><span class="cursor"></span>',
-      create: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users create alice <span class="c-flag">--admin</span>\nCreated user alice (admin)<span class="cursor"></span>',
-      list: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users list\nalice   admin\nbob     member<span class="cursor"></span>'
-    };
-    var rows = document.querySelectorAll('#fm .fm-row');
-    var out = document.getElementById('fm-out');
-    rows.forEach(function (row) {
-      row.addEventListener('mouseenter', function () {
-        rows.forEach(function (r) { r.classList.remove('on'); });
-        row.classList.add('on');
-        var key = row.dataset.cmd;
-        if (outputs[key]) out.innerHTML = outputs[key];
-      });
-    });
-  })();
-</script>
-
+	/* folder → CLI mapping: hover a file, see the resulting CLI */
+	(function () {
+		var outputs = {
+			deploy: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> deploy api <span class="c-flag">--env</span> staging\nDeploying api to staging<span class="cursor"></span>',
+			init: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> init\nScaffolding new project…<span class="cursor"></span>',
+			users: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users\n<span class="c-mut">USAGE</span>  myapp users &lt;command&gt;\n  <span class="c-cmd">create</span>   Create a user\n  <span class="c-cmd">list</span>     List users<span class="c-mut"> · no execute() = shows subcommands</span><span class="cursor"></span>',
+			create: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users create alice <span class="c-flag">--admin</span>\nCreated user alice (admin)<span class="cursor"></span>',
+			list: '<span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users list\nalice   admin\nbob     member<span class="cursor"></span>'
+		};
+		var rows = document.querySelectorAll('#fm .fm-row');
+		var out = document.getElementById('fm-out');
+		rows.forEach(function (row) {
+			row.addEventListener('mouseenter', function () {
+				rows.forEach(function (r) { r.classList.remove('on'); });
+				row.classList.add('on');
+				var key = row.dataset.cmd;
+				if (outputs[key]) out.innerHTML = outputs[key];
+			});
+	});
+})();
+	</script>
 </main>
