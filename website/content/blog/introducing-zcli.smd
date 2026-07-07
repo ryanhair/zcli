@@ -41,7 +41,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 }
 ```
 
-## Enabling LLM generation
+## [Enabling LLM generation]($heading.id('enabling-llm-generation'))
 
 One of my recent goals was to make it easier for LLM generation of CLIs. I understand people have _very strong opinions_ on this, and while I respect that, I want to make it easy for those who have a need for a CLI to be able to generate one cleanly. The benefit to following "one way to do things" _also_ leads to LLMs being able to more easily reason about and iterate on CLI code. Overall, zcli makes it surprisingly easy to get a small, portable CLI that does what you need, without disk space and memory bloat, and with about as snappy performance as possible.
 
