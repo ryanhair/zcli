@@ -220,7 +220,7 @@ pub const Context = struct {
     allocator: std.mem.Allocator,        // arena-per-command (ADR-0001)
     io: std.Io,                          // the explicit-I/O entry point
     environ: *const std.process.Environ.Map,
-    theme: zcli.theme.Theme,            // capability-detected theming
+    theme: zcli.theme.ThemeContext,      // app theme + detected terminal capabilities
 
     // App metadata (filled by the registry)
     app_name: []const u8,

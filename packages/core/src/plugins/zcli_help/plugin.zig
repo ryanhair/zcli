@@ -2,6 +2,10 @@ const std = @import("std");
 const zcli = @import("zcli");
 const md = zcli.markdown;
 
+// The app's palette, resolved at comptime from the root `zcli_theme`
+// declaration, so help text compiles to the app's themed escape sequences.
+const app_palette = zcli.appTheme().palette;
+
 /// zcli-help Plugin
 ///
 /// Provides help functionality for CLI applications using the lifecycle hook plugin system.
@@ -138,7 +142,7 @@ pub fn onError(
 /// Unified help display function that handles all help scenarios
 fn showHelp(context: anytype, help_type: HelpType) !void {
     var writer = context.stderr();
-    var fmt = md.capabilityFormatter(writer, context.theme.capability());
+    var fmt = md.capabilityFormatterWithPalette(writer, context.theme.capability(), app_palette);
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
@@ -172,7 +176,7 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
     }
 
     // Show usage
-    try fmt.write("**USAGE:**\n", .{});
+    try fmt.write("<header>USAGE:</header>\n", .{});
     switch (help_type) {
         .app, .root => {
             if (help_type == .root) {
@@ -203,7 +207,7 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
             if (module_info.has_args) {
                 if (generateArgsHelp(module_info, context) catch null) |args_help| {
                     defer context.allocator.free(args_help);
-                    try fmt.write("**ARGUMENTS:**\n", .{});
+                    try fmt.write("<header>ARGUMENTS:</header>\n", .{});
                     try writer.writeAll(args_help);
                     try writer.writeAll("\n");
                 }
@@ -217,7 +221,7 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
             if (module_info.has_options) {
                 if (generateOptionsHelp(module_info, context) catch null) |options_help| {
                     defer context.allocator.free(options_help);
-                    try fmt.write("**OPTIONS:**\n", .{});
+                    try fmt.write("<header>OPTIONS:</header>\n", .{});
                     try writer.writeAll(options_help);
                     try fmt.write("    <flag>--help</flag>, <flag>-h</flag>{s:<6} Show this help message\n\n", .{""});
                 }
@@ -241,7 +245,7 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
 
     // Show options (for non-root commands)
     if (help_type == .command) {
-        try fmt.write("**OPTIONS:**\n", .{});
+        try fmt.write("<header>OPTIONS:</header>\n", .{});
         if (context.command_module_info) |module_info| {
             if (module_info.has_options) {
                 if (generateOptionsHelp(module_info, context) catch null) |options_help| {
@@ -257,7 +261,7 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
     if (help_type == .app or help_type == .root) {
         const global_opts = context.getGlobalOptions();
         if (global_opts.len > 0) {
-            try fmt.write("\n**GLOBAL OPTIONS:**\n", .{});
+            try fmt.write("\n<header>GLOBAL OPTIONS:</header>\n", .{});
             for (global_opts) |opt| {
                 if (opt.short) |short| {
                     try fmt.write("    <flag>-{c}</flag>, <flag>--{s}</flag>", .{ short, opt.name });
@@ -291,7 +295,7 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
     // Show examples if available
     if ((help_type == .command or help_type == .root) and context.command_meta != null) {
         if (context.command_meta.?.examples) |examples| {
-            try fmt.write("\n**EXAMPLES:**\n", .{});
+            try fmt.write("\n<header>EXAMPLES:</header>\n", .{});
             for (examples) |example| {
                 try writer.print("    {s}\n", .{example});
             }
@@ -337,9 +341,9 @@ fn isAlias(name: []const u8, aliases: []const []const u8) bool {
 /// Show a list of commands (used by unified help function)
 fn showCommandList(context: anytype, fmt: anytype, list_type: CommandListType) !void {
     if (list_type == .top_level) {
-        try fmt.write("**COMMANDS:**\n", .{});
+        try fmt.write("<header>COMMANDS:</header>\n", .{});
     } else {
-        try fmt.write("**SUBCOMMANDS:**\n", .{});
+        try fmt.write("<header>SUBCOMMANDS:</header>\n", .{});
     }
 
     const command_infos = context.getAvailableCommandInfo();
@@ -530,7 +534,7 @@ fn generateUsage(context: anytype) ![]const u8 {
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var fmt = md.capabilityFormatter(buf_writer, context.theme.capability());
+    var fmt = md.capabilityFormatterWithPalette(buf_writer, context.theme.capability(), app_palette);
 
     // Start with app name and command path
     try fmt.write("<command>{s}</command>", .{context.app_name});
@@ -642,7 +646,7 @@ fn showSubcommands(context: anytype, fmt: anytype) !void {
                 try displayed_names.append(context.allocator, display_name);
 
                 if (!has_commands) {
-                    try fmt.write("**COMMANDS:**\n", .{});
+                    try fmt.write("<header>COMMANDS:</header>\n", .{});
                     has_commands = true;
                 }
 
@@ -713,7 +717,7 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.capability());
+    var buf_fmt = md.capabilityFormatterWithPalette(buf_writer, context.theme.capability(), app_palette);
 
     // Generate basic help from field names
     for (module_info.args_fields) |field_info| {
@@ -732,7 +736,7 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.capability());
+    var buf_fmt = md.capabilityFormatterWithPalette(buf_writer, context.theme.capability(), app_palette);
 
     // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {

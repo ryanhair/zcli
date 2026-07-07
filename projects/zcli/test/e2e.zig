@@ -984,6 +984,117 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
 }
 
+test "root zcli_theme declaration themes help output" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "demo", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const proj_abs = try tmpSubdirAbs(a, tmp, "demo");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // Declare a custom theme in the app root — the std_options-style hook.
+    // Command names in help should render in this color (tomato, 255;99;71).
+    try replaceInFile(proj, a, "src/main.zig",
+        \\const registry = @import("command_registry");
+    ,
+        \\const registry = @import("command_registry");
+        \\const zcli = @import("zcli");
+        \\
+        \\pub const zcli_theme: zcli.Theme = .{
+        \\    .palette = .{ .command = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 99, .b = 71 } } } },
+        \\};
+    );
+
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    // Piped (non-TTY) output stays completely plain.
+    {
+        var r = try run(proj, &.{ demo_bin, "--help" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stderr, "hello");
+        try testing.expect(std.mem.indexOf(u8, r.stderr, "\x1b[") == null);
+    }
+
+    // Under a PTY in a truecolor-capable environment, help renders command
+    // names in the custom palette color.
+    {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("COLORTERM", "truecolor"); // truecolor signal (POSIX)
+        try env.put("WT_SESSION", "1"); // truecolor signal (Windows/ConPTY)
+
+        var script = harness.InteractiveScript.init(testing.allocator);
+        defer script.deinit();
+        _ = script.expect("USAGE:");
+
+        var result = harness.runInteractive(
+            testing.allocator,
+            io,
+            &.{ demo_bin, "--help" },
+            script,
+            .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
+        ) catch |err| switch (err) {
+            // PTY allocation can be denied in some sandboxes; skip rather than
+            // fail (CI greps the log for this line and fails if the tier
+            // silently skipped).
+            error.PtyAllocationFailed => {
+                std.debug.print("runInteractive unavailable: {any}\n", .{err});
+                return;
+            },
+            else => return err,
+        };
+        defer result.deinit();
+        try expectContains(result.output, "38;2;255;99;71");
+    }
+
+    // NO_COLOR wins even on a color-capable PTY.
+    {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("COLORTERM", "truecolor");
+        try env.put("WT_SESSION", "1");
+        try env.put("NO_COLOR", "1");
+
+        var script = harness.InteractiveScript.init(testing.allocator);
+        defer script.deinit();
+        _ = script.expect("USAGE:");
+
+        var result = harness.runInteractive(
+            testing.allocator,
+            io,
+            &.{ demo_bin, "--help" },
+            script,
+            .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
+        ) catch |err| switch (err) {
+            error.PtyAllocationFailed => {
+                std.debug.print("runInteractive unavailable: {any}\n", .{err});
+                return;
+            },
+            else => return err,
+        };
+        defer result.deinit();
+        try testing.expect(std.mem.indexOf(u8, result.output, "\x1b[") == null);
+    }
+}
+
 test "scaffolded commands are unit-testable via zig build test" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
