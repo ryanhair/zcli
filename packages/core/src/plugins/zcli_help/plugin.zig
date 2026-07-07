@@ -138,7 +138,7 @@ pub fn onError(
 /// Unified help display function that handles all help scenarios
 fn showHelp(context: anytype, help_type: HelpType) !void {
     var writer = context.stderr();
-    var fmt = md.capabilityFormatter(writer, context.theme.getCapability());
+    var fmt = md.capabilityFormatter(writer, context.theme.capability());
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
@@ -530,7 +530,7 @@ fn generateUsage(context: anytype) ![]const u8 {
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var fmt = md.capabilityFormatter(buf_writer, context.theme.getCapability());
+    var fmt = md.capabilityFormatter(buf_writer, context.theme.capability());
 
     // Start with app name and command path
     try fmt.write("<command>{s}</command>", .{context.app_name});
@@ -713,7 +713,7 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.getCapability());
+    var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.capability());
 
     // Generate basic help from field names
     for (module_info.args_fields) |field_info| {
@@ -732,7 +732,7 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.getCapability());
+    var buf_fmt = md.capabilityFormatter(buf_writer, context.theme.capability());
 
     // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {

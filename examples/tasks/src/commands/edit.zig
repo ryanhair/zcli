@@ -3,7 +3,7 @@ const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
 const prompts = zcli.prompts;
-const themed = zcli.theme.theme;
+const themed = zcli.theme.styled;
 
 pub const meta = .{
     .description = "Edit a task's title and description in your editor",

@@ -1,8 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
-const themed = zcli.theme.theme;
-const Theme = zcli.theme.Theme;
+const themed = zcli.theme.styled;
+const ThemeContext = zcli.theme.ThemeContext;
 
 // The framework's own command discovery — the same scan the build runs to
 // generate the registry. Reusing it keeps the tree in lockstep with what the
@@ -403,7 +403,7 @@ fn nodeSource(ast: *Ast, node: Ast.Node.Index) []const u8 {
 
 const Role = enum { plain, header, dim, group, leaf, marker, desc, flag };
 
-fn paint(writer: anytype, theme: *const Theme, text: []const u8, role: Role) !void {
+fn paint(writer: anytype, theme: *const ThemeContext, text: []const u8, role: Role) !void {
     const t = themed(text);
     switch (role) {
         .plain => try t.render(writer, theme),
@@ -420,7 +420,7 @@ fn paint(writer: anytype, theme: *const Theme, text: []const u8, role: Role) !vo
 fn renderNodes(
     arena: std.mem.Allocator,
     writer: anytype,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     nodes: []const Node,
     prefix: []const u8,
     show_options: bool,
@@ -465,7 +465,7 @@ fn renderNodes(
 fn renderSignature(
     arena: std.mem.Allocator,
     writer: anytype,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     node: Node,
     prefix: []const u8,
 ) !void {
@@ -528,7 +528,7 @@ fn toFlagName(arena: std.mem.Allocator, field: []const u8) ![]const u8 {
 const testing = std.testing;
 
 fn renderToString(arena: std.mem.Allocator, nodes: []const Node, show_options: bool) ![]const u8 {
-    const theme = Theme.initWithCapability(.no_color, std.testing.io);
+    const theme = ThemeContext{ .caps = zcli.theme.Capabilities.initWithCapability(.no_color, std.testing.io) };
     var aw: std.Io.Writer.Allocating = .init(arena);
     try renderNodes(arena, &aw.writer, &theme, nodes, "", show_options);
     return aw.written();

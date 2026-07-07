@@ -1,8 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const themed = zcli.theme.theme;
-const Theme = zcli.theme.Theme;
+const themed = zcli.theme.styled;
+const ThemeContext = zcli.theme.ThemeContext;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -124,7 +124,7 @@ fn generateIndex(arena: std.mem.Allocator, parts: []const []const u8, descriptio
     return aw.written();
 }
 
-fn finish(w: *std.Io.Writer, theme: *const Theme, parts: []const []const u8, index_path: []const u8, with_landing: bool) !void {
+fn finish(w: *std.Io.Writer, theme: *const ThemeContext, parts: []const []const u8, index_path: []const u8, with_landing: bool) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "\u{2714} Created group {s}", .{index_path}) catch "\u{2714} Created group";

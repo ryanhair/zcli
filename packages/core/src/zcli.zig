@@ -11,6 +11,18 @@ pub const markdown = @import("markdown");
 pub const progress = @import("progress");
 pub const prompts = @import("prompts");
 
+/// A complete CLI theme; apps declare `pub const zcli_theme: zcli.Theme` in
+/// their root source file to customize how the CLI looks everywhere.
+pub const Theme = theme.Theme;
+
+/// The application's theme: the root source file's `pub const zcli_theme`
+/// declaration if present, otherwise the default theme.
+pub fn appTheme() *const theme.Theme {
+    const root = @import("root");
+    if (@hasDecl(root, "zcli_theme")) return &root.zcli_theme;
+    return &theme.default_theme;
+}
+
 /// Config-file parsing shims for the zcli_config plugin. Plugin modules import
 /// only "zcli", so the plugin cannot depend on serde directly; this is the
 /// entire surface it needs. serde itself is an internal dependency —

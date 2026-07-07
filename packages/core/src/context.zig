@@ -84,7 +84,7 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// command and plugin code should use those accessors and `io`, not this.
         stdio: *zcli.Stdio,
         environ: *const std.process.Environ.Map,
-        theme: zcli.theme.Theme = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+        theme: zcli.theme.ThemeContext = .{ .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true } },
 
         // App metadata; the registry fills these from its Config.
         app_name: []const u8 = "app",
@@ -112,14 +112,15 @@ pub fn ContextFor(comptime plugins: []const type) type {
         const Self = @This();
 
         /// Initialize a new Context with the provided io, standard streams, and
-        /// environment (the theme is detected from `env`).
+        /// environment (terminal capabilities are detected from `env`; the
+        /// theme comes from the app's root `zcli_theme` declaration).
         pub fn init(allocator: std.mem.Allocator, io: std.Io, stdio: *zcli.Stdio, env: *const std.process.Environ.Map) Self {
             return .{
                 .allocator = allocator,
                 .io = io,
                 .stdio = stdio,
                 .environ = env,
-                .theme = zcli.theme.Theme.init(env, io),
+                .theme = .{ .theme = zcli.appTheme(), .caps = zcli.theme.Capabilities.init(env, io) },
             };
         }
 

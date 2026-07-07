@@ -1,8 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const themed = zcli.theme.theme;
-const Theme = zcli.theme.Theme;
+const themed = zcli.theme.styled;
+const ThemeContext = zcli.theme.ThemeContext;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -225,7 +225,7 @@ fn anchorNotFound(stderr: *std.Io.Writer, file_path: []const u8, name: []const u
     return splice.SpliceError.AnchorNotFound;
 }
 
-fn finish(w: *std.Io.Writer, theme: *const Theme, file_path: []const u8, arg: spec.ArgSpec) !void {
+fn finish(w: *std.Io.Writer, theme: *const ThemeContext, file_path: []const u8, arg: spec.ArgSpec) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "\u{2714} Added argument '{s}' to {s}", .{ arg.name, file_path }) catch "\u{2714} Added argument";

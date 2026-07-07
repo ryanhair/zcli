@@ -9,7 +9,6 @@ const toAnsi16 = @import("color.zig").toAnsi16;
 const toAnsi256 = @import("color.zig").toAnsi256;
 const parseHex = @import("color.zig").parseHex;
 const approximateRgbToAnsi16 = @import("color.zig").approximateRgbToAnsi16;
-const SemanticRole = @import("../adaptive/semantic.zig").SemanticRole;
 const TerminalCapability = @import("../detection/capability.zig").TerminalCapability;
 
 // Runtime version of toAnsi16 (color.zig's version requires comptime for hex parsing)
@@ -51,7 +50,21 @@ pub const Style = struct {
     strikethrough: bool = false,
     dim: bool = false,
     reverse: bool = false,
-    semantic_role: ?SemanticRole = null, // For adaptive color adjustment
+
+    /// Apply `override` on top of this style: explicit colors in the override
+    /// win, boolean attributes are additive.
+    pub fn merge(self: @This(), override: Style) Style {
+        return .{
+            .foreground = override.foreground orelse self.foreground,
+            .background = override.background orelse self.background,
+            .bold = self.bold or override.bold,
+            .dim = self.dim or override.dim,
+            .italic = self.italic or override.italic,
+            .underline = self.underline or override.underline,
+            .strikethrough = self.strikethrough or override.strikethrough,
+            .reverse = self.reverse or override.reverse,
+        };
+    }
 
     /// Create a new style with the given modifications
     pub fn with(self: @This(), modifications: anytype) Style {

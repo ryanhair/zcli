@@ -18,7 +18,7 @@ const std = @import("std");
 // Semantic color support (types from theme)
 pub const semantic = @import("semantic.zig");
 pub const SemanticRole = semantic.SemanticRole;
-pub const SemanticPalette = semantic.SemanticPalette;
+pub const Palette = semantic.Palette;
 pub const TerminalCapability = semantic.TerminalCapability;
 pub const parseWithSemantics = semantic.parseWithSemantics;
 
@@ -37,17 +37,17 @@ const ANSI_RESET = "\x1b[0m";
 /// Handles: **bold**, *italic*, ~dim~, <error>, <success>, etc.
 /// Preserves format specifiers like {s}, {d} for runtime interpolation
 pub fn parse(comptime markdown: []const u8) []const u8 {
-    return parseForCapability(markdown, SemanticPalette{}, .true_color);
+    return parseForCapability(markdown, Palette{}, .true_color);
 }
 
 /// Parse with custom color palette (defaults to true_color capability)
-pub fn parseWithPalette(comptime markdown: []const u8, comptime palette: SemanticPalette) []const u8 {
+pub fn parseWithPalette(comptime markdown: []const u8, comptime palette: Palette) []const u8 {
     return parseForCapability(markdown, palette, .true_color);
 }
 
 /// Parse markdown for a specific terminal capability level
 /// This is the core parsing function that threads capability through the entire pipeline
-pub fn parseForCapability(comptime markdown: []const u8, comptime palette: SemanticPalette, comptime capability: TerminalCapability) []const u8 {
+pub fn parseForCapability(comptime markdown: []const u8, comptime palette: Palette, comptime capability: TerminalCapability) []const u8 {
     comptime {
         @setEvalBranchQuota(100000); // High quota needed for CapabilityFormatter (4x comptime parsing)
 
@@ -151,14 +151,12 @@ fn containsSemanticTags(comptime markdown: []const u8) bool {
             std.mem.indexOf(u8, markdown, "<code>") != null or
             std.mem.indexOf(u8, markdown, "<header>") != null or
             std.mem.indexOf(u8, markdown, "<link>") != null or
-            std.mem.indexOf(u8, markdown, "<primary>") != null or
-            std.mem.indexOf(u8, markdown, "<secondary>") != null or
             std.mem.indexOf(u8, markdown, "<accent>") != null;
     }
 }
 
 /// Parse markdown that contains semantic tags
-fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: SemanticPalette, comptime capability: TerminalCapability) []const u8 {
+fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Palette, comptime capability: TerminalCapability) []const u8 {
     comptime {
         const ANSI_RESET_CAP = if (capability == .no_color) "" else "\x1b[0m";
         var result: []const u8 = "";
@@ -196,8 +194,8 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Semant
                             }
 
                             const content = markdown[content_start .. content_start + ce];
-                            const color = palette.getColor(r);
-                            const ansi_code = color.toAnsi(capability);
+                            const color = palette.get(r);
+                            const ansi_code = color.sequenceComptime(capability);
 
                             // Parse inline markdown inside semantic tags, then
                             // re-apply semantic color after any inline resets
@@ -226,18 +224,18 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Semant
 }
 
 /// Create a formatter with default color palette (true_color output)
-pub fn formatter(writer: anytype) Formatter(@TypeOf(writer), SemanticPalette{}) {
+pub fn formatter(writer: anytype) Formatter(@TypeOf(writer), Palette{}) {
     return .{ .writer = writer };
 }
 
 /// Create a formatter with custom color palette (true_color output)
-pub fn formatterWithPalette(writer: anytype, comptime palette: SemanticPalette) Formatter(@TypeOf(writer), palette) {
+pub fn formatterWithPalette(writer: anytype, comptime palette: Palette) Formatter(@TypeOf(writer), palette) {
     return .{ .writer = writer };
 }
 
 /// Formatter with writer and compile-time color palette (always true_color)
 /// This is the simple API for when you don't need capability detection
-pub fn Formatter(comptime Writer: type, comptime palette: SemanticPalette) type {
+pub fn Formatter(comptime Writer: type, comptime palette: Palette) type {
     return struct {
         writer: Writer,
 
@@ -258,18 +256,18 @@ pub fn Formatter(comptime Writer: type, comptime palette: SemanticPalette) type 
 }
 
 /// Create a capability-aware formatter that adapts output to terminal capabilities
-pub fn capabilityFormatter(writer: anytype, capability: TerminalCapability) CapabilityFormatter(@TypeOf(writer), SemanticPalette{}) {
+pub fn capabilityFormatter(writer: anytype, capability: TerminalCapability) CapabilityFormatter(@TypeOf(writer), Palette{}) {
     return .{ .writer = writer, .capability = capability };
 }
 
 /// Create a capability-aware formatter with custom palette
-pub fn capabilityFormatterWithPalette(writer: anytype, capability: TerminalCapability, comptime palette: SemanticPalette) CapabilityFormatter(@TypeOf(writer), palette) {
+pub fn capabilityFormatterWithPalette(writer: anytype, capability: TerminalCapability, comptime palette: Palette) CapabilityFormatter(@TypeOf(writer), palette) {
     return .{ .writer = writer, .capability = capability };
 }
 
 /// Capability-aware formatter that pre-compiles 4 versions of each markdown string
 /// at comptime and selects the appropriate one at runtime based on terminal capability.
-pub fn CapabilityFormatter(comptime Writer: type, comptime palette: SemanticPalette) type {
+pub fn CapabilityFormatter(comptime Writer: type, comptime palette: Palette) type {
     return struct {
         writer: Writer,
         capability: TerminalCapability,
@@ -307,7 +305,7 @@ pub fn print(allocator: std.mem.Allocator, comptime markdown: []const u8, args: 
 }
 
 /// Print with custom color palette
-pub fn printWithPalette(allocator: std.mem.Allocator, comptime markdown: []const u8, comptime palette: SemanticPalette, args: anytype) ![]const u8 {
+pub fn printWithPalette(allocator: std.mem.Allocator, comptime markdown: []const u8, comptime palette: Palette, args: anytype) ![]const u8 {
     const fmt_string = comptime parseWithPalette(markdown, palette);
     return std.fmt.allocPrint(allocator, fmt_string, args);
 }
@@ -320,7 +318,7 @@ pub fn write(writer: anytype, comptime markdown: []const u8, args: anytype) !voi
 }
 
 /// Write with custom color palette
-pub fn writeWithPalette(writer: anytype, comptime markdown: []const u8, comptime palette: SemanticPalette, args: anytype) !void {
+pub fn writeWithPalette(writer: anytype, comptime markdown: []const u8, comptime palette: Palette, args: anytype) !void {
     const fmt_string = comptime parseWithPalette(markdown, palette);
     try writer.print(fmt_string, args);
 }
@@ -381,14 +379,14 @@ test "parse unclosed markers treated as literal" {
 test "parse with semantic tags" {
     const result = comptime parse("<success>Build succeeded</success>");
     // Should contain RGB color code
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "38;2;") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "Build succeeded") != null);
 }
 
 test "parse markdown inside semantic tags" {
     const result = comptime parse("<error>**Fatal error:**</error>");
     // Should have both semantic color AND bold
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "38;2;") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1m") != null);
 }
 
@@ -400,7 +398,7 @@ test "write with semantic tags and runtime values" {
 
     const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "42") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") != null); // Semantic color
+    try std.testing.expect(std.mem.indexOf(u8, output, "38;2;") != null); // Semantic color
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[1m") != null); // Bold
 }
 
@@ -426,7 +424,7 @@ test "formatter with semantic tags" {
 
     const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "42") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") != null); // Semantic color
+    try std.testing.expect(std.mem.indexOf(u8, output, "38;2;") != null); // Semantic color
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[1m") != null); // Bold
 }
 
@@ -434,8 +432,8 @@ test "formatter with custom palette" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    const custom_palette = SemanticPalette{
-        .success = .{ .r = 255, .g = 0, .b = 0 }, // Red instead of green
+    const custom_palette = Palette{
+        .success = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 0, .b = 0 } } }, // Red instead of green
     };
 
     var fmt = formatterWithPalette(&writer, custom_palette);
@@ -456,7 +454,7 @@ test "formatter print method" {
     defer allocator.free(result);
 
     try std.testing.expect(std.mem.indexOf(u8, result, "failed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "38;2;") != null);
 }
 
 test "capability formatter no color" {
@@ -481,7 +479,7 @@ test "capability formatter ansi 16" {
     const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "passed") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null); // Has ANSI
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") == null); // No RGB
+    try std.testing.expect(std.mem.indexOf(u8, output, "38;2;") == null); // No RGB
 }
 
 test "capability formatter true color" {
@@ -493,7 +491,7 @@ test "capability formatter true color" {
 
     const output = writer.buffer[0..writer.end];
     try std.testing.expect(std.mem.indexOf(u8, output, "passed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;") != null); // RGB codes
+    try std.testing.expect(std.mem.indexOf(u8, output, "38;2;") != null); // RGB codes
 }
 
 // Integration tests - complex markdown scenarios
@@ -550,7 +548,7 @@ test "nested markdown in lists" {
     try std.testing.expect(std.mem.indexOf(u8, result, "•") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1m") != null); // Bold
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[3m") != null); // Italic
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null); // Code color
+    try std.testing.expect(std.mem.indexOf(u8, result, "38;2;") != null); // Code color
 }
 
 test "ordered lists with formatting" {
@@ -622,7 +620,7 @@ test "mixed inline formatting" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1m") != null); // Bold
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[3m") != null); // Italic
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null); // Code
+    try std.testing.expect(std.mem.indexOf(u8, result, "38;2;") != null); // Code
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[9m") != null); // Strike
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[2m") != null); // Dim
 }
@@ -690,7 +688,7 @@ test "semantic tags with full markdown" {
     const result = comptime parse(markdown);
 
     // Should have semantic colors
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[38;2;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "38;2;") != null);
     // Should have bold
     try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1m") != null);
     // Should preserve format specifiers

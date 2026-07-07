@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const nightwatch = @import("nightwatch");
 
-const themed = zcli.theme.theme;
-const Theme = zcli.theme.Theme;
+const themed = zcli.theme.styled;
+const ThemeContext = zcli.theme.ThemeContext;
 
 pub const meta = .{
     .description = "Watch src/ and rebuild on change (optionally run a command)",
@@ -157,7 +157,7 @@ fn runCycle(
     io: std.Io,
     cycle_arena: *std.heap.ArenaAllocator,
     status: *std.Io.Writer,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     command: []const []const u8,
     app_child: *?std.process.Child,
 ) void {
@@ -173,7 +173,7 @@ fn doCycle(
     io: std.Io,
     arena: std.mem.Allocator,
     status: *std.Io.Writer,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     command: []const []const u8,
     app_child: *?std.process.Child,
 ) !void {
@@ -196,7 +196,7 @@ fn doCycle(
 }
 
 /// Run `zig build` (blocking), reporting success. Returns false on failure.
-fn build(io: std.Io, status: *std.Io.Writer, theme: *const Theme) !bool {
+fn build(io: std.Io, status: *std.Io.Writer, theme: *const ThemeContext) !bool {
     var child = std.process.spawn(io, .{
         .argv = &.{ "zig", "build" },
         .stdin = .inherit,
@@ -225,7 +225,7 @@ fn startApp(
     io: std.Io,
     arena: std.mem.Allocator,
     status: *std.Io.Writer,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     command: []const []const u8,
 ) !?std.process.Child {
     const binary = (try findBinary(io, arena)) orelse {
@@ -279,7 +279,7 @@ fn nap(io: std.Io, ms: u32) void {
 
 const Role = enum { header, info, ok, err, dim };
 
-fn paint(out: *std.Io.Writer, theme: *const Theme, text: []const u8, role: Role) !void {
+fn paint(out: *std.Io.Writer, theme: *const ThemeContext, text: []const u8, role: Role) !void {
     const t = themed(text);
     switch (role) {
         .header => try t.header().bold().render(out, theme),

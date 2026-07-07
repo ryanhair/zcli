@@ -7,8 +7,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const prompts = zcli.prompts;
-const themed = zcli.theme.theme;
-const Theme = zcli.theme.Theme;
+const themed = zcli.theme.styled;
+const ThemeContext = zcli.theme.ThemeContext;
 
 const generate = @import("_generate.zig");
 const scaffold = @import("scaffold");
@@ -36,7 +36,7 @@ const back_keys = &[_]prompts.terminal.Key{.escape};
 pub fn run(
     arena: std.mem.Allocator,
     context: *Context,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     seed_path: ?[]const u8,
     seed_description: ?[]const u8,
 ) !void {
@@ -58,7 +58,7 @@ const WizardResult = enum { created, cancelled, restart };
 fn runWizardOnce(
     arena: std.mem.Allocator,
     context: *Context,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     seed_path: ?[]const u8,
     seed_description: ?[]const u8,
 ) !WizardResult {
@@ -130,7 +130,7 @@ fn runWizardOnce(
 const PathResult = struct { parts: []const []const u8, prompted: bool };
 
 const PathPreview = struct {
-    theme: *const Theme,
+    theme: *const ThemeContext,
 
     fn render(ctx: *anyopaque, input: []const u8, w: *std.Io.Writer) anyerror!void {
         const self: *PathPreview = @ptrCast(@alignCast(ctx));
@@ -146,7 +146,7 @@ fn resolveCommandPath(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     io: std.Io,
     seed: ?[]const u8,
 ) !PathResult {
@@ -195,7 +195,7 @@ fn gatherArgs(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     list: *std.ArrayList(ArgSpec),
 ) !void {
     var seen_optional = false;
@@ -234,7 +234,7 @@ fn gatherOneArg(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     existing_names: []const []const u8,
     seen_optional: bool,
 ) !?ArgSpec {
@@ -349,7 +349,7 @@ fn gatherOptions(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     list: *std.ArrayList(OptSpec),
 ) !void {
     try heading(w, theme, "Options (flags)");
@@ -373,7 +373,7 @@ fn gatherOneOption(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     existing_names: []const []const u8,
     existing_shorts: []const u8,
 ) !?OptSpec {
@@ -516,7 +516,7 @@ fn promptOptionDefault(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     kind: OptKind,
     choices: []const []const u8,
 ) ![]const u8 {
@@ -560,7 +560,7 @@ fn selectOptKind(w: *std.Io.Writer, r: *std.Io.Reader) !OptKind {
 fn review(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     parts: []const []const u8,
     file_path: []const u8,
     description: []const u8,
@@ -601,7 +601,7 @@ fn review(
 
 pub fn finish(
     w: *std.Io.Writer,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     parts: []const []const u8,
     file_path: []const u8,
     new_groups: []const generate.NewGroup,
@@ -642,7 +642,7 @@ fn readFieldName(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     message: []const u8,
     allow_dash: bool,
     existing: []const []const u8,
@@ -681,7 +681,7 @@ fn readFieldName(
     }
 }
 
-fn readZigType(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const Theme) ![]const u8 {
+fn readZigType(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const ThemeContext) ![]const u8 {
     while (true) {
         const t = std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = "  Zig type:", .interrupt_keys = back_keys }), " \t\r\n");
         if (t.len == 0) {
@@ -696,7 +696,7 @@ fn readShort(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     used: []const u8,
 ) !u8 {
     while (true) {
@@ -725,7 +725,7 @@ fn readFloat(
     arena: std.mem.Allocator,
     w: *std.Io.Writer,
     r: *std.Io.Reader,
-    theme: *const Theme,
+    theme: *const ThemeContext,
     message: []const u8,
     default: f64,
 ) !f64 {
@@ -739,7 +739,7 @@ fn readFloat(
     }
 }
 
-fn readChoices(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const Theme) ![]const []const u8 {
+fn readChoices(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const ThemeContext) ![]const []const u8 {
     while (true) {
         const raw = try prompts.text(w, r, arena, .{ .message = "  Choices (comma-separated):", .interrupt_keys = back_keys });
         var list = std.ArrayList([]const u8).empty;
@@ -809,7 +809,7 @@ fn optTail(arena: std.mem.Allocator, o: OptSpec) ![]const u8 {
 
 const PaintStyle = enum { bold, dim, success, warning, command };
 
-fn paint(w: *std.Io.Writer, theme: *const Theme, text: []const u8, style: PaintStyle) !void {
+fn paint(w: *std.Io.Writer, theme: *const ThemeContext, text: []const u8, style: PaintStyle) !void {
     const t = themed(text);
     switch (style) {
         .bold => try t.bold().render(w, theme),
@@ -820,32 +820,32 @@ fn paint(w: *std.Io.Writer, theme: *const Theme, text: []const u8, style: PaintS
     }
 }
 
-fn heading(w: *std.Io.Writer, theme: *const Theme, text: []const u8) !void {
+fn heading(w: *std.Io.Writer, theme: *const ThemeContext, text: []const u8) !void {
     try w.writeAll("\r\n  ");
     try paint(w, theme, text, .bold);
     try w.writeAll("\r\n");
 }
 
-fn hint(w: *std.Io.Writer, theme: *const Theme, text: []const u8) !void {
+fn hint(w: *std.Io.Writer, theme: *const ThemeContext, text: []const u8) !void {
     try w.writeAll("  ");
     try paint(w, theme, text, .dim);
     try w.writeAll("\r\n");
 }
 
-fn warn(w: *std.Io.Writer, theme: *const Theme, text: []const u8) !void {
+fn warn(w: *std.Io.Writer, theme: *const ThemeContext, text: []const u8) !void {
     try w.writeAll("  ");
     try paint(w, theme, text, .warning);
     try w.writeAll("\r\n");
 }
 
-fn okArg(arena: std.mem.Allocator, w: *std.Io.Writer, theme: *const Theme, a: ArgSpec) !void {
+fn okArg(arena: std.mem.Allocator, w: *std.Io.Writer, theme: *const ThemeContext, a: ArgSpec) !void {
     const line = try std.fmt.allocPrint(arena, "  \u{2714} {s}  {s} \u{00b7} {s}", .{ a.name, argFieldType(a), argTail(a) });
     try w.writeAll(" ");
     try paint(w, theme, line, .success);
     try w.writeAll("\r\n");
 }
 
-fn okOpt(arena: std.mem.Allocator, w: *std.Io.Writer, theme: *const Theme, o: OptSpec) !void {
+fn okOpt(arena: std.mem.Allocator, w: *std.Io.Writer, theme: *const ThemeContext, o: OptSpec) !void {
     var flag = std.ArrayList(u8).empty;
     try flag.appendSlice(arena, "--");
     for (o.name) |ch| try flag.append(arena, if (ch == '_') '-' else ch);

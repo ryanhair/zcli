@@ -16,11 +16,11 @@ pub const Status = enum {
 
     /// Wrap `text` in this status's semantic color. Render with
     /// `.render(writer, &context.theme)` so it adapts to terminal capability.
-    pub fn themed(self: Status, text: []const u8) theme.Themed([]const u8) {
+    pub fn themed(self: Status, text: []const u8) theme.Styled([]const u8) {
         return switch (self) {
-            .todo => theme.theme(text).muted(),
-            .in_progress => theme.theme(text).warning(),
-            .done => theme.theme(text).success(),
+            .todo => theme.styled(text).muted(),
+            .in_progress => theme.styled(text).warning(),
+            .done => theme.styled(text).success(),
         };
     }
 };
@@ -41,12 +41,12 @@ pub const Priority = enum {
     }
 
     /// Wrap `text` in this priority's semantic color (medium is left unstyled).
-    pub fn themed(self: Priority, text: []const u8) theme.Themed([]const u8) {
+    pub fn themed(self: Priority, text: []const u8) theme.Styled([]const u8) {
         return switch (self) {
-            .low => theme.theme(text).muted(),
-            .medium => theme.theme(text),
-            .high => theme.theme(text).warning(),
-            .critical => theme.theme(text).err(),
+            .low => theme.styled(text).muted(),
+            .medium => theme.styled(text),
+            .high => theme.styled(text).warning(),
+            .critical => theme.styled(text).err(),
         };
     }
 };
