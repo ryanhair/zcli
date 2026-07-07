@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) !void {
 
     const zcli_dep = b.dependency("zcli", .{ .target = target, .optimize = optimize });
     const zcli_module = zcli_dep.module("zcli");
-    const ztheme_module = zcli_dep.module("ztheme");
+    const theme_module = zcli_dep.module("theme");
 
     // Shared store module for JSON persistence
     const store_module = b.createModule(.{
@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    store_module.addImport("ztheme", ztheme_module);
+    store_module.addImport("theme", theme_module);
 
     const exe = b.addExecutable(.{
         .name = "tasks",

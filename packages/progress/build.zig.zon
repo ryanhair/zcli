@@ -1,0 +1,15 @@
+.{
+    .name = .progress,
+    .fingerprint = 0x2201f246db265a87, // Changing this has security and trust implications.
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .theme = .{ .path = "../theme" },
+        .terminal = .{ .path = "../terminal" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+    },
+}

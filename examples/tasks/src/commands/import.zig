@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zprogress = zcli.zprogress;
-const ztheme = zcli.ztheme;
+const progress = zcli.progress;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Import tasks from a JSON file",
@@ -38,7 +38,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var data = parsed.value;
 
     // Import with progress bar
-    var bar = zprogress.progressBar(context.io, .{
+    var bar = progress.progressBar(context.io, .{
         .total = imported.value.tasks.len,
         .show_eta = true,
     });
@@ -60,6 +60,6 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     data.tasks = tasks_list.items;
     try store.save(allocator, context.io, data);
 
-    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try themed("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Imported {d} tasks from {s}\n", .{ imported.value.tasks.len, args.file });
 }

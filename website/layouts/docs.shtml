@@ -234,7 +234,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
         <!-- ============ PROMPTS ============ -->
         <section id="prompts">
           <h2>Interactive prompts</h2>
-          <p>The <code>zinput</code> package provides all 8 prompt types — every one works standalone (no zcli dependency) and falls back to line-based input when stdin isn't a TTY.</p>
+          <p>The <code>prompts</code> package provides all 8 prompt types — every one works standalone (no zcli dependency) and falls back to line-based input when stdin isn't a TTY.</p>
           <div class="prompt-grid">
             <div class="pcard"><h4>text</h4><p>Free-form input with an optional default.</p></div>
             <div class="pcard"><h4>confirm</h4><p>Yes/no, defaulting either way.</p></div>
@@ -246,16 +246,16 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
             <div class="pcard"><h4>editor</h4><p>Opens <code>$EDITOR</code> for longer input.</p></div>
           </div>
           <div class="code">
-            <div class="code-head"><span class="fname">zinput</span><span class="lang">zig</span></div>
-<pre><span class="kw">const</span> name = <span class="kw">try</span> zinput.<span class="fn">text</span>(writer, reader, allocator, .{
+            <div class="code-head"><span class="fname">prompts</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> name = <span class="kw">try</span> prompts.<span class="fn">text</span>(writer, reader, allocator, .{
     .message = <span class="str">"Project name:"</span>, .default = <span class="str">"my-project"</span>,
 });
-<span class="kw">const</span> features = <span class="kw">try</span> zinput.<span class="fn">multiSelect</span>(writer, reader, allocator, .{
+<span class="kw">const</span> features = <span class="kw">try</span> prompts.<span class="fn">multiSelect</span>(writer, reader, allocator, .{
     .message = <span class="str">"Features:"</span>,
     .choices = &.{ <span class="str">"typescript"</span>, <span class="str">"eslint"</span>, <span class="str">"prettier"</span> },
     .defaults = &.{ <span class="num">true</span>, <span class="num">true</span>, <span class="num">false</span> },
 });
-<span class="kw">const</span> pw = <span class="kw">try</span> zinput.<span class="fn">password</span>(writer, reader, allocator, .{
+<span class="kw">const</span> pw = <span class="kw">try</span> prompts.<span class="fn">password</span>(writer, reader, allocator, .{
     .message = <span class="str">"Token:"</span>,
 });</pre>
           </div>
@@ -264,22 +264,22 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
         <!-- ============ PROGRESS & THEMING ============ -->
         <section id="progress">
           <h2>Progress & theming</h2>
-          <p>The <code>zprogress</code> package provides spinners (9 styles) and progress bars with ETA; animations auto-disable when not a TTY.</p>
+          <p>The <code>progress</code> package provides spinners (9 styles) and progress bars with ETA; animations auto-disable when not a TTY.</p>
           <div class="code">
-            <div class="code-head"><span class="fname">zprogress</span><span class="lang">zig</span></div>
-<pre><span class="kw">var</span> spinner = zprogress.<span class="fn">spinner</span>(io, .{ .style = .dots });
+            <div class="code-head"><span class="fname">progress</span><span class="lang">zig</span></div>
+<pre><span class="kw">var</span> spinner = progress.<span class="fn">spinner</span>(io, .{ .style = .dots });
 spinner.<span class="fn">start</span>(<span class="str">"Connecting to server..."</span>);
 spinner.<span class="fn">succeed</span>(<span class="str">"Synced successfully"</span>);  <span class="cm">// or .fail() / .warn() / .info()</span>
 
-<span class="kw">var</span> bar = zprogress.<span class="fn">progressBar</span>(io, .{ .total = items.len, .show_eta = <span class="num">true</span> });
+<span class="kw">var</span> bar = progress.<span class="fn">progressBar</span>(io, .{ .total = items.len, .show_eta = <span class="num">true</span> });
 <span class="kw">for</span> (items, <span class="num">0</span>..) |item, i| { <span class="fn">process</span>(item); bar.<span class="fn">update</span>(i + <span class="num">1</span>, <span class="kw">null</span>); }</pre>
           </div>
           <h3>Theming</h3>
-          <p>The <code>ztheme</code> package maps semantic roles — <code>success</code>, <code>err</code>, <code>warning</code>, <code>command</code>, <code>path</code> — to true color, 256 color, 16 color, or no color, and respects <code>NO_COLOR</code>. Commands already have a themed context; standalone use is the same call.</p>
+          <p>The <code>theme</code> package maps semantic roles — <code>success</code>, <code>err</code>, <code>warning</code>, <code>command</code>, <code>path</code> — to true color, 256 color, 16 color, or no color, and respects <code>NO_COLOR</code>. Commands already have a themed context; standalone use is the same call.</p>
           <div class="code">
-            <div class="code-head"><span class="fname">ztheme</span><span class="lang">zig</span></div>
-<pre><span class="kw">try</span> ztheme.<span class="fn">theme</span>(<span class="str">"Error"</span>).<span class="fn">red</span>().<span class="fn">bold</span>().<span class="fn">render</span>(writer, &context.theme);
-<span class="kw">try</span> ztheme.<span class="fn">theme</span>(<span class="str">"Synced"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &context.theme);</pre>
+            <div class="code-head"><span class="fname">theme</span><span class="lang">zig</span></div>
+<pre><span class="kw">try</span> theme.<span class="fn">theme</span>(<span class="str">"Error"</span>).<span class="fn">red</span>().<span class="fn">bold</span>().<span class="fn">render</span>(writer, &context.theme);
+<span class="kw">try</span> theme.<span class="fn">theme</span>(<span class="str">"Synced"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &context.theme);</pre>
           </div>
         </section>
 

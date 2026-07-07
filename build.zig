@@ -8,28 +8,28 @@ pub fn build(b: *std.Build) void {
     // own module wiring; the root is a thin umbrella over them. b.dependency
     // runs each package's build.zig inside this build's graph — one shared
     // cache, and -Dtarget/-Doptimize propagate — and the graph-level dependency
-    // cache dedups shared subtrees, so e.g. core's, zinput's and zprogress's
-    // `ztheme` all resolve to the same module instance, compiled once.
+    // cache dedups shared subtrees, so e.g. core's, prompts's and progress's
+    // `theme` all resolve to the same module instance, compiled once.
     const core_dep = b.dependency("zcli_core", .{ .target = target, .optimize = optimize });
     const testing_dep = b.dependency("testing", .{ .target = target, .optimize = optimize });
     const vterm_dep = b.dependency("vterm", .{ .target = target, .optimize = optimize });
     const vterm_example_dep = b.dependency("vterm_example", .{ .target = target, .optimize = optimize });
-    const markdown_fmt_dep = b.dependency("markdown_fmt", .{ .target = target, .optimize = optimize });
+    const markdown_dep = b.dependency("markdown", .{ .target = target, .optimize = optimize });
     const terminal_dep = b.dependency("terminal", .{ .target = target, .optimize = optimize });
-    const zinput_dep = b.dependency("zinput", .{ .target = target, .optimize = optimize });
-    const zprogress_dep = b.dependency("zprogress", .{ .target = target, .optimize = optimize });
-    const ztheme_dep = b.dependency("ztheme", .{ .target = target, .optimize = optimize });
+    const prompts_dep = b.dependency("prompts", .{ .target = target, .optimize = optimize });
+    const progress_dep = b.dependency("progress", .{ .target = target, .optimize = optimize });
+    const theme_dep = b.dependency("theme", .{ .target = target, .optimize = optimize });
 
     // The public module surface of the zcli package — what consumers (external
     // projects, the examples, projects/zcli) get from `zcli_dep.module("...")`.
     // Aliased from the owning packages rather than re-declared here, so each
     // module's wiring lives in exactly one place: its package's build.zig.
     expose(b, "zcli", core_dep.module("zcli"));
-    expose(b, "ztheme", ztheme_dep.module("ztheme"));
-    expose(b, "markdown_fmt", markdown_fmt_dep.module("markdown_fmt"));
+    expose(b, "theme", theme_dep.module("theme"));
+    expose(b, "markdown", markdown_dep.module("markdown"));
     expose(b, "terminal", terminal_dep.module("terminal"));
-    expose(b, "zprogress", zprogress_dep.module("zprogress"));
-    expose(b, "zinput", zinput_dep.module("zinput"));
+    expose(b, "progress", progress_dep.module("progress"));
+    expose(b, "prompts", prompts_dep.module("prompts"));
     // The unit-testing tier for scaffolded projects (see `zcli.addCommandTests`):
     // in-process command execution plus vterm-rendered assertions. Lazy — costs
     // nothing unless a consumer imports it.
@@ -55,11 +55,11 @@ pub fn build(b: *std.Build) void {
         .{ .name = "core", .dep = core_dep },
         .{ .name = "testing", .dep = testing_dep },
         .{ .name = "vterm", .dep = vterm_dep },
-        .{ .name = "markdown_fmt", .dep = markdown_fmt_dep },
-        .{ .name = "zprogress", .dep = zprogress_dep },
+        .{ .name = "markdown", .dep = markdown_dep },
+        .{ .name = "progress", .dep = progress_dep },
         .{ .name = "terminal", .dep = terminal_dep },
-        .{ .name = "zinput", .dep = zinput_dep },
-        .{ .name = "ztheme", .dep = ztheme_dep },
+        .{ .name = "prompts", .dep = prompts_dep },
+        .{ .name = "theme", .dep = theme_dep },
         .{ .name = "vterm_example", .dep = vterm_example_dep },
     };
     for (test_packages) |pkg| {

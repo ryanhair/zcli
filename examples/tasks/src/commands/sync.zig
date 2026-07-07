@@ -1,7 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const zprogress = zcli.zprogress;
+const progress = zcli.progress;
 
 pub const meta = .{
     .description = "Sync tasks with remote server",
@@ -13,7 +13,7 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const io = context.io;
-    var spinner = zprogress.spinner(io, .{ .style = .dots });
+    var spinner = progress.spinner(io, .{ .style = .dots });
     spinner.start("Connecting to server...");
 
     io.sleep(.{ .nanoseconds = 500 * std.time.ns_per_ms }, .awake) catch {};

@@ -18,11 +18,11 @@ What it demonstrates:
 
 - **14 commands** in `src/commands/` — args, options, aliases (`ls`, `rm`),
   and a nested `sprint` group with its own `index.zig`.
-- **Six zinput prompt types** — text, confirm, select, number, search, and
+- **Six prompts prompt types** — text, confirm, select, number, search, and
   editor (`init`, `add`, `edit`, `search`), each falling back to line input
   when piped.
-- **zprogress** — spinners and progress bars in `sync` and `import`.
-- **ztheme** — semantic colors and status badges via `context.theme`.
+- **progress** — spinners and progress bars in `sync` and `import`.
+- **theme** — semantic colors and status badges via `context.theme`.
 - **A shared module** — `src/store.zig` (JSON persistence to `tasks.json`)
   registered once as a `shared_modules` entry in `build.zig`.
 - **Six built-in plugins** — `zcli.builtin(.help/.version/.not_found/

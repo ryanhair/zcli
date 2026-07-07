@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Remove a task",
@@ -32,7 +32,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const msg = try std.fmt.allocPrint(allocator, "Remove task #{d}: {s}?", .{ task.id, task.title });
     defer allocator.free(msg);
 
-    const confirmed = zinput.confirm(writer, reader, .{
+    const confirmed = prompts.confirm(writer, reader, .{
         .message = msg,
         .default = false,
     }) catch true; // Default to yes on non-interactive
@@ -51,6 +51,6 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     data.tasks = remaining.items;
     try store.save(allocator, context.io, data);
 
-    try ztheme.theme("✖").err().render(context.stdout(), &context.theme);
+    try themed("✖").err().render(context.stdout(), &context.theme);
     try context.stdout().print(" Removed task #{d}\n", .{args.id});
 }

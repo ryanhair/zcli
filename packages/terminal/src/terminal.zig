@@ -1,7 +1,7 @@
 //! Cross-platform terminal primitives.
 //!
 //! Provides raw mode control, key reading, cursor manipulation, and
-//! window size queries. Used by both `zinput` (interactive prompts)
+//! window size queries. Used by both `prompts` (interactive prompts)
 //! and `interactive` (PTY test harness).
 
 const std = @import("std");

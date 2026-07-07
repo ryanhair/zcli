@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Close a sprint",
@@ -27,7 +27,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const writer = context.stdout();
     const reader = context.stdin();
 
-    const idx = try zinput.select(writer, reader, .{
+    const idx = try prompts.select(writer, reader, .{
         .message = "Close which sprint?",
         .choices = data.sprints,
     });
@@ -42,6 +42,6 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     data.sprints = remaining.items;
     try store.save(allocator, context.io, data);
 
-    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try themed("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Closed sprint: {s}\n", .{name});
 }

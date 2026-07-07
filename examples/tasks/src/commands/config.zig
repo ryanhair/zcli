@@ -1,8 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Configure task tracker defaults",
@@ -53,22 +53,22 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     } else |_| {}
 
     try writer.writeAll("\r\n  ");
-    try ztheme.theme("Settings").bold().render(writer, &context.theme);
+    try themed("Settings").bold().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 
-    const priority_idx = try zinput.select(writer, reader, .{
+    const priority_idx = try prompts.select(writer, reader, .{
         .message = "Default priority for new tasks:",
         .choices = &priorities,
     });
 
-    const points = try zinput.number(writer, reader, .{
+    const points = try prompts.number(writer, reader, .{
         .message = "Default story points:",
         .default = current.add.points,
         .min = 0,
         .max = 100,
     });
 
-    const show_done = try zinput.confirm(writer, reader, .{
+    const show_done = try prompts.confirm(writer, reader, .{
         .message = "Show completed tasks in 'list' by default?",
         .default = current.list.all,
     });
@@ -87,9 +87,9 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     try file_writer.interface.flush();
 
     try writer.writeAll("\r\n  ");
-    try ztheme.theme("✔ Saved to ").success().render(writer, &context.theme);
-    try ztheme.theme(CONFIG_FILE).path().render(writer, &context.theme);
+    try themed("✔ Saved to ").success().render(writer, &context.theme);
+    try themed(CONFIG_FILE).path().render(writer, &context.theme);
     try writer.writeAll("\r\n  ");
-    try ztheme.theme("These defaults now apply to 'tasks add' and 'tasks list'.").dim().render(writer, &context.theme);
+    try themed("These defaults now apply to 'tasks add' and 'tasks list'.").dim().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 }

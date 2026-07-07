@@ -2,7 +2,7 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "List all tasks",
@@ -38,11 +38,11 @@ pub fn execute(_: Args, options: Options, context: *Context) !void {
     const theme = &context.theme;
 
     try w.writeAll("\n  ");
-    try ztheme.theme(data.name).bold().render(w, theme);
+    try themed(data.name).bold().render(w, theme);
     try w.writeAll("\n\n  ");
-    try ztheme.theme("ID   Status        Priority  Title").dim().render(w, theme);
+    try themed("ID   Status        Priority  Title").dim().render(w, theme);
     try w.writeAll("\n  ");
-    try ztheme.theme("───  ────────────  ────────  ─────────────────────────").dim().render(w, theme);
+    try themed("───  ────────────  ────────  ─────────────────────────").dim().render(w, theme);
     try w.writeAll("\n");
 
     var shown: usize = 0;
@@ -73,7 +73,7 @@ pub fn execute(_: Args, options: Options, context: *Context) !void {
 
     if (shown == 0) {
         try w.writeAll("  ");
-        try ztheme.theme("No matching tasks.").dim().render(w, theme);
+        try themed("No matching tasks.").dim().render(w, theme);
         try w.writeAll("\n");
     }
     try w.writeAll("\n");

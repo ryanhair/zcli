@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Edit a task's title and description in your editor",
@@ -44,7 +44,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         const msg = try std.fmt.allocPrint(allocator, "Edit task #{d}:", .{task.id});
         defer allocator.free(msg);
 
-        const content = try zinput.editor(writer, reader, allocator, .{
+        const content = try prompts.editor(writer, reader, allocator, .{
             .message = msg,
             .io = context.io,
             .default = initial,
@@ -63,7 +63,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         task.title = parsed_edit.title;
         task.description = parsed_edit.description;
         try store.save(allocator, context.io, data);
-        try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+        try themed("✔").success().render(context.stdout(), &context.theme);
         try context.stdout().print(" Updated task #{d}\n", .{task.id});
         return;
     }

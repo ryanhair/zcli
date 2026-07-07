@@ -1,7 +1,8 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const ztheme = zcli.ztheme;
+const themed = zcli.theme.theme;
+const Theme = zcli.theme.Theme;
 
 const scaffold = @import("scaffold");
 const spec = scaffold.spec;
@@ -224,11 +225,11 @@ fn anchorNotFound(stderr: *std.Io.Writer, file_path: []const u8, name: []const u
     return splice.SpliceError.AnchorNotFound;
 }
 
-fn finish(w: *std.Io.Writer, theme: *const ztheme.Theme, file_path: []const u8, arg: spec.ArgSpec) !void {
+fn finish(w: *std.Io.Writer, theme: *const Theme, file_path: []const u8, arg: spec.ArgSpec) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "\u{2714} Added argument '{s}' to {s}", .{ arg.name, file_path }) catch "\u{2714} Added argument";
-    try ztheme.theme(line).success().render(w, theme);
+    try themed(line).success().render(w, theme);
     try w.writeAll("\n\n  Next steps\n");
     try w.print("    1. Read the argument back with `zcli tree --show-options`\n", .{});
     try w.writeAll("    2. zig build\n");

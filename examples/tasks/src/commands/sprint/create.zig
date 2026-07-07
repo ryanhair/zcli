@@ -2,8 +2,8 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const zinput = zcli.zinput;
-const ztheme = zcli.ztheme;
+const prompts = zcli.prompts;
+const themed = zcli.theme.theme;
 
 pub const meta = .{
     .description = "Create a new sprint",
@@ -25,7 +25,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     const name = if (args.name) |n| n else blk: {
         const writer = context.stdout();
         const reader = context.stdin();
-        break :blk try zinput.text(writer, reader, allocator, .{
+        break :blk try prompts.text(writer, reader, allocator, .{
             .message = "Sprint name:",
             .default = try std.fmt.allocPrint(allocator, "Sprint {d}", .{data.sprints.len + 1}),
         });
@@ -38,6 +38,6 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     data.sprints = sprints.items;
     try store.save(allocator, context.io, data);
 
-    try ztheme.theme("✔").success().render(context.stdout(), &context.theme);
+    try themed("✔").success().render(context.stdout(), &context.theme);
     try context.stdout().print(" Created sprint: {s}\n", .{name});
 }

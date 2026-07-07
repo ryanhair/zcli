@@ -179,35 +179,35 @@ If you want one dependency that covers the whole terminal experience, that's the
 Eight prompt types with arrow-key navigation, live filtering, and unicode-correct editing. Every prompt falls back to plain line input when stdin isn't a TTY, so scripts and pipes keep working.
 
 ```zig
-const zinput = zcli.zinput;  // or standalone: @import("zinput")
+const prompts = zcli.prompts;  // or standalone: @import("prompts")
 
-const name = try zinput.text(writer, reader, allocator, .{
+const name = try prompts.text(writer, reader, allocator, .{
     .message = "Project name:",
     .default = "my-project",
 });
 
-const idx = try zinput.select(writer, reader, .{
+const idx = try prompts.select(writer, reader, .{
     .message = "Framework:",
     .choices = &.{ "express", "fastify", "koa" },
 });
 
-const pw = try zinput.password(writer, reader, allocator, .{
+const pw = try prompts.password(writer, reader, allocator, .{
     .message = "Token:",
 });
 ```
 
-Also: `confirm`, `multiSelect`, `search` (type-to-filter), `number` (range-validated), and `editor` (opens `$EDITOR`). Full API in [packages/zinput](packages/zinput/).
+Also: `confirm`, `multiSelect`, `search` (type-to-filter), `number` (range-validated), and `editor` (opens `$EDITOR`). Full API in [packages/prompts](packages/prompts/).
 
 ## Progress indicators
 
 ```zig
-const zprogress = zcli.zprogress;  // or standalone: @import("zprogress")
+const progress = zcli.progress;  // or standalone: @import("progress")
 
-var spinner = zprogress.spinner(io, .{ .style = .dots });
+var spinner = progress.spinner(io, .{ .style = .dots });
 spinner.start("Connecting to server...");
 spinner.succeed("Synced successfully"); // or .fail() / .warn() / .info()
 
-var bar = zprogress.progressBar(io, .{ .total = items.len, .show_eta = true });
+var bar = progress.progressBar(io, .{ .total = items.len, .show_eta = true });
 for (items, 0..) |item, i| {
     process(item);
     bar.update(i + 1, null);
@@ -215,21 +215,21 @@ for (items, 0..) |item, i| {
 bar.finish();
 ```
 
-Nine spinner styles; animations auto-disable when not a TTY, symbols adapt to unicode support. Details in [packages/zprogress](packages/zprogress/).
+Nine spinner styles; animations auto-disable when not a TTY, symbols adapt to unicode support. Details in [packages/progress](packages/progress/).
 
 ## Theming
 
 ```zig
-const ztheme = zcli.ztheme;  // or standalone: @import("ztheme")
+const theme = zcli.theme;  // or standalone: @import("theme")
 
 // In a zcli command you already have one: context.theme. Standalone:
-const theme_ctx = ztheme.Theme.init(init.environ_map, io);
+const theme_ctx = theme.Theme.init(init.environ_map, io);
 
-try ztheme.theme("Error").red().bold().render(writer, &theme_ctx);
-try ztheme.theme("Success").success().render(writer, &theme_ctx);
+try theme.theme("Error").red().bold().render(writer, &theme_ctx);
+try theme.theme("Success").success().render(writer, &theme_ctx);
 ```
 
-Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Full API in [packages/ztheme](packages/ztheme/).
+Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Full API in [packages/theme](packages/theme/).
 
 ## Config files
 
@@ -311,15 +311,15 @@ Building something with zcli? Open a PR to add it here.
 | Package | Description |
 |---------|-------------|
 | [**core**](packages/core/) | Command discovery, argument parsing, plugin system, registry |
-| [**zinput**](packages/zinput/) | Interactive prompts (text, confirm, select, password, search, number, editor) |
-| [**zprogress**](packages/zprogress/) | Spinners and progress bars |
-| [**ztheme**](packages/ztheme/) | Terminal theming with semantic colors and capability detection |
-| [**markdown_fmt**](packages/markdown_fmt/) | Markdown-to-terminal formatting with semantic tags |
+| [**prompts**](packages/prompts/) | Interactive prompts (text, confirm, select, password, search, number, editor) |
+| [**progress**](packages/progress/) | Spinners and progress bars |
+| [**theme**](packages/theme/) | Terminal theming with semantic colors and capability detection |
+| [**markdown**](packages/markdown/) | Markdown-to-terminal formatting with semantic tags |
 | [**terminal**](packages/terminal/) | Raw mode, key reading, cursor control, unicode detection |
 | [**vterm**](packages/vterm/) | Virtual terminal emulator for testing ANSI output |
 | [**testing**](packages/testing/) | Subprocess runner, assertions, snapshot testing, e2e harness |
 
-All packages work standalone — use `zinput`, `zprogress`, `ztheme`, or `terminal` in any Zig project without the framework.
+All packages work standalone — use `prompts`, `progress`, `theme`, or `terminal` in any Zig project without the framework.
 
 ## Zig version support
 
