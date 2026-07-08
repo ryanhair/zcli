@@ -801,16 +801,22 @@ command reaches through its `context`:
 **The layout engine (`packages/ui`, ADR-0013).** `prompts` and `progress` do
 not hand-roll cursor movement or repainting — they render on a shared
 terminal-native layout engine. Output splits into a **static stream** that flows
-into scrollback (`app.emit`) and a **live region** pinned to the bottom edge
-that repaints in place (`app.frame`). The live region is immediate-mode: a
+into scrollback (`app.emit`) and a **live region** that repaints in place just
+above it (`app.frame`) — a full layout area, from a single line up to the whole
+viewport, positioned above committed scrollback rather than a fixed bottom strip.
+This is the same static-above / live-below split as Ink's `<Static>` and dynamic
+render: the engine shares the screen instead of taking it over (no alternate
+screen buffer), so scrollback is preserved — the deliberate trade against a
+full-screen TUI (ADR-0013). The live region is immediate-mode: a
 component is a function returning a `Node`; each frame the tree is rebuilt into a
 per-frame arena, measured, painted onto a cell `Surface`, and diffed against the
 previous frame, so only changed cells reach the terminal. Four node kinds
 (`box`, `text`, `spacer`, `custom`) and three sizing words (`fit`, `len`,
 `fill`) cover the vocabulary; the region re-measures against the terminal each
-frame, so it re-lays-out on resize and clamps to the viewport. This is the
-CLI/TUI hybrid — the shape of modern agent-style CLIs — and it is exposed
-directly as `zcli.ui` / `context.ui()`.
+frame, so it re-lays-out on resize and clamps to the viewport. A full-screen app
+is just a root sized `fill`, not a separate mode. This is the CLI/TUI hybrid —
+the shape of modern agent-style CLIs — exposed directly as `zcli.ui` /
+`context.ui()`.
 
 **Construction idiom (ADR-0014).** `context.X()` is the single front door for
 every output capability: `context.theme`, `context.prompts()`,
