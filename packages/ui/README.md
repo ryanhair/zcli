@@ -2,12 +2,12 @@
 
 The terminal-native layout engine behind zcli's CLI/TUI hybrid ([ADR-0013](../../docs/adr/0013-terminal-native-layout-engine.md)).
 
-> **Status: pre-stabilization.** Built through step 3 of the ADR's build
-> order plus the full three-tier resize model (live region re-layout, and
-> the visible static tail retained in source form and reflowed on width
-> change). Still to come: porting `progress`/`prompts` onto the engine.
-> Until then this package is not exported on the zcli umbrella and its API
-> may change freely.
+> **Status: pre-stabilization.** The ADR's build order is complete: surface +
+> diff renderer, node tree + layout, `App` static/live loop, the three-tier
+> resize model, and the progress widget vocabulary (`ui.widgets`). Migrating
+> the shipped `progress`/`prompts` packages onto the engine is a separate,
+> breaking decision. Until it's made, this package is not exported on the
+> zcli umbrella and its API may change freely.
 
 ## The model
 
@@ -56,13 +56,32 @@ Note: the default `.wrap` mode word-wraps and drops break spaces. Labels with
 significant whitespace (padded numbers, aligned columns) want `.clip` or
 `.truncate` via `ui.textOpts`.
 
+## Widgets
+
+`ui.widgets` is the progress vocabulary as component functions — a spinner
+is a `text` node, a bar is one `custom` leaf, a multi-bar is a column of
+rows. No widget owns a repaint loop or state: animation is your tick,
+progress is your fraction, the frame diff does the rest. Styling flows
+through the theme's `ProgressTheme` tokens (the same ones the progress
+package consumes), so a future migration keeps its look.
+
+```zig
+try ui.row(a, .{ .gap = 1 }, &.{
+    ui.widgets.spinner(.{}, state.tick),
+    try ui.widgets.multiBar(a, .{}, &.{
+        .{ .label = "api", .fraction = 0.6 },
+        .{ .label = "assets", .fraction = 0.9 },
+    }),
+});
+```
+
 ## Try it
 
 ```sh
-zig build run-demo   # animated frame; needs a real terminal
-zig build test       # pure layout tests + vterm golden-frame tests
+zig build run-demo     # deploy-style task frame; needs a real terminal
+zig build run-hybrid   # the Claude-Code shape: streaming prose + live multi-bar
+zig build test         # pure layout tests + vterm golden-frame tests
 ```
 
-The demo (`examples/demo.zig`) also documents what the coming `App` loop will
-own: reserving the live region's rows, cursor parking/restore, and surface
-double-buffering.
+Resize the terminal while either runs: the live frame re-lays-out and the
+visible static tail rewraps with it.

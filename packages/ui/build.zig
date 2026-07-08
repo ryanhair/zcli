@@ -40,21 +40,24 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run ui tests");
     test_step.dependOn(&run_tests.step);
 
-    // Runnable demo — `zig build run-demo` (it animates, so it needs a real
-    // terminal). Compiled by `test` so it can't bitrot.
-    const demo = b.addExecutable(.{
-        .name = "ui-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/demo.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    demo.root_module.addImport("ui", mod);
-    demo.root_module.addImport("terminal", terminal_dep.module("terminal"));
-    test_step.dependOn(&demo.step);
+    // Runnable examples — `zig build run-<name>` (they animate, so they need
+    // a real terminal). Each is compiled by `test` so it can't bitrot.
+    const example_names = [_][]const u8{ "demo", "hybrid" };
+    for (example_names) |name| {
+        const exe = b.addExecutable(.{
+            .name = b.fmt("ui-{s}", .{name}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        exe.root_module.addImport("ui", mod);
+        exe.root_module.addImport("terminal", terminal_dep.module("terminal"));
+        test_step.dependOn(&exe.step);
 
-    const run_demo = b.addRunArtifact(demo);
-    const demo_step = b.step("run-demo", "Run the animated ui demo (needs a TTY)");
-    demo_step.dependOn(&run_demo.step);
+        const run = b.addRunArtifact(exe);
+        const run_step = b.step(b.fmt("run-{s}", .{name}), b.fmt("Run the animated {s} example (needs a TTY)", .{name}));
+        run_step.dependOn(&run.step);
+    }
 }
