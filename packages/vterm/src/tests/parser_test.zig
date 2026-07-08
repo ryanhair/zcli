@@ -290,3 +290,23 @@ test "large parameter values" {
     term.write("\x1b[999C"); // Move right by 999
     try testing.expectEqual(@as(u16, 9), term.cursor.x); // Clamped to width-1
 }
+
+test "DECAWM off clamps at the last column instead of wrapping" {
+    var term = try VTerm.init(testing.allocator, 4, 2);
+    defer term.deinit();
+
+    // Autowrap on (default): the 5th char wraps to row 1.
+    term.write("abcde");
+    try testing.expectEqual(@as(u21, 'e'), term.getCell(0, 1).char);
+
+    // Autowrap off: overflow overwrites the last column, cursor stays put.
+    term.write("\x1b[H\x1b[2J\x1b[?7l");
+    term.write("abcde");
+    try testing.expectEqual(@as(u21, 'e'), term.getCell(3, 0).char);
+    try testing.expectEqual(@as(u21, 0), term.getCell(0, 1).char);
+    try testing.expect(term.cursorAt(3, 0));
+
+    // Restore: wraps again.
+    term.write("\x1b[?7h\x1b[H\x1b[2Jabcde");
+    try testing.expectEqual(@as(u21, 'e'), term.getCell(0, 1).char);
+}
