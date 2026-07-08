@@ -1494,11 +1494,10 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
     // ("Caf\xC3" + "e") in the generated file. See the wizard test above for the
     // settle-delay rationale.
     //
-    // The é is typed and then erased, so the two are split by a settle delay: a
-    // real PTY streams every byte (the transient "Café" echo is always captured),
-    // but ConPTY emits screen-diff frames and would coalesce the type-then-erase
-    // into just the final "Cafe" — the pause lets it flush a frame while "Café"
-    // is still on screen, so the live-echo assertion below holds on both backends.
+    // The é is typed and then erased, split by a settle delay: prompts render
+    // frame diffs, so the é reaches the stream only in the frame painted while
+    // it is on screen — the pause lets that frame flush (and lets ConPTY, which
+    // coalesces screen diffs, emit one) before the erase, on both backends.
     const settle_ms = 400;
     var script = harness.InteractiveScript.init(testing.allocator);
     defer script.deinit();
@@ -1528,8 +1527,14 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
     };
     defer result.deinit();
 
-    // The é was echoed as a whole character while it was typed.
-    try expectContains(result.output, "Café");
+    // The é was echoed intact — its two UTF-8 bytes emitted together, never
+    // torn across writes. (Prompts paint frame *diffs* now, so a typed word is
+    // never contiguous in the byte stream — each keystroke emits only its new
+    // cell — but any single grapheme always is.)
+    try expectContains(result.output, "é");
+    // The persisted answer line shows the grapheme-aware backspace on screen:
+    // é deleted whole, no half-glyph debris before the final "e".
+    try expectContains(result.output, "Description: Cafe");
 
     try testing.expect(result.exit_code == 0);
     const generated = try readFile(tmp.dir, arena.allocator(), "src/commands/greet.zig");
