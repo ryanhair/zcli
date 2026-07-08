@@ -179,6 +179,13 @@ pub fn ContextFor(comptime plugins: []const type) type {
             };
         }
 
+        /// A markdown `Formatter` pre-wired to stdout, the detected terminal
+        /// capability, and the app's palette (baked at comptime). Call
+        /// `.write(fmt, args)` / `.print(alloc, fmt, args)` on the result.
+        pub fn markdown(self: *Self) zcli.markdown.Formatter(zcli.appTheme().palette) {
+            return .{ .writer = self.stdout(), .capability = self.theme.capability() };
+        }
+
         /// Get command description by path (for plugins)
         pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
             for (self.plugin_command_info) |cmd_info| {
@@ -230,4 +237,12 @@ pub fn ContextFor(comptime plugins: []const type) type {
             return error.CommandFailed;
         }
     };
+}
+
+test "context accessors type-check" {
+    // Core itself never calls prompts()/progress()/markdown() — Zig skips
+    // unreferenced methods, so force analysis here to catch a broken accessor
+    // signature (e.g. a stale bundle field) at build time rather than only when
+    // an example happens to use it.
+    std.testing.refAllDecls(ContextFor(&.{}));
 }
