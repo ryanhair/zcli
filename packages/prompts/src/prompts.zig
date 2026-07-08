@@ -6,19 +6,23 @@
 //! ```zig
 //! const prompts = @import("prompts");
 //!
-//! const name = try prompts.text(writer, reader, allocator, .{ .message = "Name:" });
-//! const ok = try prompts.confirm(writer, reader, .{ .message = "Continue?" });
-//! const idx = try prompts.select(writer, reader, .{ .message = "Pick:", .choices = &.{"a", "b"} });
+//! const p: prompts.Prompts = .{ .writer = writer, .reader = reader, .allocator = allocator };
+//!
+//! const name = try p.text(.{ .message = "Name:" });
+//! const ok = try p.confirm(.{ .message = "Continue?" });
+//! const idx = try p.select(.{ .message = "Pick:", .choices = &.{"a", "b"} });
 //! ```
 
 const std = @import("std");
 pub const terminal = @import("terminal");
 pub const theme = @import("theme");
 
-/// Style context used when the caller doesn't pass one: the default theme at
-/// ANSI-16, matching the package's historical fixed colors. zcli applications
-/// pass `context.theme` instead, which carries the app's theme and the
-/// detected terminal capabilities (including NO_COLOR).
+const ThemeContext = theme.ThemeContext;
+
+/// Style context used when a `Prompts` instance doesn't set one: the default
+/// theme at ANSI-16, matching the package's historical fixed colors. zcli
+/// applications set `.theme = context.theme` instead, which carries the app's
+/// theme and the detected terminal capabilities (including NO_COLOR).
 pub const default_style: theme.ThemeContext = .fallback;
 
 /// Render `ref`'s opening escape sequence into `buf`, returning the (possibly
@@ -48,6 +52,38 @@ pub const search_prompt = @import("search.zig");
 pub const number_prompt = @import("number.zig");
 pub const editor_prompt = @import("editor.zig");
 
+/// The prompts API. An instance bundles the environment every prompt needs —
+/// writer, reader, allocator, and theme — so call sites only say what's
+/// specific to the question being asked:
+///
+/// ```zig
+/// const p: prompts.Prompts = .{
+///     .writer = context.stdout(),
+///     .reader = context.stdin(),
+///     .allocator = context.allocator,
+///     .theme = context.theme,
+/// };
+/// const points = try p.number(.{ .message = "Story points:", .min = 0, .max = 100 });
+/// ```
+pub const Prompts = struct {
+    writer: *std.Io.Writer,
+    reader: *std.Io.Reader,
+    /// Owns every string a prompt returns (`text`, `password`, `editor`) and
+    /// the index slice from `multiSelect`.
+    allocator: std.mem.Allocator,
+    /// Theme + terminal capabilities for styling; zcli commands pass `context.theme`.
+    theme: ThemeContext = default_style,
+
+    pub const text = text_prompt.text;
+    pub const confirm = confirm_prompt.confirm;
+    pub const select = select_prompt.select;
+    pub const multiSelect = multi_select_prompt.multiSelect;
+    pub const password = password_prompt.password;
+    pub const search = search_prompt.search;
+    pub const number = number_prompt.number;
+    pub const editor = editor_prompt.editor;
+};
+
 /// Returned by a prompt when the user presses one of the caller's
 /// `interrupt_keys`. The prompt stays domain-agnostic — the caller decides what
 /// the interruption means (go back, cancel, open help, …).
@@ -60,16 +96,6 @@ pub fn isInterrupt(key: terminal.Key, keys: []const terminal.Key) bool {
     }
     return false;
 }
-
-// Re-export main functions
-pub const text = text_prompt.text;
-pub const confirm = confirm_prompt.confirm;
-pub const select = select_prompt.select;
-pub const multiSelect = multi_select_prompt.multiSelect;
-pub const password = password_prompt.password;
-pub const search = search_prompt.search;
-pub const number = number_prompt.number;
-pub const editor = editor_prompt.editor;
 
 /// Append a typed codepoint to `buf` as UTF-8, returning the appended bytes
 /// (a slice into `buf.items`) so the caller can echo them.

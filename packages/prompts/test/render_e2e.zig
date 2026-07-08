@@ -34,16 +34,16 @@ fn screenOf(alloc: std.mem.Allocator, cols: u16, rows: u16, bytes: []const u8) !
 
 fn multiFrame(buf: []u8, config: prompts.MultiSelectConfig, selected: []const bool, cursor: usize, ws: Winsize) ![]const u8 {
     var w: std.Io.Writer = .fixed(buf);
-    _ = try prompts.multi_select_prompt.renderList(&w, config, selected, cursor, ws);
+    _ = try prompts.multi_select_prompt.renderList(&w, prompts.default_style, config, selected, cursor, ws);
     return w.buffered();
 }
 
 fn multiNavScreen(alloc: std.mem.Allocator, config: prompts.MultiSelectConfig, selected: []const bool, from: usize, to: usize, ws: Winsize) ![]u8 {
     var buf: [16384]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    const r0 = try prompts.multi_select_prompt.renderList(&w, config, selected, from, ws);
+    const r0 = try prompts.multi_select_prompt.renderList(&w, prompts.default_style, config, selected, from, ws);
     try prompts.list_render.eraseRegion(&w, r0);
-    _ = try prompts.multi_select_prompt.renderList(&w, config, selected, to, ws);
+    _ = try prompts.multi_select_prompt.renderList(&w, prompts.default_style, config, selected, to, ws);
     return screenOf(alloc, ws.col, ws.row, w.buffered());
 }
 
@@ -104,15 +104,15 @@ test "emulator: select navigation leaves no debris when options wrap" {
 
     var cbuf: [16384]u8 = undefined;
     var cw: std.Io.Writer = .fixed(&cbuf);
-    _ = try prompts.select_prompt.renderList(&cw, config, 1, ws);
+    _ = try prompts.select_prompt.renderList(&cw, prompts.default_style, config, 1, ws);
     const clean = try screenOf(alloc, ws.col, ws.row, cw.buffered());
     defer alloc.free(clean);
 
     var nbuf: [16384]u8 = undefined;
     var nw: std.Io.Writer = .fixed(&nbuf);
-    const r0 = try prompts.select_prompt.renderList(&nw, config, 0, ws);
+    const r0 = try prompts.select_prompt.renderList(&nw, prompts.default_style, config, 0, ws);
     try prompts.list_render.eraseRegion(&nw, r0);
-    _ = try prompts.select_prompt.renderList(&nw, config, 1, ws);
+    _ = try prompts.select_prompt.renderList(&nw, prompts.default_style, config, 1, ws);
     const nav = try screenOf(alloc, ws.col, ws.row, nw.buffered());
     defer alloc.free(nav);
 
@@ -131,7 +131,7 @@ test "emulator: select hang-indents wrapped continuation lines on screen" {
     defer term.deinit();
     var buf: [16384]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    _ = try prompts.select_prompt.renderList(&w, config, 0, ws);
+    _ = try prompts.select_prompt.renderList(&w, prompts.default_style, config, 0, ws);
     term.write(w.buffered());
 
     // Row 0: "? Pick" header. Row 1: first option line (prefix "  > "/"  ❯ ").
@@ -197,15 +197,15 @@ test "emulator: search navigation leaves no debris when results wrap" {
 
     var cbuf: [16384]u8 = undefined;
     var cw: std.Io.Writer = .fixed(&cbuf);
-    _ = try prompts.search_prompt.renderSearch(&cw, config, query, &filtered, 1, ws);
+    _ = try prompts.search_prompt.renderSearch(&cw, prompts.default_style, config, query, &filtered, 1, ws);
     const clean = try screenOf(alloc, ws.col, ws.row, cw.buffered());
     defer alloc.free(clean);
 
     var nbuf: [16384]u8 = undefined;
     var nw: std.Io.Writer = .fixed(&nbuf);
-    const r0 = try prompts.search_prompt.renderSearch(&nw, config, query, &filtered, 0, ws);
+    const r0 = try prompts.search_prompt.renderSearch(&nw, prompts.default_style, config, query, &filtered, 0, ws);
     try prompts.list_render.eraseRegion(&nw, r0);
-    _ = try prompts.search_prompt.renderSearch(&nw, config, query, &filtered, 1, ws);
+    _ = try prompts.search_prompt.renderSearch(&nw, prompts.default_style, config, query, &filtered, 1, ws);
     const nav = try screenOf(alloc, ws.col, ws.row, nw.buffered());
     defer alloc.free(nav);
 

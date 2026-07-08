@@ -23,9 +23,13 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var data = parsed.value;
 
     const name = if (args.name) |n| n else blk: {
-        const writer = context.stdout();
-        const reader = context.stdin();
-        break :blk try prompts.text(writer, reader, allocator, .{
+        const p: prompts.Prompts = .{
+            .writer = context.stdout(),
+            .reader = context.stdin(),
+            .allocator = allocator,
+            .theme = context.theme,
+        };
+        break :blk try p.text(.{
             .message = "Sprint name:",
             .default = try std.fmt.allocPrint(allocator, "Sprint {d}", .{data.sprints.len + 1}),
         });

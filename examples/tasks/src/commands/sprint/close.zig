@@ -24,13 +24,16 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
         return;
     }
 
-    const writer = context.stdout();
-    const reader = context.stdin();
+    const p: prompts.Prompts = .{
+        .writer = context.stdout(),
+        .reader = context.stdin(),
+        .allocator = allocator,
+        .theme = context.theme,
+    };
 
-    const idx = try prompts.select(writer, reader, .{
+    const idx = try p.select(.{
         .message = "Close which sprint?",
         .choices = data.sprints,
-        .theme = context.theme,
     });
 
     const name = data.sprints[idx];

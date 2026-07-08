@@ -181,17 +181,24 @@ Eight prompt types with arrow-key navigation, live filtering, and unicode-correc
 ```zig
 const prompts = zcli.prompts;  // or standalone: @import("prompts")
 
-const name = try prompts.text(writer, reader, allocator, .{
+const p: prompts.Prompts = .{
+    .writer = context.stdout(),
+    .reader = context.stdin(),
+    .allocator = context.allocator,
+    .theme = context.theme,
+};
+
+const name = try p.text(.{
     .message = "Project name:",
     .default = "my-project",
 });
 
-const idx = try prompts.select(writer, reader, .{
+const idx = try p.select(.{
     .message = "Framework:",
     .choices = &.{ "express", "fastify", "koa" },
 });
 
-const pw = try prompts.password(writer, reader, allocator, .{
+const pw = try p.password(.{
     .message = "Token:",
 });
 ```

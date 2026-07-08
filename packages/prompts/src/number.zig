@@ -17,7 +17,9 @@ pub const NumberConfig = struct {
 
 /// Prompt for numeric input. Returns the entered number, or `error.Interrupted`
 /// if the user presses one of `config.interrupt_keys`.
-pub fn number(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
+pub fn number(p: prompts.Prompts, config: NumberConfig) !i64 {
+    const writer = p.writer;
+    const reader = p.reader;
     const is_tty = terminal.isStdinTty();
 
     while (true) {
@@ -160,7 +162,7 @@ test "non-TTY: parses a typed number" {
     var output: [256]u8 = undefined;
     var writer_stream: std.Io.Writer = .fixed(&output);
 
-    const result = try number(&writer_stream, &reader_stream, .{
+    const result = try number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Count:",
     });
     try std.testing.expectEqual(@as(i64, 42), result);
@@ -175,7 +177,7 @@ test "non-TTY: multi-digit value survives the readLine buffer boundary" {
     var output: [256]u8 = undefined;
     var writer_stream: std.Io.Writer = .fixed(&output);
 
-    const result = try number(&writer_stream, &reader_stream, .{
+    const result = try number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Value:",
     });
     try std.testing.expectEqual(@as(i64, 1234567), result);
@@ -187,7 +189,7 @@ test "non-TTY: empty input falls back to the default" {
     var output: [256]u8 = undefined;
     var writer_stream: std.Io.Writer = .fixed(&output);
 
-    const result = try number(&writer_stream, &reader_stream, .{
+    const result = try number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Port:",
         .default = 3000,
     });
@@ -200,7 +202,7 @@ test "non-TTY: empty input with no default errors" {
     var output: [256]u8 = undefined;
     var writer_stream: std.Io.Writer = .fixed(&output);
 
-    try std.testing.expectError(error.InvalidNumber, number(&writer_stream, &reader_stream, .{
+    try std.testing.expectError(error.InvalidNumber, number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Port:",
     }));
 }
@@ -211,7 +213,7 @@ test "non-TTY: non-numeric input errors" {
     var output: [256]u8 = undefined;
     var writer_stream: std.Io.Writer = .fixed(&output);
 
-    try std.testing.expectError(error.InvalidNumber, number(&writer_stream, &reader_stream, .{
+    try std.testing.expectError(error.InvalidNumber, number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Count:",
     }));
 }

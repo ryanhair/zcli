@@ -1,4 +1,4 @@
-//! `prompts.search` — type to fuzzy-filter a list, arrow keys to pick, Enter to select.
+//! `Prompts.search` — type to fuzzy-filter a list, arrow keys to pick, Enter to select.
 
 const std = @import("std");
 const prompts = @import("prompts");
@@ -9,12 +9,14 @@ pub fn main(init: std.process.Init) !void {
     t.init(init.io);
     defer t.flush();
 
+    const p: prompts.Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
+
     const languages = [_][]const u8{
         "Zig",    "Rust",       "Go",         "C",       "C++",
         "Python", "JavaScript", "TypeScript", "Haskell", "OCaml",
     };
 
-    const idx = prompts.search(t.w(), t.r(), init.gpa, .{
+    const idx = p.search(.{
         .message = "Search languages (type to filter):",
         .choices = &languages,
     }) catch |err| {

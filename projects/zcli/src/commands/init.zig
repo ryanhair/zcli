@@ -150,11 +150,16 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         choices[i] = choice.label;
         defaults[i] = choice.default;
     }
-    const selected = try prompts.multiSelect(stdout, context.stdin(), allocator, .{
+    const p: prompts.Prompts = .{
+        .writer = stdout,
+        .reader = context.stdin(),
+        .allocator = allocator,
+        .theme = context.theme,
+    };
+    const selected = try p.multiSelect(.{
         .message = "Select built-in plugins to include:",
         .choices = &choices,
         .defaults = &defaults,
-        .theme = context.theme,
     });
     defer allocator.free(selected);
 

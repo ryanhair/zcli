@@ -247,15 +247,22 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
           </div>
           <div class="code">
             <div class="code-head"><span class="fname">prompts</span><span class="lang">zig</span></div>
-<pre><span class="kw">const</span> name = <span class="kw">try</span> prompts.<span class="fn">text</span>(writer, reader, allocator, .{
+<pre><span class="kw">const</span> p: prompts.Prompts = .{
+    .writer = context.<span class="fn">stdout</span>(),
+    .reader = context.<span class="fn">stdin</span>(),
+    .allocator = context.allocator,
+    .theme = context.theme,
+};
+
+<span class="kw">const</span> name = <span class="kw">try</span> p.<span class="fn">text</span>(.{
     .message = <span class="str">"Project name:"</span>, .default = <span class="str">"my-project"</span>,
 });
-<span class="kw">const</span> features = <span class="kw">try</span> prompts.<span class="fn">multiSelect</span>(writer, reader, allocator, .{
+<span class="kw">const</span> features = <span class="kw">try</span> p.<span class="fn">multiSelect</span>(.{
     .message = <span class="str">"Features:"</span>,
     .choices = &.{ <span class="str">"typescript"</span>, <span class="str">"eslint"</span>, <span class="str">"prettier"</span> },
     .defaults = &.{ <span class="num">true</span>, <span class="num">true</span>, <span class="num">false</span> },
 });
-<span class="kw">const</span> pw = <span class="kw">try</span> prompts.<span class="fn">password</span>(writer, reader, allocator, .{
+<span class="kw">const</span> pw = <span class="kw">try</span> p.<span class="fn">password</span>(.{
     .message = <span class="str">"Token:"</span>,
 });</pre>
           </div>

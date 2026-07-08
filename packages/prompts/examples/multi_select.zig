@@ -1,4 +1,4 @@
-//! `prompts.multiSelect` — toggle several items with Space, confirm with Enter.
+//! `Prompts.multiSelect` — toggle several items with Space, confirm with Enter.
 
 const std = @import("std");
 const prompts = @import("prompts");
@@ -9,9 +9,11 @@ pub fn main(init: std.process.Init) !void {
     t.init(init.io);
     defer t.flush();
 
+    const p: prompts.Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
+
     const toppings = [_][]const u8{ "Cheese", "Pepperoni", "Mushrooms", "Onions", "Pineapple" };
 
-    const picks = prompts.multiSelect(t.w(), t.r(), init.gpa, .{
+    const picks = p.multiSelect(.{
         .message = "Choose your toppings:",
         .choices = &toppings,
         .defaults = &.{ true, false, false, false, false },

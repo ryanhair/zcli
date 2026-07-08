@@ -11,12 +11,13 @@ pub const MultiSelectConfig = struct {
     defaults: ?[]const bool = null,
     prefix: []const u8 = "? ",
     unicode: bool = true,
-    /// Theme + terminal capabilities for styling; zcli commands pass `context.theme`.
-    theme: prompts.theme.ThemeContext = prompts.default_style,
 };
 
 /// Prompt to select multiple items. Returns owned slice of selected indices.
-pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocator, config: MultiSelectConfig) ![]usize {
+pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
+    const writer = p.writer;
+    const reader = p.reader;
+    const allocator = p.allocator;
     if (config.choices.len == 0) return error.NoChoices;
     const is_tty = terminal.isStdinTty();
 
@@ -73,31 +74,31 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
 
     const stdin = std.Io.File.stdin().handle;
     var cursor: usize = 0;
-    var rows = try renderList(writer, config, selected, cursor, lr.windowSize());
+    var rows = try renderList(writer, p.theme, config, selected, cursor, lr.windowSize());
 
     while (true) {
         prompts.flushWriter(writer);
         switch (try terminal.readEvent(reader, stdin, &watcher)) {
             .resize => {
                 try lr.eraseRegion(writer, rows);
-                rows = try renderList(writer, config, selected, cursor, lr.windowSize());
+                rows = try renderList(writer, p.theme, config, selected, cursor, lr.windowSize());
             },
             .key => |k| switch (k) {
                 .up => {
                     if (cursor > 0) cursor -= 1;
                     try lr.eraseRegion(writer, rows);
-                    rows = try renderList(writer, config, selected, cursor, lr.windowSize());
+                    rows = try renderList(writer, p.theme, config, selected, cursor, lr.windowSize());
                 },
                 .down => {
                     if (cursor < config.choices.len - 1) cursor += 1;
                     try lr.eraseRegion(writer, rows);
-                    rows = try renderList(writer, config, selected, cursor, lr.windowSize());
+                    rows = try renderList(writer, p.theme, config, selected, cursor, lr.windowSize());
                 },
                 .char => |c| {
                     if (c == ' ') {
                         selected[cursor] = !selected[cursor];
                         try lr.eraseRegion(writer, rows);
-                        rows = try renderList(writer, config, selected, cursor, lr.windowSize());
+                        rows = try renderList(writer, p.theme, config, selected, cursor, lr.windowSize());
                     }
                 },
                 .enter => {
@@ -105,7 +106,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
                     // Show summary
                     var first = true;
                     var obuf: [64]u8 = undefined;
-                    const open = prompts.openSeq(&obuf, config.theme, config.theme.promptTokens().selected);
+                    const open = prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
                     try writer.print("  {s}", .{open});
                     for (config.choices, 0..) |choice, i| {
                         if (selected[i]) {
@@ -148,6 +149,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
 /// Public for the cross-platform emulator render tests.
 pub fn renderList(
     writer: anytype,
+    ctx: prompts.theme.ThemeContext,
     config: MultiSelectConfig,
     selected: []const bool,
     cursor: usize,
@@ -190,15 +192,15 @@ pub fn renderList(
     const list_budget = @max((height -| 1) -| rows, 1);
     const win = lr.viewport(config.choices.len, cursor, list_budget, &counter, Counter.at);
 
-    const tokens = config.theme.promptTokens();
+    const tokens = ctx.promptTokens();
     for (win.start..win.end) |i| {
         const marker = if (selected[i]) sel_sym else unsel_sym;
         var pbuf: [192]u8 = undefined;
         var cbuf: [64]u8 = undefined;
         var mbuf: [64]u8 = undefined;
         const style: lr.ItemStyle = if (i == cursor) blk: {
-            const cur_open = prompts.openSeq(&cbuf, config.theme, tokens.cursor);
-            const mark_open = prompts.openSeq(&mbuf, config.theme, tokens.marker);
+            const cur_open = prompts.openSeq(&cbuf, ctx, tokens.cursor);
+            const mark_open = prompts.openSeq(&mbuf, ctx, tokens.marker);
             break :blk .{
                 .first_prefix = std.fmt.bufPrint(&pbuf, "  {s}{s}{s} {s}{s}{s} ", .{
                     cur_open,  cursor_sym, prompts.closeSeq(cur_open),
@@ -249,7 +251,7 @@ test "non-TTY: selects by comma-separated numbers" {
     var output: [1024]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try multiSelect(&output_writer, &input_reader, allocator, .{
+    const result = try multiSelect(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Pick:",
         .choices = &.{ "a", "b", "c" },
     });
@@ -267,7 +269,7 @@ test "non-TTY: empty input returns defaults" {
     var output: [1024]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try multiSelect(&output_writer, &input_reader, allocator, .{
+    const result = try multiSelect(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Pick:",
         .choices = &.{ "a", "b", "c" },
         .defaults = &.{ true, false, true },
@@ -286,7 +288,7 @@ test "non-TTY: no defaults returns empty" {
     var output: [1024]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try multiSelect(&output_writer, &input_reader, allocator, .{
+    const result = try multiSelect(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Pick:",
         .choices = &.{ "a", "b" },
     });
@@ -301,15 +303,15 @@ test "non-TTY: no defaults returns empty" {
 // hang-indent under the option text.
 // ---------------------------------------------------------------------------
 
-fn renderToBuf(buf: []u8, config: MultiSelectConfig, selected: []const bool, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
+fn renderToBuf(buf: []u8, ctx: prompts.theme.ThemeContext, config: MultiSelectConfig, selected: []const bool, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
     var w: std.Io.Writer = .fixed(buf);
-    const rows = try renderList(&w, config, selected, cursor, ws);
+    const rows = try renderList(&w, ctx, config, selected, cursor, ws);
     return .{ .rows = rows, .text = w.buffered() };
 }
 
 test "renderList: short options are one row each" {
     var buf: [1024]u8 = undefined;
-    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, .{ .row = 24, .col = 80 });
+    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, .{ .row = 24, .col = 80 });
     // 1 header row + 3 option rows.
     try std.testing.expectEqual(@as(usize, 4), r.rows);
 }
@@ -318,7 +320,7 @@ test "renderList: a wrapping option counts as multiple physical rows" {
     var buf: [4096]u8 = undefined;
     const long = "this is a fairly long option label that will certainly wrap";
     // Narrow terminal forces the long option onto several rows.
-    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, .{ .row = 24, .col = 24 });
+    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, .{ .row = 24, .col = 24 });
     // header(1) + short(1) + long(>=3 at width 24) — the key point is it is not 3.
     try std.testing.expect(r.rows > 3);
     // Row count must equal the number of CRLF-separated lines actually emitted.
@@ -338,7 +340,7 @@ test "renderList: cursor row styles through the cursor and marker tokens" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = ctx }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
+    const r = try renderToBuf(&buf, ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
     try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;9;8;7") != null); // cursor glyph
     try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;4;5;6") != null); // marker
 }
@@ -348,14 +350,14 @@ test "renderList: no_color renders without any escapes" {
     const ctx = prompts.theme.ThemeContext{
         .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
     };
-    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = ctx }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
+    const r = try renderToBuf(&buf, ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
     try std.testing.expect(std.mem.indexOf(u8, r.text, "\x1b[") == null);
 }
 
 test "renderList: continuation lines hang-indent under the option text" {
     var buf: [4096]u8 = undefined;
     // unicode=false so the prefix is "    [ ] " = 8 columns.
-    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, .{ .row = 24, .col = 20 });
+    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, .{ .row = 24, .col = 20 });
     _ = r;
     // The continuation line is preceded by 8 spaces (prefix width), aligning it
     // under the label text rather than under the bullet.

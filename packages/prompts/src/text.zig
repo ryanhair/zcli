@@ -24,7 +24,10 @@ pub const TextConfig = struct {
 
 /// Prompt for text input. Returns an owned string (caller frees), or
 /// `error.Interrupted` if the user presses one of `config.interrupt_keys`.
-pub fn text(writer: anytype, reader: anytype, allocator: std.mem.Allocator, config: TextConfig) ![]u8 {
+pub fn text(p: prompts.Prompts, config: TextConfig) ![]u8 {
+    const writer = p.writer;
+    const reader = p.reader;
+    const allocator = p.allocator;
     const is_tty = terminal.isStdinTty();
     const use_preview = is_tty and config.preview != null;
 
@@ -148,7 +151,7 @@ test "text: non-TTY reads user input" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = try text(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Name:",
     });
     defer allocator.free(result);
@@ -163,7 +166,7 @@ test "text: non-TTY uses default on empty input" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = try text(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Name:",
         .default = "world",
     });
@@ -179,7 +182,7 @@ test "text: non-TTY uses default on EOF" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = try text(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Name:",
         .default = "fallback",
     });
@@ -195,7 +198,7 @@ test "text: prompt message appears in output" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(&output_writer, &input_reader, allocator, .{
+    const result = try text(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Enter name:",
         .default = "foo",
     });

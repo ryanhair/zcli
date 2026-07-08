@@ -229,18 +229,21 @@ const topics = [_]Topic{
         .body =
         \\prompts — interactive input with prompts (bundled)
         \\
-        \\Each prompt takes the stdout writer and stdin reader; `text` also takes an
-        \\allocator. On non-interactive stdin, handle the piped case yourself (e.g.
+        \\Build a `Prompts` instance once from the context; every prompt is a method
+        \\on it. On non-interactive stdin, handle the piped case yourself (e.g.
         \\fall back to a flag) rather than blocking.
         \\
-        \\  const prompts = zcli.prompts;
-        \\  const w = context.stdout();
-        \\  const r = context.stdin();
+        \\  const p: zcli.prompts.Prompts = .{
+        \\      .writer = context.stdout(),
+        \\      .reader = context.stdin(),
+        \\      .allocator = context.allocator,
+        \\      .theme = context.theme,
+        \\  };
         \\
-        \\  const name = try prompts.text(w, r, context.allocator, .{ .message = "Name:" });
-        \\  const ok   = try prompts.confirm(w, r, .{ .message = "Proceed?", .default = true });
-        \\  const idx  = try prompts.select(w, r, .{ .message = "Pick:", .choices = &.{ "a", "b" } });
-        \\  const pw   = try prompts.password(w, r, context.allocator, .{ .message = "Token:" }); // hidden
+        \\  const name = try p.text(.{ .message = "Name:" });
+        \\  const ok   = try p.confirm(.{ .message = "Proceed?", .default = true });
+        \\  const idx  = try p.select(.{ .message = "Pick:", .choices = &.{ "a", "b" } });
+        \\  const pw   = try p.password(.{ .message = "Token:" }); // hidden
         \\
         \\Progress bars/spinners: `zcli.progress`.
         \\

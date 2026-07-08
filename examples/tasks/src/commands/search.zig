@@ -33,10 +33,14 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     }
     defer for (titles.items) |t| allocator.free(t);
 
-    const writer = context.stdout();
-    const reader = context.stdin();
+    const p: prompts.Prompts = .{
+        .writer = context.stdout(),
+        .reader = context.stdin(),
+        .allocator = allocator,
+        .theme = context.theme,
+    };
 
-    const idx = try prompts.search(writer, reader, allocator, .{
+    const idx = try p.search(.{
         .message = "Search tasks:",
         .choices = titles.items,
     });

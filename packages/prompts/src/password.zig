@@ -11,7 +11,10 @@ pub const PasswordConfig = struct {
 };
 
 /// Prompt for password input with masking. Returns owned string.
-pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, config: PasswordConfig) ![]u8 {
+pub fn password(p: prompts.Prompts, config: PasswordConfig) ![]u8 {
+    const writer = p.writer;
+    const reader = p.reader;
+    const allocator = p.allocator;
     const is_tty = terminal.isStdinTty();
 
     try writer.print("{s}{s} ", .{ config.prefix, config.message });
@@ -100,7 +103,7 @@ test "non-TTY: reads password line" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try password(&output_writer, &input_reader, allocator, .{
+    const result = try password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Password:",
     });
     defer allocator.free(result);
@@ -115,7 +118,7 @@ test "non-TTY: EOF returns empty" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try password(&output_writer, &input_reader, allocator, .{
+    const result = try password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Password:",
     });
     defer allocator.free(result);
@@ -130,7 +133,7 @@ test "prompt shows message" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try password(&output_writer, &input_reader, allocator, .{
+    const result = try password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Enter secret:",
     });
     defer allocator.free(result);

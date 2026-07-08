@@ -28,25 +28,31 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     try themed("Project Setup").bold().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 
-    const name = try prompts.text(writer, reader, allocator, .{
+    const p: prompts.Prompts = .{
+        .writer = writer,
+        .reader = reader,
+        .allocator = allocator,
+        .theme = context.theme,
+    };
+
+    const name = try p.text(.{
         .message = "Project name:",
         .default = "my-project",
     });
     defer allocator.free(name);
 
-    const description = try prompts.text(writer, reader, allocator, .{
+    const description = try p.text(.{
         .message = "Description:",
     });
     defer allocator.free(description);
 
-    const method_idx = try prompts.select(writer, reader, .{
+    const method_idx = try p.select(.{
         .message = "Methodology:",
         .choices = &.{ "Kanban", "Scrum", "None" },
-        .theme = context.theme,
     });
     _ = method_idx;
 
-    const create_samples = try prompts.confirm(writer, reader, .{
+    const create_samples = try p.confirm(.{
         .message = "Create sample tasks?",
         .default = true,
     });

@@ -15,7 +15,9 @@ pub const ConfirmConfig = struct {
 
 /// Prompt for yes/no confirmation. Returns the answer, or `error.Interrupted`
 /// if the user presses one of `config.interrupt_keys`.
-pub fn confirm(writer: anytype, reader: anytype, config: ConfirmConfig) !bool {
+pub fn confirm(p: prompts.Prompts, config: ConfirmConfig) !bool {
+    const writer = p.writer;
+    const reader = p.reader;
     const is_tty = terminal.isStdinTty();
 
     const hint = if (config.default) "(Y/n)" else "(y/N)";
@@ -98,7 +100,7 @@ test "non-TTY: y input returns true" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(&output_writer, &input_reader, .{
+    const result = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Continue?",
         .default = false,
     });
@@ -111,7 +113,7 @@ test "non-TTY: n input returns false" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(&output_writer, &input_reader, .{
+    const result = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Continue?",
         .default = true,
     });
@@ -124,7 +126,7 @@ test "non-TTY: empty input uses default true" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(&output_writer, &input_reader, .{
+    const result = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Continue?",
         .default = true,
     });
@@ -137,7 +139,7 @@ test "non-TTY: empty input uses default false" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(&output_writer, &input_reader, .{
+    const result = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Continue?",
         .default = false,
     });
@@ -150,7 +152,7 @@ test "non-TTY: EOF uses default" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(&output_writer, &input_reader, .{
+    const result = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Continue?",
         .default = true,
     });
@@ -163,7 +165,7 @@ test "prompt shows Y/n when default is true" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    _ = try confirm(&output_writer, &input_reader, .{
+    _ = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Ok?",
         .default = true,
     });
@@ -178,7 +180,7 @@ test "prompt shows y/N when default is false" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    _ = try confirm(&output_writer, &input_reader, .{
+    _ = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Ok?",
         .default = false,
     });

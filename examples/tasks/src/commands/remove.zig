@@ -26,13 +26,17 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         return;
     };
 
-    const writer = context.stdout();
-    const reader = context.stdin();
+    const p: prompts.Prompts = .{
+        .writer = context.stdout(),
+        .reader = context.stdin(),
+        .allocator = allocator,
+        .theme = context.theme,
+    };
 
     const msg = try std.fmt.allocPrint(allocator, "Remove task #{d}: {s}?", .{ task.id, task.title });
     defer allocator.free(msg);
 
-    const confirmed = prompts.confirm(writer, reader, .{
+    const confirmed = p.confirm(.{
         .message = msg,
         .default = false,
     }) catch true; // Default to yes on non-interactive
