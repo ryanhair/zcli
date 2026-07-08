@@ -38,7 +38,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var data = parsed.value;
 
     // Import with progress bar
-    var bar = progress.progressBar(context.io, .{
+    var bar = try progress.progressBar(context.allocator, context.io, .{
         .total = imported.value.tasks.len,
         .show_eta = true,
         .theme = context.theme,

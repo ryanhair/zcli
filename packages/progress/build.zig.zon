@@ -6,6 +6,8 @@
     .dependencies = .{
         .theme = .{ .path = "../theme" },
         .terminal = .{ .path = "../terminal" },
+        .ui = .{ .path = "../ui" },
+        .vterm = .{ .path = "../vterm" },
     },
     .paths = .{
         "build.zig",

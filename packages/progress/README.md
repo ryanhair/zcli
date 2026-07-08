@@ -6,9 +6,10 @@ Progress indicators for Zig CLIs: animated spinners for indeterminate work and p
 
 - **Spinners**: nine styles (`dots`, `dots2`, `dots3`, `line`, `arrow`, `bounce`, `clock`, `moon`, `simple`), each with a tuned frame interval
 - **Progress bars**: percentage, current/total, ETA, elapsed time, and rate — all opt-in via `ProgressBarConfig`
-- **TTY-aware**: non-TTY output (pipes, CI logs) gets static lines instead of control codes
+- **Multi-bars**: stacked labeled bars for parallel work, thread-safe updates
+- **TTY-aware**: piped output (pipes, CI logs) degrades to plain lines — spinners print one line per message, bars a single finish line
 - **Result symbols**: `succeed`/`fail`/`warn`/`info` finish states with themed colors and Unicode→ASCII fallback
-- **Cursor hygiene**: the cursor is hidden while a spinner runs and restored on any finish path (configurable)
+- **Engine-rendered**: frames run on the [`ui`](../ui/) layout engine — diffed repaints, resize re-layout, and cursor hygiene are the engine's job; finish results are emitted as static lines that flow into scrollback
 
 ## Installation
 
@@ -33,13 +34,13 @@ exe.root_module.addImport("progress", progress_dep.module("progress"));
 const progress = @import("progress");
 
 // Spinner — indeterminate work
-var spinner = progress.spinner(io, .{ .style = .dots });
+var spinner = try progress.spinner(allocator, io, .{ .style = .dots });
 spinner.start("Connecting to server...");
-spinner.setText("Uploading changes...");
+spinner.setMessage("Uploading changes...");
 spinner.succeed("Synced successfully"); // or .fail() / .warn() / .info() / .stop()
 
 // Progress bar — known total
-var bar = progress.progressBar(io, .{
+var bar = try progress.progressBar(allocator, io, .{
     .total = items.len,
     .show_eta = true,
 });
@@ -47,7 +48,14 @@ for (items, 0..) |item, i| {
     process(item);
     bar.update(i + 1, null);
 }
-bar.finish();
+bar.finish(); // the final frame persists on screen
+
+// Multi-bar — parallel work (updates may come from worker threads)
+var mb = try progress.multiBar(allocator, io, .{});
+defer mb.deinit();
+const api = try mb.add("api.tar.gz", total_bytes);
+mb.set(api, downloaded);
+mb.finish();
 ```
 
 See [examples/tasks](../../examples/tasks/) (`sync`, `import` commands) for these running in a real CLI.
@@ -62,7 +70,7 @@ the detected capabilities (including `NO_COLOR` and true color):
 
 ```zig
 // In a zcli command — the context already carries the app theme:
-var spinner = progress.spinner(io, .{ .theme = context.theme });
+var spinner = try progress.spinner(context.allocator, io, .{ .theme = context.theme });
 ```
 
 Standalone, the default (`ThemeContext.fallback`) is the default theme at
@@ -70,5 +78,6 @@ ANSI-16. Token defaults are defined in [`theme`](../theme/)'s `ProgressTheme`.
 
 ## Dependencies
 
+- [`ui`](../ui/) — the layout engine that renders every frame
 - [`theme`](../theme/) — colors for the spinner and finish symbols
 - [`terminal`](../terminal/) — TTY detection and Unicode/ASCII symbol fallback

@@ -281,6 +281,47 @@ test "height-only change does not disturb the static tail" {
     try testing.expect(h.vt.containsText("running"));
 }
 
+test "non-interactive App degrades to plain line output" {
+    var aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer aw.deinit();
+    var app = try ui.App.init(testing.allocator, &aw.writer, .{
+        .term_size = .{ .w = 30, .h = 8 },
+        .interactive = false,
+    });
+    defer app.deinit();
+
+    const a = app.arena();
+    try app.frame(try ui.column(a, .{}, &.{ui.text(.{ .bold = true }, "live")}));
+    try testing.expectEqual(@as(usize, 0), aw.written().len);
+
+    try app.emit("plain {s}", .{"line"});
+    try testing.expectEqualStrings("plain line\n", aw.written());
+
+    app.deinit();
+    app = try ui.App.init(testing.allocator, &aw.writer, .{ .interactive = false });
+    // No escapes anywhere: no cursor hide/show, no clears, no SGR.
+    try testing.expect(std.mem.indexOfScalar(u8, aw.written(), 0x1b) == null);
+}
+
+test "clear erases the live region leaving nothing" {
+    var h = try Harness.init(30, 8);
+    defer h.deinit();
+
+    try h.app.frame(try h.statusFrame("busy"));
+    h.replay();
+    try testing.expect(h.vt.containsText("busy"));
+
+    try h.app.clear();
+    h.replay();
+    try testing.expect(!h.vt.containsText("busy"));
+    try testing.expectEqual(@as(u16, 0), h.app.live_rows);
+    // A following emit must not resurrect the region.
+    try h.app.emit("done", .{});
+    h.replay();
+    try testing.expect(h.vt.containsText("done"));
+    try testing.expect(!h.vt.containsText("busy"));
+}
+
 test "deinit shows the cursor and parks below the live region" {
     var h = try Harness.init(30, 8);
     defer h.deinit();
