@@ -11,6 +11,8 @@ pub const MultiSelectConfig = struct {
     defaults: ?[]const bool = null,
     prefix: []const u8 = "? ",
     unicode: bool = true,
+    /// Theme + terminal capabilities for styling; zcli commands pass `context.theme`.
+    theme: prompts.theme.ThemeContext = prompts.default_style,
 };
 
 /// Prompt to select multiple items. Returns owned slice of selected indices.
@@ -102,7 +104,9 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
                     try lr.eraseRegion(writer, rows);
                     // Show summary
                     var first = true;
-                    try writer.writeAll("  \x1b[36m");
+                    var obuf: [64]u8 = undefined;
+                    const open = prompts.openSeq(&obuf, config.theme, config.theme.promptTokens().selected);
+                    try writer.print("  {s}", .{open});
                     for (config.choices, 0..) |choice, i| {
                         if (selected[i]) {
                             if (!first) try writer.writeAll(", ");
@@ -110,7 +114,7 @@ pub fn multiSelect(writer: anytype, reader: anytype, allocator: std.mem.Allocato
                             first = false;
                         }
                     }
-                    try writer.writeAll("\x1b[0m\r\n");
+                    try writer.print("{s}\r\n", .{prompts.closeSeq(open)});
 
                     // Collect selected indices
                     var result = std.ArrayList(usize).empty;
@@ -186,19 +190,26 @@ pub fn renderList(
     const list_budget = @max((height -| 1) -| rows, 1);
     const win = lr.viewport(config.choices.len, cursor, list_budget, &counter, Counter.at);
 
+    const tokens = config.theme.promptTokens();
     for (win.start..win.end) |i| {
         const marker = if (selected[i]) sel_sym else unsel_sym;
-        var pbuf: [64]u8 = undefined;
-        const style: lr.ItemStyle = if (i == cursor)
-            .{
-                .first_prefix = std.fmt.bufPrint(&pbuf, "  \x1b[36m{s}\x1b[0m \x1b[32m{s}\x1b[0m ", .{ cursor_sym, marker }) catch "  ",
-                .prefix_w = prefix_w,
-            }
-        else
-            .{
-                .first_prefix = std.fmt.bufPrint(&pbuf, "    {s} ", .{marker}) catch "    ",
+        var pbuf: [192]u8 = undefined;
+        var cbuf: [64]u8 = undefined;
+        var mbuf: [64]u8 = undefined;
+        const style: lr.ItemStyle = if (i == cursor) blk: {
+            const cur_open = prompts.openSeq(&cbuf, config.theme, tokens.cursor);
+            const mark_open = prompts.openSeq(&mbuf, config.theme, tokens.marker);
+            break :blk .{
+                .first_prefix = std.fmt.bufPrint(&pbuf, "  {s}{s}{s} {s}{s}{s} ", .{
+                    cur_open,  cursor_sym, prompts.closeSeq(cur_open),
+                    mark_open, marker,     prompts.closeSeq(mark_open),
+                }) catch "  ",
                 .prefix_w = prefix_w,
             };
+        } else .{
+            .first_prefix = std.fmt.bufPrint(&pbuf, "    {s} ", .{marker}) catch "    ",
+            .prefix_w = prefix_w,
+        };
         rows += try lr.renderItem(writer, &first_line, style, config.choices[i], avail);
     }
 
@@ -313,6 +324,32 @@ test "renderList: a wrapping option counts as multiple physical rows" {
     // Row count must equal the number of CRLF-separated lines actually emitted.
     const lines = std.mem.count(u8, r.text, "\r\n") + 1;
     try std.testing.expectEqual(lines, r.rows);
+}
+
+test "renderList: cursor row styles through the cursor and marker tokens" {
+    var buf: [1024]u8 = undefined;
+    const custom = prompts.theme.Theme{
+        .prompts = .{
+            .cursor = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 9, .g = 8, .b = 7 } } } },
+            .marker = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 4, .g = 5, .b = 6 } } } },
+        },
+    };
+    const ctx = prompts.theme.ThemeContext{
+        .theme = &custom,
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+    };
+    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = ctx }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;9;8;7") != null); // cursor glyph
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;4;5;6") != null); // marker
+}
+
+test "renderList: no_color renders without any escapes" {
+    var buf: [1024]u8 = undefined;
+    const ctx = prompts.theme.ThemeContext{
+        .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
+    };
+    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = ctx }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "\x1b[") == null);
 }
 
 test "renderList: continuation lines hang-indent under the option text" {

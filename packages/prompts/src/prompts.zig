@@ -13,6 +13,29 @@
 
 const std = @import("std");
 pub const terminal = @import("terminal");
+pub const theme = @import("theme");
+
+/// Style context used when the caller doesn't pass one: the default theme at
+/// ANSI-16, matching the package's historical fixed colors. zcli applications
+/// pass `context.theme` instead, which carries the app's theme and the
+/// detected terminal capabilities (including NO_COLOR).
+pub const default_style: theme.ThemeContext = .{
+    .caps = .{ .capability = .ansi_16, .is_tty = true, .color_enabled = true },
+};
+
+/// Render `ref`'s opening escape sequence into `buf`, returning the (possibly
+/// empty) slice. Pair every non-empty result with `closeSeq`.
+pub fn openSeq(buf: []u8, ctx: theme.ThemeContext, ref: theme.StyleRef) []const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    const style = ctx.resolveRef(ref);
+    const wrote = style.writeSequence(&w, ctx.capability()) catch false;
+    return if (wrote) w.buffered() else "";
+}
+
+/// The reset matching a sequence produced by `openSeq` ("" when nothing was opened).
+pub fn closeSeq(open: []const u8) []const u8 {
+    return if (open.len > 0) "\x1b[0m" else "";
+}
 
 /// Shared rendering machinery for the list-style prompts (wrapping, viewport,
 /// resize-safe erase).

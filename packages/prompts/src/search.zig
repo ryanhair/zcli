@@ -10,6 +10,8 @@ pub const SearchConfig = struct {
     choices: []const []const u8,
     prefix: []const u8 = "? ",
     unicode: bool = true,
+    /// Theme + terminal capabilities for styling; zcli commands pass `context.theme`.
+    theme: prompts.theme.ThemeContext = prompts.default_style,
 };
 
 /// Prompt with search filtering. Returns the index of the selected item in the original choices array.
@@ -74,7 +76,9 @@ pub fn search(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
                     if (filtered.len > 0) {
                         const selected_idx = filtered[cursor];
                         try lr.eraseRegion(writer, rows);
-                        try writer.print("  \x1b[36m{s}\x1b[0m\r\n", .{config.choices[selected_idx]});
+                        var obuf: [64]u8 = undefined;
+                        const open = prompts.openSeq(&obuf, config.theme, config.theme.promptTokens().selected);
+                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[selected_idx], prompts.closeSeq(open) });
                         return selected_idx;
                     }
                 },
@@ -158,19 +162,39 @@ pub fn renderSearch(
 
     var rows: usize = 0;
     var first_line = true;
+    const tokens = config.theme.promptTokens();
 
     // Header line.
     const hprefix_w = terminal.displayWidth(config.prefix);
     rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = config.prefix, .prefix_w = hprefix_w }, config.message, @max(usable -| hprefix_w, 1));
 
-    // Search-input line: "  Search: <query>".
+    // Search-input line: "  Search: <query>". The hint style rides in the
+    // prefix (emitted verbatim), not the label: the wrapper drops escapes at
+    // the edges of labels (it measures them as zero-width and slices lines
+    // from the first visible grapheme).
     const search_prefix = "  Search: ";
     const search_prefix_w = terminal.displayWidth(search_prefix);
-    const query_label = if (query.len > 0) query else "\x1b[2mtype to filter\x1b[0m";
-    rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = search_prefix, .prefix_w = search_prefix_w }, query_label, @max(usable -| search_prefix_w, 1));
+    var hint_open_buf: [64]u8 = undefined;
+    var hint_prefix_buf: [96]u8 = undefined;
+    const hint_open = prompts.openSeq(&hint_open_buf, config.theme, tokens.hint);
+    if (query.len > 0) {
+        rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = search_prefix, .prefix_w = search_prefix_w }, query, @max(usable -| search_prefix_w, 1));
+    } else {
+        const styled_prefix = std.fmt.bufPrint(&hint_prefix_buf, "{s}{s}", .{ search_prefix, hint_open }) catch search_prefix;
+        rows += try lr.renderItem(writer, &first_line, .{
+            .first_prefix = styled_prefix,
+            .prefix_w = search_prefix_w,
+            .line_close = prompts.closeSeq(hint_open),
+        }, "type to filter", @max(usable -| search_prefix_w, 1));
+    }
 
     if (filtered.len == 0) {
-        rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = "  ", .prefix_w = 2 }, "\x1b[2mno matches\x1b[0m", avail);
+        const nm_prefix = std.fmt.bufPrint(&hint_prefix_buf, "  {s}", .{hint_open}) catch "  ";
+        rows += try lr.renderItem(writer, &first_line, .{
+            .first_prefix = nm_prefix,
+            .prefix_w = 2,
+            .line_close = prompts.closeSeq(hint_open),
+        }, "no matches", avail);
         return rows;
     }
 
@@ -190,15 +214,16 @@ pub fn renderSearch(
     for (win.start..win.end) |i| {
         const choice = config.choices[filtered[i]];
         var pbuf: [32]u8 = undefined;
-        const style: lr.ItemStyle = if (i == cursor)
-            .{
-                .line_open = "\x1b[36m",
+        var obuf: [64]u8 = undefined;
+        const style: lr.ItemStyle = if (i == cursor) blk: {
+            const open = prompts.openSeq(&obuf, config.theme, tokens.selected);
+            break :blk .{
+                .line_open = open,
                 .first_prefix = std.fmt.bufPrint(&pbuf, "  {s} ", .{cursor_sym}) catch "  ",
                 .prefix_w = prefix_w,
-                .line_close = "\x1b[0m",
-            }
-        else
-            .{ .first_prefix = "    ", .prefix_w = prefix_w };
+                .line_close = prompts.closeSeq(open),
+            };
+        } else .{ .first_prefix = "    ", .prefix_w = prefix_w };
         rows += try lr.renderItem(writer, &first_line, style, choice, avail);
     }
 
@@ -260,6 +285,30 @@ test "renderSearch: header + search line + results, row count matches lines" {
     try std.testing.expectEqual(@as(usize, 5), r.rows);
     const lines = std.mem.count(u8, r.text, "\r\n") + 1;
     try std.testing.expectEqual(lines, r.rows);
+}
+
+test "renderSearch: placeholder styles through the hint token; no_color is escape-free" {
+    var buf: [4096]u8 = undefined;
+    const filtered = [_]usize{ 0, 1 };
+
+    // Custom hint color flows into the placeholder
+    const custom = prompts.theme.Theme{
+        .prompts = .{ .hint = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 7, .g = 7, .b = 7 } } } } },
+    };
+    const color_ctx = prompts.theme.ThemeContext{
+        .theme = &custom,
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+    };
+    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = color_ctx }, "", &filtered, 0, .{ .row = 24, .col = 80 });
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;7;7;7") != null);
+
+    // no_color renders the placeholder and cursor row without escapes
+    const plain_ctx = prompts.theme.ThemeContext{
+        .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
+    };
+    const p = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = plain_ctx }, "", &filtered, 0, .{ .row = 24, .col = 80 });
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "type to filter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, p.text, "\x1b[") == null);
 }
 
 test "renderSearch: no matches renders a message row" {

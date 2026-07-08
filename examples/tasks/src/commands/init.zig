@@ -42,6 +42,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const method_idx = try prompts.select(writer, reader, .{
         .message = "Methodology:",
         .choices = &.{ "Kanban", "Scrum", "None" },
+        .theme = context.theme,
     });
     _ = method_idx;
 
