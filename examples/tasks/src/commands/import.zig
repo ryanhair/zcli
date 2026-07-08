@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const progress = zcli.progress;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -38,10 +37,9 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var data = parsed.value;
 
     // Import with progress bar
-    var bar = progress.progressBar(context.io, .{
+    var bar = context.progress().progressBar(.{
         .total = imported.value.tasks.len,
         .show_eta = true,
-        .theme = context.theme,
     });
 
     var tasks_list = std.ArrayList(store.Task).empty;

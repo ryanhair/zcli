@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
 
     // Main progress module
     const progress_mod = b.addModule("progress", .{
-        .root_source_file = b.path("src/progress.zig"),
+        .root_source_file = b.path("src/Progress.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
 
     const test_mod = b.addModule("test-progress", .{
-        .root_source_file = b.path("src/progress.zig"),
+        .root_source_file = b.path("src/Progress.zig"),
         .target = target,
         .optimize = optimize,
     });

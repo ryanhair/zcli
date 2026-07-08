@@ -166,6 +166,17 @@ pub fn ContextFor(comptime plugins: []const type) type {
             };
         }
 
+        /// A `Progress` instance pre-wired to this command's environment:
+        /// stdout, the framework `io`, and the app theme. Call `.spinner(...)`
+        /// or `.progressBar(...)` on the result.
+        pub fn progress(self: *Self) zcli.Progress {
+            return .{
+                .writer = self.stdout(),
+                .io = self.io,
+                .theme = self.theme,
+            };
+        }
+
         /// Get command description by path (for plugins)
         pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
             for (self.plugin_command_info) |cmd_info| {
