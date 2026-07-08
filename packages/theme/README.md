@@ -1,293 +1,154 @@
 # theme
 
-A powerful, zero-cost CLI theming system for Zig. The `theme` package provides compile-time style generation, runtime terminal capability detection, and an intuitive fluent API for creating beautiful CLI output.
+A CLI design system for Zig. Define a `Theme` once — a palette mapping
+semantic roles to styles, plus component tokens — and every render path
+(help output, prompts, progress, your own commands) follows it, degrading
+gracefully from true color down to plain text.
 
 ## Features
 
-- **Fluent API**: Intuitive method chaining like `.red().bold().underline()`
-- **Zero-Cost Abstractions**: Styling computed at compile-time where possible
-- **Terminal Capability Detection**: Automatic detection of color support (16-color, 256-color, true color)
-- **Graceful Degradation**: Colors downgrade automatically for limited terminals
-- **Semantic Theming**: Meaningful roles like `.success()`, `.error()`, `.warning()` with accessible colors
-- **Type-Safe**: Generic `Themed(T)` interface works with any content type
-- **Cross-Platform**: Windows, macOS, and Linux terminal detection
+- **Semantic roles**: style by meaning — `.success()`, `.command()`, `.err()` —
+  and let the active palette decide what that looks like
+- **One theme, applied everywhere**: a zcli app declares `pub const zcli_theme`
+  in its root file; help, prompts, and progress pick it up automatically
+- **Component tokens**: prompt cursor, selection highlight, spinner color —
+  all reference palette roles by default, all individually overridable
+- **Terminal capability detection**: NO_COLOR, COLORTERM, TERM, and platform
+  signals; colors degrade true color → 256 → 16 → plain automatically
+- **Fluent API**: `styled("text").red().bold().underline()`
+- **Cross-platform**: Windows, macOS, and Linux terminal detection
 
-## Installation
+## Theming a zcli app
 
-Add theme to your `build.zig.zon`:
+Declare a theme in your app's root source file (next to `main`), the same way
+`std_options` works:
 
 ```zig
-.dependencies = .{
-    .theme = .{
-        .path = "path/to/theme",
+const zcli = @import("zcli");
+
+pub const zcli_theme: zcli.Theme = .{
+    .palette = .{
+        // Brand your CLI: command names in help, highlights, etc.
+        .command = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 179, .b = 71 } } },
+        .accent = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 179, .b = 71 } } },
     },
-},
+};
 ```
 
-In your `build.zig`:
+That's the whole integration: `--help` renders command names in your color,
+and every semantic style in your commands resolves through your palette.
+Inside a command, the ready-to-use handle is `context.theme`:
 
 ```zig
-const theme = b.dependency("theme", .{
-    .target = target,
-    .optimize = optimize,
-});
-exe.root_module.addImport("theme", theme.module("theme"));
-```
+const styled = zcli.theme.styled;
 
-## Quick Start
-
-```zig
-const std = @import("std");
-const theme = @import("theme");
-
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-
-    var stdout_buf: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
-    const stdout = &stdout_writer.interface;
-
-    // Initialize theme context with automatic detection
-    const theme_ctx = theme.Theme.init(init.environ_map, io);
-
-    // Basic coloring
-    try theme.theme("Error: ").red().bold().render(stdout, &theme_ctx);
-    try stdout.print("Something went wrong\n", .{});
-
-    // Semantic styling
-    try theme.theme("Success!").success().render(stdout, &theme_ctx);
-    try stdout.writeAll("\n");
-
-    // RGB colors (true color terminals)
-    try theme.theme("Custom color").rgb(255, 100, 50).render(stdout, &theme_ctx);
-    try stdout.writeAll("\n");
-
-    // Background colors
-    try theme.theme("Highlighted").onYellow().black().render(stdout, &theme_ctx);
-    try stdout.writeAll("\n");
-
-    // Writers are buffered in Zig 0.16 — flush before exit.
-    try stdout.flush();
+pub fn execute(args: Args, options: Options, context: *Context) !void {
+    const out = context.stdout();
+    try styled("deploy complete").success().render(out, &context.theme);
+    try styled(args.host).value().render(out, &context.theme);
 }
 ```
 
-## API Reference
+## The pieces
 
-### Creating Themed Content
+### Palette: role → style
 
-```zig
-const styled = theme.theme("Your text");
-```
+Every semantic role maps to a full `Style` — color *and* attributes. The
+defaults are accessible colors on a dark background; `header` is
+attribute-only (bold) so it reads on any background.
 
-The `theme()` function accepts any content type and returns a `Themed(T)` wrapper.
+| Role | Default | | Role | Default |
+|------|---------|-|------|---------|
+| `success` | green, bold | | `command` | turquoise |
+| `err` | coral, bold | | `flag` | orchid |
+| `warning` | amber, bold | | `path` | light cyan |
+| `info` | blue, bold | | `value` | lawn green |
+| `muted` | gray, dim | | `code` | purple |
+| `header` | bold (no color) | | `link` | sky blue, italic |
+| `accent` | cyan | | | |
 
-### Foreground Colors
+### Component tokens
 
-**Basic Colors (ANSI 16)**
-```zig
-.black()    .red()      .green()    .yellow()
-.blue()     .magenta()  .cyan()     .white()
-```
-
-**Bright Colors**
-```zig
-.brightBlack()    .brightRed()      .brightGreen()    .brightYellow()
-.brightBlue()     .brightMagenta()  .brightCyan()     .brightWhite()
-```
-
-**Convenience Aliases**
-```zig
-.gray()   // Same as .brightBlack()
-.grey()   // Same as .brightBlack()
-```
-
-**Advanced Colors**
-```zig
-.rgb(255, 128, 64)    // True color RGB
-.hex("#FF8040")       // Hex color (compile-time only)
-.color256(196)        // 256-color palette index
-```
-
-### Background Colors
-
-All foreground colors have background equivalents prefixed with `on`:
+`Theme.prompts` and `Theme.progress` hold `StyleRef` tokens — each is either a
+role reference (the default) or a literal style:
 
 ```zig
-.onBlack()    .onRed()      .onGreen()    .onYellow()
-.onBlue()     .onMagenta()  .onCyan()     .onWhite()
-.onBrightBlack()  .onBrightRed()  // ... etc
-
-.onRgb(100, 150, 200)   // RGB background
-.onHex("#FF8040")       // Hex background (compile-time only)
-.onColor256(42)         // 256-color background
+pub const zcli_theme: zcli.Theme = .{
+    .palette = .{ .accent = .{ .foreground = .cyan } },
+    .prompts = .{
+        // Defaults shown: cursor/selected follow accent, marker follows
+        // success, hint follows muted. Pin any one independently:
+        .selected = .{ .style = .{ .foreground = .yellow, .bold = true } },
+    },
+};
 ```
 
-### Text Styles
+### ThemeContext: what render paths consume
+
+`ThemeContext` pairs the theme with detected terminal capabilities. zcli
+builds it for you as `context.theme`; standalone users build their own:
 
 ```zig
-.bold()           // Bold text
-.dim()            // Dimmed/faint text
-.italic()         // Italic text
-.underline()      // Underlined text
-.strikethrough()  // Strikethrough text
+const theme = @import("theme");
+
+const caps = theme.Capabilities.init(&environ_map, io);
+const ctx = theme.ThemeContext{ .caps = caps }; // default theme
+try theme.styled("ok").success().render(writer, &ctx);
 ```
 
-### Semantic Styling
+`Capabilities.init` honors `NO_COLOR`, `COLORTERM`, `TERM`, TTY-ness, and
+platform-specific signals (Windows Terminal, iTerm, Apple Terminal, VS Code).
 
-The `theme` package includes carefully designed semantic colors for common CLI patterns:
-
-**Core Roles**
-```zig
-.success()   // Green - successful operations
-.err()       // Red - errors and failures
-.warning()   // Yellow - warnings and cautions
-.info()      // Blue - informational messages
-.muted()     // Gray - less important text
-```
-
-**CLI-Specific Roles**
-```zig
-.command()   // Turquoise - command names
-.flag()      // Orchid - flags and options
-.path()      // Cyan - file paths
-.value()     // Green - user input/values
-.header()    // White - section headers
-.link()      // Light blue - URLs
-```
-
-### Rendering
-
-**Runtime Rendering**
-```zig
-// Render to any writer
-try styled.render(writer, &theme_ctx);
-
-// Get as allocated string
-const str = try styled.toString(allocator, &theme_ctx);
-defer allocator.free(str);
-```
-
-**Compile-Time Rendering**
-```zig
-const styled = comptime theme.theme("Optimized").red().bold();
-try styled.renderComptime(writer, .ansi_16);
-```
-
-### Method Chaining
-
-All methods return a new `Themed` instance, enabling fluent chaining:
+## Fluent styling
 
 ```zig
-const styled = theme.theme("Critical Error!")
-    .brightRed()
-    .onWhite()
-    .bold()
-    .underline();
+const styled = theme.styled;
+
+// Colors and attributes
+try styled("Error").red().bold().render(w, &ctx);
+try styled("Custom").rgb(255, 100, 50).underline().render(w, &ctx);
+try styled("Warning").onYellow().black().render(w, &ctx);
+
+// Semantic roles — resolved through ctx's palette at render time
+try styled("Build passed").success().render(w, &ctx);
+try styled("git commit").command().render(w, &ctx);
+
+// Roles and explicit settings compose; explicit wins
+try styled("important").err().underline().render(w, &ctx);
+
+// Any content type
+try styled(@as(u32, 42)).value().render(w, &ctx);
 ```
 
-### Utility Methods
+Semantic methods only *tag* the value with a role; the role is resolved
+against the active palette when `render` runs. That's what lets one theme
+restyle code that was written long before the theme existed.
+
+## Degradation
+
+A palette color is emitted at the terminal's actual capability:
+
+| Capability | `rgb(255, 105, 97)` renders as |
+|------------|--------------------------------|
+| `true_color` | `38;2;255;105;97` (exact) |
+| `ansi_256` | nearest 256-palette index |
+| `ansi_16` | nearest of the 16 ANSI colors |
+| `no_color` | nothing (plain text) |
+
+## Standalone installation
+
+The package is self-contained (it ships inside zcli but has no dependency on
+it). Add it to `build.zig.zon` and import module `theme`:
 
 ```zig
-.reset()                    // Remove all styling
-.hasStyle()                 // Check if any styling is applied
-.clone()                    // Clone the styled content
-.withContent(new_content)   // New content with same styling
+.dependencies = .{
+    .theme = .{ .path = "path/to/packages/theme" },
+},
 ```
 
-## Terminal Capability Detection
+## Design notes
 
-The `theme` package automatically detects terminal capabilities:
-
-In a zcli command you already have one: `context.theme`. Standalone:
-
-```zig
-const theme_ctx = theme.Theme.init(init.environ_map, io);
-
-// Check capabilities
-if (theme_ctx.supportsColor()) { ... }
-if (theme_ctx.supports256Color()) { ... }
-if (theme_ctx.supportsTrueColor()) { ... }
-
-// Get capability as string (for debugging)
-std.debug.print("Terminal: {s}\n", .{theme_ctx.capabilityString()});
-```
-
-### Capability Levels
-
-| Level | Description | Colors |
-|-------|-------------|--------|
-| `no_color` | No color support | Plain text only |
-| `ansi_16` | Basic ANSI | 16 colors |
-| `ansi_256` | Extended palette | 256 colors |
-| `true_color` | Full RGB | 16.7 million colors |
-
-### Manual Capability Override
-
-```zig
-// Force specific capability
-const theme_ctx = theme.Theme.initWithCapability(.true_color, io);
-
-// Force color output (override TTY detection)
-const theme_ctx = theme.Theme.initForced(init.environ_map, io, true);
-```
-
-### Environment Detection
-
-The `theme` package respects standard environment variables:
-
-- `NO_COLOR` - Disables all color output
-- `COLORTERM=truecolor` or `COLORTERM=24bit` - Enables true color
-- `TERM` - Terminal type detection (xterm-256color, etc.)
-- `TERM_PROGRAM` - Specific terminal detection (iTerm2, VS Code, etc.)
-- `WT_SESSION` - Windows Terminal detection
-
-## Color Conversion
-
-The `theme` package automatically converts colors for terminal capability:
-
-- True color terminals: Full RGB values
-- 256-color terminals: Nearest palette match
-- 16-color terminals: Smart approximation to closest ANSI color
-
-```zig
-// This RGB color will automatically adapt:
-// - True color: exact RGB(255, 100, 50)
-// - 256-color: closest palette index
-// - 16-color: approximated to red or yellow
-try theme.theme("Adaptive").rgb(255, 100, 50).render(writer, &theme_ctx);
-```
-
-## Semantic Color Palette
-
-The semantic colors use carefully designed RGB values for accessibility:
-
-| Role | RGB | Description |
-|------|-----|-------------|
-| success | `76, 217, 100` | Bright green |
-| err | `255, 105, 97` | Coral red |
-| warning | `255, 206, 84` | Bright amber |
-| info | `116, 169, 250` | Light blue |
-| muted | `156, 163, 175` | Subtle gray |
-| command | `64, 224, 208` | Turquoise |
-| flag | `218, 112, 214` | Orchid |
-| path | `100, 221, 221` | Light cyan |
-| value | `124, 252, 0` | Lawn green |
-| header | `255, 255, 255` | White |
-| link | `135, 206, 250` | Light sky blue |
-
-## Testing
-
-Run the test suite:
-
-```bash
-cd packages/theme
-zig build test
-```
-
-## Examples
-
-See [examples/tasks](../../examples/tasks/) — its commands use theme's semantic roles throughout (via `context.theme`).
-
-## License
-
-MIT License - See LICENSE file for details.
+See `docs/adr/0012-theme-system.md` in the repository root for the full
+rationale: the token hierarchy, the root-declaration idiom, why the theme is
+comptime-known (zero-cost themed help), and what's deliberately deferred
+(runtime theme switching, light/dark adaptation).

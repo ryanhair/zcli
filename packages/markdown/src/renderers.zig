@@ -261,8 +261,8 @@ test "render header" {
     const palette = semantic.Palette{};
     const result = comptime renderHeader(1, "Hello", palette, .true_color);
     try std.testing.expect(std.mem.indexOf(u8, result, "Hello") != null);
-    // The header role's full style (bold + white) is applied as one sequence
-    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1;38;2;255;255;255m") != null);
+    // The header role's style (attribute-only bold by default) is applied
+    try std.testing.expect(std.mem.indexOf(u8, result, "\x1b[1m") != null);
 }
 
 test "render code block" {

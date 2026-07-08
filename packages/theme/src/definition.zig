@@ -46,7 +46,9 @@ pub const Palette = struct {
     path: Style = .{ .foreground = .{ .rgb = .{ .r = 100, .g = 221, .b = 221 } } },
     value: Style = .{ .foreground = .{ .rgb = .{ .r = 124, .g = 252, .b = 0 } } },
     code: Style = .{ .foreground = .{ .rgb = .{ .r = 168, .g = 136, .b = 248 } } },
-    header: Style = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 255, .b = 255 } }, .bold = true },
+    // Attribute-only (no foreground): headers stay readable on light and dark
+    // backgrounds alike, matching how plain bold section headers behave.
+    header: Style = .{ .bold = true },
     link: Style = .{ .foreground = .{ .rgb = .{ .r = 135, .g = 206, .b = 250 } }, .italic = true },
     accent: Style = .{ .foreground = .{ .rgb = .{ .r = 0, .g = 255, .b = 255 } } },
 
@@ -128,7 +130,7 @@ test "palette get returns the field for every role" {
         const role = @field(SemanticRole, field.name);
         const style = palette.get(role);
         try testing.expect(std.meta.eql(style, @field(palette, field.name)));
-        try testing.expect(style.foreground != null);
+        try testing.expect(style.isVisible(.true_color));
     }
 }
 

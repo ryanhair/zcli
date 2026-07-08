@@ -984,6 +984,131 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
 }
 
+test "root zcli_theme declaration themes help output" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "demo", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const proj_abs = try tmpSubdirAbs(a, tmp, "demo");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // Declare a custom theme in the app root — the std_options-style hook.
+    // Command names in help should render in this color (tomato, 255;99;71).
+    try replaceInFile(proj, a, "src/main.zig",
+        \\const registry = @import("command_registry");
+    ,
+        \\const registry = @import("command_registry");
+        \\const zcli = @import("zcli");
+        \\
+        \\pub const zcli_theme: zcli.Theme = .{
+        \\    .palette = .{ .command = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 99, .b = 71 } } } },
+        \\};
+    );
+
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    // Piped (non-TTY) output stays completely plain.
+    {
+        var r = try run(proj, &.{ demo_bin, "--help" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stderr, "hello");
+        try testing.expect(std.mem.indexOf(u8, r.stderr, "\x1b[") == null);
+    }
+
+    // The PTY harness needs an absolute binary path: ConPTY's CreateProcessW
+    // resolves a relative command-line path against the parent's cwd, not the
+    // child's `cwd`.
+    const demo_abs = try std.fs.path.join(a, &.{ proj_abs, "zig-out", "bin", "demo" ++ exe_ext });
+
+    // Under a PTY in a truecolor-capable environment, help renders command
+    // names in the custom palette color.
+    {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("COLORTERM", "truecolor"); // truecolor signal (POSIX)
+        try env.put("WT_SESSION", "1"); // truecolor signal (Windows/ConPTY)
+        // A replaced environment must still carry SystemRoot on Windows —
+        // process startup and console plumbing consult it, and dropping it is
+        // a classic source of child-process failures.
+        if (builtin.os.tag == .windows) try env.put("SystemRoot", "C:\\Windows");
+
+        var script = harness.InteractiveScript.init(testing.allocator);
+        defer script.deinit();
+        _ = script.expect("USAGE:");
+
+        var result = harness.runInteractive(
+            testing.allocator,
+            io,
+            &.{ demo_abs, "--help" },
+            script,
+            .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
+        ) catch |err| switch (err) {
+            // PTY allocation can be denied in some sandboxes; skip rather than
+            // fail (CI greps the log for this line and fails if the tier
+            // silently skipped).
+            error.PtyAllocationFailed => {
+                std.debug.print("runInteractive unavailable: {any}\n", .{err});
+                return;
+            },
+            else => return err,
+        };
+        defer result.deinit();
+        try expectContains(result.output, "38;2;255;99;71");
+    }
+
+    // NO_COLOR wins even on a color-capable PTY.
+    {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("COLORTERM", "truecolor");
+        try env.put("WT_SESSION", "1");
+        try env.put("NO_COLOR", "1");
+        if (builtin.os.tag == .windows) try env.put("SystemRoot", "C:\\Windows");
+
+        var script = harness.InteractiveScript.init(testing.allocator);
+        defer script.deinit();
+        _ = script.expect("USAGE:");
+
+        var result = harness.runInteractive(
+            testing.allocator,
+            io,
+            &.{ demo_abs, "--help" },
+            script,
+            .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
+        ) catch |err| switch (err) {
+            error.PtyAllocationFailed => {
+                std.debug.print("runInteractive unavailable: {any}\n", .{err});
+                return;
+            },
+            else => return err,
+        };
+        defer result.deinit();
+        // Assert the theme's color is gone, not that the stream has zero
+        // escapes: ConPTY re-renders child output as VT screen-diff frames
+        // (cursor, positioning, resets), so escape-free PTY output is
+        // impossible on Windows even when the child writes plain text.
+        try testing.expect(std.mem.indexOf(u8, result.output, "38;2;255;99;71") == null);
+    }
+}
+
 test "scaffolded commands are unit-testable via zig build test" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
