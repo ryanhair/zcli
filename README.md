@@ -205,11 +205,11 @@ Also: `confirm`, `multiSelect`, `search` (type-to-filter), `number` (range-valid
 ```zig
 const progress = zcli.progress;  // or standalone: @import("progress")
 
-var spinner = progress.spinner(io, .{ .style = .dots });
+var spinner = try progress.spinner(allocator, io, .{ .style = .dots });
 spinner.start("Connecting to server...");
 spinner.succeed("Synced successfully"); // or .fail() / .warn() / .info()
 
-var bar = progress.progressBar(io, .{ .total = items.len, .show_eta = true });
+var bar = try progress.progressBar(allocator, io, .{ .total = items.len, .show_eta = true });
 for (items, 0..) |item, i| {
     process(item);
     bar.update(i + 1, null);
@@ -217,7 +217,7 @@ for (items, 0..) |item, i| {
 bar.finish();
 ```
 
-Nine spinner styles; animations auto-disable when not a TTY, symbols adapt to unicode support. Details in [packages/progress](packages/progress/).
+Nine spinner styles, plus stacked multi-bars for parallel work; animations auto-disable when not a TTY, symbols adapt to unicode support. Details in [packages/progress](packages/progress/).
 
 ## Theming
 
