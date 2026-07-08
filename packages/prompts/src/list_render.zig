@@ -154,3 +154,39 @@ test "renderItem hang-indents continuation lines under the label" {
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "  > alpha") != null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\r\n    ") != null);
 }
+
+// ---------------------------------------------------------------------------
+// Node builders for the ui-engine render path (ADR-0013 migration). The
+// imperative renderItem/eraseRegion machinery above remains until the line
+// prompts migrate too, then gets swept.
+// ---------------------------------------------------------------------------
+
+pub const ui = @import("ui");
+
+/// One list row for the engine: a fixed-width prefix cell and a wrapped label
+/// of `label_w` columns. The hang indent the imperative path computed by hand
+/// falls out of the layout — the prefix cell is one line tall, so a wrapped
+/// label's continuation lines get blank cells beneath it. The label width is
+/// explicit (not `fill`) so the row's measured height includes the wrap — a
+/// fill child contributes nothing at measure time (ADR-0013 §5) and would
+/// under-reserve the live region.
+pub fn itemRow(
+    a: std.mem.Allocator,
+    prefix: ui.Node,
+    prefix_w: u16,
+    label: []const u8,
+    label_w: u16,
+    label_style: ui.Style,
+) !ui.Node {
+    var p = prefix;
+    p.width = .{ .len = prefix_w };
+    return ui.row(a, .{}, &.{
+        p,
+        ui.textOpts(.{ .style = label_style, .width = .{ .len = label_w } }, label),
+    });
+}
+
+/// A single-style clipped prefix cell (glyphs never word-wrap).
+pub fn prefixCell(style: ui.Style, content: []const u8) ui.Node {
+    return ui.textOpts(.{ .style = style, .wrap = .clip }, content);
+}

@@ -5,6 +5,7 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .terminal = .{ .path = "../terminal" },
+        .ui = .{ .path = "../ui" },
         .theme = .{ .path = "../theme" },
         // Test-only: the render_e2e tests replay prompt output through the vterm
         // emulator. Only the test module imports it; the shipped `prompts` module

@@ -6,6 +6,7 @@ pub fn build(b: *std.Build) void {
 
     const terminal_dep = b.dependency("terminal", .{ .target = target, .optimize = optimize });
     const theme_dep = b.dependency("theme", .{ .target = target, .optimize = optimize });
+    const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
 
     const prompts_mod = b.addModule("prompts", .{
         .root_source_file = b.path("src/Prompts.zig"),
@@ -14,6 +15,7 @@ pub fn build(b: *std.Build) void {
     });
     prompts_mod.addImport("terminal", terminal_dep.module("terminal"));
     prompts_mod.addImport("theme", theme_dep.module("theme"));
+    prompts_mod.addImport("ui", ui_dep.module("ui"));
 
     const test_step = b.step("test", "Run prompts tests");
     const test_mod = b.addModule("test-prompts", .{
@@ -23,6 +25,7 @@ pub fn build(b: *std.Build) void {
     });
     test_mod.addImport("terminal", terminal_dep.module("terminal"));
     test_mod.addImport("theme", theme_dep.module("theme"));
+    test_mod.addImport("ui", ui_dep.module("ui"));
     const tests = b.addTest(.{ .root_module = test_mod });
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
@@ -38,6 +41,7 @@ pub fn build(b: *std.Build) void {
     });
     render_e2e_mod.addImport("prompts", prompts_mod);
     render_e2e_mod.addImport("vterm", vterm_dep.module("vterm"));
+    render_e2e_mod.addImport("ui", ui_dep.module("ui"));
     const render_e2e_tests = b.addTest(.{ .root_module = render_e2e_mod });
     test_step.dependOn(&b.addRunArtifact(render_e2e_tests).step);
 
