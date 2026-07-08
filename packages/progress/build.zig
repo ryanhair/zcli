@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
 
     // Main progress module
     const progress_mod = b.addModule("progress", .{
-        .root_source_file = b.path("src/progress.zig"),
+        .root_source_file = b.path("src/Progress.zig"),
         .target = target,
         .optimize = optimize,
     });

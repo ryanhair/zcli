@@ -1,46 +1,85 @@
-//! progress - Progress indicators for CLI applications
+//! Progress — spinners, bars, and stacked multi-bars for CLI applications.
 //!
-//! Spinners for indeterminate progress, bars for known totals, and stacked
-//! multi-bars for parallel work. Rendering runs on the ui engine (ADR-0013):
-//! each indicator owns a small `ui.App` live region, so diffing, resize
-//! re-layout, cursor bookkeeping, and flush discipline are the engine's
-//! problem — this package only describes what a frame looks like. Finishing
-//! an indicator emits its result as a static line that flows into scrollback
-//! (or, for bars, persists the final frame).
+//! This file is the type: `@import("progress")` returns a struct bundling the
+//! environment progress indicators need — writer, `io`, allocator, and theme —
+//! and the three constructors (`spinner`, `progressBar`, `multiBar`) are
+//! methods on it. Standalone library: no zcli dependency required.
 //!
-//! When output is not a TTY, indicators degrade to plain lines: spinners
-//! print one status line per message, bars are silent until a single finish
-//! line, and animations never spawn.
+//! Rendering runs on the ui engine (ADR-0013): each indicator owns a small
+//! `ui.App` live region, so diffing, resize re-layout, cursor bookkeeping, and
+//! flush discipline are the engine's problem — this package only describes what
+//! a frame looks like. Finishing an indicator emits its result as a static line
+//! that flows into scrollback (or, for bars, persists the final frame). When
+//! output is not a TTY, indicators degrade to plain lines: spinners print one
+//! status line per message, bars are silent until a single finish line, and
+//! animations never spawn.
 //!
-//! Basic usage:
 //! ```zig
-//! const progress = @import("progress");
+//! const Progress = @import("progress");
+//!
+//! const p: Progress = .{ .writer = writer, .io = io, .allocator = allocator };
 //!
 //! // Spinner for indeterminate progress — animates itself until finished
-//! var spinner = try progress.spinner(allocator, io, .{});
+//! var spinner = try p.spinner(.{});
 //! spinner.start("Loading...");
-//! // ... do work ...
 //! spinner.succeed("Done!");
 //!
 //! // Progress bar for known totals
-//! var bar = try progress.progressBar(allocator, io, .{ .total = 100 });
-//! for (0..100) |i| {
-//!     bar.update(i + 1, null);
-//! }
+//! var bar = try p.progressBar(.{ .total = 100 });
+//! for (0..100) |i| bar.update(i + 1, null);
 //! bar.finish();
 //!
 //! // Stacked bars for parallel work
-//! var mb = try progress.multiBar(allocator, io, .{});
+//! var mb = try p.multiBar(.{});
 //! defer mb.deinit();
 //! const dl = try mb.add("api.tar.gz", 1024);
 //! mb.set(dl, 512);
 //! mb.finish();
 //! ```
+//!
+//! In a zcli command, `context.progress()` returns an instance pre-wired to the
+//! command's stdout, `io`, arena allocator, and theme.
+
+writer: *std.Io.Writer,
+/// The framework's `std.Io` — powers each indicator's `ui.App` (animation
+/// task, timing, terminal polling).
+io: std.Io,
+/// Backs each indicator's `ui.App` (surfaces, retained static tail).
+allocator: std.mem.Allocator,
+/// Theme + terminal capabilities for styling (spinner via the theme's
+/// `progress.spinner` token, bars via `progress.bar_fill`/`bar_empty`, result
+/// symbols via the palette's success/err/warning/info roles); zcli commands
+/// carry this in `context.theme` (`context.progress()` wires it up).
+theme: ThemeContext = .fallback,
 
 const std = @import("std");
-const theme = @import("theme");
+const theme_pkg = @import("theme");
 const terminal = @import("terminal");
 const ui = @import("ui");
+
+const Progress = @This();
+
+/// Theming re-export, so standalone users can build a custom style context
+/// without depending on the `theme` package directly (it's transitive here).
+pub const ThemeContext = theme_pkg.ThemeContext;
+
+/// Start a spinner for indeterminate progress, wired to this instance's
+/// writer, `io`, allocator, and theme.
+pub fn spinner(self: Progress, config: SpinnerConfig) !Spinner {
+    return Spinner.init(self.allocator, self.writer, self.io, self.theme, config);
+}
+
+/// Start a progress bar for a known total, wired to this instance's writer,
+/// `io`, allocator, and theme.
+pub fn progressBar(self: Progress, config: ProgressBarConfig) !ProgressBar {
+    return ProgressBar.init(self.allocator, self.writer, self.io, self.theme, config);
+}
+
+/// Start a stacked multi-bar for parallel work, wired to this instance's
+/// writer, `io`, allocator, and theme.
+pub fn multiBar(self: Progress, config: MultiBarConfig) !MultiBar {
+    return MultiBar.init(self.allocator, self.writer, self.io, self.theme, config);
+}
 
 /// Spinner animation styles
 pub const SpinnerStyle = enum {
@@ -104,15 +143,12 @@ pub const SpinnerConfig = struct {
     suffix: []const u8 = "",
     /// Whether terminal supports unicode
     unicode: bool = true,
-    /// Theme + terminal capabilities for styling (spinner via the theme's
-    /// `progress.spinner` token, result symbols via the palette's
-    /// success/err/warning/info roles); zcli commands pass `context.theme`.
-    theme: theme.ThemeContext = .fallback,
 };
 
 /// Spinner for indeterminate progress.
 pub const Spinner = struct {
     io: std.Io,
+    theme: ThemeContext,
     config: SpinnerConfig,
     app: ui.App,
     message: []const u8 = "",
@@ -123,13 +159,15 @@ pub const Spinner = struct {
     mutex: std.Io.Mutex = .init,
     animation: ?std.Io.Future(void) = null,
 
-    /// Initialize a new spinner writing to `writer`.
-    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, io: std.Io, config: SpinnerConfig) !Spinner {
+    /// Initialize a new spinner writing to `writer`. Prefer `Progress.spinner`,
+    /// which supplies the allocator, writer, `io`, and theme from the bundle.
+    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, io: std.Io, theme: ThemeContext, config: SpinnerConfig) !Spinner {
         return .{
             .io = io,
+            .theme = theme,
             .config = config,
             .app = try ui.App.init(allocator, writer, .{
-                .capability = config.theme.capability(),
+                .capability = theme.capability(),
                 .unicode = config.unicode,
                 .interactive = terminal.isStdoutTty(),
             }),
@@ -225,7 +263,7 @@ pub const Spinner = struct {
         }
     }
 
-    fn finishRole(self: *Spinner, role: theme.SemanticRole, symbol: []const u8, message: []const u8) void {
+    fn finishRole(self: *Spinner, role: theme_pkg.SemanticRole, symbol: []const u8, message: []const u8) void {
         self.stopAnimation();
         self.app.clear() catch {};
         if (self.app.options.interactive) {
@@ -233,7 +271,7 @@ pub const Spinner = struct {
             // the emitted text (retained escapes are zero-width for reflow).
             var buf: [64]u8 = undefined;
             var w: std.Io.Writer = .fixed(&buf);
-            const wrote = self.config.theme.resolve(role).writeSequence(&w, self.config.theme.capability()) catch false;
+            const wrote = self.theme.resolve(role).writeSequence(&w, self.theme.capability()) catch false;
             self.app.emit("{s}{s}{s} {s}", .{
                 w.buffered(),
                 symbol,
@@ -261,7 +299,7 @@ pub const Spinner = struct {
         try self.app.frame(try ui.row(a, .{}, &.{
             ui.textOpts(.{ .wrap = .clip }, self.config.prefix),
             ui.widgets.spinner(.{
-                .theme = self.config.theme.theme,
+                .theme = self.theme.theme,
                 .frames = self.config.style.frames(),
             }, self.tick),
             ui.textOpts(.{ .wrap = .clip }, tail),
@@ -299,15 +337,13 @@ pub const ProgressBarConfig = struct {
     suffix: []const u8 = "",
     /// Whether terminal supports unicode
     unicode: bool = true,
-    /// Theme + terminal capabilities for styling (fill/empty via the theme's
-    /// `progress.bar_fill`/`bar_empty` tokens); zcli commands pass `context.theme`.
-    theme: theme.ThemeContext = .fallback,
 };
 
 /// Progress bar for determinate progress. Caller-driven: each `update`
 /// paints one frame. Piped output stays silent until one finish line.
 pub const ProgressBar = struct {
     io: std.Io,
+    theme: ThemeContext,
     config: ProgressBarConfig,
     app: ui.App,
     current: usize = 0,
@@ -315,13 +351,16 @@ pub const ProgressBar = struct {
     message: []const u8 = "",
     closed: bool = false,
 
-    /// Initialize a new progress bar writing to `writer`.
-    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, io: std.Io, config: ProgressBarConfig) !ProgressBar {
+    /// Initialize a new progress bar writing to `writer`. Prefer
+    /// `Progress.progressBar`, which supplies the allocator, writer, `io`, and
+    /// theme from the bundle.
+    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, io: std.Io, theme: ThemeContext, config: ProgressBarConfig) !ProgressBar {
         return .{
             .io = io,
+            .theme = theme,
             .config = config,
             .app = try ui.App.init(allocator, writer, .{
-                .capability = config.theme.capability(),
+                .capability = theme.capability(),
                 .unicode = config.unicode,
                 .interactive = terminal.isStdoutTty(),
             }),
@@ -440,7 +479,7 @@ pub const ProgressBar = struct {
             ui.textOpts(.{ .wrap = .clip }, left),
             ui.textOpts(.{ .wrap = .clip }, "["),
             try ui.widgets.bar(a, .{
-                .theme = self.config.theme.theme,
+                .theme = self.theme.theme,
                 .width = .{ .len = @intCast(self.config.width) },
                 .filled_char = self.config.complete_char,
                 .empty_char = self.config.incomplete_char,
@@ -466,8 +505,6 @@ pub const MultiBarConfig = struct {
     show_percent: bool = true,
     /// Whether terminal supports unicode
     unicode: bool = true,
-    /// Theme + terminal capabilities for styling; zcli commands pass `context.theme`.
-    theme: theme.ThemeContext = .fallback,
 };
 
 /// Stacked progress bars for parallel work. Thread-safe: `set`/`increment`
@@ -476,6 +513,7 @@ pub const MultiBarConfig = struct {
 pub const MultiBar = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    theme: ThemeContext,
     config: MultiBarConfig,
     app: ui.App,
     items: std.ArrayList(Item) = .empty,
@@ -489,14 +527,16 @@ pub const MultiBar = struct {
         total: usize,
     };
 
-    /// Initialize a multi-bar writing to `writer`.
-    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, io: std.Io, config: MultiBarConfig) !MultiBar {
+    /// Initialize a multi-bar writing to `writer`. Prefer `Progress.multiBar`,
+    /// which supplies the allocator, writer, `io`, and theme from the bundle.
+    pub fn init(allocator: std.mem.Allocator, writer: *std.Io.Writer, io: std.Io, theme: ThemeContext, config: MultiBarConfig) !MultiBar {
         return .{
             .allocator = allocator,
             .io = io,
+            .theme = theme,
             .config = config,
             .app = try ui.App.init(allocator, writer, .{
-                .capability = config.theme.capability(),
+                .capability = theme.capability(),
                 .unicode = config.unicode,
                 .interactive = terminal.isStdoutTty(),
             }),
@@ -561,7 +601,7 @@ pub const MultiBar = struct {
             };
         }
         var node = try ui.widgets.multiBar(a, .{
-            .theme = self.config.theme.theme,
+            .theme = self.theme.theme,
             .show_percent = self.config.show_percent,
         }, bars);
         node.width = .{ .len = @intCast(self.config.width) };
@@ -592,34 +632,6 @@ fn formatDuration(secs: u64, buf: []u8) []const u8 {
         const mins = (secs % 3600) / 60;
         return std.fmt.bufPrint(buf, "{d}h{d}m", .{ hours, mins }) catch "?h?m";
     }
-}
-
-// Thread-local buffer for stdout writer
-threadlocal var stdout_buffer: [4096]u8 = undefined;
-threadlocal var stdout_writer_storage: std.Io.File.Writer = undefined;
-threadlocal var stdout_initialized: bool = false;
-
-fn getStdoutWriter(io: std.Io) *std.Io.Writer {
-    if (!stdout_initialized) {
-        stdout_writer_storage = std.Io.File.stdout().writer(io, &stdout_buffer);
-        stdout_initialized = true;
-    }
-    return &stdout_writer_storage.interface;
-}
-
-/// Create a spinner with the default writer (stdout)
-pub fn spinner(allocator: std.mem.Allocator, io: std.Io, config: SpinnerConfig) !Spinner {
-    return Spinner.init(allocator, getStdoutWriter(io), io, config);
-}
-
-/// Create a progress bar with the default writer (stdout)
-pub fn progressBar(allocator: std.mem.Allocator, io: std.Io, config: ProgressBarConfig) !ProgressBar {
-    return ProgressBar.init(allocator, getStdoutWriter(io), io, config);
-}
-
-/// Create a multi-bar with the default writer (stdout)
-pub fn multiBar(allocator: std.mem.Allocator, io: std.Io, config: MultiBarConfig) !MultiBar {
-    return MultiBar.init(allocator, getStdoutWriter(io), io, config);
 }
 
 // ============================================================================
@@ -661,7 +673,7 @@ test "spinner initialization" {
     var output: [1024]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var s = try Spinner.init(testing.allocator, &writer, testing.io, .{});
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
     defer s.deinit();
     try testing.expect(!s.active);
     try testing.expectEqual(@as(usize, 0), s.tick);
@@ -671,7 +683,7 @@ test "spinner animates and finishes when interactive" {
     var output: [8192]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var s = try Spinner.init(testing.allocator, &writer, testing.io, .{});
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
     forceInteractive(&s.app);
 
     s.start("working");
@@ -690,7 +702,7 @@ test "spinner prints status lines when not interactive" {
     var output: [8192]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var s = try Spinner.init(testing.allocator, &writer, testing.io, .{});
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
     s.app.options.interactive = false;
 
     s.start("connecting");
@@ -709,15 +721,13 @@ test "spinner result symbols style through the palette roles" {
     var output: [8192]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    const custom = theme.Theme{
+    const custom = theme_pkg.Theme{
         .palette = .{ .success = .{ .foreground = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } } },
     };
     var s = try Spinner.init(testing.allocator, &writer, testing.io, .{
-        .theme = .{
-            .theme = &custom,
-            .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
-        },
-    });
+        .theme = &custom,
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+    }, .{});
     forceInteractive(&s.app);
 
     s.start("working");
@@ -730,15 +740,13 @@ test "spinner frame styles through the progress.spinner token" {
     var output: [8192]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    const custom = theme.Theme{
+    const custom = theme_pkg.Theme{
         .progress = .{ .spinner = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 9, .g = 8, .b = 7 } } } } },
     };
     var s = try Spinner.init(testing.allocator, &writer, testing.io, .{
-        .theme = .{
-            .theme = &custom,
-            .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
-        },
-    });
+        .theme = &custom,
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+    }, .{});
     forceInteractive(&s.app);
 
     s.start("working");
@@ -752,8 +760,8 @@ test "spinner renders no color sequences under no_color" {
     var writer: std.Io.Writer = .fixed(&output);
 
     var s = try Spinner.init(testing.allocator, &writer, testing.io, .{
-        .theme = .{ .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false } },
-    });
+        .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
+    }, .{});
     forceInteractive(&s.app);
 
     s.start("working");
@@ -770,7 +778,7 @@ test "progress bar initialization" {
     var output: [1024]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var bar = try ProgressBar.init(testing.allocator, &writer, testing.io, .{
+    var bar = try ProgressBar.init(testing.allocator, &writer, testing.io, .fallback, .{
         .total = 100,
         .width = 20,
     });
@@ -783,7 +791,7 @@ test "progress bar update and increment clamp to total" {
     var output: [8192]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var bar = try ProgressBar.init(testing.allocator, &writer, testing.io, .{
+    var bar = try ProgressBar.init(testing.allocator, &writer, testing.io, .fallback, .{
         .total = 100,
         .width = 10,
         .show_eta = false,
@@ -803,20 +811,19 @@ test "progress bar styles fill and empty through the theme tokens" {
     var output: [16384]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    const custom = theme.Theme{
+    const custom = theme_pkg.Theme{
         .progress = .{
             .bar_fill = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } } },
             .bar_empty = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 4, .g = 5, .b = 6 } } } },
         },
     };
     var bar = try ProgressBar.init(testing.allocator, &writer, testing.io, .{
+        .theme = &custom,
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+    }, .{
         .total = 10,
         .width = 10,
         .show_eta = false,
-        .theme = .{
-            .theme = &custom,
-            .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
-        },
     });
     defer bar.deinit();
     forceInteractive(&bar.app);
@@ -832,7 +839,7 @@ test "progress bar is silent when piped, except one finish line" {
     var output: [8192]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var bar = try ProgressBar.init(testing.allocator, &writer, testing.io, .{
+    var bar = try ProgressBar.init(testing.allocator, &writer, testing.io, .fallback, .{
         .total = 10,
         .show_eta = false,
     });
@@ -851,7 +858,7 @@ test "multi bar tracks items and clamps" {
     var output: [8192]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var mb = try MultiBar.init(testing.allocator, &writer, testing.io, .{});
+    var mb = try MultiBar.init(testing.allocator, &writer, testing.io, .fallback, .{});
     defer mb.deinit();
     mb.app.options.interactive = false;
 
@@ -870,7 +877,7 @@ test "multi bar renders labels, bars, and percents when interactive" {
     var output: [32768]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
 
-    var mb = try MultiBar.init(testing.allocator, &writer, testing.io, .{});
+    var mb = try MultiBar.init(testing.allocator, &writer, testing.io, .fallback, .{});
     defer mb.deinit();
     forceInteractive(&mb.app);
 

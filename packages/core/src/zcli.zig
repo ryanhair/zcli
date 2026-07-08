@@ -8,7 +8,11 @@ const diagnostic_errors = @import("diagnostic_errors.zig");
 const option_utils = @import("options/utils.zig");
 pub const theme = @import("theme");
 pub const markdown = @import("markdown");
-pub const progress = @import("progress");
+
+/// Spinners and progress bars. The import IS the type: build one instance
+/// carrying writer/io/theme and `spinner`/`progressBar` are methods on it. In a
+/// command, prefer `context.progress()`, which returns a pre-wired instance.
+pub const Progress = @import("progress");
 
 /// Interactive prompts. The import IS the type: build one instance carrying
 /// writer/reader/allocator/theme and every prompt is a method on it. In a
