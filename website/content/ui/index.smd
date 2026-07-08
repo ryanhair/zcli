@@ -1,0 +1,7 @@
+---
+.title = "zcli — The CLI/TUI hybrid",
+.description = "zcli.ui is a terminal-native layout engine: a static stream that flows into scrollback plus a diffed live region that repaints in place — the shape of modern agent-style CLIs. Immediate-mode node trees, viewport-clamped and resize-aware, degrading to plain lines when piped.",
+.date = @date("2026-07-08"),
+.author = "Ryan Hair",
+.layout = "ui.shtml",
+---

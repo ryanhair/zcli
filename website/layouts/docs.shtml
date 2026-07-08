@@ -67,6 +67,7 @@
         <a href="#context">The context</a>
         <a href="#prompts">Prompts</a>
         <a href="#progress">Progress & theming</a>
+        <a href="#hybrid">CLI/TUI hybrid</a>
         <a href="#config">Config files</a>
         <h4>Plugins</h4>
         <a href="#plugins">Using plugins</a>
@@ -270,11 +271,14 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
           <p>The <code>progress</code> package provides spinners (9 styles) and progress bars with ETA; animations auto-disable when not a TTY.</p>
           <div class="code">
             <div class="code-head"><span class="fname">progress</span><span class="lang">zig</span></div>
-<pre><span class="kw">var</span> spinner = progress.<span class="fn">spinner</span>(io, .{ .style = .dots });
+<pre><span class="cm">// Pre-wired to the command's stdout, io, allocator, and theme.</span>
+<span class="kw">const</span> p = context.<span class="fn">progress</span>();
+
+<span class="kw">var</span> spinner = <span class="kw">try</span> p.<span class="fn">spinner</span>(.{ .style = .dots });
 spinner.<span class="fn">start</span>(<span class="str">"Connecting to server..."</span>);
 spinner.<span class="fn">succeed</span>(<span class="str">"Synced successfully"</span>);  <span class="cm">// or .fail() / .warn() / .info()</span>
 
-<span class="kw">var</span> bar = progress.<span class="fn">progressBar</span>(io, .{ .total = items.len, .show_eta = <span class="num">true</span> });
+<span class="kw">var</span> bar = <span class="kw">try</span> p.<span class="fn">progressBar</span>(.{ .total = items.len, .show_eta = <span class="num">true</span> });
 <span class="kw">for</span> (items, <span class="num">0</span>..) |item, i| { <span class="fn">process</span>(item); bar.<span class="fn">update</span>(i + <span class="num">1</span>, <span class="kw">null</span>); }</pre>
           </div>
           <h3>Theming</h3>
@@ -292,6 +296,24 @@ spinner.<span class="fn">succeed</span>(<span class="str">"Synced successfully"<
 <span class="kw">try</span> <span class="fn">styled</span>(<span class="str">"Synced"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &context.theme);</pre>
           </div>
           <p>The full role list, component tokens, and how each surface consumes the theme: see the <a href="$site.page('theming').link()">theming guide</a>.</p>
+        </section>
+
+        <!-- ============ CLI/TUI HYBRID ============ -->
+        <section id="hybrid">
+          <h2>CLI/TUI hybrid</h2>
+          <p>Prompts and progress both render on <code>zcli.ui</code> — a terminal-native layout engine — and it's yours to use directly. Output splits into a static stream that flows into scrollback and a live region that repaints in place at the bottom edge: the shape of modern agent-style CLIs. A component is just a function returning a node; frames are diffed, so an animation repaints one cell, not the screen.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">var</span> app = <span class="kw">try</span> context.<span class="fn">ui</span>();
+<span class="kw">defer</span> app.<span class="fn">deinit</span>(); <span class="cm">// restores the terminal; the final frame persists</span>
+
+<span class="kw">try</span> app.<span class="fn">emit</span>(<span class="str">"compiled {s}"</span>, .{name});            <span class="cm">// static -> scrollback</span>
+<span class="kw">try</span> app.<span class="fn">frame</span>(<span class="kw">try</span> ui.<span class="fn">row</span>(app.<span class="fn">arena</span>(), .{ .gap = <span class="num">1</span> }, &.{
+    ui.widgets.<span class="fn">spinner</span>(.{}, state.tick),
+    ui.<span class="fn">text</span>(.{ .bold = <span class="num">true</span> }, <span class="str">"building..."</span>),
+}));                                          <span class="cm">// live -> diffed repaint</span></pre>
+          </div>
+          <p>Boxes, wrapped text, spacers, and custom leaves; <code>fit</code>/<code>len</code>/<code>fill</code> sizing; viewport-clamped and resize-aware, degrading to plain lines when piped. The model, the node vocabulary, and the widgets: see the <a href="$site.page('ui').link()">CLI/TUI hybrid guide</a>.</p>
         </section>
 
         <!-- ============ CONFIG ============ -->

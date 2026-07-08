@@ -63,6 +63,7 @@
                 <h4>Packages</h4>
                 <a href="$site.page('docs').link().suffix('#prompts')">prompts</a>
                 <a href="$site.page('docs').link().suffix('#progress')">progress</a>
+                <a href="$site.page('ui').link()">ui</a>
                 <a href="https://github.com/ryanhair/zcli/blob/main/LICENSE" target="_blank" rel="noopener">License (MIT)</a>
             </div>
         </div>

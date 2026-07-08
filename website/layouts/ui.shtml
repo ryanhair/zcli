@@ -1,0 +1,199 @@
+<extend template="base.shtml">
+
+<head id="head">
+<style>
+  .layout { display: grid; grid-template-columns: 240px 1fr; gap: 56px; padding: 56px 0 96px; align-items: start; }
+  .layout > * { min-width: 0; }   /* let code blocks scroll instead of widening the page */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .toc { position: sticky; top: 84px; font-family: var(--mono); font-size: 13px; }
+  .toc .toc-label { font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); margin: 20px 0 10px; }
+  .toc .toc-label:first-child { margin-top: 0; }
+  .toc a { display: block; color: var(--muted); padding: 5px 0 5px 12px; border-left: 1px solid var(--border); transition: all .15s; }
+  .toc a:hover, .toc a.active { color: var(--accent); border-left-color: var(--accent); }
+
+  .doc { max-width: 760px; }
+  .doc > section { padding: 0 0 56px; border: none; }
+  .doc h1 { font-size: 40px; margin-bottom: 12px; }
+  .doc .sub { color: var(--muted); font-size: 18px; margin-bottom: 8px; }
+  .doc h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 12px; }
+  .doc h3 { font-size: 18px; margin: 30px 0 10px; color: var(--fg); }
+  .doc p { color: var(--muted); margin-bottom: 14px; }
+  .doc ul { color: var(--muted); margin: 0 0 16px 20px; }
+  .doc li { padding: 4px 0; }
+  .doc code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
+  .doc .code code { background: none; border: none; padding: 0; color: inherit; }
+  .doc .code { margin: 16px 0 22px; }
+  .callout { background: rgba(247,164,29,0.06); border: 1px solid rgba(247,164,29,0.25); border-radius: 9px; padding: 14px 18px; margin: 18px 0; color: var(--muted); font-size: 14.5px; }
+  .callout b { color: var(--accent); font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; display: block; margin-bottom: 4px; }
+
+  .ptable { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 8px 0 8px; }
+  .ptable th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding: 0 14px 12px; border-bottom: 1px solid var(--border); font-weight: 500; }
+  .ptable td { padding: 13px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .ptable td.name { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  .ptable td.desc { color: var(--muted); }
+
+  .nextlinks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .nextlinks a { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; transition: border-color .15s; }
+  .nextlinks a:hover { border-color: var(--accent); }
+  .nextlinks .k { display: block; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .nextlinks .t { display: block; color: var(--fg); font-size: 15px; margin-top: 4px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .toc { display: none; } .nextlinks { grid-template-columns: 1fr; } }
+</style>
+</head>
+
+<main id="main">
+  <div class="wrap">
+    <div class="layout">
+      <nav class="toc" aria-label="On this page">
+        <p class="toc-label">The engine</p>
+        <a href="#intro">Overview</a>
+        <a href="#model">The frame model</a>
+        <a href="#nodes">Nodes &amp; sizing</a>
+        <p class="toc-label">Using it</p>
+        <a href="#app">The App</a>
+        <a href="#widgets">Widgets</a>
+        <a href="#resize">Resize &amp; piping</a>
+        <p class="toc-label">Details</p>
+        <a href="#standalone">Standalone use</a>
+        <a href="#try">Try it</a>
+      </nav>
+
+      <article class="doc">
+        <section id="intro">
+          <h1>The CLI/TUI hybrid</h1>
+          <p class="sub">Prompts and progress render on <code>zcli.ui</code> — a terminal-native layout engine — and it's yours to use directly. Stream lines into scrollback while a live region repaints in place at the bottom edge: the shape of modern agent-style CLIs.</p>
+          <p>A full-screen TUI takes the terminal over; a plain CLI can't paint. The hybrid is the third shape — the one Claude Code, modern installers, and deploy tools use. zcli's engine gives you both halves at once:</p>
+          <ul>
+            <li><b>A static stream</b> flows upward into scrollback, one line at a time, exactly like normal output — copy-pasteable, greppable, permanent.</li>
+            <li><b>A live region</b> sits pinned to the bottom edge and repaints in place — a spinner, a status frame, a stack of progress bars — without disturbing the scrollback above it.</li>
+            <li><b>Immediate mode</b> means a component is just a function returning a node. You rebuild the tree every frame from your own state; the engine diffs it and sends only the cells that changed.</li>
+          </ul>
+          <div class="callout"><b>Built on it</b> The <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> and <a href="$site.page('docs').link().suffix('#progress')">progress</a> packages both render on this engine — so cursor hygiene, diffed repaints, and resize re-layout are solved once, in one place.</div>
+        </section>
+
+        <section id="model">
+          <h2>The frame model</h2>
+          <p>The live region is rebuilt from scratch every frame: the node tree is allocated into a per-frame arena, measured (constraints down, sizes up), painted onto a cell surface, and diffed against the previous surface. An unchanged frame writes <em>zero</em> bytes; a ticking spinner repaints one cell, not the screen.</p>
+          <p>Two verbs drive it. <code>emit</code> writes a static line that scrolls up and away; <code>frame</code> replaces the live region with a new node tree. <code>emit</code> is the only way to write while a region is up — it erases the region, prints the line into scrollback, and repaints the region below it.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">a component is just a function</span><span class="lang">zig</span></div>
+<pre><span class="cm">// State lives in your structs; the frame is a pure function of it.</span>
+<span class="kw">fn</span> <span class="fn">statusLine</span>(a: std.mem.Allocator, s: *<span class="kw">const</span> State) !ui.Node {
+    <span class="kw">return</span> ui.<span class="fn">row</span>(a, .{ .gap = <span class="num">1</span> }, &.{
+        ui.widgets.<span class="fn">spinner</span>(.{}, s.tick),     <span class="cm">// animation = your tick</span>
+        ui.<span class="fn">text</span>(.{ .bold = <span class="num">true</span> }, s.message),
+        ui.<span class="fn">spacer</span>(),                        <span class="cm">// push the rest to the right edge</span>
+        ui.<span class="fn">text</span>(.{ .dim = <span class="num">true</span> }, s.elapsed),
+    });
+}</pre>
+          </div>
+        </section>
+
+        <section id="nodes">
+          <h2>Nodes &amp; sizing</h2>
+          <p>The whole vocabulary is four node kinds and three sizing words — small enough to hold in your head, expressive enough for a bordered, multi-column status frame.</p>
+          <div class="table-scroll">
+          <table class="ptable">
+            <thead><tr><th>Node</th><th>What it is</th></tr></thead>
+            <tbody>
+              <tr><td class="name">box</td><td class="desc">the only container — <code>row</code> and <code>column</code> are boxes with a direction; carries <code>gap</code>, <code>padding</code>, and an optional <code>border</code></td></tr>
+              <tr><td class="name">text</td><td class="desc">a styled string; <code>ui.textOpts</code> chooses <code>wrap</code> / <code>truncate</code> / <code>clip</code> and a fixed width</td></tr>
+              <tr><td class="name">spacer</td><td class="desc">flexible empty space; put one before a node to right-align it, one on each side to center</td></tr>
+              <tr><td class="name">custom</td><td class="desc">the escape hatch — a leaf that draws its own cells (this is how the progress bar is built)</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>Every dimension is one of three words. <code>fit</code> shrinks to content, <code>len(n)</code> pins an exact column count, and <code>fill(weight)</code> shares leftover space by weight — so percentages are fill weights and right-alignment is a spacer, not special-cased geometry.</p>
+          <div class="callout"><b>Whitespace</b> The default <code>.wrap</code> mode word-wraps and drops break spaces. Labels with significant whitespace — padded numbers, aligned columns — want <code>.clip</code> or <code>.truncate</code> via <code>ui.textOpts</code>.</div>
+        </section>
+
+        <section id="app">
+          <h2>The App</h2>
+          <p>In a command, <code>context.ui()</code> returns a <code>zcli.ui.App</code> pre-wired to the command's stdout, allocator, theme capability, and TTY detection. The <code>App</code> owns everything stateful — the frame arena (<code>app.arena()</code>, reset when <code>frame()</code> returns), the live region's rows, the double-buffered surfaces, and the cursor (hidden while a region is up, parked at its top-left between calls, restored on <code>deinit</code>).</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">var</span> app = <span class="kw">try</span> context.<span class="fn">ui</span>();
+<span class="kw">defer</span> app.<span class="fn">deinit</span>(); <span class="cm">// restores the terminal; the final frame persists in scrollback</span>
+
+<span class="kw">try</span> app.<span class="fn">emit</span>(<span class="str">"compiled {s}"</span>, .{name});               <span class="cm">// static -> scrollback</span>
+<span class="kw">try</span> app.<span class="fn">frame</span>(<span class="kw">try</span> <span class="fn">statusLine</span>(app.<span class="fn">arena</span>(), &state)); <span class="cm">// live  -> diffed repaint</span></pre>
+          </div>
+          <p>Builders copy their child slices into the arena, so component functions compose freely — no dangling-temporary hazards from returning a node built over a stack array. Styles on the nodes are <code>theme.Style</code> values, and the diff renderer emits them capability-aware, from <code>NO_COLOR</code> through true color.</p>
+        </section>
+
+        <section id="widgets">
+          <h2>Widgets</h2>
+          <p><code>ui.widgets</code> is the progress vocabulary as component functions: a spinner is a <code>text</code> node, a bar is one <code>custom</code> leaf, a multi-bar is a column of rows. No widget owns a repaint loop or hidden state — animation is your tick, progress is your fraction, the frame diff does the rest. Styling flows through the theme's <code>progress</code> tokens, the same ones the progress package reads.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">a bordered status frame</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> a = app.<span class="fn">arena</span>();
+<span class="kw">try</span> app.<span class="fn">frame</span>(<span class="kw">try</span> ui.<span class="fn">column</span>(a, .{ .border = .rounded, .padding = .<span class="fn">symmetric</span>(<span class="num">1</span>, <span class="num">0</span>) }, &.{
+    <span class="kw">try</span> ui.<span class="fn">row</span>(a, .{ .gap = <span class="num">1</span> }, &.{
+        ui.widgets.<span class="fn">spinner</span>(.{}, state.tick),
+        ui.<span class="fn">text</span>(.{ .bold = <span class="num">true</span> }, <span class="str">"Reading dependencies"</span>),
+        ui.<span class="fn">spacer</span>(),
+        ui.<span class="fn">text</span>(.{ .dim = <span class="num">true</span> }, state.elapsed),
+    }),
+    <span class="kw">try</span> ui.widgets.<span class="fn">multiBar</span>(a, .{}, &.{
+        .{ .label = <span class="str">"src/parser.zig"</span>,    .fraction = <span class="num">0.6</span> },
+        .{ .label = <span class="str">"src/formatter.zig"</span>, .fraction = <span class="num">0.9</span> },
+    }),
+}));</pre>
+          </div>
+        </section>
+
+        <section id="resize">
+          <h2>Resize &amp; piping</h2>
+          <p>The live region re-measures against the terminal on every frame, so it re-lays-out on resize for free; its height clamps to the viewport and clips from the bottom. Scrollback is the terminal's authority — but the engine retains the source text of the visible static tail and, on a width change, synchronously rewraps it so the seam between the reflowed tail and the live frame stays clean.</p>
+          <ul>
+            <li><b>Live region</b> — full relayout against the new width, every frame.</li>
+            <li><b>Visible static tail</b> — retained in source form and repainted to rewrap with the new width.</li>
+            <li><b>Scrollback above the fold</b> — left to the terminal; reflow there is the terminal's job, not the app's.</li>
+          </ul>
+          <p>When stdout is not a TTY — a pipe, a file, a CI log — there is no live region to repaint: <code>emit</code> lines print as normal, and a frame degrades to the plain lines it would draw. The same code path produces an interactive frame and a clean log.</p>
+        </section>
+
+        <section id="standalone">
+          <h2>Standalone use</h2>
+          <p>Like every zcli package, <code>ui</code> works without the framework. Outside a command there's no <code>context</code>, so construct the <code>App</code> yourself — it owns heap state (surfaces, retained scrollback), so it takes an explicit <code>init</code>/<code>deinit</code> rather than the value-bundle shape of the stateless packages:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">standalone</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> ui = <span class="fn">@import</span>(<span class="str">"ui"</span>);
+
+<span class="kw">var</span> app = <span class="kw">try</span> ui.App.<span class="fn">init</span>(gpa, writer, .{ .capability = .ansi_256 });
+<span class="kw">defer</span> app.<span class="fn">deinit</span>();
+
+<span class="kw">try</span> app.<span class="fn">emit</span>(<span class="str">"✓ built {s}"</span>, .{name});
+<span class="kw">try</span> app.<span class="fn">frame</span>(<span class="kw">try</span> <span class="fn">statusLine</span>(app.<span class="fn">arena</span>(), &state));</pre>
+          </div>
+        </section>
+
+        <section id="try">
+          <h2>Try it</h2>
+          <p>Two runnable examples live in the <code>ui</code> package — both want a real terminal. Resize the window while either runs and watch the live frame re-lay-out as the visible static tail rewraps with it.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">packages/ui</span><span class="lang">sh</span></div>
+<pre>zig build run-demo     <span class="cm"># deploy-style task frame: spinner, task list, live gauges</span>
+zig build run-hybrid   <span class="cm"># the Claude-Code shape: streaming prose + a live multi-bar</span></pre>
+          </div>
+          <div class="nextlinks">
+            <a href="https://github.com/ryanhair/zcli/blob/main/docs/adr/0013-terminal-native-layout-engine.md" target="_blank" rel="noopener"><span class="k">→ design</span><span class="t">ADR-0013: the layout engine</span></a>
+            <a href="https://github.com/ryanhair/zcli/tree/main/packages/ui" target="_blank" rel="noopener"><span class="k">→ source</span><span class="t">The ui package</span></a>
+          </div>
+        </section>
+      </article>
+    </div>
+  </div>
+
+<script>
+  var links = document.querySelectorAll('.toc a');
+  var secs = Array.prototype.map.call(links, function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var y = window.scrollY + 120, cur = 0;
+    secs.forEach(function (s, i) { if (s && s.offsetTop <= y) cur = i; });
+    links.forEach(function (a, i) { a.classList.toggle('active', i === cur); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+</script>
+
+</main>

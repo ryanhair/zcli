@@ -780,7 +780,48 @@ never on the commands — so the back-reference resolves cleanly. The build wire
 Plugin hooks stay `anytype` because a plugin is compiled independently of the
 app that hosts it.
 
-## 13. Developer Experience
+## 13. Terminal Output & Rendering
+
+Beyond command dispatch, zcli ships a family of terminal-output packages that a
+command reaches through its `context`:
+
+- **`theme`** — semantic styling. A comptime `Palette` maps roles
+  (`success`, `command`, `path`, …) to styles; component tokens
+  (`prompts.cursor`, `progress.spinner`) default to those roles. Everything
+  resolves against the detected terminal capability, from true color down to
+  `NO_COLOR`. See ADR-0012.
+- **`prompts`** — eight interactive prompt types (`text`, `select`,
+  `multiSelect`, `search`, …) with grapheme-aware line editing, falling back to
+  line input when stdin is not a TTY.
+- **`progress`** — spinners for indeterminate work and progress/multi-bars for
+  known totals; animations on a TTY, plain lines when piped.
+- **`markdown`** — comptime-baked ANSI formatting used by the help pipeline
+  (zero runtime cost; ADR-0012).
+
+**The layout engine (`packages/ui`, ADR-0013).** `prompts` and `progress` do
+not hand-roll cursor movement or repainting — they render on a shared
+terminal-native layout engine. Output splits into a **static stream** that flows
+into scrollback (`app.emit`) and a **live region** pinned to the bottom edge
+that repaints in place (`app.frame`). The live region is immediate-mode: a
+component is a function returning a `Node`; each frame the tree is rebuilt into a
+per-frame arena, measured, painted onto a cell `Surface`, and diffed against the
+previous frame, so only changed cells reach the terminal. Four node kinds
+(`box`, `text`, `spacer`, `custom`) and three sizing words (`fit`, `len`,
+`fill`) cover the vocabulary; the region re-measures against the terminal each
+frame, so it re-lays-out on resize and clamps to the viewport. This is the
+CLI/TUI hybrid — the shape of modern agent-style CLIs — and it is exposed
+directly as `zcli.ui` / `context.ui()`.
+
+**Construction idiom (ADR-0014).** `context.X()` is the single front door for
+every output capability: `context.theme`, `context.prompts()`,
+`context.progress()`, `context.markdown()`, `context.ui()` each hand back an
+instance already wired to the command's streams, allocator, io, and theme. The
+stateless packages (`prompts`, `progress`, `markdown`) are value bundles — the
+import *is* the type — so standalone use fills the same fields by hand;
+stateful ones (`ui.App`) keep `init`/`deinit`. Each package also works without
+the framework and is published independently.
+
+## 14. Developer Experience
 
 **Zero-Cost Dispatch:**
 

@@ -1,6 +1,6 @@
 # Consistent construction across the core output packages
 
-Status: proposed
+Status: accepted
 
 Every package that writes to the terminal — `prompts`, `progress`, `markdown`,
 `theme`, `ui` — needs some subset of the same five environment inputs: a
