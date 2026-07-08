@@ -241,7 +241,7 @@ const topics = [_]Topic{
         \\  const idx  = try p.select(.{ .message = "Pick:", .choices = &.{ "a", "b" } });
         \\  const pw   = try p.password(.{ .message = "Token:" }); // hidden
         \\
-        \\Progress bars/spinners: `zcli.progress`.
+        \\Progress bars/spinners: `context.progress()` (or `zcli.Progress`).
         \\
         ,
     },

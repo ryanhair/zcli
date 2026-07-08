@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const vterm = @import("vterm");
-const progress = @import("progress.zig");
+const progress = @import("Progress.zig");
 
 const testing = std.testing;
 const VTerm = vterm.VTerm;
@@ -41,7 +41,7 @@ test "spinner succeed replaces the live line with one static result line" {
     var c = try Capture.init(40, 6);
     defer c.deinit();
 
-    var s = try progress.Spinner.init(testing.allocator, &c.aw.writer, testing.io, .{});
+    var s = try progress.Spinner.init(testing.allocator, &c.aw.writer, testing.io, .fallback, .{});
     force(&s.app, 40, 6);
 
     s.start("working on it");
@@ -65,7 +65,7 @@ test "progress bar final frame persists below earlier output" {
     var c = try Capture.init(60, 6);
     defer c.deinit();
 
-    var bar = try progress.ProgressBar.init(testing.allocator, &c.aw.writer, testing.io, .{
+    var bar = try progress.ProgressBar.init(testing.allocator, &c.aw.writer, testing.io, .fallback, .{
         .total = 10,
         .width = 10,
         .show_eta = false,
@@ -88,7 +88,7 @@ test "multi bar stacks one row per item and updates in place" {
     var c = try Capture.init(60, 8);
     defer c.deinit();
 
-    var mb = try progress.MultiBar.init(testing.allocator, &c.aw.writer, testing.io, .{});
+    var mb = try progress.MultiBar.init(testing.allocator, &c.aw.writer, testing.io, .fallback, .{});
     defer mb.deinit();
     force(&mb.app, 60, 8);
 

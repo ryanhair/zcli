@@ -30,17 +30,22 @@ exe.root_module.addImport("progress", progress_dep.module("progress"));
 
 ## Quick start
 
+The import IS the type: build one `Progress` bundling `writer`, `io`,
+`allocator`, and `theme`, and the three constructors are methods on it.
+
 ```zig
-const progress = @import("progress");
+const Progress = @import("progress");
+
+const p: Progress = .{ .writer = writer, .io = io, .allocator = allocator };
 
 // Spinner — indeterminate work
-var spinner = try progress.spinner(allocator, io, .{ .style = .dots });
+var spinner = try p.spinner(.{ .style = .dots });
 spinner.start("Connecting to server...");
 spinner.setMessage("Uploading changes...");
 spinner.succeed("Synced successfully"); // or .fail() / .warn() / .info() / .stop()
 
 // Progress bar — known total
-var bar = try progress.progressBar(allocator, io, .{
+var bar = try p.progressBar(.{
     .total = items.len,
     .show_eta = true,
 });
@@ -51,7 +56,7 @@ for (items, 0..) |item, i| {
 bar.finish(); // the final frame persists on screen
 
 // Multi-bar — parallel work (updates may come from worker threads)
-var mb = try progress.multiBar(allocator, io, .{});
+var mb = try p.multiBar(.{});
 defer mb.deinit();
 const api = try mb.add("api.tar.gz", total_bytes);
 mb.set(api, downloaded);
@@ -65,16 +70,19 @@ See [examples/tasks](../../examples/tasks/) (`sync`, `import` commands) for thes
 Spinners animate in the theme's `progress.spinner` token (accent by default),
 result symbols render through the palette's `success`/`err`/`warning`/`info`
 roles, and bars color their fill/track via `bar_fill`/`bar_empty` on TTYs
-(piped output stays plain). Pass a `ThemeContext` to follow an app theme and
-the detected capabilities (including `NO_COLOR` and true color):
+(piped output stays plain). The bundle carries a `ThemeContext`, so every
+indicator follows an app theme and the detected capabilities (including
+`NO_COLOR` and true color):
 
 ```zig
-// In a zcli command — the context already carries the app theme:
-var spinner = try progress.spinner(context.allocator, io, .{ .theme = context.theme });
+// In a zcli command — context.progress() pre-wires the app theme, io,
+// allocator, and stdout:
+var spinner = try context.progress().spinner(.{});
 ```
 
-Standalone, the default (`ThemeContext.fallback`) is the default theme at
-ANSI-16. Token defaults are defined in [`theme`](../theme/)'s `ProgressTheme`.
+Standalone, the bundle's `theme` field defaults to `ThemeContext.fallback` —
+the default theme at ANSI-16. Token defaults are defined in
+[`theme`](../theme/)'s `ProgressTheme`.
 
 ## Dependencies
 
