@@ -219,17 +219,27 @@ Nine spinner styles; animations auto-disable when not a TTY, symbols adapt to un
 
 ## Theming
 
+Declare a theme once in your root source file and the whole CLI follows it — help output, styled text, prompts, spinners, and progress bars:
+
 ```zig
-const theme = zcli.theme;  // or standalone: @import("theme")
-
-// In a zcli command you already have one: context.theme. Standalone:
-const theme_ctx = theme.Theme.init(init.environ_map, io);
-
-try theme.theme("Error").red().bold().render(writer, &theme_ctx);
-try theme.theme("Success").success().render(writer, &theme_ctx);
+// main.zig
+pub const zcli_theme: zcli.Theme = .{
+    .palette = .{
+        .command = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 179, .b = 71 } } },
+        .accent = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 179, .b = 71 } } },
+    },
+};
 ```
 
-Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Full API in [packages/theme](packages/theme/).
+```zig
+// In a command, style by meaning — roles resolve through the active palette:
+const styled = zcli.theme.styled;
+
+try styled("Synced").success().render(writer, &context.theme);
+try styled("Error").red().bold().render(writer, &context.theme);
+```
+
+Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) resolve at render time and adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Component tokens (`prompts.cursor`, `progress.spinner`, …) default to palette roles, so one palette change restyles everything. Full API in [packages/theme](packages/theme/).
 
 ## Config files
 

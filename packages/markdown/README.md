@@ -123,8 +123,8 @@ const fmt = md.formatter(stdout);
 try fmt.write("## Status: <error>**{s}**</error>", .{status});
 
 // With custom palette
-const custom_palette = md.SemanticPalette{
-    .err = .{ .r = 255, .g = 0, .b = 0 },  // Bright red
+const custom_palette = md.Palette{
+    .err = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 0, .b = 0 } }, .bold = true },
 };
 const fmt = md.formatterWithPalette(stdout, custom_palette);
 try fmt.write("<error>Custom colors!</error>", .{});
@@ -164,7 +164,7 @@ const fmt_string = comptime md.parse("## Header\n\n**Error:** Failed to load *{s
 
 - **Core:** `<success>` `<error>` `<warning>` `<info>` `<muted>`
 - **CLI:** `<command>` `<flag>` `<path>` `<value>` `<code>`
-- **UI:** `<primary>` `<secondary>` `<accent>`
+- **Structure:** `<header>` `<link>` `<accent>`
 
 **Note:** Semantic tags work with inline markdown only. For block-level documents (headers, lists, code blocks), use pure markdown.
 
@@ -382,10 +382,10 @@ The demo showcases:
 Override any semantic color:
 
 ```zig
-const custom_palette = md.SemanticPalette{
-    .success = .{ .r = 100, .g = 255, .b = 100 },  // Bright green
-    .err = .{ .r = 255, .g = 50, .b = 50 },        // Bright red
-    .code = .{ .r = 200, .g = 200, .b = 255 },     // Light blue
+const custom_palette = md.Palette{
+    .success = .{ .foreground = .{ .rgb = .{ .r = 100, .g = 255, .b = 100 } }, .bold = true },
+    .err = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 50, .b = 50 } }, .bold = true },
+    .code = .{ .foreground = .{ .rgb = .{ .r = 200, .g = 200, .b = 255 } } },
 };
 
 const fmt = md.formatterWithPalette(stdout, custom_palette);
