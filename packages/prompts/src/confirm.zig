@@ -1,8 +1,13 @@
 //! Yes/no confirmation prompt.
+//!
+//! The TTY path renders on the ui engine; the answered line persists as
+//! static output ("? Continue? (Y/n) yes").
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
+const lr = @import("list_render.zig");
+const ui = lr.ui;
 
 pub const ConfirmConfig = struct {
     message: []const u8,
@@ -21,9 +26,9 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     const is_tty = terminal.isStdinTty();
 
     const hint = if (config.default) "(Y/n)" else "(y/N)";
-    try writer.print("{s}{s} {s} ", .{ config.prefix, config.message, hint });
 
     if (!is_tty) {
+        try writer.print("{s}{s} {s} ", .{ config.prefix, config.message, hint });
         const first = terminal.key.readByteFn(reader) catch return config.default;
         // Read rest of line
         while (true) {
@@ -45,30 +50,35 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
         raw.disable();
         Prompts.flushWriter(writer);
     }
+    var app = try ui.App.init(p.allocator, writer, .{
+        .capability = p.theme.capability(),
+    });
+    defer app.deinit();
+
+    try renderFrame(&app, config, hint);
 
     while (true) {
-        Prompts.flushWriter(writer);
         const k = if (config.interrupt_keys.len > 0)
             try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
         else
             try terminal.readKey(reader);
         if (Prompts.isInterrupt(k, config.interrupt_keys)) {
-            try writer.writeAll("\r\n");
+            try persist(&app, config, hint, null);
             return error.Interrupted;
         }
         switch (k) {
             .enter => {
-                try writer.print("{s}\r\n", .{if (config.default) "yes" else "no"});
+                try persist(&app, config, hint, if (config.default) "yes" else "no");
                 return config.default;
             },
             .char => |c| {
                 switch (c) {
                     'y', 'Y' => {
-                        try writer.writeAll("yes\r\n");
+                        try persist(&app, config, hint, "yes");
                         return true;
                     },
                     'n', 'N' => {
-                        try writer.writeAll("no\r\n");
+                        try persist(&app, config, hint, "no");
                         return false;
                     },
                     else => {},
@@ -76,13 +86,31 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
             },
             .ctrl => |c| {
                 if (c == 'c') {
-                    try writer.writeAll("\r\n");
+                    try persist(&app, config, hint, null);
                     return error.UserAborted;
                 }
             },
             else => {},
         }
     }
+}
+
+fn renderFrame(app: *ui.App, config: ConfirmConfig, hint: []const u8) !void {
+    const a = app.arena();
+    const ws = lr.windowSize();
+    const usable: u16 = @intCast(@min(@max(@as(usize, ws.col) -| 1, 1), std.math.maxInt(u16)));
+    const line = try std.fmt.allocPrint(a, "{s}{s} {s} ", .{ config.prefix, config.message, hint });
+    try app.frame(try ui.column(a, .{ .width = .{ .len = usable } }, &.{
+        ui.text(.{}, line),
+    }));
+    const pos = Prompts.endPosition(line, usable);
+    try app.showCursorAt(pos.x, pos.y);
+}
+
+/// Erase the live prompt and persist "? message (Y/n) answer" statically.
+fn persist(app: *ui.App, config: ConfirmConfig, hint: []const u8, answer: ?[]const u8) !void {
+    try app.clear();
+    try app.emit("{s}{s} {s} {s}", .{ config.prefix, config.message, hint, answer orelse "" });
 }
 
 fn parseYesNo(input: []const u8, default: bool) bool {

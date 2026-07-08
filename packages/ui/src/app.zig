@@ -88,6 +88,13 @@ pub const App = struct {
     /// Terminal width at the last frame/emit; a change triggers the tail
     /// repaint.
     last_width: ?u16 = null,
+    /// Where `showCursorAt` placed the real cursor within the live region
+    /// (region-relative), if anywhere. Any frame/emit/clear un-places it.
+    placed: ?CursorPos = null,
+    /// Guard for idempotent deinit (finish paths may close the App early).
+    deinited: bool = false,
+
+    pub const CursorPos = struct { x: u16, y: u16 };
 
     pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
         return .{
@@ -102,9 +109,12 @@ pub const App = struct {
 
     /// Restores the terminal (cursor shown, parked on a fresh line below the
     /// live region — the final frame stays visible, flowing into scrollback)
-    /// and frees everything.
+    /// and frees everything. Idempotent.
     pub fn deinit(self: *App) void {
+        if (self.deinited) return;
+        self.deinited = true;
         if (self.started) {
+            self.unplace() catch {};
             if (self.live_rows > 1) {
                 self.writer.print("\x1b[{d}B", .{self.live_rows - 1}) catch {};
             }
@@ -117,6 +127,35 @@ pub const App = struct {
         self.front.deinit();
         self.back.deinit();
         self.frame_arena.deinit();
+    }
+
+    /// Show the real terminal cursor at (x, y) in live-region coordinates —
+    /// a line editor's insertion point. Cleared by the next frame, emit, or
+    /// clear (the region invariant parks the cursor at the top-left between
+    /// operations; this is the one sanctioned excursion). No-op without an
+    /// interactive live region.
+    pub fn showCursorAt(self: *App, x: u16, y: u16) !void {
+        if (!self.options.interactive or self.live_rows == 0) return;
+        try self.unplace();
+        const pos = CursorPos{
+            .x = @min(x, self.front.width -| 1),
+            .y = @min(y, self.live_rows - 1),
+        };
+        if (pos.y > 0) try self.writer.print("\x1b[{d}B", .{pos.y});
+        try self.writer.writeByte('\r');
+        if (pos.x > 0) try self.writer.print("\x1b[{d}C", .{pos.x});
+        try self.writer.writeAll("\x1b[?25h");
+        try self.writer.flush();
+        self.placed = pos;
+    }
+
+    /// Hide the placed cursor and return to the region's top-left, restoring
+    /// the parking invariant every other operation assumes.
+    fn unplace(self: *App) !void {
+        const pos = self.placed orelse return;
+        self.placed = null;
+        try self.writer.writeAll("\x1b[?25l\r");
+        if (pos.y > 0) try self.writer.print("\x1b[{d}A", .{pos.y});
     }
 
     /// The frame arena: build each frame's node tree from this. Valid until
@@ -148,6 +187,7 @@ pub const App = struct {
         const text = try std.fmt.allocPrint(self.gpa, base ++ "\r\n", args);
         errdefer self.gpa.free(text);
 
+        try self.unplace();
         const had_live = self.live_rows > 0;
         try self.clearLive();
         try self.writer.writeAll(text);
@@ -168,6 +208,7 @@ pub const App = struct {
     pub fn frame(self: *App, node: Node) !void {
         defer _ = self.frame_arena.reset(.retain_capacity);
         if (!self.options.interactive) return;
+        try self.unplace();
 
         const ts = self.termSize();
         const width_changed = self.last_width != null and self.last_width.? != ts.w;
@@ -237,6 +278,7 @@ pub const App = struct {
     /// for a widget whose result is an `emit`ted line (or no output at
     /// all), as opposed to `deinit`'s leave-the-final-frame-visible.
     pub fn clear(self: *App) !void {
+        try self.unplace();
         try self.clearLive();
         try self.writer.flush();
     }

@@ -1,8 +1,14 @@
 //! Masked password input prompt.
+//!
+//! The TTY path renders on the ui engine: one mask glyph per typed grapheme,
+//! repainted as a frame per keystroke with the real cursor at the insertion
+//! point. On Enter the masked line persists as static output.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
+const lr = @import("list_render.zig");
+const ui = lr.ui;
 
 pub const PasswordConfig = struct {
     message: []const u8,
@@ -17,10 +23,9 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     const allocator = p.allocator;
     const is_tty = terminal.isStdinTty();
 
-    try writer.print("{s}{s} ", .{ config.prefix, config.message });
-
     if (!is_tty) {
         // Non-TTY: read line (no masking possible)
+        try writer.print("{s}{s} ", .{ config.prefix, config.message });
         const line = readLine(reader, allocator) catch return try allocator.dupe(u8, "");
         try writer.writeAll("\n");
         return line;
@@ -29,55 +34,74 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     // TTY: raw mode with mask character
     Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        try writer.writeAll("\n");
+        try writer.print("{s}{s} \n", .{ config.prefix, config.message });
         return try allocator.dupe(u8, "");
     };
     defer {
         raw.disable();
         Prompts.flushWriter(writer);
     }
+    var app = try ui.App.init(p.allocator, writer, .{
+        .capability = p.theme.capability(),
+    });
+    defer app.deinit();
 
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
+    try renderFrame(&app, config, buf.items);
+
     while (true) {
-        Prompts.flushWriter(writer);
         const k = try terminal.readKey(reader);
         switch (k) {
             .enter => {
-                try writer.writeAll("\r\n");
+                try persistLine(&app, config, buf.items);
                 return try allocator.dupe(u8, buf.items);
             },
             .backspace => {
                 if (buf.items.len > 0) {
                     Prompts.popTrailingGrapheme(&buf);
-                    try renderMask(writer, config, terminal.graphemeCount(buf.items));
+                    try renderFrame(&app, config, buf.items);
                 }
             },
             .ctrl => |c| {
                 if (c == 'c') {
-                    try writer.writeAll("\r\n");
+                    try persistLine(&app, config, buf.items);
                     return error.UserAborted;
                 }
             },
             .char => |c| {
                 // One mask glyph per typed character, not per UTF-8 byte.
                 _ = try Prompts.appendCodepoint(allocator, &buf, c);
-                try renderMask(writer, config, terminal.graphemeCount(buf.items));
+                try renderFrame(&app, config, buf.items);
             },
             else => {},
         }
     }
 }
 
-fn renderMask(writer: anytype, config: PasswordConfig, len: usize) !void {
-    // Clear line and redraw prompt + mask, then flush to ensure atomic render
-    try writer.writeAll("\r\x1b[K");
-    try writer.print("{s}{s} ", .{ config.prefix, config.message });
-    for (0..len) |_| {
-        try writer.print("{c}", .{config.mask});
-    }
-    Prompts.flushWriter(writer);
+/// The masked prompt line: "? message ****".
+fn composeLine(a: std.mem.Allocator, config: PasswordConfig, input: []const u8) ![]const u8 {
+    const masks = try a.alloc(u8, terminal.graphemeCount(input));
+    @memset(masks, config.mask);
+    return std.fmt.allocPrint(a, "{s}{s} {s}", .{ config.prefix, config.message, masks });
+}
+
+fn renderFrame(app: *ui.App, config: PasswordConfig, input: []const u8) !void {
+    const a = app.arena();
+    const ws = lr.windowSize();
+    const usable: u16 = @intCast(@min(@max(@as(usize, ws.col) -| 1, 1), std.math.maxInt(u16)));
+    try app.frame(try ui.column(a, .{ .width = .{ .len = usable } }, &.{
+        ui.text(.{}, try composeLine(a, config, input)),
+    }));
+    const pos = Prompts.endPosition(try composeLine(app.arena(), config, input), usable);
+    try app.showCursorAt(pos.x, pos.y);
+}
+
+fn persistLine(app: *ui.App, config: PasswordConfig, input: []const u8) !void {
+    try app.clear();
+    const line = try composeLine(app.arena(), config, input);
+    try app.emit("{s}", .{line});
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
@@ -140,4 +164,12 @@ test "prompt shows message" {
 
     const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "Enter secret:") != null);
+}
+
+test "composeLine: one mask glyph per grapheme, not per byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // "你" is 3 bytes, one grapheme → exactly one mask char.
+    const line = try composeLine(arena.allocator(), .{ .message = "PW:" }, "a你");
+    try std.testing.expectEqualStrings("? PW: **", line);
 }

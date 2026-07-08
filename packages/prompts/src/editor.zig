@@ -1,8 +1,14 @@
 //! Editor prompt — launches $EDITOR for multiline text input.
+//!
+//! The hint line renders on the ui engine; before spawning the editor the
+//! App is closed (cursor restored, region persisted) so the editor gets a
+//! clean terminal.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
+const lr = @import("list_render.zig");
+const ui = lr.ui;
 
 pub const EditorConfig = struct {
     message: []const u8,
@@ -20,9 +26,8 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     const allocator = p.allocator;
     const is_tty = terminal.isStdinTty();
 
-    try writer.print("{s}{s}", .{ config.prefix, config.message });
-
     if (!is_tty) {
+        try writer.print("{s}{s}", .{ config.prefix, config.message });
         // Non-TTY: read all remaining input
         try writer.writeAll("\n");
         var buf = std.ArrayList(u8).empty;
@@ -37,16 +42,17 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
         return try buf.toOwnedSlice(allocator);
     }
 
-    var obuf: [64]u8 = undefined;
-    const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().hint);
-    try writer.print(" {s}(press Enter to open editor){s} ", .{ open, Prompts.closeSeq(open) });
+    // Wait for Enter in raw mode, hint line rendered as a frame.
     Prompts.flushWriter(writer);
-
-    // Wait for Enter in raw mode
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        try writer.writeAll("\r\n");
+        try writer.print("{s}{s}\n", .{ config.prefix, config.message });
         return try allocator.dupe(u8, config.default orelse "");
     };
+    var app = try ui.App.init(p.allocator, writer, .{
+        .capability = p.theme.capability(),
+    });
+    defer app.deinit();
+    try renderFrame(&app, p.theme, config);
 
     while (true) {
         const k = try terminal.readKey(reader);
@@ -54,18 +60,23 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
             .enter => break,
             .ctrl => |c| {
                 if (c == 'c') {
+                    try app.clear();
+                    try app.emit("{s}{s}", .{ config.prefix, config.message });
+                    app.deinit();
                     raw.disable();
-                    try writer.writeAll("\r\n");
+                    Prompts.flushWriter(writer);
                     return error.UserAborted;
                 }
             },
             else => {},
         }
     }
+    // Persist the prompt line and hand the editor a clean terminal: region
+    // closed, cursor restored, raw mode off.
+    try app.clear();
+    try app.emit("{s}{s}", .{ config.prefix, config.message });
+    app.deinit();
     raw.disable();
-    Prompts.flushWriter(writer);
-
-    try writer.writeAll("\r\n");
     Prompts.flushWriter(writer);
 
     // Create temp file and write default content
@@ -110,4 +121,22 @@ test "EditorConfig defaults" {
     const cfg = EditorConfig{ .message = "Edit:", .io = std.testing.io };
     try std.testing.expect(cfg.default == null);
     try std.testing.expectEqualStrings(".txt", cfg.extension);
+}
+
+fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: EditorConfig) !void {
+    const a = app.arena();
+    const ws = terminal.getWindowSize(std.Io.File.stdout().handle) catch terminal.Winsize{ .row = 24, .col = 80 };
+    const usable: u16 = @intCast(@min(@max(@as(usize, ws.col) -| 1, 1), std.math.maxInt(u16)));
+    const head = try std.fmt.allocPrint(a, "{s}{s} ", .{ config.prefix, config.message });
+    const hint = "(press Enter to open editor) ";
+    const hint_style = ctx.resolveRef(ctx.promptTokens().hint);
+    try app.frame(try ui.column(a, .{ .width = .{ .len = usable } }, &.{
+        try ui.row(a, .{}, &.{
+            ui.textOpts(.{ .wrap = .clip }, head),
+            ui.textOpts(.{ .style = hint_style, .wrap = .clip }, hint),
+        }),
+    }));
+    const line = try std.fmt.allocPrint(app.arena(), "{s}{s}", .{ head, hint });
+    const pos = Prompts.endPosition(line, usable);
+    try app.showCursorAt(pos.x, pos.y);
 }
