@@ -19,12 +19,9 @@ const terminal = @import("terminal");
 const frame_ms: u64 = 80;
 const total_frames: u32 = 72;
 
-const spinner = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-
 const heading: ui.Style = .{ .bold = true, .foreground = .cyan };
 const faint: ui.Style = .{ .dim = true };
 const good: ui.Style = .{ .foreground = .green };
-const busy: ui.Style = .{ .foreground = .yellow };
 
 const Task = struct {
     name: []const u8,
@@ -46,48 +43,13 @@ const tasks = [_]Task{
     .{ .name = "publish release", .start = 36, .duration = 24 },
 };
 
-/// A progress gauge as a `custom` leaf: it reports a small natural size and
-/// paints whatever width the layout grants it — combined with `.fill` sizing
-/// it stretches to absorb the row's leftover space.
-const Gauge = struct {
-    frac: f32,
-
-    fn measureFn(_: *anyopaque, _: *const ui.RenderCtx, limits: ui.Limits) ui.Size {
-        return .{ .w = @min(limits.max_w, 10), .h = @min(limits.max_h, 1) };
-    }
-
-    fn renderFn(context: *anyopaque, _: *const ui.RenderCtx, region: ui.Region) anyerror!void {
-        const self: *const Gauge = @ptrCast(@alignCast(context));
-        const w = region.width();
-        const filled: u16 = @intFromFloat(self.frac * @as(f32, @floatFromInt(w)));
-        var x: u16 = 0;
-        while (x < w) : (x += 1) {
-            const on = x < filled;
-            _ = try region.writeText(x, 0, if (on) "█" else "░", if (on) good else faint);
-        }
-    }
-
-    fn node(a: std.mem.Allocator, frac: f32) !ui.Node {
-        const self = try a.create(Gauge);
-        self.* = .{ .frac = frac };
-        return .{
-            .width = .{ .fill = 1 },
-            .kind = .{ .custom = .{
-                .context = self,
-                .measureFn = measureFn,
-                .renderFn = renderFn,
-            } },
-        };
-    }
-};
-
 fn taskRow(a: std.mem.Allocator, task: Task, frame: u32) !ui.Node {
     const frac = task.fraction(frame);
     const running = frame > task.start and frac < 1;
     const glyph = if (frac >= 1)
         ui.text(good, "✓")
     else if (running)
-        ui.text(busy, spinner[frame % spinner.len])
+        ui.widgets.spinner(.{}, frame)
     else
         ui.text(faint, "◦");
     const name_style: ui.Style = if (running) .{ .bold = true } else if (frac >= 1) .{} else faint;
@@ -96,7 +58,7 @@ fn taskRow(a: std.mem.Allocator, task: Task, frame: u32) !ui.Node {
     return ui.row(a, .{ .gap = 1 }, &.{
         glyph,
         ui.textOpts(.{ .style = name_style, .wrap = .truncate, .width = .{ .len = 16 } }, task.name),
-        try Gauge.node(a, frac),
+        try ui.widgets.bar(a, .{}, frac),
         // .clip, not the .wrap default: the word-wrapper treats the pad
         // spaces in "  0%" as a break gap and would drop them.
         ui.textOpts(.{ .style = faint, .wrap = .clip }, pct),
@@ -118,7 +80,7 @@ fn buildFrame(a: std.mem.Allocator, frame: u32, width: u16) !ui.Node {
 
     var rows = std.ArrayList(ui.Node).empty;
     try rows.append(a, try ui.row(a, .{ .gap = 1 }, &.{
-        if (all_done) ui.text(good, "✓") else ui.text(heading, spinner[frame % spinner.len]),
+        if (all_done) ui.text(good, "✓") else ui.widgets.spinner(.{}, frame),
         ui.text(heading, "Deploying zcli demo"),
         ui.spacer(),
         ui.text(faint, elapsed),
@@ -126,7 +88,7 @@ fn buildFrame(a: std.mem.Allocator, frame: u32, width: u16) !ui.Node {
     for (tasks) |t| try rows.append(a, try taskRow(a, t, frame));
     try rows.append(a, try ui.row(a, .{ .gap = 1 }, &.{
         ui.text(if (all_done) good else ui.Style{}, "overall"),
-        try Gauge.node(a, sum / tasks.len),
+        try ui.widgets.bar(a, .{}, sum / tasks.len),
     }));
 
     return ui.column(a, .{
