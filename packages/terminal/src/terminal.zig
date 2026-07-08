@@ -16,6 +16,7 @@ pub const readKeyOpt = key.readKeyOpt;
 pub const event = @import("event.zig");
 pub const Event = event.Event;
 pub const readEvent = event.readEvent;
+pub const readEventTimeout = event.readEventTimeout;
 
 /// Watches for terminal resizes; construct for the lifetime of a prompt.
 pub const ResizeWatcher = backend.ResizeWatcher;

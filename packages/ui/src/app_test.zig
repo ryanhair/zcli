@@ -17,6 +17,10 @@ const Harness = struct {
     fed: usize = 0,
 
     fn init(w: u16, h: u16) !*Harness {
+        return initMode(w, h, .hybrid);
+    }
+
+    fn initMode(w: u16, h: u16, mode: ui.App.Mode) !*Harness {
         const self = try testing.allocator.create(Harness);
         errdefer testing.allocator.destroy(self);
         self.* = .{
@@ -26,6 +30,7 @@ const Harness = struct {
         };
         self.app = try ui.App.init(testing.allocator, &self.aw.writer, .{
             .term_size = .{ .w = w, .h = h },
+            .mode = mode,
         });
         return self;
     }
@@ -398,4 +403,86 @@ test "deinit is idempotent" {
     app.deinit();
     app.deinit(); // second call must be a no-op, not a double free
     try testing.expect(std.mem.endsWith(u8, aw.written(), "\x1b[?25h"));
+}
+
+// ----------------------------------------------------------------------
+// Full-screen mode (ADR-0015). A fixed term_size keeps these headless: the
+// alt-screen takeover byte stream runs, but raw mode / input do not (those
+// need a real terminal, exercised by the example + e2e).
+// ----------------------------------------------------------------------
+
+/// A `fill`×`fill` root — the shape a full-screen app uses to take the
+/// whole viewport.
+fn fullRoot(a: std.mem.Allocator, msg: []const u8) !ui.Node {
+    return ui.column(a, .{ .width = .{ .fill = 1 }, .height = .{ .fill = 1 } }, &.{ui.text(.{}, msg)});
+}
+
+test "full_screen enters the alt-screen and paints the whole viewport" {
+    var h = try Harness.initMode(20, 6, .full_screen);
+    defer h.deinit();
+    // init already switched to the alternate screen and hid the cursor.
+    h.replay();
+    try testing.expect(h.vt.alt_screen);
+    try testing.expect(!h.vt.cursor_visible);
+
+    try h.app.frame(try fullRoot(h.app.arena(), "dashboard"));
+    h.replay();
+
+    try testing.expect(h.vt.containsText("dashboard"));
+    // The frame is granted the full viewport height (no held-back row).
+    try testing.expectEqual(@as(u16, 6), h.app.live_rows);
+    // Parked at the origin (the diff renderer's anchor), still hidden.
+    try testing.expect(h.vt.cursorAt(0, 0));
+    try testing.expect(!h.vt.cursor_visible);
+}
+
+test "full_screen deinit leaves the alt-screen and shows the cursor" {
+    var h = try Harness.initMode(20, 6, .full_screen);
+    defer h.deinit();
+
+    try h.app.frame(try fullRoot(h.app.arena(), "bye"));
+    h.app.deinit();
+    // Re-init (hybrid, non-interactive so it touches nothing) so Harness.deinit's
+    // second app.deinit is a harmless no-op.
+    h.app = try ui.App.init(testing.allocator, &h.aw.writer, .{ .interactive = false });
+    h.replay();
+
+    try testing.expect(!h.vt.alt_screen);
+    try testing.expect(h.vt.cursor_visible);
+}
+
+test "emit is unavailable in full_screen" {
+    var h = try Harness.initMode(20, 6, .full_screen);
+    defer h.deinit();
+    try testing.expectError(error.EmitInFullScreen, h.app.emit("nope", .{}));
+}
+
+test "full_screen on a non-TTY is an error at init" {
+    var aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer aw.deinit();
+    try testing.expectError(error.NotATerminal, ui.App.init(testing.allocator, &aw.writer, .{
+        .term_size = .{ .w = 20, .h = 6 },
+        .mode = .full_screen,
+        .interactive = false,
+    }));
+}
+
+test "full_screen resize repaints the whole new viewport" {
+    var h = try Harness.initMode(20, 6, .full_screen);
+    defer h.deinit();
+
+    try h.app.frame(try fullRoot(h.app.arena(), "before"));
+    h.replay();
+    try testing.expectEqual(@as(u16, 6), h.app.live_rows);
+
+    // Grow the viewport (as a SIGWINCH would) and repaint.
+    h.app.options.term_size = .{ .w = 30, .h = 10 };
+    try h.vt.resize(30, 10);
+    try h.app.frame(try fullRoot(h.app.arena(), "after"));
+    h.replay();
+
+    try testing.expectEqual(@as(u16, 10), h.app.live_rows);
+    try testing.expect(h.vt.containsText("after"));
+    try testing.expect(!h.vt.containsText("before"));
+    try testing.expect(h.vt.cursorAt(0, 0));
 }

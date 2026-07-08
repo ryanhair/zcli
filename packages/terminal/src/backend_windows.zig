@@ -136,6 +136,10 @@ pub fn waitReadable(handle: Handle, timeout_ms: i32) bool {
 /// Whether a `wait` returned because input is ready or the terminal resized.
 pub const InputWait = enum { input, resize };
 
+/// Result of `waitTimeout`: input ready, a resize, or the caller's deadline
+/// elapsed with neither.
+pub const WaitResult = enum { input, resize, timeout };
+
 /// How often `wait` re-checks the window size while blocked on input. With
 /// `ENABLE_VIRTUAL_TERMINAL_INPUT`, resize events are not delivered through the
 /// byte stream (`ReadFile`), so rather than rewire input reading to consume
@@ -161,14 +165,34 @@ pub const ResizeWatcher = struct {
 
     /// Block until stdin (`handle`) has input or the console window resizes.
     pub fn wait(self: *ResizeWatcher, handle: Handle) InputWait {
+        return switch (self.waitTimeout(handle, null)) {
+            .input => .input,
+            .resize => .resize,
+            .timeout => unreachable, // a null timeout never expires
+        };
+    }
+
+    /// Like `wait`, but return `.timeout` if neither input nor a resize
+    /// arrives within `timeout_ms`. `null` blocks indefinitely (never
+    /// returns `.timeout`). A finite timeout lets a full-screen loop repaint
+    /// on a tick with no input; the size poll runs at most one
+    /// `resize_poll_ms` interval past the deadline.
+    pub fn waitTimeout(self: *ResizeWatcher, handle: Handle, timeout_ms: ?u32) WaitResult {
+        var remaining: ?u32 = timeout_ms;
         while (true) {
-            const ready = WaitForSingleObject(handle, @intCast(resize_poll_ms)) == WAIT_OBJECT_0;
+            const wait_ms: DWORD = if (remaining) |r| blk: {
+                if (r == 0) return .timeout;
+                break :blk @intCast(@min(r, @as(u32, @intCast(resize_poll_ms))));
+            } else @intCast(resize_poll_ms);
+
+            const ready = WaitForSingleObject(handle, wait_ms) == WAIT_OBJECT_0;
             const sz = getWindowSize(self.out) catch self.last;
             if (sz.row != self.last.row or sz.col != self.last.col) {
                 self.last = sz;
                 return .resize;
             }
             if (ready) return .input;
+            if (remaining) |*r| r.* -|= wait_ms;
         }
     }
 };

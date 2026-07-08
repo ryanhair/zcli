@@ -56,3 +56,7 @@ pub const ResizeWatcher = impl.ResizeWatcher;
 
 /// Result of `ResizeWatcher.wait`: either input is ready or a resize occurred.
 pub const InputWait = impl.InputWait;
+
+/// Result of `ResizeWatcher.waitTimeout`: input ready, a resize, or the
+/// caller's deadline elapsed with neither.
+pub const WaitResult = impl.WaitResult;

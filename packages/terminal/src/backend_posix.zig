@@ -83,6 +83,10 @@ pub fn waitReadable(fd: Handle, timeout_ms: i32) bool {
 /// Whether a `wait` returned because input is ready or the terminal resized.
 pub const InputWait = enum { input, resize };
 
+/// Result of `waitTimeout`: input ready, a resize, or the caller's deadline
+/// elapsed with neither.
+pub const WaitResult = enum { input, resize, timeout };
+
 /// Backstop poll interval. A SIGWINCH interrupts the poll (EINTR) and is caught
 /// immediately; this only bounds the tiny race where the signal lands between
 /// the flag check and the poll entering the kernel — at worst that resize is
@@ -125,17 +129,41 @@ pub const ResizeWatcher = struct {
     /// raw `poll` (not `std.posix.poll`, which retries EINTR internally and
     /// would hide the SIGWINCH wakeup).
     pub fn wait(self: *ResizeWatcher, fd: Handle) InputWait {
+        return switch (self.waitTimeout(fd, null)) {
+            .input => .input,
+            .resize => .resize,
+            .timeout => unreachable, // a null timeout never expires
+        };
+    }
+
+    /// Like `wait`, but return `.timeout` if neither input nor a resize
+    /// arrives within `timeout_ms`. `null` blocks indefinitely (never
+    /// returns `.timeout`) — the classic prompt behavior. A finite timeout is
+    /// what lets a full-screen loop repaint on a tick with no input.
+    ///
+    /// The deadline is honored one backstop interval at a time: each poll
+    /// waits at most `poll_backstop_ms` so a SIGWINCH that raced the poll is
+    /// noticed promptly, and the remaining budget is decremented by the
+    /// interval actually waited.
+    pub fn waitTimeout(self: *ResizeWatcher, fd: Handle, timeout_ms: ?u32) WaitResult {
         _ = self;
+        var remaining: ?u32 = timeout_ms;
         while (true) {
             if (resize_pending.swap(false, .seq_cst)) return .resize;
 
+            const wait_ms: i32 = if (remaining) |r| blk: {
+                if (r == 0) return .timeout;
+                break :blk @intCast(@min(r, @as(u32, poll_backstop_ms)));
+            } else poll_backstop_ms;
+
             var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
-            const rc = posix.system.poll(&fds, 1, poll_backstop_ms);
+            const rc = posix.system.poll(&fds, 1, wait_ms);
             if (resize_pending.swap(false, .seq_cst)) return .resize;
             switch (posix.errno(rc)) {
                 .SUCCESS => if (rc > 0 and fds[0].revents & posix.POLL.IN != 0) return .input,
                 else => {}, // EINTR / EAGAIN — loop and re-check the flag
             }
+            if (remaining) |*r| r.* -|= @intCast(wait_ms);
         }
     }
 };

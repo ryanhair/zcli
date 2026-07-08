@@ -22,11 +22,24 @@ pub const Event = union(enum) {
 /// disambiguation and by the watcher's poll. Bytes already buffered in `reader`
 /// are consumed before polling, so no keypress is missed.
 pub fn readEvent(reader: anytype, handle: backend.Handle, watcher: *backend.ResizeWatcher) !Event {
-    while (true) {
-        if (key.bufferedLen(reader) > 0) return .{ .key = try key.readKeyOpt(reader, handle) };
-        switch (watcher.wait(handle)) {
-            .resize => return .resize,
-            .input => return .{ .key = try key.readKeyOpt(reader, handle) },
-        }
-    }
+    return (try readEventTimeout(reader, handle, watcher, null)).?;
+}
+
+/// Like `readEvent`, but return `null` if neither a key nor a resize arrives
+/// within `timeout_ms`. `null` blocks indefinitely (never times out). The
+/// finite-timeout form is what lets a full-screen App repaint on a tick with
+/// no input — a `top`-style refresh — without a background thread.
+pub fn readEventTimeout(
+    reader: anytype,
+    handle: backend.Handle,
+    watcher: *backend.ResizeWatcher,
+    timeout_ms: ?u32,
+) !?Event {
+    // Bytes already buffered are input regardless of the deadline.
+    if (key.bufferedLen(reader) > 0) return Event{ .key = try key.readKeyOpt(reader, handle) };
+    return switch (watcher.waitTimeout(handle, timeout_ms)) {
+        .resize => .resize,
+        .input => Event{ .key = try key.readKeyOpt(reader, handle) },
+        .timeout => null,
+    };
 }
