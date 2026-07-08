@@ -131,15 +131,12 @@ fn runWizardOnce(
 const PathResult = struct { parts: []const []const u8, prompted: bool };
 
 const PathPreview = struct {
-    theme: *const ThemeContext,
-
-    fn render(ctx: *anyopaque, input: []const u8, w: *std.Io.Writer) anyerror!void {
-        const self: *PathPreview = @ptrCast(@alignCast(ctx));
+    // The prompt styles the preview line with the theme's hint token; the
+    // callback just produces the text (from the prompt's frame arena).
+    fn render(_: *anyopaque, a: std.mem.Allocator, input: []const u8) anyerror!?[]const u8 {
         const trimmed = std.mem.trim(u8, input, " \t/");
-        if (trimmed.len == 0) return;
-        var buf: [512]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "  \u{2192} creates src/commands/{s}.zig", .{trimmed}) catch return;
-        try themed(line).dim().render(w, self.theme);
+        if (trimmed.len == 0) return null;
+        return try std.fmt.allocPrint(a, "  \u{2192} creates src/commands/{s}.zig", .{trimmed});
     }
 };
 
@@ -151,7 +148,7 @@ fn resolveCommandPath(
 ) !PathResult {
     const w = p.writer;
     const theme = &p.theme;
-    var pp = PathPreview{ .theme = theme };
+    var pp = PathPreview{};
     var seed_opt = seed;
     var prompted = false;
     while (true) {

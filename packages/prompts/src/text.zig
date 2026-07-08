@@ -1,15 +1,25 @@
 //! Text input prompt.
+//!
+//! The TTY path renders on the ui engine: each keystroke paints one frame of
+//! the prompt line (wrapping across rows as the input grows — the engine
+//! reserves and diffs the region), and `showCursorAt` keeps the real terminal
+//! cursor at the insertion point. On Enter the line persists as static
+//! output. Input handling stays here.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
+const lr = @import("list_render.zig");
+const ui = lr.ui;
 
-/// Optional live preview rendered on the line *above* the prompt, repainted on
-/// every keystroke. `render` receives the current input and writes one line of
-/// content (no trailing newline); it owns its own styling. Only active on a TTY.
+/// Optional live preview rendered on the line *above* the prompt, repainted
+/// on every keystroke. `render` receives the current input and returns one
+/// line of plain text allocated from `a` (a frame arena — do not free), or
+/// null for no preview. The prompt styles it with the theme's hint token.
+/// Only active on a TTY.
 pub const Preview = struct {
     context: *anyopaque,
-    render: *const fn (context: *anyopaque, input: []const u8, writer: *std.Io.Writer) anyerror!void,
+    render: *const fn (context: *anyopaque, a: std.mem.Allocator, input: []const u8) anyerror!?[]const u8,
 };
 
 pub const TextConfig = struct {
@@ -29,20 +39,14 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     const reader = p.reader;
     const allocator = p.allocator;
     const is_tty = terminal.isStdinTty();
-    const use_preview = is_tty and config.preview != null;
-
-    // With a live preview, the preview line sits directly above the prompt.
-    if (use_preview) try renderPreviewLine(writer, config.preview.?, "");
-
-    // Render prompt
-    try writer.print("{s}{s}", .{ config.prefix, config.message });
-    if (config.default) |def| {
-        try writer.print(" ({s})", .{def});
-    }
-    try writer.writeAll(" ");
 
     if (!is_tty) {
-        // Non-TTY: read a line byte by byte
+        // Non-TTY: prompt inline, read a line byte by byte
+        try writer.print("{s}{s}", .{ config.prefix, config.message });
+        if (config.default) |def| {
+            try writer.print(" ({s})", .{def});
+        }
+        try writer.writeAll(" ");
         const line = readLine(reader, allocator) catch {
             return if (config.default) |def|
                 try allocator.dupe(u8, def)
@@ -60,31 +64,35 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     // TTY: raw mode character-by-character input
     Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        // Fallback if raw mode fails
-        try writer.writeAll("\n");
+        try writer.print("{s}{s} \n", .{ config.prefix, config.message });
         return try allocator.dupe(u8, config.default orelse "");
     };
     defer {
         raw.disable();
         Prompts.flushWriter(writer);
     }
+    var app = try ui.App.init(p.allocator, writer, .{
+        .capability = p.theme.capability(),
+    });
+    defer app.deinit();
 
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
+    try renderFrame(&app, p.theme, config, buf.items);
+
     while (true) {
-        Prompts.flushWriter(writer);
         const k = if (config.interrupt_keys.len > 0)
             try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
         else
             try terminal.readKey(reader);
         if (Prompts.isInterrupt(k, config.interrupt_keys)) {
-            try writer.writeAll("\r\n");
+            try persistLine(&app, config, buf.items);
             return error.Interrupted;
         }
         switch (k) {
             .enter => {
-                try writer.writeAll("\r\n");
+                try persistLine(&app, config, buf.items);
                 if (buf.items.len == 0) {
                     if (config.default) |def| return try allocator.dupe(u8, def);
                 }
@@ -92,38 +100,71 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
             },
             .backspace => {
                 if (buf.items.len > 0) {
-                    try Prompts.eraseTrailingGrapheme(writer, &buf);
-                    if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
+                    Prompts.popTrailingGrapheme(&buf);
+                    try renderFrame(&app, p.theme, config, buf.items);
                 }
             },
             .ctrl => |c| {
                 if (c == 'c') {
-                    try writer.writeAll("\r\n");
+                    try persistLine(&app, config, buf.items);
                     return error.UserAborted;
                 }
             },
             .char => |c| {
-                try writer.writeAll(try Prompts.appendCodepoint(allocator, &buf, c));
-                if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
+                _ = try Prompts.appendCodepoint(allocator, &buf, c);
+                try renderFrame(&app, p.theme, config, buf.items);
             },
             else => {},
         }
     }
 }
 
-/// Render the preview content followed by a newline (used for the initial line).
-fn renderPreviewLine(writer: *std.Io.Writer, preview: Preview, input: []const u8) !void {
-    try preview.render(preview.context, input, writer);
-    try writer.writeAll("\r\n");
+/// The prompt line as one string: "? message (default) input".
+fn composeLine(a: std.mem.Allocator, config: TextConfig, input: []const u8) ![]const u8 {
+    return if (config.default) |def|
+        std.fmt.allocPrint(a, "{s}{s} ({s}) {s}", .{ config.prefix, config.message, def, input })
+    else
+        std.fmt.allocPrint(a, "{s}{s} {s}", .{ config.prefix, config.message, input });
 }
 
-/// Repaint the preview line above the cursor without disturbing the input line:
-/// save cursor, move up one line, clear it, re-render, restore cursor.
-fn repaintPreview(writer: *std.Io.Writer, preview: Preview, input: []const u8) !void {
-    try writer.writeAll("\x1b7"); // DEC save cursor
-    try writer.writeAll("\x1b[1A\r\x1b[2K"); // up one line, carriage return, clear line
-    try preview.render(preview.context, input, writer);
-    try writer.writeAll("\x1b8"); // DEC restore cursor
+fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: TextConfig, input: []const u8) !void {
+    const a = app.arena();
+    const ws = lr.windowSize();
+    const node = try frameNode(a, ctx, config, input, ws);
+    try app.frame(node);
+
+    // Real cursor at the insertion point (end of input).
+    const usable = @max(@as(usize, ws.col) -| 1, 1);
+    const pos = Prompts.endPosition(try composeLine(app.arena(), config, input), usable);
+    const preview_rows: u16 = if (config.preview != null) 1 else 0;
+    try app.showCursorAt(pos.x, pos.y + preview_rows);
+}
+
+/// Build the (preview +) prompt-line frame. Pure and size-explicit for tests.
+pub fn frameNode(
+    a: std.mem.Allocator,
+    ctx: Prompts.ThemeContext,
+    config: TextConfig,
+    input: []const u8,
+    ws: terminal.Winsize,
+) !ui.Node {
+    const usable: u16 = @intCast(@min(@max(@as(usize, ws.col) -| 1, 1), std.math.maxInt(u16)));
+
+    var rows = std.ArrayList(ui.Node).empty;
+    if (config.preview) |preview| {
+        const content = (try preview.render(preview.context, a, input)) orelse "";
+        const hint_style = ctx.resolveRef(ctx.promptTokens().hint);
+        try rows.append(a, ui.textOpts(.{ .style = hint_style, .wrap = .clip }, content));
+    }
+    try rows.append(a, ui.text(.{}, try composeLine(a, config, input)));
+    return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
+}
+
+/// Erase the live prompt and persist its final state as a static line.
+fn persistLine(app: *ui.App, config: TextConfig, input: []const u8) !void {
+    try app.clear();
+    const line = try composeLine(app.arena(), config, input);
+    try app.emit("{s}", .{line});
 }
 
 /// Read a line from a reader byte by byte until newline.
@@ -207,4 +248,47 @@ test "text: prompt message appears in output" {
     const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "Enter name:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "(foo)") != null);
+}
+
+test "frameNode: prompt line with input; preview row above wears the hint token" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Echo = struct {
+        fn render(_: *anyopaque, alloc: std.mem.Allocator, input: []const u8) anyerror!?[]const u8 {
+            if (input.len == 0) return null;
+            return try std.fmt.allocPrint(alloc, "-> {s}", .{input});
+        }
+    };
+    var dummy: u8 = 0;
+    const node = try frameNode(a, Prompts.default_style, .{
+        .message = "Name:",
+        .preview = .{ .context = @ptrCast(&dummy), .render = Echo.render },
+    }, "ab", .{ .row = 24, .col = 40 });
+
+    var s = try ui.Surface.init(std.testing.allocator, 39, 2);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+    try ui.render(&rctx, &node, s.root());
+
+    // Row 0: preview "-> ab" in the hint style; row 1: "? Name: ab".
+    try std.testing.expectEqualStrings("-", s.cellText(s.cell(0, 0)));
+    const hint = Prompts.default_style.resolveRef(Prompts.default_style.promptTokens().hint);
+    try std.testing.expect(ui.styleEql(hint, s.cell(0, 0).style));
+    try std.testing.expectEqualStrings("?", s.cellText(s.cell(0, 1)));
+    try std.testing.expectEqualStrings("a", s.cellText(s.cell(8, 1)));
+}
+
+test "endPosition: insertion point tracks the wrapped prompt line" {
+    // "? Name: " is 8 columns; empty input puts the cursor after the space.
+    const empty = Prompts.endPosition("? Name: ", 20);
+    try std.testing.expectEqual(@as(u16, 8), empty.x);
+    try std.testing.expectEqual(@as(u16, 0), empty.y);
+
+    // Input pushes the cursor along; wrapping moves it to the next row.
+    const typed = Prompts.endPosition("? Name: abc", 20);
+    try std.testing.expectEqual(@as(u16, 11), typed.x);
+    const wrapped = Prompts.endPosition("? Name: alpha bravo charlie", 20);
+    try std.testing.expect(wrapped.y >= 1);
 }

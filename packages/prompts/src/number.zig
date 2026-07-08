@@ -1,8 +1,15 @@
 //! Numeric input prompt with optional range validation.
+//!
+//! The TTY path renders on the ui engine: the prompt line is a frame with the
+//! real cursor at the insertion point, and a range-validation message appears
+//! as a second row inside the frame (replacing the old scroll-away error
+//! lines). The accepted value persists as a static line.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
+const lr = @import("list_render.zig");
+const ui = lr.ui;
 
 pub const NumberConfig = struct {
     message: []const u8,
@@ -22,6 +29,8 @@ pub fn number(p: Prompts, config: NumberConfig) !i64 {
     const reader = p.reader;
     const is_tty = terminal.isStdinTty();
 
+    if (is_tty) return numberTty(p, config);
+
     while (true) {
         // Render prompt
         try writer.print("{s}{s}", .{ config.prefix, config.message });
@@ -30,28 +39,140 @@ pub fn number(p: Prompts, config: NumberConfig) !i64 {
         }
         try writer.writeAll(" ");
 
-        const value = if (!is_tty)
-            try readNumberNonTty(reader, config)
-        else
-            try readNumberTty(writer, reader, config);
+        const value = try readNumberNonTty(reader, config);
 
         // Validate range
         if (config.min) |min| {
             if (value < min) {
-                try writer.print("\r\n  Minimum value is {d}\r\n", .{min});
+                try writer.print("\n  Minimum value is {d}\n", .{min});
                 continue;
             }
         }
         if (config.max) |max| {
             if (value > max) {
-                try writer.print("\r\n  Maximum value is {d}\r\n", .{max});
+                try writer.print("\n  Maximum value is {d}\n", .{max});
                 continue;
             }
         }
 
-        try writer.writeAll("\r\n");
+        try writer.writeAll("\n");
         return value;
     }
+}
+
+fn numberTty(p: Prompts, config: NumberConfig) !i64 {
+    const writer = p.writer;
+    const reader = p.reader;
+
+    Prompts.flushWriter(writer);
+    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
+        return config.default orelse error.InvalidNumber;
+    };
+    defer {
+        raw.disable();
+        Prompts.flushWriter(writer);
+    }
+    var app = try ui.App.init(p.allocator, writer, .{
+        .capability = p.theme.capability(),
+    });
+    defer app.deinit();
+
+    var buf: [32]u8 = undefined;
+    var len: usize = 0;
+    var error_msg: ?[]const u8 = null;
+    var error_buf: [48]u8 = undefined;
+
+    try renderFrame(&app, config, buf[0..len], error_msg);
+
+    while (true) {
+        const k = if (config.interrupt_keys.len > 0)
+            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
+        else
+            try terminal.readKey(reader);
+        if (Prompts.isInterrupt(k, config.interrupt_keys)) {
+            try persistLine(&app, config, buf[0..len]);
+            return error.Interrupted;
+        }
+        switch (k) {
+            .enter => {
+                const value = if (len == 0)
+                    config.default orelse continue
+                else
+                    std.fmt.parseInt(i64, buf[0..len], 10) catch continue;
+
+                if (config.min) |min| {
+                    if (value < min) {
+                        error_msg = std.fmt.bufPrint(&error_buf, "minimum value is {d}", .{min}) catch "out of range";
+                        try renderFrame(&app, config, buf[0..len], error_msg);
+                        continue;
+                    }
+                }
+                if (config.max) |max| {
+                    if (value > max) {
+                        error_msg = std.fmt.bufPrint(&error_buf, "maximum value is {d}", .{max}) catch "out of range";
+                        try renderFrame(&app, config, buf[0..len], error_msg);
+                        continue;
+                    }
+                }
+                try persistLine(&app, config, buf[0..len]);
+                return value;
+            },
+            .backspace => {
+                if (len > 0) {
+                    len -= 1;
+                    error_msg = null;
+                    try renderFrame(&app, config, buf[0..len], error_msg);
+                }
+            },
+            .ctrl => |c| {
+                if (c == 'c') {
+                    try persistLine(&app, config, buf[0..len]);
+                    return error.UserAborted;
+                }
+            },
+            .char => |c| {
+                // Accept digits and leading minus (all ASCII, so the u8 casts hold)
+                if ((c >= '0' and c <= '9' and len < buf.len) or (c == '-' and len == 0)) {
+                    buf[len] = @intCast(c);
+                    len += 1;
+                    error_msg = null;
+                    try renderFrame(&app, config, buf[0..len], error_msg);
+                }
+                // Silently ignore other characters
+            },
+            else => {},
+        }
+    }
+}
+
+/// The prompt line as one string: "? message (default) input".
+fn composeLine(a: std.mem.Allocator, config: NumberConfig, input: []const u8) ![]const u8 {
+    return if (config.default) |def|
+        std.fmt.allocPrint(a, "{s}{s} ({d}) {s}", .{ config.prefix, config.message, def, input })
+    else
+        std.fmt.allocPrint(a, "{s}{s} {s}", .{ config.prefix, config.message, input });
+}
+
+fn renderFrame(app: *ui.App, config: NumberConfig, input: []const u8, error_msg: ?[]const u8) !void {
+    const a = app.arena();
+    const ws = lr.windowSize();
+    const usable: u16 = @intCast(@min(@max(@as(usize, ws.col) -| 1, 1), std.math.maxInt(u16)));
+
+    var rows = std.ArrayList(ui.Node).empty;
+    try rows.append(a, ui.text(.{}, try composeLine(a, config, input)));
+    if (error_msg) |msg| {
+        try rows.append(a, ui.text(.{}, try std.fmt.allocPrint(a, "  {s}", .{msg})));
+    }
+    try app.frame(try ui.column(a, .{ .width = .{ .len = usable } }, rows.items));
+
+    const pos = Prompts.endPosition(try composeLine(app.arena(), config, input), usable);
+    try app.showCursorAt(pos.x, pos.y);
+}
+
+fn persistLine(app: *ui.App, config: NumberConfig, input: []const u8) !void {
+    try app.clear();
+    const line = try composeLine(app.arena(), config, input);
+    try app.emit("{s}", .{line});
 }
 
 fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
@@ -61,73 +182,6 @@ fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
         return config.default orelse return error.InvalidNumber;
     }
     return std.fmt.parseInt(i64, line, 10) catch return error.InvalidNumber;
-}
-
-fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
-    Prompts.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        return config.default orelse return error.InvalidNumber;
-    };
-    defer {
-        raw.disable();
-        Prompts.flushWriter(writer);
-    }
-
-    var buf: [32]u8 = undefined;
-    var len: usize = 0;
-
-    while (true) {
-        Prompts.flushWriter(writer);
-        const k = if (config.interrupt_keys.len > 0)
-            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
-        else
-            try terminal.readKey(reader);
-        if (Prompts.isInterrupt(k, config.interrupt_keys)) {
-            try writer.writeAll("\r\n");
-            return error.Interrupted;
-        }
-        switch (k) {
-            .enter => {
-                if (len == 0) {
-                    if (config.default) |def| return def;
-                    // No input and no default — beep and continue
-                    continue;
-                }
-                return std.fmt.parseInt(i64, buf[0..len], 10) catch {
-                    // Shouldn't happen since we only accept digits
-                    continue;
-                };
-            },
-            .backspace => {
-                if (len > 0) {
-                    len -= 1;
-                    try writer.writeAll("\x08 \x08");
-                }
-            },
-            .ctrl => |c| {
-                if (c == 'c') {
-                    try writer.writeAll("\r\n");
-                    return error.UserAborted;
-                }
-            },
-            .char => |c| {
-                // Accept digits and leading minus (all ASCII, so the u8 casts hold)
-                if (c >= '0' and c <= '9') {
-                    if (len < buf.len) {
-                        buf[len] = @intCast(c);
-                        len += 1;
-                        try writer.print("{c}", .{@as(u8, @intCast(c))});
-                    }
-                } else if (c == '-' and len == 0) {
-                    buf[len] = @intCast(c);
-                    len += 1;
-                    try writer.print("{c}", .{@as(u8, @intCast(c))});
-                }
-                // Silently ignore other characters
-            },
-            else => {},
-        }
-    }
 }
 
 /// Read a line (sans trailing newline) into the caller-owned `buf`, returning

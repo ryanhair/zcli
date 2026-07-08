@@ -99,7 +99,7 @@ See [examples/tasks](../../examples/tasks/) for every prompt in a working CLI.
 ## Behavior notes
 
 - Interactive mode needs a TTY on stdin; prompts check and fall back automatically — never gate your command on TTY yourself.
-- `text` supports a live `Preview` callback rendered above the input line, repainted per keystroke.
+- `text` supports a live `Preview` callback: it returns one line of text for the current input (allocated from the prompt's frame arena), rendered above the input line in the theme's hint style and repainted per keystroke.
 - Prompts flush the writer before each blocking read, so buffered writers are safe to pass.
 
 ## Dependencies

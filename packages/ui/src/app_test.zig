@@ -339,3 +339,63 @@ test "deinit shows the cursor and parks below the live region" {
     try testing.expect(h.vt.cursorAt(0, 3));
     try testing.expect(h.vt.containsText("bye"));
 }
+
+test "showCursorAt places the real cursor; the next frame un-places it" {
+    var h = try Harness.init(30, 8);
+    defer h.deinit();
+
+    try h.app.frame(try h.statusFrame("edit me"));
+    try h.app.showCursorAt(9, 1);
+    h.replay();
+    try testing.expect(h.vt.cursor_visible);
+    try testing.expect(h.vt.cursorAt(9, 1));
+
+    // The next frame restores the parking invariant: hidden, top-left —
+    // and the diff still lands in the right cells.
+    try h.app.frame(try h.statusFrame("edit mf"));
+    h.replay();
+    try testing.expect(!h.vt.cursor_visible);
+    try testing.expect(h.vt.cursorAt(0, 0));
+    try testing.expect(h.vt.containsText("edit mf"));
+}
+
+test "showCursorAt clamps to the live region" {
+    var h = try Harness.init(30, 8);
+    defer h.deinit();
+
+    try h.app.frame(try h.statusFrame("hi"));
+    try h.app.showCursorAt(999, 999);
+    h.replay();
+    // Region is 20 wide, 3 tall.
+    try testing.expect(h.vt.cursorAt(19, 2));
+}
+
+test "emit while the cursor is placed keeps static/live intact" {
+    var h = try Harness.init(30, 8);
+    defer h.deinit();
+
+    try h.app.frame(try h.statusFrame("typing"));
+    try h.app.showCursorAt(5, 1);
+    try h.app.emit("saved", .{});
+    h.replay();
+
+    const line0 = try h.vt.getLine(testing.allocator, 0);
+    defer testing.allocator.free(line0);
+    try testing.expect(std.mem.startsWith(u8, line0, "saved"));
+    try testing.expect(h.vt.containsText("typing"));
+    // Repainted region back under the parking invariant.
+    try testing.expect(h.vt.cursorAt(0, 1));
+}
+
+test "deinit is idempotent" {
+    var aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer aw.deinit();
+    var app = try ui.App.init(testing.allocator, &aw.writer, .{
+        .term_size = .{ .w = 30, .h = 8 },
+    });
+    const a = app.arena();
+    try app.frame(try ui.column(a, .{}, &.{ui.text(.{}, "x")}));
+    app.deinit();
+    app.deinit(); // second call must be a no-op, not a double free
+    try testing.expect(std.mem.endsWith(u8, aw.written(), "\x1b[?25h"));
+}

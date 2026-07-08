@@ -125,6 +125,32 @@ pub fn eraseTrailingGrapheme(writer: anytype, buf: *std.ArrayList(u8)) !void {
     for (0..cols) |_| try writer.writeAll("\x08");
 }
 
+/// Region-relative cursor position at the end of `content` as the engine
+/// word-wraps it at `width` — where a line editor's insertion point lands.
+/// The wrapper drops trailing break-spaces, but the cursor still advances
+/// past them (a prompt line ends "message: " with the cursor after the gap).
+pub fn endPosition(content: []const u8, width: usize) struct { x: u16, y: u16 } {
+    const Ctx = struct {
+        lines: usize = 0,
+        last_w: usize = 0,
+        fn add(self: *@This(), line: []const u8) anyerror!void {
+            self.lines += 1;
+            self.last_w = terminal.displayWidth(line);
+        }
+    };
+    var c = Ctx{};
+    terminal.wrapForEach(content, width, &c, Ctx.add) catch {};
+    const w = @max(width, 1);
+    const trailing = content.len - std.mem.trimEnd(u8, content, " ").len;
+    var x = c.last_w + trailing;
+    var y = c.lines -| 1;
+    while (x >= w) {
+        x -= w;
+        y += 1;
+    }
+    return .{ .x = @intCast(x), .y = @intCast(y) };
+}
+
 /// Flush a writer if it supports flushing. Works with both pointer and value writer types.
 pub fn flushWriter(writer: anytype) void {
     const W = @TypeOf(writer);
