@@ -6,4 +6,5 @@ test {
     _ = @import("diff.zig");
     _ = @import("layout_test.zig");
     _ = @import("golden_test.zig");
+    _ = @import("app_test.zig");
 }
