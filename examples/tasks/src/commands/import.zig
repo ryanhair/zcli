@@ -37,7 +37,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var data = parsed.value;
 
     // Import with progress bar
-    var bar = context.progress().progressBar(.{
+    var bar = try context.progress().progressBar(.{
         .total = imported.value.tasks.len,
         .show_eta = true,
     });

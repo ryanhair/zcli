@@ -50,6 +50,12 @@ pub const App = struct {
         /// real terminal on every frame, which is what makes the live
         /// region re-layout on resize.
         term_size: ?Size = null,
+        /// Whether the output is a live terminal (callers pass
+        /// `terminal.isStdoutTty()`). When false — piped to a file, CI —
+        /// the App degrades to plain line output: `frame` is a no-op,
+        /// `emit` prints without escapes or retention, the cursor is never
+        /// touched.
+        interactive: bool = true,
     };
 
     /// A static block kept for the resize tail repaint (ADR-0013 resize
@@ -125,6 +131,12 @@ pub const App = struct {
     /// resize can reflow the visible tail (ADR-0013 resize tier 2).
     pub fn emit(self: *App, comptime fmt: []const u8, args: anytype) !void {
         const line_fmt = comptime if (std.mem.endsWith(u8, fmt, "\n")) fmt else fmt ++ "\n";
+        if (!self.options.interactive) {
+            // Plain line output: no live region exists, nothing to retain.
+            try self.writer.print(line_fmt, args);
+            try self.writer.flush();
+            return;
+        }
         const ts = self.termSize();
         self.last_width = ts.w;
 
@@ -147,8 +159,10 @@ pub const App = struct {
 
     /// Live output: measure, lay out, paint the diff. The tree (built from
     /// `self.arena()`) is consumed — the arena resets when this returns.
+    /// A no-op when the output is not interactive.
     pub fn frame(self: *App, node: Node) !void {
         defer _ = self.frame_arena.reset(.retain_capacity);
+        if (!self.options.interactive) return;
 
         const ts = self.termSize();
         const width_changed = self.last_width != null and self.last_width.? != ts.w;
@@ -211,6 +225,14 @@ pub const App = struct {
         std.mem.swap(Surface, &self.front, &self.back);
         self.front_valid = true;
         if (tail_repaint and self.options.sync) try self.writer.writeAll("\x1b[?2026l");
+        try self.writer.flush();
+    }
+
+    /// Erase the live region and leave nothing in its place — the ending
+    /// for a widget whose result is an `emit`ted line (or no output at
+    /// all), as opposed to `deinit`'s leave-the-final-frame-visible.
+    pub fn clear(self: *App) !void {
+        try self.clearLive();
         try self.writer.flush();
     }
 

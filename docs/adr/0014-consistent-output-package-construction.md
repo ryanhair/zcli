@@ -70,28 +70,36 @@ same fields yourself.*
 `zcli` re-exports `ui` (`pub const ui = @import("ui")`) so `context.ui()` and
 `zcli.ui.App.Options` resolve; today `ui` is not re-exported at all.
 
-### 2. The stateless packages become value bundles (the `prompts` shape)
+### 2. The factory packages become value bundles (the `prompts` shape)
 
-`progress` and `markdown` have no owned state, so they take the same
-import-is-the-type form as `prompts`:
+`progress` and `markdown` are constructed by a lightweight value that just
+captures the environment and hands out configured objects — no long-lived state
+lives on the package root — so they take the same import-is-the-type form as
+`prompts` (which likewise allocates on behalf of the objects it produces):
 
 ```zig
-// progress — matches prompts exactly
+// progress — matches prompts exactly (import IS the type)
 const Progress = @import("progress");
-const p: Progress = .{ .writer = w, .io = io, .theme = ctx };
-var spinner = p.spinner(.{ .style = .dots });   // was progress.spinner(io, .{ .style = .dots, .theme = ctx })
-var bar = p.progressBar(.{ .total = 100 });
+const p: Progress = .{ .writer = w, .io = io, .allocator = a, .theme = ctx };
+var spinner = try p.spinner(.{ .style = .dots });   // was progress.spinner(a, io, .{ .style = .dots, .theme = ctx })
+var bar = try p.progressBar(.{ .total = 100 });
+var mb = try p.multiBar(.{});
 ```
 
-This removes the thread-local stdout entirely, stops re-threading `io` and
-`theme` on every call, and drops `theme` out of `SpinnerConfig`/`ProgressBarConfig`
-(it now lives on the bundle). `markdown` collapses `formatter` /
-`capabilityFormatter` / `formatterWithPalette` / `capabilityFormatterWithPalette`
-into one instance carrying `{ writer, capability }`.
+The `Progress` bundle is a stateless *factory* over the environment; the
+indicators it produces own heap state — since #170 each runs on a `ui.App`
+(ADR-0013) — so they allocate, the methods return errors (`try`), and each
+indicator has its own `deinit`/finish. The bundle therefore carries an
+`allocator` too, making its field set identical to `Prompts` (minus `reader`).
+This removes the thread-local stdout entirely, stops re-threading `allocator`,
+`io`, and `theme` on every call, and drops `theme` out of the indicator configs
+(it lives on the bundle, forwarded to each widget). `markdown` collapses
+`formatter` / `capabilityFormatter` / `formatterWithPalette` /
+`capabilityFormatterWithPalette` into one instance carrying `{ writer, capability }`.
 
 Per the project's no-back-compat rule, the old shapes are removed, not
-deprecated: `progress.spinner`/`progressBar` free functions, the thread-local
-writer, and the four markdown formatter constructors go away.
+deprecated: the `progress.spinner`/`progressBar`/`multiBar` free functions, the
+thread-local writer, and the four markdown formatter constructors go away.
 
 ### 3. Stateful packages keep `init`/`deinit`, but align their inputs
 
@@ -155,12 +163,16 @@ symmetry is not.
 - One construction idiom to learn. `context.X()` is the front door for prompts,
   progress, markdown, and ui alike; standalone use fills the same fields.
 - The `progress` thread-local stdout — a real wart — is removed, and call sites
-  stop re-passing `io`/`theme`. markdown call sites stop re-passing the
-  allocator.
+  stop re-passing `allocator`/`io`/`theme`. markdown call sites stop re-passing
+  the allocator.
 - Breaking changes across the board (intended): every `progress.spinner`/
-  `progressBar` call site, every markdown formatter construction, and
+  `progressBar`/`multiBar` call site, every markdown formatter construction, and
   `ui.App.Options.capability` are rewritten. Examples, `projects/zcli`, and the
   `zcli_help` plugin are the known call sites.
+- `progress` reshaped on top of its ui-engine rewrite (#170): the bundle wraps
+  the same `Spinner`/`ProgressBar`/`MultiBar` and forwards the environment to
+  each `ui.App`. The engine rewrite and this construction reshape are orthogonal
+  and compose cleanly.
 - Naturally sequenced as one PR per package (progress, markdown + help-plugin,
   ui-context + `zcli.ui` re-export, optional `context.styled`), each shippable
   on its own.

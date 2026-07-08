@@ -167,12 +167,14 @@ pub fn ContextFor(comptime plugins: []const type) type {
         }
 
         /// A `Progress` instance pre-wired to this command's environment:
-        /// stdout, the framework `io`, and the app theme. Call `.spinner(...)`
-        /// or `.progressBar(...)` on the result.
+        /// stdout, the framework `io`, the arena-per-command allocator, and the
+        /// app theme. Call `.spinner(...)`, `.progressBar(...)`, or
+        /// `.multiBar(...)` on the result.
         pub fn progress(self: *Self) zcli.Progress {
             return .{
                 .writer = self.stdout(),
                 .io = self.io,
+                .allocator = self.allocator,
                 .theme = self.theme,
             };
         }

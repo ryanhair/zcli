@@ -12,13 +12,13 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const io = context.io;
-    var spinner = context.progress().spinner(.{ .style = .dots });
+    var spinner = try context.progress().spinner(.{ .style = .dots });
     spinner.start("Connecting to server...");
 
     io.sleep(.{ .nanoseconds = 500 * std.time.ns_per_ms }, .awake) catch {};
-    spinner.setText("Uploading changes...");
+    spinner.setMessage("Uploading changes...");
     io.sleep(.{ .nanoseconds = 400 * std.time.ns_per_ms }, .awake) catch {};
-    spinner.setText("Downloading updates...");
+    spinner.setMessage("Downloading updates...");
     io.sleep(.{ .nanoseconds = 600 * std.time.ns_per_ms }, .awake) catch {};
 
     spinner.succeed("Synced successfully");
