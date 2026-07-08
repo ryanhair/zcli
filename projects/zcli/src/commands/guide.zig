@@ -246,6 +246,39 @@ const topics = [_]Topic{
         ,
     },
     .{
+        .name = "ui",
+        .summary = "hybrid CLI/TUI output",
+        .body =
+        \\ui — the CLI/TUI hybrid (live frames over scrolling output)
+        \\
+        \\`context.ui()` returns a `zcli.ui.App` pre-wired to the command's
+        \\stdout, allocator, theme capability, and TTY detection. Two verbs:
+        \\  app.emit(fmt, args)   static line -> flows into scrollback
+        \\  app.frame(node)       live region -> diffed repaint at the bottom
+        \\
+        \\Build each frame's node tree from `app.arena()` (reset per frame).
+        \\A component is just a function returning a `ui.Node`; state (ticks,
+        \\selections) lives in your own structs.
+        \\
+        \\  var app = try context.ui();
+        \\  defer app.deinit(); // restores terminal, final frame persists
+        \\
+        \\  try app.emit("compiled {s}", .{name});
+        \\  try app.frame(try ui.row(app.arena(), .{ .gap = 1 }, &.{
+        \\      ui.widgets.spinner(.{}, tick),
+        \\      ui.text(.{}, "building..."),
+        \\  }));
+        \\
+        \\Vocabulary: row/column boxes (gap, padding, border), text (wrap/
+        \\truncate/clip), spacer (right-align = put one before), and custom
+        \\leaves. Sizing: fit | len(n) | fill(weight). `ui.widgets` has
+        \\spinner/bar/multiBar. Piped output degrades to plain lines
+        \\automatically; resize re-lays-out the live region and reflows the
+        \\visible static tail. progress and prompts render on this engine.
+        \\
+        ,
+    },
+    .{
         .name = "http",
         .summary = "HTTP requests with safe defaults",
         .body =

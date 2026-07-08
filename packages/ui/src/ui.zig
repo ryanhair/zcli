@@ -12,6 +12,7 @@
 //! hand its parent dangling children.
 
 const std = @import("std");
+const terminal = @import("terminal");
 
 const surface = @import("surface.zig");
 pub const Surface = surface.Surface;
@@ -24,6 +25,10 @@ pub const styleEql = surface.styleEql;
 pub const Renderer = @import("diff.zig").Renderer;
 pub const App = @import("app.zig").App;
 pub const widgets = @import("widgets.zig");
+
+/// Whether the terminal supports unicode glyphs (re-exported from `terminal`
+/// for App/RenderCtx configuration — `App.Options.unicode`).
+pub const unicodeSupported = terminal.unicodeSupported;
 
 const node_mod = @import("node.zig");
 pub const Node = node_mod.Node;

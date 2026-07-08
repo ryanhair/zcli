@@ -19,6 +19,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const ui_dep = b.dependency("ui", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const prompts_dep = b.dependency("prompts", .{
         .target = target,
         .optimize = optimize,
@@ -35,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "markdown", .module = markdown_dep.module("markdown") },
         .{ .name = "progress", .module = progress_dep.module("progress") },
         .{ .name = "prompts", .module = prompts_dep.module("prompts") },
+        .{ .name = "ui", .module = ui_dep.module("ui") },
         .{ .name = "serde", .module = serde_dep.module("serde") },
     };
 

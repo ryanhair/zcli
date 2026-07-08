@@ -219,6 +219,23 @@ bar.finish();
 
 Nine spinner styles, plus stacked multi-bars for parallel work; animations auto-disable when not a TTY, symbols adapt to unicode support. Details in [packages/progress](packages/progress/).
 
+## The CLI/TUI hybrid
+
+Prompts and progress render on `zcli.ui` — a terminal-native layout engine, and it's yours to use directly. Output splits into a static stream that flows into scrollback and a live region that repaints in place at the bottom edge: the shape of modern agent-style CLIs. A component is just a function returning a node; frames are diffed, so an animation repaints one cell, not the screen.
+
+```zig
+var app = try context.ui();
+defer app.deinit(); // restores the terminal; the final frame persists
+
+try app.emit("compiled {s}", .{name});            // static → scrollback
+try app.frame(try ui.column(app.arena(), .{ .border = .rounded }, &.{
+    ui.widgets.spinner(.{}, state.tick),
+    try ui.widgets.multiBar(app.arena(), .{}, &bars),
+}));                                              // live → diffed repaint
+```
+
+Boxes, wrapped text, spacers, and custom leaves; `fit`/`len`/`fill` sizing; viewport-clamped, resize-aware (the live region re-lays-out and the visible scrollback tail reflows), and piped output degrades to plain lines. Design in [ADR-0013](docs/adr/0013-terminal-native-layout-engine.md), API in [packages/ui](packages/ui/).
+
 ## Theming
 
 Declare a theme once in your root source file and the whole CLI follows it — help output, styled text, prompts, spinners, and progress bars:
