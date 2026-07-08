@@ -70,8 +70,7 @@ pub fn closeSeq(open: []const u8) []const u8 {
     return if (open.len > 0) "\x1b[0m" else "";
 }
 
-/// Shared rendering machinery for the list-style prompts (wrapping, viewport,
-/// resize-safe erase).
+/// Shared rendering machinery for the prompts (viewport + frame node builders).
 pub const list_render = @import("list_render.zig");
 
 pub const text_prompt = @import("text.zig");
@@ -106,23 +105,10 @@ pub fn appendCodepoint(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), c:
 }
 
 /// Shrink `buf` by its trailing grapheme cluster — one *visible* character,
-/// however many codepoints compose it. No-op on an empty buffer. For prompts
-/// that repaint their whole line; `eraseTrailingGrapheme` also erases in place.
+/// however many codepoints compose it. No-op on an empty buffer. The line
+/// editors call this on backspace and repaint the frame from the new buffer.
 pub fn popTrailingGrapheme(buf: *std.ArrayList(u8)) void {
     buf.items.len -= terminal.trailingGraphemeLen(buf.items);
-}
-
-/// Remove the trailing grapheme cluster from `buf` and erase it from the
-/// terminal line: backspace, space, backspace — once per display column, so a
-/// double-width CJK char or emoji clears both of its cells.
-pub fn eraseTrailingGrapheme(writer: anytype, buf: *std.ArrayList(u8)) !void {
-    if (buf.items.len == 0) return;
-    const tail = buf.items[buf.items.len - terminal.trailingGraphemeLen(buf.items) ..];
-    const cols = terminal.displayWidth(tail);
-    buf.items.len -= tail.len;
-    for (0..cols) |_| try writer.writeAll("\x08");
-    for (0..cols) |_| try writer.writeAll(" ");
-    for (0..cols) |_| try writer.writeAll("\x08");
 }
 
 /// Region-relative cursor position at the end of `content` as the engine
@@ -202,26 +188,4 @@ test "popTrailingGrapheme removes whole clusters, not bytes" {
     try std.testing.expectEqualStrings("", buf.items);
     popTrailingGrapheme(&buf); // no-op on empty
     try std.testing.expectEqualStrings("", buf.items);
-}
-
-test "eraseTrailingGrapheme erases one column per display cell" {
-    const allocator = std.testing.allocator;
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-    var out: [64]u8 = undefined;
-
-    // ASCII: one cell.
-    try buf.appendSlice(allocator, "ab");
-    var w1: std.Io.Writer = .fixed(&out);
-    try eraseTrailingGrapheme(&w1, &buf);
-    try std.testing.expectEqualStrings("a", buf.items);
-    try std.testing.expectEqualStrings("\x08 \x08", w1.buffered());
-
-    // Wide CJK: two cells, so two backspace/space pairs.
-    buf.clearRetainingCapacity();
-    try buf.appendSlice(allocator, "你");
-    var w2: std.Io.Writer = .fixed(&out);
-    try eraseTrailingGrapheme(&w2, &buf);
-    try std.testing.expectEqualStrings("", buf.items);
-    try std.testing.expectEqualStrings("\x08\x08  \x08\x08", w2.buffered());
 }

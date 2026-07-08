@@ -215,39 +215,6 @@ test "emulator: select answer persists as one static line, region gone" {
 }
 
 // ---------------------------------------------------------------------------
-// text input: echo + backspace-erase (grapheme/width aware)
-// ---------------------------------------------------------------------------
-
-test "emulator: backspace-erase clears a wide char's both cells" {
-    const alloc = testing.allocator;
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(alloc);
-    var out: [256]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&out);
-
-    // Type "ab" then 你 (2 cells), then backspace 你 away and type "c" — the
-    // screen must read exactly "abc" with no half-glyph debris in the cells the
-    // wide char occupied. A byte- or single-column erase fails this.
-    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, 'a'));
-    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, 'b'));
-    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, '你'));
-    try Prompts.eraseTrailingGrapheme(&w, &buf);
-    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, 'c'));
-
-    try testing.expectEqualStrings("abc", buf.items);
-
-    var term = try vterm.VTerm.init(alloc, 20, 4);
-    defer term.deinit();
-    term.write(w.buffered());
-    const line = try term.getLine(alloc, 0);
-    defer alloc.free(line);
-    try testing.expectEqualStrings("abc", std.mem.trimEnd(u8, line, " "));
-    // Cursor sits right after the 'c' — erase walked back exactly two cells.
-    try testing.expectEqual(@as(u32, 3), term.cursor.x);
-    try testing.expectEqual(@as(u32, 0), term.cursor.y);
-}
-
-// ---------------------------------------------------------------------------
 // search
 // ---------------------------------------------------------------------------
 
