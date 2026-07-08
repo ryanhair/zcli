@@ -1,0 +1,21 @@
+.{
+    .name = .ui,
+    .version = "0.1.0",
+    .fingerprint = 0x27ff46b080c69f87, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .theme = .{ .path = "../theme" },
+        .terminal = .{ .path = "../terminal" },
+        .vterm = .{ .path = "../vterm" },
+        .zg = .{
+            .url = "https://codeberg.org/atman/zg/archive/v0.16.2.tar.gz",
+            .hash = "zg-0.16.2-oGqU3HqftgI6rwFS90ypwfjgToH8Pz829OKuFURlm773",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/",
+        "examples/",
+    },
+}

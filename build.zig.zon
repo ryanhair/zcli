@@ -18,6 +18,7 @@
         .prompts = .{ .path = "packages/prompts" },
         .progress = .{ .path = "packages/progress" },
         .theme = .{ .path = "packages/theme" },
+        .ui = .{ .path = "packages/ui" },
     },
     .paths = .{
         "build.zig",

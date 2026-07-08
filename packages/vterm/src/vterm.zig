@@ -116,6 +116,7 @@ pub const VTerm = struct {
     // Terminal modes
     alt_screen: bool,
     cursor_visible: bool,
+    autowrap: bool, // DECAWM (CSI ?7 h/l); off = clamp at the last column
 
     // Circular buffer coordinate translation
     pub fn bufferLineIndex(self: *VTerm, logical_line: u32) u16 {
@@ -211,6 +212,7 @@ pub const VTerm = struct {
             // Terminal modes
             .alt_screen = false,
             .cursor_visible = true,
+            .autowrap = true,
         };
     }
 
@@ -282,18 +284,27 @@ pub const VTerm = struct {
         const width = charWidth(char);
 
         // Handle delayed wrapping: if cursor is at width, wrap before writing
+        // (with DECAWM off, clamp to the last column and overwrite instead)
         if (self.cursor.x >= self.width) {
-            self.cursor.x = 0;
-            self.virtual_cursor_y += 1;
-            self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
+            if (self.autowrap) {
+                self.cursor.x = 0;
+                self.virtual_cursor_y += 1;
+                self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
+            } else {
+                self.cursor.x = self.width - 1;
+            }
         }
 
         // For wide characters, check if there's room for both cells
         if (width == 2 and self.cursor.x >= self.width - 1) {
-            // Not enough room, wrap to next line
-            self.cursor.x = 0;
-            self.virtual_cursor_y += 1;
-            self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
+            if (self.autowrap) {
+                // Not enough room, wrap to next line
+                self.cursor.x = 0;
+                self.virtual_cursor_y += 1;
+                self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
+            } else {
+                self.cursor.x = self.width - 2;
+            }
         }
 
         // Track that we've written to at least one line
@@ -327,6 +338,11 @@ pub const VTerm = struct {
         // Wrap when cursor reaches width (immediate wrapping for putChar)
         // This allows cursor to be positioned at width for delayed wrapping in write()
         if (self.cursor.x >= self.width) {
+            if (!self.autowrap) {
+                // DECAWM off: stay on this line, clamped to the last column
+                self.cursor.x = self.width - 1;
+                return;
+            }
             // Check if we're already at the last line - if so, clamp cursor instead of wrapping
             if (self.cursor.y >= self.height - 1 and self.virtual_cursor_y >= self.height - 1) {
                 // At bottom of terminal - clamp cursor to last position instead of wrapping
@@ -709,6 +725,7 @@ pub const VTerm = struct {
     fn handlePrivateMode(self: *VTerm, enable: bool) void {
         const mode = self.getParam(0, 0);
         switch (mode) {
+            7 => self.autowrap = enable, // DECAWM auto-wrap
             25 => self.cursor_visible = enable, // Cursor visibility
             1049 => self.alt_screen = enable, // Alternate screen buffer
             else => {}, // Ignore other modes
