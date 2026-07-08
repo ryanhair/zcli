@@ -6,7 +6,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const prompts = zcli.prompts;
+const Prompts = zcli.Prompts;
 const themed = zcli.theme.styled;
 const ThemeContext = zcli.theme.ThemeContext;
 
@@ -27,7 +27,7 @@ const normalizeName = scaffold.spec.normalizeName;
 // Wizard prompts pass `.interrupt_keys = back_keys` so Escape aborts with
 // `error.Interrupted`; the gather state machines catch that to rewind a step.
 // "Go back" is the wizard's interpretation — prompts just reports the key.
-const back_keys = &[_]prompts.terminal.Key{.escape};
+const back_keys = &[_]Prompts.terminal.Key{.escape};
 
 // ---------------------------------------------------------------------------
 // Interactive wizard
@@ -63,15 +63,16 @@ fn runWizardOnce(
     seed_description: ?[]const u8,
 ) !WizardResult {
     const w = context.stdout();
-    const r = context.stdin();
     const io = context.io;
+    var p = context.prompts();
+    p.allocator = arena; // wizard state lives in its own arena
 
     try heading(w, theme, "Add a command");
     try hint(w, theme, "src/commands/ \u{00b7} Ctrl+C to cancel any time");
     try w.writeAll("\r\n");
 
     // Step 1 — command path (live preview shows the file it will create).
-    const path = try resolveCommandPath(arena, w, r, theme, io, seed_path);
+    const path = try resolveCommandPath(arena, p, io, seed_path);
     const file_path = try buildFilePath(arena, path.parts);
     if (!path.prompted) {
         const line = try std.fmt.allocPrint(arena, "  \u{2192} creates {s}", .{file_path});
@@ -82,21 +83,21 @@ fn runWizardOnce(
     // Step 2 — description.
     const description = blk: {
         if (seed_description) |d| break :blk d;
-        const d = std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = "Description:" }), " \t\r\n");
+        const d = std.mem.trim(u8, try p.text(.{ .message = "Description:" }), " \t\r\n");
         break :blk if (d.len == 0) "TODO: Add description" else d;
     };
 
     // Steps 3 & 4 — positional arguments and options.
     var args_list = std.ArrayList(ArgSpec).empty;
-    try gatherArgs(arena, w, r, theme, &args_list);
+    try gatherArgs(arena, p, &args_list);
 
     var opts_list = std.ArrayList(OptSpec).empty;
-    try gatherOptions(arena, w, r, theme, &opts_list);
+    try gatherOptions(arena, p, &opts_list);
 
     // Step 5 — review, then choose what to do.
     while (true) {
         try review(arena, w, theme, path.parts, file_path, description, args_list.items, opts_list.items);
-        const action = try prompts.select(w, r, .{ .message = "What next?", .theme = theme.*, .choices = &.{
+        const action = try p.select(.{ .message = "What next?", .choices = &.{
             "Create it",
             "Add another argument",
             "Add another option",
@@ -110,8 +111,8 @@ fn runWizardOnce(
                 try finish(w, theme, path.parts, file_path, new_groups);
                 return .created;
             },
-            1 => try gatherArgs(arena, w, r, theme, &args_list),
-            2 => try gatherOptions(arena, w, r, theme, &opts_list),
+            1 => try gatherArgs(arena, p, &args_list),
+            2 => try gatherOptions(arena, p, &opts_list),
             3 => return .restart,
             else => {
                 try w.writeAll("\r\n");
@@ -144,19 +145,19 @@ const PathPreview = struct {
 
 fn resolveCommandPath(
     arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
+    p: Prompts,
     io: std.Io,
     seed: ?[]const u8,
 ) !PathResult {
+    const w = p.writer;
+    const theme = &p.theme;
     var pp = PathPreview{ .theme = theme };
     var seed_opt = seed;
     var prompted = false;
     while (true) {
         const raw = if (seed_opt) |s| s else blk: {
             prompted = true;
-            break :blk try prompts.text(w, r, arena, .{
+            break :blk try p.text(.{
                 .message = "Command path:",
                 .preview = .{ .context = &pp, .render = PathPreview.render },
             });
@@ -193,11 +194,11 @@ const ArgKind = enum { text, integer, decimal, custom };
 
 fn gatherArgs(
     arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
+    p: Prompts,
     list: *std.ArrayList(ArgSpec),
 ) !void {
+    const w = p.writer;
+    const theme = &p.theme;
     var seen_optional = false;
     for (list.items) |a| {
         if (a.multiple) {
@@ -213,9 +214,9 @@ fn gatherArgs(
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add a positional argument?" else "Add another positional argument?";
-        if (!try prompts.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })) break;
+        if (!try p.confirm(.{ .message = prompt, .default = list.items.len == 0 })) break;
 
-        const spec = (try gatherOneArg(arena, w, r, theme, try argNames(arena, list.items), seen_optional)) orelse continue;
+        const spec = (try gatherOneArg(arena, p, try argNames(arena, list.items), seen_optional)) orelse continue;
         try list.append(arena, spec);
         try okArg(arena, w, theme, spec);
         if (spec.multiple) {
@@ -232,12 +233,12 @@ const ArgStep = enum { name, description, type, multiple, required };
 /// user backed out of the item (Escape at the name prompt).
 fn gatherOneArg(
     arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
+    p: Prompts,
     existing_names: []const []const u8,
     seen_optional: bool,
 ) !?ArgSpec {
+    const w = p.writer;
+    const theme = &p.theme;
     var name: []const u8 = "";
     var description: []const u8 = "";
     var kind: ArgKind = .text;
@@ -248,14 +249,14 @@ fn gatherOneArg(
     var step: ArgStep = .name;
     while (true) switch (step) {
         .name => {
-            name = readFieldName(arena, w, r, theme, "  Name:", false, existing_names) catch |e| {
+            name = readFieldName(arena, p, "  Name:", false, existing_names) catch |e| {
                 if (e == error.Interrupted) return null;
                 return e;
             };
             step = .description;
         },
         .description => {
-            const d = prompts.text(w, r, arena, .{ .message = "  Description:", .interrupt_keys = back_keys }) catch |e| {
+            const d = p.text(.{ .message = "  Description:", .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     step = .name;
                     continue;
@@ -266,7 +267,7 @@ fn gatherOneArg(
             step = .type;
         },
         .type => {
-            kind = selectArgKind(w, r, theme) catch |e| {
+            kind = selectArgKind(p) catch |e| {
                 if (e == error.Interrupted) {
                     step = .description;
                     continue;
@@ -277,7 +278,7 @@ fn gatherOneArg(
                 .text => elem_type = "[]const u8",
                 .integer => elem_type = "i64",
                 .decimal => elem_type = "f64",
-                .custom => elem_type = readZigType(arena, w, r, theme) catch |e| {
+                .custom => elem_type = readZigType(p) catch |e| {
                     if (e == error.Interrupted) continue; // re-select the type
                     return e;
                 },
@@ -287,7 +288,7 @@ fn gatherOneArg(
         .multiple => {
             // A positional can only repeat as []const u8 varargs.
             if (kind == .text) {
-                multiple = prompts.confirm(w, r, .{ .message = "  Multiple? (captures all remaining positionals)", .default = false, .interrupt_keys = back_keys }) catch |e| {
+                multiple = p.confirm(.{ .message = "  Multiple? (captures all remaining positionals)", .default = false, .interrupt_keys = back_keys }) catch |e| {
                     if (e == error.Interrupted) {
                         step = .type;
                         continue;
@@ -306,7 +307,7 @@ fn gatherOneArg(
                 nullable = true;
                 try hint(w, theme, "  (optional \u{2014} follows an earlier optional argument)");
             } else {
-                const req = prompts.confirm(w, r, .{ .message = "  Required?", .default = true, .interrupt_keys = back_keys }) catch |e| {
+                const req = p.confirm(.{ .message = "  Required?", .default = true, .interrupt_keys = back_keys }) catch |e| {
                     if (e == error.Interrupted) {
                         step = if (kind == .text) .multiple else .type;
                         continue;
@@ -320,11 +321,10 @@ fn gatherOneArg(
     };
 }
 
-fn selectArgKind(w: *std.Io.Writer, r: *std.Io.Reader, theme: *const ThemeContext) !ArgKind {
-    const idx = try prompts.select(w, r, .{
+fn selectArgKind(p: Prompts) !ArgKind {
+    const idx = try p.select(.{
         .message = "  Type:",
         .interrupt_keys = back_keys,
-        .theme = theme.*,
         .choices = &.{
             "Text          ([]const u8)",
             "Integer       (i64)",
@@ -348,19 +348,19 @@ const OptKind = enum { flag, text, integer, decimal, choice, custom };
 
 fn gatherOptions(
     arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
+    p: Prompts,
     list: *std.ArrayList(OptSpec),
 ) !void {
+    const w = p.writer;
+    const theme = &p.theme;
     try heading(w, theme, "Options (flags)");
     try hint(w, theme, "Esc to go back");
 
     while (true) {
         const prompt = if (list.items.len == 0) "Add an option?" else "Add another option?";
-        if (!try prompts.confirm(w, r, .{ .message = prompt, .default = list.items.len == 0 })) break;
+        if (!try p.confirm(.{ .message = prompt, .default = list.items.len == 0 })) break;
 
-        const spec = (try gatherOneOption(arena, w, r, theme, try optNames(arena, list.items), try optShorts(arena, list.items))) orelse continue;
+        const spec = (try gatherOneOption(arena, p, try optNames(arena, list.items), try optShorts(arena, list.items))) orelse continue;
         try list.append(arena, spec);
         try okOpt(arena, w, theme, spec);
     }
@@ -372,9 +372,7 @@ const OptStep = enum { name, description, type, multiple, nullable, default, sho
 /// of the item (Escape at the name prompt).
 fn gatherOneOption(
     arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
+    p: Prompts,
     existing_names: []const []const u8,
     existing_shorts: []const u8,
 ) !?OptSpec {
@@ -397,14 +395,14 @@ fn gatherOneOption(
     var step: OptStep = .name;
     while (true) switch (step) {
         .name => {
-            name = readFieldName(arena, w, r, theme, "  Name:", true, existing_names) catch |e| {
+            name = readFieldName(arena, p, "  Name:", true, existing_names) catch |e| {
                 if (e == error.Interrupted) return null;
                 return e;
             };
             step = .description;
         },
         .description => {
-            const d = prompts.text(w, r, arena, .{ .message = "  Description:", .interrupt_keys = back_keys }) catch |e| {
+            const d = p.text(.{ .message = "  Description:", .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     step = .name;
                     continue;
@@ -415,7 +413,7 @@ fn gatherOneOption(
             step = .type;
         },
         .type => {
-            kind = selectOptKind(w, r) catch |e| {
+            kind = selectOptKind(p) catch |e| {
                 if (e == error.Interrupted) {
                     step = .description;
                     continue;
@@ -428,13 +426,13 @@ fn gatherOneOption(
                 .integer => elem_type = "i64",
                 .decimal => elem_type = "f64",
                 .choice => {
-                    choices = readChoices(arena, w, r, theme) catch |e| {
+                    choices = readChoices(arena, p) catch |e| {
                         if (e == error.Interrupted) continue; // re-select the type
                         return e;
                     };
                     elem_type = try buildEnumType(arena, choices);
                 },
-                .custom => elem_type = readZigType(arena, w, r, theme) catch |e| {
+                .custom => elem_type = readZigType(p) catch |e| {
                     if (e == error.Interrupted) continue;
                     return e;
                 },
@@ -443,7 +441,7 @@ fn gatherOneOption(
         },
         .multiple => {
             if (multiple_capable(kind)) {
-                multiple = prompts.confirm(w, r, .{ .message = "  Multiple? (repeatable)", .default = false, .interrupt_keys = back_keys }) catch |e| {
+                multiple = p.confirm(.{ .message = "  Multiple? (repeatable)", .default = false, .interrupt_keys = back_keys }) catch |e| {
                     if (e == error.Interrupted) {
                         step = .type;
                         continue;
@@ -456,7 +454,7 @@ fn gatherOneOption(
             step = .nullable;
         },
         .nullable => {
-            nullable = prompts.confirm(w, r, .{ .message = if (multiple) "  Nullable? (omit \u{2192} empty list)" else "  Nullable? (omit \u{2192} null)", .default = false, .interrupt_keys = back_keys }) catch |e| {
+            nullable = p.confirm(.{ .message = if (multiple) "  Nullable? (omit \u{2192} empty list)" else "  Nullable? (omit \u{2192} null)", .default = false, .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     step = if (multiple_capable(kind)) .multiple else .type;
                     continue;
@@ -471,7 +469,7 @@ fn gatherOneOption(
             } else if (multiple) {
                 default_expr = "&.{}";
             } else {
-                default_expr = promptOptionDefault(arena, w, r, theme, kind, choices) catch |e| {
+                default_expr = promptOptionDefault(arena, p, kind, choices) catch |e| {
                     if (e == error.Interrupted) {
                         step = .nullable;
                         continue;
@@ -482,7 +480,7 @@ fn gatherOneOption(
             step = .short;
         },
         .short => {
-            const want = prompts.confirm(w, r, .{ .message = "  Short flag?", .default = false, .interrupt_keys = back_keys }) catch |e| {
+            const want = p.confirm(.{ .message = "  Short flag?", .default = false, .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
                     // Skip back over the non-prompting default step when needed.
                     step = if (!nullable and !multiple) .default else .nullable;
@@ -491,7 +489,7 @@ fn gatherOneOption(
                 return e;
             };
             if (want) {
-                short = readShort(arena, w, r, theme, existing_shorts) catch |e| {
+                short = readShort(p, existing_shorts) catch |e| {
                     if (e == error.Interrupted) continue; // re-ask the short-flag yes/no
                     return e;
                 };
@@ -515,24 +513,22 @@ fn gatherOneOption(
 /// surfaces as `error.Interrupted` for the caller to handle.
 fn promptOptionDefault(
     arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
+    p: Prompts,
     kind: OptKind,
     choices: []const []const u8,
 ) ![]const u8 {
     return switch (kind) {
-        .flag => if (try prompts.confirm(w, r, .{ .message = "  Default on?", .default = false, .interrupt_keys = back_keys })) "true" else "false",
-        .text => try quoteString(arena, std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = "  Default value:", .interrupt_keys = back_keys }), " \t\r\n")),
-        .integer => try std.fmt.allocPrint(arena, "{d}", .{try prompts.number(w, r, .{ .message = "  Default value:", .default = 0, .interrupt_keys = back_keys })}),
-        .decimal => try std.fmt.allocPrint(arena, "{d}", .{try readFloat(arena, w, r, theme, "  Default value:", 0)}),
-        .choice => try std.fmt.allocPrint(arena, ".{s}", .{choices[try prompts.select(w, r, .{ .message = "  Default:", .choices = choices, .interrupt_keys = back_keys })]}),
-        .custom => try arena.dupe(u8, std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = "  Default (Zig expression):", .interrupt_keys = back_keys }), " \t\r\n")),
+        .flag => if (try p.confirm(.{ .message = "  Default on?", .default = false, .interrupt_keys = back_keys })) "true" else "false",
+        .text => try quoteString(arena, std.mem.trim(u8, try p.text(.{ .message = "  Default value:", .interrupt_keys = back_keys }), " \t\r\n")),
+        .integer => try std.fmt.allocPrint(arena, "{d}", .{try p.number(.{ .message = "  Default value:", .default = 0, .interrupt_keys = back_keys })}),
+        .decimal => try std.fmt.allocPrint(arena, "{d}", .{try readFloat(p, "  Default value:", 0)}),
+        .choice => try std.fmt.allocPrint(arena, ".{s}", .{choices[try p.select(.{ .message = "  Default:", .choices = choices, .interrupt_keys = back_keys })]}),
+        .custom => try arena.dupe(u8, std.mem.trim(u8, try p.text(.{ .message = "  Default (Zig expression):", .interrupt_keys = back_keys }), " \t\r\n")),
     };
 }
 
-fn selectOptKind(w: *std.Io.Writer, r: *std.Io.Reader) !OptKind {
-    const idx = try prompts.select(w, r, .{
+fn selectOptKind(p: Prompts) !OptKind {
+    const idx = try p.select(.{
         .message = "  Type:",
         .interrupt_keys = back_keys,
         .choices = &.{
@@ -641,15 +637,15 @@ pub fn finish(
 
 fn readFieldName(
     arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
+    p: Prompts,
     message: []const u8,
     allow_dash: bool,
     existing: []const []const u8,
 ) ![]const u8 {
+    const w = p.writer;
+    const theme = &p.theme;
     while (true) {
-        const raw = std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys }), " \t\r\n");
+        const raw = std.mem.trim(u8, try p.text(.{ .message = message, .interrupt_keys = back_keys }), " \t\r\n");
         if (raw.len == 0) {
             try warn(w, theme, "  Name cannot be empty.");
             continue;
@@ -682,9 +678,11 @@ fn readFieldName(
     }
 }
 
-fn readZigType(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const ThemeContext) ![]const u8 {
+fn readZigType(p: Prompts) ![]const u8 {
+    const w = p.writer;
+    const theme = &p.theme;
     while (true) {
-        const t = std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = "  Zig type:", .interrupt_keys = back_keys }), " \t\r\n");
+        const t = std.mem.trim(u8, try p.text(.{ .message = "  Zig type:", .interrupt_keys = back_keys }), " \t\r\n");
         if (t.len == 0) {
             try warn(w, theme, "  Type cannot be empty (e.g. u8, []const u8, enum { a, b }).");
             continue;
@@ -693,15 +691,11 @@ fn readZigType(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, t
     }
 }
 
-fn readShort(
-    arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
-    used: []const u8,
-) !u8 {
+fn readShort(p: Prompts, used: []const u8) !u8 {
+    const w = p.writer;
+    const theme = &p.theme;
     while (true) {
-        const raw = std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = "  Short character:", .interrupt_keys = back_keys }), " \t\r\n");
+        const raw = std.mem.trim(u8, try p.text(.{ .message = "  Short character:", .interrupt_keys = back_keys }), " \t\r\n");
         if (raw.len != 1 or !std.ascii.isAlphabetic(raw[0])) {
             try warn(w, theme, "  Enter a single letter (a-z).");
             continue;
@@ -722,16 +716,11 @@ fn readShort(
     }
 }
 
-fn readFloat(
-    arena: std.mem.Allocator,
-    w: *std.Io.Writer,
-    r: *std.Io.Reader,
-    theme: *const ThemeContext,
-    message: []const u8,
-    default: f64,
-) !f64 {
+fn readFloat(p: Prompts, message: []const u8, default: f64) !f64 {
+    const w = p.writer;
+    const theme = &p.theme;
     while (true) {
-        const raw = std.mem.trim(u8, try prompts.text(w, r, arena, .{ .message = message, .interrupt_keys = back_keys }), " \t\r\n");
+        const raw = std.mem.trim(u8, try p.text(.{ .message = message, .interrupt_keys = back_keys }), " \t\r\n");
         if (raw.len == 0) return default;
         return std.fmt.parseFloat(f64, raw) catch {
             try warn(w, theme, "  Enter a number (e.g. 1.5).");
@@ -740,9 +729,11 @@ fn readFloat(
     }
 }
 
-fn readChoices(arena: std.mem.Allocator, w: *std.Io.Writer, r: *std.Io.Reader, theme: *const ThemeContext) ![]const []const u8 {
+fn readChoices(arena: std.mem.Allocator, p: Prompts) ![]const []const u8 {
+    const w = p.writer;
+    const theme = &p.theme;
     while (true) {
-        const raw = try prompts.text(w, r, arena, .{ .message = "  Choices (comma-separated):", .interrupt_keys = back_keys });
+        const raw = try p.text(.{ .message = "  Choices (comma-separated):", .interrupt_keys = back_keys });
         var list = std.ArrayList([]const u8).empty;
         var ok = true;
         var it = std.mem.splitScalar(u8, raw, ',');

@@ -179,19 +179,21 @@ If you want one dependency that covers the whole terminal experience, that's the
 Eight prompt types with arrow-key navigation, live filtering, and unicode-correct editing. Every prompt falls back to plain line input when stdin isn't a TTY, so scripts and pipes keep working.
 
 ```zig
-const prompts = zcli.prompts;  // or standalone: @import("prompts")
+// In a zcli command — pre-wired to the command's streams, allocator, and theme.
+// Standalone: `const Prompts = @import("prompts");` and fill the fields yourself.
+const p = context.prompts();
 
-const name = try prompts.text(writer, reader, allocator, .{
+const name = try p.text(.{
     .message = "Project name:",
     .default = "my-project",
 });
 
-const idx = try prompts.select(writer, reader, .{
+const idx = try p.select(.{
     .message = "Framework:",
     .choices = &.{ "express", "fastify", "koa" },
 });
 
-const pw = try prompts.password(writer, reader, allocator, .{
+const pw = try p.password(.{
     .message = "Token:",
 });
 ```

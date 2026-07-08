@@ -1,7 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -33,12 +32,13 @@ const priorities = [_][]const u8{ "low", "medium", "high", "critical" };
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
     const writer = context.stdout();
-    const reader = context.stdin();
+
+    const p = context.prompts();
 
     // Load the current config so prompts can show existing values as defaults.
     // Keep `parsed` alive until after we write, so its strings stay valid.
     var parsed: ?std.json.Parsed(Config) = null;
-    defer if (parsed) |p| p.deinit();
+    defer if (parsed) |loaded| loaded.deinit();
     var current = Config{};
     const cwd = std.Io.Dir.cwd();
     if (cwd.readFileAlloc(context.io, CONFIG_FILE, allocator, .limited(1024 * 1024))) |content| {
@@ -46,9 +46,9 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
         if (std.json.parseFromSlice(Config, allocator, content, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
-        })) |p| {
-            parsed = p;
-            current = p.value;
+        })) |loaded| {
+            parsed = loaded;
+            current = loaded.value;
         } else |_| {}
     } else |_| {}
 
@@ -56,20 +56,19 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     try themed("Settings").bold().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 
-    const priority_idx = try prompts.select(writer, reader, .{
+    const priority_idx = try p.select(.{
         .message = "Default priority for new tasks:",
         .choices = &priorities,
-        .theme = context.theme,
     });
 
-    const points = try prompts.number(writer, reader, .{
+    const points = try p.number(.{
         .message = "Default story points:",
         .default = current.add.points,
         .min = 0,
         .max = 100,
     });
 
-    const show_done = try prompts.confirm(writer, reader, .{
+    const show_done = try p.confirm(.{
         .message = "Show completed tasks in 'list' by default?",
         .default = current.list.all,
     });

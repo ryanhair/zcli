@@ -1,29 +1,64 @@
-//! prompts — Interactive terminal prompts for CLI applications.
+//! Prompts — interactive terminal prompts for CLI applications.
 //!
-//! Standalone library: works with any writer/reader, no zcli dependency required.
-//! Falls back to line-based input when stdin is not a TTY.
+//! This file is the type: `@import("prompts")` returns a struct bundling the
+//! environment every prompt needs — writer, reader, allocator, and theme —
+//! and each of the eight prompts is a method on it. Standalone library: no
+//! zcli dependency required; falls back to line-based input when stdin is
+//! not a TTY.
 //!
 //! ```zig
-//! const prompts = @import("prompts");
+//! const Prompts = @import("prompts");
 //!
-//! const name = try prompts.text(writer, reader, allocator, .{ .message = "Name:" });
-//! const ok = try prompts.confirm(writer, reader, .{ .message = "Continue?" });
-//! const idx = try prompts.select(writer, reader, .{ .message = "Pick:", .choices = &.{"a", "b"} });
+//! const p: Prompts = .{ .writer = writer, .reader = reader, .allocator = allocator };
+//!
+//! const name = try p.text(.{ .message = "Name:" });
+//! const ok = try p.confirm(.{ .message = "Continue?" });
+//! const idx = try p.select(.{ .message = "Pick:", .choices = &.{"a", "b"} });
 //! ```
+//!
+//! In a zcli command, `context.prompts()` returns an instance pre-wired to the
+//! command's streams, allocator, and theme.
+
+writer: *std.Io.Writer,
+reader: *std.Io.Reader,
+/// Owns every string a prompt returns (`text`, `password`, `editor`) and
+/// the index slice from `multiSelect`.
+allocator: std.mem.Allocator,
+/// Theme + terminal capabilities for styling; zcli commands carry this in
+/// `context.theme` (`context.prompts()` wires it up).
+theme: ThemeContext = default_style,
+
+pub const text = text_prompt.text;
+pub const confirm = confirm_prompt.confirm;
+pub const select = select_prompt.select;
+pub const multiSelect = multi_select_prompt.multiSelect;
+pub const password = password_prompt.password;
+pub const search = search_prompt.search;
+pub const number = number_prompt.number;
+pub const editor = editor_prompt.editor;
 
 const std = @import("std");
+const theme_pkg = @import("theme");
 pub const terminal = @import("terminal");
-pub const theme = @import("theme");
 
-/// Style context used when the caller doesn't pass one: the default theme at
+const Prompts = @This();
+
+/// Theming re-exports, so standalone users can build a custom style context
+/// without depending on the `theme` package directly (it's transitive here).
+pub const Theme = theme_pkg.Theme;
+pub const ThemeContext = theme_pkg.ThemeContext;
+pub const Capabilities = theme_pkg.Capabilities;
+pub const StyleRef = theme_pkg.StyleRef;
+
+/// Style context used when an instance doesn't set one: the default theme at
 /// ANSI-16, matching the package's historical fixed colors. zcli applications
-/// pass `context.theme` instead, which carries the app's theme and the
+/// set `.theme = context.theme` instead, which carries the app's theme and the
 /// detected terminal capabilities (including NO_COLOR).
-pub const default_style: theme.ThemeContext = .fallback;
+pub const default_style: ThemeContext = .fallback;
 
 /// Render `ref`'s opening escape sequence into `buf`, returning the (possibly
 /// empty) slice. Pair every non-empty result with `closeSeq`.
-pub fn openSeq(buf: []u8, ctx: theme.ThemeContext, ref: theme.StyleRef) []const u8 {
+pub fn openSeq(buf: []u8, ctx: ThemeContext, ref: StyleRef) []const u8 {
     var w: std.Io.Writer = .fixed(buf);
     const style = ctx.resolveRef(ref);
     const wrote = style.writeSequence(&w, ctx.capability()) catch false;
@@ -60,16 +95,6 @@ pub fn isInterrupt(key: terminal.Key, keys: []const terminal.Key) bool {
     }
     return false;
 }
-
-// Re-export main functions
-pub const text = text_prompt.text;
-pub const confirm = confirm_prompt.confirm;
-pub const select = select_prompt.select;
-pub const multiSelect = multi_select_prompt.multiSelect;
-pub const password = password_prompt.password;
-pub const search = search_prompt.search;
-pub const number = number_prompt.number;
-pub const editor = editor_prompt.editor;
 
 /// Append a typed codepoint to `buf` as UTF-8, returning the appended bytes
 /// (a slice into `buf.items`) so the caller can echo them.

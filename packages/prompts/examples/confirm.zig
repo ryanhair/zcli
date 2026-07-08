@@ -1,7 +1,7 @@
-//! `prompts.confirm` — a yes/no question with a default (Enter accepts it).
+//! `Prompts.confirm` — a yes/no question with a default (Enter accepts it).
 
 const std = @import("std");
-const prompts = @import("prompts");
+const Prompts = @import("prompts");
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -9,7 +9,9 @@ pub fn main(init: std.process.Init) !void {
     t.init(init.io);
     defer t.flush();
 
-    const ok = prompts.confirm(t.w(), t.r(), .{
+    const p: Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
+
+    const ok = p.confirm(.{
         .message = "Deploy to production?",
         .default = false,
     }) catch |err| {

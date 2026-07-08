@@ -1,7 +1,7 @@
-//! `prompts.password` — masked input; the typed characters are never echoed.
+//! `Prompts.password` — masked input; the typed characters are never echoed.
 
 const std = @import("std");
-const prompts = @import("prompts");
+const Prompts = @import("prompts");
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -9,7 +9,9 @@ pub fn main(init: std.process.Init) !void {
     t.init(init.io);
     defer t.flush();
 
-    const secret = prompts.password(t.w(), t.r(), init.gpa, .{
+    const p: Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
+
+    const secret = p.password(.{
         .message = "Enter a password:",
         .mask = '*',
     }) catch |err| {

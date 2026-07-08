@@ -1,7 +1,7 @@
-//! `prompts.select` — choose one item from a list with the arrow keys and Enter.
+//! `Prompts.select` — choose one item from a list with the arrow keys and Enter.
 
 const std = @import("std");
-const prompts = @import("prompts");
+const Prompts = @import("prompts");
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -9,9 +9,11 @@ pub fn main(init: std.process.Init) !void {
     t.init(init.io);
     defer t.flush();
 
+    const p: Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
+
     const fruits = [_][]const u8{ "Apple", "Banana", "Cherry", "Dragonfruit", "Elderberry" };
 
-    const idx = prompts.select(t.w(), t.r(), .{
+    const idx = p.select(.{
         .message = "Pick a fruit:",
         .choices = &fruits,
     }) catch |err| {

@@ -159,13 +159,13 @@
 
         <section id="prompts">
           <h2>Prompts</h2>
-          <p>Interactive prompts style their cursor, selected row, multi-select marker, and hint text through <code>theme.prompts</code> tokens. Pass <code>context.theme</code> and they inherit your theme <em>and</em> the detected capabilities — including <code>NO_COLOR</code>:</p>
+          <p>Interactive prompts style their cursor, selected row, multi-select marker, and hint text through <code>theme.prompts</code> tokens. <code>context.prompts()</code> returns an instance already carrying your theme <em>and</em> the detected capabilities — including <code>NO_COLOR</code> — so every prompt made through it is themed:</p>
           <div class="code">
             <div class="code-head"><span class="fname">prompts</span><span class="lang">zig</span></div>
-<pre><span class="kw">const</span> idx = <span class="kw">try</span> zcli.prompts.<span class="fn">select</span>(writer, reader, .{
+<pre><span class="kw">const</span> p = context.<span class="fn">prompts</span>();
+<span class="kw">const</span> idx = <span class="kw">try</span> p.<span class="fn">select</span>(.{
     .message = <span class="str">"Pick a region:"</span>,
     .choices = &.{ <span class="str">"us-east"</span>, <span class="str">"eu-west"</span>, <span class="str">"ap-south"</span> },
-    .theme = context.theme,
 });</pre>
           </div>
         </section>

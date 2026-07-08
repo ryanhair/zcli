@@ -31,22 +31,30 @@ exe.root_module.addImport("prompts", prompts_dep.module("prompts"));
 ## Quick start
 
 ```zig
-const prompts = @import("prompts");
+// The import IS the type: one instance carries the environment,
+// and every prompt is a method on it.
+const Prompts = @import("prompts");
+
+const p: Prompts = .{
+    .writer = writer,
+    .reader = reader,
+    .allocator = allocator,
+};
 
 // Free-form text (returns an owned []u8 — caller frees; empty submit returns
 // the default if set, otherwise an empty string)
-const title = try prompts.text(writer, reader, allocator, .{
+const title = try p.text(.{
     .message = "Task title:",
 });
 
 // Pick one from a list (returns the chosen index)
-const priority_idx = try prompts.select(writer, reader, .{
+const priority_idx = try p.select(.{
     .message = "Priority:",
     .choices = &.{ "low", "medium", "high", "critical" },
 });
 
 // Number with range validation (returns i64)
-const points = try prompts.number(writer, reader, .{
+const points = try p.number(.{
     .message = "Story points:",
     .default = 1,
     .min = 0,
@@ -54,7 +62,7 @@ const points = try prompts.number(writer, reader, .{
 });
 
 // Yes/no (returns bool)
-const sure = try prompts.confirm(writer, reader, .{ .message = "Create it?" });
+const sure = try p.confirm(.{ .message = "Create it?" });
 ```
 
 The other prompt types follow the same shape: `password` (masked input), `multiSelect` (space toggles, returns owned indices), `search` (type-to-filter a list), and `editor` (opens `$EDITOR` for multiline text).
@@ -63,19 +71,25 @@ The other prompt types follow the same shape: `password` (masked input), `multiS
 
 The list prompts (`select`, `multiSelect`, `search`) and `editor` style their
 cursor, selected row, check marker, and hint text through the theme's
-`prompts` component tokens. Pass a `ThemeContext` to follow an app theme and
-the detected terminal capabilities (including `NO_COLOR`):
+`prompts` component tokens. Set `theme` on the `Prompts` instance to follow an
+app theme and the detected terminal capabilities (including `NO_COLOR`) — every
+prompt made through that instance is themed:
 
 ```zig
-// In a zcli command — the context already carries the app theme:
-const idx = try prompts.select(writer, reader, .{
+// In a zcli command, context.prompts() returns an instance already carrying
+// the app theme:
+const p = context.prompts();
+const idx = try p.select(.{
     .message = "Pick:",
     .choices = &.{ "a", "b" },
-    .theme = context.theme,
 });
 ```
 
-Standalone, the default (`prompts.default_style`) is the default theme at
+Standalone, build a style context from the re-exported theming types
+(`Prompts.Theme`, `Prompts.ThemeContext`, `Prompts.Capabilities`) and set
+`.theme` on the instance.
+
+Left unset, the default (`Prompts.default_style`) is the default theme at
 ANSI-16 — the package's historical fixed colors. Tokens and their defaults
 (`cursor`/`selected` → accent, `marker` → success, `hint` → muted) are defined
 in [`theme`](../theme/)'s `PromptTheme`.

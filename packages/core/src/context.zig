@@ -154,6 +154,18 @@ pub fn ContextFor(comptime plugins: []const type) type {
             return self.stdio.stdin();
         }
 
+        /// A `Prompts` instance pre-wired to this command's environment:
+        /// stdout, stdin, the arena-per-command allocator, and the app theme.
+        /// Override a field before use if you need to (e.g. a scratch allocator).
+        pub fn prompts(self: *Self) zcli.Prompts {
+            return .{
+                .writer = self.stdout(),
+                .reader = self.stdin(),
+                .allocator = self.allocator,
+                .theme = self.theme,
+            };
+        }
+
         /// Get command description by path (for plugins)
         pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
             for (self.plugin_command_info) |cmd_info| {

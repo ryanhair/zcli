@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     const theme_dep = b.dependency("theme", .{ .target = target, .optimize = optimize });
 
     const prompts_mod = b.addModule("prompts", .{
-        .root_source_file = b.path("src/prompts.zig"),
+        .root_source_file = b.path("src/Prompts.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run prompts tests");
     const test_mod = b.addModule("test-prompts", .{
-        .root_source_file = b.path("src/prompts.zig"),
+        .root_source_file = b.path("src/Prompts.zig"),
         .target = target,
         .optimize = optimize,
     });

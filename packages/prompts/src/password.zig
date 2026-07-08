@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const PasswordConfig = struct {
     message: []const u8,
@@ -11,7 +11,10 @@ pub const PasswordConfig = struct {
 };
 
 /// Prompt for password input with masking. Returns owned string.
-pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, config: PasswordConfig) ![]u8 {
+pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
+    const writer = p.writer;
+    const reader = p.reader;
+    const allocator = p.allocator;
     const is_tty = terminal.isStdinTty();
 
     try writer.print("{s}{s} ", .{ config.prefix, config.message });
@@ -24,21 +27,21 @@ pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, 
     }
 
     // TTY: raw mode with mask character
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         try writer.writeAll("\n");
         return try allocator.dupe(u8, "");
     };
     defer {
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         const k = try terminal.readKey(reader);
         switch (k) {
             .enter => {
@@ -47,7 +50,7 @@ pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, 
             },
             .backspace => {
                 if (buf.items.len > 0) {
-                    prompts.popTrailingGrapheme(&buf);
+                    Prompts.popTrailingGrapheme(&buf);
                     try renderMask(writer, config, terminal.graphemeCount(buf.items));
                 }
             },
@@ -59,7 +62,7 @@ pub fn password(writer: anytype, reader: anytype, allocator: std.mem.Allocator, 
             },
             .char => |c| {
                 // One mask glyph per typed character, not per UTF-8 byte.
-                _ = try prompts.appendCodepoint(allocator, &buf, c);
+                _ = try Prompts.appendCodepoint(allocator, &buf, c);
                 try renderMask(writer, config, terminal.graphemeCount(buf.items));
             },
             else => {},
@@ -74,7 +77,7 @@ fn renderMask(writer: anytype, config: PasswordConfig, len: usize) !void {
     for (0..len) |_| {
         try writer.print("{c}", .{config.mask});
     }
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
@@ -100,7 +103,7 @@ test "non-TTY: reads password line" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try password(&output_writer, &input_reader, allocator, .{
+    const result = try password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Password:",
     });
     defer allocator.free(result);
@@ -115,7 +118,7 @@ test "non-TTY: EOF returns empty" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try password(&output_writer, &input_reader, allocator, .{
+    const result = try password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Password:",
     });
     defer allocator.free(result);
@@ -130,7 +133,7 @@ test "prompt shows message" {
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try password(&output_writer, &input_reader, allocator, .{
+    const result = try password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Enter secret:",
     });
     defer allocator.free(result);

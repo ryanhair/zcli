@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -33,10 +32,9 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     }
     defer for (titles.items) |t| allocator.free(t);
 
-    const writer = context.stdout();
-    const reader = context.stdin();
+    const p = context.prompts();
 
-    const idx = try prompts.search(writer, reader, allocator, .{
+    const idx = try p.search(.{
         .message = "Search tasks:",
         .choices = titles.items,
     });

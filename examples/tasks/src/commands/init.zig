@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -16,7 +15,6 @@ pub const Options = struct {};
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
     const writer = context.stdout();
-    const reader = context.stdin();
 
     // Check if already initialized
     if (std.Io.Dir.cwd().access(context.io, "tasks.json", .{})) |_| {
@@ -28,25 +26,26 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     try themed("Project Setup").bold().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 
-    const name = try prompts.text(writer, reader, allocator, .{
+    const p = context.prompts();
+
+    const name = try p.text(.{
         .message = "Project name:",
         .default = "my-project",
     });
     defer allocator.free(name);
 
-    const description = try prompts.text(writer, reader, allocator, .{
+    const description = try p.text(.{
         .message = "Description:",
     });
     defer allocator.free(description);
 
-    const method_idx = try prompts.select(writer, reader, .{
+    const method_idx = try p.select(.{
         .message = "Methodology:",
         .choices = &.{ "Kanban", "Scrum", "None" },
-        .theme = context.theme,
     });
     _ = method_idx;
 
-    const create_samples = try prompts.confirm(writer, reader, .{
+    const create_samples = try p.confirm(.{
         .message = "Create sample tasks?",
         .default = true,
     });

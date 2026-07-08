@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -23,8 +22,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     for (data.tasks) |*task| {
         if (task.id != args.id) continue;
 
-        const writer = context.stdout();
-        const reader = context.stdin();
+        const p = context.prompts();
 
         // Git-commit-style buffer: first line is title, blank line, then description.
         // Lines starting with '#' are comments and get stripped.
@@ -44,7 +42,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         const msg = try std.fmt.allocPrint(allocator, "Edit task #{d}:", .{task.id});
         defer allocator.free(msg);
 
-        const content = try prompts.editor(writer, reader, allocator, .{
+        const content = try p.editor(.{
             .message = msg,
             .io = context.io,
             .default = initial,

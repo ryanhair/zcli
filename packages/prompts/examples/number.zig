@@ -1,7 +1,7 @@
-//! `prompts.number` — integer input with an optional default and min/max bounds.
+//! `Prompts.number` — integer input with an optional default and min/max bounds.
 
 const std = @import("std");
-const prompts = @import("prompts");
+const Prompts = @import("prompts");
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -9,7 +9,9 @@ pub fn main(init: std.process.Init) !void {
     t.init(init.io);
     defer t.flush();
 
-    const n = prompts.number(t.w(), t.r(), .{
+    const p: Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
+
+    const n = p.number(.{
         .message = "Pick a number",
         .default = 42,
         .min = 1,

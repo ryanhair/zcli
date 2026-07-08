@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -46,18 +45,16 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         priority = store.priorityFromString(options.priority) orelse .medium;
     } else {
         // Interactive mode
-        const writer = context.stdout();
-        const reader = context.stdin();
+        const p = context.prompts();
 
-        title_owned = try prompts.text(writer, reader, allocator, .{
+        title_owned = try p.text(.{
             .message = "Task title:",
         });
         title = title_owned.?;
 
-        const priority_idx = try prompts.select(writer, reader, .{
+        const priority_idx = try p.select(.{
             .message = "Priority:",
             .choices = &.{ "low", "medium", "high", "critical" },
-            .theme = context.theme,
         });
         priority = switch (priority_idx) {
             0 => .low,
@@ -67,7 +64,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             else => .medium,
         };
 
-        const pts = try prompts.number(writer, reader, .{
+        const pts = try p.number(.{
             .message = "Story points:",
             .default = 1,
             .min = 0,

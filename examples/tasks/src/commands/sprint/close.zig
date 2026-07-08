@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -24,13 +23,11 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
         return;
     }
 
-    const writer = context.stdout();
-    const reader = context.stdin();
+    const p = context.prompts();
 
-    const idx = try prompts.select(writer, reader, .{
+    const idx = try p.select(.{
         .message = "Close which sprint?",
         .choices = data.sprints,
-        .theme = context.theme,
     });
 
     const name = data.sprints[idx];
