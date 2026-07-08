@@ -129,18 +129,23 @@ pub const App = struct {
     /// never repainted in place. Line-oriented (see module docs). The block
     /// is retained in source form while it may still be visible, so a width
     /// resize can reflow the visible tail (ADR-0013 resize tier 2).
+    ///
+    /// Interactive output terminates lines with CRLF: prompts run the
+    /// terminal in raw mode, where a bare `\n` moves down without returning
+    /// the column (no ONLCR post-processing), and CRLF is harmless in
+    /// cooked mode. Piped output keeps plain `\n`.
     pub fn emit(self: *App, comptime fmt: []const u8, args: anytype) !void {
-        const line_fmt = comptime if (std.mem.endsWith(u8, fmt, "\n")) fmt else fmt ++ "\n";
+        const base = comptime std.mem.trimEnd(u8, fmt, "\r\n");
         if (!self.options.interactive) {
             // Plain line output: no live region exists, nothing to retain.
-            try self.writer.print(line_fmt, args);
+            try self.writer.print(base ++ "\n", args);
             try self.writer.flush();
             return;
         }
         const ts = self.termSize();
         self.last_width = ts.w;
 
-        const text = try std.fmt.allocPrint(self.gpa, line_fmt, args);
+        const text = try std.fmt.allocPrint(self.gpa, base ++ "\r\n", args);
         errdefer self.gpa.free(text);
 
         const had_live = self.live_rows > 0;
@@ -256,7 +261,9 @@ pub const App = struct {
         std.debug.assert(self.live_rows == 0);
         try self.writer.writeByte('\r');
         var i: u16 = 1;
-        while (i < rows) : (i += 1) try self.writer.writeAll("\n");
+        // CRLF, not LF: under raw mode (prompts) there is no ONLCR
+        // post-processing, and the explicit CR is harmless in cooked mode.
+        while (i < rows) : (i += 1) try self.writer.writeAll("\r\n");
         if (rows > 1) try self.writer.print("\x1b[{d}A", .{rows - 1});
         self.live_rows = rows;
     }
@@ -345,7 +352,7 @@ pub const App = struct {
     /// desync this — emit output is expected tab-free.)
     fn textRows(text: []const u8, width: u16) u16 {
         const w: u32 = @max(width, 1);
-        const body = if (std.mem.endsWith(u8, text, "\n")) text[0 .. text.len - 1] else text;
+        const body = std.mem.trimEnd(u8, text, "\r\n");
         var rows: u32 = 0;
         var it = std.mem.splitScalar(u8, body, '\n');
         while (it.next()) |line| {

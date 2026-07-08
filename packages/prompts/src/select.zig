@@ -1,9 +1,16 @@
 //! Single selection prompt with arrow key navigation.
+//!
+//! Rendering runs on the ui engine: each interaction paints one frame of a
+//! node tree (diffed in place — navigation repaints only the rows that
+//! changed), and the chosen answer is emitted as a static line that flows
+//! into scrollback. Input stays here: raw mode, key events, and resize
+//! watching are the prompt's job; the App is display-only.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
 const lr = @import("list_render.zig");
+const ui = lr.ui;
 
 pub const SelectConfig = struct {
     message: []const u8,
@@ -40,52 +47,53 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
     // TTY: interactive selection
     Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
-    try writer.writeAll(terminal.ansi.hide_cursor);
     var watcher = terminal.ResizeWatcher.init();
     defer {
-        writer.writeAll(terminal.ansi.show_cursor) catch {};
         watcher.deinit();
         raw.disable();
         Prompts.flushWriter(writer);
     }
+    // The App owns the cursor (hidden on first frame, restored by deinit)
+    // and the live region. Runs before the raw/watcher cleanup above (LIFO),
+    // so its restore bytes still go out under raw mode — which is why the
+    // App terminates lines with CRLF.
+    var app = try ui.App.init(p.allocator, writer, .{
+        .capability = p.theme.capability(),
+        .unicode = config.unicode,
+    });
+    defer app.deinit();
 
     const stdin = std.Io.File.stdin().handle;
     var cursor: usize = 0;
-    var rows = try renderList(writer, p.theme, config, cursor, lr.windowSize());
+    try renderFrame(&app, p.theme, config, cursor);
 
     while (true) {
-        Prompts.flushWriter(writer);
         switch (try terminal.readEvent(reader, stdin, &watcher)) {
-            .resize => {
-                try lr.eraseRegion(writer, rows);
-                rows = try renderList(writer, p.theme, config, cursor, lr.windowSize());
-            },
+            .resize => try renderFrame(&app, p.theme, config, cursor),
             .key => |k| {
                 if (Prompts.isInterrupt(k, config.interrupt_keys)) {
-                    try lr.eraseRegion(writer, rows);
+                    try app.clear();
                     return error.Interrupted;
                 }
                 switch (k) {
                     .up => {
                         if (cursor > 0) cursor -= 1;
-                        try lr.eraseRegion(writer, rows);
-                        rows = try renderList(writer, p.theme, config, cursor, lr.windowSize());
+                        try renderFrame(&app, p.theme, config, cursor);
                     },
                     .down => {
                         if (cursor < config.choices.len - 1) cursor += 1;
-                        try lr.eraseRegion(writer, rows);
-                        rows = try renderList(writer, p.theme, config, cursor, lr.windowSize());
+                        try renderFrame(&app, p.theme, config, cursor);
                     },
                     .enter => {
-                        try lr.eraseRegion(writer, rows);
+                        try app.clear();
                         var obuf: [64]u8 = undefined;
                         const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
-                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[cursor], Prompts.closeSeq(open) });
+                        try app.emit("  {s}{s}{s}", .{ open, config.choices[cursor], Prompts.closeSeq(open) });
                         return cursor;
                     },
                     .ctrl => |c| {
                         if (c == 'c') {
-                            try lr.eraseRegion(writer, rows);
+                            try app.clear();
                             return error.UserAborted;
                         }
                     },
@@ -96,24 +104,38 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
     }
 }
 
-/// Render the header + viewport-limited choice list, returning physical rows
-/// emitted. Width is an explicit parameter so this is deterministic/testable
-/// (used by the cross-platform emulator render tests).
-pub fn renderList(writer: anytype, ctx: Prompts.ThemeContext, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !usize {
+fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: SelectConfig, cursor: usize) !void {
+    try app.frame(try frameNode(app.arena(), ctx, config, cursor, lr.windowSize()));
+}
+
+/// Build the header + viewport-limited choice list as one frame. Pure and
+/// size-explicit, so it is deterministic/testable (the emulator render tests
+/// drive it through an App with a fixed terminal size).
+pub fn frameNode(
+    a: std.mem.Allocator,
+    ctx: Prompts.ThemeContext,
+    config: SelectConfig,
+    cursor: usize,
+    ws: terminal.Winsize,
+) !ui.Node {
     const width = @max(@as(usize, ws.col), 1);
-    const usable = @max(width -| 1, 1);
+    // Leave the last column unused, matching the historical look (and the
+    // row estimates below always agree with the painted layout).
+    const usable: u16 = @intCast(@min(@max(width -| 1, 1), std.math.maxInt(u16)));
     const height = @max(@as(usize, ws.row), 2);
 
     const cursor_sym = terminal.symbols.select_cursor(config.unicode);
     // "  <cur> " and "    " are both 4 columns (single-column cursor glyph).
-    const prefix_w: usize = 4;
-    const avail = @max(usable -| prefix_w, 1);
+    const prefix_w: u16 = 4;
+    const avail = @max(@as(usize, usable) -| prefix_w, 1);
 
-    var rows: usize = 0;
-    var first_line = true;
+    var rows = std.ArrayList(ui.Node).empty;
 
-    const hprefix_w = terminal.displayWidth(config.prefix);
-    rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = config.prefix, .prefix_w = hprefix_w }, config.message, @max(usable -| hprefix_w, 1));
+    // Header (any wrap hang-indents under the message text).
+    const hprefix_w: u16 = @intCast(terminal.displayWidth(config.prefix));
+    const havail: u16 = @intCast(@max(@as(usize, usable) -| hprefix_w, 1));
+    try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, config.prefix), hprefix_w, config.message, havail, .{}));
+    const header_rows = terminal.wrapCount(config.message, havail);
 
     const Counter = struct {
         choices: []const []const u8,
@@ -123,26 +145,20 @@ pub fn renderList(writer: anytype, ctx: Prompts.ThemeContext, config: SelectConf
         }
     };
     const counter = Counter{ .choices = config.choices, .avail = avail };
-    const list_budget = @max((height -| 1) -| rows, 1);
+    const list_budget = @max((height -| 1) -| header_rows, 1);
     const win = lr.viewport(config.choices.len, cursor, list_budget, &counter, Counter.at);
 
-    const tokens = ctx.promptTokens();
+    const selected_style = ctx.resolveRef(ctx.promptTokens().selected);
     for (win.start..win.end) |i| {
-        var pbuf: [32]u8 = undefined;
-        var obuf: [64]u8 = undefined;
-        const style: lr.ItemStyle = if (i == cursor) blk: {
-            const open = Prompts.openSeq(&obuf, ctx, tokens.selected);
-            break :blk .{
-                .line_open = open,
-                .first_prefix = std.fmt.bufPrint(&pbuf, "  {s} ", .{cursor_sym}) catch "  ",
-                .prefix_w = prefix_w,
-                .line_close = Prompts.closeSeq(open),
-            };
-        } else .{ .first_prefix = "    ", .prefix_w = prefix_w };
-        rows += try lr.renderItem(writer, &first_line, style, config.choices[i], avail);
+        const on = i == cursor;
+        const prefix = if (on)
+            lr.prefixCell(selected_style, try std.fmt.allocPrint(a, "  {s} ", .{cursor_sym}))
+        else
+            lr.prefixCell(.{}, "");
+        try rows.append(a, try lr.itemRow(a, prefix, prefix_w, config.choices[i], @intCast(avail), if (on) selected_style else .{}));
     }
 
-    return rows;
+    return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
@@ -210,20 +226,52 @@ test "non-TTY: shows numbered choices" {
     try std.testing.expect(std.mem.indexOf(u8, written, "second") != null);
 }
 
-fn renderToBuf(buf: []u8, ctx: Prompts.ThemeContext, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
-    var w: std.Io.Writer = .fixed(buf);
-    const rows = try renderList(&w, ctx, config, cursor, ws);
-    return .{ .rows = rows, .text = w.buffered() };
+// ---------------------------------------------------------------------------
+// Frame tests: measure/render the component as pure functions.
+// ---------------------------------------------------------------------------
+
+const FrameHarness = struct {
+    arena: std.heap.ArenaAllocator,
+
+    fn init() FrameHarness {
+        return .{ .arena = std.heap.ArenaAllocator.init(std.testing.allocator) };
+    }
+    fn deinit(self: *FrameHarness) void {
+        self.arena.deinit();
+    }
+    fn a(self: *FrameHarness) std.mem.Allocator {
+        return self.arena.allocator();
+    }
+    fn rctx(self: *FrameHarness) ui.RenderCtx {
+        return .{ .allocator = self.a() };
+    }
+};
+
+test "frameNode: header plus one row per short option" {
+    var h = FrameHarness.init();
+    defer h.deinit();
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, .{ .row = 24, .col = 80 });
+    const rc = h.rctx();
+    const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
+    try std.testing.expectEqual(@as(u16, 4), size.h); // header + 3
 }
 
-test "renderList: short options are one row each" {
-    var buf: [1024]u8 = undefined;
-    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, .{ .row = 24, .col = 80 });
-    try std.testing.expectEqual(@as(usize, 4), r.rows); // header + 3
+test "frameNode: wrapped option occupies its true physical rows" {
+    var h = FrameHarness.init();
+    defer h.deinit();
+    const long = "this is a long option label that will certainly wrap at a narrow width";
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, .{ .row = 24, .col = 24 });
+    const rc = h.rctx();
+    const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
+    try std.testing.expect(size.h > 3);
+    // header(1) + short(1) + the long label's wrap count at the item width.
+    const expected = 2 + terminal.wrapCount(long, 24 - 1 - 4);
+    try std.testing.expectEqual(@as(u16, @intCast(expected)), size.h);
 }
 
-test "renderList: selected row styles through the theme's selected token" {
-    var buf: [1024]u8 = undefined;
+test "frameNode: selected row carries the theme's selected token" {
+    var h = FrameHarness.init();
+    defer h.deinit();
     const custom = Prompts.Theme{
         .palette = .{ .accent = .{ .foreground = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } } },
     };
@@ -231,24 +279,17 @@ test "renderList: selected row styles through the theme's selected token" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const r = try renderToBuf(&buf, ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, .{ .row = 24, .col = 80 });
-    try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;1;2;3") != null);
-}
+    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, .{ .row = 24, .col = 80 });
 
-test "renderList: no_color renders without any escapes" {
-    var buf: [1024]u8 = undefined;
-    const ctx = Prompts.ThemeContext{
-        .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
-    };
-    const r = try renderToBuf(&buf, ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, .{ .row = 24, .col = 80 });
-    try std.testing.expect(std.mem.indexOf(u8, r.text, "\x1b[") == null);
-}
+    var s = try ui.Surface.init(std.testing.allocator, 79, 3);
+    defer s.deinit();
+    const rc = h.rctx();
+    try ui.render(&rc, &node, s.root());
 
-test "renderList: wrapped option reports true physical row count" {
-    var buf: [4096]u8 = undefined;
-    const long = "this is a long option label that will certainly wrap at a narrow width";
-    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, .{ .row = 24, .col = 24 });
-    try std.testing.expect(r.rows > 3);
-    const lines = std.mem.count(u8, r.text, "\r\n") + 1;
-    try std.testing.expectEqual(lines, r.rows);
+    const selected_style = ctx.resolveRef(ctx.promptTokens().selected);
+    // Row 1 is the cursor row: glyph cell and label cell styled; row 2 plain.
+    try std.testing.expectEqualStrings("a", s.cellText(s.cell(4, 1)));
+    try std.testing.expect(ui.styleEql(selected_style, s.cell(4, 1).style));
+    try std.testing.expectEqualStrings("b", s.cellText(s.cell(4, 2)));
+    try std.testing.expect(ui.styleEql(.{}, s.cell(4, 2).style));
 }

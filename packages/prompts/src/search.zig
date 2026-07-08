@@ -1,9 +1,13 @@
 //! Search/filter prompt — type to filter a list, arrow keys to navigate, Enter to select.
+//!
+//! Rendering runs on the ui engine (see select.zig); input handling and the
+//! filter state stay here.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
 const lr = @import("list_render.zig");
+const ui = lr.ui;
 
 pub const SearchConfig = struct {
     message: []const u8,
@@ -37,14 +41,17 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
     // TTY: interactive search
     Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
-    try writer.writeAll(terminal.ansi.hide_cursor);
     var watcher = terminal.ResizeWatcher.init();
     defer {
-        writer.writeAll(terminal.ansi.show_cursor) catch {};
         watcher.deinit();
         raw.disable();
         Prompts.flushWriter(writer);
     }
+    var app = try ui.App.init(p.allocator, writer, .{
+        .capability = p.theme.capability(),
+        .unicode = config.unicode,
+    });
+    defer app.deinit();
 
     var query = std.ArrayList(u8).empty;
     defer query.deinit(allocator);
@@ -53,33 +60,27 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
     defer allocator.free(filtered);
     const stdin = std.Io.File.stdin().handle;
     var cursor: usize = 0;
-    var rows = try renderSearch(writer, p.theme, config, query.items, filtered, cursor, lr.windowSize());
+    try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
 
     while (true) {
-        Prompts.flushWriter(writer);
         switch (try terminal.readEvent(reader, stdin, &watcher)) {
-            .resize => {
-                try lr.eraseRegion(writer, rows);
-                rows = try renderSearch(writer, p.theme, config, query.items, filtered, cursor, lr.windowSize());
-            },
+            .resize => try renderFrame(&app, p.theme, config, query.items, filtered, cursor),
             .key => |k| switch (k) {
                 .up => {
                     if (cursor > 0) cursor -= 1;
-                    try lr.eraseRegion(writer, rows);
-                    rows = try renderSearch(writer, p.theme, config, query.items, filtered, cursor, lr.windowSize());
+                    try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                 },
                 .down => {
                     if (cursor < filtered.len -| 1) cursor += 1;
-                    try lr.eraseRegion(writer, rows);
-                    rows = try renderSearch(writer, p.theme, config, query.items, filtered, cursor, lr.windowSize());
+                    try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                 },
                 .enter => {
                     if (filtered.len > 0) {
                         const selected_idx = filtered[cursor];
-                        try lr.eraseRegion(writer, rows);
+                        try app.clear();
                         var obuf: [64]u8 = undefined;
                         const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
-                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[selected_idx], Prompts.closeSeq(open) });
+                        try app.emit("  {s}{s}{s}", .{ open, config.choices[selected_idx], Prompts.closeSeq(open) });
                         return selected_idx;
                     }
                 },
@@ -89,13 +90,12 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
                         allocator.free(filtered);
                         filtered = try buildFiltered(allocator, config.choices, query.items);
                         cursor = 0;
-                        try lr.eraseRegion(writer, rows);
-                        rows = try renderSearch(writer, p.theme, config, query.items, filtered, cursor, lr.windowSize());
+                        try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                     }
                 },
                 .ctrl => |c| {
                     if (c == 'c') {
-                        try lr.eraseRegion(writer, rows);
+                        try app.clear();
                         return error.UserAborted;
                     }
                 },
@@ -104,13 +104,16 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
                     allocator.free(filtered);
                     filtered = try buildFiltered(allocator, config.choices, query.items);
                     cursor = 0;
-                    try lr.eraseRegion(writer, rows);
-                    rows = try renderSearch(writer, p.theme, config, query.items, filtered, cursor, lr.windowSize());
+                    try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                 },
                 else => {},
             },
         }
     }
+}
+
+fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: SearchConfig, query: []const u8, filtered: []const usize, cursor: usize) !void {
+    try app.frame(try frameNode(app.arena(), ctx, config, query, filtered, cursor, lr.windowSize()));
 }
 
 /// Build array of indices into choices that match the query (case-insensitive substring).
@@ -142,62 +145,50 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// Render the header, search-input line, and viewport-limited results, returning
-/// the number of physical rows emitted. Width is an explicit parameter so this
-/// is deterministic/testable (used by the cross-platform emulator render tests).
-pub fn renderSearch(
-    writer: anytype,
+/// Build the header, search-input line, and viewport-limited results as one
+/// frame. Pure and size-explicit so it is deterministic and unit-testable.
+pub fn frameNode(
+    a: std.mem.Allocator,
     ctx: Prompts.ThemeContext,
     config: SearchConfig,
     query: []const u8,
     filtered: []const usize,
     cursor: usize,
     ws: terminal.Winsize,
-) !usize {
+) !ui.Node {
     const width = @max(@as(usize, ws.col), 1);
-    const usable = @max(width -| 1, 1);
+    const usable: u16 = @intCast(@min(@max(width -| 1, 1), std.math.maxInt(u16)));
     const height = @max(@as(usize, ws.row), 2);
 
     const cursor_sym = terminal.symbols.select_cursor(config.unicode);
-    const prefix_w: usize = 4; // "  <cur> " / "    "
-    const avail = @max(usable -| prefix_w, 1);
+    const prefix_w: u16 = 4; // "  <cur> " / "    "
+    const avail: u16 = @intCast(@max(@as(usize, usable) -| prefix_w, 1));
 
-    var rows: usize = 0;
-    var first_line = true;
+    var rows = std.ArrayList(ui.Node).empty;
     const tokens = ctx.promptTokens();
+    const hint_style = ctx.resolveRef(tokens.hint);
 
     // Header line.
-    const hprefix_w = terminal.displayWidth(config.prefix);
-    rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = config.prefix, .prefix_w = hprefix_w }, config.message, @max(usable -| hprefix_w, 1));
+    const hprefix_w: u16 = @intCast(terminal.displayWidth(config.prefix));
+    const havail: u16 = @intCast(@max(@as(usize, usable) -| hprefix_w, 1));
+    try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, config.prefix), hprefix_w, config.message, havail, .{}));
+    var used: usize = terminal.wrapCount(config.message, havail);
 
-    // Search-input line: "  Search: <query>". The hint style rides in the
-    // prefix (emitted verbatim), not the label: the wrapper drops escapes at
-    // the edges of labels (it measures them as zero-width and slices lines
-    // from the first visible grapheme).
+    // Search-input line: "  Search: <query>" (hint-styled placeholder when empty).
     const search_prefix = "  Search: ";
-    const search_prefix_w = terminal.displayWidth(search_prefix);
-    var hint_open_buf: [64]u8 = undefined;
-    var hint_prefix_buf: [96]u8 = undefined;
-    const hint_open = Prompts.openSeq(&hint_open_buf, ctx, tokens.hint);
+    const search_prefix_w: u16 = @intCast(terminal.displayWidth(search_prefix));
+    const savail: u16 = @intCast(@max(@as(usize, usable) -| search_prefix_w, 1));
     if (query.len > 0) {
-        rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = search_prefix, .prefix_w = search_prefix_w }, query, @max(usable -| search_prefix_w, 1));
+        try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, search_prefix), search_prefix_w, query, savail, .{}));
+        used += terminal.wrapCount(query, savail);
     } else {
-        const styled_prefix = std.fmt.bufPrint(&hint_prefix_buf, "{s}{s}", .{ search_prefix, hint_open }) catch search_prefix;
-        rows += try lr.renderItem(writer, &first_line, .{
-            .first_prefix = styled_prefix,
-            .prefix_w = search_prefix_w,
-            .line_close = Prompts.closeSeq(hint_open),
-        }, "type to filter", @max(usable -| search_prefix_w, 1));
+        try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, search_prefix), search_prefix_w, "type to filter", savail, hint_style));
+        used += 1;
     }
 
     if (filtered.len == 0) {
-        const nm_prefix = std.fmt.bufPrint(&hint_prefix_buf, "  {s}", .{hint_open}) catch "  ";
-        rows += try lr.renderItem(writer, &first_line, .{
-            .first_prefix = nm_prefix,
-            .prefix_w = 2,
-            .line_close = Prompts.closeSeq(hint_open),
-        }, "no matches", avail);
-        return rows;
+        try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, "  "), 2, "no matches", avail, hint_style));
+        return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
     }
 
     // Results viewport (row counts computed on demand).
@@ -210,26 +201,21 @@ pub fn renderSearch(
         }
     };
     const counter = Counter{ .choices = config.choices, .filtered = filtered, .avail = avail };
-    const list_budget = @max((height -| 1) -| rows, 1);
+    const list_budget = @max((height -| 1) -| used, 1);
     const win = lr.viewport(filtered.len, cursor, list_budget, &counter, Counter.at);
 
+    const selected_style = ctx.resolveRef(tokens.selected);
     for (win.start..win.end) |i| {
         const choice = config.choices[filtered[i]];
-        var pbuf: [32]u8 = undefined;
-        var obuf: [64]u8 = undefined;
-        const style: lr.ItemStyle = if (i == cursor) blk: {
-            const open = Prompts.openSeq(&obuf, ctx, tokens.selected);
-            break :blk .{
-                .line_open = open,
-                .first_prefix = std.fmt.bufPrint(&pbuf, "  {s} ", .{cursor_sym}) catch "  ",
-                .prefix_w = prefix_w,
-                .line_close = Prompts.closeSeq(open),
-            };
-        } else .{ .first_prefix = "    ", .prefix_w = prefix_w };
-        rows += try lr.renderItem(writer, &first_line, style, choice, avail);
+        const on = i == cursor;
+        const prefix = if (on)
+            lr.prefixCell(selected_style, try std.fmt.allocPrint(a, "  {s} ", .{cursor_sym}))
+        else
+            lr.prefixCell(.{}, "");
+        try rows.append(a, try lr.itemRow(a, prefix, prefix_w, choice, avail, if (on) selected_style else .{}));
     }
 
-    return rows;
+    return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
@@ -273,50 +259,64 @@ test "SearchConfig defaults" {
     try std.testing.expectEqualStrings("? ", cfg.prefix);
 }
 
-fn renderToBuf(buf: []u8, ctx: Prompts.ThemeContext, config: SearchConfig, query: []const u8, filtered: []const usize, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
-    var w: std.Io.Writer = .fixed(buf);
-    const rows = try renderSearch(&w, ctx, config, query, filtered, cursor, ws);
-    return .{ .rows = rows, .text = w.buffered() };
-}
+const FrameHarness = struct {
+    arena: std.heap.ArenaAllocator,
 
-test "renderSearch: header + search line + results, row count matches lines" {
-    var buf: [4096]u8 = undefined;
+    fn init() FrameHarness {
+        return .{ .arena = std.heap.ArenaAllocator.init(std.testing.allocator) };
+    }
+    fn deinit(self: *FrameHarness) void {
+        self.arena.deinit();
+    }
+    fn a(self: *FrameHarness) std.mem.Allocator {
+        return self.arena.allocator();
+    }
+    fn rctx(self: *FrameHarness) ui.RenderCtx {
+        return .{ .allocator = self.a() };
+    }
+};
+
+test "frameNode: header + search line + results measure one row each" {
+    var h = FrameHarness.init();
+    defer h.deinit();
     const filtered = [_]usize{ 0, 1, 2 };
-    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" } }, "a", &filtered, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" } }, "a", &filtered, 0, .{ .row = 24, .col = 80 });
+    const rc = h.rctx();
+    const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     // header(1) + search(1) + 3 results = 5
-    try std.testing.expectEqual(@as(usize, 5), r.rows);
-    const lines = std.mem.count(u8, r.text, "\r\n") + 1;
-    try std.testing.expectEqual(lines, r.rows);
+    try std.testing.expectEqual(@as(u16, 5), size.h);
 }
 
-test "renderSearch: placeholder styles through the hint token; no_color is escape-free" {
-    var buf: [4096]u8 = undefined;
+test "frameNode: empty query shows the hint-styled placeholder" {
+    var h = FrameHarness.init();
+    defer h.deinit();
     const filtered = [_]usize{ 0, 1 };
-
-    // Custom hint color flows into the placeholder
     const custom = Prompts.Theme{
         .prompts = .{ .hint = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 7, .g = 7, .b = 7 } } } } },
     };
-    const color_ctx = Prompts.ThemeContext{
+    const ctx = Prompts.ThemeContext{
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const r = try renderToBuf(&buf, color_ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "", &filtered, 0, .{ .row = 24, .col = 80 });
-    try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;7;7;7") != null);
+    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "", &filtered, 0, .{ .row = 24, .col = 80 });
 
-    // no_color renders the placeholder and cursor row without escapes
-    const plain_ctx = Prompts.ThemeContext{
-        .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
-    };
-    const p = try renderToBuf(&buf, plain_ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "", &filtered, 0, .{ .row = 24, .col = 80 });
-    try std.testing.expect(std.mem.indexOf(u8, p.text, "type to filter") != null);
-    try std.testing.expect(std.mem.indexOf(u8, p.text, "\x1b[") == null);
+    var s = try ui.Surface.init(std.testing.allocator, 79, 4);
+    defer s.deinit();
+    const rc = h.rctx();
+    try ui.render(&rc, &node, s.root());
+
+    // Row 1: "  Search: type to filter" — placeholder wears the hint token.
+    try std.testing.expectEqualStrings("t", s.cellText(s.cell(10, 1)));
+    try std.testing.expect(ui.styleEql(ctx.resolveRef(ctx.promptTokens().hint), s.cell(10, 1).style));
 }
 
-test "renderSearch: no matches renders a message row" {
-    var buf: [1024]u8 = undefined;
-    const empty = [_]usize{};
-    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "zzz", &empty, 0, .{ .row = 24, .col = 80 });
-    try std.testing.expectEqual(@as(usize, 3), r.rows); // header + search + "no matches"
-    try std.testing.expect(std.mem.indexOf(u8, r.text, "no matches") != null);
+test "frameNode: no matches renders the hint row and stops" {
+    var h = FrameHarness.init();
+    defer h.deinit();
+    const filtered = [_]usize{};
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "zz", &filtered, 0, .{ .row = 24, .col = 80 });
+    const rc = h.rctx();
+    const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
+    // header + query line + "no matches"
+    try std.testing.expectEqual(@as(u16, 3), size.h);
 }
