@@ -10,7 +10,7 @@ Cross-platform terminal primitives for interactive Zig CLIs: raw mode, event-dri
 - **Width & wrapping**: `displayWidth` handles CJK double-width, emoji (ZWJ sequences, flags, modifiers), combining marks, and skips ANSI sequences; `wrapToWidth` / `wrapForEach` / `wrapCount` wrap to a column budget (allocating, streaming, and counting variants)
 - **Grapheme editing**: `trailingGraphemeLen` and `graphemeCount` make backspace/cursor logic correct for user-perceived characters
 - **Portability**: libc-free on POSIX (`std.posix` directly — static musl builds work); on Windows, virtual-terminal mode makes the console speak the same ANSI dialect, so the escape parsing is fully shared
-- **Helpers**: `ansi.*` escape constants (`hide_cursor`, `clear_line`, …), `symbols.*` Unicode/ASCII indicator pairs, `isTty` / `isStdinTty` / `isStdoutTty`, `unicodeSupported(environ)`
+- **Helpers**: `symbols.*` Unicode/ASCII indicator pairs, `isTty` / `isStdinTty` / `isStdoutTty`, `unicodeSupported(environ)` — cursor and screen escapes live in the [`ui`](../ui/) engine, which owns all repainting
 
 ## Installation
 

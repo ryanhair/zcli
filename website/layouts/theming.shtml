@@ -175,7 +175,8 @@
           <p>Spinners animate in the <code>progress.spinner</code> token (accent by default); result symbols — <code>succeed</code>, <code>fail</code>, <code>warn</code>, <code>info</code> — render through the matching palette roles; progress bars color their fill and track via <code>bar_fill</code>/<code>bar_empty</code> on TTYs and stay plain when piped:</p>
           <div class="code">
             <div class="code-head"><span class="fname">progress</span><span class="lang">zig</span></div>
-<pre><span class="kw">var</span> spinner = zcli.progress.<span class="fn">spinner</span>(io, .{ .theme = context.theme });
+<pre><span class="cm">// context.progress() carries the app theme, so the spinner is themed.</span>
+<span class="kw">var</span> spinner = <span class="kw">try</span> context.<span class="fn">progress</span>().<span class="fn">spinner</span>(.{});
 spinner.<span class="fn">start</span>(<span class="str">"Deploying..."</span>);
 spinner.<span class="fn">succeed</span>(<span class="str">"Deployed"</span>);  <span class="cm">// ✔ in your palette's success style</span></pre>
           </div>
