@@ -96,7 +96,7 @@ fn runWizardOnce(
     // Step 5 — review, then choose what to do.
     while (true) {
         try review(arena, w, theme, path.parts, file_path, description, args_list.items, opts_list.items);
-        const action = try prompts.select(w, r, .{ .message = "What next?", .choices = &.{
+        const action = try prompts.select(w, r, .{ .message = "What next?", .theme = theme.*, .choices = &.{
             "Create it",
             "Add another argument",
             "Add another option",
@@ -266,7 +266,7 @@ fn gatherOneArg(
             step = .type;
         },
         .type => {
-            kind = selectArgKind(w, r) catch |e| {
+            kind = selectArgKind(w, r, theme) catch |e| {
                 if (e == error.Interrupted) {
                     step = .description;
                     continue;
@@ -320,10 +320,11 @@ fn gatherOneArg(
     };
 }
 
-fn selectArgKind(w: *std.Io.Writer, r: *std.Io.Reader) !ArgKind {
+fn selectArgKind(w: *std.Io.Writer, r: *std.Io.Reader, theme: *const ThemeContext) !ArgKind {
     const idx = try prompts.select(w, r, .{
         .message = "  Type:",
         .interrupt_keys = back_keys,
+        .theme = theme.*,
         .choices = &.{
             "Text          ([]const u8)",
             "Integer       (i64)",

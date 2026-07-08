@@ -57,6 +57,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         const priority_idx = try prompts.select(writer, reader, .{
             .message = "Priority:",
             .choices = &.{ "low", "medium", "high", "critical" },
+            .theme = context.theme,
         });
         priority = switch (priority_idx) {
             0 => .low,

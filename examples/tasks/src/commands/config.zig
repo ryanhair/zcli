@@ -59,6 +59,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const priority_idx = try prompts.select(writer, reader, .{
         .message = "Default priority for new tasks:",
         .choices = &priorities,
+        .theme = context.theme,
     });
 
     const points = try prompts.number(writer, reader, .{

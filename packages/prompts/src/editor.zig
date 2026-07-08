@@ -11,6 +11,8 @@ pub const EditorConfig = struct {
     prefix: []const u8 = "? ",
     editor_cmd: []const u8 = "vi",
     io: std.Io,
+    /// Theme + terminal capabilities for styling; zcli commands pass `context.theme`.
+    theme: prompts.theme.ThemeContext = prompts.default_style,
 };
 
 /// Launch the user's editor for multiline input. Returns owned string.
@@ -34,7 +36,9 @@ pub fn editor(writer: anytype, reader: anytype, allocator: std.mem.Allocator, co
         return try buf.toOwnedSlice(allocator);
     }
 
-    try writer.writeAll(" \x1b[2m(press Enter to open editor)\x1b[0m ");
+    var obuf: [64]u8 = undefined;
+    const open = prompts.openSeq(&obuf, config.theme, config.theme.promptTokens().hint);
+    try writer.print(" {s}(press Enter to open editor){s} ", .{ open, prompts.closeSeq(open) });
     prompts.flushWriter(writer);
 
     // Wait for Enter in raw mode

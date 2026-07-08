@@ -116,6 +116,16 @@ pub const ThemeContext = struct {
         return self.theme.palette.get(role);
     }
 
+    /// Resolve a style reference (role or literal) through the active palette
+    pub fn resolveRef(self: ThemeContext, ref: StyleRef) Style {
+        return ref.resolve(self.theme.palette);
+    }
+
+    /// The active theme's prompt component tokens
+    pub fn promptTokens(self: ThemeContext) PromptTheme {
+        return self.theme.prompts;
+    }
+
     /// The effective terminal capability (no_color when color is disabled)
     pub fn capability(self: ThemeContext) TerminalCapability {
         return self.caps.getCapability();

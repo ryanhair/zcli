@@ -30,6 +30,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const idx = try prompts.select(writer, reader, .{
         .message = "Close which sprint?",
         .choices = data.sprints,
+        .theme = context.theme,
     });
 
     const name = data.sprints[idx];

@@ -13,6 +13,8 @@ pub const SelectConfig = struct {
     /// Keys the prompt should not handle itself: pressing one aborts the prompt
     /// with `error.Interrupted`. Empty = handle/ignore all keys.
     interrupt_keys: []const terminal.Key = &.{},
+    /// Theme + terminal capabilities for styling; zcli commands pass `context.theme`.
+    theme: prompts.theme.ThemeContext = prompts.default_style,
 };
 
 /// Prompt to select one item from a list. Returns the chosen index, or
@@ -76,7 +78,9 @@ pub fn select(writer: anytype, reader: anytype, config: SelectConfig) !usize {
                     },
                     .enter => {
                         try lr.eraseRegion(writer, rows);
-                        try writer.print("  \x1b[36m{s}\x1b[0m\r\n", .{config.choices[cursor]});
+                        var obuf: [64]u8 = undefined;
+                        const open = prompts.openSeq(&obuf, config.theme, config.theme.promptTokens().selected);
+                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[cursor], prompts.closeSeq(open) });
                         return cursor;
                     },
                     .ctrl => |c| {
@@ -122,17 +126,19 @@ pub fn renderList(writer: anytype, config: SelectConfig, cursor: usize, ws: term
     const list_budget = @max((height -| 1) -| rows, 1);
     const win = lr.viewport(config.choices.len, cursor, list_budget, &counter, Counter.at);
 
+    const tokens = config.theme.promptTokens();
     for (win.start..win.end) |i| {
         var pbuf: [32]u8 = undefined;
-        const style: lr.ItemStyle = if (i == cursor)
-            .{
-                .line_open = "\x1b[36m",
+        var obuf: [64]u8 = undefined;
+        const style: lr.ItemStyle = if (i == cursor) blk: {
+            const open = prompts.openSeq(&obuf, config.theme, tokens.selected);
+            break :blk .{
+                .line_open = open,
                 .first_prefix = std.fmt.bufPrint(&pbuf, "  {s} ", .{cursor_sym}) catch "  ",
                 .prefix_w = prefix_w,
-                .line_close = "\x1b[0m",
-            }
-        else
-            .{ .first_prefix = "    ", .prefix_w = prefix_w };
+                .line_close = prompts.closeSeq(open),
+            };
+        } else .{ .first_prefix = "    ", .prefix_w = prefix_w };
         rows += try lr.renderItem(writer, &first_line, style, config.choices[i], avail);
     }
 
@@ -214,6 +220,28 @@ test "renderList: short options are one row each" {
     var buf: [1024]u8 = undefined;
     const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, .{ .row = 24, .col = 80 });
     try std.testing.expectEqual(@as(usize, 4), r.rows); // header + 3
+}
+
+test "renderList: selected row styles through the theme's selected token" {
+    var buf: [1024]u8 = undefined;
+    const custom = prompts.theme.Theme{
+        .palette = .{ .accent = .{ .foreground = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } } },
+    };
+    const ctx = prompts.theme.ThemeContext{
+        .theme = &custom,
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+    };
+    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = ctx }, 0, .{ .row = 24, .col = 80 });
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;1;2;3") != null);
+}
+
+test "renderList: no_color renders without any escapes" {
+    var buf: [1024]u8 = undefined;
+    const ctx = prompts.theme.ThemeContext{
+        .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
+    };
+    const r = try renderToBuf(&buf, .{ .message = "Pick", .choices = &.{ "a", "b" }, .theme = ctx }, 0, .{ .row = 24, .col = 80 });
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "\x1b[") == null);
 }
 
 test "renderList: wrapped option reports true physical row count" {

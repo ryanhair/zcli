@@ -154,6 +154,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         .message = "Select built-in plugins to include:",
         .choices = &choices,
         .defaults = &defaults,
+        .theme = context.theme,
     });
     defer allocator.free(selected);
 
