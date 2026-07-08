@@ -1,16 +1,14 @@
-//! Runnable showcase for the ui package (ADR-0013 steps 1–2): an animated
-//! "deploy" frame — spinner, task list, live progress gauges, right-aligned
-//! elapsed time — repainted in place through the frame-diff renderer.
+//! Runnable showcase for the ui package (ADR-0013): the CLI/TUI hybrid in
+//! one screen. An animated "deploy" frame — spinner, task list, live
+//! progress gauges — repaints in place at the bottom edge, while completed
+//! tasks are `emit`ted as static lines that flow into scrollback above it.
 //!
 //! Everything on screen is the four-node vocabulary: the frame is a bordered
 //! column of rows; right-alignment is a spacer; the gauges are one `custom`
-//! leaf stretched with `fill`. The whole tree is rebuilt into an arena every
-//! frame (a component is just a function), and the diff renderer emits only
-//! the cells that changed.
-//!
-//! This example hand-rolls what the App loop (build-order step 3) will own:
-//! reserving the live region's rows, parking the cursor at the top-left,
-//! double-buffering surfaces, and restoring the cursor on exit.
+//! leaf stretched with `fill`. The tree is rebuilt from the App's frame
+//! arena every frame (a component is just a function), and the diff renderer
+//! emits only the cells that changed. The `App` owns the live region's rows,
+//! the cursor, and the surfaces — the loop below is just build + emit.
 //!
 //! Run with: zig build run-demo   (from packages/ui, needs a real terminal)
 
@@ -145,58 +143,33 @@ pub fn main(init: std.process.Init) !void {
 
     var out_buf: [16384]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(io, &out_buf);
-    const w = &stdout.interface;
 
     const ws = terminal.getWindowSize(std.Io.File.stdout().handle) catch terminal.Winsize{ .row = 24, .col = 80 };
     const width: u16 = @min(64, ws.col);
 
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
+    var app = try ui.App.init(gpa, &stdout.interface, .{ .capability = .ansi_16 });
+    defer app.deinit();
 
-    // The frame's height is constant in this demo, so measure once upfront to
-    // size the region and the surfaces.
-    const rctx0 = ui.RenderCtx{ .allocator = arena.allocator() };
-    const probe = try buildFrame(arena.allocator(), 0, width);
-    const size = ui.measure(&rctx0, &probe, .{ .max_w = width, .max_h = ws.row -| 2 });
+    try app.emit("ui demo — finished tasks scroll up as static lines; the frame repaints in place", .{});
 
-    var prev = try ui.Surface.init(gpa, size.w, size.h);
-    defer prev.deinit();
-    var next = try ui.Surface.init(gpa, size.w, size.h);
-    defer next.deinit();
-
-    try w.writeAll("ui demo — the frame below repaints in place through the diff renderer\n\n");
-
-    // Reserve the live region's rows, then park the cursor at its top-left
-    // (the diff renderer's addressing contract).
-    try w.writeAll("\x1b[?25l");
-    var i: u16 = 0;
-    while (i < size.h) : (i += 1) try w.writeAll("\n");
-    try w.print("\x1b[{d}A", .{size.h});
-    try w.flush();
-
-    const renderer = ui.Renderer{ .capability = .ansi_16 };
-
-    var painted: ?*ui.Surface = null;
+    var announced = [_]bool{false} ** tasks.len;
     var frame: u32 = 0;
     while (frame <= total_frames) : (frame += 1) {
-        _ = arena.reset(.retain_capacity);
-        const rctx = ui.RenderCtx{ .allocator = arena.allocator() };
+        for (tasks, &announced) |task, *done| {
+            if (!done.* and task.fraction(frame) >= 1) {
+                done.* = true;
+                try app.emit("✓ {s} ({d:.1}s)", .{
+                    task.name,
+                    @as(f32, @floatFromInt((task.start + task.duration) * frame_ms)) / 1000.0,
+                });
+            }
+        }
 
-        next.clear();
-        const tree = try buildFrame(arena.allocator(), frame, width);
-        try ui.render(&rctx, &tree, next.root());
-
-        try renderer.paint(w, painted, &next);
-        try w.flush();
-
-        std.mem.swap(ui.Surface, &prev, &next);
-        painted = &prev;
-
+        try app.frame(try buildFrame(app.arena(), frame, width));
         io.sleep(.{ .nanoseconds = frame_ms * std.time.ns_per_ms }, .awake) catch break;
     }
 
-    // Leave the finished frame in scrollback: cursor below the region, shown.
-    try w.print("\x1b[{d}B", .{size.h -| 1});
-    try w.writeAll("\n\x1b[?25h");
-    try w.flush();
+    try app.emit("deploy finished in {d:.1}s", .{
+        @as(f32, @floatFromInt(total_frames * frame_ms)) / 1000.0,
+    });
 }

@@ -2,10 +2,12 @@
 
 The terminal-native layout engine behind zcli's CLI/TUI hybrid ([ADR-0013](../../docs/adr/0013-terminal-native-layout-engine.md)).
 
-> **Status: pre-stabilization.** Built through step 2 of the ADR's build order
-> (cell surface + diff renderer, node tree + layout). The `App` loop
-> (static/live frame model, resize) is next; until it lands this package is
-> not exported on the zcli umbrella and its API may change freely.
+> **Status: pre-stabilization.** Built through step 3 of the ADR's build
+> order (cell surface + diff renderer, node tree + layout, `App` static/live
+> loop with live-region resize). Still to come: the visible static-tail
+> repaint on resize (ADR tier 2) and porting `progress`/`prompts` onto the
+> engine. Until then this package is not exported on the zcli umbrella and
+> its API may change freely.
 
 ## The model
 
@@ -29,7 +31,20 @@ fn statusLine(a: std.mem.Allocator, s: *const State) !ui.Node {
         ui.text(.{ .dim = true }, s.elapsed),
     });
 }
+
+var app = try ui.App.init(gpa, writer, .{});
+defer app.deinit(); // cursor restored, final frame left in scrollback
+
+try app.emit("✓ built {s}", .{name});               // static → scrollback
+try app.frame(try statusLine(app.arena(), &state)); // live → diffed repaint
 ```
+
+`App` owns the frame arena (`app.arena()`, reset when `frame()` returns),
+the live region's rows, the cursor (hidden while a region is up, parked at
+the region's top-left between calls), and the double-buffered surfaces.
+`emit` is line-oriented and the only way to write while a region is up. The
+live region re-measures against the terminal on every frame, so it re-lays
+out on resize; its height clamps to the viewport and clips from the bottom.
 
 Builders copy child slices into the arena, so component functions compose
 without dangling-temporary hazards. Styles are `theme.Style` values on the

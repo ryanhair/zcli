@@ -22,6 +22,7 @@ pub const Style = surface.Style;
 pub const styleEql = surface.styleEql;
 
 pub const Renderer = @import("diff.zig").Renderer;
+pub const App = @import("app.zig").App;
 
 const node_mod = @import("node.zig");
 pub const Node = node_mod.Node;
