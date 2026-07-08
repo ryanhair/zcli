@@ -67,13 +67,15 @@ background/off-thread reflow exists in this design (see Considered Options):
 
 1. **Live region** — full re-layout at the new size. Unconditional.
 2. **Visible static tail** — repainted, reflowed at the new width. `emit` retains
-   recently emitted blocks in **source form** (node tree, not rendered cells) and
-   tracks the rows each occupies; a block leaves retention once it has fully scrolled
-   above the viewport, so retention stays bounded at about one screenful regardless of
-   session length. On resize, one synchronized write clears the viewport (`CSI 2 J` —
-   viewport only, never scrollback), re-emits the retained tail reflowed at the new
-   width, and repaints the live region below it. Synchronous and single-threaded: the
-   user immediately sees a fully consistent screen at the new width.
+   recently emitted blocks in **source form** (source text or node tree, not rendered
+   cells) and tracks the rows each occupies; a block leaves retention once it has
+   fully scrolled above the viewport, so retention stays bounded at about one
+   screenful regardless of session length. On resize, one synchronized write erases
+   from the tail's top edge down (cursor-up over the larger of the tail's old and new
+   footprints, then `CSI 0 J` — viewport only: never scrollback, and never content
+   above the tail), re-emits the retained tail so it rewraps at the new width, and
+   repaints the live region below it. Synchronous and single-threaded: the user
+   immediately sees a fully consistent screen at the new width.
 3. **Scrollback** — immutable, by terminal authority rather than by our choice. No
    escape sequence exists to rewrite a line that has scrolled off; content there keeps
    the wrap width it was emitted at. The old-wrap seam sits exactly at the top of the

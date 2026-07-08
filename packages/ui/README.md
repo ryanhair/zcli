@@ -3,11 +3,11 @@
 The terminal-native layout engine behind zcli's CLI/TUI hybrid ([ADR-0013](../../docs/adr/0013-terminal-native-layout-engine.md)).
 
 > **Status: pre-stabilization.** Built through step 3 of the ADR's build
-> order (cell surface + diff renderer, node tree + layout, `App` static/live
-> loop with live-region resize). Still to come: the visible static-tail
-> repaint on resize (ADR tier 2) and porting `progress`/`prompts` onto the
-> engine. Until then this package is not exported on the zcli umbrella and
-> its API may change freely.
+> order plus the full three-tier resize model (live region re-layout, and
+> the visible static tail retained in source form and reflowed on width
+> change). Still to come: porting `progress`/`prompts` onto the engine.
+> Until then this package is not exported on the zcli umbrella and its API
+> may change freely.
 
 ## The model
 

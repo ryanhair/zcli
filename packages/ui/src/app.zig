@@ -52,7 +52,17 @@ pub const App = struct {
         term_size: ?Size = null,
     };
 
+    /// A static block kept for the resize tail repaint (ADR-0013 resize
+    /// tier 2): the SOURCE text, not rendered cells, so it can rewrap at a
+    /// new width. `rows` is what it occupies at the width it was last
+    /// printed at (terminal character-wrapping, not word-wrapping).
+    const StaticBlock = struct {
+        text: []u8,
+        rows: u16,
+    };
+
     writer: *std.Io.Writer,
+    gpa: std.mem.Allocator,
     options: Options,
 
     frame_arena: std.heap.ArenaAllocator,
@@ -65,10 +75,18 @@ pub const App = struct {
     front_valid: bool = false,
     /// Whether we've taken over the terminal (cursor hidden) yet.
     started: bool = false,
+    /// Recently emitted static blocks that may still be visible above the
+    /// live region — the reflowable tail. Bounded to about a screenful by
+    /// `evictRetained`; oldest first.
+    retained: std.ArrayList(StaticBlock) = .empty,
+    /// Terminal width at the last frame/emit; a change triggers the tail
+    /// repaint.
+    last_width: ?u16 = null,
 
     pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
         return .{
             .writer = writer,
+            .gpa = gpa,
             .options = options,
             .frame_arena = std.heap.ArenaAllocator.init(gpa),
             .front = try Surface.init(gpa, 0, 0),
@@ -88,6 +106,8 @@ pub const App = struct {
             self.writer.writeAll("\x1b[?25h") catch {};
         }
         self.writer.flush() catch {};
+        for (self.retained.items) |b| self.gpa.free(b.text);
+        self.retained.deinit(self.gpa);
         self.front.deinit();
         self.back.deinit();
         self.frame_arena.deinit();
@@ -100,14 +120,29 @@ pub const App = struct {
     }
 
     /// Static output: printed above the live region, flows into scrollback,
-    /// never repainted. Line-oriented (see module docs).
+    /// never repainted in place. Line-oriented (see module docs). The block
+    /// is retained in source form while it may still be visible, so a width
+    /// resize can reflow the visible tail (ADR-0013 resize tier 2).
     pub fn emit(self: *App, comptime fmt: []const u8, args: anytype) !void {
+        const line_fmt = comptime if (std.mem.endsWith(u8, fmt, "\n")) fmt else fmt ++ "\n";
+        const ts = self.termSize();
+        self.last_width = ts.w;
+
+        const text = try std.fmt.allocPrint(self.gpa, line_fmt, args);
+        errdefer self.gpa.free(text);
+
         const had_live = self.live_rows > 0;
         try self.clearLive();
-        try self.writer.print(fmt, args);
-        if (comptime !std.mem.endsWith(u8, fmt, "\n")) try self.writer.writeByte('\n');
+        try self.writer.writeAll(text);
         if (had_live) try self.repaintLive();
         try self.writer.flush();
+
+        // Retain last: eviction may free the block we just printed.
+        try self.retained.append(self.gpa, .{
+            .text = text,
+            .rows = textRows(text, ts.w),
+        });
+        _ = self.evictRetained(ts.h -| self.live_rows);
     }
 
     /// Live output: measure, lay out, paint the diff. The tree (built from
@@ -116,6 +151,8 @@ pub const App = struct {
         defer _ = self.frame_arena.reset(.retain_capacity);
 
         const ts = self.termSize();
+        const width_changed = self.last_width != null and self.last_width.? != ts.w;
+        self.last_width = ts.w;
         // The viewport clamp: a live region taller than the terminal cannot
         // exist (ADR-0013 — scrollback corruption made impossible, not
         // handled). One row is held back so the region plus the static
@@ -145,7 +182,16 @@ pub const App = struct {
             try self.front.resize(size.w, size.h);
             self.front_valid = false;
         }
-        if (size.h != self.live_rows) {
+
+        // Resize tier 2 (ADR-0013): on a width change, the visible static
+        // tail is erased and reprinted reflowed at the new width, in the
+        // same synchronized write as the live repaint. The paint's own sync
+        // guard is suppressed — DECSET 2026 doesn't nest.
+        const tail_repaint = width_changed and self.live_rows > 0;
+        if (tail_repaint) {
+            if (self.options.sync) try self.writer.writeAll("\x1b[?2026h");
+            try self.repaintTail(ts, size.h);
+        } else if (size.h != self.live_rows) {
             // Region height changed (or first frame): re-reserve from
             // scratch. Erasing rather than incrementally growing keeps the
             // bookkeeping trivial; the sync guard makes it flicker-free.
@@ -159,11 +205,12 @@ pub const App = struct {
         const prev: ?*const Surface = if (self.front_valid) &self.front else null;
         const renderer = diff_mod.Renderer{
             .capability = self.options.capability,
-            .sync = self.options.sync,
+            .sync = self.options.sync and !tail_repaint,
         };
         try renderer.paint(self.writer, prev, &self.back);
         std.mem.swap(Surface, &self.front, &self.back);
         self.front_valid = true;
+        if (tail_repaint and self.options.sync) try self.writer.writeAll("\x1b[?2026l");
         try self.writer.flush();
     }
 
@@ -203,6 +250,87 @@ pub const App = struct {
         };
         try renderer.paint(self.writer, null, &self.front);
         self.front_valid = true;
+    }
+
+    /// The width-resize repaint (ADR-0013 resize tier 2). The cursor sits at
+    /// the live region's top; the retained tail sits directly above it. Move
+    /// up over the tail's footprint (bottom-anchored, relative — CUU clamps
+    /// at the viewport top exactly when the tail extends into scrollback),
+    /// erase from there down, reprint the tail so the terminal rewraps it at
+    /// the new width, and re-reserve the live region below.
+    ///
+    /// The erase covers the LARGER of the kept blocks' old footprint and
+    /// their new one: a tail that unwraps (width grew) must not leave its
+    /// old extra rows stale above the reprint. Content above that is never
+    /// touched; deeper scrollback keeps its old wrap width — that seam is
+    /// immutable by terminal authority.
+    fn repaintTail(self: *App, ts: Size, live_h: u16) !void {
+        // Old footprints, index-aligned with `retained` (frame arena — this
+        // runs inside frame(), which resets it on return).
+        const olds = try self.frame_arena.allocator().alloc(u16, self.retained.items.len);
+        for (self.retained.items, olds) |*b, *old| {
+            old.* = b.rows;
+            b.rows = textRows(b.text, ts.w);
+        }
+        const dropped = self.evictRetained(ts.h -| live_h);
+
+        var old_tail: u32 = 0;
+        for (olds[dropped..]) |r| old_tail += r;
+        var new_tail: u32 = 0;
+        for (self.retained.items) |b| new_tail += b.rows;
+
+        try self.writer.writeByte('\r');
+        const up = @max(old_tail, new_tail);
+        if (up > 0) try self.writer.print("\x1b[{d}A", .{up});
+        try self.writer.writeAll("\x1b[0J");
+        for (self.retained.items) |b| try self.writer.writeAll(b.text);
+        self.live_rows = 0;
+        self.front_valid = false;
+        try self.reserve(live_h);
+    }
+
+    /// Drop retained blocks (oldest first) whose rows no longer fit in
+    /// `budget` (the viewport rows above the live region) — they have
+    /// scrolled beyond the viewport, where nothing can repaint them anyway.
+    /// Returns how many were dropped.
+    fn evictRetained(self: *App, budget: u32) usize {
+        var total: u32 = 0;
+        var keep_from = self.retained.items.len;
+        var i = self.retained.items.len;
+        while (i > 0) {
+            i -= 1;
+            const rows = self.retained.items[i].rows;
+            if (total + rows > budget) break;
+            total += rows;
+            keep_from = i;
+        }
+        if (keep_from == 0) return 0;
+        for (self.retained.items[0..keep_from]) |b| self.gpa.free(b.text);
+        const kept = self.retained.items.len - keep_from;
+        std.mem.copyForwards(
+            StaticBlock,
+            self.retained.items[0..kept],
+            self.retained.items[keep_from..],
+        );
+        self.retained.shrinkRetainingCapacity(kept);
+        return keep_from;
+    }
+
+    /// Rows `text` occupies at `width` — the terminal's own soft-wrapping
+    /// (hard character wrap at the last column), NOT `terminal.wrap`'s word
+    /// wrap: emit prints raw text and the terminal breaks the lines, so the
+    /// bookkeeping must count the way the terminal counts. (Tabs would
+    /// desync this — emit output is expected tab-free.)
+    fn textRows(text: []const u8, width: u16) u16 {
+        const w: u32 = @max(width, 1);
+        const body = if (std.mem.endsWith(u8, text, "\n")) text[0 .. text.len - 1] else text;
+        var rows: u32 = 0;
+        var it = std.mem.splitScalar(u8, body, '\n');
+        while (it.next()) |line| {
+            const cols: u32 = @intCast(terminal.displayWidth(line));
+            rows += @max(1, (cols + w - 1) / w);
+        }
+        return @intCast(@min(rows, std.math.maxInt(u16)));
     }
 
     fn start(self: *App) !void {

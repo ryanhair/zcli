@@ -188,6 +188,99 @@ test "live region height clamps to the viewport" {
     try testing.expectEqual(@as(u16, 3), h.app.live_rows);
 }
 
+// ---------------------------------------------------------------------------
+// Resize tier 2: the visible static tail reflows on width change.
+// vterm is a NON-reflowing terminal (resize truncates/pads rows), so
+// everything correct on screen after these resizes is the App's doing.
+// ---------------------------------------------------------------------------
+
+test "width shrink rewraps the visible static tail above the live region" {
+    var h = try Harness.init(40, 10);
+    defer h.deinit();
+
+    // One static line that fits one 40-col row but needs two at 20.
+    try h.app.emit("static: the quick brown fox jumps!", .{}); // 34 cols
+    try h.app.frame(try h.statusFrame("running"));
+    h.replay();
+    try testing.expectEqual(@as(u21, '┌'), h.vt.getCell(0, 1).char);
+
+    h.app.options.term_size = .{ .w = 20, .h = 10 };
+    try h.vt.resize(20, 10);
+    try h.app.frame(try h.statusFrame("running"));
+    h.replay();
+
+    // The tail was erased and reprinted: the terminal rewrapped it onto
+    // rows 0-1 at the new width, and the live region re-reserved below it.
+    const line0 = try h.vt.getLine(testing.allocator, 0);
+    defer testing.allocator.free(line0);
+    try testing.expect(std.mem.startsWith(u8, line0, "static: the quick br"));
+    const line1 = try h.vt.getLine(testing.allocator, 1);
+    defer testing.allocator.free(line1);
+    try testing.expect(std.mem.startsWith(u8, line1, "own fox jumps!"));
+    try testing.expectEqual(@as(u21, '┌'), h.vt.getCell(0, 2).char);
+    try testing.expect(h.vt.containsText("running"));
+    try testing.expect(h.vt.cursorAt(0, 2));
+}
+
+test "width grow unwraps the tail without leaving stale rows" {
+    var h = try Harness.init(20, 10);
+    defer h.deinit();
+
+    try h.app.emit("static: the quick brown fox jumps!", .{}); // 2 rows at 20
+    try h.app.frame(try h.statusFrame("running"));
+    h.replay();
+    try testing.expectEqual(@as(u21, '┌'), h.vt.getCell(0, 2).char);
+
+    h.app.options.term_size = .{ .w = 40, .h = 10 };
+    try h.vt.resize(40, 10);
+    try h.app.frame(try h.statusFrame("running"));
+    h.replay();
+
+    // The whole line now fits row 0; the old second tail row must not
+    // survive as a stale duplicate — the live region moves up to row 1.
+    const line0 = try h.vt.getLine(testing.allocator, 0);
+    defer testing.allocator.free(line0);
+    try testing.expect(std.mem.startsWith(u8, line0, "static: the quick brown fox jumps!"));
+    try testing.expectEqual(@as(u21, '┌'), h.vt.getCell(0, 1).char);
+    try testing.expect(h.vt.containsText("running"));
+    try testing.expect(h.vt.cursorAt(0, 1));
+}
+
+test "retention stays bounded at about a screenful" {
+    var h = try Harness.init(30, 6);
+    defer h.deinit();
+
+    try h.app.frame(try ui.column(h.app.arena(), .{}, &.{ui.text(.{}, "live")}));
+    var i: u32 = 0;
+    while (i < 12) : (i += 1) {
+        try h.app.emit("log line {d}", .{i});
+    }
+    // Live region is 1 row on a 6-row terminal: at most 5 one-row blocks
+    // can still be visible above it.
+    try testing.expect(h.app.retained.items.len <= 5);
+    // (Leaks in evicted blocks would trip std.testing.allocator on deinit.)
+}
+
+test "height-only change does not disturb the static tail" {
+    var h = try Harness.init(30, 10);
+    defer h.deinit();
+
+    try h.app.emit("keep me", .{});
+    try h.app.frame(try h.statusFrame("running"));
+    h.replay();
+    const fed_before = h.fed;
+
+    h.app.options.term_size = .{ .w = 30, .h = 6 };
+    try h.app.frame(try h.statusFrame("running"));
+    h.replay();
+
+    // No width change: no tail repaint bytes, no full erase — the frame is
+    // an unchanged diff (zero paint bytes).
+    try testing.expect(std.mem.indexOf(u8, h.aw.written()[fed_before..], "keep me") == null);
+    try testing.expect(h.vt.containsText("keep me"));
+    try testing.expect(h.vt.containsText("running"));
+}
+
 test "deinit shows the cursor and parks below the live region" {
     var h = try Harness.init(30, 8);
     defer h.deinit();
