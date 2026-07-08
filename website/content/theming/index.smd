@@ -1,0 +1,7 @@
+---
+.title = "zcli — Theming",
+.description = "zcli theming: declare one theme and your whole CLI follows it — help output, styled text, prompts, spinners, and progress bars, with graceful degradation from true color down to NO_COLOR.",
+.date = @date("2026-07-07"),
+.author = "Ryan Hair",
+.layout = "theming.shtml",
+---

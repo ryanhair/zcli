@@ -52,6 +52,22 @@ bar.finish();
 
 See [examples/tasks](../../examples/tasks/) (`sync`, `import` commands) for these running in a real CLI.
 
+## Theming
+
+Spinners animate in the theme's `progress.spinner` token (accent by default),
+result symbols render through the palette's `success`/`err`/`warning`/`info`
+roles, and bars color their fill/track via `bar_fill`/`bar_empty` on TTYs
+(piped output stays plain). Pass a `ThemeContext` to follow an app theme and
+the detected capabilities (including `NO_COLOR` and true color):
+
+```zig
+// In a zcli command — the context already carries the app theme:
+var spinner = progress.spinner(io, .{ .theme = context.theme });
+```
+
+Standalone, the default (`ThemeContext.fallback`) is the default theme at
+ANSI-16. Token defaults are defined in [`theme`](../theme/)'s `ProgressTheme`.
+
 ## Dependencies
 
 - [`theme`](../theme/) — colors for the spinner and finish symbols

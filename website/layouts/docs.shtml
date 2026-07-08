@@ -275,12 +275,20 @@ spinner.<span class="fn">succeed</span>(<span class="str">"Synced successfully"<
 <span class="kw">for</span> (items, <span class="num">0</span>..) |item, i| { <span class="fn">process</span>(item); bar.<span class="fn">update</span>(i + <span class="num">1</span>, <span class="kw">null</span>); }</pre>
           </div>
           <h3>Theming</h3>
-          <p>The <code>theme</code> package maps semantic roles — <code>success</code>, <code>err</code>, <code>warning</code>, <code>command</code>, <code>path</code> — to true color, 256 color, 16 color, or no color, and respects <code>NO_COLOR</code>. Commands already have a themed context; standalone use is the same call.</p>
+          <p>Declare a theme once in your root source file and the whole CLI follows it — help output, styled text, prompts, spinners, and progress bars. Semantic roles — <code>success</code>, <code>err</code>, <code>warning</code>, <code>command</code>, <code>path</code> — resolve through the active palette at render time and degrade gracefully: true color, 256 color, 16 color, or no color (respects <code>NO_COLOR</code>).</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">main.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> zcli_theme: zcli.Theme = .{
+    .palette = .{ .accent = .{ .foreground = .{ .rgb = .{ .r = <span class="num">255</span>, .g = <span class="num">179</span>, .b = <span class="num">71</span> } } } },
+};</pre>
+          </div>
           <div class="code">
             <div class="code-head"><span class="fname">theme</span><span class="lang">zig</span></div>
-<pre><span class="kw">try</span> theme.<span class="fn">theme</span>(<span class="str">"Error"</span>).<span class="fn">red</span>().<span class="fn">bold</span>().<span class="fn">render</span>(writer, &context.theme);
-<span class="kw">try</span> theme.<span class="fn">theme</span>(<span class="str">"Synced"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &context.theme);</pre>
+<pre><span class="kw">const</span> styled = zcli.theme.styled;
+<span class="kw">try</span> <span class="fn">styled</span>(<span class="str">"Error"</span>).<span class="fn">red</span>().<span class="fn">bold</span>().<span class="fn">render</span>(writer, &context.theme);
+<span class="kw">try</span> <span class="fn">styled</span>(<span class="str">"Synced"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &context.theme);</pre>
           </div>
+          <p>The full role list, component tokens, and how each surface consumes the theme: see the <a href="$site.page('theming').link()">theming guide</a>.</p>
         </section>
 
         <!-- ============ CONFIG ============ -->

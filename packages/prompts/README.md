@@ -59,6 +59,27 @@ const sure = try prompts.confirm(writer, reader, .{ .message = "Create it?" });
 
 The other prompt types follow the same shape: `password` (masked input), `multiSelect` (space toggles, returns owned indices), `search` (type-to-filter a list), and `editor` (opens `$EDITOR` for multiline text).
 
+## Theming
+
+The list prompts (`select`, `multiSelect`, `search`) and `editor` style their
+cursor, selected row, check marker, and hint text through the theme's
+`prompts` component tokens. Pass a `ThemeContext` to follow an app theme and
+the detected terminal capabilities (including `NO_COLOR`):
+
+```zig
+// In a zcli command — the context already carries the app theme:
+const idx = try prompts.select(writer, reader, .{
+    .message = "Pick:",
+    .choices = &.{ "a", "b" },
+    .theme = context.theme,
+});
+```
+
+Standalone, the default (`prompts.default_style`) is the default theme at
+ANSI-16 — the package's historical fixed colors. Tokens and their defaults
+(`cursor`/`selected` → accent, `marker` → success, `hint` → muted) are defined
+in [`theme`](../theme/)'s `PromptTheme`.
+
 See [examples/tasks](../../examples/tasks/) for every prompt in a working CLI.
 
 ## Behavior notes

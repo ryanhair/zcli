@@ -1,13 +1,10 @@
 const std = @import("std");
 const md = @import("markdown");
 
-pub fn main() !void {
-    // Get stdout file
-    const stdout_file = std.fs.File.stdout();
-
-    // Create writer with a buffer
+pub fn main(init: std.process.Init) !void {
+    // Create a buffered stdout writer
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = stdout_file.writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
 
     // Create a formatter - configure once, use many times
     // Pass the address of the writer's interface
@@ -197,9 +194,9 @@ pub fn main() !void {
     try stdout_writer.interface.writeAll("  🔧 CUSTOM PALETTE EXAMPLE\n");
     try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
 
-    const custom_palette = md.SemanticPalette{
-        .success = .{ .r = 100, .g = 255, .b = 100 }, // Bright green
-        .err = .{ .r = 255, .g = 50, .b = 50 }, // Bright red
+    const custom_palette = md.Palette{
+        .success = .{ .foreground = .{ .rgb = .{ .r = 100, .g = 255, .b = 100 } }, .bold = true }, // Bright green
+        .err = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 50, .b = 50 } }, .bold = true }, // Bright red
     };
 
     var custom_fmt = md.formatterWithPalette(&stdout_writer.interface, custom_palette);

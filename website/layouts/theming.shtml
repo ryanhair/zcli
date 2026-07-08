@@ -1,0 +1,228 @@
+<extend template="base.shtml">
+
+<head id="head">
+<style>
+  .layout { display: grid; grid-template-columns: 240px 1fr; gap: 56px; padding: 56px 0 96px; align-items: start; }
+  .layout > * { min-width: 0; }   /* let code blocks scroll instead of widening the page */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .toc { position: sticky; top: 84px; font-family: var(--mono); font-size: 13px; }
+  .toc .toc-label { font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); margin: 20px 0 10px; }
+  .toc .toc-label:first-child { margin-top: 0; }
+  .toc a { display: block; color: var(--muted); padding: 5px 0 5px 12px; border-left: 1px solid var(--border); transition: all .15s; }
+  .toc a:hover, .toc a.active { color: var(--accent); border-left-color: var(--accent); }
+
+  .doc { max-width: 760px; }
+  .doc > section { padding: 0 0 56px; border: none; }
+  .doc h1 { font-size: 40px; margin-bottom: 12px; }
+  .doc .sub { color: var(--muted); font-size: 18px; margin-bottom: 8px; }
+  .doc h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 12px; }
+  .doc h3 { font-size: 18px; margin: 30px 0 10px; color: var(--fg); }
+  .doc p { color: var(--muted); margin-bottom: 14px; }
+  .doc ul { color: var(--muted); margin: 0 0 16px 20px; }
+  .doc li { padding: 4px 0; }
+  .doc code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
+  .doc .code code { background: none; border: none; padding: 0; color: inherit; }
+  .doc .code { margin: 16px 0 22px; }
+  .callout { background: rgba(247,164,29,0.06); border: 1px solid rgba(247,164,29,0.25); border-radius: 9px; padding: 14px 18px; margin: 18px 0; color: var(--muted); font-size: 14.5px; }
+  .callout b { color: var(--accent); font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; display: block; margin-bottom: 4px; }
+
+  .ptable { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 8px 0 8px; }
+  .ptable th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding: 0 14px 12px; border-bottom: 1px solid var(--border); font-weight: 500; }
+  .ptable td { padding: 13px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .ptable td.name { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  .ptable td.desc { color: var(--muted); }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 8px; vertical-align: -1px; }
+
+  .nextlinks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .nextlinks a { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; transition: border-color .15s; }
+  .nextlinks a:hover { border-color: var(--accent); }
+  .nextlinks .k { display: block; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .nextlinks .t { display: block; color: var(--fg); font-size: 15px; margin-top: 4px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .toc { display: none; } .nextlinks { grid-template-columns: 1fr; } }
+</style>
+</head>
+
+<main id="main">
+  <div class="wrap">
+    <div class="layout">
+      <nav class="toc" aria-label="On this page">
+        <p class="toc-label">Theming</p>
+        <a href="#intro">Overview</a>
+        <a href="#declare">Declaring a theme</a>
+        <a href="#palette">The palette</a>
+        <a href="#tokens">Component tokens</a>
+        <p class="toc-label">What it styles</p>
+        <a href="#help">Help output</a>
+        <a href="#output">Command output</a>
+        <a href="#prompts">Prompts</a>
+        <a href="#progress">Progress</a>
+        <p class="toc-label">Details</p>
+        <a href="#capabilities">Terminal capabilities</a>
+        <a href="#standalone">Standalone use</a>
+      </nav>
+
+      <article class="doc">
+        <section id="intro">
+          <h1>Theming</h1>
+          <p class="sub">Declare a theme once and your whole CLI follows it — help output, styled text, interactive prompts, spinners, and progress bars. Style by <em>meaning</em>, not by color, and let the terminal decide how much color it can show.</p>
+          <p>zcli's theme system is built on three layers:</p>
+          <ul>
+            <li><b>A palette</b> maps 13 semantic roles — <code>success</code>, <code>err</code>, <code>command</code>, <code>accent</code>, … — to complete styles (color <em>and</em> attributes like bold or dim).</li>
+            <li><b>Component tokens</b> style specific UI elements — the prompt cursor, the spinner, the progress-bar fill. Each token defaults to a palette role, so one palette change restyles everything; any token can also be overridden individually.</li>
+            <li><b>Capability detection</b> renders every style at the terminal's level: true color, 256 color, 16 color, or plain text — and always respects <code>NO_COLOR</code>.</li>
+          </ul>
+        </section>
+
+        <section id="declare">
+          <h2>Declaring a theme</h2>
+          <p>Add a public <code>zcli_theme</code> declaration to your root source file — the same pattern as Zig's <code>std_options</code>. Every field has a default, so you only write what you change:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/main.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> zcli = <span class="fn">@import</span>(<span class="str">"zcli"</span>);
+
+<span class="kw">pub const</span> zcli_theme: zcli.Theme = .{
+    .palette = .{
+        <span class="cm">// brand your CLI: one color, applied everywhere accent is referenced</span>
+        .accent = .{ .foreground = .{ .rgb = .{ .r = <span class="num">255</span>, .g = <span class="num">179</span>, .b = <span class="num">71</span> } } },
+        .command = .{ .foreground = .{ .rgb = .{ .r = <span class="num">255</span>, .g = <span class="num">179</span>, .b = <span class="num">71</span> } } },
+    },
+};</pre>
+          </div>
+          <p>That's the whole integration. The generated registry picks the declaration up at compile time and hands it to every command as part of <code>context.theme</code>; the help plugin compiles its output with your palette; prompts and progress read their tokens from it. No theme declared means the default theme — everything works out of the box.</p>
+          <div class="callout"><b>Compile-time</b> The theme is a comptime constant, so themed help text is still generated at compile time — four capability variants baked into the binary, selected at runtime. Custom palettes cost nothing at runtime.</div>
+        </section>
+
+        <section id="palette">
+          <h2>The palette</h2>
+          <p>Each role is a full <code>Style</code> — foreground, background, and attributes. Roles are the vocabulary the rest of the system speaks:</p>
+          <div class="table-scroll">
+          <table class="ptable">
+            <thead><tr><th>Role</th><th>Meant for</th><th>Default</th></tr></thead>
+            <tbody>
+              <tr><td class="name">success</td><td class="desc">operations that succeeded</td><td class="desc"><span class="swatch" style="background:rgb(76,217,100)"></span>green, bold</td></tr>
+              <tr><td class="name">err</td><td class="desc">failures (<code>error</code> is reserved in Zig)</td><td class="desc"><span class="swatch" style="background:rgb(255,105,97)"></span>coral, bold</td></tr>
+              <tr><td class="name">warning</td><td class="desc">caution, deprecation</td><td class="desc"><span class="swatch" style="background:rgb(255,206,84)"></span>amber, bold</td></tr>
+              <tr><td class="name">info</td><td class="desc">general information</td><td class="desc"><span class="swatch" style="background:rgb(116,169,250)"></span>blue, bold</td></tr>
+              <tr><td class="name">muted</td><td class="desc">less important text, hints</td><td class="desc"><span class="swatch" style="background:rgb(156,163,175)"></span>gray, dim</td></tr>
+              <tr><td class="name">command</td><td class="desc">command names in help</td><td class="desc"><span class="swatch" style="background:rgb(64,224,208)"></span>turquoise</td></tr>
+              <tr><td class="name">flag</td><td class="desc">flags and options</td><td class="desc"><span class="swatch" style="background:rgb(218,112,214)"></span>orchid</td></tr>
+              <tr><td class="name">path</td><td class="desc">file paths</td><td class="desc"><span class="swatch" style="background:rgb(100,221,221)"></span>light cyan</td></tr>
+              <tr><td class="name">value</td><td class="desc">argument names, user values</td><td class="desc"><span class="swatch" style="background:rgb(124,252,0)"></span>lawn green</td></tr>
+              <tr><td class="name">code</td><td class="desc">inline code</td><td class="desc"><span class="swatch" style="background:rgb(168,136,248)"></span>purple</td></tr>
+              <tr><td class="name">header</td><td class="desc">section headers</td><td class="desc">bold (no color — readable on light &amp; dark)</td></tr>
+              <tr><td class="name">link</td><td class="desc">URLs</td><td class="desc"><span class="swatch" style="background:rgb(135,206,250)"></span>sky blue, italic</td></tr>
+              <tr><td class="name">accent</td><td class="desc">your brand color — the role component tokens reference by default</td><td class="desc"><span class="swatch" style="background:rgb(0,255,255)"></span>cyan</td></tr>
+            </tbody>
+          </table>
+          </div>
+        </section>
+
+        <section id="tokens">
+          <h2>Component tokens</h2>
+          <p>Tokens style specific UI elements. Each is a <code>StyleRef</code>: either a reference to a palette role (the default) or a literal style. Change the palette and every referencing token follows; pin a token when one element should differ:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/main.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> zcli_theme: zcli.Theme = .{
+    .prompts = .{
+        <span class="cm">// defaults: cursor/selected → accent, marker → success, hint → muted</span>
+        .selected = .{ .role = .info },                 <span class="cm">// point at a different role…</span>
+        .cursor = .{ .style = .{ .foreground = .red } }, <span class="cm">// …or pin a literal style</span>
+    },
+    .progress = .{
+        <span class="cm">// defaults: spinner/bar_fill → accent, bar_empty → muted</span>
+    },
+};</pre>
+          </div>
+        </section>
+
+        <section id="help">
+          <h2>Help output</h2>
+          <p>The help plugin writes semantic tags — <code>&lt;command&gt;</code>, <code>&lt;flag&gt;</code>, <code>&lt;value&gt;</code>, <code>&lt;header&gt;</code> — and your palette decides how they look. There is nothing to wire: declare <code>zcli_theme</code> and <code>--help</code> renders in your colors, compiled at build time for all four capability levels.</p>
+        </section>
+
+        <section id="output">
+          <h2>Command output</h2>
+          <p>Style your own output with the fluent API. Semantic methods tag content with a role; the role resolves through the active palette when rendered:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/sync.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> styled = zcli.theme.styled;
+
+<span class="cm">// semantic — follows the app palette</span>
+<span class="kw">try</span> <span class="fn">styled</span>(<span class="str">"Synced"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &context.theme);
+<span class="kw">try</span> <span class="fn">styled</span>(<span class="str">"deploy.zig"</span>).<span class="fn">path</span>().<span class="fn">render</span>(writer, &context.theme);
+
+<span class="cm">// direct — explicit settings override the role's style</span>
+<span class="kw">try</span> <span class="fn">styled</span>(<span class="str">"Careful"</span>).<span class="fn">warning</span>().<span class="fn">underline</span>().<span class="fn">render</span>(writer, &context.theme);
+<span class="kw">try</span> <span class="fn">styled</span>(<span class="str">"raw"</span>).<span class="fn">rgb</span>(<span class="num">255</span>, <span class="num">100</span>, <span class="num">50</span>).<span class="fn">bold</span>().<span class="fn">render</span>(writer, &context.theme);</pre>
+          </div>
+        </section>
+
+        <section id="prompts">
+          <h2>Prompts</h2>
+          <p>Interactive prompts style their cursor, selected row, multi-select marker, and hint text through <code>theme.prompts</code> tokens. Pass <code>context.theme</code> and they inherit your theme <em>and</em> the detected capabilities — including <code>NO_COLOR</code>:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">prompts</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> idx = <span class="kw">try</span> zcli.prompts.<span class="fn">select</span>(writer, reader, .{
+    .message = <span class="str">"Pick a region:"</span>,
+    .choices = &.{ <span class="str">"us-east"</span>, <span class="str">"eu-west"</span>, <span class="str">"ap-south"</span> },
+    .theme = context.theme,
+});</pre>
+          </div>
+        </section>
+
+        <section id="progress">
+          <h2>Progress</h2>
+          <p>Spinners animate in the <code>progress.spinner</code> token (accent by default); result symbols — <code>succeed</code>, <code>fail</code>, <code>warn</code>, <code>info</code> — render through the matching palette roles; progress bars color their fill and track via <code>bar_fill</code>/<code>bar_empty</code> on TTYs and stay plain when piped:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">progress</span><span class="lang">zig</span></div>
+<pre><span class="kw">var</span> spinner = zcli.progress.<span class="fn">spinner</span>(io, .{ .theme = context.theme });
+spinner.<span class="fn">start</span>(<span class="str">"Deploying..."</span>);
+spinner.<span class="fn">succeed</span>(<span class="str">"Deployed"</span>);  <span class="cm">// ✔ in your palette's success style</span></pre>
+          </div>
+        </section>
+
+        <section id="capabilities">
+          <h2>Terminal capabilities</h2>
+          <p>Every style is resolved against what the terminal can actually display, detected once per run from the environment (<code>COLORTERM</code>, <code>TERM</code>, platform signals) and whether output is a TTY:</p>
+          <ul>
+            <li><b>true color</b> — exact RGB, as designed</li>
+            <li><b>256 color</b> — nearest palette index</li>
+            <li><b>16 color</b> — nearest ANSI color, bright variants preserved</li>
+            <li><b>no color</b> — plain text; set by <code>NO_COLOR</code>, a dumb terminal, or piped output</li>
+          </ul>
+          <p>The same themed call sites produce all four — no branching in your code.</p>
+        </section>
+
+        <section id="standalone">
+          <h2>Standalone use</h2>
+          <p>Like every zcli package, <code>theme</code>, <code>prompts</code>, and <code>progress</code> work without the framework. Outside zcli there's no <code>context.theme</code>, so build a <code>ThemeContext</code> yourself — or let the default kick in (default theme at ANSI-16):</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">standalone</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> theme = <span class="fn">@import</span>(<span class="str">"theme"</span>);
+
+<span class="kw">const</span> ctx = theme.ThemeContext{
+    .caps = theme.Capabilities.<span class="fn">init</span>(env, io),  <span class="cm">// detect from the environment</span>
+};
+<span class="kw">try</span> theme.<span class="fn">styled</span>(<span class="str">"done"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &ctx);</pre>
+          </div>
+          <div class="nextlinks">
+            <a href="$site.page('docs').link().suffix('#progress')"><span class="k">→ docs</span><span class="t">Progress &amp; theming in the guide</span></a>
+            <a href="https://github.com/ryanhair/zcli/tree/main/packages/theme" target="_blank" rel="noopener"><span class="k">→ source</span><span class="t">The theme package</span></a>
+          </div>
+        </section>
+      </article>
+    </div>
+  </div>
+
+<script>
+  var links = document.querySelectorAll('.toc a');
+  var secs = Array.prototype.map.call(links, function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var y = window.scrollY + 120, cur = 0;
+    secs.forEach(function (s, i) { if (s && s.offsetTop <= y) cur = i; });
+    links.forEach(function (a, i) { a.classList.toggle('active', i === cur); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+</script>
+
+</main>
