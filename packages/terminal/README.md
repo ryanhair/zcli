@@ -31,17 +31,15 @@ exe.root_module.addImport("terminal", terminal_dep.module("terminal"));
 
 ## Quick start
 
-An interactive read loop that survives resizes (this is how prompts's prompts are built):
+An interactive read loop that survives resizes (this is how prompts's prompts are built — rendering goes through the `ui` engine, which owns the cursor):
 
 ```zig
 const terminal = @import("terminal");
 
 const stdin = std.Io.File.stdin().handle;
 const raw = try terminal.enableRawMode(stdin);
-try writer.writeAll(terminal.ansi.hide_cursor);
 var watcher = terminal.ResizeWatcher.init();
 defer {
-    writer.writeAll(terminal.ansi.show_cursor) catch {};
     watcher.deinit();
     raw.disable();
 }

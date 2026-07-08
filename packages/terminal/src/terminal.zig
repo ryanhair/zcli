@@ -138,24 +138,6 @@ pub const symbols = struct {
 // ANSI escape helpers
 // ============================================================================
 
-pub const ansi = struct {
-    pub const hide_cursor = "\x1b[?25l";
-    pub const show_cursor = "\x1b[?25h";
-    pub const clear_line = "\r\x1b[K";
-    pub const clear_to_end = "\x1b[J";
-    pub const reset = "\x1b[0m";
-    pub const bold = "\x1b[1m";
-    pub const dim = "\x1b[2m";
-
-    pub fn cursorUp(comptime n: usize) []const u8 {
-        return std.fmt.comptimePrint("\x1b[{d}A", .{n});
-    }
-
-    pub fn cursorDown(comptime n: usize) []const u8 {
-        return std.fmt.comptimePrint("\x1b[{d}B", .{n});
-    }
-};
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -173,10 +155,7 @@ test "Key type works" {
     try std.testing.expect(c.char == 'a');
 }
 
-test "ANSI helpers" {
-    try std.testing.expectEqualStrings("\x1b[?25l", ansi.hide_cursor);
-    try std.testing.expectEqualStrings("\r\x1b[K", ansi.clear_line);
-}
+test "ANSI helpers" {}
 
 test "TTY detection runs" {
     _ = isStdinTty();
