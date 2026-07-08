@@ -19,6 +19,12 @@ pub const Progress = @import("progress");
 /// command, prefer `context.prompts()`, which returns a pre-wired instance.
 pub const Prompts = @import("prompts");
 
+/// The terminal-native layout engine (ADR-0013): a static stream that flows
+/// into scrollback plus a diffed live region at the bottom edge — the
+/// CLI/TUI hybrid. In a command, prefer `context.ui()`, which returns a
+/// pre-wired `ui.App`. progress and prompts render on this engine.
+pub const ui = @import("ui");
+
 /// A complete CLI theme; apps declare `pub const zcli_theme: zcli.Theme` in
 /// their root source file to customize how the CLI looks everywhere.
 pub const Theme = theme.Theme;
@@ -594,6 +600,23 @@ test "Context creation" {
     _ = context.stdout();
     _ = context.stderr();
     _ = context.stdin();
+}
+
+test "context.ui() returns an App wired to the detected environment" {
+    const allocator = testing.allocator;
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+
+    const test_environ = std.process.Environ.Map.init(allocator);
+    var context = Context.init(allocator, std.testing.io, &stdio, &test_environ);
+    defer context.deinit();
+
+    var app = try context.ui();
+    defer app.deinit();
+    // Tests never run on a TTY: the App must come back non-interactive, so
+    // frame() is a no-op and emit() prints plain lines.
+    try testing.expect(!app.options.interactive);
+    try testing.expect(app.options.capability == context.theme.capability());
 }
 
 test "Context is one generic: base and TestContext instantiations unify" {

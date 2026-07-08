@@ -40,6 +40,7 @@
         .theme = .{ .path = "../theme" },
         .progress = .{ .path = "../progress" },
         .prompts = .{ .path = "../prompts" },
+        .ui = .{ .path = "../ui" },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding

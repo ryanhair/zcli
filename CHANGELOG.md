@@ -4,6 +4,19 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
+## Unreleased
+
+The terminal-native layout engine (ADR-0013) and the migration of the interactive packages onto it.
+
+### Added
+- **`zcli.ui`** — a terminal-native layout engine for CLI/TUI hybrid apps: a static stream flowing into scrollback plus a diffed live region (`app.emit()` / `app.frame(node)`). Immediate-mode node trees (box/text/spacer/custom, `fit`/`len`/`fill` sizing), viewport clamping, resize re-layout including reflow of the visible static tail, real-cursor placement for line editors, and plain-line degradation when piped. `context.ui()` returns a pre-wired `ui.App`.
+- **`progress.MultiBar`** — stacked labeled bars for parallel work with thread-safe updates.
+- vterm supports DECAWM (private mode 7).
+
+### Changed (breaking)
+- **progress**: rebuilt as an instance API (ADR-0014, mirroring Prompts): `@import("progress")` is the `Progress` type bundling writer/`io`/allocator/theme, with `.spinner()`/`.progressBar()`/`.multiBar()` constructors — in commands, `context.progress()`. Indicator types are no longer writer-generic and gained idempotent `deinit()`; `setText` → `setMessage`, `stopAndPersist` → `persist`; `SpinnerConfig.hide_cursor` removed (the engine owns the cursor); piped bars print one finish summary line instead of a line per update.
+- **prompts**: the `text` Preview callback returns one line of plain text from the prompt's frame arena (was: writes raw styled bytes) and is styled with the theme's hint token; `number`'s range errors render inside the prompt frame instead of scrolling past it. Rendering is engine-based throughout — navigation repaints only changed cells, long input wraps correctly, and answered lines persist as static output.
+
 ## v0.19.0 — 2026-07-05
 
 Hardening and tooling release. Requires Zig 0.16.0.

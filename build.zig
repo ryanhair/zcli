@@ -19,8 +19,6 @@ pub fn build(b: *std.Build) void {
     const prompts_dep = b.dependency("prompts", .{ .target = target, .optimize = optimize });
     const progress_dep = b.dependency("progress", .{ .target = target, .optimize = optimize });
     const theme_dep = b.dependency("theme", .{ .target = target, .optimize = optimize });
-    // Not exposed on the public umbrella yet: the layout engine (ADR-0013) is
-    // pre-stabilization; it joins the surface once the node/App API lands.
     const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
 
     // The public module surface of the zcli package — what consumers (external
@@ -33,6 +31,9 @@ pub fn build(b: *std.Build) void {
     expose(b, "terminal", terminal_dep.module("terminal"));
     expose(b, "progress", progress_dep.module("progress"));
     expose(b, "prompts", prompts_dep.module("prompts"));
+    // The terminal-native layout engine (ADR-0013) — the substrate progress
+    // and prompts render on, exposed for hybrid CLI/TUI apps.
+    expose(b, "ui", ui_dep.module("ui"));
     // The unit-testing tier for scaffolded projects (see `zcli.addCommandTests`):
     // in-process command execution plus vterm-rendered assertions. Lazy — costs
     // nothing unless a consumer imports it.
