@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -23,12 +22,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var data = parsed.value;
 
     const name = if (args.name) |n| n else blk: {
-        const p: prompts.Prompts = .{
-            .writer = context.stdout(),
-            .reader = context.stdin(),
-            .allocator = allocator,
-            .theme = context.theme,
-        };
+        const p = context.prompts();
         break :blk try p.text(.{
             .message = "Sprint name:",
             .default = try std.fmt.allocPrint(allocator, "Sprint {d}", .{data.sprints.len + 1}),

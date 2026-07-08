@@ -6,7 +6,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const prompts = zcli.prompts;
+const Prompts = zcli.Prompts;
 const themed = zcli.theme.styled;
 const ThemeContext = zcli.theme.ThemeContext;
 
@@ -27,7 +27,7 @@ const normalizeName = scaffold.spec.normalizeName;
 // Wizard prompts pass `.interrupt_keys = back_keys` so Escape aborts with
 // `error.Interrupted`; the gather state machines catch that to rewind a step.
 // "Go back" is the wizard's interpretation — prompts just reports the key.
-const back_keys = &[_]prompts.terminal.Key{.escape};
+const back_keys = &[_]Prompts.terminal.Key{.escape};
 
 // ---------------------------------------------------------------------------
 // Interactive wizard
@@ -64,12 +64,8 @@ fn runWizardOnce(
 ) !WizardResult {
     const w = context.stdout();
     const io = context.io;
-    const p: prompts.Prompts = .{
-        .writer = w,
-        .reader = context.stdin(),
-        .allocator = arena,
-        .theme = theme.*,
-    };
+    var p = context.prompts();
+    p.allocator = arena; // wizard state lives in its own arena
 
     try heading(w, theme, "Add a command");
     try hint(w, theme, "src/commands/ \u{00b7} Ctrl+C to cancel any time");
@@ -149,7 +145,7 @@ const PathPreview = struct {
 
 fn resolveCommandPath(
     arena: std.mem.Allocator,
-    p: prompts.Prompts,
+    p: Prompts,
     io: std.Io,
     seed: ?[]const u8,
 ) !PathResult {
@@ -198,7 +194,7 @@ const ArgKind = enum { text, integer, decimal, custom };
 
 fn gatherArgs(
     arena: std.mem.Allocator,
-    p: prompts.Prompts,
+    p: Prompts,
     list: *std.ArrayList(ArgSpec),
 ) !void {
     const w = p.writer;
@@ -237,7 +233,7 @@ const ArgStep = enum { name, description, type, multiple, required };
 /// user backed out of the item (Escape at the name prompt).
 fn gatherOneArg(
     arena: std.mem.Allocator,
-    p: prompts.Prompts,
+    p: Prompts,
     existing_names: []const []const u8,
     seen_optional: bool,
 ) !?ArgSpec {
@@ -325,7 +321,7 @@ fn gatherOneArg(
     };
 }
 
-fn selectArgKind(p: prompts.Prompts) !ArgKind {
+fn selectArgKind(p: Prompts) !ArgKind {
     const idx = try p.select(.{
         .message = "  Type:",
         .interrupt_keys = back_keys,
@@ -352,7 +348,7 @@ const OptKind = enum { flag, text, integer, decimal, choice, custom };
 
 fn gatherOptions(
     arena: std.mem.Allocator,
-    p: prompts.Prompts,
+    p: Prompts,
     list: *std.ArrayList(OptSpec),
 ) !void {
     const w = p.writer;
@@ -376,7 +372,7 @@ const OptStep = enum { name, description, type, multiple, nullable, default, sho
 /// of the item (Escape at the name prompt).
 fn gatherOneOption(
     arena: std.mem.Allocator,
-    p: prompts.Prompts,
+    p: Prompts,
     existing_names: []const []const u8,
     existing_shorts: []const u8,
 ) !?OptSpec {
@@ -517,7 +513,7 @@ fn gatherOneOption(
 /// surfaces as `error.Interrupted` for the caller to handle.
 fn promptOptionDefault(
     arena: std.mem.Allocator,
-    p: prompts.Prompts,
+    p: Prompts,
     kind: OptKind,
     choices: []const []const u8,
 ) ![]const u8 {
@@ -531,7 +527,7 @@ fn promptOptionDefault(
     };
 }
 
-fn selectOptKind(p: prompts.Prompts) !OptKind {
+fn selectOptKind(p: Prompts) !OptKind {
     const idx = try p.select(.{
         .message = "  Type:",
         .interrupt_keys = back_keys,
@@ -641,7 +637,7 @@ pub fn finish(
 
 fn readFieldName(
     arena: std.mem.Allocator,
-    p: prompts.Prompts,
+    p: Prompts,
     message: []const u8,
     allow_dash: bool,
     existing: []const []const u8,
@@ -682,7 +678,7 @@ fn readFieldName(
     }
 }
 
-fn readZigType(p: prompts.Prompts) ![]const u8 {
+fn readZigType(p: Prompts) ![]const u8 {
     const w = p.writer;
     const theme = &p.theme;
     while (true) {
@@ -695,7 +691,7 @@ fn readZigType(p: prompts.Prompts) ![]const u8 {
     }
 }
 
-fn readShort(p: prompts.Prompts, used: []const u8) !u8 {
+fn readShort(p: Prompts, used: []const u8) !u8 {
     const w = p.writer;
     const theme = &p.theme;
     while (true) {
@@ -720,7 +716,7 @@ fn readShort(p: prompts.Prompts, used: []const u8) !u8 {
     }
 }
 
-fn readFloat(p: prompts.Prompts, message: []const u8, default: f64) !f64 {
+fn readFloat(p: Prompts, message: []const u8, default: f64) !f64 {
     const w = p.writer;
     const theme = &p.theme;
     while (true) {
@@ -733,7 +729,7 @@ fn readFloat(p: prompts.Prompts, message: []const u8, default: f64) !f64 {
     }
 }
 
-fn readChoices(arena: std.mem.Allocator, p: prompts.Prompts) ![]const []const u8 {
+fn readChoices(arena: std.mem.Allocator, p: Prompts) ![]const []const u8 {
     const w = p.writer;
     const theme = &p.theme;
     while (true) {

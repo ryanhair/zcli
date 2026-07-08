@@ -1,4 +1,4 @@
-//! Cross-platform rendering end-to-end tests for the list prompts.
+//! Cross-platform rendering end-to-end tests for the list Prompts.
 //!
 //! These drive the real render + erase code paths and replay their byte output
 //! through the in-repo `vterm` terminal emulator, then assert on the resulting
@@ -13,10 +13,10 @@
 //! leftover character from the wider/taller previous frame makes them differ.
 
 const std = @import("std");
-const prompts = @import("prompts");
+const Prompts = @import("prompts");
 const vterm = @import("vterm");
 
-const Winsize = prompts.terminal.Winsize;
+const Winsize = Prompts.terminal.Winsize;
 const testing = std.testing;
 
 /// Replay `bytes` through a fresh `cols`x`rows` emulator and return the visible
@@ -32,25 +32,25 @@ fn screenOf(alloc: std.mem.Allocator, cols: u16, rows: u16, bytes: []const u8) !
 // multi_select
 // ---------------------------------------------------------------------------
 
-fn multiFrame(buf: []u8, config: prompts.MultiSelectConfig, selected: []const bool, cursor: usize, ws: Winsize) ![]const u8 {
+fn multiFrame(buf: []u8, config: Prompts.MultiSelectConfig, selected: []const bool, cursor: usize, ws: Winsize) ![]const u8 {
     var w: std.Io.Writer = .fixed(buf);
-    _ = try prompts.multi_select_prompt.renderList(&w, prompts.default_style, config, selected, cursor, ws);
+    _ = try Prompts.multi_select_prompt.renderList(&w, Prompts.default_style, config, selected, cursor, ws);
     return w.buffered();
 }
 
-fn multiNavScreen(alloc: std.mem.Allocator, config: prompts.MultiSelectConfig, selected: []const bool, from: usize, to: usize, ws: Winsize) ![]u8 {
+fn multiNavScreen(alloc: std.mem.Allocator, config: Prompts.MultiSelectConfig, selected: []const bool, from: usize, to: usize, ws: Winsize) ![]u8 {
     var buf: [16384]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    const r0 = try prompts.multi_select_prompt.renderList(&w, prompts.default_style, config, selected, from, ws);
-    try prompts.list_render.eraseRegion(&w, r0);
-    _ = try prompts.multi_select_prompt.renderList(&w, prompts.default_style, config, selected, to, ws);
+    const r0 = try Prompts.multi_select_prompt.renderList(&w, Prompts.default_style, config, selected, from, ws);
+    try Prompts.list_render.eraseRegion(&w, r0);
+    _ = try Prompts.multi_select_prompt.renderList(&w, Prompts.default_style, config, selected, to, ws);
     return screenOf(alloc, ws.col, ws.row, w.buffered());
 }
 
 test "emulator: multi_select navigation leaves no debris when options wrap" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 30 };
-    const config = prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{
+    const config = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{
         "short",
         "a genuinely long option label that certainly wraps across several rows",
         "third choice here",
@@ -72,7 +72,7 @@ test "emulator: multi_select navigation leaves no debris when options wrap" {
 test "emulator: multi_select wraps wide CJK options without debris" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 22 };
-    const config = prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{
+    const config = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{
         "ascii option",
         "你好世界这是一个需要换行显示的很长选项",
         "另一个选项",
@@ -96,7 +96,7 @@ test "emulator: multi_select wraps wide CJK options without debris" {
 test "emulator: select navigation leaves no debris when options wrap" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 24 };
-    const config = prompts.SelectConfig{ .message = "Choose", .choices = &.{
+    const config = Prompts.SelectConfig{ .message = "Choose", .choices = &.{
         "one",
         "a long choice that will wrap onto multiple lines at this width",
         "two",
@@ -104,15 +104,15 @@ test "emulator: select navigation leaves no debris when options wrap" {
 
     var cbuf: [16384]u8 = undefined;
     var cw: std.Io.Writer = .fixed(&cbuf);
-    _ = try prompts.select_prompt.renderList(&cw, prompts.default_style, config, 1, ws);
+    _ = try Prompts.select_prompt.renderList(&cw, Prompts.default_style, config, 1, ws);
     const clean = try screenOf(alloc, ws.col, ws.row, cw.buffered());
     defer alloc.free(clean);
 
     var nbuf: [16384]u8 = undefined;
     var nw: std.Io.Writer = .fixed(&nbuf);
-    const r0 = try prompts.select_prompt.renderList(&nw, prompts.default_style, config, 0, ws);
-    try prompts.list_render.eraseRegion(&nw, r0);
-    _ = try prompts.select_prompt.renderList(&nw, prompts.default_style, config, 1, ws);
+    const r0 = try Prompts.select_prompt.renderList(&nw, Prompts.default_style, config, 0, ws);
+    try Prompts.list_render.eraseRegion(&nw, r0);
+    _ = try Prompts.select_prompt.renderList(&nw, Prompts.default_style, config, 1, ws);
     const nav = try screenOf(alloc, ws.col, ws.row, nw.buffered());
     defer alloc.free(nav);
 
@@ -123,7 +123,7 @@ test "emulator: select hang-indents wrapped continuation lines on screen" {
     const alloc = testing.allocator;
     // Short message keeps the header on one row so option rows are predictable.
     const ws = Winsize{ .row = 24, .col = 20 };
-    const config = prompts.SelectConfig{ .message = "Pick", .choices = &.{
+    const config = Prompts.SelectConfig{ .message = "Pick", .choices = &.{
         "alpha bravo charlie delta echo",
     } };
 
@@ -131,7 +131,7 @@ test "emulator: select hang-indents wrapped continuation lines on screen" {
     defer term.deinit();
     var buf: [16384]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    _ = try prompts.select_prompt.renderList(&w, prompts.default_style, config, 0, ws);
+    _ = try Prompts.select_prompt.renderList(&w, Prompts.default_style, config, 0, ws);
     term.write(w.buffered());
 
     // Row 0: "? Pick" header. Row 1: first option line (prefix "  > "/"  ❯ ").
@@ -161,11 +161,11 @@ test "emulator: backspace-erase clears a wide char's both cells" {
     // Type "ab" then 你 (2 cells), then backspace 你 away and type "c" — the
     // screen must read exactly "abc" with no half-glyph debris in the cells the
     // wide char occupied. A byte- or single-column erase fails this.
-    try w.writeAll(try prompts.appendCodepoint(alloc, &buf, 'a'));
-    try w.writeAll(try prompts.appendCodepoint(alloc, &buf, 'b'));
-    try w.writeAll(try prompts.appendCodepoint(alloc, &buf, '你'));
-    try prompts.eraseTrailingGrapheme(&w, &buf);
-    try w.writeAll(try prompts.appendCodepoint(alloc, &buf, 'c'));
+    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, 'a'));
+    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, 'b'));
+    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, '你'));
+    try Prompts.eraseTrailingGrapheme(&w, &buf);
+    try w.writeAll(try Prompts.appendCodepoint(alloc, &buf, 'c'));
 
     try testing.expectEqualStrings("abc", buf.items);
 
@@ -187,7 +187,7 @@ test "emulator: backspace-erase clears a wide char's both cells" {
 test "emulator: search navigation leaves no debris when results wrap" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 28 };
-    const config = prompts.SearchConfig{ .message = "Find", .choices = &.{
+    const config = Prompts.SearchConfig{ .message = "Find", .choices = &.{
         "apple",
         "a very long result entry that will wrap across more than one row",
         "cherry",
@@ -197,15 +197,15 @@ test "emulator: search navigation leaves no debris when results wrap" {
 
     var cbuf: [16384]u8 = undefined;
     var cw: std.Io.Writer = .fixed(&cbuf);
-    _ = try prompts.search_prompt.renderSearch(&cw, prompts.default_style, config, query, &filtered, 1, ws);
+    _ = try Prompts.search_prompt.renderSearch(&cw, Prompts.default_style, config, query, &filtered, 1, ws);
     const clean = try screenOf(alloc, ws.col, ws.row, cw.buffered());
     defer alloc.free(clean);
 
     var nbuf: [16384]u8 = undefined;
     var nw: std.Io.Writer = .fixed(&nbuf);
-    const r0 = try prompts.search_prompt.renderSearch(&nw, prompts.default_style, config, query, &filtered, 0, ws);
-    try prompts.list_render.eraseRegion(&nw, r0);
-    _ = try prompts.search_prompt.renderSearch(&nw, prompts.default_style, config, query, &filtered, 1, ws);
+    const r0 = try Prompts.search_prompt.renderSearch(&nw, Prompts.default_style, config, query, &filtered, 0, ws);
+    try Prompts.list_render.eraseRegion(&nw, r0);
+    _ = try Prompts.search_prompt.renderSearch(&nw, Prompts.default_style, config, query, &filtered, 1, ws);
     const nav = try screenOf(alloc, ws.col, ws.row, nw.buffered());
     defer alloc.free(nav);
 

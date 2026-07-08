@@ -1,7 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -33,14 +32,8 @@ const priorities = [_][]const u8{ "low", "medium", "high", "critical" };
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;
     const writer = context.stdout();
-    const reader = context.stdin();
 
-    const p: prompts.Prompts = .{
-        .writer = writer,
-        .reader = reader,
-        .allocator = allocator,
-        .theme = context.theme,
-    };
+    const p = context.prompts();
 
     // Load the current config so prompts can show existing values as defaults.
     // Keep `parsed` alive until after we write, so its strings stay valid.

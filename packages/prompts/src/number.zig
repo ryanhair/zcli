@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const NumberConfig = struct {
     message: []const u8,
@@ -17,7 +17,7 @@ pub const NumberConfig = struct {
 
 /// Prompt for numeric input. Returns the entered number, or `error.Interrupted`
 /// if the user presses one of `config.interrupt_keys`.
-pub fn number(p: prompts.Prompts, config: NumberConfig) !i64 {
+pub fn number(p: Prompts, config: NumberConfig) !i64 {
     const writer = p.writer;
     const reader = p.reader;
     const is_tty = terminal.isStdinTty();
@@ -64,25 +64,25 @@ fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
 }
 
 fn readNumberTty(writer: anytype, reader: anytype, config: NumberConfig) !i64 {
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         return config.default orelse return error.InvalidNumber;
     };
     defer {
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     var buf: [32]u8 = undefined;
     var len: usize = 0;
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         const k = if (config.interrupt_keys.len > 0)
             try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
         else
             try terminal.readKey(reader);
-        if (prompts.isInterrupt(k, config.interrupt_keys)) {
+        if (Prompts.isInterrupt(k, config.interrupt_keys)) {
             try writer.writeAll("\r\n");
             return error.Interrupted;
         }

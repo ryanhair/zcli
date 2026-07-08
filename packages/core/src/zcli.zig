@@ -9,7 +9,11 @@ const option_utils = @import("options/utils.zig");
 pub const theme = @import("theme");
 pub const markdown = @import("markdown");
 pub const progress = @import("progress");
-pub const prompts = @import("prompts");
+
+/// Interactive prompts. The import IS the type: build one instance carrying
+/// writer/reader/allocator/theme and every prompt is a method on it. In a
+/// command, prefer `context.prompts()`, which returns a pre-wired instance.
+pub const Prompts = @import("prompts");
 
 /// A complete CLI theme; apps declare `pub const zcli_theme: zcli.Theme` in
 /// their root source file to customize how the CLI looks everywhere.

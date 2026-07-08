@@ -1,7 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const prompts = zcli.prompts;
 
 /// A built-in plugin the user can opt into during `init`. `tag` is the enum
 /// tag passed to `zcli.builtin(.<tag>, .{})` in the generated build.zig.
@@ -150,12 +149,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         choices[i] = choice.label;
         defaults[i] = choice.default;
     }
-    const p: prompts.Prompts = .{
-        .writer = stdout,
-        .reader = context.stdin(),
-        .allocator = allocator,
-        .theme = context.theme,
-    };
+    const p = context.prompts();
     const selected = try p.multiSelect(.{
         .message = "Select built-in plugins to include:",
         .choices = &choices,

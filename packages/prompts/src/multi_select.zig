@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 const lr = @import("list_render.zig");
 
 pub const MultiSelectConfig = struct {
@@ -14,7 +14,7 @@ pub const MultiSelectConfig = struct {
 };
 
 /// Prompt to select multiple items. Returns owned slice of selected indices.
-pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
+pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
@@ -49,7 +49,7 @@ pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
     }
 
     // TTY: interactive multi-select
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         return collectDefaults(allocator, config);
     };
@@ -59,7 +59,7 @@ pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
         writer.writeAll(terminal.ansi.show_cursor) catch {};
         watcher.deinit();
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     var selected = try allocator.alloc(bool, config.choices.len);
@@ -77,7 +77,7 @@ pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
     var rows = try renderList(writer, p.theme, config, selected, cursor, lr.windowSize());
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         switch (try terminal.readEvent(reader, stdin, &watcher)) {
             .resize => {
                 try lr.eraseRegion(writer, rows);
@@ -106,7 +106,7 @@ pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
                     // Show summary
                     var first = true;
                     var obuf: [64]u8 = undefined;
-                    const open = prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
+                    const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
                     try writer.print("  {s}", .{open});
                     for (config.choices, 0..) |choice, i| {
                         if (selected[i]) {
@@ -115,7 +115,7 @@ pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
                             first = false;
                         }
                     }
-                    try writer.print("{s}\r\n", .{prompts.closeSeq(open)});
+                    try writer.print("{s}\r\n", .{Prompts.closeSeq(open)});
 
                     // Collect selected indices
                     var result = std.ArrayList(usize).empty;
@@ -149,7 +149,7 @@ pub fn multiSelect(p: prompts.Prompts, config: MultiSelectConfig) ![]usize {
 /// Public for the cross-platform emulator render tests.
 pub fn renderList(
     writer: anytype,
-    ctx: prompts.theme.ThemeContext,
+    ctx: Prompts.ThemeContext,
     config: MultiSelectConfig,
     selected: []const bool,
     cursor: usize,
@@ -199,12 +199,12 @@ pub fn renderList(
         var cbuf: [64]u8 = undefined;
         var mbuf: [64]u8 = undefined;
         const style: lr.ItemStyle = if (i == cursor) blk: {
-            const cur_open = prompts.openSeq(&cbuf, ctx, tokens.cursor);
-            const mark_open = prompts.openSeq(&mbuf, ctx, tokens.marker);
+            const cur_open = Prompts.openSeq(&cbuf, ctx, tokens.cursor);
+            const mark_open = Prompts.openSeq(&mbuf, ctx, tokens.marker);
             break :blk .{
                 .first_prefix = std.fmt.bufPrint(&pbuf, "  {s}{s}{s} {s}{s}{s} ", .{
-                    cur_open,  cursor_sym, prompts.closeSeq(cur_open),
-                    mark_open, marker,     prompts.closeSeq(mark_open),
+                    cur_open,  cursor_sym, Prompts.closeSeq(cur_open),
+                    mark_open, marker,     Prompts.closeSeq(mark_open),
                 }) catch "  ",
                 .prefix_w = prefix_w,
             };
@@ -303,7 +303,7 @@ test "non-TTY: no defaults returns empty" {
 // hang-indent under the option text.
 // ---------------------------------------------------------------------------
 
-fn renderToBuf(buf: []u8, ctx: prompts.theme.ThemeContext, config: MultiSelectConfig, selected: []const bool, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
+fn renderToBuf(buf: []u8, ctx: Prompts.ThemeContext, config: MultiSelectConfig, selected: []const bool, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
     var w: std.Io.Writer = .fixed(buf);
     const rows = try renderList(&w, ctx, config, selected, cursor, ws);
     return .{ .rows = rows, .text = w.buffered() };
@@ -311,7 +311,7 @@ fn renderToBuf(buf: []u8, ctx: prompts.theme.ThemeContext, config: MultiSelectCo
 
 test "renderList: short options are one row each" {
     var buf: [1024]u8 = undefined;
-    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, .{ .row = 24, .col = 80 });
+    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, .{ .row = 24, .col = 80 });
     // 1 header row + 3 option rows.
     try std.testing.expectEqual(@as(usize, 4), r.rows);
 }
@@ -320,7 +320,7 @@ test "renderList: a wrapping option counts as multiple physical rows" {
     var buf: [4096]u8 = undefined;
     const long = "this is a fairly long option label that will certainly wrap";
     // Narrow terminal forces the long option onto several rows.
-    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, .{ .row = 24, .col = 24 });
+    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, .{ .row = 24, .col = 24 });
     // header(1) + short(1) + long(>=3 at width 24) — the key point is it is not 3.
     try std.testing.expect(r.rows > 3);
     // Row count must equal the number of CRLF-separated lines actually emitted.
@@ -330,13 +330,13 @@ test "renderList: a wrapping option counts as multiple physical rows" {
 
 test "renderList: cursor row styles through the cursor and marker tokens" {
     var buf: [1024]u8 = undefined;
-    const custom = prompts.theme.Theme{
+    const custom = Prompts.Theme{
         .prompts = .{
             .cursor = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 9, .g = 8, .b = 7 } } } },
             .marker = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 4, .g = 5, .b = 6 } } } },
         },
     };
-    const ctx = prompts.theme.ThemeContext{
+    const ctx = Prompts.ThemeContext{
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
@@ -347,7 +347,7 @@ test "renderList: cursor row styles through the cursor and marker tokens" {
 
 test "renderList: no_color renders without any escapes" {
     var buf: [1024]u8 = undefined;
-    const ctx = prompts.theme.ThemeContext{
+    const ctx = Prompts.ThemeContext{
         .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
     };
     const r = try renderToBuf(&buf, ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
@@ -357,7 +357,7 @@ test "renderList: no_color renders without any escapes" {
 test "renderList: continuation lines hang-indent under the option text" {
     var buf: [4096]u8 = undefined;
     // unicode=false so the prefix is "    [ ] " = 8 columns.
-    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, .{ .row = 24, .col = 20 });
+    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, .{ .row = 24, .col = 20 });
     _ = r;
     // The continuation line is preceded by 8 spaces (prefix width), aligning it
     // under the label text rather than under the bullet.

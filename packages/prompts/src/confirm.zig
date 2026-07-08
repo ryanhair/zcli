@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const ConfirmConfig = struct {
     message: []const u8,
@@ -15,7 +15,7 @@ pub const ConfirmConfig = struct {
 
 /// Prompt for yes/no confirmation. Returns the answer, or `error.Interrupted`
 /// if the user presses one of `config.interrupt_keys`.
-pub fn confirm(p: prompts.Prompts, config: ConfirmConfig) !bool {
+pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     const writer = p.writer;
     const reader = p.reader;
     const is_tty = terminal.isStdinTty();
@@ -39,20 +39,20 @@ pub fn confirm(p: prompts.Prompts, config: ConfirmConfig) !bool {
     }
 
     // TTY: single keypress
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return config.default;
     defer {
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         const k = if (config.interrupt_keys.len > 0)
             try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
         else
             try terminal.readKey(reader);
-        if (prompts.isInterrupt(k, config.interrupt_keys)) {
+        if (Prompts.isInterrupt(k, config.interrupt_keys)) {
             try writer.writeAll("\r\n");
             return error.Interrupted;
         }

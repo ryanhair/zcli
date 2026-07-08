@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 const lr = @import("list_render.zig");
 
 pub const SelectConfig = struct {
@@ -17,7 +17,7 @@ pub const SelectConfig = struct {
 
 /// Prompt to select one item from a list. Returns the chosen index, or
 /// `error.Interrupted` if the user presses one of `config.interrupt_keys`.
-pub fn select(p: prompts.Prompts, config: SelectConfig) !usize {
+pub fn select(p: Prompts, config: SelectConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
     if (config.choices.len == 0) return error.NoChoices;
@@ -38,7 +38,7 @@ pub fn select(p: prompts.Prompts, config: SelectConfig) !usize {
     }
 
     // TTY: interactive selection
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
     try writer.writeAll(terminal.ansi.hide_cursor);
     var watcher = terminal.ResizeWatcher.init();
@@ -46,7 +46,7 @@ pub fn select(p: prompts.Prompts, config: SelectConfig) !usize {
         writer.writeAll(terminal.ansi.show_cursor) catch {};
         watcher.deinit();
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     const stdin = std.Io.File.stdin().handle;
@@ -54,14 +54,14 @@ pub fn select(p: prompts.Prompts, config: SelectConfig) !usize {
     var rows = try renderList(writer, p.theme, config, cursor, lr.windowSize());
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         switch (try terminal.readEvent(reader, stdin, &watcher)) {
             .resize => {
                 try lr.eraseRegion(writer, rows);
                 rows = try renderList(writer, p.theme, config, cursor, lr.windowSize());
             },
             .key => |k| {
-                if (prompts.isInterrupt(k, config.interrupt_keys)) {
+                if (Prompts.isInterrupt(k, config.interrupt_keys)) {
                     try lr.eraseRegion(writer, rows);
                     return error.Interrupted;
                 }
@@ -79,8 +79,8 @@ pub fn select(p: prompts.Prompts, config: SelectConfig) !usize {
                     .enter => {
                         try lr.eraseRegion(writer, rows);
                         var obuf: [64]u8 = undefined;
-                        const open = prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
-                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[cursor], prompts.closeSeq(open) });
+                        const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
+                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[cursor], Prompts.closeSeq(open) });
                         return cursor;
                     },
                     .ctrl => |c| {
@@ -99,7 +99,7 @@ pub fn select(p: prompts.Prompts, config: SelectConfig) !usize {
 /// Render the header + viewport-limited choice list, returning physical rows
 /// emitted. Width is an explicit parameter so this is deterministic/testable
 /// (used by the cross-platform emulator render tests).
-pub fn renderList(writer: anytype, ctx: prompts.theme.ThemeContext, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !usize {
+pub fn renderList(writer: anytype, ctx: Prompts.ThemeContext, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !usize {
     const width = @max(@as(usize, ws.col), 1);
     const usable = @max(width -| 1, 1);
     const height = @max(@as(usize, ws.row), 2);
@@ -131,12 +131,12 @@ pub fn renderList(writer: anytype, ctx: prompts.theme.ThemeContext, config: Sele
         var pbuf: [32]u8 = undefined;
         var obuf: [64]u8 = undefined;
         const style: lr.ItemStyle = if (i == cursor) blk: {
-            const open = prompts.openSeq(&obuf, ctx, tokens.selected);
+            const open = Prompts.openSeq(&obuf, ctx, tokens.selected);
             break :blk .{
                 .line_open = open,
                 .first_prefix = std.fmt.bufPrint(&pbuf, "  {s} ", .{cursor_sym}) catch "  ",
                 .prefix_w = prefix_w,
-                .line_close = prompts.closeSeq(open),
+                .line_close = Prompts.closeSeq(open),
             };
         } else .{ .first_prefix = "    ", .prefix_w = prefix_w };
         rows += try lr.renderItem(writer, &first_line, style, config.choices[i], avail);
@@ -210,7 +210,7 @@ test "non-TTY: shows numbered choices" {
     try std.testing.expect(std.mem.indexOf(u8, written, "second") != null);
 }
 
-fn renderToBuf(buf: []u8, ctx: prompts.theme.ThemeContext, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
+fn renderToBuf(buf: []u8, ctx: Prompts.ThemeContext, config: SelectConfig, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
     var w: std.Io.Writer = .fixed(buf);
     const rows = try renderList(&w, ctx, config, cursor, ws);
     return .{ .rows = rows, .text = w.buffered() };
@@ -218,16 +218,16 @@ fn renderToBuf(buf: []u8, ctx: prompts.theme.ThemeContext, config: SelectConfig,
 
 test "renderList: short options are one row each" {
     var buf: [1024]u8 = undefined;
-    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, .{ .row = 24, .col = 80 });
+    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, .{ .row = 24, .col = 80 });
     try std.testing.expectEqual(@as(usize, 4), r.rows); // header + 3
 }
 
 test "renderList: selected row styles through the theme's selected token" {
     var buf: [1024]u8 = undefined;
-    const custom = prompts.theme.Theme{
+    const custom = Prompts.Theme{
         .palette = .{ .accent = .{ .foreground = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } } },
     };
-    const ctx = prompts.theme.ThemeContext{
+    const ctx = Prompts.ThemeContext{
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
@@ -237,7 +237,7 @@ test "renderList: selected row styles through the theme's selected token" {
 
 test "renderList: no_color renders without any escapes" {
     var buf: [1024]u8 = undefined;
-    const ctx = prompts.theme.ThemeContext{
+    const ctx = Prompts.ThemeContext{
         .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
     };
     const r = try renderToBuf(&buf, ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, .{ .row = 24, .col = 80 });
@@ -247,7 +247,7 @@ test "renderList: no_color renders without any escapes" {
 test "renderList: wrapped option reports true physical row count" {
     var buf: [4096]u8 = undefined;
     const long = "this is a long option label that will certainly wrap at a narrow width";
-    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, .{ .row = 24, .col = 24 });
+    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, .{ .row = 24, .col = 24 });
     try std.testing.expect(r.rows > 3);
     const lines = std.mem.count(u8, r.text, "\r\n") + 1;
     try std.testing.expectEqual(lines, r.rows);

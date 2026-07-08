@@ -31,10 +31,11 @@ exe.root_module.addImport("prompts", prompts_dep.module("prompts"));
 ## Quick start
 
 ```zig
-const prompts = @import("prompts");
+// The import IS the type: one instance carries the environment,
+// and every prompt is a method on it.
+const Prompts = @import("prompts");
 
-// Build one instance carrying the environment; every prompt is a method on it.
-const p: prompts.Prompts = .{
+const p: Prompts = .{
     .writer = writer,
     .reader = reader,
     .allocator = allocator,
@@ -75,20 +76,20 @@ app theme and the detected terminal capabilities (including `NO_COLOR`) — ever
 prompt made through that instance is themed:
 
 ```zig
-// In a zcli command — the context already carries the app theme:
-const p: prompts.Prompts = .{
-    .writer = context.stdout(),
-    .reader = context.stdin(),
-    .allocator = context.allocator,
-    .theme = context.theme,
-};
+// In a zcli command, context.prompts() returns an instance already carrying
+// the app theme:
+const p = context.prompts();
 const idx = try p.select(.{
     .message = "Pick:",
     .choices = &.{ "a", "b" },
 });
 ```
 
-Left unset, the default (`prompts.default_style`) is the default theme at
+Standalone, build a style context from the re-exported theming types
+(`Prompts.Theme`, `Prompts.ThemeContext`, `Prompts.Capabilities`) and set
+`.theme` on the instance.
+
+Left unset, the default (`Prompts.default_style`) is the default theme at
 ANSI-16 — the package's historical fixed colors. Tokens and their defaults
 (`cursor`/`selected` → accent, `marker` → success, `hint` → muted) are defined
 in [`theme`](../theme/)'s `PromptTheme`.

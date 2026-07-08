@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const EditorConfig = struct {
     message: []const u8,
@@ -14,7 +14,7 @@ pub const EditorConfig = struct {
 };
 
 /// Launch the user's editor for multiline input. Returns owned string.
-pub fn editor(p: prompts.Prompts, config: EditorConfig) ![]u8 {
+pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
@@ -38,9 +38,9 @@ pub fn editor(p: prompts.Prompts, config: EditorConfig) ![]u8 {
     }
 
     var obuf: [64]u8 = undefined;
-    const open = prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().hint);
-    try writer.print(" {s}(press Enter to open editor){s} ", .{ open, prompts.closeSeq(open) });
-    prompts.flushWriter(writer);
+    const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().hint);
+    try writer.print(" {s}(press Enter to open editor){s} ", .{ open, Prompts.closeSeq(open) });
+    Prompts.flushWriter(writer);
 
     // Wait for Enter in raw mode
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
@@ -63,10 +63,10 @@ pub fn editor(p: prompts.Prompts, config: EditorConfig) ![]u8 {
         }
     }
     raw.disable();
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
 
     try writer.writeAll("\r\n");
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
 
     // Create temp file and write default content
     const tmp_name = try std.fmt.allocPrint(allocator, "/tmp/prompts_edit{s}", .{config.extension});

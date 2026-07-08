@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 const lr = @import("list_render.zig");
 
 pub const SearchConfig = struct {
@@ -13,7 +13,7 @@ pub const SearchConfig = struct {
 };
 
 /// Prompt with search filtering. Returns the index of the selected item in the original choices array.
-pub fn search(p: prompts.Prompts, config: SearchConfig) !usize {
+pub fn search(p: Prompts, config: SearchConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
@@ -35,7 +35,7 @@ pub fn search(p: prompts.Prompts, config: SearchConfig) !usize {
     }
 
     // TTY: interactive search
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
     try writer.writeAll(terminal.ansi.hide_cursor);
     var watcher = terminal.ResizeWatcher.init();
@@ -43,7 +43,7 @@ pub fn search(p: prompts.Prompts, config: SearchConfig) !usize {
         writer.writeAll(terminal.ansi.show_cursor) catch {};
         watcher.deinit();
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     var query = std.ArrayList(u8).empty;
@@ -56,7 +56,7 @@ pub fn search(p: prompts.Prompts, config: SearchConfig) !usize {
     var rows = try renderSearch(writer, p.theme, config, query.items, filtered, cursor, lr.windowSize());
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         switch (try terminal.readEvent(reader, stdin, &watcher)) {
             .resize => {
                 try lr.eraseRegion(writer, rows);
@@ -78,14 +78,14 @@ pub fn search(p: prompts.Prompts, config: SearchConfig) !usize {
                         const selected_idx = filtered[cursor];
                         try lr.eraseRegion(writer, rows);
                         var obuf: [64]u8 = undefined;
-                        const open = prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
-                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[selected_idx], prompts.closeSeq(open) });
+                        const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
+                        try writer.print("  {s}{s}{s}\r\n", .{ open, config.choices[selected_idx], Prompts.closeSeq(open) });
                         return selected_idx;
                     }
                 },
                 .backspace => {
                     if (query.items.len > 0) {
-                        prompts.popTrailingGrapheme(&query);
+                        Prompts.popTrailingGrapheme(&query);
                         allocator.free(filtered);
                         filtered = try buildFiltered(allocator, config.choices, query.items);
                         cursor = 0;
@@ -100,7 +100,7 @@ pub fn search(p: prompts.Prompts, config: SearchConfig) !usize {
                     }
                 },
                 .char => |c| {
-                    _ = try prompts.appendCodepoint(allocator, &query, c);
+                    _ = try Prompts.appendCodepoint(allocator, &query, c);
                     allocator.free(filtered);
                     filtered = try buildFiltered(allocator, config.choices, query.items);
                     cursor = 0;
@@ -147,7 +147,7 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 /// is deterministic/testable (used by the cross-platform emulator render tests).
 pub fn renderSearch(
     writer: anytype,
-    ctx: prompts.theme.ThemeContext,
+    ctx: Prompts.ThemeContext,
     config: SearchConfig,
     query: []const u8,
     filtered: []const usize,
@@ -178,7 +178,7 @@ pub fn renderSearch(
     const search_prefix_w = terminal.displayWidth(search_prefix);
     var hint_open_buf: [64]u8 = undefined;
     var hint_prefix_buf: [96]u8 = undefined;
-    const hint_open = prompts.openSeq(&hint_open_buf, ctx, tokens.hint);
+    const hint_open = Prompts.openSeq(&hint_open_buf, ctx, tokens.hint);
     if (query.len > 0) {
         rows += try lr.renderItem(writer, &first_line, .{ .first_prefix = search_prefix, .prefix_w = search_prefix_w }, query, @max(usable -| search_prefix_w, 1));
     } else {
@@ -186,7 +186,7 @@ pub fn renderSearch(
         rows += try lr.renderItem(writer, &first_line, .{
             .first_prefix = styled_prefix,
             .prefix_w = search_prefix_w,
-            .line_close = prompts.closeSeq(hint_open),
+            .line_close = Prompts.closeSeq(hint_open),
         }, "type to filter", @max(usable -| search_prefix_w, 1));
     }
 
@@ -195,7 +195,7 @@ pub fn renderSearch(
         rows += try lr.renderItem(writer, &first_line, .{
             .first_prefix = nm_prefix,
             .prefix_w = 2,
-            .line_close = prompts.closeSeq(hint_open),
+            .line_close = Prompts.closeSeq(hint_open),
         }, "no matches", avail);
         return rows;
     }
@@ -218,12 +218,12 @@ pub fn renderSearch(
         var pbuf: [32]u8 = undefined;
         var obuf: [64]u8 = undefined;
         const style: lr.ItemStyle = if (i == cursor) blk: {
-            const open = prompts.openSeq(&obuf, ctx, tokens.selected);
+            const open = Prompts.openSeq(&obuf, ctx, tokens.selected);
             break :blk .{
                 .line_open = open,
                 .first_prefix = std.fmt.bufPrint(&pbuf, "  {s} ", .{cursor_sym}) catch "  ",
                 .prefix_w = prefix_w,
-                .line_close = prompts.closeSeq(open),
+                .line_close = Prompts.closeSeq(open),
             };
         } else .{ .first_prefix = "    ", .prefix_w = prefix_w };
         rows += try lr.renderItem(writer, &first_line, style, choice, avail);
@@ -273,7 +273,7 @@ test "SearchConfig defaults" {
     try std.testing.expectEqualStrings("? ", cfg.prefix);
 }
 
-fn renderToBuf(buf: []u8, ctx: prompts.theme.ThemeContext, config: SearchConfig, query: []const u8, filtered: []const usize, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
+fn renderToBuf(buf: []u8, ctx: Prompts.ThemeContext, config: SearchConfig, query: []const u8, filtered: []const usize, cursor: usize, ws: terminal.Winsize) !struct { rows: usize, text: []const u8 } {
     var w: std.Io.Writer = .fixed(buf);
     const rows = try renderSearch(&w, ctx, config, query, filtered, cursor, ws);
     return .{ .rows = rows, .text = w.buffered() };
@@ -282,7 +282,7 @@ fn renderToBuf(buf: []u8, ctx: prompts.theme.ThemeContext, config: SearchConfig,
 test "renderSearch: header + search line + results, row count matches lines" {
     var buf: [4096]u8 = undefined;
     const filtered = [_]usize{ 0, 1, 2 };
-    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" } }, "a", &filtered, 0, .{ .row = 24, .col = 80 });
+    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" } }, "a", &filtered, 0, .{ .row = 24, .col = 80 });
     // header(1) + search(1) + 3 results = 5
     try std.testing.expectEqual(@as(usize, 5), r.rows);
     const lines = std.mem.count(u8, r.text, "\r\n") + 1;
@@ -294,10 +294,10 @@ test "renderSearch: placeholder styles through the hint token; no_color is escap
     const filtered = [_]usize{ 0, 1 };
 
     // Custom hint color flows into the placeholder
-    const custom = prompts.theme.Theme{
+    const custom = Prompts.Theme{
         .prompts = .{ .hint = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 7, .g = 7, .b = 7 } } } } },
     };
-    const color_ctx = prompts.theme.ThemeContext{
+    const color_ctx = Prompts.ThemeContext{
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
@@ -305,7 +305,7 @@ test "renderSearch: placeholder styles through the hint token; no_color is escap
     try std.testing.expect(std.mem.indexOf(u8, r.text, "38;2;7;7;7") != null);
 
     // no_color renders the placeholder and cursor row without escapes
-    const plain_ctx = prompts.theme.ThemeContext{
+    const plain_ctx = Prompts.ThemeContext{
         .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false },
     };
     const p = try renderToBuf(&buf, plain_ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "", &filtered, 0, .{ .row = 24, .col = 80 });
@@ -316,7 +316,7 @@ test "renderSearch: placeholder styles through the hint token; no_color is escap
 test "renderSearch: no matches renders a message row" {
     var buf: [1024]u8 = undefined;
     const empty = [_]usize{};
-    const r = try renderToBuf(&buf, prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "zzz", &empty, 0, .{ .row = 24, .col = 80 });
+    const r = try renderToBuf(&buf, Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" } }, "zzz", &empty, 0, .{ .row = 24, .col = 80 });
     try std.testing.expectEqual(@as(usize, 3), r.rows); // header + search + "no matches"
     try std.testing.expect(std.mem.indexOf(u8, r.text, "no matches") != null);
 }

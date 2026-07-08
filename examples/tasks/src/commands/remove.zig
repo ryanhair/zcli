@@ -2,7 +2,6 @@ const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 const store = @import("store");
-const prompts = zcli.prompts;
 const themed = zcli.theme.styled;
 
 pub const meta = .{
@@ -26,12 +25,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         return;
     };
 
-    const p: prompts.Prompts = .{
-        .writer = context.stdout(),
-        .reader = context.stdin(),
-        .allocator = allocator,
-        .theme = context.theme,
-    };
+    const p = context.prompts();
 
     const msg = try std.fmt.allocPrint(allocator, "Remove task #{d}: {s}?", .{ task.id, task.title });
     defer allocator.free(msg);

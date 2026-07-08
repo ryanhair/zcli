@@ -1,7 +1,7 @@
 //! `Prompts.multiSelect` — toggle several items with Space, confirm with Enter.
 
 const std = @import("std");
-const prompts = @import("prompts");
+const Prompts = @import("prompts");
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
     t.init(init.io);
     defer t.flush();
 
-    const p: prompts.Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
+    const p: Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
 
     const toppings = [_][]const u8{ "Cheese", "Pepperoni", "Mushrooms", "Onions", "Pineapple" };
 

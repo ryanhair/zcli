@@ -229,16 +229,12 @@ const topics = [_]Topic{
         .body =
         \\prompts — interactive input with prompts (bundled)
         \\
-        \\Build a `Prompts` instance once from the context; every prompt is a method
-        \\on it. On non-interactive stdin, handle the piped case yourself (e.g.
-        \\fall back to a flag) rather than blocking.
+        \\`context.prompts()` returns a `zcli.Prompts` instance pre-wired to the
+        \\command's streams, allocator, and theme; every prompt is a method on it.
+        \\On non-interactive stdin, handle the piped case yourself (e.g. fall back
+        \\to a flag) rather than blocking.
         \\
-        \\  const p: zcli.prompts.Prompts = .{
-        \\      .writer = context.stdout(),
-        \\      .reader = context.stdin(),
-        \\      .allocator = context.allocator,
-        \\      .theme = context.theme,
-        \\  };
+        \\  const p = context.prompts();
         \\
         \\  const name = try p.text(.{ .message = "Name:" });
         \\  const ok   = try p.confirm(.{ .message = "Proceed?", .default = true });

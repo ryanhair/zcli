@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const PasswordConfig = struct {
     message: []const u8,
@@ -11,7 +11,7 @@ pub const PasswordConfig = struct {
 };
 
 /// Prompt for password input with masking. Returns owned string.
-pub fn password(p: prompts.Prompts, config: PasswordConfig) ![]u8 {
+pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
@@ -27,21 +27,21 @@ pub fn password(p: prompts.Prompts, config: PasswordConfig) ![]u8 {
     }
 
     // TTY: raw mode with mask character
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         try writer.writeAll("\n");
         return try allocator.dupe(u8, "");
     };
     defer {
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         const k = try terminal.readKey(reader);
         switch (k) {
             .enter => {
@@ -50,7 +50,7 @@ pub fn password(p: prompts.Prompts, config: PasswordConfig) ![]u8 {
             },
             .backspace => {
                 if (buf.items.len > 0) {
-                    prompts.popTrailingGrapheme(&buf);
+                    Prompts.popTrailingGrapheme(&buf);
                     try renderMask(writer, config, terminal.graphemeCount(buf.items));
                 }
             },
@@ -62,7 +62,7 @@ pub fn password(p: prompts.Prompts, config: PasswordConfig) ![]u8 {
             },
             .char => |c| {
                 // One mask glyph per typed character, not per UTF-8 byte.
-                _ = try prompts.appendCodepoint(allocator, &buf, c);
+                _ = try Prompts.appendCodepoint(allocator, &buf, c);
                 try renderMask(writer, config, terminal.graphemeCount(buf.items));
             },
             else => {},
@@ -77,7 +77,7 @@ fn renderMask(writer: anytype, config: PasswordConfig, len: usize) !void {
     for (0..len) |_| {
         try writer.print("{c}", .{config.mask});
     }
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
 }
 
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {

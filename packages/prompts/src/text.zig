@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
-const prompts = @import("prompts.zig");
+const Prompts = @import("Prompts.zig");
 
 /// Optional live preview rendered on the line *above* the prompt, repainted on
 /// every keystroke. `render` receives the current input and writes one line of
@@ -24,7 +24,7 @@ pub const TextConfig = struct {
 
 /// Prompt for text input. Returns an owned string (caller frees), or
 /// `error.Interrupted` if the user presses one of `config.interrupt_keys`.
-pub fn text(p: prompts.Prompts, config: TextConfig) ![]u8 {
+pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
@@ -58,7 +58,7 @@ pub fn text(p: prompts.Prompts, config: TextConfig) ![]u8 {
     }
 
     // TTY: raw mode character-by-character input
-    prompts.flushWriter(writer);
+    Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         // Fallback if raw mode fails
         try writer.writeAll("\n");
@@ -66,19 +66,19 @@ pub fn text(p: prompts.Prompts, config: TextConfig) ![]u8 {
     };
     defer {
         raw.disable();
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
     }
 
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     while (true) {
-        prompts.flushWriter(writer);
+        Prompts.flushWriter(writer);
         const k = if (config.interrupt_keys.len > 0)
             try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
         else
             try terminal.readKey(reader);
-        if (prompts.isInterrupt(k, config.interrupt_keys)) {
+        if (Prompts.isInterrupt(k, config.interrupt_keys)) {
             try writer.writeAll("\r\n");
             return error.Interrupted;
         }
@@ -92,7 +92,7 @@ pub fn text(p: prompts.Prompts, config: TextConfig) ![]u8 {
             },
             .backspace => {
                 if (buf.items.len > 0) {
-                    try prompts.eraseTrailingGrapheme(writer, &buf);
+                    try Prompts.eraseTrailingGrapheme(writer, &buf);
                     if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
                 }
             },
@@ -103,7 +103,7 @@ pub fn text(p: prompts.Prompts, config: TextConfig) ![]u8 {
                 }
             },
             .char => |c| {
-                try writer.writeAll(try prompts.appendCodepoint(allocator, &buf, c));
+                try writer.writeAll(try Prompts.appendCodepoint(allocator, &buf, c));
                 if (use_preview) try repaintPreview(writer, config.preview.?, buf.items);
             },
             else => {},
