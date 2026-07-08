@@ -19,6 +19,9 @@ pub fn build(b: *std.Build) void {
     const prompts_dep = b.dependency("prompts", .{ .target = target, .optimize = optimize });
     const progress_dep = b.dependency("progress", .{ .target = target, .optimize = optimize });
     const theme_dep = b.dependency("theme", .{ .target = target, .optimize = optimize });
+    // Not exposed on the public umbrella yet: the layout engine (ADR-0013) is
+    // pre-stabilization; it joins the surface once the node/App API lands.
+    const ui_dep = b.dependency("ui", .{ .target = target, .optimize = optimize });
 
     // The public module surface of the zcli package — what consumers (external
     // projects, the examples, projects/zcli) get from `zcli_dep.module("...")`.
@@ -60,6 +63,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "terminal", .dep = terminal_dep },
         .{ .name = "prompts", .dep = prompts_dep },
         .{ .name = "theme", .dep = theme_dep },
+        .{ .name = "ui", .dep = ui_dep },
         .{ .name = "vterm_example", .dep = vterm_example_dep },
     };
     for (test_packages) |pkg| {
