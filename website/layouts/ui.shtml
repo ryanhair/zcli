@@ -61,11 +61,11 @@
       <article class="doc">
         <section id="intro">
           <h1>The CLI/TUI hybrid</h1>
-          <p class="sub">Prompts and progress render on <code>zcli.ui</code> — a terminal-native layout engine — and it's yours to use directly. Stream lines into scrollback while a live region repaints in place at the bottom edge: the shape of modern agent-style CLIs.</p>
+          <p class="sub">Prompts and progress render on <code>zcli.ui</code> — a terminal-native layout engine — and it's yours to use directly. Stream lines into scrollback while a live region — a full layout, from one line up to the whole viewport — repaints in place just above them: the shape of modern agent-style CLIs.</p>
           <p>A full-screen TUI takes the terminal over; a plain CLI can't paint. The hybrid is the third shape — the one Claude Code, modern installers, and deploy tools use. zcli's engine gives you both halves at once:</p>
           <ul>
             <li><b>A static stream</b> flows upward into scrollback, one line at a time, exactly like normal output — copy-pasteable, greppable, permanent.</li>
-            <li><b>A live region</b> sits pinned to the bottom edge and repaints in place — a spinner, a status frame, a stack of progress bars — without disturbing the scrollback above it.</li>
+            <li><b>A live region</b> repaints in place just above the scrollback — anything from a one-line spinner to a full-viewport layout. It's positioned above committed output, not a fixed strip, and shares the screen rather than taking it over, so your scrollback survives.</li>
             <li><b>Immediate mode</b> means a component is just a function returning a node. You rebuild the tree every frame from your own state; the engine diffs it and sends only the cells that changed.</li>
           </ul>
           <div class="callout"><b>Built on it</b> The <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> and <a href="$site.page('docs').link().suffix('#progress')">progress</a> packages both render on this engine — so cursor hygiene, diffed repaints, and resize re-layout are solved once, in one place.</div>
@@ -75,6 +75,7 @@
           <h2>The frame model</h2>
           <p>The live region is rebuilt from scratch every frame: the node tree is allocated into a per-frame arena, measured (constraints down, sizes up), painted onto a cell surface, and diffed against the previous surface. An unchanged frame writes <em>zero</em> bytes; a ticking spinner repaints one cell, not the screen.</p>
           <p>Two verbs drive it. <code>emit</code> writes a static line that scrolls up and away; <code>frame</code> replaces the live region with a new node tree. <code>emit</code> is the only way to write while a region is up — it erases the region, prints the line into scrollback, and repaints the region below it.</p>
+          <div class="callout"><b>Not a full-screen TUI</b> "Above the scrollback" describes where the live region sits, not how big it is — it's a full layout tree, one line to the whole viewport (a full-screen app is just a root sized <code>fill</code>). This is the same static-above / live-below split as Ink's <code>&lt;Static&gt;</code> and dynamic render: the engine shares the terminal and never switches to the alternate screen, so scrollback is preserved. The trade is that there's one live region and it's always the bottom-most live content — top-anchored or multiple independent live regions would need the alt-screen model this deliberately avoids.</div>
           <div class="code">
             <div class="code-head"><span class="fname">a component is just a function</span><span class="lang">zig</span></div>
 <pre><span class="cm">// State lives in your structs; the frame is a pure function of it.</span>

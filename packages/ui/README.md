@@ -9,7 +9,11 @@ The terminal-native layout engine behind zcli's CLI/TUI hybrid ([ADR-0013](../..
 ## The model
 
 Output splits into a **static** stream that flows into scrollback and a
-**live region** at the bottom edge that repaints in place. The live region is
+**live region** that repaints in place just above it — a full layout area,
+from a single line up to the whole viewport, positioned above committed
+scrollback rather than a fixed bottom strip. Like Ink's static/dynamic split,
+it shares the terminal instead of taking it over (no alternate screen buffer),
+so your scrollback survives. The live region is
 immediate-mode: a component is any function returning a `Node`; the tree is
 rebuilt into a frame arena every frame, measured (constraints down, sizes
 up), painted onto a cell `Surface`, and diffed — only changed cells reach the
