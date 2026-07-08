@@ -186,6 +186,20 @@ pub fn ContextFor(comptime plugins: []const type) type {
             return .{ .writer = self.stdout(), .capability = self.theme.capability() };
         }
 
+        /// A `ui.App` pre-wired to this command's environment: stdout, the
+        /// arena-per-command allocator, the detected terminal capability, and
+        /// unicode/TTY detection. The entry point for hybrid CLI/TUI output —
+        /// `app.emit()` for static lines that flow into scrollback,
+        /// `app.frame()` for the diffed live region below. `defer app.deinit()`
+        /// (idempotent) restores the terminal and persists the final frame.
+        pub fn ui(self: *Self) !zcli.ui.App {
+            return zcli.ui.App.init(self.allocator, self.stdout(), .{
+                .capability = self.theme.capability(),
+                .unicode = zcli.ui.unicodeSupported(self.environ),
+                .interactive = self.theme.caps.is_tty,
+            });
+        }
+
         /// Get command description by path (for plugins)
         pub fn getCommandDescription(self: *Self, command_path_query: []const []const u8) ?[]const u8 {
             for (self.plugin_command_info) |cmd_info| {

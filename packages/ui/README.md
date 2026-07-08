@@ -2,12 +2,9 @@
 
 The terminal-native layout engine behind zcli's CLI/TUI hybrid ([ADR-0013](../../docs/adr/0013-terminal-native-layout-engine.md)).
 
-> **Status: pre-stabilization.** The ADR's build order is complete: surface +
-> diff renderer, node tree + layout, `App` static/live loop, the three-tier
-> resize model, and the progress widget vocabulary (`ui.widgets`). Migrating
-> the shipped `progress`/`prompts` packages onto the engine is a separate,
-> breaking decision. Until it's made, this package is not exported on the
-> zcli umbrella and its API may change freely.
+> **Status: shipped.** ADR-0013 is accepted and both interactive packages
+> (`progress`, `prompts`) render on this engine. Exposed on the zcli umbrella
+> as `zcli.ui`; in a command, `context.ui()` returns a pre-wired `App`.
 
 ## The model
 

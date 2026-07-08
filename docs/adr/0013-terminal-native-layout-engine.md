@@ -1,6 +1,6 @@
 # Terminal-native layout engine: an immediate-mode UI core for the CLI/TUI hybrid
 
-Status: proposed
+Status: accepted
 
 The line between CLI and TUI has blurred. The tools defining the category (Claude Code
 and the agent CLIs, most built on ink.js) feel like CLIs — output flows into scrollback
