@@ -13,7 +13,7 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: *Context) !void {
     const io = context.io;
-    var spinner = progress.spinner(io, .{ .style = .dots });
+    var spinner = progress.spinner(io, .{ .style = .dots, .theme = context.theme });
     spinner.start("Connecting to server...");
 
     io.sleep(.{ .nanoseconds = 500 * std.time.ns_per_ms }, .awake) catch {};
