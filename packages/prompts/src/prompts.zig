@@ -19,9 +19,7 @@ pub const theme = @import("theme");
 /// ANSI-16, matching the package's historical fixed colors. zcli applications
 /// pass `context.theme` instead, which carries the app's theme and the
 /// detected terminal capabilities (including NO_COLOR).
-pub const default_style: theme.ThemeContext = .{
-    .caps = .{ .capability = .ansi_16, .is_tty = true, .color_enabled = true },
-};
+pub const default_style: theme.ThemeContext = .fallback;
 
 /// Render `ref`'s opening escape sequence into `buf`, returning the (possibly
 /// empty) slice. Pair every non-empty result with `closeSeq`.

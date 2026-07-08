@@ -81,8 +81,6 @@ pub const ResultSymbol = struct {
 /// Spinner configuration
 pub const SpinnerConfig = struct {
     style: SpinnerStyle = .dots,
-    /// Color for the spinner frame
-    color: theme.Color = .cyan,
     /// Whether to hide cursor during animation
     hide_cursor: bool = true,
     /// Prefix before spinner
@@ -91,6 +89,10 @@ pub const SpinnerConfig = struct {
     suffix: []const u8 = "",
     /// Whether terminal supports unicode
     unicode: bool = true,
+    /// Theme + terminal capabilities for styling (spinner via the theme's
+    /// `progress.spinner` token, result symbols via the palette's
+    /// success/err/warning/info roles); zcli commands pass `context.theme`.
+    theme: theme.ThemeContext = .fallback,
 };
 
 /// Spinner for indeterminate progress
@@ -181,22 +183,22 @@ pub fn Spinner(comptime WriterType: type) type {
 
         /// Stop the spinner with a success message
         pub fn succeed(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.success(self.config.unicode), .green, message);
+            self.finishWithRole(ResultSymbol.success(self.config.unicode), .success, message);
         }
 
         /// Stop the spinner with a failure message
         pub fn fail(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.failure(self.config.unicode), .red, message);
+            self.finishWithRole(ResultSymbol.failure(self.config.unicode), .err, message);
         }
 
         /// Stop the spinner with a warning message
         pub fn warn(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.warning(self.config.unicode), .yellow, message);
+            self.finishWithRole(ResultSymbol.warning(self.config.unicode), .warning, message);
         }
 
         /// Stop the spinner with an info message
         pub fn info(self: *Self, message: []const u8) void {
-            self.finishWithColor(ResultSymbol.info(self.config.unicode), .blue, message);
+            self.finishWithRole(ResultSymbol.info(self.config.unicode), .info, message);
         }
 
         /// Stop the spinner without a result symbol
@@ -213,18 +215,17 @@ pub fn Spinner(comptime WriterType: type) type {
             self.writer.writeAll(data) catch {};
         }
 
-        /// Write the color's escape sequence; returns true if one was written
-        fn writeColor(self: *Self, color: theme.Color) bool {
-            const style = theme.Style{ .foreground = color };
-            return style.writeSequence(self.writer, .ansi_16) catch false;
+        /// Write the style's escape sequence; returns true if one was written
+        fn writeStyle(self: *Self, style: theme.Style) bool {
+            return style.writeSequence(self.writer, self.config.theme.capability()) catch false;
         }
 
-        fn finishWithColor(self: *Self, symbol: []const u8, color: theme.Color, message: []const u8) void {
+        fn finishWithRole(self: *Self, symbol: []const u8, role: theme.SemanticRole, message: []const u8) void {
             self.stopAnimation();
 
             if (self.is_tty) {
                 self.writeAll("\r\x1b[K"); // Clear line
-                const wrote_color = self.writeColor(color);
+                const wrote_color = self.writeStyle(self.config.theme.resolve(role));
                 self.writeAll(symbol);
                 if (wrote_color) {
                     self.writeAll("\x1b[0m");
@@ -300,8 +301,9 @@ pub fn Spinner(comptime WriterType: type) type {
             // Write prefix
             self.writeAll(self.config.prefix);
 
-            // Write colored spinner frame
-            const wrote_color = self.writeColor(self.config.color);
+            // Write themed spinner frame
+            const spinner_style = self.config.theme.resolveRef(self.config.theme.progressTokens().spinner);
+            const wrote_color = self.writeStyle(spinner_style);
             self.writeAll(frame);
             if (wrote_color) {
                 self.writeAll("\x1b[0m");
@@ -339,6 +341,9 @@ pub const ProgressBarConfig = struct {
     /// Format string for the bar: {bar} {percent} {current}/{total} {eta}
     prefix: []const u8 = "",
     suffix: []const u8 = "",
+    /// Theme + terminal capabilities for styling (fill/empty via the theme's
+    /// `progress.bar_fill`/`bar_empty` tokens); zcli commands pass `context.theme`.
+    theme: theme.ThemeContext = .fallback,
 };
 
 /// Progress bar for determinate progress
@@ -445,13 +450,23 @@ pub fn ProgressBar(comptime WriterType: type) type {
                 self.writeAll(" ");
             }
 
-            // Bar
+            // Bar (styled only on a TTY, like the spinner — piped output stays plain)
+            const ctx = self.config.theme;
+            const tokens = ctx.progressTokens();
             self.writeAll("[");
-            for (0..filled) |_| {
-                self.writeAll(self.config.complete_char);
+            if (filled > 0) {
+                const wrote = self.is_tty and (ctx.resolveRef(tokens.bar_fill).writeSequence(self.writer, ctx.capability()) catch false);
+                for (0..filled) |_| {
+                    self.writeAll(self.config.complete_char);
+                }
+                if (wrote) self.writeAll("\x1b[0m");
             }
-            for (0..empty) |_| {
-                self.writeAll(self.config.incomplete_char);
+            if (empty > 0) {
+                const wrote = self.is_tty and (ctx.resolveRef(tokens.bar_empty).writeSequence(self.writer, ctx.capability()) catch false);
+                for (0..empty) |_| {
+                    self.writeAll(self.config.incomplete_char);
+                }
+                if (wrote) self.writeAll("\x1b[0m");
             }
             self.writeAll("]");
 
@@ -645,6 +660,67 @@ test "spinner prints status lines when not a TTY" {
     try std.testing.expect(std.mem.indexOf(u8, written, " synced\n") != null);
 }
 
+test "spinner result symbols style through the palette roles" {
+    var output: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    const custom = theme.Theme{
+        .palette = .{ .success = .{ .foreground = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } } },
+    };
+    var s = Spinner(@TypeOf(&writer)).init(&writer, std.testing.io, .{
+        .theme = .{
+            .theme = &custom,
+            .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+        },
+    });
+    s.is_tty = true;
+
+    s.start("working");
+    s.succeed("done");
+
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "38;2;1;2;3") != null);
+}
+
+test "spinner frame styles through the progress.spinner token" {
+    var output: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    const custom = theme.Theme{
+        .progress = .{ .spinner = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 9, .g = 8, .b = 7 } } } } },
+    };
+    var s = Spinner(@TypeOf(&writer)).init(&writer, std.testing.io, .{
+        .theme = .{
+            .theme = &custom,
+            .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+        },
+    });
+    s.is_tty = true;
+
+    s.start("working");
+    s.stop();
+
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "38;2;9;8;7") != null);
+}
+
+test "spinner renders no color sequences under no_color" {
+    var output: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = Spinner(@TypeOf(&writer)).init(&writer, std.testing.io, .{
+        .theme = .{ .caps = .{ .capability = .no_color, .is_tty = true, .color_enabled = false } },
+    });
+    s.is_tty = true;
+
+    s.start("working");
+    s.succeed("done");
+
+    const written = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "done") != null);
+    // Cursor-control escapes remain; SGR color/attribute sequences must not
+    try std.testing.expect(std.mem.indexOf(u8, written, "38;2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\x1b[0m") == null);
+}
+
 test "progress bar initialization" {
     var output: [1024]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&output);
@@ -690,6 +766,50 @@ test "progress bar increment" {
 
     bar.increment(5);
     try std.testing.expect(bar.current == 15);
+}
+
+test "progress bar styles fill and empty through the theme tokens on a TTY" {
+    var output: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    const custom = theme.Theme{
+        .progress = .{
+            .bar_fill = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } } } },
+            .bar_empty = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 4, .g = 5, .b = 6 } } } },
+        },
+    };
+    var bar = ProgressBar(@TypeOf(&writer)).init(&writer, std.testing.io, .{
+        .total = 10,
+        .width = 10,
+        .show_eta = false,
+        .theme = .{
+            .theme = &custom,
+            .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+        },
+    });
+    bar.is_tty = true;
+
+    bar.update(5, null);
+
+    const written = writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, written, "38;2;1;2;3") != null); // fill
+    try std.testing.expect(std.mem.indexOf(u8, written, "38;2;4;5;6") != null); // empty
+}
+
+test "progress bar stays plain when piped (non-TTY)" {
+    var output: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var bar = ProgressBar(@TypeOf(&writer)).init(&writer, std.testing.io, .{
+        .total = 10,
+        .width = 10,
+        .show_eta = false,
+    });
+    bar.is_tty = false;
+
+    bar.update(5, null);
+
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\x1b[") == null);
 }
 
 test "progress bar does not exceed total" {

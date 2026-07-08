@@ -41,6 +41,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     var bar = progress.progressBar(context.io, .{
         .total = imported.value.tasks.len,
         .show_eta = true,
+        .theme = context.theme,
     });
 
     var tasks_list = std.ArrayList(store.Task).empty;

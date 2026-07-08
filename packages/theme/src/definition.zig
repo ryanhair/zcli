@@ -111,6 +111,13 @@ pub const ThemeContext = struct {
     theme: *const Theme = &default_theme,
     caps: Capabilities,
 
+    /// Context for standalone library use where capabilities can't be
+    /// detected: the default theme at ANSI-16 with color enabled. zcli
+    /// applications use `context.theme` (detected capabilities) instead.
+    pub const fallback: ThemeContext = .{
+        .caps = .{ .capability = .ansi_16, .is_tty = true, .color_enabled = true },
+    };
+
     /// Resolve a semantic role to its style in the active palette
     pub fn resolve(self: ThemeContext, role: SemanticRole) Style {
         return self.theme.palette.get(role);
@@ -124,6 +131,11 @@ pub const ThemeContext = struct {
     /// The active theme's prompt component tokens
     pub fn promptTokens(self: ThemeContext) PromptTheme {
         return self.theme.prompts;
+    }
+
+    /// The active theme's progress component tokens
+    pub fn progressTokens(self: ThemeContext) ProgressTheme {
+        return self.theme.progress;
     }
 
     /// The effective terminal capability (no_color when color is disabled)
