@@ -6,9 +6,10 @@ pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
 
-    // Create a formatter - configure once, use many times
-    // Pass the address of the writer's interface
-    var fmt = md.formatter(&stdout_writer.interface);
+    // Create a formatter - configure once, use many times. Pass the address of
+    // the writer's interface and the terminal capability (here, full color;
+    // detect it or use `context.theme.capability()` in a zcli command).
+    var fmt = md.formatter(&stdout_writer.interface, .true_color);
 
     try stdout_writer.interface.writeAll("\n╔═══════════════════════════════════════════════════════════╗\n");
     try stdout_writer.interface.writeAll("║         markdown: Comprehensive Feature Demo          ║\n");
@@ -67,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
         \\## Fenced Code Blocks
         \\
         \\```zig
-        \\const fmt = md.formatter(stdout);
+        \\const fmt = md.formatter(stdout, .true_color);
         \\try fmt.write("**Hello** World!", .{});
         \\```
         \\
@@ -199,7 +200,7 @@ pub fn main(init: std.process.Init) !void {
         .err = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 50, .b = 50 } }, .bold = true }, // Bright red
     };
 
-    var custom_fmt = md.formatterWithPalette(&stdout_writer.interface, custom_palette);
+    var custom_fmt = md.formatterWithPalette(&stdout_writer.interface, .true_color, custom_palette);
 
     try custom_fmt.write(
         \\<success>Custom success color!</success>
@@ -211,7 +212,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout_writer.interface.writeAll("\n╔═══════════════════════════════════════════════════════════╗\n");
     try stdout_writer.interface.writeAll("║                    FORMATTER API                          ║\n");
     try stdout_writer.interface.writeAll("╠═══════════════════════════════════════════════════════════╣\n");
-    try stdout_writer.interface.writeAll("║  const fmt = md.formatter(writer);                        ║\n");
+    try stdout_writer.interface.writeAll("║  const fmt = md.formatter(writer, cap);                        ║\n");
     try stdout_writer.interface.writeAll("║  try fmt.write(\"**{s}**\", .{\"text\"});                     ║\n");
     try stdout_writer.interface.writeAll("║                                                           ║\n");
     try stdout_writer.interface.writeAll("║  ✨ Comptime parsing • Zero runtime overhead • Pure Zig   ║\n");

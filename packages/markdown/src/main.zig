@@ -49,7 +49,7 @@ pub fn parseWithPalette(comptime markdown: []const u8, comptime palette: Palette
 /// This is the core parsing function that threads capability through the entire pipeline
 pub fn parseForCapability(comptime markdown: []const u8, comptime palette: Palette, comptime capability: TerminalCapability) []const u8 {
     comptime {
-        @setEvalBranchQuota(100000); // High quota needed for CapabilityFormatter (4x comptime parsing)
+        @setEvalBranchQuota(100000); // High quota needed for Formatter (4x comptime parsing)
 
         // First, check if there are semantic tags - handle those with semantic parser
         if (containsSemanticTags(markdown)) {
@@ -223,58 +223,33 @@ fn parseWithSemanticTags(comptime markdown: []const u8, comptime palette: Palett
     }
 }
 
-/// Create a formatter with default color palette (true_color output)
-pub fn formatter(writer: anytype) Formatter(@TypeOf(writer), Palette{}) {
-    return .{ .writer = writer };
-}
-
-/// Create a formatter with custom color palette (true_color output)
-pub fn formatterWithPalette(writer: anytype, comptime palette: Palette) Formatter(@TypeOf(writer), palette) {
-    return .{ .writer = writer };
-}
-
-/// Formatter with writer and compile-time color palette (always true_color)
-/// This is the simple API for when you don't need capability detection
-pub fn Formatter(comptime Writer: type, comptime palette: Palette) type {
-    return struct {
-        writer: Writer,
-
-        const Self = @This();
-
-        /// Write formatted markdown to the writer
-        pub fn write(self: *Self, comptime markdown: []const u8, args: anytype) !void {
-            const fmt_string = comptime parseWithPalette(markdown, palette);
-            try self.writer.print(fmt_string, args);
-        }
-
-        /// Format markdown and return allocated string
-        pub fn print(_: Self, allocator: std.mem.Allocator, comptime markdown: []const u8, args: anytype) ![]const u8 {
-            const fmt_string = comptime parseWithPalette(markdown, palette);
-            return std.fmt.allocPrint(allocator, fmt_string, args);
-        }
-    };
-}
-
-/// Create a capability-aware formatter that adapts output to terminal capabilities
-pub fn capabilityFormatter(writer: anytype, capability: TerminalCapability) CapabilityFormatter(@TypeOf(writer), Palette{}) {
+/// Create a capability-aware formatter with the default palette. Pass the
+/// terminal's capability (`context.theme.capability()` in a zcli command); in a
+/// command, prefer `context.markdown()`, which wires stdout + capability + the
+/// app palette.
+pub fn formatter(writer: *std.Io.Writer, capability: TerminalCapability) Formatter(Palette{}) {
     return .{ .writer = writer, .capability = capability };
 }
 
-/// Create a capability-aware formatter with custom palette
-pub fn capabilityFormatterWithPalette(writer: anytype, capability: TerminalCapability, comptime palette: Palette) CapabilityFormatter(@TypeOf(writer), palette) {
+/// Create a capability-aware formatter with a custom (comptime) palette — e.g.
+/// the app's palette, `zcli.appTheme().palette`.
+pub fn formatterWithPalette(writer: *std.Io.Writer, capability: TerminalCapability, comptime palette: Palette) Formatter(palette) {
     return .{ .writer = writer, .capability = capability };
 }
 
-/// Capability-aware formatter that pre-compiles 4 versions of each markdown string
-/// at comptime and selects the appropriate one at runtime based on terminal capability.
-pub fn CapabilityFormatter(comptime Writer: type, comptime palette: Palette) type {
+/// A capability-aware markdown formatter: a writer paired with the terminal's
+/// capability. All four capability variants (no_color/16/256/true_color) of
+/// each format string are compiled at comptime and one is selected at runtime,
+/// so styling still costs nothing at run time (ADR-0012). The palette is a
+/// comptime parameter — role colors bake into the format string.
+pub fn Formatter(comptime palette: Palette) type {
     return struct {
-        writer: Writer,
+        writer: *std.Io.Writer,
         capability: TerminalCapability,
 
         const Self = @This();
 
-        /// Write formatted markdown to the writer, adapting to terminal capability
+        /// Write formatted markdown to the writer, adapting to terminal capability.
         pub fn write(self: *Self, comptime markdown: []const u8, args: anytype) !void {
             switch (self.capability) {
                 .no_color => try self.writer.print(comptime parseForCapability(markdown, palette, .no_color), args),
@@ -284,7 +259,7 @@ pub fn CapabilityFormatter(comptime Writer: type, comptime palette: Palette) typ
             }
         }
 
-        /// Format markdown and return allocated string
+        /// Format markdown and return an allocated string.
         pub fn print(self: Self, allocator: std.mem.Allocator, comptime markdown: []const u8, args: anytype) ![]const u8 {
             return switch (self.capability) {
                 .no_color => std.fmt.allocPrint(allocator, comptime parseForCapability(markdown, palette, .no_color), args),
@@ -406,7 +381,7 @@ test "formatter basic usage" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = formatter(&writer);
+    var fmt = formatter(&writer, .true_color);
     try fmt.write("Build **{s}** in *{d}s*", .{ "completed", 12 });
 
     const output = writer.buffer[0..writer.end];
@@ -419,7 +394,7 @@ test "formatter with semantic tags" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = formatter(&writer);
+    var fmt = formatter(&writer, .true_color);
     try fmt.write("<success>**{d}** tests passed</success>", .{42});
 
     const output = writer.buffer[0..writer.end];
@@ -436,7 +411,7 @@ test "formatter with custom palette" {
         .success = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 0, .b = 0 } } }, // Red instead of green
     };
 
-    var fmt = formatterWithPalette(&writer, custom_palette);
+    var fmt = formatterWithPalette(&writer, .true_color, custom_palette);
     try fmt.write("<success>Custom color</success>", .{});
 
     const output = writer.buffer[0..writer.end];
@@ -449,7 +424,7 @@ test "formatter print method" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    const fmt = formatter(&writer);
+    const fmt = formatter(&writer, .true_color);
     const result = try fmt.print(allocator, "<error>**{s}**</error>", .{"failed"});
     defer allocator.free(result);
 
@@ -461,7 +436,7 @@ test "capability formatter no color" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = capabilityFormatter(&writer, .no_color);
+    var fmt = formatter(&writer, .no_color);
     try fmt.write("<success>**{d}** tests passed</success>", .{42});
 
     const output = writer.buffer[0..writer.end];
@@ -473,7 +448,7 @@ test "capability formatter ansi 16" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = capabilityFormatter(&writer, .ansi_16);
+    var fmt = formatter(&writer, .ansi_16);
     try fmt.write("<success>passed</success>", .{});
 
     const output = writer.buffer[0..writer.end];
@@ -486,7 +461,7 @@ test "capability formatter true color" {
     var buf: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = capabilityFormatter(&writer, .true_color);
+    var fmt = formatter(&writer, .true_color);
     try fmt.write("<success>passed</success>", .{});
 
     const output = writer.buffer[0..writer.end];
@@ -755,7 +730,7 @@ test "formatter with complex document" {
     var buf: [2048]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
 
-    var fmt = formatter(&writer);
+    var fmt = formatter(&writer, .true_color);
 
     const markdown =
         \\# Status: **{s}**

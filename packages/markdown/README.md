@@ -5,7 +5,7 @@
 ```zig
 const md = @import("markdown");
 
-const fmt = md.formatter(stdout);
+const fmt = md.formatter(stdout, .true_color);
 try fmt.write("<error>**{s}**</error> failed at <path>{s}</path>", .{test_name, file});
 ```
 
@@ -59,7 +59,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_writer.interface;
 
-    const fmt = md.formatter(stdout);
+    const fmt = md.formatter(stdout, .true_color);
 
     // Headers
     try fmt.write(
@@ -115,19 +115,32 @@ pub fn main(init: std.process.Init) !void {
 
 ### Recommended: Formatter API
 
-Create a formatter once, use it many times without passing the writer:
+Create a formatter once — bundling the writer and the terminal's capability —
+then use it many times. The formatter pre-compiles all four capability variants
+(`no_color`/`ansi_16`/`ansi_256`/`true_color`) of each format string at comptime
+and selects one at runtime, so styling still costs nothing at run time and
+respects `NO_COLOR`. Pass the detected capability (`.true_color` here for a
+standalone example):
 
 ```zig
 // With default palette
-const fmt = md.formatter(stdout);
+const fmt = md.formatter(stdout, .true_color);
 try fmt.write("## Status: <error>**{s}**</error>", .{status});
 
 // With custom palette
 const custom_palette = md.Palette{
     .err = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 0, .b = 0 } }, .bold = true },
 };
-const fmt = md.formatterWithPalette(stdout, custom_palette);
+const fmt = md.formatterWithPalette(stdout, .true_color, custom_palette);
 try fmt.write("<error>Custom colors!</error>", .{});
+```
+
+In a zcli command, prefer `context.markdown()` — it wires stdout, the detected
+capability, and the app's palette for you:
+
+```zig
+var fmt = context.markdown();
+try fmt.write("<success>**{d}** tests passed</success>", .{count});
 ```
 
 **Formatter Methods:**
@@ -169,7 +182,7 @@ const fmt_string = comptime md.parse("## Header\n\n**Error:** Failed to load *{s
 **Note:** Semantic tags work with inline markdown only. For block-level documents (headers, lists, code blocks), use pure markdown.
 
 ```zig
-const fmt = md.formatter(stdout);
+const fmt = md.formatter(stdout, .true_color);
 
 // Status messages (inline only)
 try fmt.write("<success>Build succeeded</success>\n", .{});
@@ -280,7 +293,7 @@ try fmt.write(
 ### CLI Error Messages
 
 ```zig
-const fmt = md.formatter(stderr);
+const fmt = md.formatter(stderr, .true_color);
 
 try fmt.write(
     \\<error>**Error:**</error> Failed to parse <path>{s}</path> at line ~{d}~
@@ -291,7 +304,7 @@ try fmt.write(
 ### Build Reports with Markdown
 
 ```zig
-const fmt = md.formatter(stdout);
+const fmt = md.formatter(stdout, .true_color);
 
 try fmt.write(
     \\# Build Report
@@ -311,7 +324,7 @@ try fmt.write(
 ### CLI Help Text
 
 ````zig
-const fmt = md.formatter(stdout);
+const fmt = md.formatter(stdout, .true_color);
 
 try fmt.write(
     \\# myapp - A demonstration CLI
@@ -388,7 +401,7 @@ const custom_palette = md.Palette{
     .code = .{ .foreground = .{ .rgb = .{ .r = 200, .g = 200, .b = 255 } } },
 };
 
-const fmt = md.formatterWithPalette(stdout, custom_palette);
+const fmt = md.formatterWithPalette(stdout, .true_color, custom_palette);
 try fmt.write("<success>Custom colors!</success>", .{});
 ```
 

@@ -142,7 +142,7 @@ pub fn onError(
 /// Unified help display function that handles all help scenarios
 fn showHelp(context: anytype, help_type: HelpType) !void {
     var writer = context.stderr();
-    var fmt = md.capabilityFormatterWithPalette(writer, context.theme.capability(), app_palette);
+    var fmt = md.formatterWithPalette(writer, context.theme.capability(), app_palette);
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
@@ -534,7 +534,7 @@ fn generateUsage(context: anytype) ![]const u8 {
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var fmt = md.capabilityFormatterWithPalette(buf_writer, context.theme.capability(), app_palette);
+    var fmt = md.formatterWithPalette(buf_writer, context.theme.capability(), app_palette);
 
     // Start with app name and command path
     try fmt.write("<command>{s}</command>", .{context.app_name});
@@ -717,7 +717,7 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.capabilityFormatterWithPalette(buf_writer, context.theme.capability(), app_palette);
+    var buf_fmt = md.formatterWithPalette(buf_writer, context.theme.capability(), app_palette);
 
     // Generate basic help from field names
     for (module_info.args_fields) |field_info| {
@@ -736,7 +736,7 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.capabilityFormatterWithPalette(buf_writer, context.theme.capability(), app_palette);
+    var buf_fmt = md.formatterWithPalette(buf_writer, context.theme.capability(), app_palette);
 
     // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {
