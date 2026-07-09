@@ -1,6 +1,8 @@
 //! A `top`-style full-screen TUI (ADR-0015): the whole viewport is a live table
 //! of processes whose CPU/MEM jitter on a 250ms tick, with an arrow-key
-//! selection. It drives the `App.run(state, tick_ms, view, update)` loop —
+//! selection and a `?`-toggled help overlay (a centered modal composited over
+//! the table — ADR-0016). It drives the `App.run(state, tick_ms, view, update)`
+//! loop —
 //!
 //!     view(state)           render the whole screen from state
 //!     update(state, ev)      handle a key/resize, or a `null` tick; -> keep|quit
@@ -38,6 +40,7 @@ const Proc = struct { pid: u16, name: []const u8, cpu: f32, mem: f32 };
 const State = struct {
     tick: u32 = 0,
     selected: usize = 0,
+    show_help: bool = false,
     procs: [proc_names.len]Proc = undefined,
     last_mouse: ?ui.Mouse = null,
     focused: bool = true,
@@ -106,18 +109,46 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         try std.fmt.allocPrint(a, "{d}b \"{s}\"", .{ state.paste_len, state.paste_head[0..state.paste_head_len] })
     else
         "—";
-    const status = try std.fmt.allocPrint(a, "↑/↓ select   click a cell   paste   q quit    focus:{s}  mouse:{s}  paste:{s}", .{
+    const status = try std.fmt.allocPrint(a, "↑/↓ select   click a cell   paste   ? help   q quit    focus:{s}  mouse:{s}  paste:{s}", .{
         if (state.focused) "on" else "off",
         mouse,
         paste,
     });
     try rows.append(a, ui.text(.{ .dim = true }, status));
 
-    return ui.column(
+    const base = try ui.column(
         a,
         .{ .width = .{ .fill = 1 }, .height = .{ .fill = 1 }, .padding = .all(1) },
         rows.items,
     );
+    if (!state.show_help) return base;
+
+    // An overlay (ADR-0016): a centered help modal composited over the table.
+    // `stack` overlaps its layers back to front; `center` floats the opaque
+    // modal in the middle while the table shows through the transparent
+    // scaffold around it. No absolute addressing — the modal is just cells
+    // painted on top of the base surface before the frame diff runs.
+    return ui.stack(a, .{}, &.{
+        base,
+        try ui.center(a, try helpModal(a)),
+    });
+}
+
+fn helpModal(a: std.mem.Allocator) !ui.Node {
+    return ui.column(a, .{
+        .border = .rounded,
+        .border_style = .{ .foreground = .bright_cyan },
+        .padding = .symmetric(2, 1),
+        .style = .{ .background = .{ .indexed = 236 } }, // opaque panel
+        .gap = 0,
+    }, &.{
+        ui.text(.{ .bold = true }, "Keys"),
+        ui.text(.{}, ""),
+        ui.text(.{}, "↑ / ↓   select a process"),
+        ui.text(.{}, "click   select a row"),
+        ui.text(.{}, "?       close this help"),
+        ui.text(.{}, "q       quit"),
+    });
 }
 
 /// A `null` event is the tick (advance the jittering table); keys drive
@@ -130,7 +161,11 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
     };
     switch (e) {
         .key => |k| switch (k) {
-            .char => |c| if (c == 'q') return .quit,
+            .char => |c| switch (c) {
+                'q' => return .quit,
+                '?' => state.show_help = !state.show_help, // toggle the overlay
+                else => {},
+            },
             .ctrl => |c| if (c == 'c') return .quit,
             .up => if (state.selected > 0) {
                 state.selected -= 1;
