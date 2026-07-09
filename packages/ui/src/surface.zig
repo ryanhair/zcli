@@ -162,6 +162,24 @@ pub const Surface = struct {
         };
         if (w == 2) self.cells[i + 1] = .{ .width = 0, .style = style };
     }
+
+    /// Copy `src`'s cell verbatim into (x, y) — text, width, and style — re-
+    /// appending its grapheme bytes into this surface's own store (a cell's
+    /// `text_off` is relative to the surface that owns it). Sets the cell
+    /// directly, without dissolving whatever it overwrites: the callers
+    /// (a viewport blit into its own freshly-cleared rect) copy whole rows,
+    /// so a wide grapheme is always overwritten as a head+continuation pair.
+    fn putCell(self: *Surface, x: u16, y: u16, c: Cell, text: []const u8) !void {
+        const i = self.idx(x, y);
+        if (c.text_len == 0) {
+            // Blank (width 1) or wide-continuation (width 0): no grapheme bytes.
+            self.cells[i] = .{ .width = c.width, .style = c.style };
+            return;
+        }
+        const off: u32 = @intCast(self.bytes.items.len);
+        try self.bytes.appendSlice(self.allocator, text);
+        self.cells[i] = .{ .text_off = off, .text_len = c.text_len, .width = c.width, .style = c.style };
+    }
 };
 
 /// A clipped rectangular view of a surface. All coordinates on the API are
@@ -206,6 +224,28 @@ pub const Region = struct {
             var x: u16 = 0;
             while (x < self.rect.w) : (x += 1) {
                 self.surface.blankAt(self.rect.x + x, self.rect.y + y, style);
+            }
+        }
+    }
+
+    /// Copy `src`'s rows, starting at `src_y`, into this region — top-left
+    /// aligned, one source column per region column. Cells are copied verbatim
+    /// (text, width, style). This is the viewport's windowed blit: a child is
+    /// rendered into a full-height scratch surface, then the visible slice is
+    /// copied here (ADR-0017). Fewer available source rows than the region is
+    /// tall leaves the remaining region rows untouched — so short content shows
+    /// whatever sits beneath the viewport, consistent with the stack
+    /// transparency model. `src` should be at least the region's width.
+    pub fn copyRows(self: Region, src: *const Surface, src_y: u16) !void {
+        const cols = @min(self.rect.w, src.width);
+        var dy: u16 = 0;
+        while (dy < self.rect.h) : (dy += 1) {
+            const sy = src_y + dy;
+            if (sy >= src.height) break;
+            var x: u16 = 0;
+            while (x < cols) : (x += 1) {
+                const c = src.cell(x, sy);
+                try self.surface.putCell(self.rect.x + x, self.rect.y + dy, c, src.cellText(c));
             }
         }
     }

@@ -383,3 +383,63 @@ test "a stack carries box chrome: a border insets its layers" {
     try testing.expectEqualStrings("│XX│", try rowString(&h, &s, 1));
     try testing.expectEqualStrings("└──┘", try rowString(&h, &s, 2));
 }
+
+// ============================================================================
+// Viewport (scrollable window, ADR-0017)
+// ============================================================================
+
+fn sixLines(a: std.mem.Allocator) !ui.Node {
+    const labels = [_][]const u8{ "L0", "L1", "L2", "L3", "L4", "L5" };
+    var lines: [6]ui.Node = undefined;
+    for (&lines, labels) |*n, lbl| n.* = ui.textOpts(.{ .wrap = .clip }, lbl);
+    return ui.column(a, .{}, &lines);
+}
+
+test "viewport windows tall content at scroll_y" {
+    var h = Harness.init();
+    defer h.deinit();
+
+    var top = try ui.Surface.init(testing.allocator, 4, 3);
+    defer top.deinit();
+    try renderInto(&h, try ui.viewport(h.a(), .{ .scroll_y = 0 }, try sixLines(h.a())), &top);
+    try testing.expectEqualStrings("L0  ", try rowString(&h, &top, 0));
+    try testing.expectEqualStrings("L1  ", try rowString(&h, &top, 1));
+    try testing.expectEqualStrings("L2  ", try rowString(&h, &top, 2));
+
+    var mid = try ui.Surface.init(testing.allocator, 4, 3);
+    defer mid.deinit();
+    try renderInto(&h, try ui.viewport(h.a(), .{ .scroll_y = 2 }, try sixLines(h.a())), &mid);
+    try testing.expectEqualStrings("L2  ", try rowString(&h, &mid, 0));
+    try testing.expectEqualStrings("L3  ", try rowString(&h, &mid, 1));
+    try testing.expectEqualStrings("L4  ", try rowString(&h, &mid, 2));
+}
+
+test "viewport clamps an overscroll to the last page" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 4, 3);
+    defer s.deinit();
+    // 6 lines, 3-row window, scroll_y way past the end → rests on L3,L4,L5.
+    try renderInto(&h, try ui.viewport(h.a(), .{ .scroll_y = 100 }, try sixLines(h.a())), &s);
+    try testing.expectEqualStrings("L3  ", try rowString(&h, &s, 0));
+    try testing.expectEqualStrings("L4  ", try rowString(&h, &s, 1));
+    try testing.expectEqualStrings("L5  ", try rowString(&h, &s, 2));
+}
+
+test "viewport shorter than its window leaves trailing rows untouched" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 4, 4);
+    defer s.deinit();
+    _ = try s.root().writeText(0, 3, "ZZ", .{}); // sits beneath the viewport
+
+    const content = try ui.column(h.a(), .{}, &.{
+        ui.textOpts(.{ .wrap = .clip }, "AA"),
+        ui.textOpts(.{ .wrap = .clip }, "BB"),
+    });
+    try renderInto(&h, try ui.viewport(h.a(), .{}, content), &s);
+    try testing.expectEqualStrings("AA  ", try rowString(&h, &s, 0));
+    try testing.expectEqualStrings("BB  ", try rowString(&h, &s, 1));
+    try testing.expectEqualStrings("    ", try rowString(&h, &s, 2)); // no content, untouched
+    try testing.expectEqualStrings("ZZ  ", try rowString(&h, &s, 3)); // shows through
+}

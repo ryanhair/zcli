@@ -160,6 +160,68 @@ pub fn center(a: std.mem.Allocator, child: Node) !Node {
     });
 }
 
+pub const ViewportOpts = struct {
+    /// Caller-owned vertical scroll offset, in rows (immediate mode — the app
+    /// holds it in state and adjusts it on ↑/↓/PageUp/PageDown). Clamped to the
+    /// content, so overshooting (PageDown past the end) rests on the last page.
+    scroll_y: u16 = 0,
+    /// A viewport is a fixed window; it fills what it's granted by default and
+    /// its content scrolls behind it. `.fit` height is meaningless (there would
+    /// be nothing to scroll) — use `.fill` or `.len`.
+    width: Dim = .{ .fill = 1 },
+    height: Dim = .{ .fill = 1 },
+};
+
+/// A scrolling window onto content taller than the space it's granted (ADR-0017):
+/// a log pane, a long list, a tall form. `child` is measured at the viewport
+/// width and its natural (unbounded) height, rendered in full into a scratch
+/// surface, and the slice at `scroll_y` is copied into the viewport. Vertical
+/// scroll only. Scroll state stays caller-owned (immediate mode); the viewport
+/// only clamps it. Content is fully realized each frame — fine for the ordinary
+/// screenful-or-few; very tall content pays for its full height in scratch.
+pub fn viewport(a: std.mem.Allocator, opts: ViewportOpts, child: Node) !Node {
+    const ctx = try a.create(ViewportCtx);
+    ctx.* = .{ .child = child, .scroll_y = opts.scroll_y };
+    return .{
+        .width = opts.width,
+        .height = opts.height,
+        .kind = .{ .custom = .{
+            .context = ctx,
+            .measureFn = ViewportCtx.measureFn,
+            .renderFn = ViewportCtx.renderFn,
+        } },
+    };
+}
+
+const ViewportCtx = struct {
+    child: Node,
+    scroll_y: u16,
+
+    /// A viewport takes the whole offer — it's a fixed window (the node's own
+    /// `.len`/`.fill` dims, applied by `measure` after this, refine it).
+    fn measureFn(_: *anyopaque, _: *const RenderCtx, limits: Limits) Size {
+        return .{ .w = limits.max_w, .h = limits.max_h };
+    }
+
+    fn renderFn(context: *anyopaque, rctx: *const RenderCtx, region: Region) anyerror!void {
+        const self: *const ViewportCtx = @ptrCast(@alignCast(context));
+        const w = region.width();
+        const h = region.height();
+        if (w == 0 or h == 0) return;
+
+        // Measure the child at the viewport width, unbounded height, then paint
+        // it in full into a scratch surface (arena-backed — freed with the frame).
+        const content = measure(rctx, &self.child, .{ .max_w = w, .max_h = std.math.maxInt(u16) });
+        const content_h = @max(content.h, 1);
+        var scratch = try Surface.init(rctx.allocator, w, content_h);
+        try render(rctx, &self.child, scratch.root());
+
+        // Clamp the scroll offset to the content and copy the visible window.
+        const sy = @min(self.scroll_y, content_h -| h);
+        try region.copyRows(&scratch, sy);
+    }
+};
+
 test {
     _ = @import("node.zig");
 }

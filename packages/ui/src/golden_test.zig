@@ -267,3 +267,33 @@ test "closing an overlay repaints the base underneath it" {
     try testing.expectEqual(@as(u21, '.'), vt.getCell(3, 1).char);
     try testing.expectEqual(@as(u21, '.'), vt.getCell(5, 1).char);
 }
+
+test "a viewport blits styled and wide content through the renderer" {
+    var vt = try VTerm.init(testing.allocator, 6, 2);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Surface.init(testing.allocator, 6, 2);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    const content = try ui.column(a, .{}, &.{
+        ui.textOpts(.{ .wrap = .clip, .style = .{ .bold = true } }, "top"),
+        ui.textOpts(.{ .wrap = .clip }, "你好"), // wide graphemes
+        ui.textOpts(.{ .wrap = .clip, .style = .{ .underline = true } }, "last"),
+    });
+    // Window rows 1-2: scroll the bold "top" out of view.
+    const vp = try ui.viewport(a, .{ .scroll_y = 1 }, content);
+    try ui.render(&rctx, &vp, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // Wide graphemes survive the blit (head + continuation land intact)...
+    try testing.expectEqual(@as(u21, '你'), vt.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, '好'), vt.getCell(2, 0).char);
+    // ...and so does per-cell style.
+    try testing.expect(vt.containsText("last"));
+    try testing.expect(vt.hasAttribute(0, 1, .underline));
+    // The scrolled-out row is gone.
+    try testing.expect(!vt.containsText("top"));
+}
