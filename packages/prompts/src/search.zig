@@ -108,6 +108,7 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
                 },
                 else => {},
             },
+            else => {}, // mouse/focus never arrive — prompts don't enable them
         }
     }
 }

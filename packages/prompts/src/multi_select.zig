@@ -132,6 +132,7 @@ pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
                 },
                 else => {},
             },
+            else => {}, // mouse/focus never arrive — prompts don't enable them
         }
     }
 }

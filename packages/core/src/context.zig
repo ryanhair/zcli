@@ -218,6 +218,8 @@ pub fn ContextFor(comptime plugins: []const type) type {
                 .interactive = self.theme.caps.is_tty,
                 .sync = options.sync,
                 .stdin = self.stdin(),
+                .mouse = options.mouse,
+                .focus = options.focus,
             });
         }
 

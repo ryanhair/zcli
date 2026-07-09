@@ -11,11 +11,24 @@
 const key = @import("key.zig");
 const backend = @import("backend.zig");
 
-/// An input event: a parsed key press or a terminal resize.
+/// An input event: a key press, a terminal resize, or — when their modes are
+/// enabled — a mouse report or a focus change. Resize is out-of-band (from the
+/// watcher); the rest are parsed from the byte stream by `key.readInput`.
 pub const Event = union(enum) {
     key: key.Key,
     resize,
+    mouse: key.Mouse,
+    focus: key.Focus,
 };
+
+/// Lift a byte-parsed `Input` into an `Event`.
+fn fromInput(input: key.Input) Event {
+    return switch (input) {
+        .key => |v| .{ .key = v },
+        .mouse => |v| .{ .mouse = v },
+        .focus => |v| .{ .focus = v },
+    };
+}
 
 /// Block until a key is read from `reader` or the terminal is resized, reported
 /// via `watcher`. `handle` is the stdin handle — used both for escape-sequence
@@ -36,10 +49,10 @@ pub fn readEventTimeout(
     timeout_ms: ?u32,
 ) !?Event {
     // Bytes already buffered are input regardless of the deadline.
-    if (key.bufferedLen(reader) > 0) return Event{ .key = try key.readKeyOpt(reader, handle) };
+    if (key.bufferedLen(reader) > 0) return fromInput(try key.readInput(reader, handle));
     return switch (watcher.waitTimeout(handle, timeout_ms)) {
         .resize => .resize,
-        .input => Event{ .key = try key.readKeyOpt(reader, handle) },
+        .input => fromInput(try key.readInput(reader, handle)),
         .timeout => null,
     };
 }

@@ -47,6 +47,35 @@ pub const Key = union(enum) {
     }
 };
 
+/// A mouse report (SGR encoding, DECSET 1006). Coordinates are 1-based cells,
+/// as the terminal reports them — subtract 1 to index a 0-based surface.
+pub const Mouse = struct {
+    pub const Button = enum { left, middle, right, wheel_up, wheel_down, none };
+    /// `drag` is motion with a button held (needs DECSET 1002); `move` is motion
+    /// with no button (hover — needs 1003, not enabled by default, so it does not
+    /// occur in the current full-screen wiring).
+    pub const Action = enum { press, release, drag, move };
+    pub const Mods = struct { shift: bool = false, alt: bool = false, ctrl: bool = false };
+
+    x: u16,
+    y: u16,
+    button: Button,
+    action: Action,
+    mods: Mods = .{},
+};
+
+/// A focus change (DECSET 1004): the terminal window gained or lost focus.
+pub const Focus = enum { in, out };
+
+/// A single parsed input token from the byte stream. `readEvent` lifts this into
+/// an `Event` (adding the out-of-band `resize`); `readKey` projects it back to
+/// just the key case. Mouse/focus only arrive when their modes are enabled.
+pub const Input = union(enum) {
+    key: Key,
+    mouse: Mouse,
+    focus: Focus,
+};
+
 /// Read a single byte from a reader.
 /// Supports std.Io.Reader (pointer with readSliceAll) and GenericReader (value with readByte).
 pub fn readByteFn(reader: anytype) !u8 {
@@ -85,20 +114,33 @@ pub fn readKeyOpt(reader: anytype, esc_handle: backend.Handle) !Key {
     return readKeyImpl(reader, esc_handle);
 }
 
-fn readKeyImpl(reader: anytype, esc_handle: ?backend.Handle) !Key {
+/// Read one input token — a key, or (when their modes are enabled) a mouse or
+/// focus event. The single byte→token parser; `readKey` and the event
+/// multiplexer both funnel through it.
+pub fn readInput(reader: anytype, esc_handle: ?backend.Handle) !Input {
     const byte = try readByteFn(reader);
 
     return switch (byte) {
-        '\r', '\n' => .enter,
-        '\t' => .tab,
-        127 => .backspace,
+        '\r', '\n' => .{ .key = .enter },
+        '\t' => .{ .key = .tab },
+        127 => .{ .key = .backspace },
         '\x1b' => parseEscapeSequence(reader, esc_handle),
         // Ctrl+A through Ctrl+Z (1-26, excluding 9=tab, 10=newline, 13=cr, 27=esc)
-        1...8, 11...12, 14...26 => .{ .ctrl = byte + 'a' - 1 },
+        1...8, 11...12, 14...26 => .{ .key = .{ .ctrl = byte + 'a' - 1 } },
         // Lead byte of a multibyte UTF-8 sequence
-        0x80...0xff => .{ .char = readUtf8Tail(reader, byte) },
+        0x80...0xff => .{ .key = .{ .char = readUtf8Tail(reader, byte) } },
         // Printable ASCII (plus the few remaining C0 codes callers ignore)
-        else => .{ .char = byte },
+        else => .{ .key = .{ .char = byte } },
+    };
+}
+
+/// Key-only projection of `readInput`. Mouse/focus tokens (which arrive only if
+/// those modes are enabled — key-only callers like `prompts` never enable them)
+/// collapse to `.escape`, harmlessly ignored.
+fn readKeyImpl(reader: anytype, esc_handle: ?backend.Handle) !Key {
+    return switch (try readInput(reader, esc_handle)) {
+        .key => |k| k,
+        .mouse, .focus => .escape,
     };
 }
 
@@ -118,45 +160,123 @@ fn readUtf8Tail(reader: anytype, lead: u8) u21 {
     return std.unicode.utf8Decode(seq[0..len]) catch replacement_char;
 }
 
-fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Key {
+/// A key token wrapped as an `Input` — the common escape-parse result.
+fn keyIn(key: Key) Input {
+    return .{ .key = key };
+}
+
+fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Input {
     // A lone ESC has no following bytes. Arrow keys, etc. arrive as one chunk, so
     // their bytes are already buffered; if nothing is buffered, only the poll
     // (when a handle is given) decides — otherwise treat it as a lone Escape
     // rather than block.
-    if (!escapeSequenceFollows(reader, esc_handle)) return .escape;
+    if (!escapeSequenceFollows(reader, esc_handle)) return keyIn(.escape);
 
     // Try to read the next byte — if it's '[', this is a CSI sequence
-    const next = readByteFn(reader) catch return .escape;
+    const next = readByteFn(reader) catch return keyIn(.escape);
 
     if (next == '[') {
         // CSI sequence: ESC [ ...
-        const code = readByteFn(reader) catch return .escape;
+        const code = readByteFn(reader) catch return keyIn(.escape);
         return switch (code) {
-            'A' => .up,
-            'B' => .down,
-            'C' => .right,
-            'D' => .left,
-            'H' => .home,
-            'F' => .end,
+            'A' => keyIn(.up),
+            'B' => keyIn(.down),
+            'C' => keyIn(.right),
+            'D' => keyIn(.left),
+            'H' => keyIn(.home),
+            'F' => keyIn(.end),
+            // Focus in/out (DECSET 1004). `ESC [ O` is distinct from the SS3
+            // `ESC O …` below (no intervening `[`).
+            'I' => .{ .focus = .in },
+            'O' => .{ .focus = .out },
+            // SGR mouse (DECSET 1006): ESC [ < Cb ; Cx ; Cy (M|m).
+            '<' => parseMouseSgr(reader),
             '3' => blk: {
                 // ESC [ 3 ~ = Delete
-                const tilde = readByteFn(reader) catch break :blk .escape;
-                if (tilde == '~') break :blk .delete;
-                break :blk .escape;
+                const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
+                if (tilde == '~') break :blk keyIn(.delete);
+                break :blk keyIn(.escape);
             },
-            else => .escape,
+            else => keyIn(.escape),
         };
     } else if (next == 'O') {
         // SS3 sequence: ESC O ...
-        const code = readByteFn(reader) catch return .escape;
+        const code = readByteFn(reader) catch return keyIn(.escape);
         return switch (code) {
-            'H' => .home,
-            'F' => .end,
-            else => .escape,
+            'H' => keyIn(.home),
+            'F' => keyIn(.end),
+            else => keyIn(.escape),
         };
     }
 
-    return .escape;
+    return keyIn(.escape);
+}
+
+/// Parse the tail of an SGR mouse report (`ESC [ <` already consumed):
+/// `Cb ; Cx ; Cy` then `M` (press) or `m` (release). Any malformed byte
+/// collapses to `.escape` rather than desyncing the stream.
+fn parseMouseSgr(reader: anytype) !Input {
+    const cb = readCsiNum(reader) catch return keyIn(.escape);
+    if (cb.term != ';') return keyIn(.escape);
+    const cx = readCsiNum(reader) catch return keyIn(.escape);
+    if (cx.term != ';') return keyIn(.escape);
+    const cy = readCsiNum(reader) catch return keyIn(.escape);
+    if (cy.term != 'M' and cy.term != 'm') return keyIn(.escape);
+    return .{ .mouse = decodeMouse(cb.val, cx.val, cy.val, cy.term == 'M') };
+}
+
+const CsiNum = struct { val: u16, term: u8 };
+
+/// Read a decimal parameter and the non-digit byte that terminated it.
+fn readCsiNum(reader: anytype) !CsiNum {
+    var val: u16 = 0;
+    var any = false;
+    while (true) {
+        const b = try readByteFn(reader);
+        if (b >= '0' and b <= '9') {
+            val = val *% 10 +% (b - '0');
+            any = true;
+        } else {
+            if (!any) return error.InvalidMouse;
+            return .{ .val = val, .term = b };
+        }
+    }
+}
+
+/// Decode an SGR button code into a `Mouse`. Low 2 bits pick the button; bit 6
+/// (64) marks a wheel; bit 5 (32) marks motion (drag with a button, else move);
+/// bits 2/3/4 are shift/alt/ctrl.
+fn decodeMouse(cb: u16, x: u16, y: u16, press: bool) Mouse {
+    const wheel = (cb & 64) != 0;
+    const motion = (cb & 32) != 0;
+    const low = cb & 3;
+
+    var button: Mouse.Button = .none;
+    var action: Mouse.Action = if (press) .press else .release;
+    if (wheel) {
+        button = if (low == 0) .wheel_up else .wheel_down;
+        action = .press;
+    } else {
+        button = switch (low) {
+            0 => .left,
+            1 => .middle,
+            2 => .right,
+            else => .none,
+        };
+        if (motion) action = if (button == .none) .move else .drag;
+    }
+
+    return .{
+        .x = x,
+        .y = y,
+        .button = button,
+        .action = action,
+        .mods = .{
+            .shift = (cb & 4) != 0,
+            .alt = (cb & 8) != 0,
+            .ctrl = (cb & 16) != 0,
+        },
+    };
 }
 
 /// Whether more of an escape sequence follows the ESC byte: true if bytes are
@@ -288,4 +408,66 @@ test "readKey parses delete" {
     var reader: std.Io.Reader = .fixed(&buf);
     const k = try readKey(&reader);
     try std.testing.expect(k == .delete);
+}
+
+fn parseInput(comptime bytes: []const u8) !Input {
+    var buf: [bytes.len]u8 = undefined;
+    @memcpy(&buf, bytes);
+    var reader: std.Io.Reader = .fixed(&buf);
+    return readInput(&reader, null);
+}
+
+test "readInput parses an SGR mouse press" {
+    // ESC [ < 0 ; 10 ; 5 M — left button press at (10, 5).
+    const i = try parseInput("\x1b[<0;10;5M");
+    try std.testing.expectEqual(Mouse{
+        .x = 10,
+        .y = 5,
+        .button = .left,
+        .action = .press,
+        .mods = .{},
+    }, i.mouse);
+}
+
+test "readInput distinguishes press (M) from release (m)" {
+    try std.testing.expectEqual(Mouse.Action.press, (try parseInput("\x1b[<2;1;1M")).mouse.action);
+    const rel = (try parseInput("\x1b[<2;1;1m")).mouse;
+    try std.testing.expectEqual(Mouse.Action.release, rel.action);
+    try std.testing.expectEqual(Mouse.Button.right, rel.button);
+}
+
+test "readInput decodes wheel, drag, and modifiers" {
+    // 64 = wheel bit, low 2 bits 0 -> wheel up.
+    const wheel = (try parseInput("\x1b[<64;3;3M")).mouse;
+    try std.testing.expectEqual(Mouse.Button.wheel_up, wheel.button);
+    try std.testing.expectEqual(Mouse.Action.press, wheel.action);
+
+    // 32 = motion bit, low 2 bits 0 (left held) -> left drag.
+    const drag = (try parseInput("\x1b[<32;5;5M")).mouse;
+    try std.testing.expectEqual(Mouse.Button.left, drag.button);
+    try std.testing.expectEqual(Mouse.Action.drag, drag.action);
+
+    // 16 = ctrl modifier on a left press.
+    const ctrl = (try parseInput("\x1b[<16;1;1M")).mouse;
+    try std.testing.expect(ctrl.mods.ctrl and !ctrl.mods.shift and !ctrl.mods.alt);
+}
+
+test "readInput handles multi-digit mouse coordinates" {
+    const m = (try parseInput("\x1b[<0;120;48M")).mouse;
+    try std.testing.expectEqual(@as(u16, 120), m.x);
+    try std.testing.expectEqual(@as(u16, 48), m.y);
+}
+
+test "readInput parses focus in/out" {
+    try std.testing.expectEqual(Focus.in, (try parseInput("\x1b[I")).focus);
+    try std.testing.expectEqual(Focus.out, (try parseInput("\x1b[O")).focus);
+}
+
+test "readInput still parses keys" {
+    try std.testing.expectEqual(Key.up, (try parseInput("\x1b[A")).key);
+    try std.testing.expectEqual(Key{ .char = 'a' }, (try parseInput("a")).key);
+}
+
+test "malformed mouse sequence degrades to escape, not a desync" {
+    try std.testing.expectEqual(Key.escape, (try parseInput("\x1b[<0;xM")).key);
 }

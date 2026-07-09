@@ -277,27 +277,37 @@ const topics = [_]Topic{
         \\visible static tail. progress and prompts render on this engine.
         \\
         \\Full-screen (alt-screen TUI): `context.uiFullScreen()` takes the whole
-        \\screen over on the same engine, owns raw mode, and reads input. Write
-        \\your own loop — `app.frame(view(state))` then `app.nextEvent(timeout)`;
-        \\a null timeout blocks, a number returns null on expiry (for a tick).
-        \\Ctrl-C arrives as a key. `emit` is unavailable; leaving restores the
-        \\shell exactly (the final frame does not persist).
+        \\screen over on the same engine, owns raw mode, and reads input. Ctrl-C
+        \\arrives as a key; `emit` is unavailable; leaving restores the shell
+        \\exactly (the final frame does not persist). Opt into mouse/focus with
+        \\`.{ .mouse = true, .focus = true }` — they surface as `Event.mouse` /
+        \\`Event.focus`.
+        \\
+        \\`app.run` owns the loop for you (tick delivered as a null event,
+        \\deadline-scheduled); `update` returns `.keep` or `.quit`:
         \\
         \\  // main.zig — required, else a panic strands the alt-screen:
         \\  pub const panic = zcli.ui.panic;
         \\
         \\  var app = try context.uiFullScreen(.{});
         \\  defer app.deinit();
-        \\  while (running) {
-        \\      try app.frame(try view(app.arena(), &state));
-        \\      switch (try app.nextEvent(250) orelse { tick(&state); continue; }) {
-        \\          .key => |k| update(&state, k),
-        \\          .resize => {},
+        \\  try app.run(context.io, &state, 250, view, update);
+        \\
+        \\  fn update(s: *State, ev: ?ui.Event) !ui.Flow {
+        \\      const e = ev orelse { tick(s); return .keep; };  // null = tick
+        \\      switch (e) {
+        \\          .key => |k| if (k == .char and k.char == 'q') return .quit,
+        \\          .mouse => |m| s.cursor = .{ m.x, m.y },
+        \\          else => {},
         \\      }
+        \\      return .keep;
         \\  }
         \\
-        \\Runnable example: packages/ui/examples/fullscreen.zig (a top-style
-        \\table on a nextEvent tick). Kill/panic restore the terminal too.
+        \\Prefer the explicit loop? `app.frame(view(state))` +
+        \\`app.nextEvent(timeout)` (null blocks; a number returns null on expiry)
+        \\is what `run` wraps. Runnable example:
+        \\packages/ui/examples/fullscreen.zig (a top-style table, mouse + focus).
+        \\Kill/panic restore the terminal too.
         \\
         ,
     },
