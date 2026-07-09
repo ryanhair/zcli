@@ -1,8 +1,8 @@
 //! A focusable form (ADR-0018): two text fields, a select, a checkbox, and a
-//! submit button, with Tab / Shift-Tab (and Enter) moving focus, ↑/↓ picking
-//! within the select, Space toggling the checkbox, the button signing in on
-//! Enter/Space, and Esc quitting. It shows the whole widget contract in one
-//! screen:
+//! submit button, with Tab / Shift-Tab (and Enter) moving focus, a mouse click
+//! focusing a field (ADR-0019), ↑/↓ picking within the select, Space toggling
+//! the checkbox, the button signing in on Enter/Space, and Esc quitting. It
+//! shows the whole widget contract in one screen:
 //!
 //!   - each widget is a plain struct in `State` (immediate mode — no retained
 //!     widget tree);
@@ -23,6 +23,7 @@ const terminal = @import("terminal");
 pub const panic = ui.panic;
 
 const Field = enum { user, pass, role, remember, submit };
+const field_count = @typeInfo(Field).@"enum".fields.len;
 
 const roles = [_][]const u8{ "admin", "developer", "viewer", "auditor", "billing", "support" };
 // Fewer visible rows than roles, so the select scrolls and shows its ↑/↓ gutter.
@@ -40,10 +41,18 @@ const State = struct {
     submit: ui.widgets.Button = .{},
     focus: Field = .user,
     submitted: bool = false,
+    // Where each field last rendered — filled by `ui.probe` in `view`, read by
+    // `update` to map a mouse click to a field (ADR-0019). Click-to-focus needs
+    // nothing more than these rects.
+    rects: [field_count]ui.Rect = [_]ui.Rect{.{ .x = 0, .y = 0, .w = 0, .h = 0 }} ** field_count,
 
     fn wire(self: *State) void {
         self.user.buffer = &self.user_buf;
         self.pass.buffer = &self.pass_buf;
+    }
+
+    fn rect(self: *State, f: Field) *ui.Rect {
+        return &self.rects[@intFromEnum(f)];
     }
 };
 
@@ -62,7 +71,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
             if (state.remember.checked) " · remembered" else "",
         })
     else
-        "Tab/Enter next · Shift-Tab back · ↑/↓ pick role · Space toggles · Esc quit";
+        "Tab/Enter next · click a field · ↑/↓ pick role · Space toggles · Esc quit";
 
     const form = try ui.column(a, .{
         .border = .rounded,
@@ -72,27 +81,29 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         .width = .{ .len = 46 },
     }, &.{
         ui.text(.{ .bold = true }, "Sign in"),
-        try labeled(a, "User", try state.user.view(a, .{
+        // Each field is wrapped in `ui.probe` so its on-screen rect lands in
+        // `state.rects` — that's all click-to-focus needs.
+        try ui.probe(a, state.rect(.user), try labeled(a, "User", try state.user.view(a, .{
             .focused = state.focus == .user,
             .placeholder = "username",
-        })),
-        try labeled(a, "Pass", try state.pass.view(a, .{
+        }))),
+        try ui.probe(a, state.rect(.pass), try labeled(a, "Pass", try state.pass.view(a, .{
             .focused = state.focus == .pass,
             .placeholder = "password",
-        })),
-        try labeled(a, "Role", try state.role.view(a, .{
+        }))),
+        try ui.probe(a, state.rect(.role), try labeled(a, "Role", try state.role.view(a, .{
             .focused = state.focus == .role,
             .options = &roles,
             .height = role_rows,
-        })),
-        try state.remember.view(a, .{
+        }))),
+        try ui.probe(a, state.rect(.remember), try state.remember.view(a, .{
             .focused = state.focus == .remember,
             .label = "Remember me",
-        }),
-        try state.submit.view(a, .{
+        })),
+        try ui.probe(a, state.rect(.submit), try state.submit.view(a, .{
             .focused = state.focus == .submit,
             .label = "Sign in",
-        }),
+        })),
         ui.text(.{ .dim = !state.submitted }, status),
     });
 
@@ -108,6 +119,24 @@ fn edited(state: *State) ui.Flow {
 
 fn update(state: *State, ev: ?ui.Event) !ui.Flow {
     const e = ev orelse return .keep;
+
+    // Click-to-focus (ADR-0019): map a left-click to the field whose probed rect
+    // contains it. Mouse coords are 1-based; the surface is 0-based.
+    if (e == .mouse) {
+        const m = e.mouse;
+        if (m.button == .left and m.action == .press) {
+            const px = m.x -| 1;
+            const py = m.y -| 1;
+            for (state.rects, 0..) |r, i| {
+                if (px >= r.x and px < r.x + r.w and py >= r.y and py < r.y + r.h) {
+                    state.focus = @enumFromInt(i);
+                    break;
+                }
+            }
+        }
+        return .keep;
+    }
+
     const key = switch (e) {
         .key => |k| k,
         else => return .keep,
@@ -160,6 +189,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try ui.App.initFullScreen(gpa, &stdout.interface, .{
         .capability = .ansi_256,
         .stdin = &stdin.interface,
+        .mouse = true, // click-to-focus (ADR-0019)
     });
     defer app.deinit();
 

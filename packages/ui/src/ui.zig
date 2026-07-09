@@ -151,6 +151,56 @@ pub fn spacer() Node {
     return .{ .kind = .spacer };
 }
 
+/// Report where `child` lands on screen (ADR-0019). A layout-transparent
+/// wrapper: it lays out and paints `child` exactly as if it weren't here, and as
+/// a side effect writes the child's absolute rendered rect into `out`. Because
+/// `view` runs inside `frame` before the next event, `out` reflects the current
+/// frame — a click can be hit-tested against the very layout it's reacting to.
+///
+/// The rect is in surface coordinates, which in full-screen ARE screen
+/// coordinates (the surface fills the viewport from the origin). This is the
+/// position feedback the immediate-mode tree otherwise discards — the basis for
+/// mouse hit-testing, a hardware cursor, and anchored popups.
+///
+/// `out` is only written when `child` actually paints; a child clipped to zero
+/// size leaves it untouched (so zero-init or reset it if that matters).
+pub fn probe(a: std.mem.Allocator, out: *Rect, child: Node) !Node {
+    const ctx = try a.create(Probe);
+    ctx.* = .{ .child = child, .out = out };
+    // Copy the child's sizing so the parent measures/places the wrapper exactly
+    // as it would the child — the wrapper adds a rect report, never a layout.
+    return .{
+        .width = child.width,
+        .height = child.height,
+        .align_self = child.align_self,
+        .min_width = child.min_width,
+        .max_width = child.max_width,
+        .min_height = child.min_height,
+        .max_height = child.max_height,
+        .kind = .{ .custom = .{
+            .context = ctx,
+            .measureFn = Probe.measureFn,
+            .renderFn = Probe.renderFn,
+        } },
+    };
+}
+
+const Probe = struct {
+    child: Node,
+    out: *Rect,
+
+    fn measureFn(context: *anyopaque, rctx: *const RenderCtx, limits: Limits) Size {
+        const self: *const Probe = @ptrCast(@alignCast(context));
+        return measure(rctx, &self.child, limits);
+    }
+
+    fn renderFn(context: *anyopaque, rctx: *const RenderCtx, region: Region) anyerror!void {
+        const self: *const Probe = @ptrCast(@alignCast(context));
+        self.out.* = region.rect;
+        try render(rctx, &self.child, region);
+    }
+};
+
 /// Center `child` within the region its parent grants — spacer scaffolding for
 /// placing an overlay layer in the middle of a `stack` (a modal, a dialog).
 /// `child` sizes to its content; the surrounding scaffold is style-less, hence
