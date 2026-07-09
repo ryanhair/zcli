@@ -41,6 +41,11 @@ const State = struct {
     procs: [proc_names.len]Proc = undefined,
     last_mouse: ?ui.Mouse = null,
     focused: bool = true,
+    // A printable preview of the last paste (copied out — `Event.paste` is only
+    // borrowed for the current event).
+    paste_len: usize = 0,
+    paste_head: [24]u8 = undefined,
+    paste_head_len: usize = 0,
 
     fn init() State {
         var s = State{};
@@ -97,9 +102,14 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         try std.fmt.allocPrint(a, "{s} @ {d},{d}", .{ @tagName(m.button), m.x, m.y })
     else
         "—";
-    const status = try std.fmt.allocPrint(a, "↑/↓ select   click a cell   q quit    focus:{s}  mouse:{s}", .{
+    const paste = if (state.paste_len > 0)
+        try std.fmt.allocPrint(a, "{d}b \"{s}\"", .{ state.paste_len, state.paste_head[0..state.paste_head_len] })
+    else
+        "—";
+    const status = try std.fmt.allocPrint(a, "↑/↓ select   click a cell   paste   q quit    focus:{s}  mouse:{s}  paste:{s}", .{
         if (state.focused) "on" else "off",
         mouse,
+        paste,
     });
     try rows.append(a, ui.text(.{ .dim = true }, status));
 
@@ -139,6 +149,13 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             }
         },
         .focus => |f| state.focused = f == .in,
+        .paste => |p| {
+            state.paste_len = p.len;
+            state.paste_head_len = @min(p.len, state.paste_head.len);
+            for (p[0..state.paste_head_len], 0..) |c, i| {
+                state.paste_head[i] = if (c >= 0x20 and c < 0x7f) c else ' ';
+            }
+        },
         .resize => {},
     }
     return .keep;
@@ -166,6 +183,7 @@ pub fn main(init: std.process.Init) !void {
         .stdin = &stdin.interface,
         .mouse = true,
         .focus = true,
+        .paste = true,
     });
     defer app.deinit(); // leaves alt-screen, restores cooked mode + cursor
 

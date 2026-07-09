@@ -12,14 +12,22 @@ const key = @import("key.zig");
 const backend = @import("backend.zig");
 
 /// An input event: a key press, a terminal resize, or — when their modes are
-/// enabled — a mouse report or a focus change. Resize is out-of-band (from the
-/// watcher); the rest are parsed from the byte stream by `key.readInput`.
+/// enabled — a mouse report, focus change, or bracketed paste. Resize is
+/// out-of-band (from the watcher); the rest are parsed from the byte stream by
+/// `key.readInput`.
 pub const Event = union(enum) {
     key: key.Key,
     resize,
     mouse: key.Mouse,
     focus: key.Focus,
+    /// Bracketed-paste content, borrowed from the `PasteSink` (valid until the
+    /// next read — copy it if you need it longer).
+    paste: []const u8,
 };
+
+/// Where paste content is accumulated; passed by `App.nextEvent` when paste
+/// mode is on. `null` (e.g. `prompts` via `readEvent`) discards any paste.
+pub const PasteSink = key.PasteSink;
 
 /// Lift a byte-parsed `Input` into an `Event`.
 fn fromInput(input: key.Input) Event {
@@ -27,6 +35,7 @@ fn fromInput(input: key.Input) Event {
         .key => |v| .{ .key = v },
         .mouse => |v| .{ .mouse = v },
         .focus => |v| .{ .focus = v },
+        .paste => |v| .{ .paste = v },
     };
 }
 
@@ -35,7 +44,7 @@ fn fromInput(input: key.Input) Event {
 /// disambiguation and by the watcher's poll. Bytes already buffered in `reader`
 /// are consumed before polling, so no keypress is missed.
 pub fn readEvent(reader: anytype, handle: backend.Handle, watcher: *backend.ResizeWatcher) !Event {
-    return (try readEventTimeout(reader, handle, watcher, null)).?;
+    return (try readEventTimeout(reader, handle, watcher, null, null)).?;
 }
 
 /// Like `readEvent`, but return `null` if neither a key nor a resize arrives
@@ -47,12 +56,13 @@ pub fn readEventTimeout(
     handle: backend.Handle,
     watcher: *backend.ResizeWatcher,
     timeout_ms: ?u32,
+    paste: ?PasteSink,
 ) !?Event {
     // Bytes already buffered are input regardless of the deadline.
-    if (key.bufferedLen(reader) > 0) return fromInput(try key.readInput(reader, handle));
+    if (key.bufferedLen(reader) > 0) return fromInput(try key.readInput(reader, handle, paste));
     return switch (watcher.waitTimeout(handle, timeout_ms)) {
         .resize => .resize,
-        .input => fromInput(try key.readInput(reader, handle)),
+        .input => fromInput(try key.readInput(reader, handle, paste)),
         .timeout => null,
     };
 }

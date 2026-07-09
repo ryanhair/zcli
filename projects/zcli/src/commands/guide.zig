@@ -279,9 +279,10 @@ const topics = [_]Topic{
         \\Full-screen (alt-screen TUI): `context.uiFullScreen()` takes the whole
         \\screen over on the same engine, owns raw mode, and reads input. Ctrl-C
         \\arrives as a key; `emit` is unavailable; leaving restores the shell
-        \\exactly (the final frame does not persist). Opt into mouse/focus with
-        \\`.{ .mouse = true, .focus = true }` — they surface as `Event.mouse` /
-        \\`Event.focus`.
+        \\exactly (the final frame does not persist). Opt into mouse/focus/paste
+        \\with `.{ .mouse = true, .focus = true, .paste = true }` — they surface
+        \\as `Event.mouse` / `.focus` / `.paste` (paste content is borrowed until
+        \\the next event; `paste_max` caps it, default 5 MiB).
         \\
         \\`app.run` owns the loop for you (tick delivered as a null event,
         \\deadline-scheduled); `update` returns `.keep` or `.quit`:

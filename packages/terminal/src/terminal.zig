@@ -17,6 +17,7 @@ pub const readKeyOpt = key.readKeyOpt;
 /// Input event multiplexing: a key press or a terminal resize.
 pub const event = @import("event.zig");
 pub const Event = event.Event;
+pub const PasteSink = event.PasteSink;
 pub const readEvent = event.readEvent;
 pub const readEventTimeout = event.readEventTimeout;
 

@@ -60,6 +60,8 @@ const mouse_on = "\x1b[?1002h\x1b[?1006h"; // button+drag tracking, SGR encoding
 const mouse_off = "\x1b[?1002l\x1b[?1006l";
 const focus_on = "\x1b[?1004h";
 const focus_off = "\x1b[?1004l";
+const paste_on = "\x1b[?2004h"; // bracketed paste
+const paste_off = "\x1b[?2004l";
 const restore_tail = "\x1b[?25h\x1b[?1049l";
 
 pub const App = struct {
@@ -102,6 +104,12 @@ pub const App = struct {
         mouse: bool = false,
         /// Report window focus in/out as `Event.focus` (full-screen only).
         focus: bool = false,
+        /// Deliver bracketed paste as `Event.paste` (full-screen only). Off by
+        /// default; the borrowed slice is valid until the next `nextEvent`.
+        paste: bool = false,
+        /// Cap on a single paste's buffered bytes — a pathological multi-MB
+        /// paste is truncated to this, not an OOM. Only meaningful with `paste`.
+        paste_max: usize = 5 << 20, // 5 MiB
     };
 
     /// The caller-facing subset of `Options` for `context.ui()` /
@@ -115,6 +123,10 @@ pub const App = struct {
         mouse: bool = false,
         /// Report focus in/out (full-screen only; see `Options.focus`).
         focus: bool = false,
+        /// Deliver bracketed paste as `Event.paste` (see `Options.paste`).
+        paste: bool = false,
+        /// Cap on a single paste's buffered bytes (see `Options.paste_max`).
+        paste_max: usize = 5 << 20, // 5 MiB
     };
 
     /// A static block kept for the resize tail repaint (ADR-0013 resize
@@ -162,6 +174,9 @@ pub const App = struct {
     raw: ?terminal.RawMode = null,
     /// Resize watcher backing `nextEvent`, full-screen only.
     watcher: ?terminal.ResizeWatcher = null,
+    /// Reused accumulator for bracketed-paste content (full-screen, `paste`
+    /// enabled). `Event.paste` borrows its bytes until the next `nextEvent`.
+    paste_buf: std.ArrayList(u8) = .empty,
 
     pub const CursorPos = struct { x: u16, y: u16 };
 
@@ -271,6 +286,7 @@ pub const App = struct {
         try self.writer.writeAll("\x1b[?1049h\x1b[?25l");
         if (self.options.mouse) try self.writer.writeAll(mouse_on);
         if (self.options.focus) try self.writer.writeAll(focus_on);
+        if (self.options.paste) try self.writer.writeAll(paste_on);
         try self.anchor();
         try self.writer.flush();
     }
@@ -288,6 +304,7 @@ pub const App = struct {
         }.f;
         if (self.options.mouse) put(buf, &n, mouse_off);
         if (self.options.focus) put(buf, &n, focus_off);
+        if (self.options.paste) put(buf, &n, paste_off);
         put(buf, &n, restore_tail);
         return buf[0..n];
     }
@@ -297,6 +314,7 @@ pub const App = struct {
     fn writeRestore(self: *App) void {
         if (self.options.mouse) self.writer.writeAll(mouse_off) catch {};
         if (self.options.focus) self.writer.writeAll(focus_off) catch {};
+        if (self.options.paste) self.writer.writeAll(paste_off) catch {};
         self.writer.writeAll(restore_tail) catch {};
     }
 
@@ -344,6 +362,7 @@ pub const App = struct {
         }
         for (self.retained.items) |b| self.gpa.free(b.text);
         self.retained.deinit(self.gpa);
+        self.paste_buf.deinit(self.gpa);
         self.front.deinit();
         self.back.deinit();
         self.frame_arena.deinit();
@@ -569,11 +588,19 @@ pub const App = struct {
         // is no real terminal to read from.
         if (self.watcher == null) return error.NoInput;
         try self.writer.flush();
+        // The paste sink borrows `paste_buf` (reused each call); the returned
+        // `Event.paste` is valid only until the next `nextEvent`.
+        const sink: ?terminal.PasteSink = if (self.options.paste) .{
+            .buf = &self.paste_buf,
+            .allocator = self.gpa,
+            .max = self.options.paste_max,
+        } else null;
         return terminal.readEventTimeout(
             reader,
             std.Io.File.stdin().handle,
             &self.watcher.?,
             timeout_ms,
+            sink,
         );
     }
 

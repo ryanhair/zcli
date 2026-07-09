@@ -220,6 +220,8 @@ pub fn ContextFor(comptime plugins: []const type) type {
                 .stdin = self.stdin(),
                 .mouse = options.mouse,
                 .focus = options.focus,
+                .paste = options.paste,
+                .paste_max = options.paste_max,
             });
         }
 

@@ -67,13 +67,26 @@ pub const Mouse = struct {
 /// A focus change (DECSET 1004): the terminal window gained or lost focus.
 pub const Focus = enum { in, out };
 
+/// Where bracketed-paste content is accumulated. The caller owns `buf` (the App
+/// reuses one across pastes); the parser clears it, appends the content up to
+/// `max` bytes (a pathological multi-MB paste is truncated, not an OOM), and
+/// returns a slice of it as `Input.paste`. Borrowed — valid until the next read.
+pub const PasteSink = struct {
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    max: usize,
+};
+
 /// A single parsed input token from the byte stream. `readEvent` lifts this into
 /// an `Event` (adding the out-of-band `resize`); `readKey` projects it back to
-/// just the key case. Mouse/focus only arrive when their modes are enabled.
+/// just the key case. Mouse/focus/paste only arrive when their modes are enabled.
 pub const Input = union(enum) {
     key: Key,
     mouse: Mouse,
     focus: Focus,
+    /// Bracketed-paste content (DECSET 2004), borrowed from the `PasteSink`'s
+    /// buffer — copy it if you need it past the next read.
+    paste: []const u8,
 };
 
 /// Read a single byte from a reader.
@@ -117,14 +130,14 @@ pub fn readKeyOpt(reader: anytype, esc_handle: backend.Handle) !Key {
 /// Read one input token — a key, or (when their modes are enabled) a mouse or
 /// focus event. The single byte→token parser; `readKey` and the event
 /// multiplexer both funnel through it.
-pub fn readInput(reader: anytype, esc_handle: ?backend.Handle) !Input {
+pub fn readInput(reader: anytype, esc_handle: ?backend.Handle, paste: ?PasteSink) !Input {
     const byte = try readByteFn(reader);
 
     return switch (byte) {
         '\r', '\n' => .{ .key = .enter },
         '\t' => .{ .key = .tab },
         127 => .{ .key = .backspace },
-        '\x1b' => parseEscapeSequence(reader, esc_handle),
+        '\x1b' => parseEscapeSequence(reader, esc_handle, paste),
         // Ctrl+A through Ctrl+Z (1-26, excluding 9=tab, 10=newline, 13=cr, 27=esc)
         1...8, 11...12, 14...26 => .{ .key = .{ .ctrl = byte + 'a' - 1 } },
         // Lead byte of a multibyte UTF-8 sequence
@@ -134,13 +147,13 @@ pub fn readInput(reader: anytype, esc_handle: ?backend.Handle) !Input {
     };
 }
 
-/// Key-only projection of `readInput`. Mouse/focus tokens (which arrive only if
-/// those modes are enabled — key-only callers like `prompts` never enable them)
-/// collapse to `.escape`, harmlessly ignored.
+/// Key-only projection of `readInput`. Mouse/focus/paste tokens (which arrive
+/// only if those modes are enabled — key-only callers like `prompts` never
+/// enable them) collapse to `.escape`, harmlessly ignored.
 fn readKeyImpl(reader: anytype, esc_handle: ?backend.Handle) !Key {
-    return switch (try readInput(reader, esc_handle)) {
+    return switch (try readInput(reader, esc_handle, null)) {
         .key => |k| k,
-        .mouse, .focus => .escape,
+        .mouse, .focus, .paste => .escape,
     };
 }
 
@@ -165,7 +178,7 @@ fn keyIn(key: Key) Input {
     return .{ .key = key };
 }
 
-fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Input {
+fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle, paste: ?PasteSink) !Input {
     // A lone ESC has no following bytes. Arrow keys, etc. arrive as one chunk, so
     // their bytes are already buffered; if nothing is buffered, only the poll
     // (when a handle is given) decides — otherwise treat it as a lone Escape
@@ -195,6 +208,14 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle) !Input {
                 // ESC [ 3 ~ = Delete
                 const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
                 if (tilde == '~') break :blk keyIn(.delete);
+                break :blk keyIn(.escape);
+            },
+            '2' => blk: {
+                // ESC [ 200 ~ = bracketed-paste start (DECSET 2004). Only that
+                // exact prefix; any other ESC[2… is an unhandled CSI.
+                var m: [3]u8 = undefined;
+                for (&m) |*c| c.* = readByteFn(reader) catch break :blk keyIn(.escape);
+                if (std.mem.eql(u8, &m, "00~")) break :blk readPasteBody(reader, paste);
                 break :blk keyIn(.escape);
             },
             else => keyIn(.escape),
@@ -277,6 +298,65 @@ fn decodeMouse(cb: u16, x: u16, y: u16, press: bool) Mouse {
             .ctrl = (cb & 16) != 0,
         },
     };
+}
+
+/// The bracketed-paste terminator (`ESC [ 2 0 1 ~`). Scanned for byte-by-byte so
+/// paste content may itself contain lone ESC bytes or partial markers.
+const paste_end = "\x1b[201~";
+
+/// Read paste content (the `ESC [ 200 ~` start already consumed) up to the
+/// `ESC [ 201 ~` terminator, into `paste.buf`. Bytes matching a prefix of the
+/// terminator are held back — flushed as content only if the match breaks — so
+/// the terminator is never appended and content is preserved verbatim. Over
+/// `paste.max` bytes are dropped (scanning continues, so the terminator is still
+/// found). With no sink, the sequence is consumed and discarded (defensive: a
+/// caller that didn't enable 2004 shouldn't receive one, but must not desync).
+fn readPasteBody(reader: anytype, paste: ?PasteSink) !Input {
+    const sink = paste orelse {
+        discardPaste(reader);
+        return keyIn(.escape);
+    };
+    sink.buf.clearRetainingCapacity();
+
+    var matched: usize = 0; // bytes of `paste_end` matched so far (held back)
+    while (true) {
+        const b = readByteFn(reader) catch break; // EOF: return what we have
+        if (b == paste_end[matched]) {
+            matched += 1;
+            if (matched == paste_end.len) break; // full terminator consumed
+            continue;
+        }
+        // Match broke: the held prefix was real content. Emit it, then classify
+        // `b` (it may itself restart a match).
+        if (matched > 0) {
+            appendCapped(sink, paste_end[0..matched]);
+            matched = 0;
+        }
+        if (b == paste_end[0]) matched = 1 else appendCapped(sink, &.{b});
+    }
+    return .{ .paste = sink.buf.items };
+}
+
+/// Append `bytes` to the sink, clamped so the buffer never exceeds `max`.
+fn appendCapped(sink: PasteSink, bytes: []const u8) void {
+    const room = sink.max -| sink.buf.items.len;
+    const n = @min(room, bytes.len);
+    if (n > 0) sink.buf.appendSlice(sink.allocator, bytes[0..n]) catch {};
+}
+
+/// Consume a paste body without keeping it (no sink) — still scan to the
+/// terminator so the byte stream stays in sync.
+fn discardPaste(reader: anytype) void {
+    var matched: usize = 0;
+    while (true) {
+        const b = readByteFn(reader) catch return;
+        if (b == paste_end[matched]) {
+            matched += 1;
+            if (matched == paste_end.len) return;
+        } else {
+            matched = if (b == paste_end[0]) 1 else 0;
+        }
+    }
 }
 
 /// Whether more of an escape sequence follows the ESC byte: true if bytes are
@@ -414,7 +494,15 @@ fn parseInput(comptime bytes: []const u8) !Input {
     var buf: [bytes.len]u8 = undefined;
     @memcpy(&buf, bytes);
     var reader: std.Io.Reader = .fixed(&buf);
-    return readInput(&reader, null);
+    return readInput(&reader, null, null);
+}
+
+/// Parse `bytes` with a paste sink backed by `list` (caller owns/deinits it).
+fn parseInputPaste(comptime bytes: []const u8, list: *std.ArrayList(u8), max: usize) !Input {
+    var buf: [bytes.len]u8 = undefined;
+    @memcpy(&buf, bytes);
+    var reader: std.Io.Reader = .fixed(&buf);
+    return readInput(&reader, null, .{ .buf = list, .allocator = std.testing.allocator, .max = max });
 }
 
 test "readInput parses an SGR mouse press" {
@@ -470,4 +558,45 @@ test "readInput still parses keys" {
 
 test "malformed mouse sequence degrades to escape, not a desync" {
     try std.testing.expectEqual(Key.escape, (try parseInput("\x1b[<0;xM")).key);
+}
+
+test "readInput parses bracketed paste content" {
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    const i = try parseInputPaste("\x1b[200~hello\nworld\x1b[201~", &list, 1024);
+    try std.testing.expectEqualStrings("hello\nworld", i.paste);
+}
+
+test "paste content may contain lone ESC and partial terminators" {
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    // An ESC that isn't the terminator, and "\x1b[201" without the closing '~'.
+    const i = try parseInputPaste("\x1b[200~a\x1bb\x1b[201x\x1b[201~", &list, 1024);
+    try std.testing.expectEqualStrings("a\x1bb\x1b[201x", i.paste);
+}
+
+test "paste is truncated at max, terminator still found" {
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    const i = try parseInputPaste("\x1b[200~abcdefgh\x1b[201~", &list, 3);
+    try std.testing.expectEqualStrings("abc", i.paste); // capped, no desync
+}
+
+test "paste sink is reused across pastes (borrowed slice)" {
+    var buf = "\x1b[200~one\x1b[201~\x1b[200~two!\x1b[201~".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(std.testing.allocator);
+    const sink = PasteSink{ .buf = &list, .allocator = std.testing.allocator, .max = 1024 };
+    try std.testing.expectEqualStrings("one", (try readInput(&reader, null, sink)).paste);
+    try std.testing.expectEqualStrings("two!", (try readInput(&reader, null, sink)).paste);
+}
+
+test "paste with no sink is consumed, not desynced" {
+    // ESC[200~…ESC[201~ then a real key: the paste is discarded (escape) and the
+    // following key parses cleanly.
+    var buf = "\x1b[200~junk\x1b[201~a".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    try std.testing.expectEqual(Key.escape, (try readInput(&reader, null, null)).key);
+    try std.testing.expectEqual(Key{ .char = 'a' }, (try readInput(&reader, null, null)).key);
 }

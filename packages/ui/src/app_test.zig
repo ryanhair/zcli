@@ -490,11 +490,27 @@ test "full_screen enables mouse + focus on enter and disables them on deinit" {
     try testing.expect(mouse_off < alt_off and focus_off < alt_off);
 }
 
-test "full_screen leaves mouse/focus modes untouched when not requested" {
+test "full_screen leaves mouse/focus/paste modes untouched when not requested" {
     var h = try Harness.initMode(20, 6, .full_screen);
     defer h.deinit();
     try testing.expect(std.mem.indexOf(u8, h.aw.written(), "\x1b[?1002h") == null);
     try testing.expect(std.mem.indexOf(u8, h.aw.written(), "\x1b[?1004h") == null);
+    try testing.expect(std.mem.indexOf(u8, h.aw.written(), "\x1b[?2004h") == null);
+}
+
+test "full_screen enables paste on enter and disables it on deinit" {
+    var aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer aw.deinit();
+    var app = try ui.App.initFullScreen(testing.allocator, &aw.writer, .{
+        .term_size = .{ .w = 20, .h = 6 },
+        .paste = true,
+    });
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "\x1b[?2004h") != null);
+    app.deinit();
+    const out = aw.written();
+    const paste_off = std.mem.indexOf(u8, out, "\x1b[?2004l").?;
+    const alt_off = std.mem.lastIndexOf(u8, out, "\x1b[?1049l").?;
+    try testing.expect(paste_off < alt_off);
 }
 
 test "full_screen resize repaints the whole new viewport" {
