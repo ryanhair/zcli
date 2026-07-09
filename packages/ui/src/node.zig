@@ -48,7 +48,10 @@ pub const Dim = union(enum) {
 };
 
 pub const Align = enum { start, center, end };
-pub const Direction = enum { row, column };
+/// How a box arranges its children. `row`/`column` distribute space along that
+/// axis; `stack` overlaps them in the same region (z-layers, ADR-0016) —
+/// declaration order is z-order, later children composite over earlier ones.
+pub const Direction = enum { row, column, stack };
 pub const WrapMode = enum { wrap, truncate, clip };
 
 pub const BorderStyle = enum { none, single, rounded, double, ascii };
@@ -207,6 +210,22 @@ fn measureBox(ctx: *const RenderCtx, b: *const Box, limits: Limits) Size {
     const chrome_h: u32 = @as(u32, b.padding.top) + b.padding.bottom + borderCols(b) * 2;
     const inner = limits.shrink(chrome_w, chrome_h);
 
+    // A stack's layers overlap, so it wants the LARGEST child on both axes
+    // (a `row`/`column` sums its main axis; a stack maxes both).
+    if (b.dir == .stack) {
+        var w: u32 = 0;
+        var h: u32 = 0;
+        for (b.children) |*child| {
+            const s = measure(ctx, child, inner);
+            w = @max(w, s.w);
+            h = @max(h, s.h);
+        }
+        return .{
+            .w = @intCast(@min(chrome_w + w, limits.max_w)),
+            .h = @intCast(@min(chrome_h + h, limits.max_h)),
+        };
+    }
+
     var main_used: u32 = 0;
     var cross_max: u32 = 0;
     var first = true;
@@ -305,7 +324,12 @@ fn prefixForWidth(text: []const u8, width: u16) usize {
 }
 
 fn renderBox(ctx: *const RenderCtx, b: *const Box, region: Region) !void {
-    region.fill(b.style);
+    // A box paints its background only when it has a style; a style-less box is
+    // transparent, so in a `.stack` the layer beneath shows through its gaps
+    // (ADR-0016). In flow layout the surface is pre-cleared every frame, so
+    // skipping the blank-fill is invisible there — it only matters when an
+    // earlier stack layer already painted underneath.
+    if (!surface_mod.styleEql(b.style, .{})) region.fill(b.style);
     try drawBorder(ctx, b, region);
 
     const bc = borderCols(b);
@@ -316,6 +340,16 @@ fn renderBox(ctx: *const RenderCtx, b: *const Box, region: Region) !void {
         .h = @intCast(region.height() -| (@as(u32, b.padding.top) + b.padding.bottom + bc * 2)),
     });
     if (b.children.len == 0 or inner.width() == 0 or inner.height() == 0) return;
+
+    // Z-layers (ADR-0016): every child is granted the FULL inner region and
+    // painted in declaration order, so a later layer composites over an earlier
+    // one. A bare layer fills the stack; size and position a layer (a modal,
+    // a toast) with `ui.center` or spacer scaffolding — the scaffold boxes are
+    // style-less, hence transparent, so the base shows around the placed layer.
+    if (b.dir == .stack) {
+        for (b.children) |*child| try render(ctx, child, inner);
+        return;
+    }
 
     // --- Distribute the main axis: len, then fit in declaration order, then
     // fill by weight with largest-remainder rounding (ADR-0013 §5).

@@ -309,3 +309,77 @@ test "component functions compose: children are arena-copied, not borrowed" {
     try renderInto(&h, n, &s);
     try testing.expectEqualStrings("ok        3s", try rowString(&h, &s, 0));
 }
+
+// ============================================================================
+// Stack (z-layers / overlays, ADR-0016)
+// ============================================================================
+
+test "stack measures to its largest child on both axes" {
+    var h = Harness.init();
+    defer h.deinit();
+    const rctx = h.ctx();
+
+    const n = try ui.stack(h.a(), .{}, &.{
+        ui.textOpts(.{ .wrap = .clip }, "wide text"), // 9 x 1
+        try ui.column(h.a(), .{}, &.{ ui.text(.{}, "a"), ui.text(.{}, "b") }), // 1 x 2
+    });
+    // Layers overlap, so the stack is the widest AND the tallest child.
+    try testing.expectEqual(
+        ui.Size{ .w = 9, .h = 2 },
+        ui.measure(&rctx, &n, .{ .max_w = 20, .max_h = 10 }),
+    );
+}
+
+test "stack paints layers back to front; a later layer wins shared cells" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 4, 1);
+    defer s.deinit();
+
+    const n = try ui.stack(h.a(), .{}, &.{
+        ui.textOpts(.{ .wrap = .clip }, "...."), // base fills the row
+        ui.textOpts(.{ .wrap = .clip }, "AB"), // top layer covers two cells
+    });
+    try renderInto(&h, n, &s);
+    // Top layer wins cols 0-1; its untouched cols 2-3 show the base through.
+    try testing.expectEqualStrings("AB..", try rowString(&h, &s, 0));
+}
+
+test "an opaque layer erases the base beneath while the scaffold stays transparent" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 3, 3);
+    defer s.deinit();
+
+    const n = try ui.stack(h.a(), .{}, &.{
+        // Base: fills 3x3 with a reverse-styled background.
+        try ui.column(h.a(), .{ .style = .{ .reverse = true } }, &.{}),
+        // Modal: a 1x1 bold cell, centered → lands on the middle cell (1,1).
+        try ui.center(h.a(), try ui.column(h.a(), .{
+            .width = .{ .len = 1 },
+            .height = .{ .len = 1 },
+            .style = .{ .bold = true },
+        }, &.{})),
+    });
+    try renderInto(&h, n, &s);
+    // The opaque modal replaced the base on its own cell...
+    try testing.expect(s.cell(1, 1).style.bold and !s.cell(1, 1).style.reverse);
+    // ...but the style-less centering scaffold left the base intact elsewhere.
+    try testing.expect(s.cell(0, 0).style.reverse and !s.cell(0, 0).style.bold);
+    try testing.expect(s.cell(2, 2).style.reverse);
+}
+
+test "a stack carries box chrome: a border insets its layers" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 4, 3);
+    defer s.deinit();
+
+    const n = try ui.stack(h.a(), .{ .border = .single }, &.{
+        ui.textOpts(.{ .wrap = .clip }, "XX"),
+    });
+    try renderInto(&h, n, &s);
+    try testing.expectEqualStrings("┌──┐", try rowString(&h, &s, 0));
+    try testing.expectEqualStrings("│XX│", try rowString(&h, &s, 1));
+    try testing.expectEqualStrings("└──┘", try rowString(&h, &s, 2));
+}

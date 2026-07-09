@@ -193,3 +193,77 @@ test "style-only change repaints in place" {
     try testing.expectEqual(vterm.Color.yellow, vt.getTextColor(0, 0));
     try testing.expect(vt.hasAttribute(0, 0, .bold));
 }
+
+test "a centered overlay composites over the base through the renderer" {
+    var vt = try VTerm.init(testing.allocator, 9, 3);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var s = try Surface.init(testing.allocator, 9, 3);
+    defer s.deinit();
+
+    const rctx = ui.RenderCtx{ .allocator = a };
+    const n = try ui.stack(a, .{}, &.{
+        try ui.column(a, .{}, &.{
+            ui.textOpts(.{ .wrap = .clip }, "........."),
+            ui.textOpts(.{ .wrap = .clip }, "........."),
+            ui.textOpts(.{ .wrap = .clip }, "........."),
+        }),
+        try ui.center(a, ui.textOpts(.{ .wrap = .clip }, "MID")),
+    });
+    try ui.render(&rctx, &n, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // The overlay sits on the middle row, base dots on either side of it —
+    // compositing survives the diff renderer and lands where the surface says.
+    try testing.expect(vt.containsText("MID"));
+    try testing.expectEqual(@as(u21, 'M'), vt.getCell(3, 1).char);
+    try testing.expectEqual(@as(u21, '.'), vt.getCell(0, 1).char);
+    try testing.expectEqual(@as(u21, '.'), vt.getCell(8, 1).char);
+    // Rows above and below the overlay stay pure base.
+    try testing.expectEqual(@as(u21, '.'), vt.getCell(4, 0).char);
+    try testing.expectEqual(@as(u21, '.'), vt.getCell(4, 2).char);
+}
+
+test "closing an overlay repaints the base underneath it" {
+    var vt = try VTerm.init(testing.allocator, 9, 3);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    const baseLayer = struct {
+        fn build(alloc: std.mem.Allocator) !ui.Node {
+            return ui.column(alloc, .{}, &.{
+                ui.textOpts(.{ .wrap = .clip }, "........."),
+                ui.textOpts(.{ .wrap = .clip }, "........."),
+                ui.textOpts(.{ .wrap = .clip }, "........."),
+            });
+        }
+    }.build;
+
+    // Frame 1: base with a centered overlay.
+    var withOverlay = try Surface.init(testing.allocator, 9, 3);
+    defer withOverlay.deinit();
+    const f1 = try ui.stack(a, .{}, &.{
+        try baseLayer(a),
+        try ui.center(a, ui.textOpts(.{ .wrap = .clip }, "MID")),
+    });
+    try ui.render(&rctx, &f1, withOverlay.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &withOverlay);
+    try testing.expect(vt.containsText("MID"));
+
+    // Frame 2: overlay removed — the base cells it covered must come back.
+    var baseOnly = try Surface.init(testing.allocator, 9, 3);
+    defer baseOnly.deinit();
+    const f2 = try baseLayer(a);
+    try ui.render(&rctx, &f2, baseOnly.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, &withOverlay, &baseOnly);
+
+    try testing.expect(!vt.containsText("MID"));
+    try testing.expectEqual(@as(u21, '.'), vt.getCell(3, 1).char);
+    try testing.expectEqual(@as(u21, '.'), vt.getCell(5, 1).char);
+}

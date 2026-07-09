@@ -85,6 +85,17 @@ pub fn column(a: std.mem.Allocator, opts: BoxOpts, children: []const Node) !Node
     return box(a, .column, opts, children);
 }
 
+/// Overlapping layers, back to front (ADR-0016). Children share one region and
+/// paint in declaration order, so each composites over the ones before it — the
+/// z-layer / overlay primitive. A style-less layer is transparent (lower layers
+/// show through its gaps); a layer with a background is opaque. Each layer is
+/// granted the whole stack, so a bare layer fills it — place a smaller layer (a
+/// modal, a toast) with `center` or spacer scaffolding. Reuses `BoxOpts`, so a
+/// stack can carry its own border/padding/background like any box.
+pub fn stack(a: std.mem.Allocator, opts: BoxOpts, children: []const Node) !Node {
+    return box(a, .stack, opts, children);
+}
+
 pub fn box(a: std.mem.Allocator, dir: Direction, opts: BoxOpts, children: []const Node) !Node {
     return .{
         .width = opts.width,
@@ -135,6 +146,18 @@ pub fn textOpts(opts: TextOpts, content: []const u8) Node {
 /// by preceding with a spacer; center by surrounding with two.
 pub fn spacer() Node {
     return .{ .kind = .spacer };
+}
+
+/// Center `child` within the region its parent grants — spacer scaffolding for
+/// placing an overlay layer in the middle of a `stack` (a modal, a dialog).
+/// `child` sizes to its content; the surrounding scaffold is style-less, hence
+/// transparent, so in a stack the layer beneath shows around it.
+pub fn center(a: std.mem.Allocator, child: Node) !Node {
+    return column(a, .{}, &.{
+        spacer(),
+        try row(a, .{}, &.{ spacer(), child, spacer() }),
+        spacer(),
+    });
 }
 
 test {
