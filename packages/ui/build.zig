@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
 
     // Runnable examples — `zig build run-<name>` (they animate, so they need
     // a real terminal). Each is compiled by `test` so it can't bitrot.
-    const example_names = [_][]const u8{ "demo", "hybrid", "fullscreen" };
+    const example_names = [_][]const u8{ "demo", "hybrid", "fullscreen", "form" };
     for (example_names) |name| {
         const exe = b.addExecutable(.{
             .name = b.fmt("ui-{s}", .{name}),

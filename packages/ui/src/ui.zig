@@ -26,6 +26,9 @@ pub const Renderer = @import("diff.zig").Renderer;
 pub const App = @import("app.zig").App;
 /// Full-screen input event (`App.nextEvent`) — a key, resize, mouse, or focus.
 pub const Event = @import("app.zig").Event;
+/// A key press (`Event.key`), re-exported from `terminal` for widget `handle`
+/// signatures (`ui.widgets.TextInput.handle(key)`).
+pub const Key = terminal.Key;
 /// Mouse report / focus change carried by `Event` (full-screen, when enabled).
 pub const Mouse = terminal.Mouse;
 pub const Focus = terminal.Focus;
