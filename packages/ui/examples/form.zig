@@ -1,6 +1,7 @@
-//! A focusable form (ADR-0018): two text fields and a checkbox, with Tab /
-//! Shift-Tab moving focus, Enter submitting, and Esc quitting. It shows the
-//! whole widget contract in one screen:
+//! A focusable form (ADR-0018): two text fields, a select, and a checkbox, with
+//! Tab / Shift-Tab moving focus, ↑/↓ picking within the select, Enter
+//! submitting, and Esc quitting. It shows the whole widget contract in one
+//! screen:
 //!
 //!   - each widget is a plain struct in `State` (immediate mode — no retained
 //!     widget tree);
@@ -20,7 +21,10 @@ const terminal = @import("terminal");
 
 pub const panic = ui.panic;
 
-const Field = enum { user, pass, remember };
+const Field = enum { user, pass, role, remember };
+
+const roles = [_][]const u8{ "admin", "developer", "viewer" };
+const role_rows: u16 = roles.len;
 
 const State = struct {
     user_buf: [48]u8 = undefined,
@@ -29,6 +33,7 @@ const State = struct {
     // final address (a self-referential struct can't do it in the initializer).
     user: ui.widgets.TextInput = .{ .buffer = &.{} },
     pass: ui.widgets.TextInput = .{ .buffer = &.{}, .mask = '*' },
+    role: ui.widgets.Select = .{},
     remember: ui.widgets.Checkbox = .{},
     focus: Field = .user,
     submitted: bool = false,
@@ -48,12 +53,13 @@ fn labeled(a: std.mem.Allocator, label: []const u8, field: ui.Node) !ui.Node {
 
 fn view(a: std.mem.Allocator, state: *State) !ui.Node {
     const status = if (state.submitted)
-        try std.fmt.allocPrint(a, "✓ signed in as \"{s}\"{s}", .{
+        try std.fmt.allocPrint(a, "✓ signed in as \"{s}\" ({s}){s}", .{
             state.user.value(),
-            if (state.remember.checked) " (remembered)" else "",
+            roles[state.role.highlighted],
+            if (state.remember.checked) " · remembered" else "",
         })
     else
-        "Tab / Shift-Tab move · Enter submit · Esc quit";
+        "Tab / Shift-Tab move · ↑/↓ pick role · Enter submit · Esc quit";
 
     const form = try ui.column(a, .{
         .border = .rounded,
@@ -70,6 +76,11 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         try labeled(a, "Pass", try state.pass.view(a, .{
             .focused = state.focus == .pass,
             .placeholder = "password",
+        })),
+        try labeled(a, "Role", try state.role.view(a, .{
+            .focused = state.focus == .role,
+            .options = &roles,
+            .height = role_rows,
         })),
         try state.remember.view(a, .{
             .focused = state.focus == .remember,
@@ -93,6 +104,7 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
     const consumed = switch (state.focus) {
         .user => state.user.handle(key),
         .pass => state.pass.handle(key),
+        .role => state.role.handle(key, roles.len, role_rows),
         .remember => state.remember.handle(key),
     };
     if (consumed) {

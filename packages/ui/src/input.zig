@@ -249,6 +249,91 @@ pub const Checkbox = struct {
 };
 
 // ============================================================================
+// Select
+// ============================================================================
+
+/// A single-select scrollable list. The options are caller-owned and passed in
+/// each frame (immediate mode); the widget holds only the cursor. ↑/↓/Home/End
+/// move the highlight and are consumed; Enter/Tab/Escape bubble to the form,
+/// which reads the choice as `options[select.highlighted]`. Options are
+/// single-line. The list scrolls to keep the highlight within `height` rows —
+/// `scroll` is persistent, so the window stays put and slides only when the
+/// highlight crosses an edge (a stable viewport, not a highlight glued to the
+/// fold). It renders its own window directly rather than wrapping a `viewport`:
+/// it already knows which slice is visible, so re-rendering every option into a
+/// scratch surface would be wasted work.
+pub const Select = struct {
+    highlighted: usize = 0,
+    /// First visible option — persistent, maintained by `handle`.
+    scroll: usize = 0,
+
+    pub const ViewOpts = struct {
+        focused: bool = false,
+        options: []const []const u8,
+        /// Visible rows; the list scrolls within this window.
+        height: u16 = 6,
+        theme: *const Theme = &default_theme,
+    };
+
+    /// Handle a key; returns whether it was consumed. `count` (the option count)
+    /// and `visible` (the window height) are what the caller passes to `view`,
+    /// so the highlight and scroll stay in step with what's rendered.
+    pub fn handle(self: *Select, key: Key, count: usize, visible: u16) bool {
+        if (count == 0) return false;
+        switch (key) {
+            .up => if (self.highlighted > 0) {
+                self.highlighted -= 1;
+            },
+            .down => if (self.highlighted + 1 < count) {
+                self.highlighted += 1;
+            },
+            .home => self.highlighted = 0,
+            .end => self.highlighted = count - 1,
+            else => return false,
+        }
+        self.scroll = scrollFor(self.scroll, self.highlighted, visible, count);
+        return true;
+    }
+
+    pub fn view(self: *const Select, a: std.mem.Allocator, opts: ViewOpts) !Node {
+        const th = opts.theme;
+        const count = opts.options.len;
+        if (count == 0) return .{ .kind = .{ .text = .{ .content = "", .wrap = .clip } } };
+
+        const hi = @min(self.highlighted, count - 1);
+        const visible = @min(@max(@as(usize, opts.height), 1), count);
+        // Persistent scroll, re-derived so the highlight is always in view even
+        // if the caller set `highlighted` directly, bypassing `handle`.
+        const scroll = scrollFor(self.scroll, hi, @intCast(visible), count);
+
+        const rows = try a.alloc(Node, visible);
+        for (rows, 0..) |*row_node, i| {
+            const idx = scroll + i;
+            const is_hi = idx == hi;
+            const marker: []const u8 = if (is_hi and opts.focused) "›" else " ";
+            const line = try std.fmt.allocPrint(a, "{s} {s}", .{ marker, opts.options[idx] });
+            const style: Style = if (is_hi)
+                (if (opts.focused) th.prompts.selected.resolve(th.palette) else th.prompts.hint.resolve(th.palette))
+            else
+                .{};
+            row_node.* = .{ .kind = .{ .text = .{ .content = line, .style = style, .wrap = .clip } } };
+        }
+        return .{ .kind = .{ .box = .{ .dir = .column, .children = rows } } };
+    }
+};
+
+/// Slide `scroll` the minimum needed to keep `hi` within a `visible`-row window
+/// over `count` items — the persistent-scroll rule shared by `handle` (to
+/// update state) and `view` (to correct it).
+fn scrollFor(scroll: usize, hi: usize, visible: u16, count: usize) usize {
+    const v = @max(@as(usize, visible), 1);
+    var s = @min(scroll, count -| v);
+    if (hi < s) s = hi;
+    if (hi >= s + v) s = hi - v + 1;
+    return s;
+}
+
+// ============================================================================
 // UTF-8 helpers (codepoint boundaries; editing is codepoint-granular)
 // ============================================================================
 
