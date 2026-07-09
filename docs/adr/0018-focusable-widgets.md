@@ -3,8 +3,18 @@
 Status: accepted
 
 > Increment 1 of the widget library: the focus/routing model plus `TextInput`
-> and `Checkbox`. `Select` (a list over a `viewport`) and a `Button` are
-> follow-ups on the same contract.
+> and `Checkbox`. `Select` and a `Button` are follow-ups on the same contract.
+>
+> **Increment 2 (landed): `Select`.** A single-select scrollable list on the
+> same `view`/`handle`/`consumed` contract — it holds `highlighted` + a
+> persistent `scroll`, consumes ↑/↓/Home/End, and bubbles Enter/Tab/Esc (the
+> caller reads `options[select.highlighted]`). One refinement to the plan below:
+> `Select` **renders its own visible window directly rather than wrapping a
+> `viewport`.** It already computes which slice is visible (to place the
+> highlight and scroll it into view), so re-rendering every option into a
+> viewport's scratch surface would be wasted work; the `viewport` is the right
+> tool only once options become multi-line (deferred). Options are single-line;
+> overflow indicators (a dim ↑/↓) are the next small follow-up.
 
 ADR-0013/0015 named a focusable widget library as a clean deferral. This is the
 first increment, and it settles the one hard question: how do interactive,
@@ -84,6 +94,9 @@ identity — exactly what this avoids.
   cooked-mode, one-shot, line-oriented interactive layer; this widget library is
   its full-screen, persistent, node-tree counterpart. They are parallel and
   share the vocabulary — `prompts` is neither merged nor replaced.
-- **Next:** `Select` (a list rendered inside a `viewport`, ADR-0017 — it owns
-  `highlighted` + `scroll` and scrolls the selection into view) and a `Button`,
-  both on this same `view`/`handle`/`consumed` contract.
+- **Next:** a `Button` (fires on Enter/Space) on this same contract, plus small
+  polish on `Select` — overflow indicators (a dim ↑/↓) and multi-line options
+  (which would render through a `viewport`, ADR-0017). Still deferred across the
+  library: mouse click-to-focus and a hardware cursor, both of which need layout
+  to expose measured widget positions (the same feedback the anchored-popup
+  deferral waits on).

@@ -8,6 +8,7 @@ const widgets = @import("widgets.zig");
 const testing = std.testing;
 const TextInput = widgets.TextInput;
 const Checkbox = widgets.Checkbox;
+const Select = widgets.Select;
 
 // ---- handle: TextInput editing --------------------------------------------
 
@@ -85,6 +86,44 @@ test "Checkbox toggles on space, leaves Enter for the form" {
     // Enter is not consumed — the form uses it to submit.
     try testing.expect(!cb.handle(.enter));
     try testing.expect(!cb.checked);
+}
+
+// ---- handle: Select --------------------------------------------------------
+
+test "Select moves the highlight and clamps at the ends" {
+    var sel = Select{};
+    const n = 5;
+    try testing.expect(sel.handle(.down, n, 3));
+    try testing.expectEqual(@as(usize, 1), sel.highlighted);
+    _ = sel.handle(.up, n, 3);
+    _ = sel.handle(.up, n, 3); // clamp at the top
+    try testing.expectEqual(@as(usize, 0), sel.highlighted);
+    _ = sel.handle(.end, n, 3);
+    try testing.expectEqual(@as(usize, 4), sel.highlighted);
+    _ = sel.handle(.down, n, 3); // clamp at the bottom
+    try testing.expectEqual(@as(usize, 4), sel.highlighted);
+    _ = sel.handle(.home, n, 3);
+    try testing.expectEqual(@as(usize, 0), sel.highlighted);
+}
+
+test "Select consumes navigation, bubbles Enter/Tab, ignores an empty list" {
+    var sel = Select{};
+    try testing.expect(sel.handle(.down, 3, 3));
+    try testing.expect(!sel.handle(.enter, 3, 3));
+    try testing.expect(!sel.handle(.tab, 3, 3));
+    try testing.expect(!sel.handle(.down, 0, 3)); // nothing to move
+}
+
+test "Select scrolls to keep the highlight in the window" {
+    var sel = Select{};
+    const n = 6;
+    const vis = 3;
+    for (0..4) |_| _ = sel.handle(.down, n, vis); // highlight 4
+    try testing.expectEqual(@as(usize, 4), sel.highlighted);
+    try testing.expectEqual(@as(usize, 2), sel.scroll); // window [2,5) shows it
+    for (0..3) |_| _ = sel.handle(.up, n, vis); // back to 1
+    try testing.expectEqual(@as(usize, 1), sel.highlighted);
+    try testing.expectEqual(@as(usize, 1), sel.scroll); // window slid up to [1,4)
 }
 
 // ---- focus helpers ---------------------------------------------------------
@@ -187,4 +226,59 @@ test "Checkbox renders its box and label, checked and focused" {
     defer s.deinit();
     try renderNode(a, try cb.view(a, .{ .focused = true, .label = "on" }), &s);
     try testing.expectEqualStrings("[x] on      ", try rowString(a, &s, 0));
+}
+
+const menu_options = [_][]const u8{ "alpha", "bravo", "charlie", "delta", "echo" };
+
+test "focused Select marks and styles the highlighted row" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var sel = Select{};
+    _ = sel.handle(.down, menu_options.len, 3); // highlight 1 (bravo)
+
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &menu_options, .height = 3 }), &s);
+
+    // Window [0,3): the highlight wears the cursor marker; the others don't.
+    try testing.expectEqualStrings("  alpha   ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("› bravo   ", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("  charlie ", try rowString(a, &s, 2));
+    // The highlighted row is styled (selected token); the others are plain.
+    try testing.expect(!ui.styleEql(s.cell(0, 1).style, .{}));
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, .{}));
+}
+
+test "unfocused Select drops the cursor marker" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var sel = Select{};
+    _ = sel.handle(.down, menu_options.len, 3);
+
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = false, .options = &menu_options, .height = 3 }), &s);
+    try testing.expectEqualStrings("  bravo   ", try rowString(a, &s, 1));
+}
+
+test "Select view slides the window to the highlight" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var sel = Select{};
+    for (0..4) |_| _ = sel.handle(.down, menu_options.len, 3); // highlight 4 (echo)
+
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &menu_options, .height = 3 }), &s);
+
+    // Window slid to [2,5): charlie, delta, echo (highlighted).
+    try testing.expectEqualStrings("  charlie ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("  delta   ", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("› echo    ", try rowString(a, &s, 2));
 }
