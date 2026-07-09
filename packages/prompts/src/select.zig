@@ -100,6 +100,7 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
                     else => {},
                 }
             },
+            else => {}, // mouse/focus never arrive — prompts don't enable them
         }
     }
 }

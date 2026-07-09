@@ -47,10 +47,20 @@ const Size = node_mod.Size;
 const Limits = node_mod.Limits;
 const RenderCtx = node_mod.RenderCtx;
 
-/// An input event surfaced by `nextEvent` in full-screen mode: a parsed key
-/// press or a terminal resize (re-exported from `terminal`). Mouse/focus/paste
-/// events join here when they land (ADR-0015 deferred).
+/// An input event surfaced by `nextEvent` in full-screen mode: a key press, a
+/// terminal resize, or (when enabled) a mouse or focus event (re-exported from
+/// `terminal`). Bracketed paste joins here when it lands (ADR-0015 deferred).
 pub const Event = terminal.Event;
+
+// Full-screen takeover/restore escape sequences. The `*_on`/`*_off` pairs are
+// DECSET enable/disable for the opt-in input modes; `restore_tail` shows the
+// cursor and leaves the alt-screen. Restore order is the reverse of enter:
+// disable input modes, then cursor, then alt-screen.
+const mouse_on = "\x1b[?1002h\x1b[?1006h"; // button+drag tracking, SGR encoding
+const mouse_off = "\x1b[?1002l\x1b[?1006l";
+const focus_on = "\x1b[?1004h";
+const focus_off = "\x1b[?1004l";
+const restore_tail = "\x1b[?25h\x1b[?1049l";
 
 pub const App = struct {
     /// How the App shares the terminal (ADR-0015).
@@ -86,6 +96,12 @@ pub const App = struct {
         /// App owns raw mode and drives `nextEvent`). Unused in hybrid, where
         /// input ownership stays with the caller (e.g. `prompts`).
         stdin: ?*std.Io.Reader = null,
+        /// Report mouse press/release/drag as `Event.mouse` (full-screen only).
+        /// Off by default — mouse reporting overrides the terminal's own text
+        /// selection, so it's opt-in.
+        mouse: bool = false,
+        /// Report window focus in/out as `Event.focus` (full-screen only).
+        focus: bool = false,
     };
 
     /// The caller-facing subset of `Options` for `context.ui()` /
@@ -95,6 +111,10 @@ pub const App = struct {
     pub const SessionOptions = struct {
         /// Wrap paints in synchronized output (DECSET 2026).
         sync: bool = true,
+        /// Report mouse events (full-screen only; see `Options.mouse`).
+        mouse: bool = false,
+        /// Report focus in/out (full-screen only; see `Options.focus`).
+        focus: bool = false,
     };
 
     /// A static block kept for the resize tail repaint (ADR-0013 resize
@@ -226,7 +246,7 @@ pub const App = struct {
         // deinit, so a half-entered session never strands the terminal.
         errdefer {
             terminal.guard.disarm();
-            self.writer.writeAll("\x1b[?25h\x1b[?1049l") catch {};
+            self.writeRestore();
             self.writer.flush() catch {};
             if (self.watcher) |*w| w.deinit();
             if (self.raw) |r| r.disable();
@@ -239,17 +259,45 @@ pub const App = struct {
         if (self.options.term_size == null) {
             self.raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
             self.watcher = terminal.ResizeWatcher.init();
-            // Register the full restore (show cursor → leave alt-screen →
-            // restore termios) for the signal/panic paths that skip deinit.
-            // Armed before the alt-screen bytes go out so a signal in the gap
-            // still restores; leaving an alt-screen we haven't entered is a
-            // harmless no-op.
-            terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h\x1b[?1049l", self.raw);
+            // Register the full restore (disable input modes → show cursor →
+            // leave alt-screen → restore termios) for the signal/panic paths
+            // that skip deinit. Armed before the takeover bytes go out so a
+            // signal in the gap still restores; disabling modes / leaving an
+            // alt-screen we haven't entered yet is a harmless no-op.
+            var blob: [64]u8 = undefined;
+            terminal.guard.arm(std.Io.File.stdout().handle, self.restoreBlob(&blob), self.raw);
         }
         self.started = true; // cursor hidden, terminal owned
         try self.writer.writeAll("\x1b[?1049h\x1b[?25l");
+        if (self.options.mouse) try self.writer.writeAll(mouse_on);
+        if (self.options.focus) try self.writer.writeAll(focus_on);
         try self.anchor();
         try self.writer.flush();
+    }
+
+    /// The restore blob for the signal/panic guard: disable whichever input
+    /// modes are on, then `restore_tail` (show cursor + leave alt-screen). Same
+    /// bytes `writeRestore` emits on the normal path, packed into `buf`.
+    fn restoreBlob(self: *App, buf: []u8) []const u8 {
+        var n: usize = 0;
+        const put = struct {
+            fn f(dst: []u8, at: *usize, s: []const u8) void {
+                @memcpy(dst[at.*..][0..s.len], s);
+                at.* += s.len;
+            }
+        }.f;
+        if (self.options.mouse) put(buf, &n, mouse_off);
+        if (self.options.focus) put(buf, &n, focus_off);
+        put(buf, &n, restore_tail);
+        return buf[0..n];
+    }
+
+    /// Emit the restore sequence to the writer (normal teardown / errdefer):
+    /// disable input modes, then show cursor and leave the alt-screen.
+    fn writeRestore(self: *App) void {
+        if (self.options.mouse) self.writer.writeAll(mouse_off) catch {};
+        if (self.options.focus) self.writer.writeAll(focus_off) catch {};
+        self.writer.writeAll(restore_tail) catch {};
     }
 
     /// Park the cursor at the screen origin (the diff renderer's addressing
@@ -274,12 +322,12 @@ pub const App = struct {
         // Idempotent: a no-op on the headless path that never armed.
         if (self.started) terminal.guard.disarm();
         if (self.mode == .full_screen) {
-            // Restore in strict reverse of enter (ADR-0015 choice 5): show
-            // cursor → leave alt-screen (restores the shell's screen and
-            // scrollback; the final frame is discarded by design) → disable
-            // raw mode. The alt-screen leave must precede the raw-mode
+            // Restore in strict reverse of enter (ADR-0015 choice 5): disable
+            // input modes → show cursor → leave alt-screen (restores the shell's
+            // screen and scrollback; the final frame is discarded by design) →
+            // disable raw mode. The alt-screen leave must precede the raw-mode
             // restore so its bytes still go out while we own the terminal.
-            if (self.started) self.writer.writeAll("\x1b[?25h\x1b[?1049l") catch {};
+            if (self.started) self.writeRestore();
             self.writer.flush() catch {};
             if (self.watcher) |*w| w.deinit();
             if (self.raw) |r| r.disable();

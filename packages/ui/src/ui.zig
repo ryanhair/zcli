@@ -24,8 +24,11 @@ pub const styleEql = surface.styleEql;
 
 pub const Renderer = @import("diff.zig").Renderer;
 pub const App = @import("app.zig").App;
-/// Full-screen input event (`App.nextEvent`) — a key press or a resize.
+/// Full-screen input event (`App.nextEvent`) — a key, resize, mouse, or focus.
 pub const Event = @import("app.zig").Event;
+/// Mouse report / focus change carried by `Event` (full-screen, when enabled).
+pub const Mouse = terminal.Mouse;
+pub const Focus = terminal.Focus;
 /// `update`'s verdict for the `App.run` loop — keep looping, or quit.
 pub const Flow = App.Flow;
 pub const widgets = @import("widgets.zig");

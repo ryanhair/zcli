@@ -39,6 +39,8 @@ const State = struct {
     tick: u32 = 0,
     selected: usize = 0,
     procs: [proc_names.len]Proc = undefined,
+    last_mouse: ?ui.Mouse = null,
+    focused: bool = true,
 
     fn init() State {
         var s = State{};
@@ -91,7 +93,15 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
     }
 
     try rows.append(a, ui.spacer());
-    try rows.append(a, ui.text(.{ .dim = true }, "↑/↓ select   q quit"));
+    const mouse = if (state.last_mouse) |m|
+        try std.fmt.allocPrint(a, "{s} @ {d},{d}", .{ @tagName(m.button), m.x, m.y })
+    else
+        "—";
+    const status = try std.fmt.allocPrint(a, "↑/↓ select   click a cell   q quit    focus:{s}  mouse:{s}", .{
+        if (state.focused) "on" else "off",
+        mouse,
+    });
+    try rows.append(a, ui.text(.{ .dim = true }, status));
 
     return ui.column(
         a,
@@ -120,6 +130,15 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             },
             else => {},
         },
+        .mouse => |m| {
+            state.last_mouse = m;
+            // Left-click a table row (rows start at y=3: padding + title + header).
+            if (m.button == .left and m.action == .press and m.y >= 3) {
+                const row = m.y - 3;
+                if (row < state.procs.len) state.selected = row;
+            }
+        },
+        .focus => |f| state.focused = f == .in,
         .resize => {},
     }
     return .keep;
@@ -145,6 +164,8 @@ pub fn main(init: std.process.Init) !void {
     var app = try ui.App.initFullScreen(gpa, &stdout.interface, .{
         .capability = .ansi_256,
         .stdin = &stdin.interface,
+        .mouse = true,
+        .focus = true,
     });
     defer app.deinit(); // leaves alt-screen, restores cooked mode + cursor
 

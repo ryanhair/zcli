@@ -28,9 +28,10 @@ const backend = @import("backend.zig");
 const Handle = backend.Handle;
 const RawMode = backend.RawMode;
 
-/// The restore blob is short and bounded: show cursor (`\x1b[?25h`, 6B) plus, in
-/// full-screen, leave the alt-screen (`\x1b[?1049l`, 8B). 32B is ample headroom.
-const blob_max = 32;
+/// The restore blob is short and bounded: show cursor (`\x1b[?25h`, 6B), leave
+/// the alt-screen (`\x1b[?1049l`, 8B), and disable any opt-in input modes
+/// (mouse `?1002l?1006l`, focus `?1004l`). 48B covers all of them at once.
+const blob_max = 48;
 
 /// Set last by `arm` (release) and cleared first by `disarm` — so a handler that
 /// fires mid-`arm` either sees `false` (does nothing) or a fully written `g`.

@@ -9,6 +9,8 @@ const backend = @import("backend.zig");
 
 pub const key = @import("key.zig");
 pub const Key = key.Key;
+pub const Mouse = key.Mouse;
+pub const Focus = key.Focus;
 pub const readKey = key.readKey;
 pub const readKeyOpt = key.readKeyOpt;
 
