@@ -26,6 +26,8 @@ pub const Renderer = @import("diff.zig").Renderer;
 pub const App = @import("app.zig").App;
 /// Full-screen input event (`App.nextEvent`) — a key press or a resize.
 pub const Event = @import("app.zig").Event;
+/// `update`'s verdict for the `App.run` loop — keep looping, or quit.
+pub const Flow = App.Flow;
 pub const widgets = @import("widgets.zig");
 
 /// Root-module panic handler that restores the terminal before the default

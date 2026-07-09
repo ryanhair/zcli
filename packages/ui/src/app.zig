@@ -529,6 +529,65 @@ pub const App = struct {
         );
     }
 
+    /// `update`'s verdict: keep looping, or stop `run`.
+    pub const Flow = enum { keep, quit };
+
+    /// The full-screen driver (ADR-0015): own the `frame → nextEvent → update`
+    /// loop so callers don't hand-roll it. Each pass renders `view(state)`,
+    /// blocks for the next event, and routes it to `update`; loop until `update`
+    /// returns `.quit`. Sugar over the explicit loop — state stays caller-owned
+    /// and mutable (immediate mode), `view` should treat it as read-only.
+    ///
+    /// `tick_ms` drives a periodic refresh with no input (a `top`-style clock):
+    /// the tick is delivered to `update` as a `null` event, and it is scheduled
+    /// against a DEADLINE — a burst of keys shrinks the wait rather than
+    /// resetting it, so input can't starve the tick. `null` disables ticking
+    /// (block on input only — a form or menu). `io` is only the monotonic clock
+    /// the deadline reads (`std.Io.Clock`). Full-screen only.
+    pub fn run(
+        self: *App,
+        io: std.Io,
+        state: anytype,
+        tick_ms: ?u32,
+        comptime view: fn (std.mem.Allocator, @TypeOf(state)) anyerror!Node,
+        comptime update: fn (@TypeOf(state), ?Event) anyerror!Flow,
+    ) !void {
+        std.debug.assert(self.mode == .full_screen);
+        const ns_per_ms = std.time.ns_per_ms;
+        var next_tick: u64 = if (tick_ms) |ms| nowNs(io) + @as(u64, ms) * ns_per_ms else 0;
+
+        while (true) {
+            try self.frame(try view(self.arena(), state));
+
+            // How long until the next tick — the remaining window, not a fresh
+            // `tick_ms`, so early key wakeups can't push the tick out forever.
+            var timeout: ?u32 = null;
+            if (tick_ms) |ms| {
+                const now = nowNs(io);
+                if (now >= next_tick) {
+                    if (try update(state, null) == .quit) return;
+                    next_tick = nowNs(io) + @as(u64, ms) * ns_per_ms;
+                    continue; // re-render, then re-arm the wait
+                }
+                timeout = @intCast((next_tick - now) / ns_per_ms);
+            }
+
+            const ev = try self.nextEvent(timeout) orelse {
+                // Deadline reached with no input: a tick.
+                if (try update(state, null) == .quit) return;
+                if (tick_ms) |ms| next_tick = nowNs(io) + @as(u64, ms) * ns_per_ms;
+                continue;
+            };
+            if (try update(state, ev) == .quit) return;
+        }
+    }
+
+    /// Monotonic nanoseconds — the deadline source for `run`'s tick, via the
+    /// `.awake` clock `progress` also animates against.
+    fn nowNs(io: std.Io) u64 {
+        return @intCast(std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds);
+    }
+
     /// Erase the live region and leave nothing in its place — the ending
     /// for a widget whose result is an `emit`ted line (or no output at
     /// all), as opposed to `deinit`'s leave-the-final-frame-visible.

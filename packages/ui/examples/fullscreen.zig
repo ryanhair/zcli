@@ -1,20 +1,18 @@
-//! A `top`-style full-screen TUI (ADR-0015 step 4): the whole viewport is a
-//! live table of processes whose CPU/MEM jitter on a 250ms tick, with an
-//! arrow-key selection. It validates the loop shape the ADR proposes —
+//! A `top`-style full-screen TUI (ADR-0015): the whole viewport is a live table
+//! of processes whose CPU/MEM jitter on a 250ms tick, with an arrow-key
+//! selection. It drives the `App.run(state, tick_ms, view, update)` loop —
 //!
-//!     frame(view(state))            paint the whole screen
-//!     nextEvent(250) orelse tick()  block for a key/resize, or refresh
+//!     view(state)           render the whole screen from state
+//!     update(state, ev)      handle a key/resize, or a `null` tick; -> keep|quit
 //!
-//! — reusing the same layout engine as the hybrid, just in alt-screen mode.
-//! On exit (q or Ctrl-C) the shell's screen and scrollback come back exactly
-//! as they were: the final frame does not persist (that is the feature).
+//! — reusing the same layout engine as the hybrid, just in alt-screen mode. On
+//! exit (q or Ctrl-C) the shell's screen and scrollback come back exactly as
+//! they were: the final frame does not persist (that is the feature).
 //!
-//! The tick is scheduled against an absolute DEADLINE, not a fresh
-//! `nextEvent(250)` each pass: a burst of key input (holding an arrow repeats
-//! every ~30ms) must not keep resetting the timeout and starve the refresh.
-//! Each early wakeup shrinks the remaining window instead of restarting it, so
-//! the table keeps churning on wall-clock time no matter how fast keys arrive —
-//! one thread, no timer, exactly the loop shape the ADR intended.
+//! `run` owns the loop and schedules the tick against a deadline (a burst of
+//! keys shrinks the wait rather than resetting it, so input can't starve the
+//! refresh). The explicit `frame`/`nextEvent` loop `run` wraps is still there
+//! if you need it — see `App.run`'s doc comment.
 //!
 //! Run with: zig build run-fullscreen   (from packages/ui, needs a real TTY)
 
@@ -67,14 +65,7 @@ const State = struct {
     }
 };
 
-/// Monotonic milliseconds — the clock the deadline loop schedules against
-/// (the same `std.Io.Clock` source `progress` uses for its animation timing).
-fn nowMs(io: std.Io) u64 {
-    const ns = std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
-    return @intCast(@divTrunc(ns, std.time.ns_per_ms));
-}
-
-fn view(a: std.mem.Allocator, state: *const State) !ui.Node {
+fn view(a: std.mem.Allocator, state: *State) !ui.Node {
     var rows = std.ArrayList(ui.Node).empty;
 
     const elapsed = try std.fmt.allocPrint(a, "{d:.1}s", .{
@@ -109,6 +100,31 @@ fn view(a: std.mem.Allocator, state: *const State) !ui.Node {
     );
 }
 
+/// A `null` event is the tick (advance the jittering table); keys drive
+/// selection and quitting. Ctrl-C is an ordinary key here (raw mode cleared
+/// ISIG). Resize needs nothing — `run` re-renders every pass.
+fn update(state: *State, ev: ?ui.Event) !ui.Flow {
+    const e = ev orelse {
+        state.advance();
+        return .keep;
+    };
+    switch (e) {
+        .key => |k| switch (k) {
+            .char => |c| if (c == 'q') return .quit,
+            .ctrl => |c| if (c == 'c') return .quit,
+            .up => if (state.selected > 0) {
+                state.selected -= 1;
+            },
+            .down => if (state.selected + 1 < state.procs.len) {
+                state.selected += 1;
+            },
+            else => {},
+        },
+        .resize => {},
+    }
+    return .keep;
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;
@@ -133,42 +149,5 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit(); // leaves alt-screen, restores cooked mode + cursor
 
     var state = State.init();
-    var running = true;
-    var next_tick = nowMs(io) + tick_ms;
-    while (running) {
-        try app.frame(try view(app.arena(), &state));
-
-        // Wait only until the next scheduled tick — not a full `tick_ms` — so
-        // continuous key input can't keep pushing the refresh out (see the
-        // module header). A wakeup at or past the deadline is itself a tick.
-        const now = nowMs(io);
-        if (now >= next_tick) {
-            state.advance();
-            next_tick = now + tick_ms;
-            continue;
-        }
-        const ev = try app.nextEvent(@intCast(next_tick - now)) orelse {
-            state.advance(); // deadline reached with no input: refresh the table
-            next_tick = nowMs(io) + tick_ms;
-            continue;
-        };
-        switch (ev) {
-            .key => |k| switch (k) {
-                .char => |c| if (c == 'q') {
-                    running = false;
-                },
-                .ctrl => |c| if (c == 'c') {
-                    running = false; // Ctrl-C is a key here (raw mode cleared ISIG)
-                },
-                .up => if (state.selected > 0) {
-                    state.selected -= 1;
-                },
-                .down => if (state.selected + 1 < state.procs.len) {
-                    state.selected += 1;
-                },
-                else => {},
-            },
-            .resize => {}, // next frame re-anchors and re-measures
-        }
-    }
+    try app.run(io, &state, tick_ms, view, update);
 }
