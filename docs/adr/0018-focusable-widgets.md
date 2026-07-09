@@ -15,6 +15,15 @@ Status: accepted
 > viewport's scratch surface would be wasted work; the `viewport` is the right
 > tool only once options become multi-line (deferred). Options are single-line;
 > overflow indicators (a dim ↑/↓) are the next small follow-up.
+>
+> **Increment 3 (landed): `Button`.** A stateless action control (`[ Label ]`)
+> activated by Enter/Space. Being stateless (a terminal has no key-up, so no
+> "pressed" phase), its `handle` returns whether the key *activated* it — the
+> same routing role as the editors' `consumed` (`true` = "this key is mine, not
+> navigation"), but for an action widget "mine" means "fired." The caller runs
+> the action on a `true` return in its focus arm. This is why a `Button` can't
+> share the editors' routing arm in the form example: an editor's consumed key
+> *invalidates* a prior submit, whereas the button's *is* the submit.
 
 ADR-0013/0015 named a focusable widget library as a clean deferral. This is the
 first increment, and it settles the one hard question: how do interactive,
@@ -94,9 +103,9 @@ identity — exactly what this avoids.
   cooked-mode, one-shot, line-oriented interactive layer; this widget library is
   its full-screen, persistent, node-tree counterpart. They are parallel and
   share the vocabulary — `prompts` is neither merged nor replaced.
-- **Next:** a `Button` (fires on Enter/Space) on this same contract, plus small
-  polish on `Select` — overflow indicators (a dim ↑/↓) and multi-line options
-  (which would render through a `viewport`, ADR-0017). Still deferred across the
-  library: mouse click-to-focus and a hardware cursor, both of which need layout
-  to expose measured widget positions (the same feedback the anchored-popup
-  deferral waits on).
+- **Next:** small polish on `Select` — overflow indicators (a dim ↑/↓) and
+  multi-line options (which would render through a `viewport`, ADR-0017). With
+  `TextInput`/`Checkbox`/`Select`/`Button` landed, the widget catalog covers the
+  common form controls. Still deferred across the library: mouse click-to-focus
+  and a hardware cursor, both of which need layout to expose measured widget
+  positions (the same feedback the anchored-popup deferral waits on).
