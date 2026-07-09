@@ -1,7 +1,7 @@
-//! A focusable form (ADR-0018): two text fields, a select, and a checkbox, with
-//! Tab / Shift-Tab moving focus, ↑/↓ picking within the select, Enter
-//! submitting, and Esc quitting. It shows the whole widget contract in one
-//! screen:
+//! A focusable form (ADR-0018): two text fields, a select, a checkbox, and a
+//! submit button, with Tab / Shift-Tab moving focus, ↑/↓ picking within the
+//! select, Enter/Space firing the focused button, Enter submitting, and Esc
+//! quitting. It shows the whole widget contract in one screen:
 //!
 //!   - each widget is a plain struct in `State` (immediate mode — no retained
 //!     widget tree);
@@ -21,7 +21,7 @@ const terminal = @import("terminal");
 
 pub const panic = ui.panic;
 
-const Field = enum { user, pass, role, remember };
+const Field = enum { user, pass, role, remember, submit };
 
 const roles = [_][]const u8{ "admin", "developer", "viewer" };
 const role_rows: u16 = roles.len;
@@ -35,6 +35,7 @@ const State = struct {
     pass: ui.widgets.TextInput = .{ .buffer = &.{}, .mask = '*' },
     role: ui.widgets.Select = .{},
     remember: ui.widgets.Checkbox = .{},
+    submit: ui.widgets.Button = .{},
     focus: Field = .user,
     submitted: bool = false,
 
@@ -86,11 +87,21 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
             .focused = state.focus == .remember,
             .label = "Remember me",
         }),
+        try state.submit.view(a, .{
+            .focused = state.focus == .submit,
+            .label = "Sign in",
+        }),
         ui.text(.{ .dim = !state.submitted }, status),
     });
 
     // Center the form on the otherwise-blank alt-screen.
     return ui.center(a, form);
+}
+
+/// An editing widget consumed the key: a prior submit is now stale.
+fn edited(state: *State) ui.Flow {
+    state.submitted = false;
+    return .keep;
 }
 
 fn update(state: *State, ev: ?ui.Event) !ui.Flow {
@@ -100,16 +111,18 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
         else => return .keep,
     };
 
-    // The focused widget gets first crack; an unconsumed key is navigation.
-    const consumed = switch (state.focus) {
-        .user => state.user.handle(key),
-        .pass => state.pass.handle(key),
-        .role => state.role.handle(key, roles.len, role_rows),
-        .remember => state.remember.handle(key),
-    };
-    if (consumed) {
-        state.submitted = false; // editing invalidates a prior submit
-        return .keep;
+    // The focused widget gets first crack; an unconsumed key falls through to
+    // navigation. Editing invalidates a prior submit; the Button *is* the submit
+    // (Enter/Space on it fires), which is why it can't share the editors' arm.
+    switch (state.focus) {
+        .user => if (state.user.handle(key)) return edited(state),
+        .pass => if (state.pass.handle(key)) return edited(state),
+        .role => if (state.role.handle(key, roles.len, role_rows)) return edited(state),
+        .remember => if (state.remember.handle(key)) return edited(state),
+        .submit => if (state.submit.handle(key)) {
+            state.submitted = true;
+            return .keep;
+        },
     }
 
     switch (key) {
