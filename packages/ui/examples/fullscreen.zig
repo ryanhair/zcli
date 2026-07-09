@@ -9,6 +9,13 @@
 //! On exit (q or Ctrl-C) the shell's screen and scrollback come back exactly
 //! as they were: the final frame does not persist (that is the feature).
 //!
+//! The tick is scheduled against an absolute DEADLINE, not a fresh
+//! `nextEvent(250)` each pass: a burst of key input (holding an arrow repeats
+//! every ~30ms) must not keep resetting the timeout and starve the refresh.
+//! Each early wakeup shrinks the remaining window instead of restarting it, so
+//! the table keeps churning on wall-clock time no matter how fast keys arrive —
+//! one thread, no timer, exactly the loop shape the ADR intended.
+//!
 //! Run with: zig build run-fullscreen   (from packages/ui, needs a real TTY)
 
 const std = @import("std");
@@ -54,6 +61,13 @@ const State = struct {
         self.refresh();
     }
 };
+
+/// Monotonic milliseconds — the clock the deadline loop schedules against
+/// (the same `std.Io.Clock` source `progress` uses for its animation timing).
+fn nowMs(io: std.Io) u64 {
+    const ns = std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
+    return @intCast(@divTrunc(ns, std.time.ns_per_ms));
+}
 
 fn view(a: std.mem.Allocator, state: *const State) !ui.Node {
     var rows = std.ArrayList(ui.Node).empty;
@@ -116,10 +130,22 @@ pub fn main(init: std.process.Init) !void {
 
     var state = State.init();
     var running = true;
+    var next_tick = nowMs(io) + tick_ms;
     while (running) {
         try app.frame(try view(app.arena(), &state));
-        const ev = try app.nextEvent(tick_ms) orelse {
-            state.advance(); // timeout: refresh the table
+
+        // Wait only until the next scheduled tick — not a full `tick_ms` — so
+        // continuous key input can't keep pushing the refresh out (see the
+        // module header). A wakeup at or past the deadline is itself a tick.
+        const now = nowMs(io);
+        if (now >= next_tick) {
+            state.advance();
+            next_tick = now + tick_ms;
+            continue;
+        }
+        const ev = try app.nextEvent(@intCast(next_tick - now)) orelse {
+            state.advance(); // deadline reached with no input: refresh the table
+            next_tick = nowMs(io) + tick_ms;
             continue;
         };
         switch (ev) {
