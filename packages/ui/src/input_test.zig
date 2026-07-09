@@ -2,6 +2,7 @@
 //! transitions (no terminal), and `view` painted onto a surface directly.
 
 const std = @import("std");
+const theme_mod = @import("theme");
 const ui = @import("ui.zig");
 const widgets = @import("widgets.zig");
 
@@ -265,18 +266,25 @@ test "focused Select marks and styles the highlighted row" {
     try testing.expect(ui.styleEql(s.cell(0, 0).style, .{}));
 }
 
-test "unfocused Select drops the cursor marker" {
+test "unfocused Select drops the marker but keeps the highlight prominent" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     var sel = Select{};
-    _ = sel.handle(.down, menu_options.len, 3);
+    _ = sel.handle(.down, menu_options.len, 3); // highlight bravo
 
     var s = try ui.Surface.init(testing.allocator, 10, 3);
     defer s.deinit();
     try renderNode(a, try sel.view(a, .{ .focused = false, .options = &menu_options, .height = 3 }), &s);
     try testing.expectEqualStrings("  bravo   ", try rowString(a, &s, 1));
+    // Unfocused, the current option still reads as chosen — it wears the
+    // `selected` token, not a dimmer one, so it never looks less prominent than
+    // its neighbours.
+    const t = theme_mod.default_theme;
+    const selected = t.prompts.selected.resolve(t.palette);
+    try testing.expect(ui.styleEql(s.cell(0, 1).style, selected));
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, .{})); // a neighbour is plain
 }
 
 test "Select view slides the window to the highlight" {

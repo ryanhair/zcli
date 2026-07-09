@@ -326,10 +326,10 @@ pub const Select = struct {
             const is_hi = idx == hi;
             const marker: []const u8 = if (is_hi and opts.focused) "›" else " ";
             const line = try std.fmt.allocPrint(a, "{s} {s}", .{ marker, opts.options[idx] });
-            const style: Style = if (is_hi)
-                (if (opts.focused) th.prompts.selected.resolve(th.palette) else hint)
-            else
-                .{};
+            // The current option always stands out (the `selected` token), so it
+            // reads as chosen whether or not the list is focused; the `›` marker
+            // is what signals focus. Non-highlighted rows are plain.
+            const style: Style = if (is_hi) th.prompts.selected.resolve(th.palette) else .{};
             const up = i == 0 and more_above;
             const down = i == visible - 1 and more_below;
             const arrow: []const u8 = if (up and down) "↕" else if (up) "↑" else if (down) "↓" else " ";
