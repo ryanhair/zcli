@@ -611,7 +611,7 @@ test "context.ui() returns an App wired to the detected environment" {
     var context = Context.init(allocator, std.testing.io, &stdio, &test_environ);
     defer context.deinit();
 
-    var app = try context.ui();
+    var app = try context.ui(.{});
     defer app.deinit();
     // Tests never run on a TTY: the App must come back non-interactive, so
     // frame() is a no-op and emit() prints plain lines.

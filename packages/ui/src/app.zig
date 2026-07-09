@@ -1,9 +1,17 @@
-//! App: the static/live frame loop (ADR-0013 step 3).
+//! App: the static/live frame loop (ADR-0013 step 3), in two modes (ADR-0015).
 //!
 //! Owns everything the demo used to hand-roll: the frame arena, the
 //! double-buffered surfaces, reserving the live region's rows, parking the
 //! cursor at the region's top-left (the diff renderer's addressing
 //! contract), and cursor hide/restore.
+//!
+//! The default is `hybrid`: a static stream (`emit`) flowing into scrollback
+//! with a live region (`frame`) pinned above it, sharing the screen. Opting
+//! into `full_screen` (ADR-0015) takes the screen over via the alternate-screen
+//! buffer, grants the frame the whole viewport, owns raw mode for the session,
+//! and reads input through `nextEvent` — `emit` is unavailable there (no
+//! scrollback). The measure/render/diff core is identical between the two;
+//! full-screen is a mode, not a fork.
 //!
 //! The two verbs:
 //!
@@ -39,7 +47,24 @@ const Size = node_mod.Size;
 const Limits = node_mod.Limits;
 const RenderCtx = node_mod.RenderCtx;
 
+/// An input event surfaced by `nextEvent` in full-screen mode: a parsed key
+/// press or a terminal resize (re-exported from `terminal`). Mouse/focus/paste
+/// events join here when they land (ADR-0015 deferred).
+pub const Event = terminal.Event;
+
 pub const App = struct {
+    /// How the App shares the terminal (ADR-0015).
+    ///
+    /// - `hybrid` (default, ADR-0013): a static stream flowing into scrollback
+    ///   with a live region pinned above it. `emit` + `frame`, shared screen.
+    /// - `full_screen`: takes the screen over via the alternate-screen buffer
+    ///   (the shell and its scrollback are saved on enter, restored on exit),
+    ///   owns raw mode for the session, and reads input through `nextEvent`.
+    ///   The static stream goes unused — `emit` is an error — and the frame is
+    ///   granted the whole viewport. The layout/measure/render/diff core is
+    ///   identical; full-screen is a mode, not a fork.
+    pub const Mode = enum { hybrid, full_screen };
+
     pub const Options = struct {
         capability: theme.TerminalCapability = .ansi_16,
         /// Chooses border/ellipsis glyphs (`terminal.unicodeSupported`).
@@ -54,8 +79,25 @@ pub const App = struct {
         /// `terminal.isStdoutTty()`). When false — piped to a file, CI —
         /// the App degrades to plain line output: `frame` is a no-op,
         /// `emit` prints without escapes or retention, the cursor is never
-        /// touched.
+        /// touched. A `full_screen` App on a non-TTY is an error at `init` —
+        /// a TUI into a pipe is meaningless.
         interactive: bool = true,
+        /// Hybrid (default) or full-screen (alt-screen) mode (ADR-0015).
+        mode: Mode = .hybrid,
+        /// Stdin reader for full-screen input. Required in `full_screen` (the
+        /// App owns raw mode and drives `nextEvent`); unused in `hybrid`,
+        /// where input ownership stays with the caller (e.g. `prompts`).
+        stdin: ?*std.Io.Reader = null,
+    };
+
+    /// The caller-facing subset of `Options` for `context.ui()`: the
+    /// environment-derived fields (capability, unicode, interactive, stdin)
+    /// are wired by the context, so these are the choices left to the app
+    /// author.
+    pub const SessionOptions = struct {
+        mode: Mode = .hybrid,
+        /// Wrap paints in synchronized output (DECSET 2026).
+        sync: bool = true,
     };
 
     /// A static block kept for the resize tail repaint (ADR-0013 resize
@@ -93,11 +135,16 @@ pub const App = struct {
     placed: ?CursorPos = null,
     /// Guard for idempotent deinit (finish paths may close the App early).
     deinited: bool = false,
+    /// Session-owned raw mode, in full-screen only (the App reads input via
+    /// `nextEvent`). `null` in hybrid, where input ownership stays external.
+    raw: ?terminal.RawMode = null,
+    /// Resize watcher backing `nextEvent`, full-screen only.
+    watcher: ?terminal.ResizeWatcher = null,
 
     pub const CursorPos = struct { x: u16, y: u16 };
 
     pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
-        return .{
+        var self: App = .{
             .writer = writer,
             .gpa = gpa,
             .options = options,
@@ -105,6 +152,54 @@ pub const App = struct {
             .front = try Surface.init(gpa, 0, 0),
             .back = try Surface.init(gpa, 0, 0),
         };
+        errdefer {
+            self.front.deinit();
+            self.back.deinit();
+            self.frame_arena.deinit();
+        }
+        if (options.mode == .full_screen) try self.enterFullScreen();
+        return self;
+    }
+
+    /// Take the terminal over: enable session raw mode, switch to the
+    /// alternate-screen buffer (saving the shell's screen + scrollback), hide
+    /// the cursor, and anchor at the origin — `?1049h` clears the alt buffer
+    /// but carries the cursor position over from the main screen, so the diff
+    /// renderer's "cursor parked at the region's top-left" contract must be
+    /// established explicitly before the first paint (ADR-0015 choice 2).
+    fn enterFullScreen(self: *App) !void {
+        if (!self.options.interactive) return error.NotATerminal;
+        // Restore terminal state if any step below fails — same bytes/order as
+        // deinit, so a half-entered session never strands the terminal.
+        errdefer {
+            self.writer.writeAll("\x1b[?25h\x1b[?1049l") catch {};
+            self.writer.flush() catch {};
+            if (self.watcher) |*w| w.deinit();
+            if (self.raw) |r| r.disable();
+        }
+        // A fixed `term_size` is the headless-harness path (tests): there is
+        // no real terminal to put in raw mode or watch for resizes. Still emit
+        // the alt-screen takeover so the byte stream is exercised; live input
+        // (`nextEvent`) is a real-terminal-only affair.
+        if (self.options.term_size == null) {
+            self.raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
+            self.watcher = terminal.ResizeWatcher.init();
+        }
+        self.started = true; // cursor hidden, terminal owned
+        try self.writer.writeAll("\x1b[?1049h\x1b[?25l");
+        try self.anchor();
+        try self.writer.flush();
+    }
+
+    /// Park the cursor at the screen origin (the diff renderer's addressing
+    /// anchor in full-screen). One relative sequence — CR plus a
+    /// viewport-height CUU that clamps at the top row — so the renderer stays
+    /// CUP-free and shared byte-for-byte with the hybrid. Used on entry and
+    /// after a resize, the two moments the parked position is invalidated.
+    fn anchor(self: *App) !void {
+        const h = self.termSize().h;
+        try self.writer.writeByte('\r');
+        if (h > 0) try self.writer.print("\x1b[{d}A", .{h});
     }
 
     /// Restores the terminal (cursor shown, parked on a fresh line below the
@@ -113,15 +208,27 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         if (self.deinited) return;
         self.deinited = true;
-        if (self.started) {
+        if (self.options.mode == .full_screen) {
+            // Restore in strict reverse of enter (ADR-0015 choice 5): show
+            // cursor → leave alt-screen (restores the shell's screen and
+            // scrollback; the final frame is discarded by design) → disable
+            // raw mode. The alt-screen leave must precede the raw-mode
+            // restore so its bytes still go out while we own the terminal.
+            if (self.started) self.writer.writeAll("\x1b[?25h\x1b[?1049l") catch {};
+            self.writer.flush() catch {};
+            if (self.watcher) |*w| w.deinit();
+            if (self.raw) |r| r.disable();
+        } else if (self.started) {
             self.unplace() catch {};
             if (self.live_rows > 1) {
                 self.writer.print("\x1b[{d}B", .{self.live_rows - 1}) catch {};
             }
             if (self.live_rows > 0) self.writer.writeAll("\r\n") catch {};
             self.writer.writeAll("\x1b[?25h") catch {};
+            self.writer.flush() catch {};
+        } else {
+            self.writer.flush() catch {};
         }
-        self.writer.flush() catch {};
         for (self.retained.items) |b| self.gpa.free(b.text);
         self.retained.deinit(self.gpa);
         self.front.deinit();
@@ -174,6 +281,10 @@ pub const App = struct {
     /// the column (no ONLCR post-processing), and CRLF is harmless in
     /// cooked mode. Piped output keeps plain `\n`.
     pub fn emit(self: *App, comptime fmt: []const u8, args: anytype) !void {
+        // Full-screen owns the whole viewport — there is no scrollback for a
+        // static line to flow into (ADR-0015). Code that wants both a
+        // scrollback log and a live frame is, by definition, the hybrid.
+        if (self.options.mode == .full_screen) return error.EmitInFullScreen;
         const base = comptime std.mem.trimEnd(u8, fmt, "\r\n");
         if (!self.options.interactive) {
             // Plain line output: no live region exists, nothing to retain.
@@ -208,6 +319,7 @@ pub const App = struct {
     pub fn frame(self: *App, node: Node) !void {
         defer _ = self.frame_arena.reset(.retain_capacity);
         if (!self.options.interactive) return;
+        if (self.options.mode == .full_screen) return self.frameFullScreen(node);
         try self.unplace();
 
         const ts = self.termSize();
@@ -224,8 +336,9 @@ pub const App = struct {
         };
 
         var size = node_mod.measure(&rctx, &node, limits);
-        // A root with `.fill` stretches to the terminal edge (a full-screen
-        // app is just a root with `height = fill`, not a separate mode).
+        // A root with `.fill` stretches to the terminal edge. Full-screen
+        // (ADR-0015) reuses the same measure/render, but grants the whole
+        // viewport and takes the alt-screen — see `frameFullScreen`.
         if (node.width == .fill) size.w = limits.max_w;
         if (node.height == .fill) size.h = limits.max_h;
 
@@ -272,6 +385,83 @@ pub const App = struct {
         self.front_valid = true;
         if (tail_repaint and self.options.sync) try self.writer.writeAll("\x1b[?2026l");
         try self.writer.flush();
+    }
+
+    /// Full-screen frame (ADR-0015). The alt-screen buffer is ours end to
+    /// end, so this is markedly simpler than the hybrid `frame`: no row
+    /// reservation (the buffer starts blank), no scrollback seam, no tail
+    /// reflow. The surface is always the whole viewport — the root is granted
+    /// the full terminal rect (a `fill`×`fill` root is the norm; centering or
+    /// margins are the root's own layout, via spacers/alignment) — and the
+    /// diff renderer addresses it relative to the origin, where the cursor is
+    /// parked between paints.
+    ///
+    /// Resize is just: re-anchor the parked cursor (the one piece of state the
+    /// terminal silently invalidates) and force a full repaint. A viewport
+    /// change already resizes the surface, which forces the repaint on its
+    /// own; the re-anchor is the resize-specific step.
+    fn frameFullScreen(self: *App, node: Node) !void {
+        const ts = self.termSize();
+        const size = Size{ .w = ts.w, .h = ts.h };
+        if (size.w == 0 or size.h == 0) return;
+
+        // A width or height change invalidates the parked cursor and the
+        // surface both. Re-anchor, then let the surface-size mismatch below
+        // force the full repaint.
+        const resized = self.last_width != null and
+            (self.last_width.? != ts.w or self.live_rows != ts.h);
+        self.last_width = ts.w;
+        if (resized) try self.anchor();
+
+        const rctx = RenderCtx{
+            .allocator = self.frame_arena.allocator(),
+            .unicode = self.options.unicode,
+        };
+
+        if (size.w != self.back.width or size.h != self.back.height) {
+            try self.back.resize(size.w, size.h);
+            try self.front.resize(size.w, size.h);
+            self.front_valid = false;
+        }
+        self.live_rows = size.h;
+
+        self.back.clear();
+        try node_mod.render(&rctx, &node, self.back.root());
+
+        const prev: ?*const Surface = if (self.front_valid) &self.front else null;
+        const renderer = diff_mod.Renderer{
+            .capability = self.options.capability,
+            .sync = self.options.sync,
+        };
+        try renderer.paint(self.writer, prev, &self.back);
+        std.mem.swap(Surface, &self.front, &self.back);
+        self.front_valid = true;
+        try self.writer.flush();
+    }
+
+    /// Full-screen input (ADR-0015). Block for the next key or resize, or
+    /// return `null` when `timeout_ms` elapses first — the timeout is what
+    /// lets a loop repaint on a tick with no input (`nextEvent(250) orelse
+    /// tick()`), no background thread. `null` blocks indefinitely.
+    ///
+    /// Flushes the App's writer before blocking: the frame just built must
+    /// reach the terminal before we wait on the user (the flush-before-read
+    /// discipline `prompts` learned, enforced here in one place). Ctrl-C
+    /// arrives as an ordinary `.key` — raw mode cleared `ISIG` — so whether
+    /// it quits, cancels, or is ignored is the caller's `update`.
+    pub fn nextEvent(self: *App, timeout_ms: ?u32) !?Event {
+        std.debug.assert(self.options.mode == .full_screen);
+        const reader = self.options.stdin orelse return error.NoInput;
+        // No watcher means the headless-harness path (`term_size` set): there
+        // is no real terminal to read from.
+        if (self.watcher == null) return error.NoInput;
+        try self.writer.flush();
+        return terminal.readEventTimeout(
+            reader,
+            std.Io.File.stdin().handle,
+            &self.watcher.?,
+            timeout_ms,
+        );
     }
 
     /// Erase the live region and leave nothing in its place — the ending

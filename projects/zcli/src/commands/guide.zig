@@ -260,7 +260,7 @@ const topics = [_]Topic{
         \\A component is just a function returning a `ui.Node`; state (ticks,
         \\selections) lives in your own structs.
         \\
-        \\  var app = try context.ui();
+        \\  var app = try context.ui(.{});
         \\  defer app.deinit(); // restores terminal, final frame persists
         \\
         \\  try app.emit("compiled {s}", .{name});

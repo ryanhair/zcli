@@ -188,15 +188,22 @@ pub fn ContextFor(comptime plugins: []const type) type {
 
         /// A `ui.App` pre-wired to this command's environment: stdout, the
         /// arena-per-command allocator, the detected terminal capability, and
-        /// unicode/TTY detection. The entry point for hybrid CLI/TUI output —
+        /// unicode/TTY detection. The entry point for CLI/TUI output —
         /// `app.emit()` for static lines that flow into scrollback,
         /// `app.frame()` for the diffed live region below. `defer app.deinit()`
         /// (idempotent) restores the terminal and persists the final frame.
-        pub fn ui(self: *Self) !zcli.ui.App {
+        ///
+        /// Pass `.{ .mode = .full_screen }` for an opt-in alt-screen TUI
+        /// (ADR-0015): the App takes the screen over, owns raw mode, and reads
+        /// input through `app.nextEvent()`; stdin is wired automatically.
+        pub fn ui(self: *Self, options: zcli.ui.App.SessionOptions) !zcli.ui.App {
             return zcli.ui.App.init(self.allocator, self.stdout(), .{
                 .capability = self.theme.capability(),
                 .unicode = zcli.ui.unicodeSupported(self.environ),
                 .interactive = self.theme.caps.is_tty,
+                .mode = options.mode,
+                .sync = options.sync,
+                .stdin = if (options.mode == .full_screen) self.stdin() else null,
             });
         }
 

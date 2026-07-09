@@ -24,6 +24,8 @@ pub const styleEql = surface.styleEql;
 
 pub const Renderer = @import("diff.zig").Renderer;
 pub const App = @import("app.zig").App;
+/// Full-screen input event (`App.nextEvent`) — a key press or a resize.
+pub const Event = @import("app.zig").Event;
 pub const widgets = @import("widgets.zig");
 
 /// Whether the terminal supports unicode glyphs (re-exported from `terminal`
