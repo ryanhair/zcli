@@ -22,6 +22,11 @@ const std = @import("std");
 const ui = @import("ui");
 const terminal = @import("terminal");
 
+/// Restore the terminal on a panic before the trace prints — required for
+/// full-screen (a panic doesn't run `defer app.deinit()`, and would otherwise
+/// strand the alt-screen). `App.initFullScreen` won't compile without it.
+pub const panic = ui.panic;
+
 const tick_ms: u32 = 250;
 
 const proc_names = [_][]const u8{
@@ -121,9 +126,8 @@ pub fn main(init: std.process.Init) !void {
     var in_buf: [256]u8 = undefined;
     var stdin = std.Io.File.stdin().reader(io, &in_buf);
 
-    var app = try ui.App.init(gpa, &stdout.interface, .{
+    var app = try ui.App.initFullScreen(gpa, &stdout.interface, .{
         .capability = .ansi_256,
-        .mode = .full_screen,
         .stdin = &stdin.interface,
     });
     defer app.deinit(); // leaves alt-screen, restores cooked mode + cursor
