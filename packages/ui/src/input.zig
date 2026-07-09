@@ -306,6 +306,20 @@ pub const Select = struct {
         // if the caller set `highlighted` directly, bypassing `handle`.
         const scroll = scrollFor(self.scroll, hi, @intCast(visible), count);
 
+        // A fixed label column (widest option + the `"{marker} "` prefix), so the
+        // column doesn't jitter as you scroll and the 1-cell overflow gutter to
+        // its right stays put. Measured over ALL options, not just the visible
+        // ones, so the width is stable. A too-wide option truncates (`…`) only
+        // when the granted width can't hold it.
+        var opt_w: usize = 0;
+        for (opts.options) |o| opt_w = @max(opt_w, terminal.displayWidth(o));
+        const label_w: u16 = @intCast(opt_w + 2);
+
+        // Overflow: dim ↑/↓ in the gutter when options are hidden above/below.
+        const more_above = scroll > 0;
+        const more_below = scroll + visible < count;
+        const hint = th.prompts.hint.resolve(th.palette);
+
         const rows = try a.alloc(Node, visible);
         for (rows, 0..) |*row_node, i| {
             const idx = scroll + i;
@@ -313,10 +327,17 @@ pub const Select = struct {
             const marker: []const u8 = if (is_hi and opts.focused) "›" else " ";
             const line = try std.fmt.allocPrint(a, "{s} {s}", .{ marker, opts.options[idx] });
             const style: Style = if (is_hi)
-                (if (opts.focused) th.prompts.selected.resolve(th.palette) else th.prompts.hint.resolve(th.palette))
+                (if (opts.focused) th.prompts.selected.resolve(th.palette) else hint)
             else
                 .{};
-            row_node.* = .{ .kind = .{ .text = .{ .content = line, .style = style, .wrap = .clip } } };
+            const up = i == 0 and more_above;
+            const down = i == visible - 1 and more_below;
+            const arrow: []const u8 = if (up and down) "↕" else if (up) "↑" else if (down) "↓" else " ";
+            const children = try a.dupe(Node, &.{
+                .{ .width = .{ .len = label_w }, .kind = .{ .text = .{ .content = line, .style = style, .wrap = .truncate } } },
+                .{ .width = .{ .len = 1 }, .kind = .{ .text = .{ .content = arrow, .style = hint, .wrap = .clip } } },
+            });
+            row_node.* = .{ .kind = .{ .box = .{ .dir = .row, .children = children } } };
         }
         return .{ .kind = .{ .box = .{ .dir = .column, .children = rows } } };
     }

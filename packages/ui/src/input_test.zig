@@ -256,9 +256,10 @@ test "focused Select marks and styles the highlighted row" {
     try renderNode(a, try sel.view(a, .{ .focused = true, .options = &menu_options, .height = 3 }), &s);
 
     // Window [0,3): the highlight wears the cursor marker; the others don't.
+    // The list runs past the window, so the bottom row carries a ↓.
     try testing.expectEqualStrings("  alpha   ", try rowString(a, &s, 0));
     try testing.expectEqualStrings("› bravo   ", try rowString(a, &s, 1));
-    try testing.expectEqualStrings("  charlie ", try rowString(a, &s, 2));
+    try testing.expectEqualStrings("  charlie↓", try rowString(a, &s, 2));
     // The highlighted row is styled (selected token); the others are plain.
     try testing.expect(!ui.styleEql(s.cell(0, 1).style, .{}));
     try testing.expect(ui.styleEql(s.cell(0, 0).style, .{}));
@@ -290,10 +291,52 @@ test "Select view slides the window to the highlight" {
     defer s.deinit();
     try renderNode(a, try sel.view(a, .{ .focused = true, .options = &menu_options, .height = 3 }), &s);
 
-    // Window slid to [2,5): charlie, delta, echo (highlighted).
-    try testing.expectEqualStrings("  charlie ", try rowString(a, &s, 0));
+    // Window slid to [2,5): charlie, delta, echo (highlighted). More options sit
+    // above the window now, so the top row carries a ↑ (and none below).
+    try testing.expectEqualStrings("  charlie↑", try rowString(a, &s, 0));
     try testing.expectEqualStrings("  delta   ", try rowString(a, &s, 1));
     try testing.expectEqualStrings("› echo    ", try rowString(a, &s, 2));
+}
+
+test "Select shows both overflow arrows mid-list, and none when it fits" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Highlight 3 with a 3-row window over 5 → scroll 1, window [1,4): bravo,
+    // charlie, delta (delta highlighted). Hidden options both above and below,
+    // so the top row carries ↑ and the bottom row ↓. Surface is label_w+1 wide.
+    var sel = Select{};
+    for (0..3) |_| _ = sel.handle(.down, menu_options.len, 3);
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &menu_options, .height = 3 }), &s);
+    try testing.expectEqualStrings("  bravo  ↑", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("  charlie ", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("› delta  ↓", try rowString(a, &s, 2));
+
+    // A list that fits its window carries no arrows (surface = label_w+1 = 6).
+    var sel2 = Select{};
+    var s2 = try ui.Surface.init(testing.allocator, 6, 3);
+    defer s2.deinit();
+    const two = [_][]const u8{ "one", "two" };
+    try renderNode(a, try sel2.view(a, .{ .focused = true, .options = &two, .height = 3 }), &s2);
+    try testing.expectEqualStrings("› one ", try rowString(a, &s2, 0));
+    try testing.expectEqualStrings("  two ", try rowString(a, &s2, 1));
+}
+
+test "Select truncates an option too wide for the granted width" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var sel = Select{};
+    const one = [_][]const u8{"development"};
+    var s = try ui.Surface.init(testing.allocator, 8, 1);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .options = &one, .height = 1 }), &s);
+    const row = try rowString(a, &s, 0);
+    try testing.expect(std.mem.indexOf(u8, row, "…") != null);
 }
 
 test "Button renders its label and styles the focused state" {

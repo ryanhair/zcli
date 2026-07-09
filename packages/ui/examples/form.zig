@@ -23,8 +23,9 @@ pub const panic = ui.panic;
 
 const Field = enum { user, pass, role, remember, submit };
 
-const roles = [_][]const u8{ "admin", "developer", "viewer" };
-const role_rows: u16 = roles.len;
+const roles = [_][]const u8{ "admin", "developer", "viewer", "auditor", "billing", "support" };
+// Fewer visible rows than roles, so the select scrolls and shows its ↑/↓ gutter.
+const role_rows: u16 = 3;
 
 const State = struct {
     user_buf: [48]u8 = undefined,
