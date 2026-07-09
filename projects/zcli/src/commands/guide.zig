@@ -276,6 +276,29 @@ const topics = [_]Topic{
         \\automatically; resize re-lays-out the live region and reflows the
         \\visible static tail. progress and prompts render on this engine.
         \\
+        \\Full-screen (alt-screen TUI): `context.uiFullScreen()` takes the whole
+        \\screen over on the same engine, owns raw mode, and reads input. Write
+        \\your own loop — `app.frame(view(state))` then `app.nextEvent(timeout)`;
+        \\a null timeout blocks, a number returns null on expiry (for a tick).
+        \\Ctrl-C arrives as a key. `emit` is unavailable; leaving restores the
+        \\shell exactly (the final frame does not persist).
+        \\
+        \\  // main.zig — required, else a panic strands the alt-screen:
+        \\  pub const panic = zcli.ui.panic;
+        \\
+        \\  var app = try context.uiFullScreen(.{});
+        \\  defer app.deinit();
+        \\  while (running) {
+        \\      try app.frame(try view(app.arena(), &state));
+        \\      switch (try app.nextEvent(250) orelse { tick(&state); continue; }) {
+        \\          .key => |k| update(&state, k),
+        \\          .resize => {},
+        \\      }
+        \\  }
+        \\
+        \\Runnable example: packages/ui/examples/fullscreen.zig (a top-style
+        \\table on a nextEvent tick). Kill/panic restore the terminal too.
+        \\
         ,
     },
     .{

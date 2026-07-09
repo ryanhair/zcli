@@ -123,7 +123,12 @@ const impl = if (builtin.os.tag == .windows) struct {
             var act = posix.Sigaction{
                 .handler = .{ .handler = handlerFor(signo) },
                 .mask = posix.sigemptyset(),
-                .flags = 0,
+                // RESETHAND: the disposition is back to default on entry, so the
+                // handler's re-raise finds SIG_DFL (no recursion). NODEFER: the
+                // signal isn't blocked during the handler, so the re-raise is
+                // delivered synchronously and terminates us then and there —
+                // together, the "clean up, then die BY the signal" idiom.
+                .flags = posix.SA.RESETHAND | posix.SA.NODEFER,
             };
             posix.sigaction(signo, &act, &old[i]);
         }
@@ -146,15 +151,17 @@ const impl = if (builtin.os.tag == .windows) struct {
     }
 
     /// A distinct handler per signal so each knows its own number without reading
-    /// the (platform-varying) handler argument. Restore, then exit `128 + signo`
-    /// — the conventional signal-death code. (We exit rather than re-raise the
-    /// default disposition: `std.posix.raise` is unimplemented libc-free on macOS,
-    /// and for an interactive TUI the exit code is cosmetic — the restore is the
-    /// point.)
+    /// the (platform-varying) handler argument. Restore, then re-raise the signal
+    /// so the process dies BY it — the parent sees `WIFSIGNALED`/`WTERMSIG`, not a
+    /// plain exit. `posix.raise` is reachable on every target this branch compiles
+    /// for (macOS always links libSystem; libc-free Linux uses `tkill`; Windows
+    /// takes the other `impl`), so no libc dependency is added. The `exit` is a
+    /// fallback for the practically-impossible case where `raise` returns.
     fn handlerFor(comptime signo: anytype) fn (posix.SIG) callconv(.c) void {
         return struct {
             fn h(_: posix.SIG) callconv(.c) void {
                 restore();
+                posix.raise(signo) catch {};
                 std.process.exit(128 +| sigNum(signo));
             }
         }.h;

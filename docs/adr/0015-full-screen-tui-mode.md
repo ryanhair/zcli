@@ -1,6 +1,15 @@
 # Full-screen mode: opt-in alt-screen TUI on the same layout engine
 
-Status: proposed
+Status: accepted
+
+> Shipped across PRs #180 (steps 1/2/4), #181 (deadline-scheduled tick), and
+> #182 (step 3 teardown). One deviation from the text below: there is no
+> generated `main.zig` (apps author their own entry point), so the panic hook
+> ships as a one-line opt-in — `pub const panic = zcli.ui.panic;` — enforced at
+> compile time for full-screen apps via `App.initFullScreen`, rather than
+> emitted by codegen. `mode` also became a constructor split
+> (`init`/`initFullScreen`, `context.ui`/`context.uiFullScreen`) instead of a
+> runtime `Options.mode` flag, to make that compile-time check possible.
 
 The layout engine (ADR-0013) was built CLI-first: a static stream flowing into
 scrollback plus a live region pinned above it. But the engine that paints the
