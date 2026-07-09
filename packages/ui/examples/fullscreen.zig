@@ -18,9 +18,9 @@ const terminal = @import("terminal");
 const tick_ms: u32 = 250;
 
 const proc_names = [_][]const u8{
-    "zig",         "zls",     "kernel_task", "WindowServer",
-    "Terminal",    "firefox", "Slack",       "node",
-    "zcli",        "git",     "ripgrep",     "ssh",
+    "zig",      "zls",     "kernel_task", "WindowServer",
+    "Terminal", "firefox", "Slack",       "node",
+    "zcli",     "git",     "ripgrep",     "ssh",
 };
 
 const Proc = struct { pid: u16, name: []const u8, cpu: f32, mem: f32 };
