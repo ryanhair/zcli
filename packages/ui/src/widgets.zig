@@ -167,3 +167,15 @@ pub fn multiBar(a: std.mem.Allocator, opts: MultiBarOpts, items: []const MultiBa
 
     return .{ .kind = .{ .box = .{ .dir = .column, .children = rows } } };
 }
+
+// ============================================================================
+// Focusable input widgets (ADR-0018)
+// ============================================================================
+
+// These live in `input.zig` (interactive widgets, a distinct concern from the
+// progress widgets above) but re-export here so the whole catalog is one
+// namespace: `ui.widgets.TextInput`, `ui.widgets.Checkbox`, `ui.widgets.focusNext`.
+pub const TextInput = @import("input.zig").TextInput;
+pub const Checkbox = @import("input.zig").Checkbox;
+pub const focusNext = @import("input.zig").focusNext;
+pub const focusPrev = @import("input.zig").focusPrev;

@@ -20,6 +20,8 @@ pub const Key = union(enum) {
     delete,
     escape,
     tab,
+    /// Shift-Tab (CSI Z / "cursor backward tabulation") — reverse focus.
+    back_tab,
     up,
     down,
     left,
@@ -36,6 +38,7 @@ pub const Key = union(enum) {
             .delete => try writer.writeAll("<delete>"),
             .escape => try writer.writeAll("<escape>"),
             .tab => try writer.writeAll("<tab>"),
+            .back_tab => try writer.writeAll("<back_tab>"),
             .up => try writer.writeAll("<up>"),
             .down => try writer.writeAll("<down>"),
             .left => try writer.writeAll("<left>"),
@@ -198,6 +201,8 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle, paste: ?Pas
             'D' => keyIn(.left),
             'H' => keyIn(.home),
             'F' => keyIn(.end),
+            // Shift-Tab: CSI Z (cursor backward tabulation).
+            'Z' => keyIn(.back_tab),
             // Focus in/out (DECSET 1004). `ESC [ O` is distinct from the SS3
             // `ESC O …` below (no intervening `[`).
             'I' => .{ .focus = .in },
@@ -460,6 +465,13 @@ test "Key format renders a multibyte char" {
     const str = try std.fmt.allocPrint(allocator, "{f}", .{k});
     defer allocator.free(str);
     try std.testing.expectEqualStrings("'你'", str);
+}
+
+test "readKey parses shift-tab as back_tab" {
+    var buf = "\x1b[Z".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
+    try std.testing.expect(k == .back_tab);
 }
 
 test "readKey parses arrow up" {
