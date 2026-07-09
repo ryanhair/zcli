@@ -1,7 +1,8 @@
 //! A focusable form (ADR-0018): two text fields, a select, a checkbox, and a
-//! submit button, with Tab / Shift-Tab moving focus, ↑/↓ picking within the
-//! select, Enter/Space firing the focused button, Enter submitting, and Esc
-//! quitting. It shows the whole widget contract in one screen:
+//! submit button, with Tab / Shift-Tab (and Enter) moving focus, ↑/↓ picking
+//! within the select, Space toggling the checkbox, the button signing in on
+//! Enter/Space, and Esc quitting. It shows the whole widget contract in one
+//! screen:
 //!
 //!   - each widget is a plain struct in `State` (immediate mode — no retained
 //!     widget tree);
@@ -23,8 +24,9 @@ pub const panic = ui.panic;
 
 const Field = enum { user, pass, role, remember, submit };
 
-const roles = [_][]const u8{ "admin", "developer", "viewer" };
-const role_rows: u16 = roles.len;
+const roles = [_][]const u8{ "admin", "developer", "viewer", "auditor", "billing", "support" };
+// Fewer visible rows than roles, so the select scrolls and shows its ↑/↓ gutter.
+const role_rows: u16 = 3;
 
 const State = struct {
     user_buf: [48]u8 = undefined,
@@ -60,7 +62,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
             if (state.remember.checked) " · remembered" else "",
         })
     else
-        "Tab / Shift-Tab move · ↑/↓ pick role · Enter submit · Esc quit";
+        "Tab/Enter next · Shift-Tab back · ↑/↓ pick role · Space toggles · Esc quit";
 
     const form = try ui.column(a, .{
         .border = .rounded,
@@ -126,9 +128,11 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
     }
 
     switch (key) {
-        .tab => state.focus = ui.widgets.focusNext(Field, state.focus),
+        // Enter advances to the next field (it walks down to the submit button,
+        // where the button consumes it and signs in). Tab does the same; the
+        // button is the one place a key actually submits.
+        .tab, .enter => state.focus = ui.widgets.focusNext(Field, state.focus),
         .back_tab => state.focus = ui.widgets.focusPrev(Field, state.focus),
-        .enter => state.submitted = true,
         .escape => return .quit,
         .ctrl => |c| if (c == 'c') return .quit,
         else => {},

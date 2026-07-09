@@ -24,6 +24,18 @@ Status: accepted
 > the action on a `true` return in its focus arm. This is why a `Button` can't
 > share the editors' routing arm in the form example: an editor's consumed key
 > *invalidates* a prior submit, whereas the button's *is* the submit.
+>
+> **Increment 4 (landed): `Select` polish — truncation + overflow arrows.** Long
+> option labels now truncate with `…` (the widest option sets a fixed label
+> column, so the width doesn't jitter as you scroll, and truncation only bites
+> when the granted width can't hold it). A dim ↑/↓ shows in a 1-cell right gutter
+> when options are hidden above/below the window (`↕` when a one-row window has
+> both). This diverges from `prompts`, which omits arrows — justified because a
+> `Select` is *embedded* in a larger full-screen UI, where "this scrolls" isn't
+> obvious. The gutter is a fixed-width column (`row{ label(len), gutter(len 1) }`)
+> rather than a `fill` label, so the row still measures to its intrinsic width.
+> Deferred: full multi-line/wrapped options (a physical-row windowing rewrite,
+> like `prompts`' `list_render` — no full-screen consumer needs it yet).
 
 ADR-0013/0015 named a focusable widget library as a clean deferral. This is the
 first increment, and it settles the one hard question: how do interactive,
@@ -103,9 +115,11 @@ identity — exactly what this avoids.
   cooked-mode, one-shot, line-oriented interactive layer; this widget library is
   its full-screen, persistent, node-tree counterpart. They are parallel and
   share the vocabulary — `prompts` is neither merged nor replaced.
-- **Next:** small polish on `Select` — overflow indicators (a dim ↑/↓) and
-  multi-line options (which would render through a `viewport`, ADR-0017). With
-  `TextInput`/`Checkbox`/`Select`/`Button` landed, the widget catalog covers the
-  common form controls. Still deferred across the library: mouse click-to-focus
-  and a hardware cursor, both of which need layout to expose measured widget
-  positions (the same feedback the anchored-popup deferral waits on).
+- **Next:** the widget catalog now covers the common form controls
+  (`TextInput`/`Checkbox`/`Select`/`Button`), with `Select` truncation + overflow
+  arrows landed (increment 4). The one remaining `Select` capability is full
+  multi-line/wrapped options — a physical-row windowing rewrite (like `prompts`'
+  `list_render`), deferred until a full-screen consumer needs it. Still deferred
+  across the library: mouse click-to-focus and a hardware cursor, both of which
+  need layout to expose measured widget positions (the same feedback the
+  anchored-popup deferral waits on).
