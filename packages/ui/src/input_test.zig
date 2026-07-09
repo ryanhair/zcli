@@ -9,6 +9,7 @@ const testing = std.testing;
 const TextInput = widgets.TextInput;
 const Checkbox = widgets.Checkbox;
 const Select = widgets.Select;
+const Button = widgets.Button;
 
 // ---- handle: TextInput editing --------------------------------------------
 
@@ -124,6 +125,18 @@ test "Select scrolls to keep the highlight in the window" {
     for (0..3) |_| _ = sel.handle(.up, n, vis); // back to 1
     try testing.expectEqual(@as(usize, 1), sel.highlighted);
     try testing.expectEqual(@as(usize, 1), sel.scroll); // window slid up to [1,4)
+}
+
+// ---- handle: Button --------------------------------------------------------
+
+test "Button activates on Enter and Space, ignores other keys" {
+    var b = Button{};
+    try testing.expect(b.handle(.enter));
+    try testing.expect(b.handle(.{ .char = ' ' }));
+    // A non-activating key bubbles (so Tab still navigates off the button).
+    try testing.expect(!b.handle(.tab));
+    try testing.expect(!b.handle(.{ .char = 'x' }));
+    try testing.expect(!b.handle(.left));
 }
 
 // ---- focus helpers ---------------------------------------------------------
@@ -281,4 +294,21 @@ test "Select view slides the window to the highlight" {
     try testing.expectEqualStrings("  charlie ", try rowString(a, &s, 0));
     try testing.expectEqualStrings("  delta   ", try rowString(a, &s, 1));
     try testing.expectEqualStrings("› echo    ", try rowString(a, &s, 2));
+}
+
+test "Button renders its label and styles the focused state" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var b = Button{};
+    var s = try ui.Surface.init(testing.allocator, 12, 1);
+    defer s.deinit();
+    try renderNode(a, try b.view(a, .{ .focused = true, .label = "OK" }), &s);
+    try testing.expectEqualStrings("[ OK ]      ", try rowString(a, &s, 0));
+    try testing.expect(!ui.styleEql(s.cell(0, 0).style, .{})); // focused → styled
+
+    s.clear();
+    try renderNode(a, try b.view(a, .{ .focused = false, .label = "OK" }), &s);
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, .{})); // unfocused → plain
 }
