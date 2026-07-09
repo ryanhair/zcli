@@ -21,6 +21,12 @@ pub const readEventTimeout = event.readEventTimeout;
 /// Watches for terminal resizes; construct for the lifetime of a prompt.
 pub const ResizeWatcher = backend.ResizeWatcher;
 
+/// Process-global terminal restore guard (ADR-0015): replays a registered
+/// restore blob on external termination (signals / console-close) and, via the
+/// `ui.panic` hook, on a panic. `arm` on takeover, `disarm` on clean teardown,
+/// `restore` from a handler.
+pub const guard = @import("guard.zig");
+
 /// Display-width measurement and word-wrapping (grapheme- and ANSI-aware).
 pub const wrap = @import("wrap.zig");
 pub const displayWidth = wrap.displayWidth;

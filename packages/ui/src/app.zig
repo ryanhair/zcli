@@ -82,20 +82,17 @@ pub const App = struct {
         /// touched. A `full_screen` App on a non-TTY is an error at `init` —
         /// a TUI into a pipe is meaningless.
         interactive: bool = true,
-        /// Hybrid (default) or full-screen (alt-screen) mode (ADR-0015).
-        mode: Mode = .hybrid,
-        /// Stdin reader for full-screen input. Required in `full_screen` (the
-        /// App owns raw mode and drives `nextEvent`); unused in `hybrid`,
-        /// where input ownership stays with the caller (e.g. `prompts`).
+        /// Stdin reader for full-screen input, wired by `initFullScreen` (the
+        /// App owns raw mode and drives `nextEvent`). Unused in hybrid, where
+        /// input ownership stays with the caller (e.g. `prompts`).
         stdin: ?*std.Io.Reader = null,
     };
 
-    /// The caller-facing subset of `Options` for `context.ui()`: the
-    /// environment-derived fields (capability, unicode, interactive, stdin)
-    /// are wired by the context, so these are the choices left to the app
-    /// author.
+    /// The caller-facing subset of `Options` for `context.ui()` /
+    /// `context.uiFullScreen()`: the environment-derived fields (capability,
+    /// unicode, interactive, stdin) are wired by the context, so this is the
+    /// choice left to the app author.
     pub const SessionOptions = struct {
-        mode: Mode = .hybrid,
         /// Wrap paints in synchronized output (DECSET 2026).
         sync: bool = true,
     };
@@ -112,6 +109,11 @@ pub const App = struct {
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     options: Options,
+    /// How the App shares the terminal — set by the constructor (`init` →
+    /// hybrid, `initFullScreen` → full-screen), not a caller option, so the
+    /// full-screen path (and its compile-time panic-hook requirement) rides on
+    /// a distinct constructor rather than a runtime flag.
+    mode: Mode = .hybrid,
 
     frame_arena: std.heap.ArenaAllocator,
     /// What the terminal currently shows (diff source) / the paint target.
@@ -143,23 +145,74 @@ pub const App = struct {
 
     pub const CursorPos = struct { x: u16, y: u16 };
 
+    /// A hybrid App (ADR-0013): a static stream flowing into scrollback with a
+    /// live region pinned above it. Shares the screen, stays in cooked mode,
+    /// input ownership is the caller's.
     pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
-        var self: App = .{
+        return .{
             .writer = writer,
             .gpa = gpa,
             .options = options,
+            .mode = .hybrid,
             .frame_arena = std.heap.ArenaAllocator.init(gpa),
             .front = try Surface.init(gpa, 0, 0),
             .back = try Surface.init(gpa, 0, 0),
         };
+    }
+
+    /// A full-screen App (ADR-0015): takes the screen over via the
+    /// alternate-screen buffer, owns raw mode for the session, and reads input
+    /// through `nextEvent`. Pass a stdin reader in `options.stdin`.
+    ///
+    /// A distinct constructor, not a `mode` option, for one reason: full-screen
+    /// hands the terminal to the alt-screen in raw mode, so a panic (which does
+    /// not run `defer app.deinit()`) would strand it — the app MUST install the
+    /// restore panic hook. Because `mode` is comptime-known here (unlike a
+    /// runtime flag), `assertPanicInstalled` can turn a forgotten hook into a
+    /// build error instead of a wedged terminal, and only for full-screen apps.
+    pub fn initFullScreen(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
+        comptime assertPanicInstalled();
+        var self = try init(gpa, writer, options);
+        self.mode = .full_screen;
         errdefer {
             self.front.deinit();
             self.back.deinit();
             self.frame_arena.deinit();
         }
-        if (options.mode == .full_screen) try self.enterFullScreen();
+        try self.enterFullScreen();
         return self;
     }
+
+    /// Compile-time guard on `initFullScreen`: full-screen needs a panic handler
+    /// (see the constructor). Zig resolves the handler as `@import("root").panic`
+    /// — a root-module decl an imported module can't provide — so this checks the
+    /// root source file for it. Hybrid carries no such requirement (cooked mode,
+    /// cursor-only), which is why the check lives here and not in `init`.
+    fn assertPanicInstalled() void {
+        // `zig test` roots at the test runner (no panic hook) and constructs
+        // full-screen Apps only headlessly (fixed `term_size`, no real terminal
+        // to strand), so the requirement doesn't apply there.
+        if (@import("builtin").is_test) return;
+        if (!@hasDecl(@import("root"), "panic")) @compileError(
+            "full-screen ui.App requires a panic handler, so a panic can't strand the " ++
+                "terminal in the alt-screen. Add to your root source file (main.zig):\n\n" ++
+                "    pub const panic = zcli.ui.panic;\n\n" ++
+                "(standalone ui users: `pub const panic = ui.panic;`)",
+        );
+    }
+
+    /// Panic handler that restores the terminal (replays the `terminal.guard`
+    /// blob) *before* the default handler prints — so the stack trace lands on
+    /// the shell's real screen, not the discarded alt-screen. Install in your
+    /// root source file: `pub const panic = zcli.ui.panic;`. Required for
+    /// full-screen (enforced by `initFullScreen`); optional but recommended for
+    /// hybrid, where it re-shows the hidden cursor.
+    pub const panic = std.debug.FullPanic(struct {
+        fn call(msg: []const u8, first_trace_addr: ?usize) noreturn {
+            terminal.guard.restore();
+            std.debug.defaultPanic(msg, first_trace_addr);
+        }
+    }.call);
 
     /// Take the terminal over: enable session raw mode, switch to the
     /// alternate-screen buffer (saving the shell's screen + scrollback), hide
@@ -172,18 +225,26 @@ pub const App = struct {
         // Restore terminal state if any step below fails — same bytes/order as
         // deinit, so a half-entered session never strands the terminal.
         errdefer {
+            terminal.guard.disarm();
             self.writer.writeAll("\x1b[?25h\x1b[?1049l") catch {};
             self.writer.flush() catch {};
             if (self.watcher) |*w| w.deinit();
             if (self.raw) |r| r.disable();
         }
         // A fixed `term_size` is the headless-harness path (tests): there is
-        // no real terminal to put in raw mode or watch for resizes. Still emit
-        // the alt-screen takeover so the byte stream is exercised; live input
-        // (`nextEvent`) is a real-terminal-only affair.
+        // no real terminal to put in raw mode, watch for resizes, or arm the
+        // restore guard against (tests must not grab process signals). Still
+        // emit the alt-screen takeover so the byte stream is exercised; live
+        // input (`nextEvent`) is a real-terminal-only affair.
         if (self.options.term_size == null) {
             self.raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
             self.watcher = terminal.ResizeWatcher.init();
+            // Register the full restore (show cursor → leave alt-screen →
+            // restore termios) for the signal/panic paths that skip deinit.
+            // Armed before the alt-screen bytes go out so a signal in the gap
+            // still restores; leaving an alt-screen we haven't entered is a
+            // harmless no-op.
+            terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h\x1b[?1049l", self.raw);
         }
         self.started = true; // cursor hidden, terminal owned
         try self.writer.writeAll("\x1b[?1049h\x1b[?25l");
@@ -208,7 +269,11 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         if (self.deinited) return;
         self.deinited = true;
-        if (self.options.mode == .full_screen) {
+        // Clean teardown owns the restore from here — disarm so a racing signal
+        // doesn't also replay, and to put the old signal dispositions back.
+        // Idempotent: a no-op on the headless path that never armed.
+        if (self.started) terminal.guard.disarm();
+        if (self.mode == .full_screen) {
             // Restore in strict reverse of enter (ADR-0015 choice 5): show
             // cursor → leave alt-screen (restores the shell's screen and
             // scrollback; the final frame is discarded by design) → disable
@@ -284,7 +349,7 @@ pub const App = struct {
         // Full-screen owns the whole viewport — there is no scrollback for a
         // static line to flow into (ADR-0015). Code that wants both a
         // scrollback log and a live frame is, by definition, the hybrid.
-        if (self.options.mode == .full_screen) return error.EmitInFullScreen;
+        if (self.mode == .full_screen) return error.EmitInFullScreen;
         const base = comptime std.mem.trimEnd(u8, fmt, "\r\n");
         if (!self.options.interactive) {
             // Plain line output: no live region exists, nothing to retain.
@@ -319,7 +384,7 @@ pub const App = struct {
     pub fn frame(self: *App, node: Node) !void {
         defer _ = self.frame_arena.reset(.retain_capacity);
         if (!self.options.interactive) return;
-        if (self.options.mode == .full_screen) return self.frameFullScreen(node);
+        if (self.mode == .full_screen) return self.frameFullScreen(node);
         try self.unplace();
 
         const ts = self.termSize();
@@ -450,7 +515,7 @@ pub const App = struct {
     /// arrives as an ordinary `.key` — raw mode cleared `ISIG` — so whether
     /// it quits, cancels, or is ignored is the caller's `update`.
     pub fn nextEvent(self: *App, timeout_ms: ?u32) !?Event {
-        std.debug.assert(self.options.mode == .full_screen);
+        std.debug.assert(self.mode == .full_screen);
         const reader = self.options.stdin orelse return error.NoInput;
         // No watcher means the headless-harness path (`term_size` set): there
         // is no real terminal to read from.
@@ -594,10 +659,17 @@ pub const App = struct {
         return @intCast(@min(rows, std.math.maxInt(u16)));
     }
 
+    /// Hybrid takeover: hide the cursor (the only process-global state hybrid
+    /// touches). Arm the guard to re-show it on a signal/panic that skips
+    /// deinit — the mode-agnostic restore, minus the alt-screen and termios
+    /// full-screen also registers. Only on a real terminal (`term_size` null);
+    /// the headless harness must not grab process signals.
     fn start(self: *App) !void {
         if (self.started) return;
         self.started = true;
         try self.writer.writeAll("\x1b[?25l");
+        if (self.options.term_size == null)
+            terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h", null);
     }
 
     fn termSize(self: *App) Size {

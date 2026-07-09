@@ -28,10 +28,11 @@ const Harness = struct {
             .vt = try VTerm.init(testing.allocator, w, h),
             .app = undefined,
         };
-        self.app = try ui.App.init(testing.allocator, &self.aw.writer, .{
-            .term_size = .{ .w = w, .h = h },
-            .mode = mode,
-        });
+        const opts = ui.App.Options{ .term_size = .{ .w = w, .h = h } };
+        self.app = switch (mode) {
+            .hybrid => try ui.App.init(testing.allocator, &self.aw.writer, opts),
+            .full_screen => try ui.App.initFullScreen(testing.allocator, &self.aw.writer, opts),
+        };
         return self;
     }
 
@@ -460,9 +461,8 @@ test "emit is unavailable in full_screen" {
 test "full_screen on a non-TTY is an error at init" {
     var aw = std.Io.Writer.Allocating.init(testing.allocator);
     defer aw.deinit();
-    try testing.expectError(error.NotATerminal, ui.App.init(testing.allocator, &aw.writer, .{
+    try testing.expectError(error.NotATerminal, ui.App.initFullScreen(testing.allocator, &aw.writer, .{
         .term_size = .{ .w = 20, .h = 6 },
-        .mode = .full_screen,
         .interactive = false,
     }));
 }

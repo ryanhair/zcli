@@ -193,17 +193,31 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// `app.frame()` for the diffed live region below. `defer app.deinit()`
         /// (idempotent) restores the terminal and persists the final frame.
         ///
-        /// Pass `.{ .mode = .full_screen }` for an opt-in alt-screen TUI
-        /// (ADR-0015): the App takes the screen over, owns raw mode, and reads
-        /// input through `app.nextEvent()`; stdin is wired automatically.
+        /// For an opt-in alt-screen TUI, use `uiFullScreen` instead.
         pub fn ui(self: *Self, options: zcli.ui.App.SessionOptions) !zcli.ui.App {
             return zcli.ui.App.init(self.allocator, self.stdout(), .{
                 .capability = self.theme.capability(),
                 .unicode = zcli.ui.unicodeSupported(self.environ),
                 .interactive = self.theme.caps.is_tty,
-                .mode = options.mode,
                 .sync = options.sync,
-                .stdin = if (options.mode == .full_screen) self.stdin() else null,
+            });
+        }
+
+        /// A full-screen (alt-screen) `ui.App` pre-wired to this command's
+        /// environment, with stdin wired for input (ADR-0015): the App takes the
+        /// screen over, owns raw mode, and reads input through `app.nextEvent()`.
+        ///
+        /// Requires a panic handler in your root source file so a panic can't
+        /// strand the terminal in the alt-screen — enforced at compile time:
+        ///
+        ///     pub const panic = zcli.ui.panic;
+        pub fn uiFullScreen(self: *Self, options: zcli.ui.App.SessionOptions) !zcli.ui.App {
+            return zcli.ui.App.initFullScreen(self.allocator, self.stdout(), .{
+                .capability = self.theme.capability(),
+                .unicode = zcli.ui.unicodeSupported(self.environ),
+                .interactive = self.theme.caps.is_tty,
+                .sync = options.sync,
+                .stdin = self.stdin(),
             });
         }
 

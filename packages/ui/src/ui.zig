@@ -28,6 +28,12 @@ pub const App = @import("app.zig").App;
 pub const Event = @import("app.zig").Event;
 pub const widgets = @import("widgets.zig");
 
+/// Root-module panic handler that restores the terminal before the default
+/// handler prints (ADR-0015). Install in your `main.zig`:
+/// `pub const panic = zcli.ui.panic;`. Required for `App.initFullScreen` /
+/// `context.uiFullScreen` (enforced at compile time); optional for hybrid.
+pub const panic = App.panic;
+
 /// Whether the terminal supports unicode glyphs (re-exported from `terminal`
 /// for App/RenderCtx configuration — `App.Options.unicode`).
 pub const unicodeSupported = terminal.unicodeSupported;
