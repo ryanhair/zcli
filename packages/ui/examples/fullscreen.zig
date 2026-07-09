@@ -1,8 +1,8 @@
-//! A `top`-style full-screen TUI (ADR-0015): the whole viewport is a live table
-//! of processes whose CPU/MEM jitter on a 250ms tick, with an arrow-key
-//! selection and a `?`-toggled help overlay (a centered modal composited over
-//! the table — ADR-0016). It drives the `App.run(state, tick_ms, view, update)`
-//! loop —
+//! A `top`-style full-screen TUI (ADR-0015): a live table of processes whose
+//! CPU/MEM jitter on a 250ms tick, in a scrolling pane the arrow keys drive
+//! (the selection scrolls into view — ADR-0017), with a `?`-toggled help
+//! overlay (a centered modal composited over the table — ADR-0016). It drives
+//! the `App.run(state, tick_ms, view, update)` loop —
 //!
 //!     view(state)           render the whole screen from state
 //!     update(state, ev)      handle a key/resize, or a `null` tick; -> keep|quit
@@ -29,10 +29,18 @@ pub const panic = ui.panic;
 
 const tick_ms: u32 = 250;
 
+/// Visible rows in the scrolling process pane — a fixed window so `update` can
+/// keep the selection in view without knowing the laid-out height.
+const visible_rows: usize = 8;
+
 const proc_names = [_][]const u8{
-    "zig",      "zls",     "kernel_task", "WindowServer",
-    "Terminal", "firefox", "Slack",       "node",
-    "zcli",     "git",     "ripgrep",     "ssh",
+    "zig",      "zls",        "kernel_task",  "WindowServer",
+    "Terminal", "firefox",    "Slack",        "node",
+    "zcli",     "git",        "ripgrep",      "ssh",
+    "dockerd",  "postgres",   "redis-server", "nginx",
+    "python3",  "rustc",      "cargo",        "go",
+    "vim",      "tmux",       "bash",         "launchd",
+    "mdworker", "spotlightd", "cloudd",       "bluetoothd",
 };
 
 const Proc = struct { pid: u16, name: []const u8, cpu: f32, mem: f32 };
@@ -40,6 +48,7 @@ const Proc = struct { pid: u16, name: []const u8, cpu: f32, mem: f32 };
 const State = struct {
     tick: u32 = 0,
     selected: usize = 0,
+    scroll: u16 = 0, // first visible process row in the viewport
     show_help: bool = false,
     procs: [proc_names.len]Proc = undefined,
     last_mouse: ?ui.Mouse = null,
@@ -92,13 +101,21 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         "  PID   CPU%    MEM%  COMMAND",
     ));
 
-    for (state.procs, 0..) |p, i| {
+    // The process rows live in a scrolling viewport (ADR-0017): the list is
+    // taller than its fixed window, so `state.scroll` (kept in view by `update`)
+    // slides it. The header above and the status below stay put.
+    const proc_rows = try a.alloc(ui.Node, state.procs.len);
+    for (state.procs, proc_rows, 0..) |p, *row_node, i| {
         const line = try std.fmt.allocPrint(a, "{d:>5} {d:>6.1} {d:>7.1}  {s}", .{
             p.pid, p.cpu, p.mem, p.name,
         });
         const style: ui.Style = if (i == state.selected) .{ .reverse = true } else .{};
-        try rows.append(a, ui.textOpts(.{ .style = style, .wrap = .clip }, line));
+        row_node.* = ui.textOpts(.{ .style = style, .wrap = .clip }, line);
     }
+    try rows.append(a, try ui.viewport(a, .{
+        .scroll_y = state.scroll,
+        .height = .{ .len = @intCast(visible_rows) },
+    }, try ui.column(a, .{}, proc_rows)));
 
     try rows.append(a, ui.spacer());
     const mouse = if (state.last_mouse) |m|
@@ -151,6 +168,16 @@ fn helpModal(a: std.mem.Allocator) !ui.Node {
     });
 }
 
+/// Slide the scroll offset so the selected row stays inside the fixed viewport
+/// window — the immediate-mode analogue of a list widget's "scroll into view".
+fn keepSelectionVisible(state: *State) void {
+    if (state.selected < state.scroll) {
+        state.scroll = @intCast(state.selected);
+    } else if (state.selected >= state.scroll + visible_rows) {
+        state.scroll = @intCast(state.selected - visible_rows + 1);
+    }
+}
+
 /// A `null` event is the tick (advance the jittering table); keys drive
 /// selection and quitting. Ctrl-C is an ordinary key here (raw mode cleared
 /// ISIG). Resize needs nothing — `run` re-renders every pass.
@@ -169,18 +196,24 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             .ctrl => |c| if (c == 'c') return .quit,
             .up => if (state.selected > 0) {
                 state.selected -= 1;
+                keepSelectionVisible(state);
             },
             .down => if (state.selected + 1 < state.procs.len) {
                 state.selected += 1;
+                keepSelectionVisible(state);
             },
             else => {},
         },
         .mouse => |m| {
             state.last_mouse = m;
-            // Left-click a table row (rows start at y=3: padding + title + header).
+            // Left-click a process row: the viewport starts at y=3 (padding +
+            // title + header), so a click maps through the scroll offset.
             if (m.button == .left and m.action == .press and m.y >= 3) {
-                const row = m.y - 3;
-                if (row < state.procs.len) state.selected = row;
+                const vis = m.y - 3;
+                if (vis < visible_rows) {
+                    const row = @as(usize, state.scroll) + vis;
+                    if (row < state.procs.len) state.selected = row;
+                }
             }
         },
         .focus => |f| state.focused = f == .in,
