@@ -341,63 +341,114 @@ identity, exactly what this avoids"). So the helper is **sugar over the existing
 switch, not a layer**: the caller can bypass it entirely, and it introduces no
 retained state.
 
-### Proposed comptime design
-
-```zig
-pub fn FocusRing(comptime State: type) type { ... }
-```
+### Chosen comptime design: extras-tuple dispatch
 
 `FocusRing(State)` inspects `State`'s fields at comptime and identifies the
-**widget fields** — those whose type has a `handle` method (a `@hasDecl(F, "handle")`
+**widget fields** — those whose type has a `handle` decl (a `@hasDecl(F, "handle")`
 duck-typed check, the same "convention not interface" stance ADR-0018 takes for
-`view`/`handle`). It builds a comptime array of those field names in declaration
-order — that array *is* the ring. Focus is a `usize` index into the ring (or the
-caller's existing enum; the helper accepts either — an enum's `@intFromEnum` is
-the index). The helper provides:
+`view`/`handle`). It collects those field names in declaration order — that list
+*is* the ring — and reifies a named `Focus` enum from them, so the caller's focus
+value is a real `state.focus == .submit` enum, not a bare `usize` index.
 
-- `next(i)` / `prev(i)` — wrapping increment/decrement over the ring length
+```zig
+pub fn FocusRing(comptime State: type) type {
+    // comptime: `widget_field_names` = State's fields whose type has a `handle`
+    // decl, in declaration order. That list is the ring.
+    return struct {
+        // A named enum generated from the field names, e.g.
+        // `enum { user, pass, remember, submit }` — the caller's focus type.
+        pub const Focus = @Enum(Tag, .exhaustive, widget_field_names, values);
+
+        pub fn next(f: Focus) Focus { ... } // wrapping over the ring length
+        pub fn prev(f: Focus) Focus { ... }
+
+        pub fn dispatch(state: *State, f: Focus, key: Key, extras: anytype) bool {
+            inline for (widget_field_names, 0..) |name, i| {
+                if (@intFromEnum(f) == i) {
+                    const w = &@field(state, name);
+                    const base = .{ w, key };
+                    const args = if (@hasField(@TypeOf(extras), name))
+                        base ++ @field(extras, name) // multi-arg widget
+                    else
+                        base; // plain handle(key)
+                    return @call(.auto, @TypeOf(w.*).handle, args);
+                }
+            }
+            unreachable;
+        }
+    };
+}
+```
+
+The helper provides:
+
+- `next(f)` / `prev(f)` — wrapping increment/decrement over the ring length
   (thin generalizations of the existing `focusNext`/`focusPrev`, which already do
-  exactly this over an enum's field count);
-- `dispatch(state, i, key) bool` — an `inline for` over the ring that, when the
-  loop index matches `i`, calls `@field(state, name).handle(key, ...)` and
-  returns *consumed*. The routing is generated at comptime — no vtable, no
-  dynamic dispatch, identical codegen to the hand-written switch.
+  exactly this over an enum's field count), now typed as the derived `Focus`;
+- `dispatch(state, f, key, extras) bool` — full handoff: routes `key` to the
+  focused widget's `handle` and returns *consumed*. An `inline for` over the ring
+  selects the matching field, borrows `&@field(state, name)`, and `@call`s its
+  `handle` with a comptime-concatenated argument tuple. Everything is comptime
+  (`inline for` + tuple `++` + `@call`) — no vtable, no dynamic dispatch, codegen
+  identical to the hand-written switch.
 
-The **one comptime friction** is heterogeneous `handle` signatures:
+This keeps the original **handoff** requirement (a `dispatch(key) → bool` that
+routes to the focused widget) — the N-arm switch, the part that actually scales
+badly, moves into the helper, not just the ring ordering.
+
+**The arity problem, handled, not dropped.** `handle` signatures are heterogeneous:
 `TextInput.handle(key)` vs `Select.handle(key, count, visible)` vs
-`Tabs.handle(key, active, count)`. A blind `@field(...).handle(key)` won't
-compile against the multi-arg widgets. Two ways out, in order of preference:
+`Tabs.handle(key, active, count)`. The **extras tuple** solves it: widgets with a
+plain `handle(key)` need no entry; a multi-arg widget gets its extra args as a
+tuple keyed by field name, concatenated onto `.{ w, key }` before the `@call`.
+The whole hand-written switch collapses to:
 
-1. **Adapter shim**: the ring dispatches `key` only, and each widget grows a
-   uniform `handle(key) bool` that reads the counts it needs from fields it can
-   see (Select/Table would need the option/row slice available — which pushes
-   toward the widget holding a borrowed slice, a bigger change). *Rejected as
-   forcing an API change on shipped widgets.*
-2. **Caller-supplied dispatch, ring-supplied order** (**chosen**): the helper
-   owns only the *ring order* and `next`/`prev`/index mapping (the tedious,
-   error-prone part), and the caller keeps a tiny `dispatch` switch for the
-   handful of widgets that take extra args. This still deletes the
-   focus-ordering boilerplate (the part that actually scales badly) without the
-   helper needing to understand every `handle` arity. `form.zig`'s
-   `focusNext(Field, ...)`/`focusPrev(Field, ...)` calls collapse into
-   `ring.next(...)`/`ring.prev(...)` derived from the struct, and the enum +
-   `field_count` bookkeeping goes away.
+```zig
+const Ring = ui.widgets.FocusRing(State);
+const consumed = Ring.dispatch(&state, state.focus, key, .{
+    .list = .{ options.len, 8 }, // Select's extra (count, visible) args
+});
+```
 
-### Fallback (if comptime fights the language)
+One nuance the sketch must respect: because `state.focus` is a *runtime* value,
+the `inline for` compiles every arm, so `extras` describes the *widgets* (each
+multi-arg field's extra args), not just the currently-focused one — the entry for
+a multi-arg field must be present even on a frame where a different widget is
+focused. Only the matching arm actually runs. (Verified against 0.16: `@Enum`
+reifies the named enum, tuple `++` concatenates `.{w, key}` with the keyed
+extras, and `@call(.auto, T.handle, args)` dispatches — codegen matches the
+switch.)
 
-A **runtime slice-of-vtables**: `[]const struct { handle: *const fn(*anyopaque, Key) bool }`
-the caller populates once. It's a registry-lite, so it's the *fallback*, not the
-default — it reintroduces a hint of the identity ADR-0018 avoided. The comptime
-"ring order + caller dispatch" design keeps zero runtime structure and stays
-under ~100 lines; the vtable version is the escape hatch only if reflection
-proves too painful.
+**Button caveat.** `Button.handle`'s `true` means *activated*, not merely
+*consumed* (ADR-0018 incr3). So a caller that routes a Button through `dispatch`
+runs the button's action whenever `consumed and state.focus == .submit` — the
+ring doesn't change that contract; it's the same "consumed ⇒ activated for a
+Button" the hand-written switch already had.
+
+### Fallbacks
+
+If the comptime machinery proves not worth it in practice, the **simplification**
+is *ring order only, caller keeps the switch*: the helper owns only the ring
+`Focus` enum and `next`/`prev`/index mapping (the tedious, error-prone part), and
+the caller keeps a small `switch (state.focus)` for the handful of widgets that
+take extra args. This still deletes the focus-ordering boilerplate without the
+extras-tuple reflection.
+
+The **last resort** is a **runtime slice-of-vtables**:
+`[]const struct { handle: *const fn(*anyopaque, Key) bool }` the caller populates
+once. It's a registry-lite, so it reintroduces a hint of the widget identity
+ADR-0018 avoided — the escape hatch only if both comptime designs fight the
+language. (The uniform-`handle(key)`-adapter route — forcing every widget to grow
+a `handle(key) bool` that reads its counts from a borrowed slice — stays
+**rejected**: it forces an API change on shipped widgets.)
 
 ### Scope
 
 Sugar, ≤ ~100 lines, no framework loop, no registry, fully bypassable. Prove it
-by refactoring `examples/form.zig` — the example should get visibly shorter (the
-`Field` enum ordering + `focusNext`/`focusPrev` threading shrink to a
-struct-derived ring).
+by refactoring `examples/form.zig` — with full dispatch the example loses *both*
+the `Field` enum (now the derived `Focus`) *and* the hand-written
+`switch (state.focus)` dispatch, plus the `focusNext`/`focusPrev` + `field_count`
+threading, collapsing to a struct-derived ring and a single `Ring.dispatch` call.
 
 ---
 
