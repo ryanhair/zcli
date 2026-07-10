@@ -225,7 +225,7 @@ Nine spinner styles, plus stacked multi-bars for parallel work; animations auto-
 Prompts and progress render on `zcli.ui` — a terminal-native layout engine, and it's yours to use directly. Output splits into a static stream that flows into scrollback and a live region that repaints in place just above it — a full layout, from a single line up to the whole viewport, not a fixed bottom strip. Unlike a full-screen TUI it never takes the terminal over, so your scrollback stays intact. This is the shape of modern agent-style CLIs: a component is just a function returning a node, and frames are diffed, so an animation repaints one cell, not the screen.
 
 ```zig
-var app = try context.ui();
+var app = try context.ui(.{});
 defer app.deinit(); // restores the terminal; the final frame persists
 
 try app.emit("compiled {s}", .{name});            // static → scrollback
@@ -235,7 +235,9 @@ try app.frame(try ui.column(app.arena(), .{ .border = .rounded }, &.{
 }));                                              // live → diffed repaint
 ```
 
-Boxes, wrapped text, spacers, and custom leaves; `fit`/`len`/`fill` sizing; viewport-clamped, resize-aware (the live region re-lays-out and the visible scrollback tail reflows), and piped output degrades to plain lines. Design in [ADR-0013](docs/adr/0013-terminal-native-layout-engine.md), API in [packages/ui](packages/ui/).
+Boxes, wrapped text, spacers, and custom leaves; `fit`/`len`/`fill` sizing; viewport-clamped, resize-aware (the live region re-lays-out and the visible scrollback tail reflows), and piped output degrades to plain lines.
+
+When you want the whole terminal — a `top`-style dashboard, an interactive form — the same node tree, layout, and diff run in **full-screen mode**: `context.uiFullScreen(.{})` switches to the alternate screen and hands the `frame → event → update` loop to `app.run`. It comes with focusable widgets (`TextInput`, `Select`, `Checkbox`, `Button` — each a plain struct in your state, routed by a single `handle`-returns-`bool` contract), overlays via a `stack` of z-layers, scrollable viewports, mouse/focus/paste events, and anchored popups that flip and clamp to stay on screen. On exit the shell comes back exactly as it was. Design in [ADR-0013](docs/adr/0013-terminal-native-layout-engine.md) (full-screen and widgets in [ADRs 0015–0020](docs/adr/)), API in [packages/ui](packages/ui/).
 
 ## Theming
 
@@ -259,7 +261,7 @@ try styled("Synced").success().render(writer, &context.theme);
 try styled("Error").red().bold().render(writer, &context.theme);
 ```
 
-Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) resolve at render time and adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Component tokens (`prompts.cursor`, `progress.spinner`, …) default to palette roles, so one palette change restyles everything. Full API in [packages/theme](packages/theme/).
+Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) resolve at render time and adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Component tokens (`prompts.cursor`, `progress.spinner`, `surface.border`, …) default to palette roles, so one palette change restyles everything — including the chrome behind a full-screen panel. Styling defaults *derive* from the theme at compile time, so `ui.panel` and bordered boxes need no `Style` at the call site and `ui.text(ui.role(.success), …)` styles by meaning in one word. Full API in [packages/theme](packages/theme/).
 
 ## Config files
 

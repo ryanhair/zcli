@@ -304,7 +304,7 @@ spinner.<span class="fn">succeed</span>(<span class="str">"Synced successfully"<
           <p>Prompts and progress both render on <code>zcli.ui</code> — a terminal-native layout engine — and it's yours to use directly. Output splits into a static stream that flows into scrollback and a live region that repaints in place just above it — a full layout, from a single line up to the whole viewport, not a fixed bottom strip. Unlike a full-screen TUI it never takes the terminal over, so your scrollback stays intact. This is the shape of modern agent-style CLIs: a component is just a function returning a node, and frames are diffed, so an animation repaints one cell, not the screen.</p>
           <div class="code">
             <div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
-<pre><span class="kw">var</span> app = <span class="kw">try</span> context.<span class="fn">ui</span>();
+<pre><span class="kw">var</span> app = <span class="kw">try</span> context.<span class="fn">ui</span>(.{});
 <span class="kw">defer</span> app.<span class="fn">deinit</span>(); <span class="cm">// restores the terminal; the final frame persists</span>
 
 <span class="kw">try</span> app.<span class="fn">emit</span>(<span class="str">"compiled {s}"</span>, .{name});            <span class="cm">// static -> scrollback</span>
@@ -313,7 +313,7 @@ spinner.<span class="fn">succeed</span>(<span class="str">"Synced successfully"<
     ui.<span class="fn">text</span>(.{ .bold = <span class="num">true</span> }, <span class="str">"building..."</span>),
 }));                                          <span class="cm">// live -> diffed repaint</span></pre>
           </div>
-          <p>Boxes, wrapped text, spacers, and custom leaves; <code>fit</code>/<code>len</code>/<code>fill</code> sizing; viewport-clamped and resize-aware, degrading to plain lines when piped. The model, the node vocabulary, and the widgets: see the <a href="$site.page('ui').link()">CLI/TUI hybrid guide</a>.</p>
+          <p>Boxes, wrapped text, spacers, and custom leaves; <code>fit</code>/<code>len</code>/<code>fill</code> sizing; viewport-clamped and resize-aware, degrading to plain lines when piped. The same node tree, layout, and diff also run in <b>full-screen mode</b> — <code>context.uiFullScreen(.{})</code> with an event loop, focusable form widgets, and overlays — when you want to take the terminal over. The model, the node vocabulary, the widgets, and full-screen: see the <a href="$site.page('ui').link()">CLI/TUI hybrid guide</a>.</p>
         </section>
 
         <!-- ============ CONFIG ============ -->

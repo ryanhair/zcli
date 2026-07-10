@@ -6,10 +6,14 @@ All notable changes to zcli are documented here.
 
 ## Unreleased
 
-The terminal-native layout engine (ADR-0013) and the migration of the interactive packages onto it.
+The terminal-native layout engine (ADR-0013), the migration of the interactive packages onto it, and its growth into a full-screen TUI toolkit (ADRs 0015–0020).
 
 ### Added
-- **`zcli.ui`** — a terminal-native layout engine for CLI/TUI hybrid apps: a static stream flowing into scrollback plus a diffed live region (`app.emit()` / `app.frame(node)`). Immediate-mode node trees (box/text/spacer/custom, `fit`/`len`/`fill` sizing), viewport clamping, resize re-layout including reflow of the visible static tail, real-cursor placement for line editors, and plain-line degradation when piped. `context.ui()` returns a pre-wired `ui.App`.
+- **`zcli.ui`** — a terminal-native layout engine for CLI/TUI hybrid apps: a static stream flowing into scrollback plus a diffed live region (`app.emit()` / `app.frame(node)`). Immediate-mode node trees (box/text/spacer/custom, `fit`/`len`/`fill` sizing), viewport clamping, resize re-layout including reflow of the visible static tail, real-cursor placement for line editors, and plain-line degradation when piped. `context.ui(.{})` returns a pre-wired `ui.App`.
+- **Full-screen TUI mode** — `context.uiFullScreen(.{})` / `App.initFullScreen` run the same layout engine on the alternate screen with raw input and an `App.run` event loop (`view` builds the tree, `update` handles a key/resize/mouse/focus/paste event or a deadline-scheduled `null` tick, an optional post-frame hook places the hardware cursor). The screen and scrollback are restored on exit; requires a `pub const panic = zcli.ui.panic` hook (checked at compile time). (ADR-0015)
+- **Focusable widgets** — `ui.widgets.TextInput`, `Select`, `Checkbox`, and `Button`: immediate-mode structs with a `view`/`handle` contract where `handle` returns whether it consumed the key (the whole routing model), caller-owned focus via `focusNext`/`focusPrev`, hardware-cursor placement, and click-to-focus. `Select` supports multi-line / wrapped options. (ADRs 0018–0019)
+- **Overlays, viewports, and popups** — a `stack` z-layer direction with `center` for modals, `viewport` for content taller than its window, and `probe`/`positioned`/`anchored` for popups that flip above and clamp on screen; plus opt-in `mouse`/`focus`/`paste` events. (ADRs 0016–0019)
+- **Theme-derived style defaults** — every styling default derives from the root `zcli_theme` at compile time: a new `surface` token group (`border`, `panel`) styles full-screen chrome, `ui.panel` and bordered boxes need no call-site `Style`, and `ui.role(r)` resolves a palette role in one word. (ADR-0020)
 - **`progress.MultiBar`** — stacked labeled bars for parallel work with thread-safe updates.
 - vterm supports DECAWM (private mode 7).
 

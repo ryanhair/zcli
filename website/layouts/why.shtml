@@ -48,7 +48,7 @@
         <tr><td class="hl">Scope</td><td>argument parser</td><td>CLI framework</td><td class="zcli-col hl">CLI framework</td></tr>
         <tr><td class="hl">Commands defined by</td><td>manual dispatch</td><td>runtime builder</td><td class="zcli-col hl">files on disk, discovered at build time</td></tr>
         <tr><td class="hl">Flags are</td><td>comptime DSL → typed result</td><td>registered at runtime, read by name</td><td class="zcli-col hl">struct fields, checked at compile time</td></tr>
-        <tr><td class="hl">Beyond parsing</td><td>help text</td><td>help, version, spinners</td><td class="zcli-col hl">help, completions, prompts, progress, theming, config files, plugins, testing tools</td></tr>
+        <tr><td class="hl">Beyond parsing</td><td>help text</td><td>help, version, spinners</td><td class="zcli-col hl">help, completions, prompts, progress, theming, full-screen TUI, config files, plugins, testing tools</td></tr>
       </tbody>
     </table>
     </div>

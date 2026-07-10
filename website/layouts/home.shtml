@@ -82,6 +82,7 @@
 		@media (max-width: 900px) {
 			.hero .wrap { grid-template-columns: 1fr; }
 			.features { grid-template-columns: 1fr 1fr; }
+			.filler { display: none; }   /* below 3 columns, 8 cards tile clean on their own */
 		}
 		@media (max-width: 600px) {
 			.features { grid-template-columns: 1fr; }
@@ -306,12 +307,25 @@ Deploying api to staging<span class="cursor"></span></pre>
 					<p>Nine spinner styles plus progress bars with ETA. Semantic colors adapt to your terminal's capabilities.</p>
 					<span class="goto">→ docs</span>
 				</a>
+				<a class="feat" href="$site.page('ui').link()">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
+					<h3>CLI/TUI hybrid</h3>
+					<p>A terminal-native layout engine: stream into scrollback with a diffed live region, or go full-screen with forms, overlays, and mouse input.</p>
+					<span class="goto">→ ui</span>
+				</a>
+				<a class="feat" href="$site.page('theming').link()">
+					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3s6 5.5 6 10a6 6 0 0 1-12 0c0-4.5 6-10 6-10z"/></svg>
+					<h3>Theming</h3>
+					<p>Declare one theme; help, prompts, progress, and full-screen chrome all follow it — true color down to NO_COLOR, no branches in your code.</p>
+					<span class="goto">→ theming</span>
+				</a>
 				<a class="feat" href="$site.page('docs').link().suffix('#docsgen')">
 					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h11l5 5v11H4z"/><path d="M14 4v5h5M8 13h8M8 17h8"/></svg>
 					<h3>Docs generation</h3>
 					<p>Emit markdown, man pages, and HTML straight from command metadata. Config loads transparently from JSON, TOML, or YAML.</p>
 					<span class="goto">→ docs</span>
 				</a>
+				<span class="feat filler" aria-hidden="true"></span>
 			</div>
 		</div>
 	</section>
