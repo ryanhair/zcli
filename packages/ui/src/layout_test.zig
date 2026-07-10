@@ -521,3 +521,99 @@ test "positioned places its child at an absolute offset over a transparent base"
     try testing.expectEqualStrings("...POP..", try rowString(&h, &s, 1));
     try testing.expectEqualStrings("........", try rowString(&h, &s, 2));
 }
+
+// A base of dots the size of the surface; the anchored popup composites over it.
+fn dotBase(h: *Harness, w: u16, rows: u16) !ui.Node {
+    const line = try h.a().alloc(u8, w);
+    @memset(line, '.');
+    const children = try h.a().alloc(ui.Node, rows);
+    for (children) |*c| c.* = ui.textOpts(.{ .wrap = .clip }, line);
+    return ui.column(h.a(), .{}, children);
+}
+
+test "anchored opens below the anchor when there is room" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 8, 5);
+    defer s.deinit();
+
+    // Anchor is a 2-wide, 1-tall widget at (1, 1); the 3x1 popup opens below it.
+    const anchor: ui.Rect = .{ .x = 1, .y = 1, .w = 2, .h = 1 };
+    const node = try ui.stack(h.a(), .{}, &.{
+        try dotBase(&h, 8, 5),
+        try ui.anchored(h.a(), anchor, .{}, ui.textOpts(.{ .wrap = .clip }, "POP")),
+    });
+    try renderInto(&h, node, &s);
+
+    // Left edge pins to the anchor's x (1); row is anchor.y + anchor.h = 2.
+    try testing.expectEqualStrings("........", try rowString(&h, &s, 1));
+    try testing.expectEqualStrings(".POP....", try rowString(&h, &s, 2));
+    try testing.expectEqualStrings("........", try rowString(&h, &s, 3));
+}
+
+test "anchored flips above when the popup would run off the bottom" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 8, 5);
+    defer s.deinit();
+
+    // Anchor sits on the last row (y=4); a 2-tall popup can't open below, but
+    // fits above, so it flips to end just above the anchor (rows 2..3).
+    const anchor: ui.Rect = .{ .x = 1, .y = 4, .w = 2, .h = 1 };
+    const popup = try ui.column(h.a(), .{}, &.{
+        ui.textOpts(.{ .wrap = .clip }, "AA"),
+        ui.textOpts(.{ .wrap = .clip }, "BB"),
+    });
+    const node = try ui.stack(h.a(), .{}, &.{
+        try dotBase(&h, 8, 5),
+        try ui.anchored(h.a(), anchor, .{}, popup),
+    });
+    try renderInto(&h, node, &s);
+
+    try testing.expectEqualStrings(".AA.....", try rowString(&h, &s, 2));
+    try testing.expectEqualStrings(".BB.....", try rowString(&h, &s, 3));
+    // The anchor's own row is untouched (base shows through).
+    try testing.expectEqualStrings("........", try rowString(&h, &s, 4));
+}
+
+test "anchored clamps left when the popup would run off the right edge" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 8, 4);
+    defer s.deinit();
+
+    // Anchor near the right edge (x=6); a 4-wide popup pinned there would end at
+    // x=10, off an 8-wide screen, so it shifts left to sit flush at x=4.
+    const anchor: ui.Rect = .{ .x = 6, .y = 0, .w = 2, .h = 1 };
+    const node = try ui.stack(h.a(), .{}, &.{
+        try dotBase(&h, 8, 4),
+        try ui.anchored(h.a(), anchor, .{}, ui.textOpts(.{ .wrap = .clip }, "WIDE")),
+    });
+    try renderInto(&h, node, &s);
+
+    try testing.expectEqualStrings("....WIDE", try rowString(&h, &s, 1));
+}
+
+test "anchored keeps the preferred side and clips when neither side fits" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 8, 3);
+    defer s.deinit();
+
+    // A 3-tall popup fits neither below (anchor at y=1, only row 2 left) nor
+    // fully above; it keeps `below` and clips to the one visible row.
+    const anchor: ui.Rect = .{ .x = 0, .y = 1, .w = 2, .h = 1 };
+    const popup = try ui.column(h.a(), .{}, &.{
+        ui.textOpts(.{ .wrap = .clip }, "11"),
+        ui.textOpts(.{ .wrap = .clip }, "22"),
+        ui.textOpts(.{ .wrap = .clip }, "33"),
+    });
+    const node = try ui.stack(h.a(), .{}, &.{
+        try dotBase(&h, 8, 3),
+        try ui.anchored(h.a(), anchor, .{}, popup),
+    });
+    try renderInto(&h, node, &s);
+
+    // Below the anchor: only the popup's first row lands; the rest clips.
+    try testing.expectEqualStrings("11......", try rowString(&h, &s, 2));
+}
