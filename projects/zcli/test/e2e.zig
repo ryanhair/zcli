@@ -80,6 +80,25 @@ fn run(cwd: std.Io.Dir, argv: []const []const u8) !RunResult {
     };
 }
 
+/// Run `argv` with stdout AND stderr both redirected to `out_file` — an
+/// already-open regular file — reproducing an inherited-regular-file fd
+/// (`cmd >log 2>&1`, CI logs, a coding agent capturing output). Unlike `run`,
+/// which pipes (streaming on both sides), this is the exact shape that a
+/// positional-mode stdio writer corrupts: it pwrites from its own offset
+/// starting at 0, overwriting whatever a prior invocation wrote to the same
+/// shared fd. The caller reuses one `out_file` across invocations so the second
+/// run must append at the shared offset, not clobber from byte 0.
+fn runToSharedFile(cwd: std.Io.Dir, out_file: std.Io.File, argv: []const []const u8) !void {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .dir = cwd },
+        .stdin = .ignore,
+        .stdout = .{ .file = out_file },
+        .stderr = .{ .file = out_file },
+    });
+    _ = try child.wait(io);
+}
+
 fn fileExists(dir: std.Io.Dir, path: []const u8) bool {
     // Windows rejects these characters in a path at the syscall layer with
     // OBJECT_NAME_INVALID, which Zig surfaces as an unrecoverable panic rather
@@ -691,6 +710,32 @@ test "scaffolded project builds, runs, and round-trips add command" {
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "Hello, World!");
+    }
+
+    // Regression (P0 output corruption): two invocations sharing one inherited
+    // regular-file stdout must both survive, in order. A positional-mode stdio
+    // writer pwrites from offset 0 every time, so the second run clobbered the
+    // first from byte 0 — losing output to CI logs, cron, and agents capturing
+    // command output (pipes/TTYs were unaffected, masking it). Streaming mode
+    // respects the fd's shared offset, so appends serialize.
+    {
+        const log = try proj.createFile(io, "shared.log", .{ .read = true });
+        defer log.close(io);
+
+        try runToSharedFile(proj, log, &.{ demo_bin, "hello", "First" });
+        try runToSharedFile(proj, log, &.{ demo_bin, "hello", "Second" });
+
+        const contents = try readFile(proj, arena.allocator(), "shared.log");
+        const first = std.mem.indexOf(u8, contents, "Hello, First!") orelse {
+            std.debug.print("shared.log lost the first invocation:\n{s}\n", .{contents});
+            return error.FirstOutputClobbered;
+        };
+        const second = std.mem.indexOf(u8, contents, "Hello, Second!") orelse {
+            std.debug.print("shared.log lost the second invocation:\n{s}\n", .{contents});
+            return error.SecondOutputMissing;
+        };
+        // Order preserved: the second append lands after the first, not over it.
+        try testing.expect(second > first);
     }
 
     // Help lists the discovered command (the help plugin writes to stderr).
