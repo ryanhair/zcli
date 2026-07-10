@@ -10,6 +10,7 @@ const testing = std.testing;
 const TextInput = widgets.TextInput;
 const Checkbox = widgets.Checkbox;
 const Select = widgets.Select;
+const Table = widgets.Table;
 const Button = widgets.Button;
 
 // ---- handle: TextInput editing --------------------------------------------
@@ -126,6 +127,70 @@ test "Select scrolls to keep the highlight in the window" {
     for (0..3) |_| _ = sel.handle(.up, n, vis); // back to 1
     try testing.expectEqual(@as(usize, 1), sel.highlighted);
     try testing.expectEqual(@as(usize, 1), sel.scroll); // window slid up to [1,4)
+}
+
+// ---- handle: Table ---------------------------------------------------------
+
+test "Table moves the selection and clamps at the ends" {
+    var t = Table{};
+    const n = 5;
+    try testing.expect(t.handle(.down, n, 3));
+    try testing.expectEqual(@as(usize, 1), t.highlighted);
+    _ = t.handle(.up, n, 3);
+    _ = t.handle(.up, n, 3); // clamp at the top
+    try testing.expectEqual(@as(usize, 0), t.highlighted);
+    _ = t.handle(.end, n, 3);
+    try testing.expectEqual(@as(usize, 4), t.highlighted);
+    _ = t.handle(.down, n, 3); // clamp at the bottom
+    try testing.expectEqual(@as(usize, 4), t.highlighted);
+    _ = t.handle(.home, n, 3);
+    try testing.expectEqual(@as(usize, 0), t.highlighted);
+}
+
+test "Table consumes navigation, bubbles Enter/Tab, ignores an empty grid" {
+    var t = Table{};
+    try testing.expect(t.handle(.down, 3, 3));
+    try testing.expect(!t.handle(.enter, 3, 3));
+    try testing.expect(!t.handle(.tab, 3, 3));
+    try testing.expect(!t.handle(.down, 0, 3)); // nothing to move
+}
+
+test "Table pages by the visible height and clamps at the boundaries" {
+    var t = Table{};
+    const n = 20;
+    const vis = 5;
+    try testing.expect(t.handle(.pagedown, n, vis)); // 0 -> 5
+    try testing.expectEqual(@as(usize, 5), t.highlighted);
+    _ = t.handle(.pagedown, n, vis); // 5 -> 10
+    try testing.expectEqual(@as(usize, 10), t.highlighted);
+    _ = t.handle(.pagedown, n, vis); // 10 -> 15
+    _ = t.handle(.pagedown, n, vis); // 15 -> 19 (clamped, not 20)
+    try testing.expectEqual(@as(usize, 19), t.highlighted);
+    _ = t.handle(.pagedown, n, vis); // already at the last row, stays
+    try testing.expectEqual(@as(usize, 19), t.highlighted);
+    _ = t.handle(.pageup, n, vis); // 19 -> 14
+    try testing.expectEqual(@as(usize, 14), t.highlighted);
+    _ = t.handle(.pageup, n, vis); // 14 -> 9
+    _ = t.handle(.pageup, n, vis); // 9 -> 4
+    _ = t.handle(.pageup, n, vis); // 4 -> 0 (saturating, not underflow)
+    try testing.expectEqual(@as(usize, 0), t.highlighted);
+    _ = t.handle(.pageup, n, vis); // already at the top, stays
+    try testing.expectEqual(@as(usize, 0), t.highlighted);
+}
+
+test "Table scrolls to keep the selection in the window" {
+    var t = Table{};
+    const n = 6;
+    const vis = 3;
+    for (0..4) |_| _ = t.handle(.down, n, vis); // selection 4
+    try testing.expectEqual(@as(usize, 4), t.highlighted);
+    try testing.expectEqual(@as(usize, 2), t.scroll); // window [2,5) shows it
+    for (0..3) |_| _ = t.handle(.up, n, vis); // back to 1
+    try testing.expectEqual(@as(usize, 1), t.highlighted);
+    try testing.expectEqual(@as(usize, 1), t.scroll); // window slid up to [1,4)
+    _ = t.handle(.pagedown, n, vis); // 1 -> 4, window slides to keep it in view
+    try testing.expectEqual(@as(usize, 4), t.highlighted);
+    try testing.expectEqual(@as(usize, 2), t.scroll);
 }
 
 // ---- handle: Button --------------------------------------------------------
@@ -426,6 +491,118 @@ test "wrapped Select shows both arrows on a single-row window" {
 
     // One physical row with options hidden both above and below → a merged ↕.
     try testing.expectEqualStrings("› b      ↕", try rowString(a, &s, 0));
+}
+
+// ---- view: Table -----------------------------------------------------------
+
+const tbl_columns = [_]Table.Column{
+    .{ .header = "ID", .width = .fit },
+    .{ .header = "NAME", .width = .fit },
+};
+const tbl_rows = [_][]const []const u8{
+    &.{ "1", "alpha" },
+    &.{ "2", "bravo" },
+    &.{ "33", "charlie" },
+    &.{ "4", "delta" },
+    &.{ "5", "echo" },
+};
+
+test "Table renders a header band over aligned .fit columns" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var t = Table{};
+    // Surface 11 wide: ID(.fit=2) + gap + NAME(.fit=7) = 10 body cells + 1 gutter.
+    var s = try ui.Surface.init(testing.allocator, 11, 6);
+    defer s.deinit();
+    try renderNode(a, try t.view(a, .{ .focused = true, .columns = &tbl_columns, .rows = &tbl_rows, .height = 3 }), &s);
+
+    // Header row in hint style, columns aligned; the gutter trails blank on it.
+    try testing.expectEqualStrings("ID NAME    ", try rowString(a, &s, 0));
+    const th = theme_mod.default_theme;
+    const hint = th.prompts.hint.resolve(th.palette);
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, hint));
+    // Body rows follow, column-aligned under the header. Scroll is 0, so the
+    // first body row has a blank gutter (nothing hidden above it).
+    try testing.expectEqualStrings("1  alpha   ", try rowString(a, &s, 1));
+    // The list overflows the 3-row window, so the last visible body row carries ↓.
+    try testing.expectEqualStrings("33 charlie↓", try rowString(a, &s, 3));
+}
+
+test "Table highlights the selected row as a full-width band" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var t = Table{};
+    _ = t.handle(.down, tbl_rows.len, 3); // select row 1 (bravo)
+
+    var s = try ui.Surface.init(testing.allocator, 11, 6);
+    defer s.deinit();
+    try renderNode(a, try t.view(a, .{ .focused = true, .columns = &tbl_columns, .rows = &tbl_rows, .height = 3 }), &s);
+
+    // Row 2 of the surface is body row 1 (bravo), highlighted.
+    const th = theme_mod.default_theme;
+    const selected = th.prompts.selected.resolve(th.palette);
+    // The band spans the cells AND the gap between them (a full-width band), not
+    // just the styled text — the cell at the inter-column gap wears it too.
+    try testing.expect(ui.styleEql(s.cell(0, 2).style, selected)); // ID cell
+    try testing.expect(ui.styleEql(s.cell(2, 2).style, selected)); // gap between columns
+    try testing.expect(ui.styleEql(s.cell(3, 2).style, selected)); // NAME cell
+    // A neighbouring (unselected) body row is plain.
+    try testing.expect(ui.styleEql(s.cell(0, 1).style, .{}));
+}
+
+test "Table shows overflow arrows and slides its window" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var t = Table{};
+    for (0..4) |_| _ = t.handle(.down, tbl_rows.len, 3); // select 4 (echo), scroll 2
+
+    var s = try ui.Surface.init(testing.allocator, 11, 4);
+    defer s.deinit();
+    try renderNode(a, try t.view(a, .{ .focused = true, .columns = &tbl_columns, .rows = &tbl_rows, .height = 3 }), &s);
+
+    // Header, then window [2,5): charlie, delta, echo. Rows hidden above → the
+    // top body row carries ↑ (and nothing below, echo is the last row).
+    try testing.expectEqualStrings("ID NAME    ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("33 charlie↑", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("4  delta   ", try rowString(a, &s, 2));
+    try testing.expectEqualStrings("5  echo    ", try rowString(a, &s, 3));
+}
+
+test "Table truncates a cell too wide for its column" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var t = Table{};
+    const cols = [_]Table.Column{.{ .header = "NAME", .width = .{ .len = 4 } }};
+    const rows = [_][]const []const u8{&.{"development"}};
+    var s = try ui.Surface.init(testing.allocator, 6, 2);
+    defer s.deinit();
+    try renderNode(a, try t.view(a, .{ .columns = &cols, .rows = &rows, .height = 1 }), &s);
+    const row = try rowString(a, &s, 1);
+    try testing.expect(std.mem.indexOf(u8, row, "…") != null);
+}
+
+test "Table renders an empty grid as just its header" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var t = Table{};
+    const empty: []const []const []const u8 = &.{};
+    var s = try ui.Surface.init(testing.allocator, 11, 3);
+    defer s.deinit();
+    // No rows: the header still draws, no body, and no crash (division by zero,
+    // out-of-range highlight, etc.).
+    try renderNode(a, try t.view(a, .{ .columns = &tbl_columns, .rows = empty, .height = 3 }), &s);
+    try testing.expectEqualStrings("ID NAME    ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("           ", try rowString(a, &s, 1)); // blank body
 }
 
 test "Button renders its label and styles the focused state" {

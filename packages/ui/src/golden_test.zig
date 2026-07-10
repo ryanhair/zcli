@@ -297,3 +297,72 @@ test "a viewport blits styled and wide content through the renderer" {
     // The scrolled-out row is gone.
     try testing.expect(!vt.containsText("top"));
 }
+
+// ---- Table (ADR-0021 incr1) ------------------------------------------------
+
+const table_columns = [_]ui.widgets.Table.Column{
+    .{ .header = "PID", .width = .{ .len = 4 } },
+    .{ .header = "COMMAND", .width = .fit },
+};
+const table_rows = [_][]const []const u8{
+    &.{ "1001", "zig" },
+    &.{ "1138", "firefox" },
+    &.{ "1275", "kernel_task" },
+    &.{ "1412", "postgres" },
+    &.{ "1549", "nginx" },
+};
+
+test "a Table paints an aligned header and body through the renderer" {
+    var vt = try VTerm.init(testing.allocator, 20, 5);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Surface.init(testing.allocator, 20, 4);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    var t = ui.widgets.Table{};
+    const node = try t.view(a, .{ .focused = true, .columns = &table_columns, .rows = &table_rows, .height = 3 });
+    try ui.render(&rctx, &node, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // Header and body land, addressed to the right cells.
+    try testing.expect(vt.containsText("PID"));
+    try testing.expect(vt.containsText("COMMAND"));
+    try testing.expect(vt.containsText("zig"));
+    // The COMMAND column starts at the same x on the header and every body row —
+    // the `.fit`/`.len` columns line up through the renderer (PID .len(4) + 1 gap
+    // → column 5), which is exactly the addressing a byte-golden string would bake
+    // in and this test verifies against a real parsed frame.
+    try testing.expectEqual(@as(u21, 'C'), vt.getCell(5, 0).char); // COMMAND
+    try testing.expectEqual(@as(u21, 'z'), vt.getCell(5, 1).char); // zig
+    try testing.expectEqual(@as(u21, 'f'), vt.getCell(5, 2).char); // firefox
+    // The PID column is left-aligned in its fixed 4-cell width on every row.
+    try testing.expectEqual(@as(u21, '1'), vt.getCell(0, 1).char);
+}
+
+test "a Table truncates an overwide cell and draws the overflow arrow" {
+    var vt = try VTerm.init(testing.allocator, 12, 5);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Surface.init(testing.allocator, 12, 4);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    var t = ui.widgets.Table{};
+    // A 12-wide surface can't hold "kernel_task"; the COMMAND cell truncates with
+    // an ellipsis, and the 3-row window over 5 rows shows a ↓ on the last body row.
+    const node = try t.view(a, .{ .focused = true, .columns = &table_columns, .rows = &table_rows, .height = 3 });
+    try ui.render(&rctx, &node, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // The last body row is "1275 kerne…" — the COMMAND cell truncates with an
+    // ellipsis, and its gutter carries the ↓ overflow arrow. (`containsText` is
+    // byte-wise, so multibyte glyphs are checked per-cell via `getCell`.)
+    try testing.expectEqual(@as(u21, '…'), vt.getCell(10, 3).char); // truncation ellipsis
+    try testing.expectEqual(@as(u21, '↓'), vt.getCell(11, 3).char); // overflow arrow
+    try testing.expect(!vt.containsText("kernel_task")); // the full text did not fit
+}

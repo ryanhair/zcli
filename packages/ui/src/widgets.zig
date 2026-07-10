@@ -179,6 +179,7 @@ pub fn multiBar(a: std.mem.Allocator, opts: MultiBarOpts, items: []const MultiBa
 pub const TextInput = @import("input.zig").TextInput;
 pub const Checkbox = @import("input.zig").Checkbox;
 pub const Select = @import("input.zig").Select;
+pub const Table = @import("input.zig").Table;
 pub const Button = @import("input.zig").Button;
 pub const focusNext = @import("input.zig").focusNext;
 pub const focusPrev = @import("input.zig").focusPrev;
