@@ -271,6 +271,33 @@ test "discovery skips underscore-prefixed helper files and directories" {
     try testing.expect(commands.root.get("_helpers") == null);
 }
 
+test "sortedByName yields alphabetical order regardless of discovery order" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Names chosen so filesystem/hash order is unlikely to be alphabetical.
+    try tmp.dir.writeFile(io, .{ .sub_path = "zebra.zig", .data = "pub fn execute() void {}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "apple.zig", .data = "pub fn execute() void {}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "mango.zig", .data = "pub fn execute() void {}" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = try discoverInDir(testing.allocator, io, dir);
+    defer commands.deinit();
+
+    const sorted = try types.sortedByName(testing.allocator, &commands.root);
+    defer testing.allocator.free(sorted);
+
+    try testing.expectEqual(@as(usize, 3), sorted.len);
+    try testing.expectEqualStrings("apple", sorted[0].name);
+    try testing.expectEqualStrings("mango", sorted[1].name);
+    try testing.expectEqualStrings("zebra", sorted[2].name);
+}
+
 test "isValidCommandName security checks" {
     const testing = std.testing;
 

@@ -330,6 +330,11 @@ const CommandListType = union(enum) {
     subcommands_of: []const u8, // Show subcommands of a specific command
 };
 
+/// Sort comparator: order command names alphabetically for display.
+fn lessByNameStr(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 /// Check if a name is in the aliases list
 fn isAlias(name: []const u8, aliases: []const []const u8) bool {
     for (aliases) |alias| {
@@ -442,16 +447,20 @@ fn showCommandList(context: anytype, fmt: anytype, list_type: CommandListType) !
         }
     }
 
-    // Second pass: display commands in order
+    // Second pass: display commands in alphabetical order. The dedup map above
+    // is a StringHashMap (unordered), so collect its names and sort them before
+    // printing — otherwise the list comes out in hash order.
     var it = command_map.iterator();
     while (it.next()) |entry| {
         const display_name = entry.key_ptr.*;
-        const info = entry.value_ptr.*;
-
         // Skip help command for top-level (we'll add it manually)
         if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
-
         try displayed_names.append(context.allocator, display_name);
+    }
+    std.mem.sort([]const u8, displayed_names.items, {}, lessByNameStr);
+
+    for (displayed_names.items) |display_name| {
+        const info = command_map.get(display_name).?;
 
         if (info.description) |desc| {
             if (info.aliases.len > 0) {
