@@ -221,9 +221,19 @@ pub const Stdio = struct {
     /// possible at all.
     pub fn init(self: *@This(), io: std.Io) void {
         self.* = .{ .io = io };
-        self.stdout_writer = std.Io.File.stdout().writer(io, &self.stdout_buf);
-        self.stderr_writer = std.Io.File.stderr().writer(io, &self.stderr_buf);
-        self.stdin_reader = std.Io.File.stdin().reader(io, &self.stdin_buf);
+        // Streaming (plain write(2)), never positional. Inherited stdout/stderr
+        // may be a shared regular-file fd (e.g. `cmd >log`, CI logs, a coding
+        // agent capturing output). Positional mode pwrites from its own offset
+        // starting at 0, ignoring the fd's shared offset — so a second process
+        // writing to the same file overwrites the first from byte 0. Streaming
+        // uses the kernel's shared offset, so appends serialize correctly.
+        self.stdout_writer = std.Io.File.stdout().writerStreaming(io, &self.stdout_buf);
+        self.stderr_writer = std.Io.File.stderr().writerStreaming(io, &self.stderr_buf);
+        // Streaming (plain read(2)) for the same reason: an inherited stdin fd
+        // that is a shared regular file (`cmd <file`) has a live shared offset.
+        // Positional mode would read from byte 0, re-reading data the parent
+        // already consumed instead of continuing from the shared offset.
+        self.stdin_reader = std.Io.File.stdin().readerStreaming(io, &self.stdin_buf);
     }
 
     pub fn stdout(self: *@This()) *std.Io.Writer {

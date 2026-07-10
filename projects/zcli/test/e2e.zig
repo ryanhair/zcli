@@ -80,6 +80,45 @@ fn run(cwd: std.Io.Dir, argv: []const []const u8) !RunResult {
     };
 }
 
+/// Run two invocations of the demo binary through a single *shell* redirect
+/// `( a; b ) >log 2>&1`, reproducing an inherited shared regular-file stdout
+/// (`cmd >log`, CI logs, cron, a coding agent capturing output). This is the
+/// exact shape a positional-mode stdio writer corrupts: it pwrites from its own
+/// offset starting at 0, so the second invocation overwrites the first from byte
+/// 0. Streaming mode instead writes at the fd's shared kernel offset, so the two
+/// appends serialize.
+///
+/// The redirect is driven by the *shell*, not by Zig's `std.process.spawn(.file
+/// = ...)`, on purpose. On POSIX, `.file` uses `dup2`, sharing one open file
+/// description (shared offset) — but on Windows, `.file` *reopens* the handle
+/// (`NtCreateFile` with an empty name relative to the handle, Threaded.zig
+/// `processSpawnWindows`), yielding a fresh FILE_OBJECT whose position starts at
+/// 0. Two `.file` spawns would therefore each write from 0 on Windows regardless
+/// of the writer's mode, so that path can't model the shared-offset scenario.
+/// A shell (`cmd.exe` / `sh`) opens the log once and inherits the *same* handle
+/// to both child processes, giving a genuinely shared file position on both
+/// platforms — which is precisely what the reported real-world redirect does.
+fn runTwiceIntoSharedFileViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, log_name: []const u8, bin: []const u8) !void {
+    const argv: []const []const u8 = if (builtin.os.tag == .windows) blk: {
+        // cmd.exe wants backslashes and no leading `./`; normalize `bin`.
+        const trimmed = if (std.mem.startsWith(u8, bin, "./")) bin[2..] else bin;
+        const win_bin = try a.dupe(u8, trimmed);
+        std.mem.replaceScalar(u8, win_bin, '/', '\\');
+        // `( bin hello First & bin hello Second ) > log 2>&1`. `&` sequences
+        // unconditionally (unlike `&&`); `2>&1` folds stderr in.
+        break :blk &.{ "cmd", "/c", try std.fmt.allocPrint(a, "( {s} hello First & {s} hello Second ) > {s} 2>&1", .{ win_bin, win_bin, log_name }) };
+    } else &.{ "sh", "-c", try std.fmt.allocPrint(a, "( '{s}' hello First; '{s}' hello Second ) > {s} 2>&1", .{ bin, bin, log_name }) };
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .dir = cwd },
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    _ = try child.wait(io);
+}
+
 fn fileExists(dir: std.Io.Dir, path: []const u8) bool {
     // Windows rejects these characters in a path at the syscall layer with
     // OBJECT_NAME_INVALID, which Zig surfaces as an unrecoverable panic rather
@@ -691,6 +730,30 @@ test "scaffolded project builds, runs, and round-trips add command" {
         defer r.deinit();
         try expectOk(r);
         try expectContains(r.stdout, "Hello, World!");
+    }
+
+    // Regression (P0 output corruption): two invocations sharing one inherited
+    // regular-file stdout must both survive, in order. A positional-mode stdio
+    // writer pwrites from offset 0 every time, so the second run clobbered the
+    // first from byte 0 — losing output to CI logs, cron, and agents capturing
+    // command output (pipes/TTYs were unaffected, masking it). Streaming mode
+    // respects the fd's shared offset, so appends serialize. Driven through a
+    // shell redirect (see runTwiceIntoSharedFileViaShell) so the shared handle
+    // is modeled the same way on POSIX and Windows.
+    {
+        try runTwiceIntoSharedFileViaShell(arena.allocator(), proj, "shared.log", demo_bin);
+
+        const contents = try readFile(proj, arena.allocator(), "shared.log");
+        const first = std.mem.indexOf(u8, contents, "Hello, First!") orelse {
+            std.debug.print("shared.log lost the first invocation:\n{s}\n", .{contents});
+            return error.FirstOutputClobbered;
+        };
+        const second = std.mem.indexOf(u8, contents, "Hello, Second!") orelse {
+            std.debug.print("shared.log lost the second invocation:\n{s}\n", .{contents});
+            return error.SecondOutputMissing;
+        };
+        // Order preserved: the second append lands after the first, not over it.
+        try testing.expect(second > first);
     }
 
     // Help lists the discovered command (the help plugin writes to stderr).
