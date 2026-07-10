@@ -1,8 +1,10 @@
 //! A `top`-style full-screen TUI (ADR-0015): a live table of processes whose
-//! CPU/MEM jitter on a 250ms tick, in a scrolling pane the arrow keys drive
-//! (the selection scrolls into view — ADR-0017), with a `?`-toggled help
-//! overlay (a centered modal composited over the table — ADR-0016). It drives
-//! the `App.run(state, tick_ms, view, update)` loop —
+//! CPU/MEM jitter on a 250ms tick, driven by the `Table` widget (ADR-0021) —
+//! the arrow keys and PgUp/PgDn move the selection and the widget keeps it in
+//! its scroll window, so the example carries no manual scroll bookkeeping. A
+//! `?`-toggled help overlay (a centered modal composited over the table —
+//! ADR-0016) floats on top. It drives the `App.run(state, tick_ms, view,
+//! update)` loop —
 //!
 //!     view(state)           render the whole screen from state
 //!     update(state, ev)      handle a key/resize, or a `null` tick; -> keep|quit
@@ -29,8 +31,8 @@ pub const panic = ui.panic;
 
 const tick_ms: u32 = 250;
 
-/// Visible rows in the scrolling process pane — a fixed window so `update` can
-/// keep the selection in view without knowing the laid-out height.
+/// Visible body rows in the process `Table` — the height its scroll window pages
+/// by, passed to both `Table.view` and `Table.handle` so they stay in step.
 const visible_rows: usize = 8;
 
 const proc_names = [_][]const u8{
@@ -43,12 +45,23 @@ const proc_names = [_][]const u8{
     "mdworker", "spotlightd", "cloudd",       "bluetoothd",
 };
 
+/// The process table's columns. Numeric columns are fixed-width (`.len`) so they
+/// don't jitter as the values churn; COMMAND fills the leftover width.
+const proc_columns = [_]ui.widgets.Table.Column{
+    .{ .header = "PID", .width = .{ .len = 5 } },
+    .{ .header = "CPU%", .width = .{ .len = 6 } },
+    .{ .header = "MEM%", .width = .{ .len = 6 } },
+    .{ .header = "COMMAND", .width = .{ .fill = 1 } },
+};
+
 const Proc = struct { pid: u16, name: []const u8, cpu: f32, mem: f32 };
 
 const State = struct {
     tick: u32 = 0,
-    selected: usize = 0,
-    scroll: u16 = 0, // first visible process row in the viewport
+    /// The process grid: `table.highlighted` is the selected row and `table.scroll`
+    /// its window top — both maintained by `Table.handle`, so `update` no longer
+    /// tracks the selection or slides a scroll offset by hand.
+    table: ui.widgets.Table = .{},
     show_help: bool = false,
     procs: [proc_names.len]Proc = undefined,
     last_mouse: ?ui.Mouse = null,
@@ -96,26 +109,26 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         ui.text(.{ .dim = true }, elapsed),
     }));
 
-    try rows.append(a, ui.textOpts(
-        .{ .style = .{ .bold = true, .underline = true }, .wrap = .clip },
-        "  PID   CPU%    MEM%  COMMAND",
-    ));
-
-    // The process rows live in a scrolling viewport (ADR-0017): the list is
-    // taller than its fixed window, so `state.scroll` (kept in view by `update`)
-    // slides it. The header above and the status below stay put.
-    const proc_rows = try a.alloc(ui.Node, state.procs.len);
-    for (state.procs, proc_rows, 0..) |p, *row_node, i| {
-        const line = try std.fmt.allocPrint(a, "{d:>5} {d:>6.1} {d:>7.1}  {s}", .{
-            p.pid, p.cpu, p.mem, p.name,
-        });
-        const style: ui.Style = if (i == state.selected) .{ .reverse = true } else .{};
-        row_node.* = ui.textOpts(.{ .style = style, .wrap = .clip }, line);
+    // The process grid is a real `Table` (ADR-0021): PID/CPU%/MEM%/COMMAND
+    // columns whose widths the layout engine sizes (`.len`/`.fill`), the selected
+    // row highlighted, and overflow arrows in the gutter. The list is taller than
+    // the `visible_rows` window, so `Table` scrolls to keep the selection in view
+    // — no manual scroll offset here.
+    const grid = try a.alloc([]const []const u8, state.procs.len);
+    for (state.procs, grid) |p, *cells| {
+        const row_cells = try a.alloc([]const u8, 4);
+        row_cells[0] = try std.fmt.allocPrint(a, "{d}", .{p.pid});
+        row_cells[1] = try std.fmt.allocPrint(a, "{d:.1}", .{p.cpu});
+        row_cells[2] = try std.fmt.allocPrint(a, "{d:.1}", .{p.mem});
+        row_cells[3] = p.name;
+        cells.* = row_cells;
     }
-    try rows.append(a, try ui.viewport(a, .{
-        .scroll_y = state.scroll,
-        .height = .{ .len = @intCast(visible_rows) },
-    }, try ui.column(a, .{}, proc_rows)));
+    try rows.append(a, try state.table.view(a, .{
+        .focused = true,
+        .columns = &proc_columns,
+        .rows = grid,
+        .height = @intCast(visible_rows),
+    }));
 
     try rows.append(a, ui.spacer());
     const mouse = if (state.last_mouse) |m|
@@ -126,7 +139,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         try std.fmt.allocPrint(a, "{d}b \"{s}\"", .{ state.paste_len, state.paste_head[0..state.paste_head_len] })
     else
         "—";
-    const status = try std.fmt.allocPrint(a, "↑/↓ select   click a cell   paste   ? help   q quit    focus:{s}  mouse:{s}  paste:{s}", .{
+    const status = try std.fmt.allocPrint(a, "↑/↓ select   PgUp/PgDn page   click a row   ? help   q quit    focus:{s}  mouse:{s}  paste:{s}", .{
         if (state.focused) "on" else "off",
         mouse,
         paste,
@@ -159,21 +172,12 @@ fn helpModal(a: std.mem.Allocator) !ui.Node {
     }, &.{
         ui.text(.{ .bold = true }, "Keys"),
         ui.text(.{}, ""),
-        ui.text(.{}, "↑ / ↓   select a process"),
-        ui.text(.{}, "click   select a row"),
-        ui.text(.{}, "?       close this help"),
-        ui.text(.{}, "q       quit"),
+        ui.text(.{}, "↑ / ↓        select a process"),
+        ui.text(.{}, "PgUp / PgDn  page the selection"),
+        ui.text(.{}, "click        select a row"),
+        ui.text(.{}, "?            close this help"),
+        ui.text(.{}, "q            quit"),
     });
-}
-
-/// Slide the scroll offset so the selected row stays inside the fixed viewport
-/// window — the immediate-mode analogue of a list widget's "scroll into view".
-fn keepSelectionVisible(state: *State) void {
-    if (state.selected < state.scroll) {
-        state.scroll = @intCast(state.selected);
-    } else if (state.selected >= state.scroll + visible_rows) {
-        state.scroll = @intCast(state.selected - visible_rows + 1);
-    }
 }
 
 /// A `null` event is the tick (advance the jittering table); keys drive
@@ -185,32 +189,30 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
         return .keep;
     };
     switch (e) {
-        .key => |k| switch (k) {
-            .char => |c| switch (c) {
-                'q' => return .quit,
-                '?' => state.show_help = !state.show_help, // toggle the overlay
+        .key => |k| {
+            // Let the Table consume selection/paging keys (↑/↓/Home/End/PgUp/PgDn),
+            // keeping the highlight in its scroll window; only unconsumed keys are
+            // form-level navigation here.
+            if (state.table.handle(k, state.procs.len, @intCast(visible_rows))) return .keep;
+            switch (k) {
+                .char => |c| switch (c) {
+                    'q' => return .quit,
+                    '?' => state.show_help = !state.show_help, // toggle the overlay
+                    else => {},
+                },
+                .ctrl => |c| if (c == 'c') return .quit,
                 else => {},
-            },
-            .ctrl => |c| if (c == 'c') return .quit,
-            .up => if (state.selected > 0) {
-                state.selected -= 1;
-                keepSelectionVisible(state);
-            },
-            .down => if (state.selected + 1 < state.procs.len) {
-                state.selected += 1;
-                keepSelectionVisible(state);
-            },
-            else => {},
+            }
         },
         .mouse => |m| {
             state.last_mouse = m;
-            // Left-click a process row: the viewport starts at y=3 (padding +
-            // title + header), so a click maps through the scroll offset.
+            // Left-click a process row: the table's body starts at y=3 (padding +
+            // title + header), so a click maps through the widget's scroll window.
             if (m.button == .left and m.action == .press and m.y >= 3) {
                 const vis = m.y - 3;
                 if (vis < visible_rows) {
-                    const row = @as(usize, state.scroll) + vis;
-                    if (row < state.procs.len) state.selected = row;
+                    const row = @as(usize, state.table.scroll) + vis;
+                    if (row < state.procs.len) state.table.highlighted = row;
                 }
             }
         },

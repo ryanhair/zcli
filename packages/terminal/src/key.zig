@@ -28,6 +28,10 @@ pub const Key = union(enum) {
     right,
     home,
     end,
+    /// Page Up (CSI 5 ~) — page the selection/scroll up by a viewport.
+    pageup,
+    /// Page Down (CSI 6 ~) — page the selection/scroll down by a viewport.
+    pagedown,
     ctrl: u8,
 
     pub fn format(self: Key, writer: anytype) !void {
@@ -45,6 +49,8 @@ pub const Key = union(enum) {
             .right => try writer.writeAll("<right>"),
             .home => try writer.writeAll("<home>"),
             .end => try writer.writeAll("<end>"),
+            .pageup => try writer.writeAll("<pageup>"),
+            .pagedown => try writer.writeAll("<pagedown>"),
             .ctrl => |c| try writer.print("<ctrl+{c}>", .{c}),
         }
     }
@@ -213,6 +219,18 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle, paste: ?Pas
                 // ESC [ 3 ~ = Delete
                 const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
                 if (tilde == '~') break :blk keyIn(.delete);
+                break :blk keyIn(.escape);
+            },
+            '5' => blk: {
+                // ESC [ 5 ~ = Page Up
+                const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
+                if (tilde == '~') break :blk keyIn(.pageup);
+                break :blk keyIn(.escape);
+            },
+            '6' => blk: {
+                // ESC [ 6 ~ = Page Down
+                const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
+                if (tilde == '~') break :blk keyIn(.pagedown);
                 break :blk keyIn(.escape);
             },
             '2' => blk: {
@@ -500,6 +518,20 @@ test "readKey parses delete" {
     var reader: std.Io.Reader = .fixed(&buf);
     const k = try readKey(&reader);
     try std.testing.expect(k == .delete);
+}
+
+test "readKey parses page up" {
+    var buf = "\x1b[5~".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
+    try std.testing.expect(k == .pageup);
+}
+
+test "readKey parses page down" {
+    var buf = "\x1b[6~".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    const k = try readKey(&reader);
+    try std.testing.expect(k == .pagedown);
 }
 
 fn parseInput(comptime bytes: []const u8) !Input {

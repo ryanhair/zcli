@@ -90,9 +90,11 @@ comes back exactly as it was; the final frame does not persist.
 Interactive widgets for full-screen forms and menus live in `ui.widgets`
 alongside the progress ones ([ADR-0018](../../docs/adr/0018-focusable-widgets.md)):
 `TextInput` (optional password `mask`), `Checkbox`, `Select` (scrolling window,
-truncation, optional multi-line `wrap`), and `Button`. Each is a plain struct
-you embed in your state with a `view(a, opts) !Node` + `handle(key) bool`
-contract; focus is caller-owned (an enum), and an unconsumed key is form-level
+truncation, optional multi-line `wrap`), `Table` (a read-only data grid with
+`Dim`-sized columns, selection, a scroll window, PgUp/PgDn paging, and truncation
+— [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button`.
+Each is a plain struct you embed in your state with a `view(a, opts) !Node` +
+`handle(key) bool` contract; focus is caller-owned (an enum), and an unconsumed key is form-level
 navigation. Overlays (`stack` + `center`, [ADR-0016](../../docs/adr/0016-overlays-z-layers.md)),
 scrolling panes (`viewport`, [ADR-0017](../../docs/adr/0017-scrollable-viewports.md)),
 and anchored popups (`probe` + `positioned` / `anchored`, [ADR-0019](../../docs/adr/0019-position-feedback.md))
@@ -103,7 +105,7 @@ are all composition on the same tree.
 ```sh
 zig build run-demo        # hybrid: deploy-style task frame; needs a real terminal
 zig build run-hybrid      # hybrid: the Claude-Code shape — streaming prose + live multi-bar
-zig build run-fullscreen  # full-screen: a top-style dashboard — viewport, tick, overlay, mouse
+zig build run-fullscreen  # full-screen: a top-style dashboard — Table, tick, overlay, mouse
 zig build run-form        # full-screen: focusable form — text fields, select, checkbox, button
 zig build run-popup       # full-screen: anchored dropdowns that flip above / clamp on screen
 zig build test            # pure layout tests + vterm golden-frame tests

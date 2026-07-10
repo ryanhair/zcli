@@ -398,8 +398,10 @@ pub const Select = struct {
 };
 
 /// Slide `scroll` the minimum needed to keep `hi` within a `visible`-row window
-/// over `count` items — the persistent-scroll rule shared by `handle` (to
-/// update state) and `view` (to correct it).
+/// over `count` items — the single persistent-scroll rule, shared by every
+/// single-line list widget (`Select`, `Table`). Both `handle` (to update state)
+/// and `view` (to correct it) call it, so the window slides only when the
+/// cursor crosses an edge and never drifts off the content.
 fn scrollFor(scroll: usize, hi: usize, visible: u16, count: usize) usize {
     const v = @max(@as(usize, visible), 1);
     var s = @min(scroll, count -| v);
@@ -549,6 +551,176 @@ fn growWindow(
         end += 1;
     }
     return .{ .start = start, .end = end };
+}
+
+// ============================================================================
+// Table
+// ============================================================================
+
+/// A read-only data grid: a header row over scrollable body rows, with a
+/// selection and a scroll window ported straight from `Select`. Rows and columns
+/// are caller-owned and passed to `view` each frame (immediate mode); the widget
+/// holds only the two persistent fields `Select` does — `highlighted` (the
+/// selected row) and `scroll` (the window top) — maintained by the shared
+/// `scrollFor` rule.
+///
+/// ↑/↓/Home/End move the selection one row / to the ends; PgUp/PgDn page by the
+/// visible height. Those keys are consumed; Enter/Tab/Escape bubble to the form,
+/// which reads the choice as `rows[table.highlighted]`.
+///
+/// Column widths reuse the existing `Dim` vocabulary (`node.zig`): `.fit` sizes
+/// to the widest cell in that column (header included), `.len(n)` is fixed, and
+/// `.fill(w)` splits leftover width proportionally — the box engine does the
+/// distribution, so there is no bespoke column math beyond resolving `.fit` to a
+/// concrete width. Cells that overrun their column truncate with `…` through the
+/// same width/ANSI-aware path `Select` uses (`wrap = .truncate`). The header wears
+/// `th.prompts.hint`; the highlighted row is a full-width `th.prompts.selected`
+/// band; and a 1-cell right gutter carries the dim ↑/↓/↕ overflow arrows, exactly
+/// as `Select`'s single-line path (ADR-0018 incr4).
+pub const Table = struct {
+    highlighted: usize = 0,
+    /// First visible body row — persistent, maintained by `handle`.
+    scroll: usize = 0,
+
+    /// A column: a header label and a width in the existing `Dim` vocabulary.
+    pub const Column = struct {
+        header: []const u8,
+        width: Dim = .fit,
+    };
+
+    pub const ViewOpts = struct {
+        focused: bool = false,
+        columns: []const Column,
+        /// `rows[r][c]` is the text of row `r`, column `c`. A row must have one
+        /// cell per column; a short row renders blanks for the missing cells.
+        rows: []const []const []const u8,
+        /// Visible body rows (the header sits above and does not scroll).
+        height: u16 = 10,
+        theme: *const Theme = theme_mod.appTheme(),
+    };
+
+    /// Handle a key; returns whether it was consumed. `row_count` (the row count)
+    /// and `visible` (the body height) are what the caller passes to `view`, so
+    /// the selection and scroll stay in step with what's rendered. PgUp/PgDn move
+    /// by `visible` rows; everything else (Enter/Tab/…) bubbles.
+    pub fn handle(self: *Table, key: Key, row_count: usize, visible: u16) bool {
+        if (row_count == 0) return false;
+        const v = @max(@as(usize, visible), 1);
+        switch (key) {
+            .up => if (self.highlighted > 0) {
+                self.highlighted -= 1;
+            },
+            .down => if (self.highlighted + 1 < row_count) {
+                self.highlighted += 1;
+            },
+            .home => self.highlighted = 0,
+            .end => self.highlighted = row_count - 1,
+            .pageup => self.highlighted -|= v,
+            .pagedown => self.highlighted = @min(self.highlighted + v, row_count - 1),
+            else => return false,
+        }
+        self.scroll = scrollFor(self.scroll, self.highlighted, visible, row_count);
+        return true;
+    }
+
+    pub fn view(self: *const Table, a: std.mem.Allocator, opts: ViewOpts) !Node {
+        const th = opts.theme;
+        const cols = opts.columns;
+        const count = opts.rows.len;
+        const hint = th.prompts.hint.resolve(th.palette);
+
+        // Resolve each column's effective width. `.fit` becomes a concrete `.len`
+        // of the widest cell in that column (header + every row), so columns align
+        // across rows — a per-row `.fit` would size each cell independently. `.len`
+        // and `.fill` pass through untouched for the box engine to distribute.
+        const widths = try a.alloc(Dim, cols.len);
+        for (cols, widths, 0..) |col, *w, ci| {
+            w.* = switch (col.width) {
+                .fit => blk: {
+                    var max = terminal.displayWidth(col.header);
+                    for (opts.rows) |r| {
+                        if (ci < r.len) max = @max(max, terminal.displayWidth(r[ci]));
+                    }
+                    break :blk .{ .len = @intCast(max) };
+                },
+                else => col.width,
+            };
+        }
+
+        const hi = if (count == 0) 0 else @min(self.highlighted, count - 1);
+        const visible = @min(@max(@as(usize, opts.height), 1), count);
+        // Persistent scroll, re-derived so the selection stays in view even if the
+        // caller set `highlighted` directly, bypassing `handle`.
+        const scroll = if (count == 0) 0 else scrollFor(self.scroll, hi, @intCast(visible), count);
+
+        const more_above = scroll > 0;
+        const more_below = scroll + visible < count;
+
+        // Header row + one body row per visible line, then the body draws its own
+        // gutter arrows. Header carries a blank gutter cell so its columns line up
+        // with the body's.
+        const lines = try a.alloc(Node, 1 + visible);
+        lines[0] = try buildRow(a, cols, widths, try headerCells(a, cols), hint, hint, " ", .{});
+
+        for (0..visible) |i| {
+            const idx = scroll + i;
+            const is_hi = idx == hi;
+            const style: Style = if (is_hi) th.prompts.selected.resolve(th.palette) else .{};
+            // Full-width band on the highlighted row (the box background paints the
+            // gaps between cells too); non-highlighted rows are plain.
+            const band: Style = if (is_hi) style else .{};
+            const up = i == 0 and more_above;
+            const down = i == visible - 1 and more_below;
+            const arrow: []const u8 = if (up and down) "↕" else if (up) "↑" else if (down) "↓" else " ";
+            lines[1 + i] = try buildRow(a, cols, widths, opts.rows[idx], style, hint, arrow, band);
+        }
+        return .{ .kind = .{ .box = .{ .dir = .column, .children = lines } } };
+    }
+};
+
+/// The header cells (one per column) as a `[]const []const u8`, so the header
+/// row is built through the same `buildRow` path as a body row.
+fn headerCells(a: std.mem.Allocator, cols: []const Table.Column) ![]const []const u8 {
+    const cells = try a.alloc([]const u8, cols.len);
+    for (cols, cells) |col, *c| c.* = col.header;
+    return cells;
+}
+
+/// One table row: an inner `row{}` of per-cell `text` nodes carrying the resolved
+/// column `Dim`s (so the box engine distributes the columns), paired with a fixed
+/// 1-cell gutter for the overflow arrow — the same shape as `Select`'s single-line
+/// row. The inner row carries the highlight `band` background (so it spans the
+/// gaps between cells for a full-width band) but *not* the gutter, which keeps a
+/// plain background under the dim arrow exactly as `Select` does. `cell_style`
+/// styles the cell text; `gutter_style` styles the arrow.
+fn buildRow(
+    a: std.mem.Allocator,
+    cols: []const Table.Column,
+    widths: []const Dim,
+    cells: []const []const u8,
+    cell_style: Style,
+    gutter_style: Style,
+    arrow: []const u8,
+    band: Style,
+) !Node {
+    const cells_nodes = try a.alloc(Node, cols.len);
+    for (widths, 0..) |w, ci| {
+        const content: []const u8 = if (ci < cells.len) cells[ci] else "";
+        cells_nodes[ci] = .{
+            .width = w,
+            .kind = .{ .text = .{ .content = content, .style = cell_style, .wrap = .truncate } },
+        };
+    }
+    const inner: Node = .{
+        .width = .{ .fill = 1 },
+        .kind = .{ .box = .{ .dir = .row, .gap = 1, .children = cells_nodes, .style = band } },
+    };
+    const gutter: Node = .{
+        .width = .{ .len = 1 },
+        .kind = .{ .text = .{ .content = arrow, .style = gutter_style, .wrap = .clip } },
+    };
+    const outer = try a.dupe(Node, &.{ inner, gutter });
+    return .{ .kind = .{ .box = .{ .dir = .row, .children = outer } } };
 }
 
 // ============================================================================
