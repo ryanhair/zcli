@@ -11,8 +11,12 @@
 //!     is form-level navigation. That one bool is the entire routing model.
 //!   - `view` passes `focused` to each widget so it draws its caret/highlight.
 //!
-//! Focus is caller-owned (a `Field` enum); `ui.widgets.focusNext`/`focusPrev`
-//! are the only helpers the library adds.
+//! Focus is caller-owned. Rather than hand-write a `Field` enum and a dispatch
+//! switch, this form derives both from `State` with `ui.widgets.FocusRing`
+//! (ADR-0021 incr 4): the ring is `State`'s widget fields in declaration order,
+//! `Ring.next`/`prev` walk it, and `Ring.dispatch` routes a key to the focused
+//! widget — the enum + `focusNext`/`focusPrev` + the `switch` all collapse into
+//! the struct-derived helper.
 //!
 //! Run with: zig build run-form   (from packages/ui, needs a real TTY)
 
@@ -22,8 +26,17 @@ const terminal = @import("terminal");
 
 pub const panic = ui.panic;
 
-const Field = enum { user, pass, role, remember, submit };
-const field_count = @typeInfo(Field).@"enum".fields.len;
+// The focus ring is derived from `State`'s widget fields (types with a `handle`
+// method) in declaration order — no hand-written enum. `Focus` is the reified
+// enum; its `@intFromEnum` doubles as the index into `state.rects`.
+const Ring = ui.widgets.FocusRing(State);
+const Focus = Ring.Focus;
+
+// `rects` (below) parallels the ring one-to-one for click-to-focus. Its length
+// can't be `Ring.ring.len` — a `State` field whose *size* depends on the ring
+// (which reads `@typeInfo(State)`) is a dependency loop — so it's a plain
+// literal, checked against the derived ring in `main`.
+const field_count = 5;
 
 // Descriptive roles: the longer ones wrap to two lines in the field, so the
 // select runs in `wrap` mode (physical-row windowing) rather than one row each.
@@ -53,7 +66,11 @@ const State = struct {
     role: ui.widgets.Select = .{},
     remember: ui.widgets.Checkbox = .{},
     submit: ui.widgets.Button = .{},
-    focus: Field = .user,
+    // Focus is held as a ring index rather than `Focus` directly: a `State`
+    // field can't be typed `FocusRing(State).Focus` (it would make
+    // `@typeInfo(State)` depend on itself), so State stores the index and the
+    // `focused()` accessor hands back the enum.
+    focus: usize = 0,
     submitted: bool = false,
     // The focused text field reports its caret here during render (ADR-0019);
     // the post-frame hook places the real terminal cursor there.
@@ -68,7 +85,11 @@ const State = struct {
         self.pass.buffer = &self.pass_buf;
     }
 
-    fn rect(self: *State, f: Field) *ui.Rect {
+    fn focused(self: *const State) Focus {
+        return @enumFromInt(self.focus);
+    }
+
+    fn rect(self: *State, f: Focus) *ui.Rect {
         return &self.rects[@intFromEnum(f)];
     }
 };
@@ -100,27 +121,27 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         // Each field is wrapped in `ui.probe` so its on-screen rect lands in
         // `state.rects` — that's all click-to-focus needs.
         try ui.probe(a, state.rect(.user), try labeled(a, "User", try state.user.view(a, .{
-            .focused = state.focus == .user,
+            .focused = state.focused() == .user,
             .placeholder = "username",
             .cursor_out = &state.caret,
         }))),
         try ui.probe(a, state.rect(.pass), try labeled(a, "Pass", try state.pass.view(a, .{
-            .focused = state.focus == .pass,
+            .focused = state.focused() == .pass,
             .placeholder = "password",
             .cursor_out = &state.caret,
         }))),
         try ui.probe(a, state.rect(.role), try labeled(a, "Role", try state.role.view(a, .{
-            .focused = state.focus == .role,
+            .focused = state.focused() == .role,
             .options = &roles,
             .height = role_rows,
             .wrap = true,
         }))),
         try ui.probe(a, state.rect(.remember), try state.remember.view(a, .{
-            .focused = state.focus == .remember,
+            .focused = state.focused() == .remember,
             .label = "Remember me",
         })),
         try ui.probe(a, state.rect(.submit), try state.submit.view(a, .{
-            .focused = state.focus == .submit,
+            .focused = state.focused() == .submit,
             .label = "Sign in",
         })),
         ui.text(.{ .dim = !state.submitted }, status),
@@ -156,7 +177,7 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             const py = m.y -| 1;
             for (state.rects, 0..) |r, i| {
                 if (px >= r.x and px < r.x + r.w and py >= r.y and py < r.y + r.h) {
-                    state.focus = @enumFromInt(i);
+                    state.focus = i;
                     break;
                 }
             }
@@ -169,26 +190,29 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
         else => return .keep,
     };
 
-    // The focused widget gets first crack; an unconsumed key falls through to
-    // navigation. Editing invalidates a prior submit; the Button *is* the submit
-    // (Enter/Space on it fires), which is why it can't share the editors' arm.
-    switch (state.focus) {
-        .user => if (state.user.handle(key)) return edited(state),
-        .pass => if (state.pass.handle(key)) return edited(state),
-        .role => if (state.role.handle(key, roles.len, role_rows)) return edited(state),
-        .remember => if (state.remember.handle(key)) return edited(state),
-        .submit => if (state.submit.handle(key)) {
+    const focus = state.focused();
+
+    // The focused widget gets first crack via the ring: `dispatch` routes `key`
+    // to `state.<focused>.handle(...)` and returns *consumed*. `extras` supplies
+    // the multi-arg widgets' extra args (here just the Select's count/visible).
+    // An unconsumed key falls through to navigation below.
+    if (Ring.dispatch(state, focus, key, .{ .role = .{ roles.len, role_rows } })) {
+        // The Button *is* the submit: a consumed key on it fires sign-in
+        // (ADR-0018 — `Button.handle`'s `true` means *activated*); every other
+        // widget consuming a key is an edit that stales a prior submit.
+        if (focus == .submit) {
             state.submitted = true;
             return .keep;
-        },
+        }
+        return edited(state);
     }
 
     switch (key) {
         // Enter advances to the next field (it walks down to the submit button,
         // where the button consumes it and signs in). Tab does the same; the
         // button is the one place a key actually submits.
-        .tab, .enter => state.focus = ui.widgets.focusNext(Field, state.focus),
-        .back_tab => state.focus = ui.widgets.focusPrev(Field, state.focus),
+        .tab, .enter => state.focus = @intFromEnum(Ring.next(focus)),
+        .back_tab => state.focus = @intFromEnum(Ring.prev(focus)),
         .escape => return .quit,
         .ctrl => |c| if (c == 'c') return .quit,
         else => {},
@@ -197,6 +221,7 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
 }
 
 pub fn main(init: std.process.Init) !void {
+    comptime std.debug.assert(Ring.ring.len == field_count); // rects parallels the ring
     const io = init.io;
     const gpa = init.gpa;
 

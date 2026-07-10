@@ -101,7 +101,15 @@ tab-bar row with ←/→ and number-key selection over a caller-owned active ind
 [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button`.
 Each is a plain struct you embed in your state with a `view(a, opts) !Node` +
 `handle(key) bool` contract; focus is caller-owned (an enum), and an unconsumed key is form-level
-navigation. Overlays (`stack` + `center`, [ADR-0016](../../docs/adr/0016-overlays-z-layers.md)),
+navigation. For routing, `focusNext`/`focusPrev` wrap over a hand-written focus
+enum, or `FocusRing(State)` derives the whole ring from `State`'s widget fields
+(any field whose type has a `handle` method) — a reified `Focus` enum,
+`next`/`prev`, and a `dispatch(state, focus, key, extras)` that routes to the
+focused widget (`extras` supplies the multi-arg widgets' extra args; it must
+cover every multi-arg widget since dispatch compiles all arms). It's sugar over
+the switch — no framework loop, fully bypassable
+([ADR-0021](../../docs/adr/0021-widget-catalog-completion.md); `examples/form.zig`).
+Overlays (`stack` + `center`, [ADR-0016](../../docs/adr/0016-overlays-z-layers.md)),
 scrolling panes (`viewport`, [ADR-0017](../../docs/adr/0017-scrollable-viewports.md)),
 and anchored popups (`probe` + `positioned` / `anchored`, [ADR-0019](../../docs/adr/0019-position-feedback.md))
 are all composition on the same tree.

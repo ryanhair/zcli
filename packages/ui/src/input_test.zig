@@ -455,6 +455,83 @@ test "focusNext and focusPrev wrap around" {
     try testing.expectEqual(F.a, widgets.focusPrev(F, .b));
 }
 
+// ---- FocusRing (ADR-0021 incr 4) ------------------------------------------
+
+// A form-shaped state mixing widget fields (types with `handle`) and plain
+// data — the ring derivation must pick only the widgets. Buffers for the text
+// field are inline so no allocation is needed.
+const RingState = struct {
+    user_buf: [16]u8 = undefined,
+    user: TextInput = .{ .buffer = &.{} },
+    label: []const u8 = "x", // plain data — not a widget
+    role: Select = .{}, // multi-arg handle(key, count, visible)
+    remember: Checkbox = .{},
+    submit: Button = .{},
+    focus: usize = 0, // held as an index (can't be Ring.Focus — circular)
+
+    fn wire(self: *RingState) void {
+        self.user.buffer = &self.user_buf;
+    }
+};
+
+const Ring = widgets.FocusRing(RingState);
+
+test "FocusRing derivation skips non-widget fields" {
+    // Only the four `handle`-bearing fields join the ring, in declaration order;
+    // `user_buf`, `label`, and `focus` are skipped.
+    try testing.expectEqual(@as(usize, 4), Ring.ring.len);
+    try testing.expectEqualStrings("user", Ring.ring[0]);
+    try testing.expectEqualStrings("role", Ring.ring[1]);
+    try testing.expectEqualStrings("remember", Ring.ring[2]);
+    try testing.expectEqualStrings("submit", Ring.ring[3]);
+    // The reified enum's tags match the field names and their indices.
+    try testing.expectEqual(@as(usize, 0), @intFromEnum(Ring.Focus.user));
+    try testing.expectEqual(@as(usize, 3), @intFromEnum(Ring.Focus.submit));
+}
+
+test "FocusRing next/prev wrap over the ring" {
+    try testing.expectEqual(Ring.Focus.role, Ring.next(.user));
+    try testing.expectEqual(Ring.Focus.user, Ring.next(.submit)); // wrap
+    try testing.expectEqual(Ring.Focus.submit, Ring.prev(.user)); // wrap
+    try testing.expectEqual(Ring.Focus.remember, Ring.prev(.submit));
+}
+
+// `extras` must describe *every* multi-arg widget field (here `role`), because
+// `dispatch`'s `inline for` compiles all arms regardless of the runtime focus.
+const ring_extras = .{ .role = .{ @as(usize, 3), @as(u16, 4) } };
+
+test "FocusRing.dispatch routes to the focused widget and mutates it" {
+    var st = RingState{};
+    st.wire();
+
+    // A char goes to the focused TextInput.
+    try testing.expect(Ring.dispatch(&st, .user, .{ .char = 'a' }, ring_extras));
+    try testing.expectEqualStrings("a", st.user.value());
+
+    // With `role` focused, ↓ moves the Select's highlight — proving the extras
+    // (count/visible) reached the multi-arg widget.
+    try testing.expectEqual(@as(usize, 0), st.role.highlighted);
+    try testing.expect(Ring.dispatch(&st, .role, .down, ring_extras));
+    try testing.expectEqual(@as(usize, 1), st.role.highlighted);
+    // The TextInput is untouched — dispatch routed only to `role`.
+    try testing.expectEqualStrings("a", st.user.value());
+}
+
+test "FocusRing.dispatch returns the handle's bool" {
+    var st = RingState{};
+    st.wire();
+
+    // Checkbox consumes Space (toggles) but bubbles an unrelated key.
+    try testing.expect(Ring.dispatch(&st, .remember, .{ .char = ' ' }, ring_extras));
+    try testing.expect(st.remember.checked);
+    try testing.expect(!Ring.dispatch(&st, .remember, .tab, ring_extras));
+
+    // Button arm: Enter "activates" (handle returns true → the caller's submit),
+    // Tab bubbles (false → navigation). dispatch faithfully returns that bool.
+    try testing.expect(Ring.dispatch(&st, .submit, .enter, ring_extras));
+    try testing.expect(!Ring.dispatch(&st, .submit, .tab, ring_extras));
+}
+
 // ---- view: rendering onto a surface ---------------------------------------
 
 fn rowString(a: std.mem.Allocator, s: *ui.Surface, y: u16) ![]u8 {
