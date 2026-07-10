@@ -1047,6 +1047,111 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
 }
 
+test "required options and enum args: end-user messages and help" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "demo", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const proj_abs = try tmpSubdirAbs(a, tmp, "demo");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // A command exercising both features: a required option (`region`: a
+    // defaultless, non-optional string) and an enum positional arg (`env`).
+    // Commands are convention-discovered from src/commands, so writing the file
+    // is enough — no registration.
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/deploy.zig",
+        .data =
+        \\const std = @import("std");
+        \\const zcli = @import("zcli");
+        \\const Context = @import("command_registry").Context;
+        \\
+        \\pub const meta = .{
+        \\    .description = "Deploy to an environment",
+        \\    .options = .{ .region = .{ .description = "Target region" } },
+        \\};
+        \\
+        \\pub const Args = struct {
+        \\    env: enum { dev, staging, prod },
+        \\};
+        \\
+        \\pub const Options = struct {
+        \\    region: []const u8,
+        \\};
+        \\
+        \\pub fn execute(args: Args, options: Options, context: *Context) !void {
+        \\    try context.stdout().print("Deploying {s} to {s}\n", .{ @tagName(args.env), options.region });
+        \\}
+        \\
+        ,
+    });
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    // A required option omitted from every source is a clean, humane error.
+    {
+        var r = try run(proj, &.{ demo_bin, "deploy", "dev" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "Missing required option '--region'");
+        try expectContains(r.stderr, "Run 'demo deploy --help' for usage.");
+        // Humane message, not a raw error name/trace.
+        try testing.expect(std.mem.indexOf(u8, r.stderr, "OptionMissingRequired") == null);
+    }
+
+    // Supplied on the CLI: the command runs.
+    {
+        var r = try run(proj, &.{ demo_bin, "deploy", "dev", "--region", "us-east-1" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "Deploying dev to us-east-1");
+    }
+
+    // Supplied via the environment: also satisfies the requirement. (No `.env`
+    // is declared here, so this must still error — asserting the negative keeps
+    // the "required" definition honest: only real sources satisfy it.)
+    {
+        var r = try run(proj, &.{ demo_bin, "deploy", "staging" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "Missing required option '--region'");
+    }
+
+    // A mistyped enum arg reports the choices AND a did-you-mean.
+    {
+        var r = try run(proj, &.{ demo_bin, "deploy", "prud", "--region", "us-east-1" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "Invalid value 'prud'");
+        try expectContains(r.stderr, "Did you mean 'prod'?");
+    }
+
+    // Help shows the required option marker + usage placement, and the enum
+    // choices for the positional arg. (Help renders to stderr.)
+    {
+        var r = try run(proj, &.{ demo_bin, "deploy", "--help" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stderr, "--region <value>"); // usage line
+        try expectContains(r.stderr, "(required)"); // OPTIONS marker
+        try expectContains(r.stderr, "one of: dev, staging, prod"); // ARGUMENTS choices
+    }
+}
+
 test "root zcli_theme declaration themes help output" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

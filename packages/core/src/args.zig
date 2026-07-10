@@ -134,6 +134,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                             .position = field_index,
                             .provided_value = args[pos],
                             .expected_type = diagnostic_errors.expectedTypeName(field_type),
+                            .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
                         } };
                     }
                     return err;
@@ -154,6 +155,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                             .position = field_index,
                             .provided_value = args[pos],
                             .expected_type = diagnostic_errors.expectedTypeName(field_type),
+                            .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
                         } };
                     }
                     return err;
@@ -181,6 +183,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                         .position = field_index,
                         .provided_value = args[pos],
                         .expected_type = diagnostic_errors.expectedTypeName(field_type),
+                        .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
                     } };
                 }
                 return err;
@@ -511,6 +514,44 @@ test "parseArgs enum edge cases" {
     {
         const args = [_][]const u8{"yellow"};
         try std.testing.expectError(diagnostic_errors.ZcliError.ArgumentInvalidValue, parseArgs(TestArgs, &args, null));
+    }
+}
+
+test "parseArgs enum invalid value carries a did-you-mean suggestion" {
+    const Env = enum { dev, staging, prod };
+    const TestArgs = struct { env: Env };
+
+    // Near-miss → suggestion filled.
+    {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{"stagin"};
+        try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(TestArgs, &args, &diag));
+        try std.testing.expectEqualStrings("staging", diag.?.ArgumentInvalidValue.suggestion.?);
+    }
+    // Unrelated word → no suggestion (null, not a nonsense hint).
+    {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{"zzzzzzzz"};
+        try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(TestArgs, &args, &diag));
+        try std.testing.expect(diag.?.ArgumentInvalidValue.suggestion == null);
+    }
+}
+
+test "parseArgs optional and defaulted enums parse and validate" {
+    const Env = enum { dev, staging, prod };
+
+    // Optional enum: absent → null, present valid → value, present invalid → error.
+    {
+        const OptArgs = struct { env: ?Env = null };
+        try std.testing.expectEqual(@as(?Env, null), (try parseArgs(OptArgs, &.{}, null)).env);
+        try std.testing.expectEqual(Env.prod, (try parseArgs(OptArgs, &.{"prod"}, null)).env.?);
+        try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(OptArgs, &.{"nope"}, null));
+    }
+    // Defaulted enum: absent → default, present valid → value.
+    {
+        const DefArgs = struct { env: Env = .dev };
+        try std.testing.expectEqual(Env.dev, (try parseArgs(DefArgs, &.{}, null)).env);
+        try std.testing.expectEqual(Env.staging, (try parseArgs(DefArgs, &.{"staging"}, null)).env);
     }
 }
 

@@ -571,7 +571,28 @@ fn generateUsage(context: anytype) ![]const u8 {
         }
 
         if (has_options) {
-            try buf_writer.writeAll(" [OPTIONS]");
+            // Required options are shown explicitly in the usage line (e.g.
+            // `--region <value>`); everything else folds into `[OPTIONS]`. An
+            // empty Options struct keeps `[OPTIONS]` (the command still takes
+            // --help); only an all-required set drops it — nothing is left over.
+            var has_optional_options = true;
+            if (context.command_module_info) |module_info| {
+                if (module_info.options_fields.len > 0) {
+                    has_optional_options = false;
+                    for (module_info.options_fields) |field_info| {
+                        if (field_info.is_required) {
+                            try buf_writer.writeAll(" --");
+                            for (field_info.name) |c| try buf_writer.writeByte(if (c == '_') '-' else c);
+                            try buf_writer.writeAll(" <value>");
+                        } else {
+                            has_optional_options = true;
+                        }
+                    }
+                }
+            }
+            if (has_optional_options) {
+                try buf_writer.writeAll(" [OPTIONS]");
+            }
         }
 
         if (has_args) {
@@ -719,13 +740,40 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u
     const buf_writer = &aw.writer;
     var buf_fmt = md.formatterWithPalette(buf_writer, context.theme.capability(), app_palette);
 
-    // Generate basic help from field names
+    // Each row: name column, then the description (from meta.args), then the
+    // valid choices for an enum-typed arg — `one of: dev, staging, prod`. When a
+    // field has neither, fall back to echoing the name so the column isn't bare.
     for (module_info.args_fields) |field_info| {
-        try buf_fmt.write("    <value>{s:<16}</value> {s}\n", .{ field_info.name, field_info.name });
+        try buf_fmt.write("    <value>{s:<16}</value> ", .{field_info.name});
+        var wrote_detail = false;
+        if (field_info.description) |desc| {
+            try buf_fmt.write("{s}", .{desc});
+            wrote_detail = true;
+        }
+        if (field_info.enum_values) |values| {
+            try writeChoices(&buf_fmt, values, wrote_detail);
+            wrote_detail = true;
+        }
+        if (!wrote_detail) {
+            try buf_fmt.write("{s}", .{field_info.name});
+        }
+        try buf_fmt.write("\n", .{});
     }
 
     var al = aw.toArrayList();
     return try al.toOwnedSlice(context.allocator);
+}
+
+/// Append the enum choice list — `(one of: a, b, c)` — to a help row. When
+/// `leading_space` the list is separated from preceding text by a space.
+fn writeChoices(fmt: anytype, values: []const []const u8, leading_space: bool) !void {
+    if (leading_space) try fmt.write(" ", .{});
+    try fmt.write("(one of: ", .{});
+    for (values, 0..) |value, i| {
+        if (i > 0) try fmt.write(", ", .{});
+        try fmt.write("{s}", .{value});
+    }
+    try fmt.write(")", .{});
 }
 
 /// Generate options help text from command module info
@@ -784,12 +832,21 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
         @memset(&padding_buf, ' ');
         const padding = padding_buf[0..padding_needed];
 
-        // Add long form first, then short form (consistent with --help, -h)
+        // Add long form first, then short form (consistent with --help, -h),
+        // then the description, the enum choices (if any), and a `(required)`
+        // marker so a defaultless option reads as mandatory at a glance.
         if (short) |short_char| {
-            try buf_fmt.write("    <flag>--{s}</flag>, <flag>-{c}</flag>{s} {s}\n", .{ option_name, short_char, padding, description });
+            try buf_fmt.write("    <flag>--{s}</flag>, <flag>-{c}</flag>{s} {s}", .{ option_name, short_char, padding, description });
         } else {
-            try buf_fmt.write("    <flag>--{s}</flag>{s} {s}\n", .{ option_name, padding, description });
+            try buf_fmt.write("    <flag>--{s}</flag>{s} {s}", .{ option_name, padding, description });
         }
+        if (field_info.enum_values) |values| {
+            try writeChoices(&buf_fmt, values, description.len > 0);
+        }
+        if (field_info.is_required) {
+            try buf_fmt.write(" (required)", .{});
+        }
+        try buf_fmt.write("\n", .{});
     }
 
     var al = aw.toArrayList();

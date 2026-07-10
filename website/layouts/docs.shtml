@@ -191,7 +191,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
 
         <section id="options">
           <h2>Args & options</h2>
-          <p>Every command has up to four exports. Declare <code>Args</code> and <code>Options</code> as structs — field defaults become option defaults, and parsing is type-checked at compile time.</p>
+          <p>Every command has up to four exports. Declare <code>Args</code> and <code>Options</code> as structs — field defaults become option defaults, and parsing is type-checked at compile time. An <code>Options</code> field with no absent-value — not a <code>bool</code>, optional, array, or defaulted — is a <b>required option</b>: the type says a value must be provided (from the CLI flag, its <code>.env</code> var, or config), and the command errors if none did.</p>
           <div class="code">
             <div class="code-head"><span class="fname">command structure</span><span class="lang">zig</span></div>
 <pre><span class="kw">pub const</span> meta = .{
@@ -207,6 +207,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
 };
 
 <span class="kw">pub const</span> Options = <span class="kw">struct</span> {
+    region: []<span class="kw">const</span> <span class="fn">u8</span>,           <span class="cm">// --region &lt;value&gt; (required)</span>
     all: <span class="fn">bool</span> = <span class="num">false</span>,            <span class="cm">// --all / -a (flag)</span>
     output: []<span class="kw">const</span> <span class="fn">u8</span> = <span class="str">"text"</span>,  <span class="cm">// --output &lt;value&gt;</span>
     count: <span class="fn">u32</span> = <span class="num">1</span>,               <span class="cm">// --count &lt;number&gt;</span>

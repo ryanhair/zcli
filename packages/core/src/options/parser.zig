@@ -192,14 +192,18 @@ pub fn parseOptionsWithMeta(
                 @field(result, field.name) = default_value.*;
             }
         } else {
-            // Backstop for callers that bypass validateCommand: a field with
-            // no absent-flag value would be read as undefined memory.
-            @compileError("option field '" ++ field.name ++ "' has type `" ++ @typeName(field.type) ++
-                "` and no default value, so it would be undefined when the flag is not passed. " ++
-                "Options must be bool, optional, an accumulating array, or have a default; " ++
-                "required values belong in Args.");
+            // A required option (no absent-flag value): initialize to a defined
+            // placeholder so the field is always safe to read. Whether it was
+            // actually supplied is tracked in `provided` (env/CLI) plus, later,
+            // the config pass — the registry errors if no source set it. The
+            // placeholder's value is never surfaced (see requiredPlaceholder).
+            @field(result, field.name) = utils.requiredPlaceholder(field.type);
         }
     }
+
+    // One flag per field: set when a value source (env below, or CLI parsing
+    // further down) supplies it. The required-option check reads these.
+    var provided = [_]bool{false} ** struct_info.fields.len;
 
     // Apply environment-variable fallbacks declared as meta.options.<field>.env.
     // Running after defaults and before CLI parsing gives the documented
@@ -207,10 +211,10 @@ pub fn parseOptionsWithMeta(
     // CLI set. Values come from the environ map threaded down from
     // process.Init; 0.16 has no ambient getenv.
     if (environ) |env_map| {
-        inline for (struct_info.fields) |field| {
+        inline for (struct_info.fields, 0..) |field, i| {
             if (comptime envNameFor(meta, field.name)) |env_name| {
                 if (env_map.get(env_name)) |env_value| {
-                    _ = applyEnvValue(field.type, &@field(result, field.name), env_value);
+                    if (applyEnvValue(field.type, &@field(result, field.name), env_value)) provided[i] = true;
                 }
             }
         }
@@ -283,6 +287,13 @@ pub fn parseOptionsWithMeta(
         }
     }
 
+    // Fold CLI-set fields into `provided`. `option_counts` is keyed by field
+    // name for every option the CLI touched (values, booleans, negations), so
+    // its membership is exactly "the CLI set this field".
+    inline for (struct_info.fields, 0..) |field, i| {
+        if (option_counts.contains(field.name)) provided[i] = true;
+    }
+
     // Finalize array fields by converting ArrayLists to slices. If a later
     // field's conversion fails, the slices already handed to `result` must be
     // freed here — their lists are empty by then, so the deinit defer above
@@ -310,6 +321,7 @@ pub fn parseOptionsWithMeta(
     return types.OptionsResult(OptionsType){
         .options = result,
         .result = .{ .next_arg_index = arg_index },
+        .provided = provided,
     };
 }
 
@@ -549,6 +561,7 @@ fn parseLongOptions(
                         .is_short = false,
                         .provided_value = value,
                         .expected_type = diagnostic_errors.expectedTypeName(field.type),
+                        .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
                     } };
                     return err;
                 };
@@ -734,6 +747,7 @@ fn parseShortOptionsWithMeta(
                                 .is_short = true,
                                 .provided_value = value,
                                 .expected_type = diagnostic_errors.expectedTypeName(field.type),
+                                .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
                             } };
                             return err;
                         };
@@ -1709,6 +1723,77 @@ test "diagnostics: option error sites fill precise context" {
         try std.testing.expectEqualStrings("verbose", diag.?.OptionBooleanWithValue.option_name);
         try std.testing.expectEqualStrings("yes", diag.?.OptionBooleanWithValue.provided_value);
     }
+}
+
+test "required option: provided flags track CLI and env sources" {
+    const allocator = std.testing.allocator;
+    const Options = struct {
+        region: []const u8, // required — no default, not bool/optional/array
+        verbose: bool = false,
+    };
+    const meta = .{ .options = .{ .region = .{ .env = "ZCLI_TEST_REQ_REGION" } } };
+
+    // Absent from every source: not provided (and zero-initialized, not undefined).
+    {
+        const args = [_][]const u8{};
+        const r = try parseOptionsWithMeta(Options, meta, allocator, null, &args, null);
+        try std.testing.expect(!r.provided[0]);
+    }
+    // CLI supplies it.
+    {
+        const args = [_][]const u8{ "--region", "us-east-1" };
+        const r = try parseOptionsWithMeta(Options, meta, allocator, null, &args, null);
+        try std.testing.expect(r.provided[0]);
+        try std.testing.expectEqualStrings("us-east-1", r.options.region);
+    }
+    // env supplies it.
+    {
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try env.put("ZCLI_TEST_REQ_REGION", "eu-west-1");
+        const args = [_][]const u8{};
+        const r = try parseOptionsWithMeta(Options, meta, allocator, &env, &args, null);
+        try std.testing.expect(r.provided[0]);
+        try std.testing.expectEqualStrings("eu-west-1", r.options.region);
+    }
+}
+
+test "required option: provided flag distinguishes the zero enum variant from unset" {
+    const allocator = std.testing.allocator;
+    const Options = struct { env: enum { dev, staging, prod } };
+
+    // `dev` is the zero variant — its value equals std.mem.zeroes, so only the
+    // provided flag can tell "explicitly chose dev" from "never set".
+    const set = try parseOptions(Options, allocator, &.{ "--env", "dev" }, null);
+    try std.testing.expect(set.provided[0]);
+    try std.testing.expectEqual(.dev, set.options.env);
+
+    const unset = try parseOptions(Options, allocator, &.{}, null);
+    try std.testing.expect(!unset.provided[0]);
+}
+
+test "required enum option: a non-zero-tag enum is safe and tracked" {
+    const allocator = std.testing.allocator;
+    const Mode = enum(u8) { fast = 1, slow = 2 }; // no tag with value 0
+    const Options = struct { mode: Mode };
+
+    // Unset: the placeholder (first variant) holds, and provided is false.
+    const unset = try parseOptions(Options, allocator, &.{}, null);
+    try std.testing.expect(!unset.provided[0]);
+
+    // Set to the first variant: provided is true even though value == placeholder.
+    const set = try parseOptions(Options, allocator, &.{ "--mode", "fast" }, null);
+    try std.testing.expect(set.provided[0]);
+    try std.testing.expectEqual(Mode.fast, set.options.mode);
+}
+
+test "enum option invalid value carries a did-you-mean suggestion" {
+    const allocator = std.testing.allocator;
+    const Options = struct { level: enum { debug, info, warn } = .info };
+    var diag: ?ZcliDiagnostic = null;
+    const args = [_][]const u8{ "--level", "inof" };
+    try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(Options, allocator, &args, &diag));
+    try std.testing.expectEqualStrings("info", diag.?.OptionInvalidValue.suggestion.?);
 }
 
 test "diagnostics: resource-limit sites report which cap tripped" {

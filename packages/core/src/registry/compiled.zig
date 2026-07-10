@@ -64,6 +64,7 @@ fn isReportedCliError(err: anyerror) bool {
         error.OptionInvalidValue,
         error.OptionBooleanWithValue,
         error.OptionDuplicate,
+        error.OptionMissingRequired,
         error.ArgumentMissingRequired,
         error.ArgumentInvalidValue,
         error.ArgumentTooMany,
@@ -807,9 +808,12 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         }
 
         /// Convert a command struct's fields to runtime FieldInfo for plugin
-        /// introspection, pulling per-option short/description from
-        /// `options_meta` (pass null for Args structs, which carry neither).
-        fn buildFieldInfoList(comptime T: type, comptime options_meta: anytype, allocator: std.mem.Allocator) ![]const zcli.FieldInfo {
+        /// introspection. `field_meta` is the per-field metadata map — an
+        /// options map (`meta.options`, structs carrying short/description) when
+        /// `is_option`, an args map (`meta.args`, plain string descriptions)
+        /// otherwise, or null. `is_option` also gates required-option marking:
+        /// a defaultless positional is required by position, not by this flag.
+        fn buildFieldInfoList(comptime T: type, comptime field_meta_map: anytype, comptime is_option: bool, allocator: std.mem.Allocator) ![]const zcli.FieldInfo {
             const type_info = @typeInfo(T);
             if (type_info != .@"struct") return &.{};
             var field_list = std.ArrayList(zcli.FieldInfo).empty;
@@ -817,11 +821,16 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 const field_type_info = @typeInfo(field.type);
                 var short: ?u8 = null;
                 var description: ?[]const u8 = null;
-                if (comptime @TypeOf(options_meta) != @TypeOf(null)) {
-                    if (@hasField(@TypeOf(options_meta), field.name)) {
-                        const field_meta = @field(options_meta, field.name);
-                        if (@hasField(@TypeOf(field_meta), "short")) short = field_meta.short;
-                        if (@hasField(@TypeOf(field_meta), "description")) description = field_meta.description;
+                if (comptime @TypeOf(field_meta_map) != @TypeOf(null)) {
+                    if (@hasField(@TypeOf(field_meta_map), field.name)) {
+                        const fm = @field(field_meta_map, field.name);
+                        if (comptime isStringLike(@TypeOf(fm))) {
+                            // Args metadata is a bare string description.
+                            description = fm;
+                        } else {
+                            if (@hasField(@TypeOf(fm), "short")) short = fm.short;
+                            if (@hasField(@TypeOf(fm), "description")) description = fm.description;
+                        }
                     }
                 }
                 const default_value: ?[]const u8 = comptime blk: {
@@ -835,6 +844,21 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         else => null, // optionals default to null; arrays have no scalar default
                     };
                 };
+                const enum_values: ?[]const []const u8 = comptime blk: {
+                    const Bare = switch (field_type_info) {
+                        .optional => |o| o.child,
+                        else => field.type,
+                    };
+                    switch (@typeInfo(Bare)) {
+                        .@"enum" => |e| {
+                            var names: [e.fields.len][]const u8 = undefined;
+                            for (e.fields, 0..) |f, i| names[i] = f.name;
+                            const frozen = names;
+                            break :blk &frozen;
+                        },
+                        else => break :blk null,
+                    }
+                };
                 try field_list.append(allocator, zcli.FieldInfo{
                     .name = field.name,
                     .is_optional = field_type_info == .optional or field.default_value_ptr != null,
@@ -843,9 +867,25 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .description = description,
                     .type_name = @typeName(field.type),
                     .default_value = default_value,
+                    .is_required = is_option and comptime option_utils.isRequiredOption(field),
+                    .enum_values = enum_values,
                 });
             }
             return field_list.toOwnedSlice(allocator);
+        }
+
+        /// Whether `T` is a string description: `[]const u8` or a string literal
+        /// (`*const [N:0]u8`). Used to tell an args metadata entry (a bare
+        /// string) from an options one (a struct).
+        fn isStringLike(comptime T: type) bool {
+            const ti = @typeInfo(T);
+            if (ti != .pointer) return false;
+            if (ti.pointer.size == .slice) return ti.pointer.child == u8;
+            if (ti.pointer.size == .one) {
+                const ci = @typeInfo(ti.pointer.child);
+                return ci == .array and ci.array.child == u8;
+            }
+            return false;
         }
 
         /// Record the resolved command's metadata and introspection info on
@@ -863,12 +903,16 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "options")) break :blk Module.meta.options;
                 break :blk null;
             };
+            const args_meta = comptime blk: {
+                if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "args")) break :blk Module.meta.args;
+                break :blk null;
+            };
             context.command_module_info = zcli.CommandModuleInfo{
                 .has_args = @hasDecl(Module, "Args"),
                 .has_options = @hasDecl(Module, "Options"),
                 .raw_meta_ptr = if (@hasDecl(Module, "meta")) &Module.meta else null,
-                .args_fields = if (@hasDecl(Module, "Args")) try buildFieldInfoList(Module.Args, null, context.allocator) else &.{},
-                .options_fields = if (@hasDecl(Module, "Options")) try buildFieldInfoList(Module.Options, options_meta, context.allocator) else &.{},
+                .args_fields = if (@hasDecl(Module, "Args")) try buildFieldInfoList(Module.Args, args_meta, false, context.allocator) else &.{},
+                .options_fields = if (@hasDecl(Module, "Options")) try buildFieldInfoList(Module.Options, options_meta, true, context.allocator) else &.{},
             };
         }
 
@@ -924,12 +968,31 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             const args_instance = parse_result.args;
             var options_instance = parse_result.options;
 
+            // Snapshot the post-parse options (a value copy) so the required
+            // check below can see which fields the config pass filled in.
+            const before_config = options_instance;
+
             // Config defaults override struct defaults; CLI-provided values
             // (already parsed) still take precedence.
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "applyConfigDefaults")) {
                     Plugin.applyConfigDefaults(context, OptionsType, &options_instance);
                 }
+            }
+
+            // Required options: a non-optional, defaultless, non-bool, non-array
+            // Options field must be supplied by SOME source — CLI, env, or config.
+            // Checked here, after every source has been applied, and reported like
+            // any other parse error (humane message + usage hint).
+            if (command_parser.firstMissingRequiredOption(OptionsType, cmd_meta, before_config, options_instance, parse_result.options_provided)) |missing| {
+                const diag: zcli.ZcliDiagnostic = .{ .OptionMissingRequired = .{
+                    .option_name = missing.name,
+                    .expected_type = missing.expected_type,
+                } };
+                context.diagnostic = diag;
+                if (try runOnErrorHooks(context, error.OptionMissingRequired)) return;
+                try reportParseError(context, diag);
+                return error.OptionMissingRequired;
             }
 
             // Execute. A handled error (onError returns true) is suppressed

@@ -1,4 +1,5 @@
 const std = @import("std");
+const levenshtein = @import("levenshtein.zig");
 
 pub const ZcliError = error{
     // Argument parsing errors
@@ -12,6 +13,7 @@ pub const ZcliError = error{
     OptionInvalidValue,
     OptionBooleanWithValue,
     OptionDuplicate,
+    OptionMissingRequired,
 
     // Command routing errors
     CommandNotFound,
@@ -47,6 +49,9 @@ pub const ZcliDiagnostic = union(enum) {
         position: usize,
         provided_value: []const u8,
         expected_type: []const u8,
+        /// Nearest valid choice for a mistyped enum value ("did you mean … ?"),
+        /// or null. A comptime variant name with static lifetime — never freed.
+        suggestion: ?[]const u8 = null,
     },
     ArgumentTooMany: struct {
         expected_count: usize,
@@ -69,6 +74,9 @@ pub const ZcliDiagnostic = union(enum) {
         is_short: bool,
         provided_value: []const u8,
         expected_type: []const u8,
+        /// Nearest valid choice for a mistyped enum value ("did you mean … ?"),
+        /// or null. A comptime variant name with static lifetime — never freed.
+        suggestion: ?[]const u8 = null,
     },
     OptionBooleanWithValue: struct {
         option_name: []const u8,
@@ -78,6 +86,10 @@ pub const ZcliDiagnostic = union(enum) {
     OptionDuplicate: struct {
         option_name: []const u8,
         is_short: bool,
+    },
+    OptionMissingRequired: struct {
+        option_name: []const u8,
+        expected_type: []const u8,
     },
 
     // Command routing errors
@@ -188,6 +200,40 @@ pub fn expectedTypeName(comptime T: type) []const u8 {
     };
 }
 
+/// For an enum-typed field (or `?enum`), the valid variant name nearest to a
+/// mistyped `value`, for a "did you mean …?" hint — or null when the field is
+/// not an enum or nothing is close enough. Variant names are comptime string
+/// literals with static lifetime, so the result needs no allocation and is never
+/// freed. Shared by the args parser and the options parser so enum suggestions
+/// read identically for positional args and option values.
+pub fn nearestEnumValue(comptime T: type, value: []const u8) ?[]const u8 {
+    const Bare = switch (@typeInfo(T)) {
+        .optional => |o| o.child,
+        else => T,
+    };
+    switch (@typeInfo(Bare)) {
+        .@"enum" => |e| {
+            var best: ?[]const u8 = null;
+            var best_distance: usize = std.math.maxInt(usize);
+            inline for (e.fields) |f| {
+                const d = levenshtein.editDistance(value, f.name);
+                if (d < best_distance) {
+                    best_distance = d;
+                    best = f.name;
+                }
+            }
+            // Only offer a suggestion when it is a plausible typo of a variant,
+            // not an unrelated word — same spirit as the unknown-option list.
+            const max_distance = 3;
+            if (best) |name| {
+                if (best_distance <= max_distance and best_distance < name.len) return name;
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
 fn allDigits(s: []const u8) bool {
     for (s) |c| {
         if (c < '0' or c > '9') return false;
@@ -224,7 +270,10 @@ fn humanType(type_name: []const u8) []const u8 {
 pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator) ![]u8 {
     return switch (diagnostic) {
         .ArgumentMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required argument '{s}' at position {d}. Expected {s}.", .{ ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
-        .ArgumentInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
+        .ArgumentInvalidValue => |ctx| if (ctx.suggestion) |s|
+            std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}. Did you mean '{s}'?", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type), s })
+        else
+            std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
         .ArgumentTooMany => |ctx| std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments, got {d}", .{ ctx.expected_count, ctx.actual_count }),
         .OptionUnknown => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name });
@@ -246,9 +295,13 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
             }
         },
         .OptionMissingValue => |ctx| std.fmt.allocPrint(allocator, "Option '{s}{s}' requires {s}.", .{ if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type) }),
-        .OptionInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected {s}.", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type) }),
+        .OptionInvalidValue => |ctx| if (ctx.suggestion) |s|
+            std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected {s}. Did you mean '{s}'?", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type), s })
+        else
+            std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected {s}.", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type) }),
         .OptionBooleanWithValue => |ctx| std.fmt.allocPrint(allocator, "Boolean option '{s}{s}' does not accept a value (got '{s}')", .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.provided_value }),
         .OptionDuplicate => |ctx| std.fmt.allocPrint(allocator, "Duplicate option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name }),
+        .OptionMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required option '--{s}'. Expected {s}.", .{ ctx.option_name, humanType(ctx.expected_type) }),
         .CommandNotFound => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown command '{s}'", .{ctx.attempted_command});
 
@@ -367,6 +420,64 @@ test "humanType maps Zig type names to human-readable expectations" {
     try std.testing.expectEqualStrings("a value", humanType("u"));
     // Enum lists from expectedTypeName pass through verbatim.
     try std.testing.expectEqualStrings("one of: red, green", humanType("one of: red, green"));
+}
+
+test "nearestEnumValue suggests the closest variant, or nothing" {
+    const Env = enum { dev, staging, prod };
+    try std.testing.expectEqualStrings("staging", nearestEnumValue(Env, "stagin").?);
+    try std.testing.expectEqualStrings("prod", nearestEnumValue(Env, "prd").?);
+    // Optional enums unwrap to the same variant list.
+    try std.testing.expectEqualStrings("dev", nearestEnumValue(?Env, "dee").?);
+    // Nothing close → no suggestion (avoids nonsense hints).
+    try std.testing.expect(nearestEnumValue(Env, "xxxxxxxx") == null);
+    // Non-enum types never suggest.
+    try std.testing.expect(nearestEnumValue(u32, "5") == null);
+    try std.testing.expect(nearestEnumValue([]const u8, "anything") == null);
+}
+
+test "OptionMissingRequired renders a humane message" {
+    const allocator = std.testing.allocator;
+    const diag = ZcliDiagnostic{ .OptionMissingRequired = .{
+        .option_name = "region",
+        .expected_type = "[]const u8",
+    } };
+    const msg = try formatDiagnostic(diag, allocator);
+    defer allocator.free(msg);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "Missing required option '--region'") != null);
+    // The type is humanized, not leaked raw.
+    try std.testing.expect(std.mem.indexOf(u8, msg, "text") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "[]const u8") == null);
+}
+
+test "invalid enum value messages carry a did-you-mean" {
+    const allocator = std.testing.allocator;
+    // Argument form.
+    {
+        const diag = ZcliDiagnostic{ .ArgumentInvalidValue = .{
+            .field_name = "env",
+            .position = 0,
+            .provided_value = "stagin",
+            .expected_type = "one of: dev, staging, prod",
+            .suggestion = "staging",
+        } };
+        const msg = try formatDiagnostic(diag, allocator);
+        defer allocator.free(msg);
+        try std.testing.expect(std.mem.indexOf(u8, msg, "one of: dev, staging, prod") != null);
+        try std.testing.expect(std.mem.indexOf(u8, msg, "Did you mean 'staging'?") != null);
+    }
+    // Option form.
+    {
+        const diag = ZcliDiagnostic{ .OptionInvalidValue = .{
+            .option_name = "level",
+            .is_short = false,
+            .provided_value = "inof",
+            .expected_type = "one of: debug, info, warn",
+            .suggestion = "info",
+        } };
+        const msg = try formatDiagnostic(diag, allocator);
+        defer allocator.free(msg);
+        try std.testing.expect(std.mem.indexOf(u8, msg, "Did you mean 'info'?") != null);
+    }
 }
 
 test "expectedTypeName lists enum variants" {

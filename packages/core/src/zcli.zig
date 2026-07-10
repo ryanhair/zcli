@@ -148,6 +148,14 @@ pub const FieldInfo = struct {
     /// `type_name` this lets a consumer decide presentation — e.g. help shows a
     /// default-`true` boolean by its `--no-` negation.
     default_value: ?[]const u8 = null,
+    /// True for a *required* option: non-optional, non-array, non-bool, and with
+    /// no default — the value must be supplied. Help marks these `(required)`.
+    /// Always false for positional args (their required-ness is positional).
+    is_required: bool = false,
+    /// For an enum-typed field (or `?enum`), its variant names — the valid
+    /// choices — else `null`. Help renders these as `one of: a, b, c`. Names are
+    /// comptime string literals with static lifetime.
+    enum_values: ?[]const []const u8 = null,
 };
 
 /// Information about command module structure for plugin introspection
@@ -359,25 +367,14 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
             "`. Example: `pub const Options = struct { verbose: bool = false };`");
     }
 
-    // Every Options field must have a well-defined value when its flag is
-    // absent: bool (false), optional (null), accumulating array (empty), or
-    // an explicit default. Anything else would be read as undefined memory
-    // when the flag isn't passed — required values belong in Args.
+    // Options field shapes. A field with no absent-flag value — not bool,
+    // optional, accumulating array, or defaulted — is a REQUIRED option: its
+    // type says a value must be supplied, and the parser enforces that at
+    // runtime (satisfiable by CLI, env, or config). No shape is rejected here;
+    // the checks below are about naming collisions, not presence.
     if (@typeInfo(OptionsType) == .@"struct") {
         const opts_meta = if (@hasDecl(Module, "meta")) Module.meta else null;
         inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
-            const has_absent_value = field.type == bool or
-                @typeInfo(field.type) == .optional or
-                option_utils.isArrayType(field.type) or
-                field.default_value_ptr != null;
-            if (!has_absent_value) {
-                @compileError(loc ++ "option '" ++ field.name ++ "' has type `" ++ @typeName(field.type) ++
-                    "` and no default value, so it would be undefined when the flag is not passed. " ++
-                    "Give it a default (`" ++ field.name ++ ": " ++ @typeName(field.type) ++ " = ...`), " ++
-                    "make it optional (`?" ++ @typeName(field.type) ++ "`), " ++
-                    "or make it a required positional in `Args`.");
-            }
-
             // A boolean flag's name must not begin with `no-`: every bool and
             // `?bool` auto-generates a `--no-<name>` negation, so a `no_`-prefixed
             // flag would collide with (and read as) another flag's negation.

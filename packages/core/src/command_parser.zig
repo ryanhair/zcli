@@ -12,6 +12,9 @@ pub fn CommandParseResult(comptime ArgsType: type, comptime OptionsType: type) t
     return struct {
         args: ArgsType,
         options: OptionsType,
+        /// One flag per Options field, true when env or CLI set it. The registry
+        /// combines this with the config pass to enforce required options.
+        options_provided: [options_parser.optionFieldCount(OptionsType)]bool = [_]bool{false} ** options_parser.optionFieldCount(OptionsType),
         allocator: ?std.mem.Allocator = null, // Only set if cleanup is needed
         _positional_slice: ?[]const []const u8 = null, // Keep varargs slice alive
 
@@ -125,7 +128,8 @@ pub fn parseCommandLine(
     // Parse options from the collected option arguments. Always goes through
     // the meta-aware parser (not just when flags were passed) so `.env`
     // fallbacks apply to a command line with no options at all.
-    const options = try parseOptionsFromArgs(OptionsType, meta, allocator, environ, option_args.items, diag);
+    const options_res = try parseOptionsFromArgs(OptionsType, meta, allocator, environ, option_args.items, diag);
+    const options = options_res.options;
 
     // Parse positional arguments
     // Note: We need to keep positional_args.items alive for the lifetime of the result
@@ -145,6 +149,7 @@ pub fn parseCommandLine(
     return CommandParseResult(ArgsType, OptionsType){
         .args = parsed_args,
         .options = options,
+        .options_provided = options_res.provided,
         .allocator = if (needs_cleanup) allocator else null,
         ._positional_slice = if (has_varargs) positional_slice else blk: {
             // If no varargs, we don't need to keep the slice alive, so free it now
@@ -162,7 +167,8 @@ fn isNegativeNumber(arg: []const u8) bool {
     return std.ascii.isDigit(arg[1]);
 }
 
-/// Parse options from a list of option arguments
+/// Parse options from a list of option arguments, returning the parsed values
+/// alongside the per-field `provided` flags the required-option check needs.
 fn parseOptionsFromArgs(
     comptime OptionsType: type,
     comptime meta: anytype,
@@ -170,49 +176,49 @@ fn parseOptionsFromArgs(
     environ: ?*const std.process.Environ.Map,
     option_args: []const []const u8,
     diag: ?*?ZcliDiagnostic,
-) ZcliError!OptionsType {
+) ZcliError!options_parser.OptionsResult(OptionsType) {
     // Delegate to the meta-aware options parser: meta carries custom names,
     // shorts, and `.env` fallback declarations.
-    const result = try options_parser.parseOptionsWithMeta(OptionsType, meta, allocator, environ, option_args, diag);
-    return result.options;
+    return options_parser.parseOptionsWithMeta(OptionsType, meta, allocator, environ, option_args, diag);
 }
 
-/// Initialize an options struct with all default values
-fn initializeDefaultOptions(comptime OptionsType: type) OptionsType {
-    const type_info = @typeInfo(OptionsType);
-    if (type_info != .@"struct") {
-        @compileError("OptionsType must be a struct");
-    }
+/// A required option that no value source supplied — reported to the user via
+/// the `OptionMissingRequired` diagnostic. `name` is the option's effective long
+/// flag name (custom `meta.options.<field>.name` or dashed field name).
+pub const MissingRequiredOption = struct {
+    name: []const u8,
+    expected_type: []const u8,
+};
 
-    var result: OptionsType = undefined;
-
-    inline for (type_info.@"struct".fields) |field| {
-        if (comptime option_utils.isArrayType(field.type)) {
-            const element_type = @typeInfo(field.type).pointer.child;
-            @field(result, field.name) = @as(field.type, &[_]element_type{});
-        } else if (@typeInfo(field.type) == .optional) {
-            @field(result, field.name) = null;
-        } else if (field.type == bool) {
-            // Respect a declared default (`bool = true`); absent flag → default,
-            // or false when none is declared. `--no-<flag>` sets it back to false.
-            @field(result, field.name) = if (field.default_value_ptr) |default_ptr|
-                @as(*const bool, @ptrCast(@alignCast(default_ptr))).*
-            else
-                false;
-        } else if (field.default_value_ptr) |default_ptr| {
-            const default_value: *const field.type = @ptrCast(@alignCast(default_ptr));
-            @field(result, field.name) = default_value.*;
-        } else {
-            // Same rule the options parser enforces: a field with no
-            // absent-flag value would be read as undefined memory.
-            @compileError("option field '" ++ field.name ++ "' has type `" ++ @typeName(field.type) ++
-                "` and no default value, so it would be undefined when the flag is not passed. " ++
-                "Options must be bool, optional, an accumulating array, or have a default; " ++
-                "required values belong in Args.");
+/// The first required option (in field order) that no source supplied, or null.
+///
+/// A required option — see `option_utils.isRequiredOption` — has no meaning when
+/// absent, so exactly one of these must hold for it: env or CLI set it
+/// (`provided[i]`), or config set it (its value changed between `before_config`
+/// and `after_config`). `std.meta.eql` compares strings by pointer+len, so a
+/// config-supplied string differs from the zero-initialized placeholder even
+/// when both are empty. Called by the registry after the config pass.
+pub fn firstMissingRequiredOption(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    before_config: OptionsType,
+    after_config: OptionsType,
+    provided: [options_parser.optionFieldCount(OptionsType)]bool,
+) ?MissingRequiredOption {
+    const info = @typeInfo(OptionsType);
+    if (info != .@"struct") return null;
+    inline for (info.@"struct".fields, 0..) |field, i| {
+        if (comptime option_utils.isRequiredOption(field)) {
+            const config_set = !std.meta.eql(@field(before_config, field.name), @field(after_config, field.name));
+            if (!provided[i] and !config_set) {
+                return .{
+                    .name = comptime option_utils.effectiveLongName(meta, field.name),
+                    .expected_type = diagnostic_errors.expectedTypeName(field.type),
+                };
+            }
         }
     }
-
-    return result;
+    return null;
 }
 
 /// Check if an options type has any array fields that need cleanup
@@ -836,6 +842,53 @@ test "negative numbers classify as values and positionals, not flags" {
     defer result.deinit();
     try std.testing.expectEqual(@as(i32, -5), result.options.offset);
     try std.testing.expectEqual(@as(i32, -10), result.args.delta);
+}
+
+test "firstMissingRequiredOption: satisfied by CLI, env, or config; else reported" {
+    const Options = struct {
+        region: []const u8, // required
+        verbose: bool = false,
+    };
+
+    // Nothing set it and config left it unchanged → missing.
+    {
+        const before = Options{ .region = "", .verbose = false };
+        const provided = [_]bool{ false, false };
+        const miss = firstMissingRequiredOption(Options, null, before, before, provided);
+        try std.testing.expect(miss != null);
+        try std.testing.expectEqualStrings("region", miss.?.name);
+        try std.testing.expectEqualStrings("[]const u8", miss.?.expected_type);
+    }
+    // env or CLI set it (provided[0] = true) → satisfied.
+    {
+        const opts = Options{ .region = "us", .verbose = false };
+        const provided = [_]bool{ true, false };
+        try std.testing.expect(firstMissingRequiredOption(Options, null, opts, opts, provided) == null);
+    }
+    // Config set it (value changed between the before/after snapshot) → satisfied.
+    {
+        const before = Options{ .region = "", .verbose = false };
+        const after = Options{ .region = "from-config", .verbose = false };
+        const provided = [_]bool{ false, false };
+        try std.testing.expect(firstMissingRequiredOption(Options, null, before, after, provided) == null);
+    }
+}
+
+test "firstMissingRequiredOption: reports the effective (custom) flag name" {
+    const Options = struct { output_file: []const u8 };
+    const meta = .{ .options = .{ .output_file = .{ .name = "out" } } };
+    const before = Options{ .output_file = "" };
+    const provided = [_]bool{false};
+    const miss = firstMissingRequiredOption(Options, meta, before, before, provided);
+    try std.testing.expect(miss != null);
+    try std.testing.expectEqualStrings("out", miss.?.name);
+}
+
+test "firstMissingRequiredOption: no required fields is never missing" {
+    const Options = struct { verbose: bool = false, name: ?[]const u8 = null };
+    const before = Options{};
+    const provided = [_]bool{ false, false };
+    try std.testing.expect(firstMissingRequiredOption(Options, null, before, before, provided) == null);
 }
 
 test "parseArgs failure after array options were parsed does not leak them" {
