@@ -283,7 +283,62 @@ pub const Region = struct {
         }
         return @intCast(col - start);
     }
+
+    /// Paint a vertical scrollbar down this region's full height (ADR-0021 incr5):
+    /// a `track` cell in `track_style` on every row, over which a proportional
+    /// `thumb` band is drawn in `thumb_style`. The thumb's length and position
+    /// come from `scrollThumb` — length ∝ visible/total (min 1), position ∝
+    /// scroll/(total − visible). This is the opt-in scroll indicator behind the
+    /// `scrollbar` opt on `viewport`/`Select`/`Table`; each reserves a 1-cell
+    /// gutter and hands it here. The region should be 1 cell wide.
+    pub fn paintScrollbar(
+        self: Region,
+        total: usize,
+        visible: usize,
+        scroll: usize,
+        track_style: Style,
+        thumb_style: Style,
+    ) void {
+        const h = self.rect.h;
+        if (h == 0 or self.rect.w == 0) return;
+        const bar = scrollThumb(total, visible, scroll, h);
+        var y: u16 = 0;
+        while (y < h) : (y += 1) {
+            const on_thumb = y >= bar.start and y < bar.start + bar.len;
+            _ = self.writeText(0, y, "│", if (on_thumb) thumb_style else track_style) catch {};
+        }
+    }
 };
+
+/// The scrollbar thumb geometry: its `start` row and `len` in a gutter of height
+/// `h`, for a window of `visible` rows over `total` content rows at offset
+/// `scroll`. A pure function (no I/O), unit-tested directly for the edge cases.
+///
+/// - No overflow (`total <= visible`): a full-length thumb (`start=0, len=h`) —
+///   the least-noisy reading of "everything is in view" for an explicit column.
+/// - Length ∝ `visible/total`, at least 1 cell, never past `h`.
+/// - Position ∝ `scroll/(total − visible)`, so the thumb touches the top exactly
+///   at `scroll=0` and the bottom exactly at the max scroll (`total − visible`).
+pub const Thumb = struct { start: u16, len: u16 };
+
+pub fn scrollThumb(total: usize, visible: usize, scroll: usize, h: u16) Thumb {
+    if (h == 0) return .{ .start = 0, .len = 0 };
+    // Nothing to scroll: the thumb fills the whole track.
+    if (total <= visible or visible == 0) return .{ .start = 0, .len = h };
+
+    // Thumb length ∝ visible/total, rounded, clamped to [1, h].
+    const raw_len = (@as(usize, h) * visible + total / 2) / total;
+    const len: u16 = @intCast(std.math.clamp(raw_len, 1, h));
+
+    // Thumb travel is the rows the thumb can slide over; distribute `scroll` over
+    // `total − visible` across it, rounding, so start=0 at scroll=0 and
+    // start=travel at max scroll (both extremes touch exactly).
+    const travel: usize = h - len;
+    const max_scroll = total - visible;
+    const s = @min(scroll, max_scroll);
+    const start: u16 = if (travel == 0) 0 else @intCast((travel * s + max_scroll / 2) / max_scroll);
+    return .{ .start = start, .len = len };
+}
 
 /// Index just past the ANSI escape sequence starting at `text[i]` (an ESC the
 /// caller already saw). Same recognizer as `terminal.wrap`: CSI, OSC (BEL/ST
@@ -461,4 +516,71 @@ test "styleEql compares hex colors by content" {
     try testing.expect(styleEql(a, b));
     try testing.expect(!styleEql(a, .{}));
     try testing.expect(styleEql(.{}, .{}));
+}
+
+// ---- scrollThumb (ADR-0021 incr5) ------------------------------------------
+
+test "scrollThumb: no overflow fills the whole track" {
+    // total <= visible → a full-length thumb (nothing to scroll).
+    try testing.expectEqual(Thumb{ .start = 0, .len = 10 }, scrollThumb(5, 10, 0, 10));
+    try testing.expectEqual(Thumb{ .start = 0, .len = 10 }, scrollThumb(10, 10, 0, 10));
+    // visible == 0 degenerates to the same full-track reading.
+    try testing.expectEqual(Thumb{ .start = 0, .len = 10 }, scrollThumb(100, 0, 0, 10));
+}
+
+test "scrollThumb: length is proportional to visible/total, at least 1" {
+    // 10 visible of 100 over a 10-row gutter → 1-cell thumb.
+    try testing.expectEqual(@as(u16, 1), scrollThumb(100, 10, 0, 10).len);
+    // 50 visible of 100 → half the gutter.
+    try testing.expectEqual(@as(u16, 5), scrollThumb(100, 50, 0, 10).len);
+    // A tiny window over huge content never rounds to 0 — the min-1 floor holds.
+    try testing.expectEqual(@as(u16, 1), scrollThumb(10000, 1, 0, 10).len);
+}
+
+test "scrollThumb: touches the top at scroll 0 and the bottom at max scroll" {
+    // 20 rows, 5 visible, gutter 10 → len 3 (round(10*5/20)=2.5→3), travel 7.
+    const at_top = scrollThumb(20, 5, 0, 10);
+    try testing.expectEqual(@as(u16, 0), at_top.start); // top exactly
+    const max_scroll = 20 - 5;
+    const at_bottom = scrollThumb(20, 5, max_scroll, 10);
+    try testing.expectEqual(@as(u16, 10), at_bottom.start + at_bottom.len); // bottom exactly
+    // Overshooting max scroll clamps to the same bottom-touching position.
+    const over = scrollThumb(20, 5, 999, 10);
+    try testing.expectEqual(@as(u16, 10), over.start + over.len);
+}
+
+test "scrollThumb: tiny gutters stay in bounds" {
+    // h = 1: the thumb is the whole single cell at both extremes.
+    try testing.expectEqual(Thumb{ .start = 0, .len = 1 }, scrollThumb(100, 10, 0, 1));
+    try testing.expectEqual(Thumb{ .start = 0, .len = 1 }, scrollThumb(100, 10, 90, 1));
+    // h = 2: a 1-cell thumb slides from the top row to the bottom row.
+    try testing.expectEqual(Thumb{ .start = 0, .len = 1 }, scrollThumb(100, 10, 0, 2));
+    try testing.expectEqual(Thumb{ .start = 1, .len = 1 }, scrollThumb(100, 10, 90, 2));
+    // h = 0 is degenerate: no thumb.
+    try testing.expectEqual(Thumb{ .start = 0, .len = 0 }, scrollThumb(100, 10, 0, 0));
+}
+
+test "scrollThumb: position advances monotonically with scroll" {
+    // As scroll grows, the thumb start never moves backward and stays in bounds.
+    var prev: u16 = 0;
+    var sc: usize = 0;
+    while (sc <= 95) : (sc += 1) {
+        const t = scrollThumb(100, 5, sc, 10);
+        try testing.expect(t.start >= prev);
+        try testing.expect(t.start + t.len <= 10);
+        prev = t.start;
+    }
+}
+
+test "paintScrollbar draws a track with a proportional thumb band" {
+    var s = try Surface.init(testing.allocator, 1, 10);
+    defer s.deinit();
+    // 20 rows, 5 visible, at the top: len 3, start 0 (see scrollThumb test).
+    s.root().paintScrollbar(20, 5, 0, .{ .dim = true }, .{ .bold = true });
+    // Thumb rows 0-2 are bold; track rows below are dim.
+    try testing.expect(s.cell(0, 0).style.bold);
+    try testing.expect(s.cell(0, 2).style.bold);
+    try testing.expect(s.cell(0, 3).style.dim);
+    try testing.expect(!s.cell(0, 3).style.bold);
+    try testing.expect(s.cell(0, 9).style.dim);
 }

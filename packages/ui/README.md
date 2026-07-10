@@ -93,9 +93,10 @@ alongside the progress ones ([ADR-0018](../../docs/adr/0018-focusable-widgets.md
 caller-owned buffer: soft wrap at the granted width, visual-row ↑/↓ and Home/End,
 Enter inserts a newline, PgUp/PgDn paging, vertical scroll, and the real hardware
 cursor via `cursor_out` — [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)),
-`Checkbox`, `Select` (scrolling window, truncation, optional multi-line `wrap`),
-`Table` (a read-only data grid with `Dim`-sized columns, selection, a scroll
-window, PgUp/PgDn paging, and truncation
+`Checkbox`, `Select` (scrolling window, truncation, optional multi-line `wrap`,
+optional `scrollbar`), `Table` (a read-only data grid with `Dim`-sized columns,
+selection, a scroll window, PgUp/PgDn paging, truncation, and an optional
+`scrollbar`
 — [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), `Tabs` (a stateless
 tab-bar row with ←/→ and number-key selection over a caller-owned active index —
 [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button`.
@@ -110,9 +111,13 @@ cover every multi-arg widget since dispatch compiles all arms). It's sugar over
 the switch — no framework loop, fully bypassable
 ([ADR-0021](../../docs/adr/0021-widget-catalog-completion.md); `examples/form.zig`).
 Overlays (`stack` + `center`, [ADR-0016](../../docs/adr/0016-overlays-z-layers.md)),
-scrolling panes (`viewport`, [ADR-0017](../../docs/adr/0017-scrollable-viewports.md)),
+scrolling panes (`viewport`, [ADR-0017](../../docs/adr/0017-scrollable-viewports.md);
+opt-in proportional `scrollbar`, [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)),
 and anchored popups (`probe` + `positioned` / `anchored`, [ADR-0019](../../docs/adr/0019-position-feedback.md))
-are all composition on the same tree.
+are all composition on the same tree. The `scrollbar` opt is off by default
+everywhere — it reserves a 1-cell gutter (dim track, brighter thumb proportional
+to the visible fraction), so a caller opts in only where a stable indicator earns
+the column; on `Select`/`Table` it replaces the overflow arrows in that gutter.
 
 ## Try it
 

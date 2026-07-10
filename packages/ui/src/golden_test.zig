@@ -298,6 +298,39 @@ test "a viewport blits styled and wide content through the renderer" {
     try testing.expect(!vt.containsText("top"));
 }
 
+test "a scrollbar viewport reserves a gutter and paints a thumb" {
+    var vt = try VTerm.init(testing.allocator, 6, 4);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Surface.init(testing.allocator, 6, 4);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    // Eight lines "0".."7" in a 4-row window scrolled to the bottom (scroll_y past
+    // the end clamps to 4). The gutter is column 5; the content blits into 0..4.
+    const lines = [_][]const u8{ "0", "1", "2", "3", "4", "5", "6", "7" };
+    const kids = try a.alloc(ui.Node, lines.len);
+    for (lines, kids) |line, *k| k.* = ui.textOpts(.{ .wrap = .clip }, line);
+    const content = try ui.column(a, .{}, kids);
+    const vp = try ui.viewport(a, .{ .scroll_y = 99, .scrollbar = true }, content);
+    try ui.render(&rctx, &vp, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // Content occupies columns 0..4; the bottom four lines "4".."7" show.
+    try testing.expectEqual(@as(u21, '4'), vt.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, '7'), vt.getCell(0, 3).char);
+    // The scrollbar gutter (column 5) carries a │ glyph on every row — a track
+    // with a thumb, both the same glyph, distinguished only by style (which the
+    // 16-color path can't reliably assert; the styles are covered in the unit
+    // test). The addressing — a full gutter column — is what this verifies.
+    try testing.expectEqual(@as(u21, '│'), vt.getCell(5, 0).char);
+    try testing.expectEqual(@as(u21, '│'), vt.getCell(5, 3).char);
+    // Scrolled to the bottom: the top line "0" is gone.
+    try testing.expect(!vt.containsText("0"));
+}
+
 // ---- Table (ADR-0021 incr1) ------------------------------------------------
 
 const table_columns = [_]ui.widgets.Table.Column{
@@ -365,6 +398,35 @@ test "a Table truncates an overwide cell and draws the overflow arrow" {
     try testing.expectEqual(@as(u21, '…'), vt.getCell(10, 3).char); // truncation ellipsis
     try testing.expectEqual(@as(u21, '↓'), vt.getCell(11, 3).char); // overflow arrow
     try testing.expect(!vt.containsText("kernel_task")); // the full text did not fit
+}
+
+test "a scrollbar Table paints a thumb gutter over its scrolling body" {
+    var vt = try VTerm.init(testing.allocator, 20, 5);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Surface.init(testing.allocator, 20, 4);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    // A 3-row body window over 5 rows with the scrollbar on: the body's rightmost
+    // column (19) carries a │ thumb/track on each of the 3 body rows, replacing the
+    // ↑/↓ overflow arrows. The header (row 0) keeps a blank gutter cell.
+    var t = ui.widgets.Table{};
+    const node = try t.view(a, .{ .focused = true, .columns = &table_columns, .rows = &table_rows, .height = 3, .scrollbar = true });
+    try ui.render(&rctx, &node, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // Header and body still land.
+    try testing.expect(vt.containsText("PID"));
+    try testing.expect(vt.containsText("zig"));
+    // The scrollbar occupies the gutter on the three body rows (1..3), not the
+    // header — and it replaced the arrows, so no ↓ is drawn there.
+    try testing.expectEqual(@as(u21, '│'), vt.getCell(19, 1).char);
+    try testing.expectEqual(@as(u21, '│'), vt.getCell(19, 3).char);
+    try testing.expect(vt.getCell(19, 0).char != @as(u21, '│')); // header gutter is blank
+    try testing.expect(vt.getCell(19, 3).char != @as(u21, '↓')); // arrow suppressed
 }
 
 // ---- Tabs (ADR-0021 incr2) -------------------------------------------------

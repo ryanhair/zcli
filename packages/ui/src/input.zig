@@ -829,6 +829,11 @@ pub const Select = struct {
         /// the visible window is chosen by physical-row budget (grow-from-cursor)
         /// instead of option index. The single-line default is left untouched.
         wrap: bool = false,
+        /// Opt in to a proportional scrollbar in the right gutter (ADR-0021 incr5),
+        /// OFF by default. When on, the scrollbar *replaces* the ↑/↓/↕ overflow
+        /// arrows in the same 1-cell gutter — the richer indicator for the same
+        /// column. Single-line path only for now (the `wrap` path keeps its arrows).
+        scrollbar: bool = false,
     };
 
     /// Handle a key; returns whether it was consumed. `count` (the option count)
@@ -893,6 +898,8 @@ pub const Select = struct {
         const label_w: u16 = @intCast(opt_w + 2);
 
         // Overflow: dim ↑/↓ in the gutter when options are hidden above/below.
+        // With a scrollbar the gutter carries the thumb instead (drawn over the
+        // blank gutter cells by `scrollbarWrap`), so the arrows are suppressed.
         const more_above = scroll > 0;
         const more_below = scroll + visible < count;
         const hint = th.prompts.hint.resolve(th.palette);
@@ -907,8 +914,8 @@ pub const Select = struct {
             // reads as chosen whether or not the list is focused; the `›` marker
             // is what signals focus. Non-highlighted rows are plain.
             const style: Style = if (is_hi) th.prompts.selected.resolve(th.palette) else .{};
-            const up = i == 0 and more_above;
-            const down = i == visible - 1 and more_below;
+            const up = !opts.scrollbar and i == 0 and more_above;
+            const down = !opts.scrollbar and i == visible - 1 and more_below;
             const arrow: []const u8 = if (up and down) "↕" else if (up) "↑" else if (down) "↓" else " ";
             const children = try a.dupe(Node, &.{
                 .{ .width = .{ .len = label_w }, .kind = .{ .text = .{ .content = line, .style = style, .wrap = .truncate } } },
@@ -916,7 +923,57 @@ pub const Select = struct {
             });
             row_node.* = .{ .kind = .{ .box = .{ .dir = .row, .children = children } } };
         }
-        return .{ .kind = .{ .box = .{ .dir = .column, .children = rows } } };
+        const list: Node = .{ .kind = .{ .box = .{ .dir = .column, .children = rows } } };
+        if (opts.scrollbar) return scrollbarWrap(a, th, list, count, visible, scroll);
+        return list;
+    }
+};
+
+/// Wrap a built list/grid `body` (whose rightmost column is the 1-cell gutter)
+/// in a `custom` leaf that paints a proportional scrollbar down that gutter
+/// (ADR-0021 incr5). The body is rendered first, then the thumb overpaints the
+/// gutter column — so the scrollbar *replaces* the overflow arrows when a caller
+/// opts in (the richer indicator in the same reserved column), rather than adding
+/// a second gutter. `total`/`visible`/`scroll` are the same window facts `view`
+/// already computed. Theme-derived: thumb = `surface.border`, track = `prompts.hint`.
+fn scrollbarWrap(a: std.mem.Allocator, th: *const Theme, body: Node, total: usize, visible: usize, scroll: usize) !Node {
+    const ctx = try a.create(ScrollbarWrap);
+    ctx.* = .{
+        .body = body,
+        .total = total,
+        .visible = visible,
+        .scroll = scroll,
+        .track = th.prompts.hint.resolve(th.palette),
+        .thumb = th.surface.border.resolve(th.palette),
+    };
+    return .{ .kind = .{ .custom = .{
+        .context = ctx,
+        .measureFn = ScrollbarWrap.measureFn,
+        .renderFn = ScrollbarWrap.renderFn,
+    } } };
+}
+
+const ScrollbarWrap = struct {
+    body: Node,
+    total: usize,
+    visible: usize,
+    scroll: usize,
+    track: Style,
+    thumb: Style,
+
+    fn measureFn(context: *anyopaque, rctx: *const RenderCtx, limits: Limits) Size {
+        const self: *const ScrollbarWrap = @ptrCast(@alignCast(context));
+        return node_mod.measure(rctx, &self.body, limits);
+    }
+
+    fn renderFn(context: *anyopaque, rctx: *const RenderCtx, region: Region) anyerror!void {
+        const self: *const ScrollbarWrap = @ptrCast(@alignCast(context));
+        try node_mod.render(rctx, &self.body, region);
+        const w = region.width();
+        const h = region.height();
+        if (w == 0 or h == 0) return;
+        region.sub(.{ .x = w - 1, .y = 0, .w = 1, .h = h })
+            .paintScrollbar(self.total, self.visible, self.scroll, self.track, self.thumb);
     }
 };
 
@@ -1120,6 +1177,11 @@ pub const Table = struct {
         /// Visible body rows (the header sits above and does not scroll).
         height: u16 = 10,
         theme: *const Theme = theme_mod.appTheme(),
+        /// Opt in to a proportional scrollbar in the right gutter (ADR-0021 incr5),
+        /// OFF by default. When on, the scrollbar *replaces* the ↑/↓/↕ overflow
+        /// arrows in the same 1-cell body gutter — the richer indicator for the
+        /// same column. The non-scrolling header keeps a blank gutter cell.
+        scrollbar: bool = false,
     };
 
     /// Handle a key; returns whether it was consumed. `row_count` (the row count)
@@ -1179,12 +1241,12 @@ pub const Table = struct {
         const more_above = scroll > 0;
         const more_below = scroll + visible < count;
 
-        // Header row + one body row per visible line, then the body draws its own
-        // gutter arrows. Header carries a blank gutter cell so its columns line up
-        // with the body's.
-        const lines = try a.alloc(Node, 1 + visible);
-        lines[0] = try buildRow(a, cols, widths, try headerCells(a, cols), hint, hint, " ", .{});
+        // Header row + one body column of visible lines. The header carries a blank
+        // gutter cell so its columns line up with the body's; the body draws its own
+        // gutter arrows (or, with a scrollbar, a blank gutter the thumb overpaints).
+        const header = try buildRow(a, cols, widths, try headerCells(a, cols), hint, hint, " ", .{});
 
+        const body_rows = try a.alloc(Node, visible);
         for (0..visible) |i| {
             const idx = scroll + i;
             const is_hi = idx == hi;
@@ -1192,11 +1254,18 @@ pub const Table = struct {
             // Full-width band on the highlighted row (the box background paints the
             // gaps between cells too); non-highlighted rows are plain.
             const band: Style = if (is_hi) style else .{};
-            const up = i == 0 and more_above;
-            const down = i == visible - 1 and more_below;
+            // With a scrollbar the gutter carries the thumb instead of arrows.
+            const up = !opts.scrollbar and i == 0 and more_above;
+            const down = !opts.scrollbar and i == visible - 1 and more_below;
             const arrow: []const u8 = if (up and down) "↕" else if (up) "↑" else if (down) "↓" else " ";
-            lines[1 + i] = try buildRow(a, cols, widths, opts.rows[idx], style, hint, arrow, band);
+            body_rows[i] = try buildRow(a, cols, widths, opts.rows[idx], style, hint, arrow, band);
         }
+        var body: Node = .{ .kind = .{ .box = .{ .dir = .column, .children = body_rows } } };
+        // The scrollbar spans only the scrolling body rows (the header is fixed),
+        // so it wraps the body column, not the whole table.
+        if (opts.scrollbar) body = try scrollbarWrap(a, th, body, count, visible, scroll);
+
+        const lines = try a.dupe(Node, &.{ header, body });
         return .{ .kind = .{ .box = .{ .dir = .column, .children = lines } } };
     }
 };

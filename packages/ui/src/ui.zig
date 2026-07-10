@@ -387,6 +387,12 @@ pub const ViewportOpts = struct {
     /// be nothing to scroll) — use `.fill` or `.len`.
     width: Dim = .{ .fill = 1 },
     height: Dim = .{ .fill = 1 },
+    /// Opt in to a 1-cell right scrollbar gutter (ADR-0021 incr5): OFF by
+    /// default so the content width stays stable regardless of how tall the
+    /// content grows. When on, the rightmost column shows a proportional thumb
+    /// (dim track, brighter thumb) and the content is measured/blitted at
+    /// `width − 1`. Theme-derived: thumb = `surface.border`, track = `prompts.hint`.
+    scrollbar: bool = false,
 };
 
 /// A scrolling window onto content taller than the space it's granted (ADR-0017):
@@ -398,7 +404,7 @@ pub const ViewportOpts = struct {
 /// screenful-or-few; very tall content pays for its full height in scratch.
 pub fn viewport(a: std.mem.Allocator, opts: ViewportOpts, child: Node) !Node {
     const ctx = try a.create(ViewportCtx);
-    ctx.* = .{ .child = child, .scroll_y = opts.scroll_y };
+    ctx.* = .{ .child = child, .scroll_y = opts.scroll_y, .scrollbar = opts.scrollbar };
     return .{
         .width = opts.width,
         .height = opts.height,
@@ -413,6 +419,7 @@ pub fn viewport(a: std.mem.Allocator, opts: ViewportOpts, child: Node) !Node {
 const ViewportCtx = struct {
     child: Node,
     scroll_y: u16,
+    scrollbar: bool,
 
     /// A viewport takes the whole offer — it's a fixed window (the node's own
     /// `.len`/`.fill` dims, applied by `measure` after this, refine it).
@@ -422,8 +429,12 @@ const ViewportCtx = struct {
 
     fn renderFn(context: *anyopaque, rctx: *const RenderCtx, region: Region) anyerror!void {
         const self: *const ViewportCtx = @ptrCast(@alignCast(context));
-        const w = region.width();
         const h = region.height();
+        // Reserve the rightmost column for the scrollbar gutter when opted in, so
+        // the content measures/blits into a stable `w`, and paint the thumb there.
+        const full_w = region.width();
+        const gutter: u16 = if (self.scrollbar and full_w > 0) 1 else 0;
+        const w = full_w - gutter;
         if (w == 0 or h == 0) return;
 
         // Measure the child at the viewport width, unbounded height, then paint
@@ -435,7 +446,16 @@ const ViewportCtx = struct {
 
         // Clamp the scroll offset to the content and copy the visible window.
         const sy = @min(self.scroll_y, content_h -| h);
-        try region.copyRows(&scratch, sy);
+        const body = region.sub(.{ .x = 0, .y = 0, .w = w, .h = h });
+        try body.copyRows(&scratch, sy);
+
+        if (gutter == 1) {
+            const th = appTheme();
+            const track = th.prompts.hint.resolve(th.palette);
+            const thumb = th.surface.border.resolve(th.palette);
+            region.sub(.{ .x = w, .y = 0, .w = 1, .h = h })
+                .paintScrollbar(content_h, h, sy, track, thumb);
+        }
     }
 };
 

@@ -810,6 +810,60 @@ test "Select shows both overflow arrows mid-list, and none when it fits" {
     try testing.expectEqualStrings("  two ", try rowString(a, &s2, 1));
 }
 
+test "Select scrollbar replaces the overflow arrows with a thumb gutter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Same window as the arrows test (scroll 1, [1,4)) but with the scrollbar on:
+    // the gutter carries a │ on every row (no ↑/↓ arrows), and the thumb cells wear
+    // the `surface.border` style while the track cells wear `prompts.hint`.
+    var sel = Select{};
+    for (0..3) |_| _ = sel.handle(.down, menu_options.len, 3);
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    const th = theme_mod.appTheme();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &menu_options, .height = 3, .scrollbar = true }), &s);
+
+    // Every gutter row is a │ — the arrows are gone.
+    for (0..3) |y| try testing.expectEqualStrings("│", s.cellText(s.cell(9, @intCast(y))));
+    // 5 options, 3 visible → thumb len round(3*3/5)=2, scroll 1 of max 2 → start
+    // round(1*1/2)=1: track row 0, thumb rows 1-2. Styles distinguish them.
+    const track = th.prompts.hint.resolve(th.palette);
+    const thumb = th.surface.border.resolve(th.palette);
+    try testing.expect(ui.styleEql(s.cell(9, 0).style, track));
+    try testing.expect(ui.styleEql(s.cell(9, 1).style, thumb));
+    try testing.expect(ui.styleEql(s.cell(9, 2).style, thumb));
+}
+
+test "Table scrollbar draws a thumb gutter over the body, not the header" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const columns = [_]Table.Column{
+        .{ .header = "N", .width = .{ .len = 1 } },
+    };
+    const grid = [_][]const []const u8{
+        &.{"a"}, &.{"b"}, &.{"c"}, &.{"d"}, &.{"e"},
+    };
+    var t = Table{};
+    var s = try ui.Surface.init(testing.allocator, 4, 4); // header + 3 body rows
+    defer s.deinit();
+    const th = theme_mod.appTheme();
+    try renderNode(a, try t.view(a, .{ .focused = true, .columns = &columns, .rows = &grid, .height = 3, .scrollbar = true }), &s);
+
+    // Row 0 is the header: its gutter cell is blank, not a scrollbar glyph.
+    try testing.expect(s.cell(3, 0).text_len == 0);
+    // Rows 1..3 are the scrolling body: each gutter cell is a │.
+    for (1..4) |y| try testing.expectEqualStrings("│", s.cellText(s.cell(3, @intCast(y))));
+    // 5 rows, 3 visible, at top (scroll 0) → thumb len 2 at start 0, track below.
+    const thumb = th.surface.border.resolve(th.palette);
+    const track = th.prompts.hint.resolve(th.palette);
+    try testing.expect(ui.styleEql(s.cell(3, 1).style, thumb));
+    try testing.expect(ui.styleEql(s.cell(3, 3).style, track));
+}
+
 test "Select truncates an option too wide for the granted width" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

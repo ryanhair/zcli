@@ -134,9 +134,10 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
     if (state.active_tab == 0) {
         // The process grid is a real `Table` (ADR-0021): PID/CPU%/MEM%/COMMAND
         // columns whose widths the layout engine sizes (`.len`/`.fill`), the
-        // selected row highlighted, and overflow arrows in the gutter. The list is
-        // taller than the `visible_rows` window, so `Table` scrolls to keep the
-        // selection in view — no manual scroll offset here.
+        // selected row highlighted, and a proportional scrollbar in the gutter
+        // (`scrollbar = true`, ADR-0021 incr5 — the richer indicator replacing the
+        // overflow arrows). The list is taller than the `visible_rows` window, so
+        // `Table` scrolls to keep the selection in view — no manual scroll offset.
         const grid = try a.alloc([]const []const u8, state.procs.len);
         for (state.procs, grid) |p, *cells| {
             const row_cells = try a.alloc([]const u8, 4);
@@ -151,6 +152,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
             .columns = &proc_columns,
             .rows = grid,
             .height = @intCast(visible_rows),
+            .scrollbar = true,
         }));
     } else {
         try rows.append(a, ui.text(.{ .bold = true }, "About"));
