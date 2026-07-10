@@ -390,6 +390,18 @@ sha256sum -c checksums.txt                              # then the binaries
 
 The trust model and the key rotation/compromise procedure live in [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) ([ADR-0023](docs/adr/0023-release-signing-minisign.md)).
 
+## Stability & the road to 1.0
+
+zcli is pre-1.0: breaking changes can land in minor versions and are always
+called out in the CHANGELOG; patch versions are always safe. The core command
+contract (`meta`/`Args`/`Options`/`execute`), the plugin hooks, and the
+`build.zig` integration have been stable across releases — the remaining churn is
+scoped and mechanical.
+
+If you're evaluating whether to adopt now or wait, [ROADMAP.md](ROADMAP.md) lays
+out what freezes at 1.0, what stays deliberately open, what must land first, and
+how to pin and upgrade safely today.
+
 ## License
 
 MIT
