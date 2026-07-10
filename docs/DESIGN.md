@@ -157,6 +157,7 @@ pub const Args = struct {
 
 // Named options (flags)
 pub const Options = struct {
+    region: []const u8,             // Required option — must be supplied
     limit: u32 = 10,
     format: enum { json, table } = .table,
     verbose: bool = false,
@@ -179,10 +180,18 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 **Options Rules:**
 
-- Every field must have a well-defined value when its flag is absent:
-  `bool` (its declared default, or `false`), optional (`null`), an accumulating
-  array (empty), or an explicit default value. This is enforced at compile time —
-  required values belong in `Args`.
+- The field's type says whether it's required. A field with a well-defined
+  absent value — `bool` (its declared default, or `false`), optional (`null`), an
+  accumulating array (empty), or an explicit default — is **optional**. A field
+  with none of those — a non-`bool`, non-optional, non-array field with no default,
+  e.g. `region: []const u8` — is a **required option**: the type says a value must
+  be provided, so the framework requires one.
+- "Required" means *absent after every source*, not *absent from argv*. A required
+  option is satisfied by the CLI flag, its declared `.env` variable, or a config
+  file (via `zcli_config`); only if none of them supplied it does the command fail,
+  with `Missing required option '--region'. Expected text.` and a usage hint.
+  (`Args` positionals remain the right home for a value that must appear *on the
+  command line* in a fixed position.)
 - `bool` and `?bool` are **flags** — they parse by presence and never take a
   value. Each auto-generates a `--no-<flag>` that sets it `false`, so a
   `bool = true` default can be turned off and `?bool` is a true three-state flag

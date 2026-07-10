@@ -201,6 +201,34 @@ pub fn isArrayType(comptime T: type) bool {
     return true;
 }
 
+/// A *required* option: a field with no well-defined value when its flag is
+/// absent — not a boolean flag (false), not optional (null), not an accumulating
+/// array (empty), and with no declared default. The type itself says the value
+/// must be supplied; the framework accepts CLI, env, or config as the source and
+/// errors only when none provided it. This is the inverse of the "has an absent
+/// value" rule `validateCommand` uses, kept here as the single definition both
+/// the validator and the parser consult.
+pub fn isRequiredOption(comptime field: std.builtin.Type.StructField) bool {
+    if (isBooleanFlag(field.type)) return false;
+    if (@typeInfo(field.type) == .optional) return false;
+    if (isArrayType(field.type)) return false;
+    return field.default_value_ptr == null;
+}
+
+/// A defined placeholder value to initialize a required option field with
+/// before any source is applied. `std.mem.zeroes` covers strings ("" ), numbers
+/// (0), etc., but is a *compile error* for an enum whose tags don't include 0
+/// (e.g. `enum(u8){ a = 1 }`) — so enums use their first declared variant. The
+/// placeholder is only ever compared (never surfaced): if no source supplies the
+/// option the command errors before `execute`, and `provided`/config-change
+/// tracking — not the placeholder's value — decides that.
+pub fn requiredPlaceholder(comptime T: type) T {
+    return switch (@typeInfo(T)) {
+        .@"enum" => |e| @field(T, e.fields[0].name),
+        else => std.mem.zeroes(T),
+    };
+}
+
 /// Enhanced float parsing with IEEE 754 special values support
 pub fn parseFloat(comptime T: type, value: []const u8) !T {
     // Handle special IEEE 754 values

@@ -10,6 +10,7 @@ const parser = @import("options/parser.zig");
 
 // Core types
 pub const OptionsResult = types.OptionsResult;
+pub const optionFieldCount = types.optionFieldCount;
 
 // Main parsing functions
 pub const parseOptions = parser.parseOptions;

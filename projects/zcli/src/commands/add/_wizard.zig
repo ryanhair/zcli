@@ -465,7 +465,9 @@ fn gatherOneOption(
                 default_expr = null;
             } else if (multiple) {
                 default_expr = "&.{}";
-            } else {
+            } else if (kind == .flag) {
+                // A bool is never required (it has an absent value, false); just
+                // ask whether it defaults on.
                 default_expr = promptOptionDefault(arena, p, kind, choices) catch |e| {
                     if (e == error.Interrupted) {
                         step = .nullable;
@@ -473,13 +475,35 @@ fn gatherOneOption(
                     }
                     return e;
                 };
+            } else {
+                // A non-nullable scalar is either required (no default, the type
+                // demands a value) or carries a default value.
+                const req = p.confirm(.{ .message = "  Required? (must be supplied; no default)", .default = false, .interrupt_keys = back_keys }) catch |e| {
+                    if (e == error.Interrupted) {
+                        step = .nullable;
+                        continue;
+                    }
+                    return e;
+                };
+                if (req) {
+                    default_expr = null;
+                } else {
+                    default_expr = promptOptionDefault(arena, p, kind, choices) catch |e| {
+                        // Escape re-asks Required? (not the nullable step) so the
+                        // user can flip their answer without backing out further.
+                        if (e == error.Interrupted) continue;
+                        return e;
+                    };
+                }
             }
             step = .short;
         },
         .short => {
             const want = p.confirm(.{ .message = "  Short flag?", .default = false, .interrupt_keys = back_keys }) catch |e| {
                 if (e == error.Interrupted) {
-                    // Skip back over the non-prompting default step when needed.
+                    // Back to the default step when it prompts (a scalar/flag:
+                    // Required?/Default), else skip the non-prompting default
+                    // (nullable/multiple) straight to the nullable step.
                     step = if (!nullable and !multiple) .default else .nullable;
                     continue;
                 }

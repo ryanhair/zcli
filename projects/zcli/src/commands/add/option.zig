@@ -12,6 +12,7 @@ pub const meta = .{
     .description = "Add an option to an existing command",
     .examples = &.{
         "add option users/create verbose --type bool --default false --short v",
+        "add option deploy region --type []const u8", // required (no --default/--nullable)
         "add option deploy region --type []const u8 --nullable",
         "add option search tag --type []const u8 --multiple",
     },
@@ -23,7 +24,7 @@ pub const meta = .{
         .type = .{ .description = "Element/scalar Zig type (e.g. u32, bool, []const u8; default: []const u8)", .short = 't' },
         .multiple = .{ .description = "Accumulate repeated flags into a slice" },
         .nullable = .{ .description = "Optional: renders as ?T = null" },
-        .default = .{ .description = "Default value, a Zig expression (required for a non-nullable scalar)" },
+        .default = .{ .description = "Default value, a Zig expression; omit on a non-nullable scalar to make the option required" },
         .short = .{ .description = "Single-character short flag", .short = 's' },
         .description = .{ .description = "Option description", .short = 'd' },
     },
@@ -82,7 +83,6 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         error.ContradictoryFlags,
         error.UnsupportedArrayElement,
         error.BadShort,
-        error.MissingDefault,
         => return error.CommandFailed,
         else => return err,
     };
@@ -137,16 +137,14 @@ fn buildSpec(arena: std.mem.Allocator, stderr: *std.Io.Writer, name: []const u8,
         short = s[0];
     }
 
-    // Default expression: only meaningful for a non-nullable scalar, where it is
-    // required. A non-nullable multiple defaults to an empty slice.
+    // Default expression. A non-nullable multiple defaults to an empty slice.
+    // A non-nullable scalar keeps its explicit --default; with none it becomes a
+    // required option (default_expr stays null → the field renders as `name: T`).
     var default_expr: ?[]const u8 = null;
     if (options.multiple) {
         if (!options.nullable) default_expr = "&.{}";
     } else if (!options.nullable) {
-        default_expr = options.default orelse {
-            try stderr.print("Error: a non-nullable scalar option needs a --default (or pass --nullable)\n", .{});
-            return error.MissingDefault;
-        };
+        default_expr = options.default;
     }
 
     return .{
@@ -163,7 +161,8 @@ fn buildSpec(arena: std.mem.Allocator, stderr: *std.Io.Writer, name: []const u8,
 fn finish(w: *std.Io.Writer, theme: *const ThemeContext, file_path: []const u8, opt: spec.OptSpec) !void {
     try w.writeAll("\n  ");
     var buf: [512]u8 = undefined;
-    const field = std.fmt.bufPrint(&buf, "\u{2714} Added option --{s} to {s}", .{ opt.name, file_path }) catch "\u{2714} Added option";
+    const required_suffix = if (opt.isRequired()) " (required)" else "";
+    const field = std.fmt.bufPrint(&buf, "\u{2714} Added option --{s}{s} to {s}", .{ opt.name, required_suffix, file_path }) catch "\u{2714} Added option";
     try themed(field).success().render(w, theme);
     try w.writeAll("\n\n  Next steps\n");
     try w.print("    1. Read the option back with `zcli tree --show-options`\n", .{});
@@ -191,8 +190,18 @@ test "buildSpec: nullable + default is contradictory" {
     });
 }
 
-test "buildSpec: non-nullable scalar requires a default" {
-    try expectBuildError(error.MissingDefault, "count", .{ .type = "u32" });
+test "buildSpec: non-nullable scalar with no default is a required option" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var aw = std.Io.Writer.Allocating.init(arena.allocator());
+    const s = try buildSpec(arena.allocator(), &aw.writer, "region", .{ .type = "[]const u8" });
+    try testing.expect(s.default_expr == null);
+    try testing.expect(!s.nullable);
+    try testing.expect(!s.multiple);
+    try testing.expect(s.isRequired());
+    // Renders as a bare `name: T` — a required option.
+    const field = try scaffold.spec.renderOptField(arena.allocator(), s);
+    try testing.expectEqualStrings("region: []const u8", field);
 }
 
 test "buildSpec: multiple rejects unsupported element types" {
