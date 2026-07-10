@@ -19,6 +19,20 @@ Status: accepted
 > reading a `Point` the field wrote during render. The reporting channel stayed a
 > `ViewOpts` pointer over a `RenderCtx` slot for the same reason increment 1 chose
 > a wrapper over a `Node` field: keep `node.zig` free of a cursor concept.
+>
+> **Increment 3 (landed): anchored popups.** The last consumer, and pure
+> composition — no new engine capability. A `ui.positioned(a, x, y, child)` helper
+> places a child at an absolute cell via fixed-size `len` gaps (the `center`
+> pattern with offsets; the gaps are style-less, hence transparent, ADR-0016). An
+> anchored popup is then `stack{ base, positioned(anchor.x, anchor.y + anchor.h,
+> popup) }`, where `anchor` is the rect `probe` reported for the anchor widget —
+> no `anchoredPopup` wrapper, the three-line composition reads clearly. The popup
+> reads the *previous* frame's anchor rect (probe fills during render, positioning
+> happens in `view`), which is exact for a stable anchor. Smart placement
+> (flip-when-near-an-edge, horizontal clamp) is deferred — it needs the popup's
+> measured size — and the dumb `positioned` clips gracefully off-screen. Demo: a
+> new `popup.zig` dropdown (button → menu anchored below), integrating probe +
+> stack + positioned + `Select`.
 
 The layout engine (ADR-0013) is immediate-mode: `view(state)` builds a fresh,
 anonymous node tree every frame; `measure`+`render` lay it out and paint it; the
@@ -78,12 +92,13 @@ is reacting to, not a frame behind.
 - **Full-screen is where this is meaningful.** In hybrid, the live region floats
   in scrollback, so the surface rect isn't a stable screen coordinate; the
   consumers (mouse, cursor, popups) are full-screen features anyway.
-- **Hardware cursor landed (increment 2); anchored popups remain.** The cursor
-  reuses this position feedback for a point *inside* a widget (the caret) plus
-  App plumbing (`cursorAt` + the `run` post-frame hook + `frameFullScreen`'s
-  pre-paint `unplace`). *Anchored popups* — the last consumer — probe the
-  anchor's rect, then render a popup in a `stack` (ADR-0016) positioned there
-  with len-spacers. A composition of what already exists; no core change.
+- **All three consumers landed.** Click-to-focus (increment 1), hardware cursor
+  (increment 2, position feedback for a point *inside* a widget plus App
+  plumbing), and anchored popups (increment 3, `probe` + `stack` + `positioned`).
+  The last needed no core change at all — it is composition — which is the
+  clearest evidence that `probe` was the right primitive: with a node's rendered
+  rect in hand, the deferred TUI features fall out of the vocabulary already
+  built. This closes the ADR-0015 full-screen deferral list.
 - **No renderer or measure change.** `probe` is a `custom` leaf like `viewport`
   and the widgets — the position feedback is a side effect of the normal render
   pass, tested headlessly (the rect is deterministic) with the live click path

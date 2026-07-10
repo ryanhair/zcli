@@ -214,6 +214,23 @@ pub fn center(a: std.mem.Allocator, child: Node) !Node {
     });
 }
 
+/// Place `child`'s top-left at absolute `(x, y)` within the region its parent
+/// grants — the placement half of an anchored popup (ADR-0019): a `stack` layer
+/// `positioned` at a widget's probed rect floats a dropdown/menu over the base.
+/// Uses fixed-size `len` gaps, which are style-less and therefore transparent,
+/// so the base shows through everywhere but the (opaque) `child`. An `(x, y)`
+/// past the region clips gracefully rather than erroring. It's the `center`
+/// pattern with fixed offsets instead of spacers.
+pub fn positioned(a: std.mem.Allocator, x: u16, y: u16, child: Node) !Node {
+    return column(a, .{}, &.{
+        try row(a, .{ .height = .{ .len = y } }, &.{}), // top gap: y rows tall
+        try row(a, .{}, &.{
+            try column(a, .{ .width = .{ .len = x } }, &.{}), // left gap: x cols wide
+            child,
+        }),
+    });
+}
+
 pub const ViewportOpts = struct {
     /// Caller-owned vertical scroll offset, in rows (immediate mode — the app
     /// holds it in state and adjusts it on ↑/↓/PageUp/PageDown). Clamped to the
