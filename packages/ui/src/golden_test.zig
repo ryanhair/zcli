@@ -396,3 +396,74 @@ test "a Tabs bar paints its labels in a spaced row through the renderer" {
     try testing.expectEqual(@as(u21, ' '), vt.getCell(3, 0).char); // separator
     try testing.expectEqual(@as(u21, ' '), vt.getCell(7, 0).char); // separator
 }
+
+// ---- TextArea (ADR-0021 incr3) ---------------------------------------------
+
+test "a TextArea soft-wraps a paragraph across visual rows through the renderer" {
+    var vt = try VTerm.init(testing.allocator, 6, 4);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Surface.init(testing.allocator, 6, 4);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    var ta = ui.widgets.TextArea{ .buffer = try a.dupe(u8, "aaa bbb ccc") };
+    ta.len = 11;
+    // Width 6 wraps "aaa bbb ccc" → "aaa" / "bbb" / "ccc", each its own row.
+    const node = try ta.view(a, .{ .width = .{ .len = 6 }, .height = 4 });
+    try ui.render(&rctx, &node, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // Each soft-wrapped visual row lands on its own line, addressed to (0, row).
+    try testing.expectEqual(@as(u21, 'a'), vt.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'b'), vt.getCell(0, 1).char);
+    try testing.expectEqual(@as(u21, 'c'), vt.getCell(0, 2).char);
+    try testing.expect(vt.containsText("aaa"));
+    try testing.expect(vt.containsText("bbb"));
+    try testing.expect(vt.containsText("ccc"));
+}
+
+test "a TextArea paints the scrolled window and its placeholder through the renderer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Scrolled window: six lines "0".."5", a 3-row field, cursor on the last row.
+    {
+        var vt = try VTerm.init(testing.allocator, 8, 3);
+        defer vt.deinit();
+        var s = try Surface.init(testing.allocator, 8, 3);
+        defer s.deinit();
+        const rctx = ui.RenderCtx{ .allocator = a };
+
+        var ta = ui.widgets.TextArea{ .buffer = try a.dupe(u8, "0\n1\n2\n3\n4\n5") };
+        ta.len = ta.buffer.len;
+        for (0..5) |_| _ = ta.handle(.down, 8, 3); // walk the caret to the last row
+        const node = try ta.view(a, .{ .focused = true, .width = .{ .len = 8 }, .height = 3 });
+        try ui.render(&rctx, &node, s.root());
+        try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+        // The 3-row window slid to the bottom three lines "3","4","5".
+        try testing.expectEqual(@as(u21, '3'), vt.getCell(0, 0).char);
+        try testing.expectEqual(@as(u21, '4'), vt.getCell(0, 1).char);
+        try testing.expectEqual(@as(u21, '5'), vt.getCell(0, 2).char);
+        try testing.expect(!vt.containsText("0")); // scrolled off the top
+    }
+
+    // Placeholder: an empty field shows its hint text, addressed at the origin.
+    {
+        var vt = try VTerm.init(testing.allocator, 10, 3);
+        defer vt.deinit();
+        var s = try Surface.init(testing.allocator, 10, 3);
+        defer s.deinit();
+        const rctx = ui.RenderCtx{ .allocator = a };
+
+        var ta = ui.widgets.TextArea{ .buffer = try a.alloc(u8, 16) };
+        const node = try ta.view(a, .{ .placeholder = "notes...", .width = .{ .len = 10 }, .height = 3 });
+        try ui.render(&rctx, &node, s.root());
+        try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+        try testing.expect(vt.containsText("notes..."));
+    }
+}

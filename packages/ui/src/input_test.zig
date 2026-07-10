@@ -79,6 +79,181 @@ test "TextInput does not consume navigation keys" {
     try testing.expect(!ti.handle(.escape));
 }
 
+// ---- handle: TextArea ------------------------------------------------------
+
+const TextArea = widgets.TextArea;
+// A wide field so most typing stays on one visual row unless a `\n` or an
+// explicit wrap width forces a break.
+const ta_w = 40;
+const ta_h = 6;
+
+test "TextArea inserts, deletes, and Enter adds a newline" {
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    for ("ab") |c| _ = ta.handle(.{ .char = c }, ta_w, ta_h);
+    try testing.expect(ta.handle(.enter, ta_w, ta_h)); // Enter inserts \n (consumed)
+    for ("cd") |c| _ = ta.handle(.{ .char = c }, ta_w, ta_h);
+    try testing.expectEqualStrings("ab\ncd", ta.value());
+    try testing.expectEqual(@as(usize, 5), ta.cursor);
+    _ = ta.handle(.backspace, ta_w, ta_h); // "ab\nc"
+    try testing.expectEqualStrings("ab\nc", ta.value());
+    _ = ta.handle(.home, ta_w, ta_h); // start of visual row 2
+    _ = ta.handle(.delete, ta_w, ta_h); // delete 'c'
+    try testing.expectEqualStrings("ab\n", ta.value());
+}
+
+test "TextArea edits multibyte codepoints whole" {
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    _ = ta.handle(.{ .char = 'é' }, ta_w, ta_h); // 2 bytes
+    _ = ta.handle(.{ .char = '中' }, ta_w, ta_h); // 3 bytes
+    try testing.expectEqual(@as(usize, 5), ta.len);
+    _ = ta.handle(.backspace, ta_w, ta_h); // removes 中 whole
+    try testing.expectEqualStrings("é", ta.value());
+}
+
+test "TextArea left/right cross the newline boundary" {
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    for ("a") |c| _ = ta.handle(.{ .char = c }, ta_w, ta_h);
+    _ = ta.handle(.enter, ta_w, ta_h);
+    for ("b") |c| _ = ta.handle(.{ .char = c }, ta_w, ta_h); // "a\nb", cursor 3
+    _ = ta.handle(.left, ta_w, ta_h); // before 'b' (offset 2)
+    try testing.expectEqual(@as(usize, 2), ta.cursor);
+    _ = ta.handle(.left, ta_w, ta_h); // onto the \n (offset 1)
+    try testing.expectEqual(@as(usize, 1), ta.cursor);
+    _ = ta.handle(.right, ta_w, ta_h); // back across the \n (offset 2)
+    try testing.expectEqual(@as(usize, 2), ta.cursor);
+}
+
+test "TextArea up/down move a visual row, clamping the column" {
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    // "hello\nhi\nworld" — three lines of differing length.
+    for ("hello") |c| _ = ta.handle(.{ .char = c }, ta_w, ta_h);
+    _ = ta.handle(.enter, ta_w, ta_h);
+    for ("hi") |c| _ = ta.handle(.{ .char = c }, ta_w, ta_h);
+    _ = ta.handle(.enter, ta_w, ta_h);
+    for ("world") |c| _ = ta.handle(.{ .char = c }, ta_w, ta_h);
+    // Cursor at end of "world" (col 5). Up → "hi" clamps to col 2 (its length).
+    _ = ta.handle(.up, ta_w, ta_h);
+    try testing.expectEqual(@as(usize, 8), ta.cursor); // after "hi"
+    // Up again → "hello" at col 2 (the column is re-derived from the offset each
+    // press, no sticky goal column — so it stays at 2, not the original 5).
+    _ = ta.handle(.up, ta_w, ta_h);
+    try testing.expectEqual(@as(usize, 2), ta.cursor); // "he|llo"
+    // Down twice returns toward "world" at col 2.
+    _ = ta.handle(.down, ta_w, ta_h);
+    _ = ta.handle(.down, ta_w, ta_h);
+    try testing.expectEqual(@as(usize, 11), ta.cursor); // "wo|rld" (offset 9+2)
+}
+
+test "TextArea up/down move visual rows within one wrapped paragraph" {
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    // One paragraph that wraps at width 6: "aaa bbb ccc" → "aaa" / "bbb" / "ccc".
+    for ("aaa bbb ccc") |c| _ = ta.handle(.{ .char = c }, 6, ta_h); // cursor at end (row 2)
+    _ = ta.handle(.up, 6, ta_h); // to visual row 1 ("bbb"), col clamps to 3
+    // "aaa bbb ccc": row1 "bbb" starts at byte 4; col 3 → offset 7 (after "bbb").
+    try testing.expectEqual(@as(usize, 7), ta.cursor);
+    _ = ta.handle(.home, 6, ta_h); // start of visual row "bbb"
+    try testing.expectEqual(@as(usize, 4), ta.cursor);
+    _ = ta.handle(.end, 6, ta_h); // end of visual row "bbb"
+    try testing.expectEqual(@as(usize, 7), ta.cursor);
+}
+
+test "TextArea PgUp/PgDn move by the height in visual rows" {
+    var buf: [128]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    // 10 short lines "0".."9" — each is its own visual row.
+    for (0..10) |i| {
+        _ = ta.handle(.{ .char = @intCast('0' + i) }, ta_w, ta_h);
+        if (i < 9) _ = ta.handle(.enter, ta_w, ta_h);
+    }
+    // Cursor on the last row (9), col 1 (after the digit — the preserved target).
+    const h = 6;
+    _ = ta.handle(.pageup, ta_w, h);
+    try testing.expectEqual(@as(RowColExpect, .{ .row = 3, .col = 1 }), rowColOf(&ta, ta_w));
+    _ = ta.handle(.pageup, ta_w, h); // row 3 - 6 → clamp to 0
+    try testing.expectEqual(@as(RowColExpect, .{ .row = 0, .col = 1 }), rowColOf(&ta, ta_w));
+    _ = ta.handle(.pagedown, ta_w, h); // 0 + 6 → row 6
+    try testing.expectEqual(@as(RowColExpect, .{ .row = 6, .col = 1 }), rowColOf(&ta, ta_w));
+    _ = ta.handle(.pagedown, ta_w, h); // 6 + 6 → clamp to 9 (last row)
+    try testing.expectEqual(@as(RowColExpect, .{ .row = 9, .col = 1 }), rowColOf(&ta, ta_w));
+}
+
+test "TextArea keeps the caret in the scroll window" {
+    var buf: [128]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    // 10 single-row lines, a 4-row window.
+    for (0..10) |i| {
+        _ = ta.handle(.{ .char = @intCast('0' + i) }, ta_w, ta_h);
+        if (i < 9) _ = ta.handle(.enter, ta_w, ta_h);
+    }
+    const h = 4;
+    _ = ta.handle(.end, ta_w, h); // cursor on row 9
+    _ = ta.handle(.home, ta_w, h); // Home stays on row 9
+    // Cursor is on visual row 9; the 4-row window slid to [6,10).
+    try testing.expectEqual(@as(u16, 6), ta.scroll_row);
+    for (0..7) |_| _ = ta.handle(.up, ta_w, h); // to row 2
+    try testing.expectEqual(@as(u16, 2), ta.scroll_row); // window slid up to [2,6)
+}
+
+test "TextArea drops a keystroke when the buffer is full" {
+    var buf: [2]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    _ = ta.handle(.{ .char = 'a' }, ta_w, ta_h);
+    _ = ta.handle(.{ .char = 'b' }, ta_w, ta_h);
+    try testing.expect(ta.handle(.{ .char = 'c' }, ta_w, ta_h)); // consumed, dropped
+    try testing.expectEqualStrings("ab", ta.value());
+    try testing.expect(ta.handle(.enter, ta_w, ta_h)); // \n also dropped (full)
+    try testing.expectEqualStrings("ab", ta.value());
+}
+
+test "TextArea on an empty buffer: motion is a no-op, editing keys consume" {
+    var buf: [16]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    try testing.expect(ta.handle(.up, ta_w, ta_h));
+    try testing.expect(ta.handle(.down, ta_w, ta_h));
+    try testing.expect(ta.handle(.left, ta_w, ta_h));
+    try testing.expect(ta.handle(.home, ta_w, ta_h));
+    try testing.expectEqual(@as(usize, 0), ta.cursor);
+    try testing.expectEqual(@as(usize, 0), ta.len);
+}
+
+test "TextArea does not consume navigation keys" {
+    var buf: [16]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    try testing.expect(!ta.handle(.tab, ta_w, ta_h));
+    try testing.expect(!ta.handle(.back_tab, ta_w, ta_h));
+    try testing.expect(!ta.handle(.escape, ta_w, ta_h));
+    // ...but Enter IS consumed (it inserts a newline — the multi-line distinction).
+    try testing.expect(ta.handle(.enter, ta_w, ta_h));
+}
+
+// A test helper mirroring the widget's own `(visual_row, col)` derivation, so
+// paging/motion tests can assert the caret's logical position without reaching
+// into the private geometry functions.
+const RowColExpect = struct { row: usize, col: u16 };
+fn rowColOf(ta: *const TextArea, width: u16) RowColExpect {
+    // Re-derive by walking: count visual rows before the cursor, and the column
+    // is the display width from the current row's start. We approximate via the
+    // widget's public value + a simple newline-count for these single-row-line
+    // fixtures (each line is one visual row), which is exact here.
+    var row: usize = 0;
+    var col: u16 = 0;
+    const text = ta.value();
+    var i: usize = 0;
+    while (i < ta.cursor) : (i += 1) {
+        if (text[i] == '\n') {
+            row += 1;
+            col = 0;
+        } else col += 1;
+    }
+    _ = width;
+    return .{ .row = row, .col = col };
+}
+
 // ---- handle: Checkbox ------------------------------------------------------
 
 test "Checkbox toggles on space, leaves Enter for the form" {
@@ -358,6 +533,101 @@ test "empty TextInput shows its placeholder" {
     defer s.deinit();
     try renderNode(a, try ti.view(a, .{ .placeholder = "name" }), &s);
     try testing.expectEqualStrings("name    ", try rowString(a, &s, 0));
+}
+
+test "TextArea paints wrapped multi-line content and reports the caret cell" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    // "aaa bbb ccc" wraps at width 6 → "aaa" / "bbb" / "ccc". Cursor after "bbb".
+    for ("aaa bbb ccc") |c| _ = ta.handle(.{ .char = c }, 6, 4);
+    _ = ta.handle(.up, 6, 4); // to "bbb", end → offset 7
+
+    var s = try ui.Surface.init(testing.allocator, 6, 4);
+    defer s.deinit();
+    var caret: ?ui.Point = null;
+    try renderNode(a, try ta.view(a, .{ .focused = true, .width = .{ .len = 6 }, .height = 4, .cursor_out = &caret }), &s);
+
+    try testing.expectEqualStrings("aaa   ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("bbb   ", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("ccc   ", try rowString(a, &s, 2));
+    // Caret sits at the end of the "bbb" visual row (col 3, row 1).
+    try testing.expectEqual(@as(?ui.Point, .{ .x = 3, .y = 1 }), caret);
+}
+
+test "TextArea scrolls to keep the caret's row visible" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    // Six single-glyph lines "0".."5", a 3-row window; cursor on the last row.
+    for (0..6) |i| {
+        _ = ta.handle(.{ .char = @intCast('0' + i) }, 8, 3);
+        if (i < 5) _ = ta.handle(.enter, 8, 3);
+    }
+
+    var s = try ui.Surface.init(testing.allocator, 8, 3);
+    defer s.deinit();
+    var caret: ?ui.Point = null;
+    try renderNode(a, try ta.view(a, .{ .focused = true, .width = .{ .len = 8 }, .height = 3, .cursor_out = &caret }), &s);
+
+    // Window slid to the bottom three rows [3,6): "3","4","5".
+    try testing.expectEqualStrings("3       ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("4       ", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("5       ", try rowString(a, &s, 2));
+    try testing.expectEqual(@as(?ui.Point, .{ .x = 1, .y = 2 }), caret); // last row, past "5"
+}
+
+test "empty TextArea shows its placeholder in hint style" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [16]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    try renderNode(a, try ta.view(a, .{ .placeholder = "notes...", .width = .{ .len = 10 }, .height = 3 }), &s);
+    try testing.expectEqualStrings("notes...  ", try rowString(a, &s, 0));
+    // Placeholder wears the hint style, not the default.
+    try testing.expect(!ui.styleEql(s.cell(0, 0).style, .{}));
+}
+
+test "unfocused TextArea (cursor_out null) paints no reverse caret" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [16]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    for ("hi") |c| _ = ta.handle(.{ .char = c }, 10, 3);
+
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    try renderNode(a, try ta.view(a, .{ .focused = false, .width = .{ .len = 10 }, .height = 3 }), &s);
+    try testing.expect(!s.cell(2, 0).style.reverse);
+}
+
+test "focused TextArea with no cursor_out paints a reverse block caret" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [16]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    for ("hi") |c| _ = ta.handle(.{ .char = c }, 10, 3);
+
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    // No cursor_out → fall back to the reverse block caret at the caret cell.
+    try renderNode(a, try ta.view(a, .{ .focused = true, .width = .{ .len = 10 }, .height = 3 }), &s);
+    try testing.expect(s.cell(2, 0).style.reverse); // past "hi"
 }
 
 test "Checkbox renders its box and label, checked and focused" {
