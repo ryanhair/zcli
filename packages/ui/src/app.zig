@@ -42,6 +42,7 @@ const node_mod = @import("node.zig");
 const diff_mod = @import("diff.zig");
 
 const Surface = surface_mod.Surface;
+const Point = surface_mod.Point;
 const Node = node_mod.Node;
 const Size = node_mod.Size;
 const Limits = node_mod.Limits;
@@ -388,6 +389,22 @@ pub const App = struct {
         self.placed = pos;
     }
 
+    /// Place the real terminal cursor at an absolute screen cell, or hide it
+    /// (`null`) — the full-screen entry point for a focused text field's caret
+    /// (ADR-0019). In full-screen the surface fills the viewport from the origin,
+    /// so a widget's reported cell (`TextInput`'s `cursor_out`) is already a
+    /// screen coordinate. Call it after `frame`, before blocking on input — the
+    /// natural home is `run`'s post-frame hook. `frameFullScreen` returns the
+    /// cursor to the origin before the next diff.
+    pub fn cursorAt(self: *App, p: ?Point) !void {
+        if (p) |pt| {
+            try self.showCursorAt(pt.x, pt.y);
+        } else {
+            try self.unplace();
+            try self.writer.flush();
+        }
+    }
+
     /// Hide the placed cursor and return to the region's top-left, restoring
     /// the parking invariant every other operation assumes.
     fn unplace(self: *App) !void {
@@ -533,6 +550,11 @@ pub const App = struct {
     /// change already resizes the surface, which forces the repaint on its
     /// own; the re-anchor is the resize-specific step.
     fn frameFullScreen(self: *App, node: Node) !void {
+        // A hardware cursor placed after the last frame (`cursorAt`) sits away
+        // from the origin the diff renderer addresses relative to — return it
+        // before painting, mirroring the hybrid `frame`.
+        try self.unplace();
+
         const ts = self.termSize();
         const size = Size{ .w = ts.w, .h = ts.h };
         if (size.w == 0 or size.h == 0) return;
@@ -619,6 +641,13 @@ pub const App = struct {
     /// resetting it, so input can't starve the tick. `null` disables ticking
     /// (block on input only — a form or menu). `io` is only the monotonic clock
     /// the deadline reads (`std.Io.Clock`). Full-screen only.
+    ///
+    /// `after_frame` (optional) runs after each paint, just before blocking on
+    /// input — the post-frame hook for work that depends on the rendered layout.
+    /// Its home use is the hardware cursor: place the focused field's caret with
+    /// `app.cursorAt(...)` (ADR-0019), reading a `Point` the field reported into
+    /// caller state during render. It receives the App and state; keep it to
+    /// terminal side effects (don't re-enter `frame`). Pass `null` for none.
     pub fn run(
         self: *App,
         io: std.Io,
@@ -626,6 +655,7 @@ pub const App = struct {
         tick_ms: ?u32,
         comptime view: fn (std.mem.Allocator, @TypeOf(state)) anyerror!Node,
         comptime update: fn (@TypeOf(state), ?Event) anyerror!Flow,
+        comptime after_frame: ?fn (*App, @TypeOf(state)) anyerror!void,
     ) !void {
         std.debug.assert(self.mode == .full_screen);
         const ns_per_ms = std.time.ns_per_ms;
@@ -646,6 +676,10 @@ pub const App = struct {
                 }
                 timeout = @intCast((next_tick - now) / ns_per_ms);
             }
+
+            // Post-frame hook, right before we block: the frame is painted and
+            // its layout (e.g. a caret position) is settled.
+            if (after_frame) |hook| try hook(self, state);
 
             const ev = try self.nextEvent(timeout) orelse {
                 // Deadline reached with no input: a tick.

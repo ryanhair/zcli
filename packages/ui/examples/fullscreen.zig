@@ -256,5 +256,5 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit(); // leaves alt-screen, restores cooked mode + cursor
 
     var state = State.init();
-    try app.run(io, &state, tick_ms, view, update);
+    try app.run(io, &state, tick_ms, view, update, null);
 }

@@ -63,6 +63,7 @@ fn colorEql(a: ?theme.Color, b: ?theme.Color) bool {
 }
 
 pub const Rect = struct { x: u16, y: u16, w: u16, h: u16 };
+pub const Point = struct { x: u16, y: u16 };
 
 pub const Surface = struct {
     allocator: std.mem.Allocator,

@@ -41,6 +41,9 @@ const State = struct {
     submit: ui.widgets.Button = .{},
     focus: Field = .user,
     submitted: bool = false,
+    // The focused text field reports its caret here during render (ADR-0019);
+    // the post-frame hook places the real terminal cursor there.
+    caret: ?ui.Point = null,
     // Where each field last rendered — filled by `ui.probe` in `view`, read by
     // `update` to map a mouse click to a field (ADR-0019). Click-to-focus needs
     // nothing more than these rects.
@@ -86,10 +89,12 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         try ui.probe(a, state.rect(.user), try labeled(a, "User", try state.user.view(a, .{
             .focused = state.focus == .user,
             .placeholder = "username",
+            .cursor_out = &state.caret,
         }))),
         try ui.probe(a, state.rect(.pass), try labeled(a, "Pass", try state.pass.view(a, .{
             .focused = state.focus == .pass,
             .placeholder = "password",
+            .cursor_out = &state.caret,
         }))),
         try ui.probe(a, state.rect(.role), try labeled(a, "Role", try state.role.view(a, .{
             .focused = state.focus == .role,
@@ -115,6 +120,14 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
 fn edited(state: *State) ui.Flow {
     state.submitted = false;
     return .keep;
+}
+
+/// Post-frame hook: place the real terminal cursor at the focused field's caret
+/// (a text field filled `state.caret` during render), or hide it when no text
+/// field is focused. Reset the cache so the next frame starts blank.
+fn placeCursor(app: *ui.App, state: *State) !void {
+    try app.cursorAt(state.caret);
+    state.caret = null;
 }
 
 fn update(state: *State, ev: ?ui.Event) !ui.Flow {
@@ -195,5 +208,7 @@ pub fn main(init: std.process.Init) !void {
 
     var state = State{};
     state.wire();
-    try app.run(io, &state, null, view, update); // no tick — a form blocks on input
+    // `placeCursor` runs after each frame — the real terminal cursor tracks the
+    // focused text field's caret (ADR-0019).
+    try app.run(io, &state, null, view, update, placeCursor); // no tick — a form blocks on input
 }
