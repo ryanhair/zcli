@@ -50,8 +50,8 @@ pub const ThemeContext = theme_pkg.ThemeContext;
 pub const Capabilities = theme_pkg.Capabilities;
 pub const StyleRef = theme_pkg.StyleRef;
 
-/// Style context used when an instance doesn't set one: the default theme at
-/// ANSI-16, matching the package's historical fixed colors. zcli applications
+/// Style context used when an instance doesn't set one: the app theme (root
+/// `zcli_theme`, or the default — ADR-0020) at ANSI-16. zcli applications
 /// set `.theme = context.theme` instead, which carries the app's theme and the
 /// detected terminal capabilities (including NO_COLOR).
 pub const default_style: ThemeContext = .fallback;

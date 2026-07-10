@@ -30,12 +30,9 @@ pub const ui = @import("ui");
 pub const Theme = theme.Theme;
 
 /// The application's theme: the root source file's `pub const zcli_theme`
-/// declaration if present, otherwise the default theme.
-pub fn appTheme() *const theme.Theme {
-    const root = @import("root");
-    if (@hasDecl(root, "zcli_theme")) return &root.zcli_theme;
-    return &theme.default_theme;
-}
+/// declaration if present, otherwise the default theme. Lives in the theme
+/// package (ADR-0020) so ui/prompts/progress defaults derive from it too.
+pub const appTheme = theme.appTheme;
 
 /// Config-file parsing shims for the zcli_config plugin. Plugin modules import
 /// only "zcli", so the plugin cannot depend on serde directly; this is the

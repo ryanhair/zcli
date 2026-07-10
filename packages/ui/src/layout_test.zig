@@ -617,3 +617,87 @@ test "anchored keeps the preferred side and clips when neither side fits" {
     // Below the anchor: only the popup's first row lands; the rest clips.
     try testing.expectEqualStrings("11......", try rowString(&h, &s, 2));
 }
+
+// ============================================================================
+// Theme-derived style defaults (ADR-0020)
+// ============================================================================
+
+const theme_mod = @import("theme");
+
+test "a bordered box derives its border style from the app theme" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 6, 3);
+    defer s.deinit();
+
+    // No border_style given — the builder resolves surface.border (under
+    // `zig test` the app theme is the default theme, so that's accent).
+    const n = try ui.column(h.a(), .{ .border = .single, .width = .{ .fill = 1 }, .height = .{ .fill = 1 } }, &.{
+        ui.text(.{}, "hi"),
+    });
+    try renderInto(&h, n, &s);
+
+    const th = theme_mod.appTheme();
+    const derived = th.surface.border.resolve(th.palette);
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, derived)); // corner
+    try testing.expect(ui.styleEql(s.cell(3, 0).style, derived)); // top edge
+    // The content inside stays unstyled — derivation touches chrome only.
+    try testing.expect(ui.styleEql(s.cell(1, 1).style, .{}));
+}
+
+test "an explicit border_style overrides the derived default" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 6, 3);
+    defer s.deinit();
+
+    // `.{}` is an override too: a deliberately plain border.
+    const n = try ui.column(h.a(), .{
+        .border = .single,
+        .border_style = .{ .dim = true },
+        .width = .{ .fill = 1 },
+        .height = .{ .fill = 1 },
+    }, &.{ui.text(.{}, "hi")});
+    try renderInto(&h, n, &s);
+
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, .{ .dim = true }));
+}
+
+test "panel derives an opaque themed surface; every field overridable" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 8, 4);
+    defer s.deinit();
+
+    const n = try ui.panel(h.a(), .{
+        .padding = .all(1),
+        .width = .{ .fill = 1 },
+        .height = .{ .fill = 1 },
+    }, &.{ui.text(.{}, "hi")});
+    try renderInto(&h, n, &s);
+
+    const th = theme_mod.appTheme();
+    const border = th.surface.border.resolve(th.palette);
+    const fill = th.surface.panel.resolve(th.palette);
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, border));
+    // An interior blank cell wears the panel fill — the panel is opaque.
+    try testing.expect(ui.styleEql(s.cell(1, 1).style, fill));
+
+    // Overriding the background wins over the derived fill.
+    var s2 = try ui.Surface.init(testing.allocator, 8, 4);
+    defer s2.deinit();
+    const n2 = try ui.panel(h.a(), .{
+        .style = .{ .reverse = true },
+        .width = .{ .fill = 1 },
+        .height = .{ .fill = 1 },
+    }, &.{ui.text(.{}, "hi")});
+    try renderInto(&h, n2, &s2);
+    // A blank interior cell (text cells carry their own style, not the fill).
+    try testing.expect(ui.styleEql(s2.cell(4, 1).style, .{ .reverse = true }));
+}
+
+test "role resolves a semantic role through the app palette" {
+    const th = theme_mod.appTheme();
+    try testing.expect(ui.styleEql(ui.role(.muted), th.palette.get(.muted)));
+    try testing.expect(ui.styleEql(ui.role(.accent), th.palette.get(.accent)));
+}
