@@ -31,6 +31,7 @@ const Size = node_mod.Size;
 const RenderCtx = node_mod.RenderCtx;
 const Region = surface_mod.Region;
 const Style = surface_mod.Style;
+const Point = surface_mod.Point;
 const Key = terminal.Key;
 
 pub const Theme = theme_mod.Theme;
@@ -79,6 +80,13 @@ pub const TextInput = struct {
         placeholder: []const u8 = "",
         width: Dim = .{ .fill = 1 },
         theme: *const Theme = &default_theme,
+        /// When set (and focused), the field reports its caret's absolute cell
+        /// here during render and draws NO block cursor — the caller places the
+        /// real terminal cursor there (`App.cursorAt`, ADR-0019). The target is
+        /// an *optional* Point: only a focused field writes it, so the caller
+        /// resets it to null each frame and reads "no caret" when nothing did.
+        /// Left null, the field paints the reverse-video block caret as before.
+        cursor_out: ?*?Point = null,
     };
 
     pub fn value(self: *const TextInput) []const u8 {
@@ -143,6 +151,7 @@ pub const TextInput = struct {
                 .focused = opts.focused,
                 .text_style = th.prompts.hint.resolve(th.palette),
                 .caret_style = .{ .reverse = true },
+                .cursor_out = opts.cursor_out,
             };
         } else {
             const shown = if (self.mask) |m| try maskOf(a, self.value(), m) else self.value();
@@ -154,6 +163,7 @@ pub const TextInput = struct {
                 .focused = opts.focused,
                 .text_style = .{},
                 .caret_style = .{ .reverse = true },
+                .cursor_out = opts.cursor_out,
             };
         }
         return .{
@@ -188,6 +198,7 @@ const FieldView = struct {
     focused: bool,
     text_style: Style,
     caret_style: Style,
+    cursor_out: ?*?Point,
 
     fn measureFn(_: *anyopaque, _: *const RenderCtx, limits: Limits) Size {
         return .{ .w = limits.max_w, .h = @min(1, limits.max_h) };
@@ -202,8 +213,15 @@ const FieldView = struct {
         const scroll: u16 = if (self.cursor_col < w) 0 else self.cursor_col - w + 1;
         const start = byteAtColumn(self.text, scroll);
         _ = try region.writeText(0, 0, self.text[start..], self.text_style);
-        if (self.focused) {
-            _ = try region.writeText(self.cursor_col - scroll, 0, self.caret, self.caret_style);
+        if (!self.focused) return;
+
+        const vis_col = self.cursor_col - scroll;
+        if (self.cursor_out) |out| {
+            // Report the caret's absolute cell for a real terminal cursor; no
+            // block (the App draws the cursor there instead).
+            out.* = .{ .x = region.rect.x + vis_col, .y = region.rect.y };
+        } else {
+            _ = try region.writeText(vis_col, 0, self.caret, self.caret_style);
         }
     }
 };

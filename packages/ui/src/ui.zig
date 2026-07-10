@@ -18,6 +18,7 @@ const surface = @import("surface.zig");
 pub const Surface = surface.Surface;
 pub const Region = surface.Region;
 pub const Rect = surface.Rect;
+pub const Point = surface.Point;
 pub const Cell = surface.Cell;
 pub const Style = surface.Style;
 pub const styleEql = surface.styleEql;

@@ -363,3 +363,58 @@ test "Button renders its label and styles the focused state" {
     try renderNode(a, try b.view(a, .{ .focused = false, .label = "OK" }), &s);
     try testing.expect(ui.styleEql(s.cell(0, 0).style, .{})); // unfocused → plain
 }
+
+// ---- TextInput hardware-cursor reporting (ADR-0019) -----------------------
+
+test "focused TextInput reports its caret and suppresses the block" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [16]u8 = undefined;
+    var ti = TextInput{ .buffer = &buf };
+    for ("hi") |c| _ = ti.handle(.{ .char = c }); // caret at col 2
+
+    var caret: ?ui.Point = null;
+    var s = try ui.Surface.init(testing.allocator, 6, 1);
+    defer s.deinit();
+    try renderNode(a, try ti.view(a, .{ .focused = true, .cursor_out = &caret }), &s);
+
+    try testing.expectEqual(ui.Point{ .x = 2, .y = 0 }, caret.?);
+    // The real cursor goes there — no reverse-video block is painted.
+    try testing.expect(!s.cell(2, 0).style.reverse);
+}
+
+test "TextInput caret reports the scrolled column" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [16]u8 = undefined;
+    var ti = TextInput{ .buffer = &buf };
+    for ("abcdef") |c| _ = ti.handle(.{ .char = c }); // caret at col 6
+
+    var caret: ?ui.Point = null;
+    var s = try ui.Surface.init(testing.allocator, 4, 1); // field only 4 wide → scrolls
+    defer s.deinit();
+    try renderNode(a, try ti.view(a, .{ .focused = true, .cursor_out = &caret }), &s);
+
+    // cursor_col 6, width 4 → scroll 3 → caret visible at column 3.
+    try testing.expectEqual(@as(u16, 3), caret.?.x);
+}
+
+test "unfocused TextInput reports no caret" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [16]u8 = undefined;
+    var ti = TextInput{ .buffer = &buf };
+    for ("hi") |c| _ = ti.handle(.{ .char = c });
+
+    var caret: ?ui.Point = null;
+    var s = try ui.Surface.init(testing.allocator, 6, 1);
+    defer s.deinit();
+    try renderNode(a, try ti.view(a, .{ .focused = false, .cursor_out = &caret }), &s);
+    try testing.expect(caret == null);
+}
