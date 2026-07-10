@@ -244,7 +244,7 @@
 
         <section id="data">
           <h2>Reading plugin data from a command</h2>
-          <p>Anything a plugin stores in its <code>ContextData</code> is namespaced under <code>context.plugins.{plugin_id}</code> and fully typed — a command can read it directly:</p>
+          <p>Anything a plugin stores in its <code>ContextData</code> is namespaced under <code>context.plugins.{plugin_id}</code> and fully typed — a command can read it directly. Because <code>plugin_id</code> becomes that field name verbatim, it must be a valid Zig identifier (lowercase <code>snake_case</code>); declaring <code>ContextData</code> without a <code>plugin_id</code>, or using an invalid one like <code>"my-plugin"</code>, is a compile-time error that names the fix.</p>
           <div class="code">
             <div class="code-head"><span class="fname">src/commands/build.zig</span><span class="lang">zig</span></div>
 <pre><span class="kw">const</span> Context = <span class="at">@import</span>(<span class="str">"command_registry"</span>).Context;

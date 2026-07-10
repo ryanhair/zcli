@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli.zig");
+const identifier = @import("identifier.zig");
 const testing = std.testing;
 
 // ============================================================================
@@ -266,6 +267,69 @@ pub fn validatePlugin(comptime Plugin: type) void {
                 }
             }
         }
+
+        // The ContextData contract: a plugin's ContextData is exposed as a
+        // typed field on `context.plugins`, named by `plugin_id`. Enforce the
+        // whole contract here at the declaration — a helpful comptime error —
+        // instead of letting it fail obscurely at the `context.plugins.<id>`
+        // use-site (or silently getting no slot).
+        if (@hasDecl(Plugin, "ContextData") and !@hasDecl(Plugin, "plugin_id")) {
+            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares ContextData but no plugin_id. " ++
+                "ContextData is exposed as a typed field on context.plugins named by plugin_id. Add:\n" ++
+                "    pub const plugin_id = \"my_plugin\";");
+        }
+        // deinitContextData is the cleanup hook for ContextData and only runs
+        // when ContextData exists — without it the function is silently dead,
+        // the same failure shape as a misspelled lifecycle hook above.
+        if (@hasDecl(Plugin, "deinitContextData") and !@hasDecl(Plugin, "ContextData")) {
+            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares deinitContextData but no ContextData. " ++
+                "deinitContextData is the cleanup hook for a plugin's ContextData and would never be called as written. " ++
+                "Add a ContextData, or remove deinitContextData.");
+        }
+        // plugin_id becomes the `context.plugins.<id>` field name verbatim, so
+        // it must already be a valid Zig identifier (checked whenever declared).
+        if (@hasDecl(Plugin, "plugin_id")) {
+            validatePluginId(@typeName(Plugin), Plugin.plugin_id);
+        }
+    }
+}
+
+/// `plugin_id` becomes the `context.plugins.<id>` field name verbatim, so it
+/// must be a valid Zig identifier (`[a-zA-Z_][a-zA-Z0-9_]*`). An invalid id is
+/// a compile error — the framework does not silently rewrite it, because the
+/// author is choosing the field name they will type in code.
+fn validatePluginId(comptime type_name: []const u8, comptime id: []const u8) void {
+    comptime {
+        if (!isValidIdentifier(id)) {
+            @compileError("plugin '" ++ type_name ++ "': plugin_id \"" ++ id ++ "\" is not a valid Zig identifier. " ++
+                "It becomes the context.plugins.<id> field name you access in code, so it must match " ++
+                "[a-zA-Z_][a-zA-Z0-9_]*. Use \"" ++ identifierSuggestion(id) ++ "\".");
+        }
+    }
+}
+
+/// Whether `id` is a valid Zig identifier: non-empty, first byte a letter or
+/// '_', the rest letters, digits, or '_'.
+fn isValidIdentifier(comptime id: []const u8) bool {
+    comptime {
+        if (id.len == 0) return false;
+        for (id, 0..) |c, i| {
+            const ok = std.ascii.isAlphabetic(c) or c == '_' or (i > 0 and std.ascii.isDigit(c));
+            if (!ok) return false;
+        }
+        return true;
+    }
+}
+
+/// A valid-identifier form of `id` to show in the error message: every
+/// non-identifier byte becomes '_' (the shared identifier rule), with a
+/// leading '_' prepended if the result would otherwise start with a digit.
+fn identifierSuggestion(comptime id: []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (id) |c| out = out ++ &[_]u8{identifier.sanitizeChar(c)};
+        if (out.len == 0 or std.ascii.isDigit(out[0])) out = "_" ++ out;
+        return out;
     }
 }
 
@@ -318,6 +382,36 @@ test "validatePlugin accepts a well-formed plugin with helpers" {
         }
     };
     comptime validatePlugin(Plugin);
+}
+
+test "validatePlugin accepts ContextData paired with a valid plugin_id" {
+    const Plugin = struct {
+        pub const plugin_id = "my_plugin";
+        pub const ContextData = struct { count: u32 = 0 };
+        pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
+            _ = data;
+            _ = allocator;
+        }
+    };
+    comptime validatePlugin(Plugin);
+}
+
+test "isValidIdentifier accepts identifiers and rejects everything else" {
+    comptime {
+        std.debug.assert(isValidIdentifier("zcli_help"));
+        std.debug.assert(isValidIdentifier("_x9"));
+        std.debug.assert(!isValidIdentifier("my-plugin"));
+        std.debug.assert(!isValidIdentifier("9lives"));
+        std.debug.assert(!isValidIdentifier("has space"));
+        std.debug.assert(!isValidIdentifier(""));
+    }
+}
+
+test "identifierSuggestion rewrites to a valid identifier" {
+    comptime {
+        std.debug.assert(std.mem.eql(u8, identifierSuggestion("my-plugin"), "my_plugin"));
+        std.debug.assert(std.mem.eql(u8, identifierSuggestion("9lives"), "_9lives"));
+    }
 }
 
 // ============================================================================

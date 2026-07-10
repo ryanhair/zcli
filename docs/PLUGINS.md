@@ -86,7 +86,11 @@ A plugin is a Zig module with a `plugin_id` and any of the lifecycle exports:
 ```zig
 pub const plugin_id = "my_plugin";
 pub const ContextData = struct { enabled: bool = false };
+```
 
+`plugin_id` becomes the `context.plugins.<id>` field name **verbatim**, so it must be a valid Zig identifier (`[a-zA-Z_][a-zA-Z0-9_]*` — in practice lowercase `snake_case`). A plugin that declares `ContextData` without a `plugin_id`, or gives one that isn't a valid identifier (e.g. `"my-plugin"`), fails at compile time with a message naming the plugin and the fix. zcli does **not** silently rewrite an invalid id — you choose the field name you'll type.
+
+```zig
 pub const global_options = [_]zcli.GlobalOption{
     zcli.option("verbose", bool, .{ .short = 'v', .default = false }),
 };
