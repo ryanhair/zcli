@@ -46,10 +46,13 @@ the arc (per-increment website edits optional).
 ## Increment 1: Table
 
 A read-only data grid — the single highest-value addition. Selection and a scroll
-window, ported from `Select`. It renders as a `custom` leaf (`TableView`) because,
-like `WrapSelectView`, it needs the granted width to allocate column widths and
-truncate cells, and it wants the same paint-its-own-window efficiency `Select`'s
-single-line path has (it already knows which row slice is visible).
+window, ported from `Select`. It renders as a **plain builder composition**, like
+`Select`'s single-line path: `view` already knows the visible row slice, and once
+each cell is a `text` node carrying the caller's `Dim`, the box engine does the
+column sizing — so a `custom` leaf (a `TableView`, à la `WrapSelectView`) would
+buy nothing. The leaf's rationale ("needs the granted width to size columns") is
+moot when the `Dim`s carry the sizing; it stays the escape hatch only if a wrap
+path ever arrives (as it did for `Select` increment 5).
 
 ### State struct
 
@@ -90,11 +93,12 @@ column, `.fill(weight)` splits leftover width proportionally — exactly what
 `Dim`s and let the layout engine distribute** (the `Select` overflow-gutter row
 is the precedent: `row{ .{ .width = .{ .len = label_w } }, .{ .width = .{ .len = 1 } } }`).
 That reuses ADR-0013's column math verbatim and gets `fit`/`len`/`fill` for free.
-The `custom` leaf is then thin: it computes the visible row slice, emits the
-header row plus one body row per visible line via the builders, and draws the
-overflow gutter/highlight — the column sizing is the engine's job, not the
-widget's. (`TableView` still owns *rendering* to paint the full-width highlight
-band and the gutter cleanly, as `WrapSelectView` does.)
+`view` is then thin: it resolves `.fit` to a concrete `.len` of the column's
+widest cell (so columns align *across* rows — a per-cell `.fit` would size each
+row independently), computes the visible row slice, and emits the header row plus
+one body row per visible line via the builders — the highlight band is the row
+box's background style, and the gutter is a fixed 1-cell column, both `Select`'s
+proven idioms. Column distribution is the engine's job, not the widget's.
 
 **Rows representation — DECISION: `[]const []const []const u8` (a materialized
 slice of rows, each a slice of cell strings).** The handoff says start simple,
@@ -108,7 +112,7 @@ materialization is an explicit non-goal (below); if a consumer ever needs a
 (same optionality argument ADR-0017 made for the offset-clip `Region`). Start
 with the slice.
 
-### Rendering (`TableView` custom leaf)
+### Rendering
 
 - **Header row** in `th.prompts.hint` style over a full-width band — a fixed,
   non-scrolling row above the body (like `fullscreen.zig`'s current bold/underline
@@ -522,7 +526,7 @@ whole arc; each has a clean upgrade path if a consumer ever needs it.
   only change outside `packages/ui` — the same kind of small, justified
   parser addition ADR-0018 made for `.back_tab`. Fallback: `Ctrl-U`/`Ctrl-D`.
 - **No renderer, `measure`, `Node`, or `RenderCtx` change.** Every new widget is
-  either a plain builder composition (Tabs) or a `custom` leaf (Table, TextArea) —
+  either a plain builder composition (Table, Tabs) or a `custom` leaf (TextArea) —
   the escape hatch ADR-0013 reserved and ADR-0017/0018/0019 have used four times.
   The layout core stays theme-free and styles stay plain data (ADR-0020).
 - **The catalog covers data display, paging, and multi-line input** after this
