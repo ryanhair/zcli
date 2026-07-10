@@ -1046,7 +1046,7 @@ test "Stdio.init wires streams to the struct's own buffers, in place" {
 
 test "TestContext.deinit runs plugin deinitContextData hooks" {
     const HookPlugin = struct {
-        pub const plugin_id = "hook-plugin"; // dash exercises field-name sanitization
+        pub const plugin_id = "hook_plugin";
         var hook_ran: bool = false;
         pub const ContextData = struct { payload: ?[]u8 = null };
         pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {

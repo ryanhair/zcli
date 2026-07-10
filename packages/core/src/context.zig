@@ -11,30 +11,24 @@
 
 const std = @import("std");
 const zcli = @import("zcli.zig");
-const identifier = @import("identifier.zig");
 
-/// Field name in `context.plugins` for a plugin's ContextData: its
-/// `plugin_id` with every non-identifier character replaced by '_'.
-/// Plugins with ContextData MUST declare `pub const plugin_id = "unique_name";`
+/// Field name in `context.plugins` for a plugin's ContextData: its `plugin_id`
+/// verbatim. `plugin_id` is required to be a valid Zig identifier — enforced at
+/// registration by plugin_types.validatePlugin — so there is nothing to rewrite
+/// here. Plugins with ContextData MUST declare `pub const plugin_id = "unique_name";`
 pub fn pluginFieldName(comptime Plugin: type) [:0]const u8 {
     comptime {
         if (!@hasDecl(Plugin, "plugin_id")) {
-            @compileError("Plugins with ContextData must declare 'pub const plugin_id'. " ++
-                "Add: pub const plugin_id = \"my_plugin\";");
+            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares ContextData but no plugin_id. " ++
+                "ContextData is exposed as a typed field on context.plugins named by plugin_id. Add:\n" ++
+                "    pub const plugin_id = \"my_plugin\";");
         }
 
         const id: []const u8 = Plugin.plugin_id;
-        var result: [256]u8 = undefined;
-        var result_idx: usize = 0;
-        for (id) |c| {
-            if (result_idx >= result.len - 1) break;
-            // Shared rule (identifier.zig) — build-time codegen sanitizes
-            // plugin/module names with the same function.
-            result[result_idx] = identifier.sanitizeChar(c);
-            result_idx += 1;
-        }
-        result[result_idx] = 0;
-        return result[0..result_idx :0];
+        var result: [id.len + 1]u8 = undefined;
+        for (id, 0..) |c, i| result[i] = c;
+        result[id.len] = 0;
+        return result[0..id.len :0];
     }
 }
 

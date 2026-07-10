@@ -724,7 +724,10 @@ Plugins attach their own state to the context with full compile-time type
 safety — there is no `StringHashMap` or runtime key lookup. A plugin declares a
 `plugin_id` and a `ContextData` struct; the generated `Context` contains one
 field per plugin, named by `plugin_id`, and accessed as
-`context.plugins.<plugin_id>`:
+`context.plugins.<plugin_id>`. Because `plugin_id` becomes that field name
+verbatim it must be a valid Zig identifier — declaring `ContextData` without a
+`plugin_id`, or giving one that isn't (`"my-plugin"`), is a compile-time error
+naming the plugin and the fix; there is no silent rewriting:
 
 ```zig
 // In the plugin:
