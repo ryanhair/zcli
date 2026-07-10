@@ -39,10 +39,9 @@ const roles = [_][]const u8{
 // scrolls and shows its ↑/↓ gutter.
 const role_rows: u16 = 6;
 
-// One theme drives the whole screen's look: the panel border reads from its
-// surface tokens, and every widget's focus highlight from its prompt tokens
-// (widgets default to this same theme). Change it in one place to reskin.
-const th: ui.widgets.Theme = .{};
+// One theme drives the whole screen's look (ADR-0020): the border derives from
+// the app theme's surface tokens, and every widget's focus highlight from its
+// prompt tokens. Declare a root `zcli_theme` to reskin everything at once.
 
 const State = struct {
     user_buf: [48]u8 = undefined,
@@ -93,7 +92,6 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
 
     const form = try ui.column(a, .{
         .border = .rounded,
-        .border_style = th.surface.border.resolve(th.palette),
         .padding = .symmetric(2, 1),
         .gap = 1,
         .width = .{ .len = 46 },

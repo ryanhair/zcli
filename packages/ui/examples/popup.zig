@@ -41,16 +41,10 @@ const State = struct {
     corner_rect: ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 };
 
-// The panel border + fill come from one theme's surface tokens — change them in
-// a single place and every panel reskins.
-const th: ui.widgets.Theme = .{};
-
+// A panel's border + (opaque) fill derive from the app theme's surface tokens
+// (ADR-0020) — declare a root `zcli_theme` and every panel reskins.
 fn panel(a: std.mem.Allocator, child: ui.Node) !ui.Node {
-    return ui.column(a, .{
-        .border = .rounded,
-        .border_style = th.surface.border.resolve(th.palette),
-        .style = th.surface.panel.resolve(th.palette),
-    }, &.{child});
+    return ui.panel(a, .{}, &.{child});
 }
 
 /// A dropdown button: a bordered label whose rect is probed into `out`.

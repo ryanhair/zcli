@@ -29,10 +29,6 @@ pub const panic = ui.panic;
 
 const tick_ms: u32 = 250;
 
-// The help modal's border + fill come from one theme's surface tokens — change
-// them in a single place and every panel reskins.
-const th: ui.widgets.Theme = .{};
-
 /// Visible rows in the scrolling process pane — a fixed window so `update` can
 /// keep the selection in view without knowing the laid-out height.
 const visible_rows: usize = 8;
@@ -156,12 +152,10 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
 }
 
 fn helpModal(a: std.mem.Allocator) !ui.Node {
-    return ui.column(a, .{
-        .border = .rounded,
-        .border_style = th.surface.border.resolve(th.palette),
+    // A panel's border + (opaque) fill derive from the app theme's surface
+    // tokens (ADR-0020) — declare a root `zcli_theme` and every panel reskins.
+    return ui.panel(a, .{
         .padding = .symmetric(2, 1),
-        .style = th.surface.panel.resolve(th.palette), // opaque panel
-        .gap = 0,
     }, &.{
         ui.text(.{ .bold = true }, "Keys"),
         ui.text(.{}, ""),

@@ -13,6 +13,21 @@
 
 const std = @import("std");
 const terminal = @import("terminal");
+const theme_mod = @import("theme");
+
+/// The application's theme (root `zcli_theme`, or the default) — the source
+/// every styling default below derives from (ADR-0020). Re-exported from the
+/// theme package for callers that want to resolve tokens themselves.
+pub const appTheme = theme_mod.appTheme;
+pub const Theme = theme_mod.Theme;
+pub const SemanticRole = theme_mod.SemanticRole;
+
+/// A semantic role resolved through the app palette — one word for themed
+/// text: `ui.text(ui.role(.success), "done")`.
+pub fn role(r: SemanticRole) Style {
+    const th = appTheme();
+    return th.palette.get(r);
+}
 
 const surface = @import("surface.zig");
 pub const Surface = surface.Surface;
@@ -70,7 +85,9 @@ pub const BoxOpts = struct {
     gap: u16 = 0,
     padding: Padding = .{},
     border: BorderStyle = .none,
-    border_style: Style = .{},
+    /// Border color. `null` derives the theme's `surface.border` token
+    /// (ADR-0020); set explicitly — including `.{}` for plain — to override.
+    border_style: ?Style = null,
     style: Style = .{},
     width: Dim = .auto,
     height: Dim = .auto,
@@ -115,10 +132,61 @@ pub fn box(a: std.mem.Allocator, dir: Direction, opts: BoxOpts, children: []cons
             .gap = opts.gap,
             .padding = opts.padding,
             .border = opts.border,
-            .border_style = opts.border_style,
+            .border_style = opts.border_style orelse themedBorder(),
             .style = opts.style,
         } },
     };
+}
+
+/// The theme-derived border color (`surface.border` through the app palette) —
+/// what a bordered box wears unless `border_style` is set (ADR-0020).
+fn themedBorder() Style {
+    const th = appTheme();
+    return th.surface.border.resolve(th.palette);
+}
+
+/// `panel` options: `BoxOpts` with chrome that derives from the theme's
+/// surface tokens. Unlike a box, a panel's background defaults to the (opaque)
+/// `surface.panel` fill — a panel *is* the declaration of opacity, which is
+/// what keeps ADR-0016's rule crisp (style-less box = transparent layer).
+pub const PanelOpts = struct {
+    dir: Direction = .column,
+    gap: u16 = 0,
+    padding: Padding = .{},
+    border: BorderStyle = .rounded,
+    /// `null` derives `surface.border` (via `box`).
+    border_style: ?Style = null,
+    /// Background fill; `null` derives `surface.panel`.
+    style: ?Style = null,
+    width: Dim = .auto,
+    height: Dim = .auto,
+    align_self: Align = .start,
+    min_width: ?u16 = null,
+    max_width: ?u16 = null,
+    min_height: ?u16 = null,
+    max_height: ?u16 = null,
+};
+
+/// An opaque themed surface (ADR-0020): border and background come from the
+/// app theme's surface tokens, so a modal/dropdown/panel needs no style
+/// mentions at all — `ui.panel(a, .{ .padding = .all(1) }, children)` reskins
+/// entirely from the root `zcli_theme`. Every field remains overridable.
+pub fn panel(a: std.mem.Allocator, opts: PanelOpts, children: []const Node) !Node {
+    const th = appTheme();
+    return box(a, opts.dir, .{
+        .gap = opts.gap,
+        .padding = opts.padding,
+        .border = opts.border,
+        .border_style = opts.border_style,
+        .style = opts.style orelse th.surface.panel.resolve(th.palette),
+        .width = opts.width,
+        .height = opts.height,
+        .align_self = opts.align_self,
+        .min_width = opts.min_width,
+        .max_width = opts.max_width,
+        .min_height = opts.min_height,
+        .max_height = opts.max_height,
+    }, children);
 }
 
 /// A wrapping styled text node. `content` is borrowed, not copied — it must

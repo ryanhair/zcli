@@ -16,7 +16,9 @@
 //!
 //! Styling flows through the theme's prompt tokens (`PromptTheme`: cursor,
 //! selected, marker, hint) — the same tokens the `prompts` package uses, so the
-//! full-screen widgets and the line-oriented prompts share one look.
+//! full-screen widgets and the line-oriented prompts share one look. The
+//! `theme` option defaults to the app theme (root `zcli_theme`, ADR-0020), so
+//! a custom theme flows in with no per-call threading.
 
 const std = @import("std");
 const theme_mod = @import("theme");
@@ -35,7 +37,6 @@ const Point = surface_mod.Point;
 const Key = terminal.Key;
 
 pub const Theme = theme_mod.Theme;
-const default_theme = theme_mod.default_theme;
 
 // ============================================================================
 // Focus helpers
@@ -79,7 +80,7 @@ pub const TextInput = struct {
         /// Shown dimmed when the field is empty.
         placeholder: []const u8 = "",
         width: Dim = .{ .fill = 1 },
-        theme: *const Theme = &default_theme,
+        theme: *const Theme = theme_mod.appTheme(),
         /// When set (and focused), the field reports its caret's absolute cell
         /// here during render and draws NO block cursor — the caller places the
         /// real terminal cursor there (`App.cursorAt`, ADR-0019). The target is
@@ -238,7 +239,7 @@ pub const Checkbox = struct {
     pub const ViewOpts = struct {
         focused: bool = false,
         label: []const u8 = "",
-        theme: *const Theme = &default_theme,
+        theme: *const Theme = theme_mod.appTheme(),
     };
 
     pub fn handle(self: *Checkbox, key: Key) bool {
@@ -300,7 +301,7 @@ pub const Select = struct {
         /// Visible rows. Single-line (`wrap = false`): a count of options. Wrapped
         /// (`wrap = true`): a budget of *physical* rows the window grows to fill.
         height: u16 = 6,
-        theme: *const Theme = &default_theme,
+        theme: *const Theme = theme_mod.appTheme(),
         /// Opt in to multi-line options: each option wraps to the field width and
         /// the visible window is chosen by physical-row budget (grow-from-cursor)
         /// instead of option index. The single-line default is left untouched.
@@ -564,7 +565,7 @@ pub const Button = struct {
     pub const ViewOpts = struct {
         focused: bool = false,
         label: []const u8 = "",
-        theme: *const Theme = &default_theme,
+        theme: *const Theme = theme_mod.appTheme(),
     };
 
     pub fn handle(self: *Button, key: Key) bool {

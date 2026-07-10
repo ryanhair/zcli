@@ -32,6 +32,7 @@ pub const ProgressTheme = @import("definition.zig").ProgressTheme;
 pub const SurfaceTheme = @import("definition.zig").SurfaceTheme;
 pub const Theme = @import("definition.zig").Theme;
 pub const default_theme = @import("definition.zig").default_theme;
+pub const appTheme = @import("definition.zig").appTheme;
 pub const ThemeContext = @import("definition.zig").ThemeContext;
 
 // Terminal detection and capability management

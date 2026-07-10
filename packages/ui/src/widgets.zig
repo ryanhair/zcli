@@ -7,7 +7,8 @@
 //!
 //! Styling flows through the theme's component tokens (`ProgressTheme`),
 //! the same tokens the progress package consumes today, so a future
-//! migration of that package onto this engine keeps its look unchanged.
+//! migration of that package onto this engine keeps its look unchanged. The
+//! `theme` option defaults to the app theme (root `zcli_theme`, ADR-0020).
 
 const std = @import("std");
 const theme_mod = @import("theme");
@@ -30,7 +31,7 @@ pub const dots_frames: []const []const u8 =
     &.{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
 pub const SpinnerOpts = struct {
-    theme: *const Theme = &theme_mod.default_theme,
+    theme: *const Theme = theme_mod.appTheme(),
     frames: []const []const u8 = dots_frames,
 };
 
@@ -45,7 +46,7 @@ pub fn spinner(opts: SpinnerOpts, tick: usize) Node {
 }
 
 pub const BarOpts = struct {
-    theme: *const Theme = &theme_mod.default_theme,
+    theme: *const Theme = theme_mod.appTheme(),
     /// Bars default to absorbing the row's leftover space.
     width: Dim = .{ .fill = 1 },
     /// Glyphs when the terminal supports unicode; a non-unicode RenderCtx
@@ -111,7 +112,7 @@ pub const MultiBarItem = struct {
 };
 
 pub const MultiBarOpts = struct {
-    theme: *const Theme = &theme_mod.default_theme,
+    theme: *const Theme = theme_mod.appTheme(),
     bar: BarOpts = .{},
     gap: u16 = 1,
     show_percent: bool = true,

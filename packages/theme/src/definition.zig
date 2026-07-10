@@ -119,15 +119,29 @@ pub const Theme = struct {
 
 pub const default_theme: Theme = .{};
 
+/// The application's theme: the root source file's `pub const zcli_theme`
+/// declaration if present, otherwise the default theme (the `std_options`
+/// idiom, ADR-0012). Comptime-known — this is what lets every styling
+/// *default* in ui/prompts/progress derive from the app theme with no
+/// threading (ADR-0020). Under `zig test` the root is the test runner, so
+/// this resolves to `default_theme`.
+pub fn appTheme() *const Theme {
+    const root = @import("root");
+    if (@hasDecl(root, "zcli_theme")) return &root.zcli_theme;
+    return &default_theme;
+}
+
 /// Runtime handle pairing a Theme with detected terminal capabilities.
 /// This is what render paths consume: it answers both "what does this role
 /// look like" and "what can this terminal display".
 pub const ThemeContext = struct {
-    theme: *const Theme = &default_theme,
+    /// Defaults to the app theme (root `zcli_theme`, ADR-0020), so a context
+    /// built without an explicit theme still follows the app's declaration.
+    theme: *const Theme = appTheme(),
     caps: Capabilities,
 
     /// Context for standalone library use where capabilities can't be
-    /// detected: the default theme at ANSI-16 with color enabled. zcli
+    /// detected: the app theme at ANSI-16 with color enabled. zcli
     /// applications use `context.theme` (detected capabilities) instead.
     pub const fallback: ThemeContext = .{
         .caps = .{ .capability = .ansi_16, .is_tty = true, .color_enabled = true },
@@ -222,6 +236,15 @@ test "surface tokens: border follows accent, panel is a literal fill" {
     try testing.expect(std.meta.eql(custom.surface.border.resolve(custom.palette), custom.palette.accent));
     // …but the literal panel is unaffected by the palette.
     try testing.expect(std.meta.eql(custom.surface.panel.resolve(custom.palette).background, Color{ .indexed = 236 }));
+}
+
+test "appTheme falls back to default_theme without a root declaration" {
+    // The test runner is the root module and declares no `zcli_theme`.
+    try testing.expect(appTheme() == &default_theme);
+    const ctx = ThemeContext{
+        .caps = .{ .capability = .ansi_16, .is_tty = true, .color_enabled = true },
+    };
+    try testing.expect(ctx.theme == &default_theme);
 }
 
 test "ThemeContext capability honors color_enabled" {
