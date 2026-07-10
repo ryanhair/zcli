@@ -29,6 +29,7 @@ pub const Palette = @import("definition.zig").Palette;
 pub const StyleRef = @import("definition.zig").StyleRef;
 pub const PromptTheme = @import("definition.zig").PromptTheme;
 pub const ProgressTheme = @import("definition.zig").ProgressTheme;
+pub const SurfaceTheme = @import("definition.zig").SurfaceTheme;
 pub const Theme = @import("definition.zig").Theme;
 pub const default_theme = @import("definition.zig").default_theme;
 pub const ThemeContext = @import("definition.zig").ThemeContext;

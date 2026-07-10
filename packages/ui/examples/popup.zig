@@ -32,11 +32,15 @@ const State = struct {
     button: ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 };
 
+// The panel border + fill come from one theme's surface tokens — change them in
+// a single place and every panel reskins.
+const th: ui.widgets.Theme = .{};
+
 fn panel(a: std.mem.Allocator, child: ui.Node) !ui.Node {
     return ui.column(a, .{
         .border = .rounded,
-        .border_style = .{ .foreground = .bright_cyan },
-        .style = .{ .background = .{ .indexed = 236 } },
+        .border_style = th.surface.border.resolve(th.palette),
+        .style = th.surface.panel.resolve(th.palette),
     }, &.{child});
 }
 

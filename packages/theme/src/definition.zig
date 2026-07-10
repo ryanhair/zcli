@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const Style = @import("core/style.zig").Style;
+const Color = @import("core/color.zig").Color;
 const Capabilities = @import("detection/capability.zig").Capabilities;
 const TerminalCapability = @import("detection/capability.zig").TerminalCapability;
 
@@ -95,11 +96,25 @@ pub const ProgressTheme = struct {
     bar_empty: StyleRef = .{ .role = .muted },
 };
 
+/// Component tokens for full-screen surface chrome (consumed by the ui package's
+/// panels and overlays). `PromptTheme` is the line-oriented layer; this is its
+/// surface-oriented counterpart — the one place an app sets "the panel look" for
+/// a full-screen UI instead of repeating literals.
+pub const SurfaceTheme = struct {
+    /// The base fill behind a panel or overlay's content.
+    panel: StyleRef = .{ .style = .{ .background = .{ .indexed = 236 } } },
+    /// A panel or overlay border's color. The border *glyph shape*
+    /// (`.rounded`/`.single`/…) stays a per-node `BorderStyle` — that's
+    /// structure, not palette.
+    border: StyleRef = .{ .role = .accent },
+};
+
 /// A complete CLI theme: one place to define how an app looks everywhere.
 pub const Theme = struct {
     palette: Palette = .{},
     prompts: PromptTheme = .{},
     progress: ProgressTheme = .{},
+    surface: SurfaceTheme = .{},
 };
 
 pub const default_theme: Theme = .{};
@@ -136,6 +151,11 @@ pub const ThemeContext = struct {
     /// The active theme's progress component tokens
     pub fn progressTokens(self: ThemeContext) ProgressTheme {
         return self.theme.progress;
+    }
+
+    /// The active theme's surface-chrome component tokens
+    pub fn surfaceTokens(self: ThemeContext) SurfaceTheme {
+        return self.theme.surface;
     }
 
     /// The effective terminal capability (no_color when color is disabled)
@@ -184,6 +204,24 @@ test "component tokens default to role references" {
     try testing.expect(std.meta.eql(spinner, theme.palette.accent));
     const marker = theme.prompts.marker.resolve(theme.palette);
     try testing.expect(std.meta.eql(marker, theme.palette.success));
+}
+
+test "surface tokens: border follows accent, panel is a literal fill" {
+    const theme = Theme{};
+    // border defaults to the accent role — recoloring the brand moves the border.
+    const border = theme.surface.border.resolve(theme.palette);
+    try testing.expect(std.meta.eql(border, theme.palette.accent));
+    // panel is a literal background (no palette role owns a surface fill).
+    const panel = theme.surface.panel.resolve(theme.palette);
+    try testing.expect(std.meta.eql(panel.background, Color{ .indexed = 236 }));
+
+    // A custom accent flows through the border token…
+    const custom = Theme{
+        .palette = .{ .accent = .{ .foreground = .{ .rgb = .{ .r = 250, .g = 100, .b = 0 } } } },
+    };
+    try testing.expect(std.meta.eql(custom.surface.border.resolve(custom.palette), custom.palette.accent));
+    // …but the literal panel is unaffected by the palette.
+    try testing.expect(std.meta.eql(custom.surface.panel.resolve(custom.palette).background, Color{ .indexed = 236 }));
 }
 
 test "ThemeContext capability honors color_enabled" {
