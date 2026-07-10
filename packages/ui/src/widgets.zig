@@ -181,5 +181,6 @@ pub const Checkbox = @import("input.zig").Checkbox;
 pub const Select = @import("input.zig").Select;
 pub const Table = @import("input.zig").Table;
 pub const Button = @import("input.zig").Button;
+pub const Tabs = @import("input.zig").Tabs;
 pub const focusNext = @import("input.zig").focusNext;
 pub const focusPrev = @import("input.zig").focusPrev;

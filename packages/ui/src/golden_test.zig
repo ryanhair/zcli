@@ -366,3 +366,33 @@ test "a Table truncates an overwide cell and draws the overflow arrow" {
     try testing.expectEqual(@as(u21, '↓'), vt.getCell(11, 3).char); // overflow arrow
     try testing.expect(!vt.containsText("kernel_task")); // the full text did not fit
 }
+
+// ---- Tabs (ADR-0021 incr2) -------------------------------------------------
+
+test "a Tabs bar paints its labels in a spaced row through the renderer" {
+    var vt = try VTerm.init(testing.allocator, 20, 1);
+    defer vt.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = try Surface.init(testing.allocator, 20, 1);
+    defer s.deinit();
+    const rctx = ui.RenderCtx{ .allocator = a };
+
+    const labels = [_][]const u8{ "One", "Two", "Three" };
+    var tabs = ui.widgets.Tabs{};
+    const node = try tabs.view(a, .{ .focused = true, .labels = &labels, .active = 1 });
+    try ui.render(&rctx, &node, s.root());
+    try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
+
+    // Labels land, each separated by a single space, addressed to the right cells:
+    // "One"(0-2) space(3) "Two"(4-6) space(7) "Three"(8-12). Precise active/inactive
+    // styling is asserted in input_test.zig via `styleEql` — accent-color
+    // downsampling through the diff renderer is unreliable, so here we verify the
+    // addressing/alignment a byte-golden string would otherwise bake in.
+    try testing.expect(vt.containsText("One Two Three"));
+    try testing.expectEqual(@as(u21, 'T'), vt.getCell(4, 0).char); // Two (active)
+    try testing.expectEqual(@as(u21, 'T'), vt.getCell(8, 0).char); // Three
+    try testing.expectEqual(@as(u21, ' '), vt.getCell(3, 0).char); // separator
+    try testing.expectEqual(@as(u21, ' '), vt.getCell(7, 0).char); // separator
+}
