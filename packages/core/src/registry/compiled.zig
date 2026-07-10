@@ -22,6 +22,17 @@ fn reportParseError(context: anytype, diag: ?zcli.ZcliDiagnostic) !void {
     const message = zcli.formatDiagnostic(d, context.allocator) catch return;
     var stderr = context.stderr();
     try stderr.print("Error: {s}\n", .{message});
+
+    // A one-line usage pointer, mirroring the not-found plugin's closing line.
+    // Points at the resolved command's own --help when we're inside a command,
+    // otherwise the app-level help.
+    if (context.command_path.len > 0) {
+        const path = try std.mem.join(context.allocator, " ", context.command_path);
+        defer context.allocator.free(path);
+        try stderr.print("Run '{s} {s} --help' for usage.\n", .{ context.app_name, path });
+    } else {
+        try stderr.print("Run '{s} --help' for usage.\n", .{context.app_name});
+    }
     try stderr.flush();
 }
 
@@ -592,7 +603,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .option_name = global_opt.name,
                     .is_short = is_short,
                     .provided_value = value,
-                    .expected_type = @typeName(global_opt.type),
+                    .expected_type = zcli.expectedTypeName(global_opt.type),
                 } };
                 return zcli.ZcliError.OptionInvalidValue;
             };
@@ -641,7 +652,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                     context.diagnostic = .{ .OptionMissingValue = .{
                                         .option_name = global_opt.name,
                                         .is_short = false,
-                                        .expected_type = @typeName(global_opt.type),
+                                        .expected_type = zcli.expectedTypeName(global_opt.type),
                                     } };
                                     return zcli.ZcliError.OptionMissingValue;
                                 }
@@ -673,7 +684,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                     context.diagnostic = .{ .OptionMissingValue = .{
                                         .option_name = global_opt.name,
                                         .is_short = true,
-                                        .expected_type = @typeName(global_opt.type),
+                                        .expected_type = zcli.expectedTypeName(global_opt.type),
                                     } };
                                     return zcli.ZcliError.OptionMissingValue;
                                 }
@@ -1016,10 +1027,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
 
             // Nothing matched. Record the attempted path and route through
-            // CommandNotFound (the help plugin suggests near-misses).
+            // CommandNotFound. The not-found plugin renders the styled block
+            // (suggestions + available commands) — the single source of truth.
+            // A plugin that fully handles the error suppresses it (returns true);
+            // otherwise the error propagates so the entry point exits non-zero.
+            // No bare fallback line here: it would double-report over that block.
             try setCommandPath(context, args);
             if (try runOnErrorHooks(context, error.CommandNotFound)) return;
-            try context.stderr().print("command {s} not found\n", .{args[0]});
             return error.CommandNotFound;
         }
 

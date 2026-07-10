@@ -76,6 +76,12 @@ const testing = std.testing;
 pub const ZcliError = diagnostic_errors.ZcliError;
 pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 pub const formatDiagnostic = diagnostic_errors.formatDiagnostic;
+pub const expectedTypeName = diagnostic_errors.expectedTypeName;
+
+/// Levenshtein edit-distance + nearest-match helpers, shared by the options
+/// parser (unknown-option suggestions) and the not-found plugin (unknown-command
+/// suggestions), so both draw "did you mean" hints from one implementation.
+pub const levenshtein = @import("levenshtein.zig");
 
 // Re-export plugin types for user convenience
 

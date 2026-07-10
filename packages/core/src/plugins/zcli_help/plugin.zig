@@ -164,9 +164,9 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
             try fmt.write("'<command>{s}</command>' is a command group. Available subcommands:\n\n", .{group_name});
         },
         .command => |command_name| {
-            try fmt.write("Help for command: <command>{s}</command>\n\n", .{command_name});
-
-            // Show description if available
+            _ = command_name;
+            // Lead with the description (like the root help), then USAGE below.
+            // No "Help for command:" label — the usage line already names it.
             if (context.command_meta) |meta| {
                 if (meta.description) |desc| {
                     try writer.print("{s}\n\n", .{desc});
