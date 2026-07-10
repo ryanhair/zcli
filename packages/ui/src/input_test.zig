@@ -347,6 +347,87 @@ test "Select truncates an option too wide for the granted width" {
     try testing.expect(std.mem.indexOf(u8, row, "…") != null);
 }
 
+// A long option wraps to two physical rows at label width 7 (surface 10 wide:
+// 2 marker cols + 7 label + 1 gutter): "hello" then "world".
+const wrap_options = [_][]const u8{ "hello world", "beta", "gamma", "delta" };
+
+test "wrapped Select hangs a multi-row option under its label" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var sel = Select{};
+    const one = [_][]const u8{"hello world"};
+    var s = try ui.Surface.init(testing.allocator, 10, 4);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &one, .height = 4, .wrap = true }), &s);
+
+    // The label wraps; the continuation line keeps the hang indent (its marker
+    // cell stays blank), and the whole block wears the selected style.
+    try testing.expectEqualStrings("› hello   ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("  world   ", try rowString(a, &s, 1));
+    const t = theme_mod.default_theme;
+    const selected = t.prompts.selected.resolve(t.palette);
+    try testing.expect(ui.styleEql(s.cell(2, 0).style, selected));
+    try testing.expect(ui.styleEql(s.cell(2, 1).style, selected)); // continuation too
+}
+
+test "wrapped Select budgets physical rows and shows a down arrow" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Budget 3: the 2-row highlighted option plus one more fills it; the rest are
+    // hidden below, so the last row carries a ↓.
+    var sel = Select{};
+    var s = try ui.Surface.init(testing.allocator, 10, 4);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &wrap_options, .height = 3, .wrap = true }), &s);
+
+    try testing.expectEqualStrings("› hello   ", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("  world   ", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("  beta   ↓", try rowString(a, &s, 2));
+    try testing.expectEqualStrings("          ", try rowString(a, &s, 3)); // past the budget
+    // The highlighted block is styled; a neighbour below it is plain.
+    const t = theme_mod.default_theme;
+    const selected = t.prompts.selected.resolve(t.palette);
+    try testing.expect(ui.styleEql(s.cell(2, 1).style, selected));
+    try testing.expect(ui.styleEql(s.cell(2, 2).style, .{}));
+}
+
+test "wrapped Select grows the window upward with an up arrow" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Highlight the last option: the window grows up from it (single-row options
+    // above), the highlight sits on the bottom row, and hidden options above put
+    // a ↑ on the top row.
+    var sel = Select{ .highlighted = 3 };
+    var s = try ui.Surface.init(testing.allocator, 10, 3);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &wrap_options, .height = 3, .wrap = true }), &s);
+
+    try testing.expectEqualStrings("  beta   ↑", try rowString(a, &s, 0));
+    try testing.expectEqualStrings("  gamma   ", try rowString(a, &s, 1));
+    try testing.expectEqualStrings("› delta   ", try rowString(a, &s, 2));
+}
+
+test "wrapped Select shows both arrows on a single-row window" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const abc = [_][]const u8{ "a", "b", "c" };
+    var sel = Select{ .highlighted = 1 };
+    var s = try ui.Surface.init(testing.allocator, 10, 1);
+    defer s.deinit();
+    try renderNode(a, try sel.view(a, .{ .focused = true, .options = &abc, .height = 1, .wrap = true }), &s);
+
+    // One physical row with options hidden both above and below → a merged ↕.
+    try testing.expectEqualStrings("› b      ↕", try rowString(a, &s, 0));
+}
+
 test "Button renders its label and styles the focused state" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
