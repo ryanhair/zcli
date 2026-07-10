@@ -345,114 +345,75 @@ identity, exactly what this avoids"). So the helper is **sugar over the existing
 switch, not a layer**: the caller can bypass it entirely, and it introduces no
 retained state.
 
-### Chosen comptime design: extras-tuple dispatch
+### Comptime design (chosen, and shipped)
+
+```zig
+pub fn FocusRing(comptime State: type) type { ... }
+```
 
 `FocusRing(State)` inspects `State`'s fields at comptime and identifies the
-**widget fields** — those whose type has a `handle` decl (a `@hasDecl(F, "handle")`
-duck-typed check, the same "convention not interface" stance ADR-0018 takes for
-`view`/`handle`). It collects those field names in declaration order — that list
-*is* the ring — and reifies a named `Focus` enum from them, so the caller's focus
-value is a real `state.focus == .submit` enum, not a bare `usize` index.
+**widget fields** — those whose type is a struct exposing a `pub` `handle` decl
+(a `@hasDecl(F, "handle")` duck-typed check, the same "convention not interface"
+stance ADR-0018 takes for `view`/`handle`). Plain data, rects, and the focus
+value itself are skipped. It builds a comptime array of those field names in
+declaration order — that array *is* the ring. The helper provides:
 
-```zig
-pub fn FocusRing(comptime State: type) type {
-    // comptime: `widget_field_names` = State's fields whose type has a `handle`
-    // decl, in declaration order. That list is the ring.
-    return struct {
-        // A named enum generated from the field names, e.g.
-        // `enum { user, pass, remember, submit }` — the caller's focus type.
-        pub const Focus = @Enum(Tag, .exhaustive, widget_field_names, values);
+- `Focus` — a **named enum reified from the field names** (index = tag), so a
+  call site reads `focus == .role`, not a bare index. In Zig 0.16 the enum
+  builtin is `@Enum(tag_type, .exhaustive, names, values)` — the
+  enum-construction half split out of `@Type`, which no longer accepts
+  `.@"enum"` (`error: invalid builtin function: '@Type'`); `@Enum` is what
+  `std.meta.FieldEnum` uses. The tag type is the smallest int fitting the field
+  count, so `next`/`prev` widen through `usize` before the `% len` or a two-field
+  ring's `u1` overflows.
+- `next(Focus)` / `prev(Focus)` — wrapping (thin generalizations of the existing
+  `focusNext`/`focusPrev`, which do exactly this over a hand-written enum);
+- `dispatch(state, focus, key, extras) bool` — an `inline for` over the ring
+  that, when the loop index matches `@intFromEnum(focus)`, builds args as
+  `.{ &widget, key }` and — when `@hasField(@TypeOf(extras), name)` — appends
+  `@field(extras, name)`, then `return @call(.auto, Widget.handle, args)`.
+  Comptime-generated, no vtable, identical codegen to the hand-written switch.
 
-        pub fn next(f: Focus) Focus { ... } // wrapping over the ring length
-        pub fn prev(f: Focus) Focus { ... }
-
-        pub fn dispatch(state: *State, f: Focus, key: Key, extras: anytype) bool {
-            inline for (widget_field_names, 0..) |name, i| {
-                if (@intFromEnum(f) == i) {
-                    const w = &@field(state, name);
-                    const base = .{ w, key };
-                    const args = if (@hasField(@TypeOf(extras), name))
-                        base ++ @field(extras, name) // multi-arg widget
-                    else
-                        base; // plain handle(key)
-                    return @call(.auto, @TypeOf(w.*).handle, args);
-                }
-            }
-            unreachable;
-        }
-    };
-}
-```
-
-The helper provides:
-
-- `next(f)` / `prev(f)` — wrapping increment/decrement over the ring length
-  (thin generalizations of the existing `focusNext`/`focusPrev`, which already do
-  exactly this over an enum's field count), now typed as the derived `Focus`;
-- `dispatch(state, f, key, extras) bool` — full handoff: routes `key` to the
-  focused widget's `handle` and returns *consumed*. An `inline for` over the ring
-  selects the matching field, borrows `&@field(state, name)`, and `@call`s its
-  `handle` with a comptime-concatenated argument tuple. Everything is comptime
-  (`inline for` + tuple `++` + `@call`) — no vtable, no dynamic dispatch, codegen
-  identical to the hand-written switch.
-
-This keeps the original **handoff** requirement (a `dispatch(key) → bool` that
-routes to the focused widget) — the N-arm switch, the part that actually scales
-badly, moves into the helper, not just the ring ordering.
-
-**The arity problem, handled, not dropped.** `handle` signatures are heterogeneous:
+The **one comptime friction** is heterogeneous `handle` signatures:
 `TextInput.handle(key)` vs `Select.handle(key, count, visible)` vs
-`Tabs.handle(key, active, count)`. The **extras tuple** solves it: widgets with a
-plain `handle(key)` need no entry; a multi-arg widget gets its extra args as a
-tuple keyed by field name, concatenated onto `.{ w, key }` before the `@call`.
-The whole hand-written switch collapses to:
+`Tabs.handle(key, active, count)`. `extras` absorbs it: an anon struct mapping a
+widget field name to a tuple of its *extra* args. **Because `focus` is a runtime
+value, `dispatch`'s `inline for` compiles every arm** — so `extras` must describe
+**every** multi-arg widget field, not only the focused one (single-arg widgets
+need no entry). This keeps the shipped widgets' signatures unchanged (no adapter
+shim forcing a uniform `handle(key)`) while the helper still owns the whole
+routing, not just the ordering.
 
-```zig
-const Ring = ui.widgets.FocusRing(State);
-const consumed = Ring.dispatch(&state, state.focus, key, .{
-    .list = .{ options.len, 8 }, // Select's extra (count, visible) args
-});
-```
+### Where focus lives (the circularity)
 
-One nuance the sketch must respect: because `state.focus` is a *runtime* value,
-the `inline for` compiles every arm, so `extras` describes the *widgets* (each
-multi-arg field's extra args), not just the currently-focused one — the entry for
-a multi-arg field must be present even on a frame where a different widget is
-focused. Only the matching arm actually runs. (Verified against 0.16: `@Enum`
-reifies the named enum, tuple `++` concatenates `.{w, key}` with the keyed
-extras, and `@call(.auto, T.handle, args)` dispatches — codegen matches the
-switch.)
+The natural sketch — a `State` field typed `FocusRing(State).Focus` — **does not
+compile**: deriving the ring reads `@typeInfo(State)`, so a `State` field whose
+*type or size* depends on the ring makes `State` depend on itself (`error: type
+'…State' depends on itself for type information` / `dependency loop`). The clean
+working pattern: **the caller holds focus as a plain index** (`focus: usize`) and
+converts through the enum at the edges (`@enumFromInt` to read, `@intFromEnum` to
+store) — `examples/form.zig` adds a one-line `focused()` accessor so the body
+still reads `focus == .role`. Any parallel array (form's click-to-focus `rects`)
+sized to the ring hits the same loop, so it takes a literal length checked with a
+`comptime assert` against `Ring.ring.len`.
 
-**Button caveat.** `Button.handle`'s `true` means *activated*, not merely
-*consumed* (ADR-0018 incr3). So a caller that routes a Button through `dispatch`
-runs the button's action whenever `consumed and state.focus == .submit` — the
-ring doesn't change that contract; it's the same "consumed ⇒ activated for a
-Button" the hand-written switch already had.
+### Fallback (not needed)
 
-### Fallbacks
-
-If the comptime machinery proves not worth it in practice, the **simplification**
-is *ring order only, caller keeps the switch*: the helper owns only the ring
-`Focus` enum and `next`/`prev`/index mapping (the tedious, error-prone part), and
-the caller keeps a small `switch (state.focus)` for the handful of widgets that
-take extra args. This still deletes the focus-ordering boilerplate without the
-extras-tuple reflection.
-
-The **last resort** is a **runtime slice-of-vtables**:
-`[]const struct { handle: *const fn(*anyopaque, Key) bool }` the caller populates
-once. It's a registry-lite, so it reintroduces a hint of the widget identity
-ADR-0018 avoided — the escape hatch only if both comptime designs fight the
-language. (The uniform-`handle(key)`-adapter route — forcing every widget to grow
-a `handle(key) bool` that reads its counts from a borrowed slice — stays
-**rejected**: it forces an API change on shipped widgets.)
+A runtime slice-of-vtables the caller populates once was the escape hatch if
+reflection proved too painful. It wasn't needed — the comptime design keeps zero
+runtime structure, stays well under ~100 lines, and compiles cleanly on 0.16.
 
 ### Scope
 
-Sugar, ≤ ~100 lines, no framework loop, no registry, fully bypassable. Prove it
-by refactoring `examples/form.zig` — with full dispatch the example loses *both*
-the `Field` enum (now the derived `Focus`) *and* the hand-written
-`switch (state.focus)` dispatch, plus the `focusNext`/`focusPrev` + `field_count`
-threading, collapsing to a struct-derived ring and a single `Ring.dispatch` call.
+Sugar, ≤ ~100 lines, no framework loop, no registry, fully bypassable. Proven by
+refactoring `examples/form.zig`: the hand-written `Field` enum, `field_count`
+`@typeInfo`, and the five-arm dispatch switch collapse into the struct-derived
+ring + one `dispatch` call. (Raw line count stays roughly flat once the
+circularity's `focused()` accessor and `rects` assert are counted — the win is
+that focus *ordering* and per-widget *arity threading* are no longer
+hand-maintained, which is the part that scaled badly.) `focusNext`/`focusPrev`
+stay — they remain the documented ADR-0018 primitive for a hand-written enum and
+are what `FocusRing` generalizes.
 
 ---
 
