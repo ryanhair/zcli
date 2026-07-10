@@ -57,6 +57,7 @@
         <a href="#fullscreen">Full-screen mode</a>
         <a href="#forms">Focusable widgets</a>
         <a href="#overlays">Overlays &amp; popups</a>
+        <a href="#choose">Prompts vs widgets</a>
         <p class="toc-label">Details</p>
         <a href="#standalone">Standalone use</a>
         <a href="#try">Try it</a>
@@ -251,6 +252,24 @@
           </div>
           <p>Two more helpers build on the same idea. A <code>viewport</code> is a scrolling window onto content taller than the space it's granted — a log pane, a long list — with the scroll offset held in your own state. And <code>probe</code> reports where a node actually rendered, which <code>anchored</code> then uses to pin a popup to it: a dropdown that opens under a button, <b>flips above</b> when it would run off the bottom, and <b>clamps left</b> when it would run off the right — smart placement as pure composition, no new primitive.</p>
           <div class="callout"><b>Chrome comes from the theme</b> <code>ui.panel</code>'s border and fill, and any bordered box's border color, derive from your app's <code>zcli_theme</code> surface tokens — so a modal or dropdown needs no style mentions to look right, and one theme change reskins every overlay at once. See <a href="$site.page('theming').link().suffix('#surface')">theming → surface chrome</a>.</div>
+        </section>
+
+        <section id="choose">
+          <h2>Prompts vs widgets</h2>
+          <p>zcli has two ways to ask the user something, and they solve different problems. The <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> package asks a question; the full-screen widgets above build a screen. Reach for the right one:</p>
+          <div class="table-scroll">
+          <table class="ptable">
+            <thead><tr><th></th><th>prompts</th><th>ui widgets</th></tr></thead>
+            <tbody>
+              <tr><td class="name">shape</td><td class="desc">one-shot Q&amp;A — <code>const name = try p.text(.{ ... })</code> blocks, returns a value, moves on</td><td class="desc">persistent widgets you embed in an <code>App</code> you drive frame by frame</td></tr>
+              <tr><td class="name">loop</td><td class="desc">self-contained — the prompt runs its own read loop internally</td><td class="desc">you own the <code>view → update</code> loop (usually via <code>app.run</code>)</td></tr>
+              <tr><td class="name">focus &amp; layout</td><td class="desc">one field at a time, on its own line</td><td class="desc">many fields on screen at once, caller-owned focus, full layout</td></tr>
+              <tr><td class="name">non-TTY</td><td class="desc">falls back to line-based input automatically (pipes, CI)</td><td class="desc">full-screen only — needs a real terminal</td></tr>
+              <tr><td class="name">reach for it when</td><td class="desc">a wizard, a scaffold, a few sequential questions</td><td class="desc">a live form, a dashboard, a pager — anything that owns the screen</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>In one line: <b>prompts are a question; widgets are a screen.</b> If you want to ask a few things and print a result, use <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> — they're shorter and degrade gracefully off a TTY. If you want a persistent, laid-out, keyboard-driven surface, build a <a href="#fullscreen">full-screen App</a> from the <a href="#forms">focusable widgets</a>.</p>
         </section>
 
         <section id="standalone">

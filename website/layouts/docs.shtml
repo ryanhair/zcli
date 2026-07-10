@@ -263,6 +263,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
     .message = <span class="str">"Token:"</span>,
 });</pre>
           </div>
+          <p>Prompts are one-shot questions that block, return a value, and fall back to line input off a TTY. For a persistent, laid-out, keyboard-driven surface — a live form or dashboard — build a full-screen App from the interactive widgets instead: see <a href="$site.page('ui').link().suffix('#choose')">prompts vs widgets</a>.</p>
         </section>
 
         <!-- ============ PROGRESS & THEMING ============ -->
