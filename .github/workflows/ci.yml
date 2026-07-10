@@ -56,6 +56,50 @@ jobs:
             exit 1
           fi
 
+      # The website's getting-started page shows a demo `install` transcript with
+      # a hardcoded release version ("Fetching latest release… zcli vX.Y.Z" and a
+      # `zcli --version` line). The site builds from a prebuilt Zine binary — not
+      # zig build — so nothing recompiles these strings against the zon; they drift
+      # silently. Pin them to the released version (root build.zig.zon) here.
+      - name: Website transcript version matches the release
+        shell: bash
+        run: |
+          root=$(grep -m1 -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' build.zig.zon | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          gs=website/layouts/getting-started.shtml
+          # Every version string in the demo transcript's two release lines.
+          strings=$(grep -oE 'zcli v?[0-9]+\.[0-9]+\.[0-9]+' "$gs" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
+          if [ -z "$strings" ]; then
+            echo "::error::could not find any 'zcli <version>' string in $gs — did the transcript change shape?"
+            exit 1
+          fi
+          echo "root build.zig.zon:              $root"
+          echo "$gs transcript versions:"
+          echo "$strings" | sed 's/^/  /'
+          for v in $strings; do
+            if [ "$v" != "$root" ]; then
+              echo "::error::version drift: $gs shows zcli $v but the release is $root — update the demo transcript"
+              exit 1
+            fi
+          done
+
+      # The one-line curl installer standardises on the branded zcli.sh host
+      # (https://zcli.sh/install.sh) across README + every website layout. The
+      # drift this catches is a stray raw.githubusercontent.com install URL —
+      # the old form that slipped in on some pages. (The home page renders the
+      # host without the scheme, and the getting-started demo terminal shows an
+      # elided `…/install.sh` placeholder; both are the branded host, so we
+      # simply forbid the wrong host rather than pin an exact string.)
+      - name: Install URL uses the branded host, not raw.githubusercontent
+        shell: bash
+        run: |
+          bad=$(grep -rnE 'raw\.githubusercontent\.com/[^ ]*install\.sh' README.md website/layouts || true)
+          if [ -n "$bad" ]; then
+            echo "::error::install URL drift — use https://zcli.sh/install.sh, not the raw GitHub URL. Offending lines:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "No raw.githubusercontent.com install URLs — all install commands use the branded zcli.sh host"
+
   test:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
