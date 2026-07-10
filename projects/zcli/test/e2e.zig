@@ -80,21 +80,41 @@ fn run(cwd: std.Io.Dir, argv: []const []const u8) !RunResult {
     };
 }
 
-/// Run `argv` with stdout AND stderr both redirected to `out_file` — an
-/// already-open regular file — reproducing an inherited-regular-file fd
-/// (`cmd >log 2>&1`, CI logs, a coding agent capturing output). Unlike `run`,
-/// which pipes (streaming on both sides), this is the exact shape that a
-/// positional-mode stdio writer corrupts: it pwrites from its own offset
-/// starting at 0, overwriting whatever a prior invocation wrote to the same
-/// shared fd. The caller reuses one `out_file` across invocations so the second
-/// run must append at the shared offset, not clobber from byte 0.
-fn runToSharedFile(cwd: std.Io.Dir, out_file: std.Io.File, argv: []const []const u8) !void {
+/// Run two invocations of the demo binary through a single *shell* redirect
+/// `( a; b ) >log 2>&1`, reproducing an inherited shared regular-file stdout
+/// (`cmd >log`, CI logs, cron, a coding agent capturing output). This is the
+/// exact shape a positional-mode stdio writer corrupts: it pwrites from its own
+/// offset starting at 0, so the second invocation overwrites the first from byte
+/// 0. Streaming mode instead writes at the fd's shared kernel offset, so the two
+/// appends serialize.
+///
+/// The redirect is driven by the *shell*, not by Zig's `std.process.spawn(.file
+/// = ...)`, on purpose. On POSIX, `.file` uses `dup2`, sharing one open file
+/// description (shared offset) — but on Windows, `.file` *reopens* the handle
+/// (`NtCreateFile` with an empty name relative to the handle, Threaded.zig
+/// `processSpawnWindows`), yielding a fresh FILE_OBJECT whose position starts at
+/// 0. Two `.file` spawns would therefore each write from 0 on Windows regardless
+/// of the writer's mode, so that path can't model the shared-offset scenario.
+/// A shell (`cmd.exe` / `sh`) opens the log once and inherits the *same* handle
+/// to both child processes, giving a genuinely shared file position on both
+/// platforms — which is precisely what the reported real-world redirect does.
+fn runTwiceIntoSharedFileViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, log_name: []const u8, bin: []const u8) !void {
+    const argv: []const []const u8 = if (builtin.os.tag == .windows) blk: {
+        // cmd.exe wants backslashes and no leading `./`; normalize `bin`.
+        const trimmed = if (std.mem.startsWith(u8, bin, "./")) bin[2..] else bin;
+        const win_bin = try a.dupe(u8, trimmed);
+        std.mem.replaceScalar(u8, win_bin, '/', '\\');
+        // `( bin hello First & bin hello Second ) > log 2>&1`. `&` sequences
+        // unconditionally (unlike `&&`); `2>&1` folds stderr in.
+        break :blk &.{ "cmd", "/c", try std.fmt.allocPrint(a, "( {s} hello First & {s} hello Second ) > {s} 2>&1", .{ win_bin, win_bin, log_name }) };
+    } else &.{ "sh", "-c", try std.fmt.allocPrint(a, "( '{s}' hello First; '{s}' hello Second ) > {s} 2>&1", .{ bin, bin, log_name }) };
+
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .dir = cwd },
         .stdin = .ignore,
-        .stdout = .{ .file = out_file },
-        .stderr = .{ .file = out_file },
+        .stdout = .inherit,
+        .stderr = .inherit,
     });
     _ = try child.wait(io);
 }
@@ -717,13 +737,11 @@ test "scaffolded project builds, runs, and round-trips add command" {
     // writer pwrites from offset 0 every time, so the second run clobbered the
     // first from byte 0 — losing output to CI logs, cron, and agents capturing
     // command output (pipes/TTYs were unaffected, masking it). Streaming mode
-    // respects the fd's shared offset, so appends serialize.
+    // respects the fd's shared offset, so appends serialize. Driven through a
+    // shell redirect (see runTwiceIntoSharedFileViaShell) so the shared handle
+    // is modeled the same way on POSIX and Windows.
     {
-        const log = try proj.createFile(io, "shared.log", .{ .read = true });
-        defer log.close(io);
-
-        try runToSharedFile(proj, log, &.{ demo_bin, "hello", "First" });
-        try runToSharedFile(proj, log, &.{ demo_bin, "hello", "Second" });
+        try runTwiceIntoSharedFileViaShell(arena.allocator(), proj, "shared.log", demo_bin);
 
         const contents = try readFile(proj, arena.allocator(), "shared.log");
         const first = std.mem.indexOf(u8, contents, "Hello, First!") orelse {
