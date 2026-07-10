@@ -29,6 +29,13 @@ pub const OptSpec = struct {
     default_expr: ?[]const u8 = null,
     short: ?u8 = null,
     description: []const u8 = "",
+
+    /// True when this renders as a *required* option — a non-nullable, non-array,
+    /// non-`bool` scalar with no default, whose type demands a value at runtime.
+    pub fn isRequired(o: OptSpec) bool {
+        return !o.multiple and !o.nullable and o.default_expr == null and
+            !std.mem.eql(u8, o.elem_type, "bool");
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -54,11 +61,14 @@ pub fn writeOptFieldType(w: *std.Io.Writer, o: OptSpec) !void {
         }
     } else if (o.nullable) {
         try w.print("?{s} = null", .{o.elem_type});
+    } else if (o.default_expr) |dflt| {
+        try w.print("{s} = {s}", .{ o.elem_type, dflt });
     } else {
-        // A non-nullable scalar option always carries a default (the wizard
-        // sets one; `add option` requires --default). Fail loudly rather than
-        // writing `= undefined` if that invariant ever breaks.
-        try w.print("{s} = {s}", .{ o.elem_type, o.default_expr orelse unreachable });
+        // A non-nullable scalar with no default is a REQUIRED option: `name: T`.
+        // The type says a value must be supplied; the framework enforces it at
+        // runtime (CLI, env, or config). A `bool` here is just a default-false
+        // flag — not required, since a bool always has an absent value.
+        try w.writeAll(o.elem_type);
     }
 }
 
@@ -293,6 +303,25 @@ test "renderOptField covers scalar, nullable, multiple" {
         .multiple = true,
         .nullable = false,
     }));
+    // A non-nullable scalar with no default renders as a required option.
+    try testing.expectEqualStrings("region: []const u8", try renderOptField(a, .{
+        .name = "region",
+        .elem_type = "[]const u8",
+        .multiple = false,
+        .nullable = false,
+        .default_expr = null,
+    }));
+}
+
+test "OptSpec.isRequired distinguishes required from default/nullable/bool" {
+    // Required: non-nullable scalar, no default, not a bool.
+    try testing.expect((OptSpec{ .name = "region", .elem_type = "[]const u8", .multiple = false, .nullable = false }).isRequired());
+    // Has a default → optional.
+    try testing.expect(!(OptSpec{ .name = "limit", .elem_type = "u32", .multiple = false, .nullable = false, .default_expr = "10" }).isRequired());
+    // Nullable → optional.
+    try testing.expect(!(OptSpec{ .name = "note", .elem_type = "[]const u8", .multiple = false, .nullable = true }).isRequired());
+    // A bool always has an absent value (false) — never required.
+    try testing.expect(!(OptSpec{ .name = "loud", .elem_type = "bool", .multiple = false, .nullable = false }).isRequired());
 }
 
 test "renderArgField covers required, optional, variadic" {

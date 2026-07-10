@@ -1066,6 +1066,18 @@ test "required options and enum args: end-user messages and help" {
     const proj_abs = try tmpSubdirAbs(a, tmp, "demo");
     try pointDependencyAtLocalTree(proj, proj_abs);
 
+    // The scaffolder creates a required option: a non-nullable scalar with no
+    // --default is no longer rejected — it renders as a bare `name: T` and the
+    // success line marks it (required). (Adds to the init-generated `hello`.)
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "option", "hello", "region", "--type", "[]const u8" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "(required)");
+        const src = try readFile(proj, a, "src/commands/hello.zig");
+        try expectContains(src, "region: []const u8,");
+    }
+
     // A command exercising both features: a required option (`region`: a
     // defaultless, non-optional string) and an enum positional arg (`env`).
     // Commands are convention-discovered from src/commands, so writing the file
