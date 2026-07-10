@@ -492,3 +492,32 @@ test "probe is layout-transparent" {
     // The wrapped child sits after "hi" + gap: absolute x = 3.
     try testing.expectEqual(@as(u16, 3), rect.x);
 }
+
+// ============================================================================
+// positioned (anchored placement, ADR-0019)
+// ============================================================================
+
+test "positioned places its child at an absolute offset over a transparent base" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 8, 4);
+    defer s.deinit();
+
+    // A base layer fills the surface with dots; a popup is positioned at (3, 1).
+    const node = try ui.stack(h.a(), .{}, &.{
+        try ui.column(h.a(), .{}, &.{
+            ui.textOpts(.{ .wrap = .clip }, "........"),
+            ui.textOpts(.{ .wrap = .clip }, "........"),
+            ui.textOpts(.{ .wrap = .clip }, "........"),
+            ui.textOpts(.{ .wrap = .clip }, "........"),
+        }),
+        try ui.positioned(h.a(), 3, 1, ui.textOpts(.{ .wrap = .clip }, "POP")),
+    });
+    try renderInto(&h, node, &s);
+
+    // The popup lands at column 3 of row 1; the transparent gaps let the base
+    // show through around it.
+    try testing.expectEqualStrings("........", try rowString(&h, &s, 0));
+    try testing.expectEqualStrings("...POP..", try rowString(&h, &s, 1));
+    try testing.expectEqualStrings("........", try rowString(&h, &s, 2));
+}
