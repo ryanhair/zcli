@@ -1,0 +1,180 @@
+<extend template="base.shtml">
+
+<head id="head">
+<style>
+  .layout { display: grid; grid-template-columns: 240px 1fr; gap: 56px; padding: 56px 0 96px; align-items: start; }
+  .layout > * { min-width: 0; }   /* let code blocks scroll instead of widening the page */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .toc { position: sticky; top: 84px; font-family: var(--mono); font-size: 13px; }
+  .toc .toc-label { font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); margin: 20px 0 10px; }
+  .toc .toc-label:first-child { margin-top: 0; }
+  .toc a { display: block; color: var(--muted); padding: 5px 0 5px 12px; border-left: 1px solid var(--border); transition: all .15s; }
+  .toc a:hover, .toc a.active { color: var(--accent); border-left-color: var(--accent); }
+
+  .doc { max-width: 760px; }
+  .doc > section { padding: 0 0 56px; border: none; }
+  .doc h1 { font-size: 40px; margin-bottom: 12px; }
+  .doc .sub { color: var(--muted); font-size: 18px; margin-bottom: 8px; }
+  .doc h2 { font-size: 26px; margin: 44px 0 14px; padding-top: 12px; }
+  .doc h3 { font-size: 18px; margin: 30px 0 10px; color: var(--fg); }
+  .doc p { color: var(--muted); margin-bottom: 14px; }
+  .doc ul { color: var(--muted); margin: 0 0 16px 20px; }
+  .doc li { padding: 4px 0; }
+  .doc code { font-family: var(--mono); font-size: 0.88em; background: var(--surface2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: var(--accent); }
+  .doc .code code { background: none; border: none; padding: 0; color: inherit; }
+  .doc .code { margin: 16px 0 22px; }
+  .callout { background: rgba(247,164,29,0.06); border: 1px solid rgba(247,164,29,0.25); border-radius: 9px; padding: 14px 18px; margin: 18px 0; color: var(--muted); font-size: 14.5px; }
+  .callout b { color: var(--accent); font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; display: block; margin-bottom: 4px; }
+
+  .ptable { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 8px 0 8px; }
+  .ptable th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding: 0 14px 12px; border-bottom: 1px solid var(--border); font-weight: 500; }
+  .ptable td { padding: 13px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .ptable td.name { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  .ptable td.desc { color: var(--muted); }
+
+  .nextlinks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .nextlinks a { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; transition: border-color .15s; }
+  .nextlinks a:hover { border-color: var(--accent); }
+  .nextlinks .k { display: block; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .nextlinks .t { display: block; color: var(--fg); font-size: 15px; margin-top: 4px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .toc { display: none; } .nextlinks { grid-template-columns: 1fr; } }
+</style>
+</head>
+
+<main id="main">
+  <div class="wrap">
+    <div class="layout">
+      <nav class="toc" aria-label="On this page">
+        <p class="toc-label">Built for agents</p>
+        <a href="#intro">The thesis</a>
+        <p class="toc-label">Mechanisms</p>
+        <a href="#arena">Leak-free by construction</a>
+        <a href="#contract">Errors that name the fix</a>
+        <a href="#scaffold">Mechanical edits</a>
+        <a href="#context">Drift-proof context</a>
+        <a href="#testing">Headless verification</a>
+        <p class="toc-label">Details</p>
+        <a href="#adrs">The decisions</a>
+      </nav>
+
+      <article class="doc">
+        <section id="intro">
+          <h1>Built for coding agents</h1>
+          <p class="sub">CLIs are increasingly written with — and increasingly by — coding agents. zcli is designed so that's safe and productive by construction, not by hoping the model gets Zig right.</p>
+          <p>This isn't an AI feature bolted on. It's a set of decisions made early, each aimed at one question: when a coding agent writes a command, what goes wrong, and who catches it? Zig gives an agent no garbage collector and a manual-memory model it has little training data for. A runtime CLI framework gives it a builder API to misremember. zcli's answer is to remove those failure modes at the level where they occur — the allocator, the compiler, the scaffolder, and the reference the agent reads — so the loop of <em>write → verify → fix</em> closes without a human decoding a type error in the middle.</p>
+          <p>Every mechanism below is real and shipping. This page is for a human deciding on a framework; the <a href="$site.page('docs').link().suffix('#ai-agents')">AI agents section of the docs</a> shows the agent-facing loop in practice.</p>
+        </section>
+
+        <section id="arena">
+          <h2>Leak-free by construction</h2>
+          <p>The failure mode of AI-written Zig that is simultaneously silent, hard to debug, and specific to the language is memory: a leak or a use-after-free that compiles clean and passes the happy-path test. Every other failure has an owner — the compiler catches code that doesn't build, tests catch wrong behavior — but memory had none.</p>
+          <p>So each command's <code>execute()</code> receives an allocator backed by a per-command <strong>arena</strong>. A command runs once and exits; the arena is dropped wholesale when it returns. The idiom is <em>"never call <code>free</code>; the arena reclaims everything at command end"</em> — and business logic an agent writes into that body is leak-free whether or not the agent understood Zig's ownership rules.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/repo.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub fn</span> <span class="fn">execute</span>(args: Args, _: Options, context: <span class="kw">anytype</span>) !<span class="kw">void</span> {
+    <span class="kw">const</span> a = context.allocator;              <span class="cm">// the per-command arena</span>
+    <span class="kw">const</span> url = <span class="kw">try</span> std.fmt.<span class="fn">allocPrint</span>(a, <span class="str">"https://api.github.com/repos/{s}"</span>, .{args.slug});
+    <span class="kw">var</span> res = <span class="kw">try</span> context.http.<span class="fn">get</span>(a, url, .{});
+    <span class="kw">const</span> repo = <span class="kw">try</span> res.<span class="fn">json</span>(Repo, a);
+    <span class="cm">// no defer, no free — the arena reclaims it all when execute() returns</span>
+    <span class="kw">try</span> context.<span class="fn">stdout</span>().<span class="fn">print</span>(<span class="str">"{s} — ★ {d}\n"</span>, .{ repo.full_name, repo.stargazers_count });
+}</pre>
+          </div>
+          <div class="callout"><b>ADR-0001</b> The one advanced case — a long-running <code>watch</code>/<code>dev</code> loop — uses a child arena per iteration. Everything else just never frees.</div>
+        </section>
+
+        <section id="contract">
+          <h2>Errors that name the file and show the fix</h2>
+          <p>A command is a contract: a <code>meta</code> block, an <code>Args</code> struct, an <code>Options</code> struct, and an <code>execute</code> function. That contract is validated at compile time — but a raw Zig type error is exactly the thing a non-Zig-fluent human (or the agent) burns a turn decoding. So the validation is written to fail with a message that names the offending command file and states the correction directly.</p>
+          <p>An agent that forgets the <code>Options</code> struct, mistypes a field, or wires up a default that doesn't parse doesn't get a stack of generic type mismatches — it gets a sentence it can act on. That turns the compiler into a fast, precise reviewer: the agent iterates against it directly, no human in the loop to translate.</p>
+          <div class="callout"><b>Verify</b> The whole loop is <code>zig build</code> plus tests. An agent's edit either compiles into a working command or comes back with a named, actionable error — the same signal a human would want, just phrased for a machine to fix.</div>
+        </section>
+
+        <section id="scaffold">
+          <h2>Structure changes are mechanical edits</h2>
+          <p>Because a command is a file and its path is its command path, changing the shape of a CLI is a filesystem operation — not freeform code an agent has to author and get right. The meta-CLI does those edits mechanically:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
+<pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> add command users/create <span class="c-mut"># → src/commands/users/create.zig</span>
+<span class="c-prompt">$</span> <span class="c-cmd">zcli</span> add arg users/create name --type []const u8
+<span class="c-prompt">$</span> <span class="c-cmd">zcli</span> add option users/create admin --type bool --default false
+<span class="c-prompt">$</span> <span class="c-cmd">zcli</span> mv users/create accounts/create
+<span class="c-prompt">$</span> <span class="c-cmd">zcli</span> rm command users/create</pre>
+          </div>
+          <p>The division of labor is the point: the agent uses <code>add</code>/<code>rm</code>/<code>mv</code> to change structure, and writes freeform code only inside <code>execute()</code> bodies — where the arena has already made it safe. Renaming a command becomes a well-defined operation instead of a multi-file refactor an agent might do halfway.</p>
+        </section>
+
+        <section id="context">
+          <h2>Drift-proof, version-matched context</h2>
+          <p>Coding agents are fluent in mainstream languages but have almost no zcli in their training data, and what little they might pick up goes stale the moment the framework changes — a renamed <code>Context</code> field, a plugin config shape that moved. Stale context is worse than none: it actively steers the model toward APIs that no longer exist. zcli solves this with two artifacts that can't drift.</p>
+          <h3>The AGENTS.md spine</h3>
+          <p><code>zcli init</code> scaffolds an <code>AGENTS.md</code> into every project. It's deliberately <strong>thin and frozen</strong> — safe to freeze because it speaks in <code>zcli</code> commands, not Zig signatures, and commands are a far more stable contract than code. It carries the project's identity, the write→verify→fix loop, a short set of high-leverage invariants (never <code>free</code> in <code>execute()</code>; change structure with the scaffolder; file path = command path), and a pointer to the guide. No signature ever lives here, so it never goes out of date.</p>
+          <h3>zcli guide</h3>
+          <p>The volatile detail — API signatures, the primitive catalog, worked examples — lives in <code>zcli guide</code>, served from the <em>pinned zcli version in your <code>build.zig.zon</code></em>. It is drift-proof by construction: the reference an agent reads is generated from the exact zcli it's compiling against, not a training-data snapshot. And its examples are the repo's canonical example CLIs, which CI compiles — so a breaking change to the framework breaks the build and forces the context up to date.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
+<pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> guide arena
+arena — the per-command allocator
+
+  context.allocator is an arena, dropped when execute() returns.
+  Allocate freely; never free. For a long-running loop, use a
+  child arena per iteration.</pre>
+          </div>
+          <div class="callout"><b>ADR-0004 · ADR-0008</b> Three layers, each with the stability its content needs: a frozen spine, a version-matched guide, and the live project state (<code>zcli tree --show-options</code>). Drift-sensitive content lives only in the layer pinned to the code.</div>
+        </section>
+
+        <section id="testing">
+          <h2>Headless verification</h2>
+          <p>An agent can't watch a terminal repaint, so "did the output come out right?" has to be answerable in code. zcli commands run in-process against a real ANSI-parsing virtual terminal, and the assertions are on <em>meaning</em> — text, color, attributes — not raw escape codes:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/deploy_test.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> testing = <span class="fn">@import</span>(<span class="str">"zcli-testing"</span>);
+
+<span class="kw">test</span> <span class="str">"deploy prints a green success line"</span> {
+    <span class="kw">var</span> result = <span class="kw">try</span> testing.<span class="fn">runCommand</span>(DeployCommand, .{
+        .args = .{ .service = <span class="str">"api"</span> },
+        .options = .{ .env = <span class="str">"staging"</span> },
+    });
+    <span class="kw">defer</span> result.<span class="fn">deinit</span>();
+    <span class="kw">try</span> std.testing.<span class="fn">expect</span>(result.term.<span class="fn">containsText</span>(<span class="str">"Deploying"</span>));
+    <span class="kw">try</span> std.testing.<span class="fn">expect</span>(result.term.<span class="fn">hasAttribute</span>(<span class="num">0</span>, <span class="num">0</span>, .bold));
+}</pre>
+          </div>
+          <p>The agent gets a truth signal for exactly the kind of output — colored, formatted, interactive — that it otherwise couldn't verify. Combined with <code>zig build test</code>, the write→verify→fix loop is fully closable without a human in it.</p>
+        </section>
+
+        <section id="adrs">
+          <h2>The decisions</h2>
+          <p>None of this is hype; each mechanism is a recorded architecture decision, linked here for depth:</p>
+          <div class="table-scroll">
+          <table class="ptable">
+            <thead><tr><th>ADR</th><th>Decision</th></tr></thead>
+            <tbody>
+              <tr><td class="name"><a href="https://github.com/ryanhair/zcli/blob/main/docs/adr/0001-arena-per-command-allocator.md" target="_blank" rel="noopener">0001</a></td><td class="desc">Arena-per-command allocator — AI-authored business logic is leak-free by construction.</td></tr>
+              <tr><td class="name"><a href="https://github.com/ryanhair/zcli/blob/main/docs/adr/0004-ai-context-is-a-projection-of-compiled-examples.md" target="_blank" rel="noopener">0004</a></td><td class="desc">AI context ships via <code>AGENTS.md</code>, sourced from CI-compiled canonical examples — drift-resistant by construction.</td></tr>
+              <tr><td class="name"><a href="https://github.com/ryanhair/zcli/blob/main/docs/adr/0008-agents-md-three-layer-context.md" target="_blank" rel="noopener">0008</a></td><td class="desc">A thin frozen <code>AGENTS.md</code> spine over a version-matched <code>zcli guide</code> — signatures never live in the frozen layer.</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>The full set of AI-authoring decisions is <a href="https://github.com/ryanhair/zcli/tree/main/docs/adr" target="_blank" rel="noopener">ADRs 0001–0008</a>.</p>
+          <div class="nextlinks">
+            <a href="$site.page('docs').link().suffix('#ai-agents')"><span class="k">→ docs</span><span class="t">The agent loop, in practice</span></a>
+            <a href="https://github.com/ryanhair/zcli/tree/main/examples" target="_blank" rel="noopener"><span class="k">→ examples</span><span class="t">The CI-compiled canonical CLIs</span></a>
+          </div>
+        </section>
+      </article>
+    </div>
+  </div>
+
+<script>
+  var links = document.querySelectorAll('.toc a');
+  var secs = Array.prototype.map.call(links, function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var y = window.scrollY + 120, cur = 0;
+    secs.forEach(function (s, i) { if (s && s.offsetTop <= y) cur = i; });
+    links.forEach(function (a, i) { a.classList.toggle('active', i === cur); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+</script>
+
+</main>

@@ -25,6 +25,7 @@
         <nav>
             <a class="$site.page('docs').isCurrent().then('active')" href="$site.page('docs').link()">Docs</a>
             <a class="$site.page('why').isCurrent().then('active')" href="$site.page('why').link()">Why zcli</a>
+            <a class="$site.page('ai').isCurrent().then('active')" href="$site.page('ai').link()">AI agents</a>
             <a class="$site.page('changelog').isCurrent().then('active')" href="$site.page('changelog').link()">Changelog</a>
             <a class="$site.page('blog').isCurrent().then('active')" href="$site.page('blog').link()">Blog</a>
             <a class="gh" href="https://github.com/ryanhair/zcli" target="_blank" rel="noopener">
@@ -49,7 +50,7 @@
                 <h4>Docs</h4>
                 <a href="$site.page('docs').link().suffix('#quick-start')">Quick start</a>
                 <a href="$site.page('docs').link().suffix('#commands')">Commands</a>
-                <a href="$site.page('docs').link().suffix('#ai-agents')">AI agents</a>
+                <a href="$site.page('ai').link()">AI agents</a>
                 <a href="$site.page('install').link()">Install</a>
             </div>
             <div class="col">

@@ -378,7 +378,7 @@ Deploying api to staging<span class="cursor"></span></pre>
 					restructure your project without hand-editing struct fields or meta blocks. The same scaffolder writes an <code class="mono">AGENTS.md</code>
 					for you — a version-matched reference at <code class="mono">zcli guide</code>
 					that keeps AI coding agents from hallucinating stale APIs.</p>
-					<a class="btn ghost" href="$site.page('docs').link().suffix('#ai-agents')">AI agents & AGENTS.md →</a>
+					<a class="btn ghost" href="$site.page('ai').link()">Built for coding agents →</a>
 				</div>
 				<div class="term">
 					<div class="term-bar">

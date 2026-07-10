@@ -333,8 +333,16 @@ cd examples/tasks && zig build
 
 ## Built with zcli
 
-- **[zcli](projects/zcli)** — the meta-CLI is itself a zcli app: `init`, `add`, `mv`, `rm`, `tree`, `dev`, `guide`, and `release` are files in its `commands/` directory, and it runs on the framework's own plugins (help, completions, "did you mean?", GitHub self-upgrade).
-- **[tasks](examples/tasks)** — the showcase task tracker from the demo above.
+What a real zcli app looks like. The meta-CLI you install is one; the rest are the compiled, CI-checked example apps in this repo — each a small, complete CLI you can read end to end.
+
+| App | What it is |
+|-----|------------|
+| [**zcli**](projects/zcli) — the meta-CLI | Itself a zcli app: `init`, `add`, `mv`, `rm`, `tree`, `dev`, `guide`, and `release` are files in its `commands/` directory, running on the framework's own plugins (help, completions, "did you mean?", GitHub self-upgrade). |
+| [**tasks**](examples/tasks) | A full task tracker — the app in the demo GIF above. 14 commands with nested groups and aliases, every prompt type, spinners and progress bars, themed output, JSON persistence, config files, and completions. |
+| [**ghauth**](examples/ghauth) | GitHub device-flow companion: stashes an API token in the OS keychain via `zcli_secrets`, then uses `zcli.http` to call the API as `whoami`. |
+| [**oauth-device**](examples/oauth-device) | Mints a token from scratch by running GitHub's OAuth device flow (RFC 8628), then keychains it — freeform command code, not a framework feature. |
+| [**notes**](examples/notes) | A tiny note keeper: saves and loads a typed struct as a JSON file and shares one `store` module across three commands. |
+| [**repostat**](examples/repostat) | Prints stats for a public GitHub repo — the minimal `zcli.http` + typed-JSON example, with safe client defaults out of the box. |
 
 Building something with zcli? Open a PR to add it here.
 
