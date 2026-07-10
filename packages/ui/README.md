@@ -89,9 +89,13 @@ comes back exactly as it was; the final frame does not persist.
 
 Interactive widgets for full-screen forms and menus live in `ui.widgets`
 alongside the progress ones ([ADR-0018](../../docs/adr/0018-focusable-widgets.md)):
-`TextInput` (optional password `mask`), `Checkbox`, `Select` (scrolling window,
-truncation, optional multi-line `wrap`), `Table` (a read-only data grid with
-`Dim`-sized columns, selection, a scroll window, PgUp/PgDn paging, and truncation
+`TextInput` (optional password `mask`), `TextArea` (a multi-line field over a
+caller-owned buffer: soft wrap at the granted width, visual-row ↑/↓ and Home/End,
+Enter inserts a newline, PgUp/PgDn paging, vertical scroll, and the real hardware
+cursor via `cursor_out` — [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)),
+`Checkbox`, `Select` (scrolling window, truncation, optional multi-line `wrap`),
+`Table` (a read-only data grid with `Dim`-sized columns, selection, a scroll
+window, PgUp/PgDn paging, and truncation
 — [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), `Tabs` (a stateless
 tab-bar row with ←/→ and number-key selection over a caller-owned active index —
 [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button`.
@@ -109,6 +113,7 @@ zig build run-demo        # hybrid: deploy-style task frame; needs a real termin
 zig build run-hybrid      # hybrid: the Claude-Code shape — streaming prose + live multi-bar
 zig build run-fullscreen  # full-screen: a top-style dashboard — Table, tick, overlay, mouse
 zig build run-form        # full-screen: focusable form — text fields, select, checkbox, button
+zig build run-textarea    # full-screen: multi-line editor — soft wrap, scroll, real caret
 zig build run-popup       # full-screen: anchored dropdowns that flip above / clamp on screen
 zig build test            # pure layout tests + vterm golden-frame tests
 ```

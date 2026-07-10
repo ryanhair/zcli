@@ -177,6 +177,7 @@ pub fn multiBar(a: std.mem.Allocator, opts: MultiBarOpts, items: []const MultiBa
 // progress widgets above) but re-export here so the whole catalog is one
 // namespace: `ui.widgets.TextInput`, `ui.widgets.Checkbox`, `ui.widgets.focusNext`.
 pub const TextInput = @import("input.zig").TextInput;
+pub const TextArea = @import("input.zig").TextArea;
 pub const Checkbox = @import("input.zig").Checkbox;
 pub const Select = @import("input.zig").Select;
 pub const Table = @import("input.zig").Table;
