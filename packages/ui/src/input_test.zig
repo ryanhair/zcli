@@ -12,6 +12,7 @@ const Checkbox = widgets.Checkbox;
 const Select = widgets.Select;
 const Table = widgets.Table;
 const Button = widgets.Button;
+const Tabs = widgets.Tabs;
 
 // ---- handle: TextInput editing --------------------------------------------
 
@@ -203,6 +204,70 @@ test "Button activates on Enter and Space, ignores other keys" {
     try testing.expect(!b.handle(.tab));
     try testing.expect(!b.handle(.{ .char = 'x' }));
     try testing.expect(!b.handle(.left));
+}
+
+// ---- handle: Tabs ----------------------------------------------------------
+
+test "Tabs arrows move the active tab, wrapping at both ends" {
+    var tabs = Tabs{};
+    var active: usize = 0;
+    const n = 3;
+    try testing.expect(tabs.handle(.right, &active, n));
+    try testing.expectEqual(@as(usize, 1), active);
+    _ = tabs.handle(.right, &active, n);
+    try testing.expectEqual(@as(usize, 2), active);
+    _ = tabs.handle(.right, &active, n); // wrap forward: 2 -> 0
+    try testing.expectEqual(@as(usize, 0), active);
+    _ = tabs.handle(.left, &active, n); // wrap backward: 0 -> 2
+    try testing.expectEqual(@as(usize, 2), active);
+    _ = tabs.handle(.left, &active, n);
+    try testing.expectEqual(@as(usize, 1), active);
+}
+
+test "Tabs number keys jump directly, ignoring out-of-range digits" {
+    var tabs = Tabs{};
+    var active: usize = 0;
+    const n = 3;
+    try testing.expect(tabs.handle(.{ .char = '3' }, &active, n)); // -> index 2
+    try testing.expectEqual(@as(usize, 2), active);
+    try testing.expect(tabs.handle(.{ .char = '1' }, &active, n)); // -> index 0
+    try testing.expectEqual(@as(usize, 0), active);
+    // '4' has no tab (only 3), so it bubbles and leaves the active index alone.
+    try testing.expect(!tabs.handle(.{ .char = '4' }, &active, n));
+    try testing.expectEqual(@as(usize, 0), active);
+    // '0' is not a tab shortcut (tabs are 1-indexed on the keyboard).
+    try testing.expect(!tabs.handle(.{ .char = '0' }, &active, n));
+    try testing.expectEqual(@as(usize, 0), active);
+}
+
+test "Tabs never consumes Tab and bubbles other keys" {
+    var tabs = Tabs{};
+    var active: usize = 1;
+    const n = 3;
+    // Tab stays reserved for the focus ring — the bar never eats it.
+    try testing.expect(!tabs.handle(.tab, &active, n));
+    try testing.expect(!tabs.handle(.back_tab, &active, n));
+    try testing.expect(!tabs.handle(.enter, &active, n));
+    try testing.expect(!tabs.handle(.{ .char = 'x' }, &active, n));
+    try testing.expectEqual(@as(usize, 1), active); // none of them moved it
+}
+
+test "Tabs handles the count==0 and count==1 edge cases" {
+    var tabs = Tabs{};
+    var active: usize = 0;
+    // No tabs: every key bubbles and nothing moves.
+    try testing.expect(!tabs.handle(.right, &active, 0));
+    try testing.expect(!tabs.handle(.left, &active, 0));
+    try testing.expect(!tabs.handle(.{ .char = '1' }, &active, 0));
+    try testing.expectEqual(@as(usize, 0), active);
+    // One tab: arrows are consumed but wrap back to the only tab; '1' selects it.
+    try testing.expect(tabs.handle(.right, &active, 1));
+    try testing.expectEqual(@as(usize, 0), active);
+    try testing.expect(tabs.handle(.left, &active, 1));
+    try testing.expectEqual(@as(usize, 0), active);
+    try testing.expect(tabs.handle(.{ .char = '1' }, &active, 1));
+    try testing.expectEqual(@as(usize, 0), active);
+    try testing.expect(!tabs.handle(.{ .char = '2' }, &active, 1));
 }
 
 // ---- focus helpers ---------------------------------------------------------
@@ -620,6 +685,32 @@ test "Button renders its label and styles the focused state" {
     s.clear();
     try renderNode(a, try b.view(a, .{ .focused = false, .label = "OK" }), &s);
     try testing.expect(ui.styleEql(s.cell(0, 0).style, .{})); // unfocused → plain
+}
+
+test "Tabs renders labels with the active one styled apart from the rest" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const labels = [_][]const u8{ "One", "Two", "Three" };
+    var tabs = Tabs{};
+    var s = try ui.Surface.init(testing.allocator, 20, 1);
+    defer s.deinit();
+    try renderNode(a, try tabs.view(a, .{ .labels = &labels, .active = 1 }), &s);
+
+    // Labels sit in a row with a single-space gap between them.
+    try testing.expectEqualStrings("One Two Three       ", try rowString(a, &s, 0));
+
+    const th = theme_mod.default_theme;
+    const selected = th.prompts.selected.resolve(th.palette);
+    const hint = th.prompts.hint.resolve(th.palette);
+    // Active tab ("Two", starting at column 4) wears `selected`; the inactive
+    // tabs ("One" at 0, "Three" at 8) wear `hint`.
+    try testing.expect(ui.styleEql(s.cell(4, 0).style, selected)); // Two
+    try testing.expect(ui.styleEql(s.cell(0, 0).style, hint)); // One
+    try testing.expect(ui.styleEql(s.cell(8, 0).style, hint)); // Three
+    // The active and inactive styles are distinguishable (the whole point).
+    try testing.expect(!ui.styleEql(selected, hint));
 }
 
 // ---- TextInput hardware-cursor reporting (ADR-0019) -----------------------

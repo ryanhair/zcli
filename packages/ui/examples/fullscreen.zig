@@ -2,9 +2,12 @@
 //! CPU/MEM jitter on a 250ms tick, driven by the `Table` widget (ADR-0021) —
 //! the arrow keys and PgUp/PgDn move the selection and the widget keeps it in
 //! its scroll window, so the example carries no manual scroll bookkeeping. A
-//! `?`-toggled help overlay (a centered modal composited over the table —
-//! ADR-0016) floats on top. It drives the `App.run(state, tick_ms, view,
-//! update)` loop —
+//! `Tabs` bar (ADR-0021 incr2) pages between the live process view and an
+//! "About" pane — ←/→ or the number keys switch the active tab, and the caller
+//! (this example) swaps the content it renders below the bar; the widget is only
+//! the chrome. A `?`-toggled help overlay (a centered modal composited over the
+//! screen — ADR-0016) floats on top. It drives the `App.run(state, tick_ms,
+//! view, update)` loop —
 //!
 //!     view(state)           render the whole screen from state
 //!     update(state, ev)      handle a key/resize, or a `null` tick; -> keep|quit
@@ -56,8 +59,15 @@ const proc_columns = [_]ui.widgets.Table.Column{
 
 const Proc = struct { pid: u16, name: []const u8, cpu: f32, mem: f32 };
 
+/// The tab-bar labels. The active index (`State.active_tab`) is caller-owned;
+/// `Tabs` only advances it — the content pane below the bar is switched here.
+const tab_labels = [_][]const u8{ "1 Processes", "2 About" };
+
 const State = struct {
     tick: u32 = 0,
+    /// The `Tabs` bar's active index — caller-owned, advanced by `Tabs.handle`.
+    tabs: ui.widgets.Tabs = .{},
+    active_tab: usize = 0,
     /// The process grid: `table.highlighted` is the selected row and `table.scroll`
     /// its window top — both maintained by `Table.handle`, so `update` no longer
     /// tracks the selection or slides a scroll offset by hand.
@@ -109,26 +119,45 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         ui.text(.{ .dim = true }, elapsed),
     }));
 
-    // The process grid is a real `Table` (ADR-0021): PID/CPU%/MEM%/COMMAND
-    // columns whose widths the layout engine sizes (`.len`/`.fill`), the selected
-    // row highlighted, and overflow arrows in the gutter. The list is taller than
-    // the `visible_rows` window, so `Table` scrolls to keep the selection in view
-    // — no manual scroll offset here.
-    const grid = try a.alloc([]const []const u8, state.procs.len);
-    for (state.procs, grid) |p, *cells| {
-        const row_cells = try a.alloc([]const u8, 4);
-        row_cells[0] = try std.fmt.allocPrint(a, "{d}", .{p.pid});
-        row_cells[1] = try std.fmt.allocPrint(a, "{d:.1}", .{p.cpu});
-        row_cells[2] = try std.fmt.allocPrint(a, "{d:.1}", .{p.mem});
-        row_cells[3] = p.name;
-        cells.* = row_cells;
-    }
-    try rows.append(a, try state.table.view(a, .{
+    // The `Tabs` bar (ADR-0021 incr2): a strip of styled labels with the active
+    // one highlighted. It owns no content — the caller (below) switches which
+    // pane it renders on `state.active_tab`.
+    try rows.append(a, try state.tabs.view(a, .{
         .focused = true,
-        .columns = &proc_columns,
-        .rows = grid,
-        .height = @intCast(visible_rows),
+        .labels = &tab_labels,
+        .active = state.active_tab,
     }));
+    try rows.append(a, ui.text(.{}, ""));
+
+    // Tab 0 is the live process grid; tab 1 is a static About pane. The tab bar
+    // is chrome; this switch is what "owns the content" means in the ADR.
+    if (state.active_tab == 0) {
+        // The process grid is a real `Table` (ADR-0021): PID/CPU%/MEM%/COMMAND
+        // columns whose widths the layout engine sizes (`.len`/`.fill`), the
+        // selected row highlighted, and overflow arrows in the gutter. The list is
+        // taller than the `visible_rows` window, so `Table` scrolls to keep the
+        // selection in view — no manual scroll offset here.
+        const grid = try a.alloc([]const []const u8, state.procs.len);
+        for (state.procs, grid) |p, *cells| {
+            const row_cells = try a.alloc([]const u8, 4);
+            row_cells[0] = try std.fmt.allocPrint(a, "{d}", .{p.pid});
+            row_cells[1] = try std.fmt.allocPrint(a, "{d:.1}", .{p.cpu});
+            row_cells[2] = try std.fmt.allocPrint(a, "{d:.1}", .{p.mem});
+            row_cells[3] = p.name;
+            cells.* = row_cells;
+        }
+        try rows.append(a, try state.table.view(a, .{
+            .focused = true,
+            .columns = &proc_columns,
+            .rows = grid,
+            .height = @intCast(visible_rows),
+        }));
+    } else {
+        try rows.append(a, ui.text(.{ .bold = true }, "About"));
+        try rows.append(a, ui.text(.{}, ""));
+        try rows.append(a, ui.text(.{ .dim = true }, "A full-screen zcli/ui demo: Table + Tabs + an overlay,"));
+        try rows.append(a, ui.text(.{ .dim = true }, "all on the same immediate-mode layout engine (ADR-0021)."));
+    }
 
     try rows.append(a, ui.spacer());
     const mouse = if (state.last_mouse) |m|
@@ -139,7 +168,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
         try std.fmt.allocPrint(a, "{d}b \"{s}\"", .{ state.paste_len, state.paste_head[0..state.paste_head_len] })
     else
         "—";
-    const status = try std.fmt.allocPrint(a, "↑/↓ select   PgUp/PgDn page   click a row   ? help   q quit    focus:{s}  mouse:{s}  paste:{s}", .{
+    const status = try std.fmt.allocPrint(a, "←/→ tab   ↑/↓ select   PgUp/PgDn page   click a row   ? help   q quit    focus:{s}  mouse:{s}  paste:{s}", .{
         if (state.focused) "on" else "off",
         mouse,
         paste,
@@ -172,6 +201,7 @@ fn helpModal(a: std.mem.Allocator) !ui.Node {
     }, &.{
         ui.text(.{ .bold = true }, "Keys"),
         ui.text(.{}, ""),
+        ui.text(.{}, "← / →        switch tab (or 1/2)"),
         ui.text(.{}, "↑ / ↓        select a process"),
         ui.text(.{}, "PgUp / PgDn  page the selection"),
         ui.text(.{}, "click        select a row"),
@@ -190,10 +220,13 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
     };
     switch (e) {
         .key => |k| {
-            // Let the Table consume selection/paging keys (↑/↓/Home/End/PgUp/PgDn),
-            // keeping the highlight in its scroll window; only unconsumed keys are
-            // form-level navigation here.
-            if (state.table.handle(k, state.procs.len, @intCast(visible_rows))) return .keep;
+            // The `Tabs` bar consumes ←/→ and the number keys (1/2) to switch the
+            // active tab; the Table consumes selection/paging keys (↑/↓/Home/End/
+            // PgUp/PgDn) on the process tab. Only unconsumed keys fall through to
+            // form-level navigation (q, ?, Ctrl-C) below.
+            if (state.tabs.handle(k, &state.active_tab, tab_labels.len)) return .keep;
+            if (state.active_tab == 0 and
+                state.table.handle(k, state.procs.len, @intCast(visible_rows))) return .keep;
             switch (k) {
                 .char => |c| switch (c) {
                     'q' => return .quit,
@@ -206,10 +239,11 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
         },
         .mouse => |m| {
             state.last_mouse = m;
-            // Left-click a process row: the table's body starts at y=3 (padding +
-            // title + header), so a click maps through the widget's scroll window.
-            if (m.button == .left and m.action == .press and m.y >= 3) {
-                const vis = m.y - 3;
+            // Left-click a process row (process tab only): the table's body starts
+            // at y=5 (padding + title + tab bar + blank + header), so a click maps
+            // through the widget's scroll window.
+            if (state.active_tab == 0 and m.button == .left and m.action == .press and m.y >= 5) {
+                const vis = m.y - 5;
                 if (vis < visible_rows) {
                     const row = @as(usize, state.table.scroll) + vis;
                     if (row < state.procs.len) state.table.highlighted = row;

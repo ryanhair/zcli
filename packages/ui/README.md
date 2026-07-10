@@ -92,7 +92,9 @@ alongside the progress ones ([ADR-0018](../../docs/adr/0018-focusable-widgets.md
 `TextInput` (optional password `mask`), `Checkbox`, `Select` (scrolling window,
 truncation, optional multi-line `wrap`), `Table` (a read-only data grid with
 `Dim`-sized columns, selection, a scroll window, PgUp/PgDn paging, and truncation
-— [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button`.
+— [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), `Tabs` (a stateless
+tab-bar row with ←/→ and number-key selection over a caller-owned active index —
+[ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button`.
 Each is a plain struct you embed in your state with a `view(a, opts) !Node` +
 `handle(key) bool` contract; focus is caller-owned (an enum), and an unconsumed key is form-level
 navigation. Overlays (`stack` + `center`, [ADR-0016](../../docs/adr/0016-overlays-z-layers.md)),
