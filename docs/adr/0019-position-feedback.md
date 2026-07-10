@@ -5,6 +5,20 @@ Status: accepted
 > Increment 1: the `ui.probe` primitive plus its first consumer, mouse
 > click-to-focus in the form example. The hardware cursor and anchored popups —
 > the other two features this unblocks — are follow-ups on the same primitive.
+>
+> **Increment 2 (landed): hardware cursor.** A focused `TextInput` reports its
+> caret's absolute cell through a `cursor_out: ?*?Point` in its `ViewOpts` (the
+> same caller-pointer shape as `probe`, since the caret sits *inside* the field
+> at a scroll-dependent column only the widget's render knows) and draws no block
+> there. The App gained `cursorAt(?Point)` — place the real terminal cursor at a
+> screen cell or hide it — which reuses the hybrid `showCursorAt`/`unplace`
+> machinery (already coordinate-general); `frameFullScreen` now `unplace()`s
+> before painting so the placed cursor returns to the origin the diff addresses
+> against. `App.run` gained an optional **post-frame hook** (`after_frame`, run
+> just before blocking on input) — its home use is `app.cursorAt(state.caret)`,
+> reading a `Point` the field wrote during render. The reporting channel stayed a
+> `ViewOpts` pointer over a `RenderCtx` slot for the same reason increment 1 chose
+> a wrapper over a `Node` field: keep `node.zig` free of a cursor concept.
 
 The layout engine (ADR-0013) is immediate-mode: `view(state)` builds a fresh,
 anonymous node tree every frame; `measure`+`render` lay it out and paint it; the
@@ -64,12 +78,12 @@ is reacting to, not a frame behind.
 - **Full-screen is where this is meaningful.** In hybrid, the live region floats
   in scrollback, so the surface rect isn't a stable screen coordinate; the
   consumers (mouse, cursor, popups) are full-screen features anyway.
-- **The two deferred consumers ride the same primitive.** *Hardware cursor* needs
-  a `TextInput`-specific caret point (a `cursor_out` in its `ViewOpts`, since the
-  caret is internal) plus App plumbing — a full-screen `showCursorAt` that
-  survives the diff renderer's park-at-origin contract. *Anchored popups* probe
-  the anchor's rect, then render a popup in a `stack` (ADR-0016) positioned there
-  with len-spacers. Both are follow-ups; neither needs a core change.
+- **Hardware cursor landed (increment 2); anchored popups remain.** The cursor
+  reuses this position feedback for a point *inside* a widget (the caret) plus
+  App plumbing (`cursorAt` + the `run` post-frame hook + `frameFullScreen`'s
+  pre-paint `unplace`). *Anchored popups* — the last consumer — probe the
+  anchor's rect, then render a popup in a `stack` (ADR-0016) positioned there
+  with len-spacers. A composition of what already exists; no core change.
 - **No renderer or measure change.** `probe` is a `custom` leaf like `viewport`
   and the widgets — the position feedback is a side effect of the normal render
   pass, tested headlessly (the rect is deterministic) with the live click path
