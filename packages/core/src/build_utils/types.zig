@@ -12,6 +12,7 @@ const std = @import("std");
 pub const CommandType = @import("discovery_types.zig").CommandType;
 pub const CommandInfo = @import("discovery_types.zig").CommandInfo;
 pub const DiscoveredCommands = @import("discovery_types.zig").DiscoveredCommands;
+pub const sortedByName = @import("discovery_types.zig").sortedByName;
 
 /// Information about a plugin (local or external)
 pub const PluginInfo = struct {

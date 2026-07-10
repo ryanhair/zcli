@@ -52,6 +52,33 @@ pub const CommandInfo = struct {
     }
 };
 
+/// A command map's entries as a slice sorted alphabetically by name.
+///
+/// Discovery stores each directory level in an (unordered) `StringHashMap`.
+/// Routing the code that *emits* commands through this one helper is what makes
+/// command order deterministic and alphabetical: the generated registry — and
+/// therefore everything downstream that reads it in registration order, like
+/// completions — lists commands by name rather than by filesystem-iteration
+/// order. `zcli tree` sorts its own display nodes; help re-buckets command info
+/// through its own map and sorts there. Caller owns the returned slice.
+pub fn sortedByName(allocator: std.mem.Allocator, map: *const std.StringHashMap(CommandInfo)) ![]CommandInfo {
+    const entries = try allocator.alloc(CommandInfo, map.count());
+    errdefer allocator.free(entries);
+
+    var it = map.iterator();
+    var i: usize = 0;
+    while (it.next()) |entry| : (i += 1) {
+        entries[i] = entry.value_ptr.*;
+    }
+
+    std.mem.sort(CommandInfo, entries, {}, lessByName);
+    return entries;
+}
+
+fn lessByName(_: void, a: CommandInfo, b: CommandInfo) bool {
+    return std.mem.lessThan(u8, a.name, b.name);
+}
+
 /// Container for all discovered commands
 pub const DiscoveredCommands = struct {
     allocator: std.mem.Allocator,

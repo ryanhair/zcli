@@ -47,10 +47,12 @@ pub fn generateComptimeRegistrySource(
 
 /// Generate command module imports
 fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
-    var it = commands.root.iterator();
-    while (it.next()) |entry| {
-        const cmd_name = entry.key_ptr.*;
-        const cmd_info = entry.value_ptr.*;
+    // Emit in alphabetical order (see types.sortedByName) so the generated
+    // registry is deterministic rather than filesystem-iteration ordered.
+    const sorted = try types.sortedByName(commands.allocator, &commands.root);
+    defer commands.allocator.free(sorted);
+    for (sorted) |cmd_info| {
+        const cmd_name = cmd_info.name;
 
         if (cmd_info.command_type != .leaf) {
             // Generate import for optional group with index file
@@ -75,10 +77,10 @@ fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
 /// Generate group command imports recursively
 fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const CommandInfo) !void {
     if (group_info.subcommands) |subcommands| {
-        var it = subcommands.iterator();
-        while (it.next()) |entry| {
-            const subcmd_name = entry.key_ptr.*;
-            const subcmd_info = entry.value_ptr.*;
+        const sorted = try types.sortedByName(subcommands.allocator, &subcommands);
+        defer subcommands.allocator.free(sorted);
+        for (sorted) |subcmd_info| {
+            const subcmd_name = subcmd_info.name;
 
             if (subcmd_info.command_type == .optional_group) {
                 // Generate import for optional group with index file
@@ -191,10 +193,9 @@ fn generatePureCommandGroups(writer: anytype, commands: DiscoveredCommands, allo
 
 /// Recursively generate pure command group entries
 fn generatePureGroupsFromMap(writer: anytype, command_map: *const std.StringHashMap(CommandInfo), allocator: std.mem.Allocator) !void {
-    var it = command_map.iterator();
-    while (it.next()) |entry| {
-        const cmd_info = entry.value_ptr.*;
-
+    const sorted = try types.sortedByName(allocator, command_map);
+    defer allocator.free(sorted);
+    for (sorted) |cmd_info| {
         if (cmd_info.command_type == .pure_group) {
             // Generate entry for this pure group
             try writer.writeAll("    &.{");
@@ -216,10 +217,12 @@ fn generatePureGroupsFromMap(writer: anytype, command_map: *const std.StringHash
 
 /// Generate command registrations
 fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, allocator: std.mem.Allocator) !void {
-    var it = commands.root.iterator();
-    while (it.next()) |entry| {
-        const cmd_name = entry.key_ptr.*;
-        const cmd_info = entry.value_ptr.*;
+    // Registration order becomes the registry's command order (and thus the
+    // order help/completions read back), so emit alphabetically.
+    const sorted = try types.sortedByName(allocator, &commands.root);
+    defer allocator.free(sorted);
+    for (sorted) |cmd_info| {
+        const cmd_name = cmd_info.name;
 
         if (cmd_info.command_type != .leaf) {
             // Register optional group with index file as a command
@@ -254,10 +257,10 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
 /// Generate group command registrations recursively
 fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const CommandInfo, allocator: std.mem.Allocator) !void {
     if (group_info.subcommands) |subcommands| {
-        var it = subcommands.iterator();
-        while (it.next()) |entry| {
-            const subcmd_name = entry.key_ptr.*;
-            const subcmd_info = entry.value_ptr.*;
+        const sorted = try types.sortedByName(allocator, &subcommands);
+        defer allocator.free(sorted);
+        for (sorted) |subcmd_info| {
+            const subcmd_name = subcmd_info.name;
 
             if (subcmd_info.command_type == .optional_group) {
                 // Register the optional group itself

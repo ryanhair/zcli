@@ -233,8 +233,8 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
 
 /// Generate documentation from command metadata during the build.
 ///
-/// Docs are generated automatically on every `zig build` and also
-/// available via `zig build docs`. Output goes to `output_dir`.
+/// Docs are generated on demand via `zig build docs` (kept off the default
+/// build so ordinary builds stay quiet). Output goes to `output_dir`.
 ///
 /// ```zig
 /// // Single format (default: markdown)
@@ -264,10 +264,9 @@ pub fn generateDocs(b: *std.Build, registry_module: *std.Build.Module, zcli_dep:
         run.addArg(fmt);
     }
 
-    // Run on every `zig build`
-    b.getInstallStep().dependOn(&run.step);
-
-    // Also available as explicit `zig build docs`
+    // Only run when explicitly requested via `zig build docs`. Keeping it off
+    // the default install step means an ordinary `zig build` stays quiet and
+    // fast — no doc-gen output on every build of every consuming project.
     const docs_step = b.step("docs", "Generate documentation");
     docs_step.dependOn(&run.step);
 }
