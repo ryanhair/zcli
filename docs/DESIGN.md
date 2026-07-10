@@ -787,9 +787,12 @@ command reaches through its `context`:
 
 - **`theme`** — semantic styling. A comptime `Palette` maps roles
   (`success`, `command`, `path`, …) to styles; component tokens
-  (`prompts.cursor`, `progress.spinner`) default to those roles. Everything
+  (`prompts.cursor`, `progress.spinner`, `surface.border`/`surface.panel`)
+  default to those roles. Every styling default derives from the root
+  `zcli_theme` at comptime (ADR-0020), so `ui.panel` and bordered boxes need no
+  call-site style and `ui.role(r)` styles by meaning in one word. Everything
   resolves against the detected terminal capability, from true color down to
-  `NO_COLOR`. See ADR-0012.
+  `NO_COLOR`. See ADR-0012, ADR-0020.
 - **`prompts`** — eight interactive prompt types (`text`, `select`,
   `multiSelect`, `search`, …) with grapheme-aware line editing, falling back to
   line input when stdin is not a TTY.
@@ -805,22 +808,38 @@ into scrollback (`app.emit`) and a **live region** that repaints in place just
 above it (`app.frame`) — a full layout area, from a single line up to the whole
 viewport, positioned above committed scrollback rather than a fixed bottom strip.
 This is the same static-above / live-below split as Ink's `<Static>` and dynamic
-render: the engine shares the screen instead of taking it over (no alternate
-screen buffer), so scrollback is preserved — the deliberate trade against a
-full-screen TUI (ADR-0013). The live region is immediate-mode: a
+render: in this hybrid mode the engine shares the screen instead of taking it
+over (no alternate screen buffer), so scrollback is preserved (ADR-0013). The
+live region is immediate-mode: a
 component is a function returning a `Node`; each frame the tree is rebuilt into a
 per-frame arena, measured, painted onto a cell `Surface`, and diffed against the
 previous frame, so only changed cells reach the terminal. Four node kinds
 (`box`, `text`, `spacer`, `custom`) and three sizing words (`fit`, `len`,
 `fill`) cover the vocabulary; the region re-measures against the terminal each
-frame, so it re-lays-out on resize and clamps to the viewport. A full-screen app
-is just a root sized `fill`, not a separate mode. This is the CLI/TUI hybrid —
-the shape of modern agent-style CLIs — exposed directly as `zcli.ui` /
-`context.ui()`.
+frame, so it re-lays-out on resize and clamps to the viewport. This is the
+CLI/TUI hybrid — the shape of modern agent-style CLIs — exposed directly as
+`zcli.ui` / `context.ui(.{})`.
+
+**Full-screen mode (ADR-0015).** When an app wants the whole terminal instead of
+sharing it — a `top`-style dashboard, an interactive form — the same node tree,
+layout, and diff run on the alternate screen: `context.uiFullScreen(.{})` (or
+`App.initFullScreen` standalone, which requires a `pub const panic =
+zcli.ui.panic` hook, enforced at compile time). `App.run` owns the
+`frame → nextEvent → update` loop — `view(arena, state)` builds the tree,
+`update(state, event)` mutates state for a key/resize/mouse/focus/paste event or
+a deadline-scheduled `null` tick and returns `keep`/`quit`, and an optional
+post-frame hook places the hardware cursor. On top sit focusable widgets
+(`TextInput`/`Select`/`Checkbox`/`Button`, immediate-mode structs routed by a
+single `handle`-returns-`bool` contract with caller-owned focus), overlays (a
+`stack` of z-layers with `center`), scrollable `viewport`s, and anchored popups
+(`probe`/`positioned`/`anchored`, flipping and clamping to stay on screen). On
+exit the shell's screen and scrollback return exactly as they were — the final
+frame does not persist. `emit` is a compile-time error here; everything is the
+frame.
 
 **Construction idiom (ADR-0014).** `context.X()` is the single front door for
 every output capability: `context.theme`, `context.prompts()`,
-`context.progress()`, `context.markdown()`, `context.ui()` each hand back an
+`context.progress()`, `context.markdown()`, `context.ui(.{})` each hand back an
 instance already wired to the command's streams, allocator, io, and theme. The
 stateless packages (`prompts`, `progress`, `markdown`) are value bundles — the
 import *is* the type — so standalone use fills the same fields by hand;

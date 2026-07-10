@@ -51,6 +51,7 @@
         <a href="#declare">Declaring a theme</a>
         <a href="#palette">The palette</a>
         <a href="#tokens">Component tokens</a>
+        <a href="#surface">Surface chrome</a>
         <p class="toc-label">What it styles</p>
         <a href="#help">Help output</a>
         <a href="#output">Command output</a>
@@ -68,7 +69,7 @@
           <p>zcli's theme system is built on three layers:</p>
           <ul>
             <li><b>A palette</b> maps 13 semantic roles — <code>success</code>, <code>err</code>, <code>command</code>, <code>accent</code>, … — to complete styles (color <em>and</em> attributes like bold or dim).</li>
-            <li><b>Component tokens</b> style specific UI elements — the prompt cursor, the spinner, the progress-bar fill. Each token defaults to a palette role, so one palette change restyles everything; any token can also be overridden individually.</li>
+            <li><b>Component tokens</b> style specific UI elements — the prompt cursor, the spinner, the progress-bar fill, the chrome behind a full-screen panel. Each token defaults to a palette role, so one palette change restyles everything; any token can also be overridden individually.</li>
             <li><b>Capability detection</b> renders every style at the terminal's level: true color, 256 color, 16 color, or plain text — and always respects <code>NO_COLOR</code>.</li>
           </ul>
         </section>
@@ -133,6 +134,41 @@
     },
 };</pre>
           </div>
+        </section>
+
+        <section id="surface">
+          <h2>Surface chrome</h2>
+          <p>Prompts and progress are line-oriented. A full-screen <a href="$site.page('ui').link()">UI</a> also draws <em>surfaces</em> — panels, modals, dropdowns, the border around a box. Those get their own token group, <code>surface</code>: the one place you set "the panel look" instead of repeating styles at every call site.</p>
+          <div class="table-scroll">
+          <table class="ptable">
+            <thead><tr><th>Token</th><th>Styles</th><th>Default</th></tr></thead>
+            <tbody>
+              <tr><td class="name">border</td><td class="desc">the color of a box or panel border (the glyph <em>shape</em> — <code>rounded</code>, <code>single</code> — stays a per-node choice)</td><td class="desc">the <code>accent</code> role — recolor your brand and every border follows</td></tr>
+              <tr><td class="name">panel</td><td class="desc">the opaque fill behind a panel or overlay's content</td><td class="desc">a literal dark-gray background (no palette role owns a surface fill)</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>The point isn't just two more tokens — it's that <b>styling defaults derive from the theme</b>, resolved at compile time from your root <code>zcli_theme</code>. You rarely pass a <code>Style</code> at a call site at all. A bordered <code>ui.box</code> wears <code>surface.border</code> unless you override it; <code>ui.panel</code> wears both tokens, so a modal or dropdown reskins entirely from the theme with zero style mentions. Set the look once; every surface derives from it.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/main.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> zcli_theme: zcli.Theme = .{
+    .surface = .{
+        <span class="cm">// defaults: border → accent, panel → a dark-gray fill</span>
+        .border = .{ .role = .info }, <span class="cm">// point borders at a different role…</span>
+        .panel = .{ .style = .{ .background = .{ .indexed = <span class="num">234</span> } } }, <span class="cm">// …or pin a fill</span>
+    },
+};</pre>
+          </div>
+          <p>At the call site, chrome and semantic text both come straight from the theme — no <code>Style</code> literals, no plumbing:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">a full-screen frame</span><span class="lang">zig</span></div>
+<pre><span class="cm">// A modal whose border and fill derive from the theme's surface tokens.</span>
+<span class="kw">try</span> ui.<span class="fn">panel</span>(a, .{ .padding = .<span class="fn">all</span>(<span class="num">1</span>) }, children);
+
+<span class="cm">// ui.role pulls a palette role into any text node — one word, themed.</span>
+ui.<span class="fn">text</span>(ui.<span class="fn">role</span>(.success), <span class="str">"done"</span>);</pre>
+          </div>
+          <div class="callout"><b>Why compile-time</b> The app theme is a comptime constant reached through the root declaration (the same <code>std_options</code> idiom), so every default resolves where it's declared — the <code>ui</code>, <code>prompts</code>, and <code>progress</code> packages read your theme with no value threaded through their APIs. Custom chrome costs nothing at runtime, and a package compiled into your app picks up <em>your</em> theme automatically.</div>
         </section>
 
         <section id="help">

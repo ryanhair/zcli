@@ -49,10 +49,14 @@
         <a href="#intro">Overview</a>
         <a href="#model">The frame model</a>
         <a href="#nodes">Nodes &amp; sizing</a>
-        <p class="toc-label">Using it</p>
+        <p class="toc-label">The hybrid</p>
         <a href="#app">The App</a>
-        <a href="#widgets">Widgets</a>
+        <a href="#widgets">Progress widgets</a>
         <a href="#resize">Resize &amp; piping</a>
+        <p class="toc-label">Full-screen</p>
+        <a href="#fullscreen">Full-screen mode</a>
+        <a href="#forms">Focusable widgets</a>
+        <a href="#overlays">Overlays &amp; popups</a>
         <p class="toc-label">Details</p>
         <a href="#standalone">Standalone use</a>
         <a href="#try">Try it</a>
@@ -75,7 +79,7 @@
           <h2>The frame model</h2>
           <p>The live region is rebuilt from scratch every frame: the node tree is allocated into a per-frame arena, measured (constraints down, sizes up), painted onto a cell surface, and diffed against the previous surface. An unchanged frame writes <em>zero</em> bytes; a ticking spinner repaints one cell, not the screen.</p>
           <p>Two verbs drive it. <code>emit</code> writes a static line that scrolls up and away; <code>frame</code> replaces the live region with a new node tree. <code>emit</code> is the only way to write while a region is up — it erases the region, prints the line into scrollback, and repaints the region below it.</p>
-          <div class="callout"><b>Not a full-screen TUI</b> "Above the scrollback" describes where the live region sits, not how big it is — it's a full layout tree, one line to the whole viewport (a full-screen app is just a root sized <code>fill</code>). This is the same static-above / live-below split as Ink's <code>&lt;Static&gt;</code> and dynamic render: the engine shares the terminal and never switches to the alternate screen, so scrollback is preserved. The trade is that there's one live region and it's always the bottom-most live content — top-anchored or multiple independent live regions would need the alt-screen model this deliberately avoids.</div>
+          <div class="callout"><b>Two modes, one engine</b> "Above the scrollback" describes where the live region sits in <em>hybrid</em> mode — the shape above. The region is a full layout tree, one line to the whole viewport, sharing the terminal with your scrollback and never switching to the alternate screen (the same static-above / live-below split as Ink's <code>&lt;Static&gt;</code> and dynamic render). When you <em>do</em> want to take the terminal over — a <code>top</code>-style dashboard, an interactive form — the same node tree, layout, and diff run in <a href="#fullscreen"><b>full-screen mode</b></a>: alt-screen, raw input, an event loop, and nothing left behind on exit. Same vocabulary, different frame.</div>
           <div class="code">
             <div class="code-head"><span class="fname">a component is just a function</span><span class="lang">zig</span></div>
 <pre><span class="cm">// State lives in your structs; the frame is a pure function of it.</span>
@@ -97,7 +101,7 @@
           <table class="ptable">
             <thead><tr><th>Node</th><th>What it is</th></tr></thead>
             <tbody>
-              <tr><td class="name">box</td><td class="desc">the only container — <code>row</code> and <code>column</code> are boxes with a direction; carries <code>gap</code>, <code>padding</code>, and an optional <code>border</code></td></tr>
+              <tr><td class="name">box</td><td class="desc">the only container — <code>row</code>, <code>column</code>, and <code>stack</code> are boxes with a direction (<code>stack</code> overlaps its children into <a href="#overlays">z-layers</a>); carries <code>gap</code>, <code>padding</code>, and an optional <code>border</code></td></tr>
               <tr><td class="name">text</td><td class="desc">a styled string; <code>ui.textOpts</code> chooses <code>wrap</code> / <code>truncate</code> / <code>clip</code> and a fixed width</td></tr>
               <tr><td class="name">spacer</td><td class="desc">flexible empty space; put one before a node to right-align it, one on each side to center</td></tr>
               <tr><td class="name">custom</td><td class="desc">the escape hatch — a leaf that draws its own cells (this is how the progress bar is built)</td></tr>
@@ -106,14 +110,15 @@
           </div>
           <p>Every dimension is one of three words. <code>fit</code> shrinks to content, <code>len(n)</code> pins an exact column count, and <code>fill(weight)</code> shares leftover space by weight — so percentages are fill weights and right-alignment is a spacer, not special-cased geometry.</p>
           <div class="callout"><b>Whitespace</b> The default <code>.wrap</code> mode word-wraps and drops break spaces. Labels with significant whitespace — padded numbers, aligned columns — want <code>.clip</code> or <code>.truncate</code> via <code>ui.textOpts</code>.</div>
+          <p>Everything else is composition. <code>center</code> and <code>positioned</code> place a child with spacer scaffolding; <code>panel</code> is a box whose border and fill come from the <a href="$site.page('theming').link()">theme</a>; <code>viewport</code> scrolls content taller than its window; <code>probe</code> and <code>anchored</code> float a popup at a widget's rendered position. None of them is a new node kind — they're helpers built from the four above, so the engine core stays four kinds and three words.</p>
         </section>
 
         <section id="app">
           <h2>The App</h2>
-          <p>In a command, <code>context.ui()</code> returns a <code>zcli.ui.App</code> pre-wired to the command's stdout, allocator, theme capability, and TTY detection. The <code>App</code> owns everything stateful — the frame arena (<code>app.arena()</code>, reset when <code>frame()</code> returns), the live region's rows, the double-buffered surfaces, and the cursor (hidden while a region is up, parked at its top-left between calls, restored on <code>deinit</code>).</p>
+          <p>In a command, <code>context.ui(.{})</code> returns a <code>zcli.ui.App</code> pre-wired to the command's stdout, allocator, theme capability, and TTY detection. The <code>App</code> owns everything stateful — the frame arena (<code>app.arena()</code>, reset when <code>frame()</code> returns), the live region's rows, the double-buffered surfaces, and the cursor (hidden while a region is up, parked at its top-left between calls, restored on <code>deinit</code>).</p>
           <div class="code">
             <div class="code-head"><span class="fname">src/commands/deploy.zig</span><span class="lang">zig</span></div>
-<pre><span class="kw">var</span> app = <span class="kw">try</span> context.<span class="fn">ui</span>();
+<pre><span class="kw">var</span> app = <span class="kw">try</span> context.<span class="fn">ui</span>(.{});
 <span class="kw">defer</span> app.<span class="fn">deinit</span>(); <span class="cm">// restores the terminal; the final frame persists in scrollback</span>
 
 <span class="kw">try</span> app.<span class="fn">emit</span>(<span class="str">"compiled {s}"</span>, .{name});               <span class="cm">// static -> scrollback</span>
@@ -123,8 +128,8 @@
         </section>
 
         <section id="widgets">
-          <h2>Widgets</h2>
-          <p><code>ui.widgets</code> is the progress vocabulary as component functions: a spinner is a <code>text</code> node, a bar is one <code>custom</code> leaf, a multi-bar is a column of rows. No widget owns a repaint loop or hidden state — animation is your tick, progress is your fraction, the frame diff does the rest. Styling flows through the theme's <code>progress</code> tokens, the same ones the progress package reads.</p>
+          <h2>Progress widgets</h2>
+          <p><code>ui.widgets</code> is the progress vocabulary as component functions: a spinner is a <code>text</code> node, a bar is one <code>custom</code> leaf, a multi-bar is a column of rows. No widget owns a repaint loop or hidden state — animation is your tick, progress is your fraction, the frame diff does the rest. Styling flows through the theme's <code>progress</code> tokens, the same ones the progress package reads. (The interactive widgets — text fields, selects, checkboxes, buttons — live in the same namespace and are covered under <a href="#forms">full-screen</a>.)</p>
           <div class="code">
             <div class="code-head"><span class="fname">a bordered status frame</span><span class="lang">zig</span></div>
 <pre><span class="kw">const</span> a = app.<span class="fn">arena</span>();
@@ -154,6 +159,100 @@
           <p>When stdout is not a TTY — a pipe, a file, a CI log — there is no live region to repaint: <code>emit</code> lines print as normal, and a frame degrades to the plain lines it would draw. The same code path produces an interactive frame and a clean log.</p>
         </section>
 
+        <section id="fullscreen">
+          <h2>Full-screen mode</h2>
+          <p>The hybrid shares the terminal. Sometimes you want the whole thing — a <code>top</code>-style dashboard, a wizard, a full-screen form. That's the engine's second mode: <code>context.uiFullScreen(.{})</code> (or <code>App.initFullScreen</code> standalone) switches to the alternate screen and raw input, and the same node trees, layout, and diff run against the full viewport. On exit the shell's screen and scrollback come back exactly as they were — the final frame does <em>not</em> persist. That's the difference from hybrid, where the last frame stays in scrollback.</p>
+          <p>Instead of you calling <code>emit</code>/<code>frame</code> by hand, full-screen apps hand the loop to <code>app.run</code>. You supply two pure-ish functions and it owns the rest:</p>
+          <ul>
+            <li><b><code>view(arena, state)</code></b> — builds the whole screen as a node tree, exactly like a hybrid frame. Treat <code>state</code> as read-only here.</li>
+            <li><b><code>update(state, event)</code></b> — mutates <code>state</code> for a key, resize, mouse, focus, or paste, and returns <code>.keep</code> or <code>.quit</code>. A <code>null</code> event is the periodic tick.</li>
+          </ul>
+          <div class="code">
+            <div class="code-head"><span class="fname">a top-style dashboard</span><span class="lang">zig</span></div>
+<pre><span class="cm">// Required for full-screen: restore the terminal on a panic before the</span>
+<span class="cm">// trace prints. initFullScreen won't compile without it.</span>
+<span class="kw">pub const</span> panic = zcli.ui.panic;
+
+<span class="kw">fn</span> <span class="fn">view</span>(a: std.mem.Allocator, s: *State) !ui.Node {
+    <span class="cm">// ...build the whole screen from state (read-only here), like any frame</span>
+}
+
+<span class="kw">fn</span> <span class="fn">update</span>(s: *State, ev: ?ui.Event) !ui.Flow {
+    <span class="kw">const</span> e = ev <span class="kw">orelse</span> { s.<span class="fn">advance</span>(); <span class="kw">return</span> .keep; }; <span class="cm">// null = the tick</span>
+    <span class="kw">switch</span> (e) {
+        .key => |k| <span class="kw">switch</span> (k) {
+            .char => |c| <span class="kw">if</span> (c == <span class="str">'q'</span>) <span class="kw">return</span> .quit,
+            .up => s.<span class="fn">move</span>(-<span class="num">1</span>),
+            .down => s.<span class="fn">move</span>(<span class="num">1</span>),
+            <span class="kw">else</span> => {},
+        },
+        <span class="kw">else</span> => {}, <span class="cm">// .resize/.mouse/.focus/.paste — enable what you need</span>
+    }
+    <span class="kw">return</span> .keep;
+}
+
+<span class="kw">var</span> app = <span class="kw">try</span> context.<span class="fn">uiFullScreen</span>(.{ .mouse = <span class="num">true</span> });
+<span class="kw">defer</span> app.<span class="fn">deinit</span>();                          <span class="cm">// leaves the alt-screen — nothing persists</span>
+<span class="kw">try</span> app.<span class="fn">run</span>(context.io, &state, <span class="num">250</span>, view, update, <span class="num">null</span>); <span class="cm">// 250ms tick</span></pre>
+          </div>
+          <div class="callout"><b>The tick is a deadline</b> Pass <code>tick_ms</code> and <code>run</code> delivers a <code>null</code> event on a schedule — a clock for animating data. It's scheduled against a <em>deadline</em>, so a burst of keystrokes shrinks the next wait instead of resetting it: input can't starve the refresh. Pass <code>null</code> for a form or menu that should only wake on input. The final argument, <code>after_frame</code>, is an optional post-paint hook — its home use is placing the hardware cursor, below.</div>
+          <p>Events are opt-in past keys and resize: set <code>.mouse</code>, <code>.focus</code>, or <code>.paste</code> in the options to receive those. <code>emit</code> is a compile-time error in full-screen — there's no scrollback stream to write to; everything is the frame.</p>
+        </section>
+
+        <section id="forms">
+          <h2>Focusable widgets</h2>
+          <p>On top of the layout engine sits a small kit of interactive widgets — <code>TextInput</code>, <code>Select</code>, <code>Checkbox</code>, <code>Button</code> — in the same <code>ui.widgets</code> namespace. Each is a plain struct you keep in your own state: immediate mode all the way down, no retained widget tree, no framework-owned event bus. A widget gives you two methods:</p>
+          <ul>
+            <li><b><code>view(arena, opts)</code></b> — returns the widget's node for this frame; pass <code>.focused</code> so it draws its caret or highlight.</li>
+            <li><b><code>handle(key)</code></b> — returns whether it consumed the key. <em>That one bool is the entire routing model.</em></li>
+          </ul>
+          <p>Give the focused widget first crack at each key; an unconsumed key (Tab, Enter, Esc) is form-level navigation. Focus is yours to hold — an enum — and <code>focusNext</code>/<code>focusPrev</code> cycle it with wrap-around. That's the whole contract; there's no form object.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">routing a key through a form</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> Field = <span class="kw">enum</span> { user, role, submit };
+
+<span class="kw">fn</span> <span class="fn">update</span>(s: *State, ev: ?ui.Event) !ui.Flow {
+    <span class="kw">const</span> key = <span class="kw">switch</span> (ev <span class="kw">orelse</span> <span class="kw">return</span> .keep) { .key => |k| k, <span class="kw">else</span> => <span class="kw">return</span> .keep };
+
+    <span class="cm">// The focused widget gets first crack; handle() reports if it consumed the key.</span>
+    <span class="kw">switch</span> (s.focus) {
+        .user   => <span class="kw">if</span> (s.user.<span class="fn">handle</span>(key)) <span class="kw">return</span> .keep,
+        .role   => <span class="kw">if</span> (s.role.<span class="fn">handle</span>(key, roles.len, <span class="num">6</span>)) <span class="kw">return</span> .keep,
+        .submit => <span class="kw">if</span> (s.submit.<span class="fn">handle</span>(key)) <span class="kw">return</span> .quit, <span class="cm">// Enter/Space fires it</span>
+    }
+
+    <span class="cm">// Unconsumed → navigation.</span>
+    <span class="kw">switch</span> (key) {
+        .tab      => s.focus = ui.widgets.<span class="fn">focusNext</span>(Field, s.focus),
+        .back_tab => s.focus = ui.widgets.<span class="fn">focusPrev</span>(Field, s.focus),
+        .escape   => <span class="kw">return</span> .quit,
+        <span class="kw">else</span> => {},
+    }
+    <span class="kw">return</span> .keep;
+}</pre>
+          </div>
+          <p><code>Select</code> takes its options each frame (immediate mode) and a visible-row budget, and can run in <code>.wrap</code> mode for options that span multiple lines. <code>TextInput</code> carries a caller-owned buffer and can <code>.mask</code> its content for passwords.</p>
+          <div class="callout"><b>Hardware cursor</b> A focused text field reports its caret cell through <code>cursor_out</code> during render; the <code>after_frame</code> hook then places the real terminal cursor there with <code>app.cursorAt(...)</code>. The blinking block lands exactly where typing goes — the layout tree tells you the position, so you never track it by hand.</div>
+        </section>
+
+        <section id="overlays">
+          <h2>Overlays &amp; popups</h2>
+          <p>A <code>stack</code> box overlaps its children into layers, painted back to front. A layer with no background is transparent — the layers beneath show through its gaps — and a layer with a background is opaque. That single rule is the whole overlay system: a modal is an opaque <code>panel</code> composited over the base screen, with no absolute cursor addressing anywhere. It's just cells painted on top before the frame diff runs.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">a help modal over the screen</span><span class="lang">zig</span></div>
+<pre><span class="kw">return</span> ui.<span class="fn">stack</span>(a, .{}, &.{
+    base,                                    <span class="cm">// layer 0: the whole screen</span>
+    <span class="kw">try</span> ui.<span class="fn">center</span>(a, <span class="kw">try</span> ui.<span class="fn">panel</span>(a, .{ .padding = .<span class="fn">symmetric</span>(<span class="num">2</span>, <span class="num">1</span>) }, &.{
+        ui.<span class="fn">text</span>(.{ .bold = <span class="num">true</span> }, <span class="str">"Keys"</span>),
+        ui.<span class="fn">text</span>(.{}, <span class="str">"↑ / ↓   select"</span>),
+        ui.<span class="fn">text</span>(.{}, <span class="str">"?       close"</span>),
+    })),                                     <span class="cm">// layer 1: an opaque, themed modal, centered</span>
+});</pre>
+          </div>
+          <p>Two more helpers build on the same idea. A <code>viewport</code> is a scrolling window onto content taller than the space it's granted — a log pane, a long list — with the scroll offset held in your own state. And <code>probe</code> reports where a node actually rendered, which <code>anchored</code> then uses to pin a popup to it: a dropdown that opens under a button, <b>flips above</b> when it would run off the bottom, and <b>clamps left</b> when it would run off the right — smart placement as pure composition, no new primitive.</p>
+          <div class="callout"><b>Chrome comes from the theme</b> <code>ui.panel</code>'s border and fill, and any bordered box's border color, derive from your app's <code>zcli_theme</code> surface tokens — so a modal or dropdown needs no style mentions to look right, and one theme change reskins every overlay at once. See <a href="$site.page('theming').link().suffix('#surface')">theming → surface chrome</a>.</div>
+        </section>
+
         <section id="standalone">
           <h2>Standalone use</h2>
           <p>Like every zcli package, <code>ui</code> works without the framework. Outside a command there's no <code>context</code>, so construct the <code>App</code> yourself — it owns heap state (surfaces, retained scrollback), so it takes an explicit <code>init</code>/<code>deinit</code> rather than the value-bundle shape of the stateless packages:</p>
@@ -171,11 +270,14 @@
 
         <section id="try">
           <h2>Try it</h2>
-          <p>Two runnable examples live in the <code>ui</code> package — both want a real terminal. Resize the window while either runs and watch the live frame re-lay-out as the visible static tail rewraps with it.</p>
+          <p>Five runnable examples live in the <code>ui</code> package — all want a real terminal. Resize the window while the hybrid ones run and watch the live frame re-lay-out as the visible static tail rewraps with it; press <code>?</code> in the full-screen demo, Tab through the form.</p>
           <div class="code">
             <div class="code-head"><span class="fname">packages/ui</span><span class="lang">sh</span></div>
-<pre>zig build run-demo     <span class="cm"># deploy-style task frame: spinner, task list, live gauges</span>
-zig build run-hybrid   <span class="cm"># the Claude-Code shape: streaming prose + a live multi-bar</span></pre>
+<pre>zig build run-demo        <span class="cm"># hybrid: deploy-style task frame — spinner, task list, gauges</span>
+zig build run-hybrid      <span class="cm"># hybrid: the Claude-Code shape — streaming prose + a live multi-bar</span>
+zig build run-fullscreen  <span class="cm"># full-screen: a top-style table, scrolling viewport, help overlay</span>
+zig build run-form        <span class="cm"># full-screen: a focusable form — text fields, select, checkbox, button</span>
+zig build run-popup       <span class="cm"># full-screen: anchored dropdowns that flip and clamp on screen</span></pre>
           </div>
           <div class="nextlinks">
             <a href="https://github.com/ryanhair/zcli/blob/main/docs/adr/0013-terminal-native-layout-engine.md" target="_blank" rel="noopener"><span class="k">→ design</span><span class="t">ADR-0013: the layout engine</span></a>
