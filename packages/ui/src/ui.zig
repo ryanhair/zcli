@@ -231,6 +231,84 @@ pub fn positioned(a: std.mem.Allocator, x: u16, y: u16, child: Node) !Node {
     });
 }
 
+/// Smart-placement options for `anchored`.
+pub const AnchorOpts = struct {
+    /// Which side of the anchor to open on when there's room. `anchored` flips
+    /// to the other side only when the preferred side doesn't fit and the other
+    /// does; otherwise it keeps the preferred side (and clips off-screen).
+    prefer: enum { below, above } = .below,
+    /// Which edges to align horizontally: `.left` pins the popup's left edge to
+    /// the anchor's left, `.right` pins their right edges. Either way the popup
+    /// is then clamped so its right edge stays on screen (never shifted past x=0).
+    halign: enum { left, right } = .left,
+};
+
+/// Pin `popup` to `anchor`, keeping it on screen — the smart counterpart to
+/// `positioned` (ADR-0019). It opens below the anchor, but **flips above** when
+/// it would run off the bottom (and above fits), and **clamps** left when it
+/// would run off the right edge. Returns a `stack` layer, so an anchored popup
+/// is `stack{ base, anchored(probed_rect, .{}, popup) }`.
+///
+/// The geometry runs at RENDER time, where a `stack` layer is granted the whole
+/// viewport as its region (ADR-0016) — so the popup can be `measure`d and placed
+/// against the real viewport, the two facts `view` lacks. `anchor` is a probed
+/// rect (ADR-0019), reflecting the previous frame; exact for a stable anchor.
+pub fn anchored(a: std.mem.Allocator, anchor: Rect, opts: AnchorOpts, popup: Node) !Node {
+    const ctx = try a.create(Anchor);
+    ctx.* = .{ .popup = popup, .anchor = anchor, .opts = opts };
+    return .{
+        .kind = .{ .custom = .{
+            .context = ctx,
+            .measureFn = Anchor.measureFn,
+            .renderFn = Anchor.renderFn,
+        } },
+    };
+}
+
+const Anchor = struct {
+    popup: Node,
+    anchor: Rect,
+    opts: AnchorOpts,
+
+    /// Take the whole offer so the `stack` grants this leaf the full viewport.
+    fn measureFn(_: *anyopaque, _: *const RenderCtx, limits: Limits) Size {
+        return .{ .w = limits.max_w, .h = limits.max_h };
+    }
+
+    fn renderFn(context: *anyopaque, rctx: *const RenderCtx, region: Region) anyerror!void {
+        const self: *const Anchor = @ptrCast(@alignCast(context));
+        const vw = region.width();
+        const vh = region.height();
+        const size = measure(rctx, &self.popup, .{ .max_w = vw, .max_h = vh });
+        if (size.w == 0 or size.h == 0) return;
+
+        // Vertical: keep the preferred side, flipping to the other only when the
+        // preferred one overflows and the other fits; else keep it and clip.
+        const below_y = self.anchor.y +| self.anchor.h;
+        const above_y = self.anchor.y -| size.h;
+        const fits_below = @as(u32, below_y) + size.h <= vh;
+        const fits_above = self.anchor.y >= size.h;
+        const y = switch (self.opts.prefer) {
+            .below => if (!fits_below and fits_above) above_y else below_y,
+            .above => if (!fits_above and fits_below) below_y else above_y,
+        };
+
+        // Horizontal: align an edge to the anchor, then clamp on screen. `want_x`
+        // and `max_x` go through i32 because a right-align or a popup wider than
+        // the viewport can push the ideal x negative.
+        const want_x: i32 = switch (self.opts.halign) {
+            .left => @as(i32, self.anchor.x),
+            .right => @as(i32, self.anchor.x) + self.anchor.w - size.w,
+        };
+        const max_x: i32 = @max(0, @as(i32, vw) - size.w);
+        const x: u16 = @intCast(@max(0, @min(want_x, max_x)));
+
+        // `sub` clips against the region, so a kept-but-overflowing popup (the
+        // "doesn't fit either side" case) trims gracefully instead of erroring.
+        try render(rctx, &self.popup, region.sub(.{ .x = x, .y = y, .w = size.w, .h = size.h }));
+    }
+};
+
 pub const ViewportOpts = struct {
     /// Caller-owned vertical scroll offset, in rows (immediate mode — the app
     /// holds it in state and adjusts it on ↑/↓/PageUp/PageDown). Clamped to the

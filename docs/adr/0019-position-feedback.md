@@ -33,6 +33,21 @@ Status: accepted
 > measured size — and the dumb `positioned` clips gracefully off-screen. Demo: a
 > new `popup.zig` dropdown (button → menu anchored below), integrating probe +
 > stack + positioned + `Select`.
+>
+> **Increment 4 (landed): smart placement.** The deferred nicety from increment 3:
+> `ui.anchored(a, anchor, opts, popup)` pins a popup to a probed rect and keeps it
+> on screen — it **flips above** the anchor when the popup would run off the bottom
+> (and above fits), and **clamps** horizontally when it would run off the right
+> edge (never past x=0). `positioned` stays the dumb primitive; `anchored` is the
+> smart layer over it. The trick that makes flip/clamp possible without threading
+> the terminal size through `view`: `anchored` is a **custom leaf** (like `probe`/
+> `viewport`), so at *render* time it's granted the whole viewport as its region
+> (a `stack` layer gets the full inner region, ADR-0016) — enough to `measure` the
+> popup and place it against the real viewport, the two facts `view` lacks. The
+> `AnchorOpts { prefer: .below|.above, halign: .left|.right }` policy: flip only
+> when the preferred side doesn't fit and the other does (else keep-and-clip);
+> horizontal aligns an edge then clamps. `popup.zig` grew a second, corner
+> dropdown whose menu flips above and clamps left, demonstrating both live.
 
 The layout engine (ADR-0013) is immediate-mode: `view(state)` builds a fresh,
 anonymous node tree every frame; `measure`+`render` lay it out and paint it; the
