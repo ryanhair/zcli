@@ -76,13 +76,38 @@ try ui.row(a, .{ .gap = 1 }, &.{
 });
 ```
 
+## Full-screen mode
+
+The hybrid shares the screen; a full-screen TUI takes it over on the same
+engine ([ADR-0015](../../docs/adr/0015-full-screen-tui-mode.md)). `context.uiFullScreen()`
+(or `ui.App.initFullScreen`) enters the alternate screen and raw mode, grants
+the frame the whole viewport, and drives a `view → nextEvent → update` loop
+(`app.run` owns it for you, with an optional tick clock). `emit` is an error —
+there's no scrollback to flow into — and a panic hook is required and
+compile-time-enforced (`pub const panic = zcli.ui.panic;`). On exit the shell
+comes back exactly as it was; the final frame does not persist.
+
+Interactive widgets for full-screen forms and menus live in `ui.widgets`
+alongside the progress ones ([ADR-0018](../../docs/adr/0018-focusable-widgets.md)):
+`TextInput` (optional password `mask`), `Checkbox`, `Select` (scrolling window,
+truncation, optional multi-line `wrap`), and `Button`. Each is a plain struct
+you embed in your state with a `view(a, opts) !Node` + `handle(key) bool`
+contract; focus is caller-owned (an enum), and an unconsumed key is form-level
+navigation. Overlays (`stack` + `center`, [ADR-0016](../../docs/adr/0016-overlays-z-layers.md)),
+scrolling panes (`viewport`, [ADR-0017](../../docs/adr/0017-scrollable-viewports.md)),
+and anchored popups (`probe` + `positioned` / `anchored`, [ADR-0019](../../docs/adr/0019-position-feedback.md))
+are all composition on the same tree.
+
 ## Try it
 
 ```sh
-zig build run-demo     # deploy-style task frame; needs a real terminal
-zig build run-hybrid   # the Claude-Code shape: streaming prose + live multi-bar
-zig build test         # pure layout tests + vterm golden-frame tests
+zig build run-demo        # hybrid: deploy-style task frame; needs a real terminal
+zig build run-hybrid      # hybrid: the Claude-Code shape — streaming prose + live multi-bar
+zig build run-fullscreen  # full-screen: a top-style dashboard — viewport, tick, overlay, mouse
+zig build run-form        # full-screen: focusable form — text fields, select, checkbox, button
+zig build run-popup       # full-screen: anchored dropdowns that flip above / clamp on screen
+zig build test            # pure layout tests + vterm golden-frame tests
 ```
 
-Resize the terminal while either runs: the live frame re-lays-out and the
-visible static tail rewraps with it.
+Resize the terminal while a hybrid example runs: the live frame re-lays-out and
+the visible static tail rewraps with it.
