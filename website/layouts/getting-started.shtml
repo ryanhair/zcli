@@ -121,8 +121,8 @@
         <div>
           <p class="col-label">Run</p>
           <div class="cmdbox">
-            <pre><span class="pr">$</span> curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh</pre>
-            <button onclick="cp(this,'curl -fsSL https://raw.githubusercontent.com/ryanhair/zcli/main/install.sh | sh')">copy</button>
+            <pre><span class="pr">$</span> curl -fsSL https://zcli.sh/install.sh | sh</pre>
+            <button onclick="cp(this,'curl -fsSL https://zcli.sh/install.sh | sh')">copy</button>
           </div>
           <p class="note">The script detects your platform, pulls the matching binary from the latest GitHub release, verifies the checksum when available, and marks it executable.</p>
         </div>
@@ -148,13 +148,13 @@
           <div class="term-body">
 <pre><span class="c-prompt">$</span> <span class="c-cmd">curl</span> -fsSL <span class="c-mut">…/install.sh</span> | sh
 <span class="c-flag">==></span> Detecting platform… macos / aarch64
-<span class="c-flag">==></span> Fetching latest release… zcli v0.18.0
+<span class="c-flag">==></span> Fetching latest release… zcli v0.19.0
 <span class="c-flag">==></span> Downloading binary…
 <span class="c-flag">==></span> Verifying checksum…
 <span class="c-ok">  ✓</span> Installed zcli to ~/.local/bin/zcli
 
 <span class="c-prompt">$</span> <span class="c-cmd">zcli</span> --version
-zcli 0.18.0
+zcli 0.19.0
 
 <span class="c-prompt">$</span> <span class="c-cmd">zcli</span> --help
 <span class="c-mut">Build beautiful CLIs with zcli — scaffold</span>
