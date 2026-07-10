@@ -21,10 +21,14 @@ The token hierarchy follows design-system practice:
   attributes (errors are bold, links italic, muted is dim). The palette field
   defaults are the single source of truth for the default look.
 - **`StyleRef`** is either a role reference or a literal style. Component
-  tokens — `PromptTheme` (cursor, selected, marker, hint) and `ProgressTheme`
-  (spinner, bar fill/empty) — default to role references, so one palette edit
-  flows through every component, while any single token can still be pinned.
-- **`Theme`** aggregates `{ palette, prompts, progress }`. **`ThemeContext`**
+  tokens — `PromptTheme` (cursor, selected, marker, hint), `ProgressTheme`
+  (spinner, bar fill/empty), and `SurfaceTheme` (panel, border) — default to
+  role references, so one palette edit flows through every component, while any
+  single token can still be pinned. `SurfaceTheme` is the full-screen chrome
+  layer (ADR-0013→0019): `border` follows `accent`; `panel` is a literal fill
+  (`indexed 236`), since no foreground palette role owns a surface background.
+- **`Theme`** aggregates `{ palette, prompts, progress, surface }`.
+  **`ThemeContext`**
   pairs a `*const Theme` with detected `Capabilities` (the struct previously
   misnamed `Theme`) and is the one value render paths consume: it answers both
   "what does this role look like" and "what can this terminal display".
@@ -58,6 +62,11 @@ palette apply to code written before the theme existed.
   the custom color, stays plain when piped, and honors NO_COLOR.
 - Prompts and progress adopt their component tokens in follow-up changes;
   the schema ships with the Theme so the contract is stable.
+- Full-screen surface chrome (panels, overlays, their borders) resolves through
+  `SurfaceTheme` rather than per-node literals; the `ui` core is untouched —
+  callers resolve a token and assign it to `border_style`/`.style`, the same
+  call-site pattern the focusable widgets already use for `PromptTheme`. The
+  border *glyph shape* stays a per-node `BorderStyle` (structure, not palette).
 - Runtime theme *switching* (config file, `--theme` flag) is deliberately out
   of scope: a comptime theme is what keeps help compilation zero-cost. If
   demand appears, help rendering can move to the runtime formatting path.

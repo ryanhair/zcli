@@ -29,6 +29,11 @@ const roles = [_][]const u8{ "admin", "developer", "viewer", "auditor", "billing
 // Fewer visible rows than roles, so the select scrolls and shows its ↑/↓ gutter.
 const role_rows: u16 = 3;
 
+// One theme drives the whole screen's look: the panel border reads from its
+// surface tokens, and every widget's focus highlight from its prompt tokens
+// (widgets default to this same theme). Change it in one place to reskin.
+const th: ui.widgets.Theme = .{};
+
 const State = struct {
     user_buf: [48]u8 = undefined,
     pass_buf: [48]u8 = undefined,
@@ -78,7 +83,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
 
     const form = try ui.column(a, .{
         .border = .rounded,
-        .border_style = .{ .foreground = .bright_cyan },
+        .border_style = th.surface.border.resolve(th.palette),
         .padding = .symmetric(2, 1),
         .gap = 1,
         .width = .{ .len = 46 },
