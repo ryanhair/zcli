@@ -443,3 +443,52 @@ test "viewport shorter than its window leaves trailing rows untouched" {
     try testing.expectEqualStrings("    ", try rowString(&h, &s, 2)); // no content, untouched
     try testing.expectEqualStrings("ZZ  ", try rowString(&h, &s, 3)); // shows through
 }
+
+// ============================================================================
+// probe (position feedback, ADR-0019)
+// ============================================================================
+
+test "probe reports its child's absolute rendered rect" {
+    var h = Harness.init();
+    defer h.deinit();
+    var s = try ui.Surface.init(testing.allocator, 12, 5);
+    defer s.deinit();
+
+    var rect: ui.Rect = undefined;
+    // Padding offsets the child; the probe must report the absolute rect.
+    const node = try ui.column(h.a(), .{ .padding = .{ .top = 1, .left = 2 } }, &.{
+        try ui.probe(h.a(), &rect, ui.textOpts(
+            .{ .wrap = .clip, .width = .{ .len = 4 }, .height = .{ .len = 1 } },
+            "abcd",
+        )),
+    });
+    try renderInto(&h, node, &s);
+
+    try testing.expectEqual(ui.Rect{ .x = 2, .y = 1, .w = 4, .h = 1 }, rect);
+    // ...and the child still painted where the rect says.
+    try testing.expectEqualStrings("abcd", (try rowString(&h, &s, 1))[2..6]);
+}
+
+test "probe is layout-transparent" {
+    var h = Harness.init();
+    defer h.deinit();
+    var with = try ui.Surface.init(testing.allocator, 10, 2);
+    defer with.deinit();
+    var without = try ui.Surface.init(testing.allocator, 10, 2);
+    defer without.deinit();
+
+    var rect: ui.Rect = undefined;
+    const plain = try ui.row(h.a(), .{ .gap = 1 }, &.{ ui.text(.{}, "hi"), ui.text(.{}, "yo") });
+    const probed = try ui.row(h.a(), .{ .gap = 1 }, &.{ ui.text(.{}, "hi"), try ui.probe(h.a(), &rect, ui.text(.{}, "yo")) });
+
+    try renderInto(&h, plain, &without);
+    try renderInto(&h, probed, &with);
+
+    // The frame renders cell-for-cell identically whether or not the probe is there.
+    var y: u16 = 0;
+    while (y < 2) : (y += 1) {
+        try testing.expectEqualStrings(try rowString(&h, &without, y), try rowString(&h, &with, y));
+    }
+    // The wrapped child sits after "hi" + gap: absolute x = 3.
+    try testing.expectEqual(@as(u16, 3), rect.x);
+}
