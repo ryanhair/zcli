@@ -3,7 +3,7 @@ const testing = std.testing;
 const zcli = @import("zcli.zig");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
-const levenshtein = @import("plugins/zcli_not_found/levenshtein.zig");
+const levenshtein = @import("levenshtein.zig");
 
 // ============================================================================
 // Security Test Framework - Corrected Version

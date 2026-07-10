@@ -1,6 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
-const levenshtein = @import("levenshtein.zig");
+const levenshtein = zcli.levenshtein;
 
 /// zcli-not-found Plugin
 ///
@@ -30,8 +30,10 @@ pub fn onError(
         defer context.allocator.free(attempted_command);
         try generateCommandNotFoundHelp(context, attempted_command, visible_commands.items);
 
-        // We've shown helpful suggestions, but let the error continue to propagate
-        // This allows other plugins or the default handler to also respond if needed
+        // We've rendered the styled block (the single source of truth for
+        // command-not-found). Let the error keep propagating so the entry point
+        // exits non-zero — but the framework must NOT print its own bare
+        // fallback line on top of ours (see the routing site).
         return false;
     }
 

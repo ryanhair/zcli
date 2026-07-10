@@ -6,6 +6,7 @@ const logging = @import("../logging.zig");
 const args_parser = @import("../args.zig");
 const diagnostic_errors = @import("../diagnostic_errors.zig");
 const type_utils = @import("../type_utils.zig");
+const levenshtein = @import("../levenshtein.zig");
 const ZcliError = diagnostic_errors.ZcliError;
 const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 const ResourceLimits = @import("../resource_limits.zig").ResourceLimits;
@@ -409,6 +410,50 @@ fn applyEnvValue(comptime T: type, target: *T, env_value: []const u8) bool {
     return false;
 }
 
+/// Nearest-match long option names for an unknown `--option`, for the
+/// OptionUnknown diagnostic's "did you mean" list. Uses the same edit-distance
+/// engine as the command not-found plugin. Returns up to `max` names within a
+/// small distance, closest first; an empty slice when nothing is close.
+///
+/// Allocated on `allocator` (the run's arena) — the diagnostic is rendered
+/// before that arena is freed, so callers do not free the result.
+fn suggestLongOptions(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    unknown: []const u8,
+    allocator: std.mem.Allocator,
+) []const []const u8 {
+    const max = 3;
+    const max_distance = 3;
+    const field_count = std.meta.fields(OptionsType).len;
+    if (field_count == 0) return &.{};
+
+    const Scored = struct { name: []const u8, distance: usize };
+    var scored: [field_count]Scored = undefined;
+    var count: usize = 0;
+
+    inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+        const name = comptime utils.effectiveLongName(meta, field.name);
+        const distance = levenshtein.editDistance(unknown, name);
+        if (distance <= max_distance and distance < name.len) {
+            scored[count] = .{ .name = name, .distance = distance };
+            count += 1;
+        }
+    }
+    if (count == 0) return &.{};
+
+    std.sort.pdq(Scored, scored[0..count], {}, struct {
+        fn lessThan(_: void, a: Scored, b: Scored) bool {
+            return a.distance < b.distance;
+        }
+    }.lessThan);
+
+    const limit = @min(count, max);
+    const result = allocator.alloc([]const u8, limit) catch return &.{};
+    for (0..limit) |i| result[i] = scored[i].name;
+    return result;
+}
+
 /// Parse a long option with metadata support (--option or --option=value)
 fn parseLongOptions(
     comptime OptionsType: type,
@@ -483,7 +528,7 @@ fn parseLongOptions(
                     if (diag) |d| d.* = .{ .OptionMissingValue = .{
                         .option_name = option_name,
                         .is_short = false,
-                        .expected_type = @typeName(field.type),
+                        .expected_type = diagnostic_errors.expectedTypeName(field.type),
                     } };
                     return error.MissingOptionValue;
                 }
@@ -503,7 +548,7 @@ fn parseLongOptions(
                         .option_name = option_name,
                         .is_short = false,
                         .provided_value = value,
-                        .expected_type = @typeName(field.type),
+                        .expected_type = diagnostic_errors.expectedTypeName(field.type),
                     } };
                     return err;
                 };
@@ -544,7 +589,7 @@ fn parseLongOptions(
         if (diag) |d| d.* = .{ .OptionUnknown = .{
             .option_name = option_name,
             .is_short = false,
-            .suggestions = &.{},
+            .suggestions = suggestLongOptions(OptionsType, meta, option_name, allocator),
         } };
         return error.UnknownOption;
     }
@@ -668,7 +713,7 @@ fn parseShortOptionsWithMeta(
                             if (diag) |d| d.* = .{ .OptionMissingValue = .{
                                 .option_name = options_part[0..1],
                                 .is_short = true,
-                                .expected_type = @typeName(field.type),
+                                .expected_type = diagnostic_errors.expectedTypeName(field.type),
                             } };
                             return error.MissingOptionValue;
                         }
@@ -688,7 +733,7 @@ fn parseShortOptionsWithMeta(
                                 .option_name = options_part[0..1],
                                 .is_short = true,
                                 .provided_value = value,
-                                .expected_type = @typeName(field.type),
+                                .expected_type = diagnostic_errors.expectedTypeName(field.type),
                             } };
                             return err;
                         };

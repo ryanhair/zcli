@@ -164,11 +164,67 @@ pub fn hasDiagnostic(err: anyerror) bool {
     return false;
 }
 
+/// The expectation string a diagnostic should carry for a field of type `T`.
+///
+/// For enums this is a comptime-built variant list — `one of: a, b, c` — which
+/// `humanType` passes through verbatim. For everything else it is the raw
+/// `@typeName(T)`, which `humanType` maps to a friendly phrase at render time.
+/// Every parser site that fills a diagnostic's `expected_type` uses this so the
+/// enum-listing behavior is uniform.
+pub fn expectedTypeName(comptime T: type) []const u8 {
+    const Bare = switch (@typeInfo(T)) {
+        .optional => |o| o.child,
+        else => T,
+    };
+    return switch (@typeInfo(Bare)) {
+        .@"enum" => |e| comptime blk: {
+            var list: []const u8 = "one of: ";
+            for (e.fields, 0..) |f, i| {
+                list = list ++ (if (i == 0) "" else ", ") ++ f.name;
+            }
+            break :blk list;
+        },
+        else => @typeName(T),
+    };
+}
+
+fn allDigits(s: []const u8) bool {
+    for (s) |c| {
+        if (c < '0' or c > '9') return false;
+    }
+    return true;
+}
+
+/// Turn a Zig type name (as produced by `@typeName`, or an `expectedTypeName`
+/// enum list) into an expectation phrase an end user of the CLI can
+/// understand. This is the only place raw type strings are rendered, so all
+/// humanizing lives here.
+fn humanType(type_name: []const u8) []const u8 {
+    // Enum variant lists (from expectedTypeName) are already human-readable.
+    if (std.mem.startsWith(u8, type_name, "one of:")) return type_name;
+    if (std.mem.eql(u8, type_name, "[]const u8") or std.mem.eql(u8, type_name, "?[]const u8")) {
+        return "text";
+    }
+    // Strip a leading optional marker so `?u32` reads like `u32`.
+    const bare = if (type_name.len > 0 and type_name[0] == '?') type_name[1..] else type_name;
+    if (bare.len == 0) return "a value";
+    if (std.mem.eql(u8, bare, "bool")) return "true or false";
+    if (std.mem.eql(u8, bare, "usize") or std.mem.eql(u8, bare, "isize")) return "an integer";
+    switch (bare[0]) {
+        // iNN / uNN sized integer types (all chars after the prefix are digits).
+        'i', 'u' => if (bare.len > 1 and allDigits(bare[1..])) return "an integer",
+        // fNN float types.
+        'f' => if (bare.len > 1 and allDigits(bare[1..])) return "a number",
+        else => {},
+    }
+    return "a value";
+}
+
 /// Get a user-friendly description of a diagnostic
 pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator) ![]u8 {
     return switch (diagnostic) {
-        .ArgumentMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required argument '{s}' at position {d}. Expected type: {s}", .{ ctx.field_name, ctx.position + 1, ctx.expected_type }),
-        .ArgumentInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected type: {s}", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, ctx.expected_type }),
+        .ArgumentMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required argument '{s}' at position {d}. Expected {s}.", .{ ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
+        .ArgumentInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
         .ArgumentTooMany => |ctx| std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments, got {d}", .{ ctx.expected_count, ctx.actual_count }),
         .OptionUnknown => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name });
@@ -189,8 +245,8 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
                 break :blk base_msg;
             }
         },
-        .OptionMissingValue => |ctx| std.fmt.allocPrint(allocator, "Option '{s}{s}' requires a value of type: {s}", .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.expected_type }),
-        .OptionInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected type: {s}", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, ctx.expected_type }),
+        .OptionMissingValue => |ctx| std.fmt.allocPrint(allocator, "Option '{s}{s}' requires {s}.", .{ if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type) }),
+        .OptionInvalidValue => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected {s}.", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type) }),
         .OptionBooleanWithValue => |ctx| std.fmt.allocPrint(allocator, "Boolean option '{s}{s}' does not accept a value (got '{s}')", .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.provided_value }),
         .OptionDuplicate => |ctx| std.fmt.allocPrint(allocator, "Duplicate option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name }),
         .CommandNotFound => |ctx| blk: {
@@ -266,11 +322,12 @@ test "compile-time error/diagnostic sync validation" {
 test "diagnostic formatting" {
     const allocator = std.testing.allocator;
 
-    // Test argument error diagnostic
+    // Test argument error diagnostic: the raw `@typeName` is rendered as a
+    // human-readable expectation ("text"), not the Zig type name.
     const arg_diag = ZcliDiagnostic{ .ArgumentMissingRequired = .{
         .field_name = "username",
         .position = 0,
-        .expected_type = "string",
+        .expected_type = "[]const u8",
     } };
 
     const arg_msg = try formatDiagnostic(arg_diag, allocator);
@@ -278,7 +335,9 @@ test "diagnostic formatting" {
 
     try std.testing.expect(std.mem.indexOf(u8, arg_msg, "username") != null);
     try std.testing.expect(std.mem.indexOf(u8, arg_msg, "position 1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, arg_msg, "string") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arg_msg, "text") != null);
+    // The raw Zig type name never leaks to the user.
+    try std.testing.expect(std.mem.indexOf(u8, arg_msg, "[]const u8") == null);
 
     // Test option error diagnostic
     const opt_diag = ZcliDiagnostic{ .OptionUnknown = .{
@@ -293,4 +352,27 @@ test "diagnostic formatting" {
     try std.testing.expect(std.mem.indexOf(u8, opt_msg, "--verbose") != null);
     try std.testing.expect(std.mem.indexOf(u8, opt_msg, "Did you mean") != null);
     try std.testing.expect(std.mem.indexOf(u8, opt_msg, "verbosity") != null);
+}
+
+test "humanType maps Zig type names to human-readable expectations" {
+    try std.testing.expectEqualStrings("text", humanType("[]const u8"));
+    try std.testing.expectEqualStrings("text", humanType("?[]const u8"));
+    try std.testing.expectEqualStrings("an integer", humanType("u32"));
+    try std.testing.expectEqualStrings("an integer", humanType("i64"));
+    try std.testing.expectEqualStrings("an integer", humanType("?usize"));
+    try std.testing.expectEqualStrings("a number", humanType("f64"));
+    try std.testing.expectEqualStrings("true or false", humanType("bool"));
+    // Unknown / qualified type names fall back to a generic phrase.
+    try std.testing.expectEqualStrings("a value", humanType("some.module.Color"));
+    try std.testing.expectEqualStrings("a value", humanType("u"));
+    // Enum lists from expectedTypeName pass through verbatim.
+    try std.testing.expectEqualStrings("one of: red, green", humanType("one of: red, green"));
+}
+
+test "expectedTypeName lists enum variants" {
+    const Color = enum { red, green, blue };
+    try std.testing.expectEqualStrings("one of: red, green, blue", expectedTypeName(Color));
+    try std.testing.expectEqualStrings("one of: red, green, blue", expectedTypeName(?Color));
+    try std.testing.expectEqualStrings("[]const u8", expectedTypeName([]const u8));
+    try std.testing.expectEqualStrings("u32", expectedTypeName(u32));
 }

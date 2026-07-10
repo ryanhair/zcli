@@ -133,7 +133,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                             .field_name = field.name,
                             .position = field_index,
                             .provided_value = args[pos],
-                            .expected_type = @typeName(field_type),
+                            .expected_type = diagnostic_errors.expectedTypeName(field_type),
                         } };
                     }
                     return err;
@@ -153,7 +153,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                             .field_name = field.name,
                             .position = field_index,
                             .provided_value = args[pos],
-                            .expected_type = @typeName(field_type),
+                            .expected_type = diagnostic_errors.expectedTypeName(field_type),
                         } };
                     }
                     return err;
@@ -168,7 +168,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                 if (diag) |d| d.* = .{ .ArgumentMissingRequired = .{
                     .field_name = field.name,
                     .position = field_index,
-                    .expected_type = @typeName(field_type),
+                    .expected_type = diagnostic_errors.expectedTypeName(field_type),
                 } };
                 return ZcliError.ArgumentMissingRequired;
             }
@@ -180,7 +180,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                         .field_name = field.name,
                         .position = field_index,
                         .provided_value = args[pos],
-                        .expected_type = @typeName(field_type),
+                        .expected_type = diagnostic_errors.expectedTypeName(field_type),
                     } };
                 }
                 return err;
