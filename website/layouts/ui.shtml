@@ -202,7 +202,7 @@
 
         <section id="forms">
           <h2>Focusable widgets</h2>
-          <p>On top of the layout engine sits a small kit of interactive widgets — <code>TextInput</code>, <code>Select</code>, <code>Checkbox</code>, <code>Button</code> — in the same <code>ui.widgets</code> namespace. Each is a plain struct you keep in your own state: immediate mode all the way down, no retained widget tree, no framework-owned event bus. A widget gives you two methods:</p>
+          <p>On top of the layout engine sits a kit of interactive widgets — <code>TextInput</code>, <code>TextArea</code>, <code>Select</code>, <code>Table</code>, <code>Tabs</code>, <code>Checkbox</code>, <code>Button</code> — in the same <code>ui.widgets</code> namespace. Each is a plain struct you keep in your own state: immediate mode all the way down, no retained widget tree, no framework-owned event bus. A widget gives you two methods:</p>
           <ul>
             <li><b><code>view(arena, opts)</code></b> — returns the widget's node for this frame; pass <code>.focused</code> so it draws its caret or highlight.</li>
             <li><b><code>handle(key)</code></b> — returns whether it consumed the key. <em>That one bool is the entire routing model.</em></li>
@@ -232,7 +232,8 @@
     <span class="kw">return</span> .keep;
 }</pre>
           </div>
-          <p><code>Select</code> takes its options each frame (immediate mode) and a visible-row budget, and can run in <code>.wrap</code> mode for options that span multiple lines. <code>TextInput</code> carries a caller-owned buffer and can <code>.mask</code> its content for passwords.</p>
+          <p><code>Select</code> takes its options each frame (immediate mode) and a visible-row budget, and can run in <code>.wrap</code> mode for options that span multiple lines. <code>TextInput</code> carries a caller-owned buffer and can <code>.mask</code> its content for passwords; <code>TextArea</code> is its multi-line sibling — soft wrap at the granted width, visual-row arrows, Enter inserting a newline, and vertical scroll to keep the caret in view. <code>Table</code> is a read-only data grid: <code>Dim</code>-sized columns the layout engine distributes, a themed header, a selectable/scrolling body with PgUp/PgDn paging and cell truncation. <code>Tabs</code> is a stateless tab-bar row (the chrome only; you own the content panes) with ←/→ and number-key selection. A <code>Select</code> or <code>Table</code> — and a <code>viewport</code> — can opt into a proportional <code>scrollbar</code> in the right gutter (off by default, so content width stays stable).</p>
+          <p>Manual <code>switch (focus)</code> dispatch scales badly past a dozen widgets. <code>FocusRing(State)</code> derives the ring from your state's widget fields at comptime — any field whose type has a <code>handle</code> method — and gives you a reified <code>Focus</code> enum, wrapping <code>next</code>/<code>prev</code>, and a <code>dispatch(state, focus, key, extras)</code> that routes the key to the focused widget. It's sugar over the switch above — no framework loop, no registry, fully bypassable.</p>
           <div class="callout"><b>Hardware cursor</b> A focused text field reports its caret cell through <code>cursor_out</code> during render; the <code>after_frame</code> hook then places the real terminal cursor there with <code>app.cursorAt(...)</code>. The blinking block lands exactly where typing goes — the layout tree tells you the position, so you never track it by hand.</div>
         </section>
 
@@ -250,7 +251,7 @@
     })),                                     <span class="cm">// layer 1: an opaque, themed modal, centered</span>
 });</pre>
           </div>
-          <p>Two more helpers build on the same idea. A <code>viewport</code> is a scrolling window onto content taller than the space it's granted — a log pane, a long list — with the scroll offset held in your own state. And <code>probe</code> reports where a node actually rendered, which <code>anchored</code> then uses to pin a popup to it: a dropdown that opens under a button, <b>flips above</b> when it would run off the bottom, and <b>clamps left</b> when it would run off the right — smart placement as pure composition, no new primitive.</p>
+          <p>Two more helpers build on the same idea. A <code>viewport</code> is a scrolling window onto content taller than the space it's granted — a log pane, a long list — with the scroll offset held in your own state, and an opt-in <code>scrollbar</code> that paints a proportional thumb in a reserved right column. And <code>probe</code> reports where a node actually rendered, which <code>anchored</code> then uses to pin a popup to it: a dropdown that opens under a button, <b>flips above</b> when it would run off the bottom, and <b>clamps left</b> when it would run off the right — smart placement as pure composition, no new primitive.</p>
           <div class="callout"><b>Chrome comes from the theme</b> <code>ui.panel</code>'s border and fill, and any bordered box's border color, derive from your app's <code>zcli_theme</code> surface tokens — so a modal or dropdown needs no style mentions to look right, and one theme change reskins every overlay at once. See <a href="$site.page('theming').link().suffix('#surface')">theming → surface chrome</a>.</div>
         </section>
 

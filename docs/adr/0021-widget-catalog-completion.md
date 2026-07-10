@@ -1,6 +1,6 @@
 # Completing the widget catalog: Table, Tabs, TextArea, a focus ring, a scrollbar
 
-Status: proposed
+Status: accepted
 
 ADR-0018 established the widget contract and shipped the form controls
 (`TextInput`, `Checkbox`, `Select`, `Button`); ADR-0019 closed the full-screen
