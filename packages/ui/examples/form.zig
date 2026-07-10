@@ -25,9 +25,19 @@ pub const panic = ui.panic;
 const Field = enum { user, pass, role, remember, submit };
 const field_count = @typeInfo(Field).@"enum".fields.len;
 
-const roles = [_][]const u8{ "admin", "developer", "viewer", "auditor", "billing", "support" };
-// Fewer visible rows than roles, so the select scrolls and shows its ↑/↓ gutter.
-const role_rows: u16 = 3;
+// Descriptive roles: the longer ones wrap to two lines in the field, so the
+// select runs in `wrap` mode (physical-row windowing) rather than one row each.
+const roles = [_][]const u8{
+    "admin (all permissions)",
+    "developer (read/write code and deploy to staging environments)",
+    "viewer (read-only across the workspace)",
+    "auditor (read-only plus access to the full audit log)",
+    "billing (manage plans, invoices, and payment methods)",
+    "support (impersonate users to reproduce reported issues)",
+};
+// A physical-row budget (wrapped mode): enough for a few options, so the select
+// scrolls and shows its ↑/↓ gutter.
+const role_rows: u16 = 6;
 
 const State = struct {
     user_buf: [48]u8 = undefined,
@@ -100,6 +110,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
             .focused = state.focus == .role,
             .options = &roles,
             .height = role_rows,
+            .wrap = true,
         }))),
         try ui.probe(a, state.rect(.remember), try state.remember.view(a, .{
             .focused = state.focus == .remember,

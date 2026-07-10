@@ -36,6 +36,28 @@ Status: accepted
 > rather than a `fill` label, so the row still measures to its intrinsic width.
 > Deferred: full multi-line/wrapped options (a physical-row windowing rewrite,
 > like `prompts`' `list_render` — no full-screen consumer needs it yet).
+>
+> **Increment 5 (landed): `Select` multi-line / wrapped options.** Opt in with
+> `wrap = true`: options that overflow the field wrap to several physical rows
+> (a hang indent under the label — the continuation lines' marker cells stay
+> blank), and `height` becomes a *physical-row budget*. The visible window is
+> chosen by growing *whole options* out from the cursor until the budget is used
+> (`growWindow`, the ui-side mirror of `prompts`' `list_render.viewport`), so the
+> wrap path is cursor-anchored like a `prompts` list rather than persistent-scroll
+> like the single-line path. That difference is forced, not chosen: persistent
+> scroll needs each option's wrapped height, which needs the granted width, which
+> `handle` never sees — so `handle` is unchanged and the wrap window derives from
+> `highlighted` alone each frame. Rendered by a custom leaf (`WrapSelectView`),
+> because only a leaf's `renderFn` learns the width `view` can't; this reverses
+> increment 4's "render own window, skip the scratch surface" rationale, which
+> was explicitly premised on single-line (row index == option index). Overflow
+> arrows carry over in physical-row terms (↑ on the first painted row, ↓ on the
+> last, `↕` when the whole window is one row). The single-line path — truncation,
+> persistent scroll, arrows — is untouched; `wrap` defaults to `false`. The one
+> genuinely reusable primitive (paint-to-scratch → copy a visible row slice) was
+> already factored out as `Region.copyRows` (ADR-0017); `viewport` and this leaf
+> are two thin peers over it, so `viewport` is left alone rather than overloaded
+> with cursor-following list logic for an audience of one.
 
 ADR-0013/0015 named a focusable widget library as a clean deferral. This is the
 first increment, and it settles the one hard question: how do interactive,
@@ -117,9 +139,7 @@ identity — exactly what this avoids.
   share the vocabulary — `prompts` is neither merged nor replaced.
 - **Next:** the widget catalog now covers the common form controls
   (`TextInput`/`Checkbox`/`Select`/`Button`), with `Select` truncation + overflow
-  arrows landed (increment 4). The one remaining `Select` capability is full
-  multi-line/wrapped options — a physical-row windowing rewrite (like `prompts`'
-  `list_render`), deferred until a full-screen consumer needs it. Still deferred
-  across the library: mouse click-to-focus and a hardware cursor, both of which
-  need layout to expose measured widget positions (the same feedback the
-  anchored-popup deferral waits on).
+  arrows (increment 4) and multi-line/wrapped options (increment 5) both landed —
+  the `Select` capability set is complete. Mouse click-to-focus and the hardware
+  cursor also landed (ADR-0019). The library-wide deferrals that remained are
+  closed; further work is new widgets, not gaps in the existing ones.
