@@ -305,7 +305,7 @@ test "deploy command" {
 }
 ```
 
-`result.term` is a real ANSI-parsing terminal emulator ([vterm](packages/vterm/)). Two more tiers — subprocess integration tests and snapshot tests — are covered in [docs/TESTING.md](docs/TESTING.md).
+`result.term` is a real ANSI-parsing terminal emulator ([vterm](packages/vterm/)). Two more tiers — subprocess integration tests and snapshot tests — are covered at [zcli.sh/testing](https://zcli.sh/testing/).
 
 ## Documentation generation
 

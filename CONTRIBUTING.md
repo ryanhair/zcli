@@ -50,9 +50,15 @@ zig build test
 
 ## Where to start reading
 
+Internal docs live in the repo:
+
 - [docs/DESIGN.md](docs/DESIGN.md) — how the framework fits together
 - [docs/BUILD.md](docs/BUILD.md) — the build-time codegen pipeline
-- [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) — the error model and diagnostics
-- [docs/TESTING.md](docs/TESTING.md) — the three testing tiers and when to use each
-- [docs/COMMANDS.md](docs/COMMANDS.md) / [docs/PLUGINS.md](docs/PLUGINS.md) — quick repo summaries; the full user-facing reference lives at [zcli.sh](https://zcli.sh)
 - [docs/adr/](docs/adr/) — why things are the way they are
+
+User-facing docs live on the website ([zcli.sh](https://zcli.sh)) — the repo copies (`docs/COMMANDS.md`, `docs/PLUGINS.md`, `docs/TESTING.md`, `docs/ERROR_HANDLING.md`) are quick summaries that link to it:
+
+- [zcli.sh/docs](https://zcli.sh/docs/) — commands, args & options, the context
+- [zcli.sh/plugins](https://zcli.sh/plugins/) — using and writing plugins
+- [zcli.sh/testing](https://zcli.sh/testing/) — the three testing tiers and when to use each
+- [zcli.sh/errors](https://zcli.sh/errors/) — the error model and diagnostics
