@@ -34,6 +34,7 @@ const RenderCtx = node_mod.RenderCtx;
 const Region = surface_mod.Region;
 const Style = surface_mod.Style;
 const Point = surface_mod.Point;
+const Rect = surface_mod.Rect;
 const Key = terminal.Key;
 
 pub const Theme = theme_mod.Theme;
@@ -1162,6 +1163,10 @@ pub const Table = struct {
     /// First visible body row — persistent, maintained by `handle`.
     scroll: usize = 0,
 
+    /// Non-scrolling rows `view` paints above the body (just the column header).
+    /// `rowAt` subtracts these so a click maps to a body row, not the header.
+    pub const header_rows: u16 = 1;
+
     /// A column: a header label and a width in the existing `Dim` vocabulary.
     pub const Column = struct {
         header: []const u8,
@@ -1206,6 +1211,24 @@ pub const Table = struct {
         }
         self.scroll = scrollFor(self.scroll, self.highlighted, visible, row_count);
         return true;
+    }
+
+    /// Map a click onto the body row it landed on, or `null` if it missed the
+    /// body (the header row, or outside the table). `rect` is the table's rendered
+    /// rect (from `ui.probe`) and `y` is the click's row — both in 0-based surface
+    /// coordinates. Mouse reports are 1-based, so pass `mouse.y - 1`.
+    ///
+    /// This exists because `view` paints its column header as the table's first
+    /// row (`header_rows`), inside the same rect `probe` reports: a caller doing
+    /// `row = y - rect.y` would be off by the header and select the row below the
+    /// click. `rowAt` subtracts the header and adds `scroll`, so the returned index
+    /// is into the caller's full row slice. It does not bound against the row
+    /// count — the caller clamps (a click below the last populated row is theirs to
+    /// reject); it only rejects the header and rows past the rendered rect.
+    pub fn rowAt(self: *const Table, rect: Rect, y: u16) ?usize {
+        if (y < rect.y + header_rows) return null; // header or above
+        if (y >= rect.y + rect.h) return null; // below the table
+        return self.scroll + (y - rect.y - header_rows);
     }
 
     pub fn view(self: *const Table, a: std.mem.Allocator, opts: ViewOpts) !Node {
