@@ -218,6 +218,55 @@ lowest: CLI argument > environment variable > default value.
 Values come from the environ threaded down from `process.Init` — the
 framework performs no ambient `getenv`.
 
+**Option Constraints (cross-field):**
+
+Some rules span more than one option. zcli expresses them with two constraints,
+each in its natural home (ADR-0022):
+
+- `meta.exclusive` (command level) — a list of *sets*; at most one member of
+  each set may be supplied.
+- `meta.options.<field>.requires` (field level) — a list of option field names
+  that must also be supplied whenever this field is (a directional dependency).
+
+```zig
+pub const Options = struct {
+    json: bool = false,
+    yaml: bool = false,
+    xml: bool = false,
+    output: ?[]const u8 = null,
+    output_format: ?enum { pretty, compact } = null,
+};
+
+pub const meta = .{
+    .exclusive = .{
+        .{ .json, .yaml, .xml },                        // at most one of these
+    },
+    .options = .{
+        .output_format = .{ .requires = .{.output} },   // needs --output
+    },
+};
+```
+
+Both key off the same notion of "supplied" that required options use — CLI flag,
+`.env` variable, or config file — not the option's *value*. Options are named as
+enum literals (`.output`) — the same way an option is keyed elsewhere in `meta` —
+checked at compile time with `@hasField` (a typo is a build error).
+Further comptime guards reject the nonsensical: a field that lists itself in
+`requires`, a set with fewer than two members or a duplicated member, and a
+*required* option placed in an `exclusive` set (it is always supplied, so it
+could never be one of several mutually-exclusive choices).
+
+At runtime the checks run after every source is applied, in order:
+missing-required → `requires` → `exclusive`. A violation is reported like any
+other parse error and is interceptable by `onError` hooks:
+
+- `Options '--json' and '--yaml' cannot be used together.`
+- `Option '--output-format' requires '--output'.`
+
+Exactly-one-of-a-mode needs no constraint: an enum with no default
+(`format: enum { json, yaml, xml }`) is already exactly-one, and `?enum … = null`
+is at-most-one.
+
 **Context Structure:**
 
 The context provides access to system resources and framework features:

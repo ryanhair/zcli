@@ -855,11 +855,41 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
         if (field_info.is_required) {
             try buf_fmt.write(" (required)", .{});
         }
+        if (field_info.requires) |deps| {
+            try buf_fmt.write(" (requires ", .{});
+            for (deps, 0..) |dep, di| {
+                if (di > 0) try buf_fmt.write(", ", .{});
+                try writeDashedFlag(&buf_fmt, dep);
+            }
+            try buf_fmt.write(")", .{});
+        }
+        try buf_fmt.write("\n", .{});
+    }
+
+    // Mutually-exclusive sets, listed once each under the option lines.
+    for (module_info.exclusive) |set| {
+        try buf_fmt.write("    Mutually exclusive: ", .{});
+        for (set, 0..) |member, mi| {
+            if (mi > 0) try buf_fmt.write(", ", .{});
+            try writeDashedFlag(&buf_fmt, member);
+        }
         try buf_fmt.write("\n", .{});
     }
 
     var al = aw.toArrayList();
     return try al.toOwnedSlice(context.allocator);
+}
+
+/// Write an option field name as its `--dashed-flag`, converting underscores to
+/// dashes (matching how option names render above).
+fn writeDashedFlag(buf_fmt: anytype, field_name: []const u8) !void {
+    var name_buf: [64]u8 = undefined;
+    if (field_name.len > name_buf.len) {
+        try buf_fmt.write("--{s}", .{field_name});
+        return;
+    }
+    for (field_name, 0..) |c, i| name_buf[i] = if (c == '_') '-' else c;
+    try buf_fmt.write("<flag>--{s}</flag>", .{name_buf[0..field_name.len]});
 }
 
 test {
@@ -907,6 +937,39 @@ test "help never renders auto-generated --no- negation flags" {
     // default-true bool: negation shown, positive hidden.
     try std.testing.expect(std.mem.indexOf(u8, help, "--no-color") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "--color") == null);
+}
+
+test "help renders requires markers and mutually-exclusive sets" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    const module_info = zcli.CommandModuleInfo{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "json", .is_optional = false, .is_array = false, .type_name = "bool", .default_value = "false" },
+            .{ .name = "yaml", .is_optional = false, .is_array = false, .type_name = "bool", .default_value = "false" },
+            .{ .name = "output", .is_optional = true, .is_array = false, .type_name = "?[]const u8" },
+            .{ .name = "output_format", .is_optional = true, .is_array = false, .type_name = "?[]const u8", .requires = &.{"output"} },
+        },
+        .exclusive = &.{&.{ "json", "yaml" }},
+    };
+
+    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    defer allocator.free(help);
+
+    // The dependent option shows its requirement (dash-converted).
+    try std.testing.expect(std.mem.indexOf(u8, help, "requires ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--output") != null);
+    // The exclusive set is listed once.
+    try std.testing.expect(std.mem.indexOf(u8, help, "Mutually exclusive:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--yaml") != null);
 }
 
 // Note: Integration tests for handleGlobalOption and help command execution

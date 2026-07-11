@@ -14,6 +14,8 @@ pub const ZcliError = error{
     OptionBooleanWithValue,
     OptionDuplicate,
     OptionMissingRequired,
+    OptionMutuallyExclusive,
+    OptionMissingDependency,
 
     // Command routing errors
     CommandNotFound,
@@ -91,6 +93,19 @@ pub const ZcliDiagnostic = union(enum) {
         option_name: []const u8,
         expected_type: []const u8,
     },
+    /// Two members of a `meta.exclusive` set were both supplied. Names are the
+    /// effective long flag names (without the leading `--`), static lifetime.
+    OptionMutuallyExclusive: struct {
+        first: []const u8,
+        second: []const u8,
+    },
+    /// A field declaring `meta.options.<field>.requires` was supplied without one
+    /// of its dependencies. Names are the effective long flag names (without the
+    /// leading `--`), static lifetime.
+    OptionMissingDependency: struct {
+        option_name: []const u8,
+        required_name: []const u8,
+    },
 
     // Command routing errors
     CommandNotFound: struct {
@@ -144,6 +159,7 @@ pub const ZcliDiagnostic = union(enum) {
 // Compile-time validation to ensure every error has a corresponding diagnostic
 // This prevents errors and diagnostics from getting out of sync
 comptime {
+    @setEvalBranchQuota(5000);
     const error_fields = std.meta.fields(ZcliError);
     const diagnostic_fields = std.meta.fields(std.meta.FieldEnum(ZcliDiagnostic));
 
@@ -302,6 +318,8 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
         .OptionBooleanWithValue => |ctx| std.fmt.allocPrint(allocator, "Boolean option '{s}{s}' does not accept a value (got '{s}')", .{ if (ctx.is_short) "-" else "--", ctx.option_name, ctx.provided_value }),
         .OptionDuplicate => |ctx| std.fmt.allocPrint(allocator, "Duplicate option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name }),
         .OptionMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required option '--{s}'. Expected {s}.", .{ ctx.option_name, humanType(ctx.expected_type) }),
+        .OptionMutuallyExclusive => |ctx| std.fmt.allocPrint(allocator, "Options '--{s}' and '--{s}' cannot be used together.", .{ ctx.first, ctx.second }),
+        .OptionMissingDependency => |ctx| std.fmt.allocPrint(allocator, "Option '--{s}' requires '--{s}'.", .{ ctx.option_name, ctx.required_name }),
         .CommandNotFound => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown command '{s}'", .{ctx.attempted_command});
 
@@ -447,6 +465,24 @@ test "OptionMissingRequired renders a humane message" {
     // The type is humanized, not leaked raw.
     try std.testing.expect(std.mem.indexOf(u8, msg, "text") != null);
     try std.testing.expect(std.mem.indexOf(u8, msg, "[]const u8") == null);
+}
+
+test "OptionMutuallyExclusive names both offending flags" {
+    const allocator = std.testing.allocator;
+    const diag = ZcliDiagnostic{ .OptionMutuallyExclusive = .{ .first = "json", .second = "yaml" } };
+    const msg = try formatDiagnostic(diag, allocator);
+    defer allocator.free(msg);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "--json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "--yaml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "cannot be used together") != null);
+}
+
+test "OptionMissingDependency names the supplied option and its missing requirement" {
+    const allocator = std.testing.allocator;
+    const diag = ZcliDiagnostic{ .OptionMissingDependency = .{ .option_name = "output-format", .required_name = "output" } };
+    const msg = try formatDiagnostic(diag, allocator);
+    defer allocator.free(msg);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "'--output-format' requires '--output'") != null);
 }
 
 test "invalid enum value messages carry a did-you-mean" {

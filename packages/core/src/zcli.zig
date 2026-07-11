@@ -156,6 +156,11 @@ pub const FieldInfo = struct {
     /// choices — else `null`. Help renders these as `one of: a, b, c`. Names are
     /// comptime string literals with static lifetime.
     enum_values: ?[]const []const u8 = null,
+    /// The option-field names this field depends on via
+    /// `meta.options.<field>.requires`, or `null`. Help renders these as
+    /// `(requires --dep)`. Raw field names (dash-converted at render), static
+    /// lifetime. Always null for positional args.
+    requires: ?[]const []const u8 = null,
 };
 
 /// Information about command module structure for plugin introspection
@@ -165,6 +170,9 @@ pub const CommandModuleInfo = struct {
     raw_meta_ptr: ?*const anyopaque = null, // Points to cmd.module.meta
     args_fields: []const FieldInfo = &.{}, // Runtime-safe field info
     options_fields: []const FieldInfo = &.{}, // Runtime-safe field info
+    /// The command's `meta.exclusive` mutually-exclusive sets — each a list of
+    /// Options field names. Help lists them under OPTIONS. Empty when none.
+    exclusive: []const []const []const u8 = &.{},
 };
 
 /// Execution context provided to commands and plugins — see context.zig,
@@ -434,7 +442,7 @@ pub fn validateMeta(
     }
 
     // Valid top-level meta fields
-    const valid_top_level = .{ "description", "examples", "args", "options", "hidden", "aliases" };
+    const valid_top_level = .{ "description", "examples", "args", "options", "hidden", "aliases", "exclusive" };
 
     // Validate top-level fields
     inline for (meta_info.@"struct".fields) |field| {
@@ -482,7 +490,7 @@ pub fn validateMeta(
             const option_meta_info = @typeInfo(@TypeOf(option_meta));
 
             if (option_meta_info == .@"struct") {
-                const valid_option_fields = .{ "description", "short", "name", "env" };
+                const valid_option_fields = .{ "description", "short", "name", "env", "requires" };
 
                 inline for (option_meta_info.@"struct".fields) |opt_field| {
                     const opt_is_valid = comptime blk: {
@@ -494,7 +502,55 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env");
+                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires");
+                    }
+                }
+
+                // `requires`: every named dependency must be an Options field,
+                // and a field may not require itself (a no-op that reads as a bug).
+                if (@hasField(@TypeOf(option_meta), "requires")) {
+                    for (option_utils.tupleToStrings(option_meta.requires)) |dep| {
+                        if (!@hasField(OptionsType, dep)) {
+                            @compileError(loc ++ "option '" ++ field.name ++ "' requires '" ++ dep ++
+                                "', which is not a field in the Options struct");
+                        }
+                        if (std.mem.eql(u8, dep, field.name)) {
+                            @compileError(loc ++ "option '" ++ field.name ++ "' lists itself in `requires`");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate 'exclusive' sets if present: each set names two or more distinct
+    // Options fields, at most one of which may be supplied. A *required* field
+    // (always present) can never satisfy "at most one", so it may not appear in
+    // a set at all.
+    if (@hasField(MetaType, "exclusive")) {
+        for (option_utils.exclusiveSets(meta), 0..) |set, set_i| {
+            if (set.len < 2) {
+                @compileError(loc ++ std.fmt.comptimePrint("`meta.exclusive` set #{d} lists {d} option(s); " ++
+                    "a mutually-exclusive set needs at least two members", .{ set_i + 1, set.len }));
+            }
+            for (set, 0..) |member, member_i| {
+                if (!@hasField(OptionsType, member)) {
+                    @compileError(loc ++ "`meta.exclusive` names '" ++ member ++
+                        "', which is not a field in the Options struct");
+                }
+                // No duplicate members within a set.
+                for (set[0..member_i]) |earlier| {
+                    if (std.mem.eql(u8, earlier, member)) {
+                        @compileError(loc ++ "`meta.exclusive` lists '" ++ member ++ "' twice in the same set");
+                    }
+                }
+                // A required option can't participate: it is always supplied, so
+                // no other member of its set could ever be.
+                inline for (@typeInfo(OptionsType).@"struct".fields) |opt_field| {
+                    if (comptime std.mem.eql(u8, opt_field.name, member) and option_utils.isRequiredOption(opt_field)) {
+                        @compileError(loc ++ "`meta.exclusive` includes required option '" ++ member ++
+                            "'. A required option is always supplied, so it can't be one of several mutually-" ++
+                            "exclusive choices — give it a default, make it optional, or drop it from the set.");
                     }
                 }
             }
@@ -594,6 +650,21 @@ test "validateCommand accepts a well-formed command" {
 //   command 'broken': meta.options describes 'nope', which is not a field in the Options struct
 //     pub const meta = .{ .options = .{ .nope = .{ .short = 'x' } } };
 //     pub const Options = struct { real: bool = false };
+//
+//   Option constraints (ADR-0022). Each guard below is verified by hand:
+//
+//   command 'broken': `meta.exclusive` names 'yamlx', which is not a field ...
+//     pub const meta = .{ .exclusive = .{.{ .json, .yamlx }} };
+//
+//   command 'broken': `meta.exclusive` includes required option 'region' ...
+//     pub const meta = .{ .exclusive = .{.{ .region, .json }} };
+//     pub const Options = struct { region: []const u8, json: bool = false };
+//
+//   command 'broken': `meta.exclusive` set #1 lists 1 option(s); a ... needs at least two
+//     pub const meta = .{ .exclusive = .{.{.json}} };
+//
+//   command 'broken': option 'a' lists itself in `requires`
+//     pub const meta = .{ .options = .{ .a = .{ .requires = .{.a} } } };
 
 test "Context creation" {
     const allocator = testing.allocator;
