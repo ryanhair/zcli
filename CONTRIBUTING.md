@@ -54,5 +54,5 @@ zig build test
 - [docs/BUILD.md](docs/BUILD.md) — the build-time codegen pipeline
 - [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) — the error model and diagnostics
 - [docs/TESTING.md](docs/TESTING.md) — the three testing tiers and when to use each
-- [docs/COMMANDS.md](docs/COMMANDS.md) / [docs/PLUGINS.md](docs/PLUGINS.md) — the user-facing reference the README links to
+- [docs/COMMANDS.md](docs/COMMANDS.md) / [docs/PLUGINS.md](docs/PLUGINS.md) — quick repo summaries; the full user-facing reference lives at [zcli.sh](https://zcli.sh)
 - [docs/adr/](docs/adr/) — why things are the way they are
