@@ -29,6 +29,9 @@ The terminal-native layout engine (ADR-0013), the migration of the interactive p
 - **progress**: rebuilt as an instance API (ADR-0014, mirroring Prompts): `@import("progress")` is the `Progress` type bundling writer/`io`/allocator/theme, with `.spinner()`/`.progressBar()`/`.multiBar()` constructors — in commands, `context.progress()`. Indicator types are no longer writer-generic and gained idempotent `deinit()`; `setText` → `setMessage`, `stopAndPersist` → `persist`; `SpinnerConfig.hide_cursor` removed (the engine owns the cursor); piped bars print one finish summary line instead of a line per update.
 - **prompts**: the `text` Preview callback returns one line of plain text from the prompt's frame arena (was: writes raw styled bytes) and is styled with the theme's hint token; `number`'s range errors render inside the prompt frame instead of scrolling past it. Rendering is engine-based throughout — navigation repaints only changed cells, long input wraps correctly, and answered lines persist as static output.
 
+### Fixed
+- **`ui.widgets.Table` click-to-select off-by-one** — clicking a table row selected the row *below* the cursor in the full-screen demo. Two things stacked: mouse reports are 1-based cells while surfaces are 0-based, and `Table.view` paints its column header as the table's first row inside the same rect `probe` reports — so a hand-rolled `row = click_y - rect.y` was off by one on both counts. Added `Table.rowAt(rect, y) ?usize`, which maps a 0-based click row through the header offset and the scroll window (and rejects clicks on the header or below the table), so click-to-select is one call with no layout magic numbers. `examples/fullscreen.zig` now uses `ui.probe` + `rowAt` (the same click-hit-test idiom `form.zig`/`popup.zig` already use). (ADR-0021)
+
 ## v0.19.0 — 2026-07-05
 
 Hardening and tooling release. Requires Zig 0.16.0.

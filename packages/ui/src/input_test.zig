@@ -369,6 +369,30 @@ test "Table scrolls to keep the selection in the window" {
     try testing.expectEqual(@as(usize, 2), t.scroll);
 }
 
+test "Table rowAt maps a click through the header offset and scroll window" {
+    // A table rendered at surface rect y=4, height 9 (1 header + 8 body rows).
+    const rect = ui.Rect{ .x = 1, .y = 4, .w = 20, .h = 9 };
+
+    var t = Table{}; // scroll 0
+    // The header row (rect.y) is not a body row.
+    try testing.expectEqual(@as(?usize, null), t.rowAt(rect, 4));
+    // The first body row (rect.y + header) maps to row 0 — NOT row 1. This is the
+    // off-by-one the fullscreen demo hit: a naive `y - rect.y` would return 1.
+    try testing.expectEqual(@as(?usize, 0), t.rowAt(rect, 5));
+    try testing.expectEqual(@as(?usize, 1), t.rowAt(rect, 6));
+    // Last visible body row (rect.y + h - 1); one past the rect is a miss.
+    try testing.expectEqual(@as(?usize, 7), t.rowAt(rect, 12));
+    try testing.expectEqual(@as(?usize, null), t.rowAt(rect, 13));
+    // Above the table is a miss (no underflow).
+    try testing.expectEqual(@as(?usize, null), t.rowAt(rect, 0));
+
+    // Scrolled: the same click rows map through the window top.
+    t.scroll = 20;
+    try testing.expectEqual(@as(?usize, 20), t.rowAt(rect, 5)); // first body → scroll+0
+    try testing.expectEqual(@as(?usize, 27), t.rowAt(rect, 12)); // last body → scroll+7
+    try testing.expectEqual(@as(?usize, null), t.rowAt(rect, 4)); // still the header
+}
+
 // ---- handle: Button --------------------------------------------------------
 
 test "Button activates on Enter and Space, ignores other keys" {

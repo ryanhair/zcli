@@ -72,6 +72,9 @@ const State = struct {
     /// its window top — both maintained by `Table.handle`, so `update` no longer
     /// tracks the selection or slides a scroll offset by hand.
     table: ui.widgets.Table = .{},
+    /// The process table's rendered rect (written by `ui.probe` each frame), so a
+    /// click hit-tests against the very layout it's reacting to — no magic offsets.
+    table_rect: ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     show_help: bool = false,
     procs: [proc_names.len]Proc = undefined,
     last_mouse: ?ui.Mouse = null,
@@ -147,13 +150,16 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
             row_cells[3] = p.name;
             cells.* = row_cells;
         }
-        try rows.append(a, try state.table.view(a, .{
+        // Wrap the table in `ui.probe` so its rendered rect lands in `table_rect`
+        // for click hit-testing (see `update`'s mouse arm). The probe is layout-
+        // transparent — it reports the rect, it doesn't change the layout.
+        try rows.append(a, try ui.probe(a, &state.table_rect, try state.table.view(a, .{
             .focused = true,
             .columns = &proc_columns,
             .rows = grid,
             .height = @intCast(visible_rows),
             .scrollbar = true,
-        }));
+        })));
     } else {
         try rows.append(a, ui.text(.{ .bold = true }, "About"));
         try rows.append(a, ui.text(.{}, ""));
@@ -241,13 +247,13 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
         },
         .mouse => |m| {
             state.last_mouse = m;
-            // Left-click a process row (process tab only): the table's body starts
-            // at y=5 (padding + title + tab bar + blank + header), so a click maps
-            // through the widget's scroll window.
-            if (state.active_tab == 0 and m.button == .left and m.action == .press and m.y >= 5) {
-                const vis = m.y - 5;
-                if (vis < visible_rows) {
-                    const row = @as(usize, state.table.scroll) + vis;
+            // Left-click a process row (process tab only). `Table.rowAt` maps the
+            // click through the probed rect and the widget's scroll window — it
+            // subtracts the header row itself, so there are no layout magic numbers
+            // here. Mouse reports are 1-based; `probe` rects are 0-based, so pass
+            // `m.y - 1`. `rowAt` rejects the header; we clamp against the row count.
+            if (state.active_tab == 0 and m.button == .left and m.action == .press) {
+                if (state.table.rowAt(state.table_rect, m.y - 1)) |row| {
                     if (row < state.procs.len) state.table.highlighted = row;
                 }
             }
