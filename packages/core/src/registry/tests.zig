@@ -1243,3 +1243,104 @@ test "global options: missing and invalid values produce diagnostics" {
     try testing.expectEqualStrings("abc", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("i64", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.expected_type);
 }
+
+// ============================================================================
+// Option constraints (ADR-0022) — end-to-end through the wired registry
+// ============================================================================
+
+// Captures the constraint diagnostics so the assertions can read the offending
+// names, and swallows the error so runQuiet returns cleanly.
+const ConstraintCapturePlugin = struct {
+    var captured_err: ?anyerror = null;
+    var captured_diag: ?zcli.ZcliDiagnostic = null;
+    var command_ran: bool = false;
+
+    pub fn reset() void {
+        captured_err = null;
+        captured_diag = null;
+        command_ran = false;
+    }
+
+    pub fn onError(context: anytype, err: anyerror) !bool {
+        captured_err = err;
+        captured_diag = context.diagnostic;
+        return true;
+    }
+};
+
+// --json/--yaml/--xml are mutually exclusive; --output-format requires --output.
+const ConstrainedCommand = struct {
+    pub const meta = .{
+        .description = "constrained",
+        .exclusive = .{.{ "json", "yaml", "xml" }},
+        .options = .{
+            .output_format = .{ .requires = .{"output"} },
+        },
+    };
+    pub const Args = struct {};
+    pub const Options = struct {
+        json: bool = false,
+        yaml: bool = false,
+        xml: bool = false,
+        output: ?[]const u8 = null,
+        output_format: ?enum { pretty, compact } = null,
+    };
+    pub fn execute(_: Args, _: Options, _: anytype) !void {
+        ConstraintCapturePlugin.command_ran = true;
+    }
+};
+
+fn constrainedApp() type {
+    return Registry.init(.{
+        .app_name = "constraints-test",
+        .app_version = "1.0.0",
+        .app_description = "option constraints",
+    })
+        .register("run", ConstrainedCommand)
+        .registerPlugin(ConstraintCapturePlugin)
+        .build();
+}
+
+test "constraints e2e: exclusive members together are rejected" {
+    var app = constrainedApp().init();
+    const env = std.process.Environ.Map.init(testing.allocator);
+
+    ConstraintCapturePlugin.reset();
+    try runQuiet(&app, &env, &.{ "run", "--json", "--yaml" });
+    try testing.expectEqual(@as(?anyerror, error.OptionMutuallyExclusive), ConstraintCapturePlugin.captured_err);
+    try testing.expectEqualStrings("json", ConstraintCapturePlugin.captured_diag.?.OptionMutuallyExclusive.first);
+    try testing.expectEqualStrings("yaml", ConstraintCapturePlugin.captured_diag.?.OptionMutuallyExclusive.second);
+    try testing.expect(!ConstraintCapturePlugin.command_ran);
+}
+
+test "constraints e2e: one exclusive member is fine" {
+    var app = constrainedApp().init();
+    const env = std.process.Environ.Map.init(testing.allocator);
+
+    ConstraintCapturePlugin.reset();
+    try runQuiet(&app, &env, &.{ "run", "--yaml" });
+    try testing.expectEqual(@as(?anyerror, null), ConstraintCapturePlugin.captured_err);
+    try testing.expect(ConstraintCapturePlugin.command_ran);
+}
+
+test "constraints e2e: requires without its dependency is rejected" {
+    var app = constrainedApp().init();
+    const env = std.process.Environ.Map.init(testing.allocator);
+
+    ConstraintCapturePlugin.reset();
+    try runQuiet(&app, &env, &.{ "run", "--output-format", "pretty" });
+    try testing.expectEqual(@as(?anyerror, error.OptionMissingDependency), ConstraintCapturePlugin.captured_err);
+    try testing.expectEqualStrings("output-format", ConstraintCapturePlugin.captured_diag.?.OptionMissingDependency.option_name);
+    try testing.expectEqualStrings("output", ConstraintCapturePlugin.captured_diag.?.OptionMissingDependency.required_name);
+    try testing.expect(!ConstraintCapturePlugin.command_ran);
+}
+
+test "constraints e2e: requires satisfied by its dependency runs" {
+    var app = constrainedApp().init();
+    const env = std.process.Environ.Map.init(testing.allocator);
+
+    ConstraintCapturePlugin.reset();
+    try runQuiet(&app, &env, &.{ "run", "--output-format", "pretty", "--output", "out.txt" });
+    try testing.expectEqual(@as(?anyerror, null), ConstraintCapturePlugin.captured_err);
+    try testing.expect(ConstraintCapturePlugin.command_ran);
+}

@@ -833,6 +833,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         }
                     }
                 }
+                const requires: ?[]const []const u8 = comptime blk: {
+                    if (@TypeOf(field_meta_map) == @TypeOf(null)) break :blk null;
+                    if (!@hasField(@TypeOf(field_meta_map), field.name)) break :blk null;
+                    const fm = @field(field_meta_map, field.name);
+                    if (isStringLike(@TypeOf(fm)) or !@hasField(@TypeOf(fm), "requires")) break :blk null;
+                    break :blk option_utils.tupleToStrings(fm.requires);
+                };
                 const default_value: ?[]const u8 = comptime blk: {
                     const dp = field.default_value_ptr orelse break :blk null;
                     const dv = @as(*const field.type, @ptrCast(@alignCast(dp))).*;
@@ -869,6 +876,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .default_value = default_value,
                     .is_required = is_option and comptime option_utils.isRequiredOption(field),
                     .enum_values = enum_values,
+                    .requires = requires,
                 });
             }
             return field_list.toOwnedSlice(allocator);
@@ -913,6 +921,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 .raw_meta_ptr = if (@hasDecl(Module, "meta")) &Module.meta else null,
                 .args_fields = if (@hasDecl(Module, "Args")) try buildFieldInfoList(Module.Args, args_meta, false, context.allocator) else &.{},
                 .options_fields = if (@hasDecl(Module, "Options")) try buildFieldInfoList(Module.Options, options_meta, true, context.allocator) else &.{},
+                .exclusive = comptime option_utils.exclusiveSets(if (@hasDecl(Module, "meta")) Module.meta else null),
             };
         }
 
@@ -993,6 +1002,31 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 if (try runOnErrorHooks(context, error.OptionMissingRequired)) return;
                 try reportParseError(context, diag);
                 return error.OptionMissingRequired;
+            }
+
+            // Cross-field constraints (ADR-0022), checked over the same
+            // provided-set + config snapshot. Order per ADR: requires, then
+            // exclusive (missing-required above ran first).
+            if (command_parser.firstMissingDependency(OptionsType, cmd_meta, before_config, options_instance, parse_result.options_provided)) |dep| {
+                const diag: zcli.ZcliDiagnostic = .{ .OptionMissingDependency = .{
+                    .option_name = dep.option_name,
+                    .required_name = dep.required_name,
+                } };
+                context.diagnostic = diag;
+                if (try runOnErrorHooks(context, error.OptionMissingDependency)) return;
+                try reportParseError(context, diag);
+                return error.OptionMissingDependency;
+            }
+
+            if (command_parser.firstExclusiveViolation(OptionsType, cmd_meta, before_config, options_instance, parse_result.options_provided)) |ex| {
+                const diag: zcli.ZcliDiagnostic = .{ .OptionMutuallyExclusive = .{
+                    .first = ex.first,
+                    .second = ex.second,
+                } };
+                context.diagnostic = diag;
+                if (try runOnErrorHooks(context, error.OptionMutuallyExclusive)) return;
+                try reportParseError(context, diag);
+                return error.OptionMutuallyExclusive;
             }
 
             // Execute. A handled error (onError returns true) is suppressed

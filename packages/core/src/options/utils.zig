@@ -649,6 +649,57 @@ pub fn shortCharForField(comptime meta: anytype, comptime field_name: []const u8
     return if (field_name.len > 0) field_name[0] else 0;
 }
 
+// ============================================================================
+// Cross-field option constraints — `meta.exclusive` and `.<field>.requires`
+// ============================================================================
+//
+// Both constraints (ADR-0022) name Options *field* names as string literals in
+// comptime tuples. These accessors flatten those tuples into plain
+// `[]const []const u8` slices with static lifetime, so the comptime validator,
+// the runtime constraint walks, and help rendering all read one uniform shape.
+
+/// Flatten a comptime tuple of string literals (`.{ "a", "b" }`) into a
+/// `[]const []const u8`. The result has static lifetime.
+pub fn tupleToStrings(comptime tuple: anytype) []const []const u8 {
+    return comptime blk: {
+        var list: []const []const u8 = &.{};
+        for (@typeInfo(@TypeOf(tuple)).@"struct".fields) |f| {
+            const s: []const u8 = @field(tuple, f.name);
+            list = list ++ &[_][]const u8{s};
+        }
+        break :blk list;
+    };
+}
+
+/// The `meta.options.<field>.requires` dependency list — the Options *field*
+/// names that must also be supplied whenever this field is — or null when the
+/// field declares no `requires`.
+pub fn requiresFor(comptime meta: anytype, comptime field_name: []const u8) ?[]const []const u8 {
+    if (@TypeOf(meta) == @TypeOf(null)) return null;
+    if (!@hasField(@TypeOf(meta), "options")) return null;
+    if (!@hasField(@TypeOf(meta.options), field_name)) return null;
+    const field_meta = @field(meta.options, field_name);
+    if (@TypeOf(field_meta) == []const u8) return null;
+    if (!@hasField(@TypeOf(field_meta), "requires")) return null;
+    return tupleToStrings(field_meta.requires);
+}
+
+/// The `meta.exclusive` mutually-exclusive sets — each a list of Options field
+/// names, at most one of which may be supplied — or an empty slice when none are
+/// declared.
+pub fn exclusiveSets(comptime meta: anytype) []const []const []const u8 {
+    if (@TypeOf(meta) == @TypeOf(null)) return &.{};
+    if (!@hasField(@TypeOf(meta), "exclusive")) return &.{};
+    return comptime blk: {
+        var sets: []const []const []const u8 = &.{};
+        for (@typeInfo(@TypeOf(meta.exclusive)).@"struct".fields) |set_field| {
+            const set = @field(meta.exclusive, set_field.name);
+            sets = sets ++ &[_][]const []const u8{tupleToStrings(set)};
+        }
+        break :blk sets;
+    };
+}
+
 /// Whether the long option `option_name` takes a value. Null means no field
 /// matches (an unknown option — the parser reports it with a diagnostic).
 pub fn longOptionTakesValue(
@@ -729,4 +780,34 @@ test "takes-value resolution matches parser semantics" {
     try std.testing.expectEqual(@as(?bool, true), shortOptionTakesValue(Options, meta, 'c'));
     try std.testing.expectEqual(@as(?bool, true), shortOptionTakesValue(Options, meta, 'o'));
     try std.testing.expectEqual(@as(?bool, null), shortOptionTakesValue(Options, meta, 'x'));
+}
+
+test "requiresFor flattens the dependency tuple, or null" {
+    const meta = .{ .options = .{
+        .output_format = .{ .requires = .{"output"} },
+        .verbose = .{ .description = "loud" },
+    } };
+    const reqs = requiresFor(meta, "output_format").?;
+    try std.testing.expectEqual(@as(usize, 1), reqs.len);
+    try std.testing.expectEqualStrings("output", reqs[0]);
+    // A field with no requires, and an unmentioned field, both yield null.
+    try std.testing.expect(requiresFor(meta, "verbose") == null);
+    try std.testing.expect(requiresFor(meta, "output") == null);
+    try std.testing.expect(requiresFor(null, "anything") == null);
+}
+
+test "exclusiveSets flattens the set-of-sets, or empty" {
+    const meta = .{ .exclusive = .{
+        .{ "json", "yaml", "xml" },
+        .{ "a", "b" },
+    } };
+    const sets = exclusiveSets(meta);
+    try std.testing.expectEqual(@as(usize, 2), sets.len);
+    try std.testing.expectEqual(@as(usize, 3), sets[0].len);
+    try std.testing.expectEqualStrings("json", sets[0][0]);
+    try std.testing.expectEqualStrings("xml", sets[0][2]);
+    try std.testing.expectEqualStrings("b", sets[1][1]);
+    // No exclusive declared → empty.
+    try std.testing.expectEqual(@as(usize, 0), exclusiveSets(.{}).len);
+    try std.testing.expectEqual(@as(usize, 0), exclusiveSets(null).len);
 }

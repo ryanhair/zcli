@@ -59,6 +59,36 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 The parser is generated from these structs at compile time, so an option's type is checked when parsing its value, and code that reads a nonexistent field fails to compile.
 
+## Option constraints
+
+Rules that span more than one option live in `meta`, keyed off whether an option was *supplied* (by CLI flag, `.env` variable, or config) — not its value:
+
+```zig
+pub const Options = struct {
+    json: bool = false,
+    yaml: bool = false,
+    xml: bool = false,
+    output: ?[]const u8 = null,
+    output_format: ?enum { pretty, compact } = null,
+};
+
+pub const meta = .{
+    // At most one member of each set may be supplied.
+    .exclusive = .{
+        .{ "json", "yaml", "xml" },
+    },
+    .options = .{
+        // --output-format is meaningless without --output.
+        .output_format = .{ .requires = .{"output"} },
+    },
+};
+```
+
+- **`meta.exclusive`** — a list of *sets*; supplying two members of one set is an error (`Options '--json' and '--yaml' cannot be used together.`). Write a two-element set for a one-off "A conflicts with B".
+- **`meta.options.<field>.requires`** — the options that must accompany this one. Directional: `output_format` needs `output`, but `output` alone is fine (`Option '--output-format' requires '--output'.`).
+
+Names are Options field names, verified at compile time (`@hasField`) — a typo is a build error. The compiler also rejects the nonsensical: a field that requires itself, an `exclusive` set with fewer than two (or duplicated) members, and a *required* option in an `exclusive` set (it's always supplied, so it could never be the "at most one"). You don't need a constraint for exactly-one-of-a-mode — an enum with no default (`format: enum { json, yaml, xml }`) already is exactly-one, and `?enum … = null` is at-most-one.
+
 ## Typing `context`
 
 `Context` is generated per-app from your config and plugin set, so it carries a

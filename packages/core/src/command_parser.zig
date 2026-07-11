@@ -221,6 +221,104 @@ pub fn firstMissingRequiredOption(
     return null;
 }
 
+/// Was this option supplied by *some* source — CLI/env (`provided[index]`) or
+/// config (its value changed between the before/after snapshot)? The same
+/// "provided" notion `firstMissingRequiredOption` uses, shared by the exclusive
+/// and requires constraint walks so all three agree on what "supplied" means.
+fn optionSupplied(
+    comptime OptionsType: type,
+    comptime field_name: []const u8,
+    comptime index: usize,
+    before_config: OptionsType,
+    after_config: OptionsType,
+    provided: [options_parser.optionFieldCount(OptionsType)]bool,
+) bool {
+    if (provided[index]) return true;
+    return !std.meta.eql(@field(before_config, field_name), @field(after_config, field_name));
+}
+
+/// The field index of `name` in `OptionsType` (comptime). Constraint names are
+/// validated with `@hasField` at build time, so this always resolves here.
+fn fieldIndex(comptime OptionsType: type, comptime name: []const u8) usize {
+    inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
+        if (comptime std.mem.eql(u8, field.name, name)) return i;
+    }
+    @compileError("no Options field named '" ++ name ++ "'");
+}
+
+/// A supplied option whose `meta.options.<field>.requires` dependency was not
+/// supplied. Names are effective long flag names (custom `.name` or dashed
+/// field name), static lifetime.
+pub const MissingDependency = struct {
+    option_name: []const u8,
+    required_name: []const u8,
+};
+
+/// The first unmet `requires` dependency (in field order, then dependency
+/// order), or null. A field's dependencies are enforced only when the field
+/// itself was supplied; each dependency must then be supplied by some source.
+/// Runs beside `firstMissingRequiredOption`, over the same `options_provided`
+/// bitset and config snapshot.
+pub fn firstMissingDependency(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    before_config: OptionsType,
+    after_config: OptionsType,
+    provided: [options_parser.optionFieldCount(OptionsType)]bool,
+) ?MissingDependency {
+    const info = @typeInfo(OptionsType);
+    if (info != .@"struct") return null;
+    inline for (info.@"struct".fields, 0..) |field, i| {
+        if (comptime option_utils.requiresFor(meta, field.name)) |req_list| {
+            if (optionSupplied(OptionsType, field.name, i, before_config, after_config, provided)) {
+                inline for (req_list) |dep| {
+                    const dep_i = comptime fieldIndex(OptionsType, dep);
+                    if (!optionSupplied(OptionsType, dep, dep_i, before_config, after_config, provided)) {
+                        return .{
+                            .option_name = comptime option_utils.effectiveLongName(meta, field.name),
+                            .required_name = comptime option_utils.effectiveLongName(meta, dep),
+                        };
+                    }
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/// Two members of a `meta.exclusive` set that were both supplied. Names are
+/// effective long flag names, static lifetime.
+pub const MutuallyExclusive = struct {
+    first: []const u8,
+    second: []const u8,
+};
+
+/// The first `meta.exclusive` set with two or more supplied members (reporting
+/// the first two in declaration order), or null. Runs beside
+/// `firstMissingRequiredOption`, after `requires`, over the same
+/// `options_provided` bitset and config snapshot.
+pub fn firstExclusiveViolation(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    before_config: OptionsType,
+    after_config: OptionsType,
+    provided: [options_parser.optionFieldCount(OptionsType)]bool,
+) ?MutuallyExclusive {
+    const sets = comptime option_utils.exclusiveSets(meta);
+    inline for (sets) |set| {
+        var first_name: ?[]const u8 = null;
+        inline for (set) |member| {
+            const idx = comptime fieldIndex(OptionsType, member);
+            if (optionSupplied(OptionsType, member, idx, before_config, after_config, provided)) {
+                const eff = comptime option_utils.effectiveLongName(meta, member);
+                if (first_name) |f| return .{ .first = f, .second = eff };
+                first_name = eff;
+            }
+        }
+    }
+    return null;
+}
+
 /// Check if an options type has any array fields that need cleanup
 fn hasArrayFields(comptime OptionsType: type) bool {
     const type_info = @typeInfo(OptionsType);
@@ -889,6 +987,112 @@ test "firstMissingRequiredOption: no required fields is never missing" {
     const before = Options{};
     const provided = [_]bool{ false, false };
     try std.testing.expect(firstMissingRequiredOption(Options, null, before, before, provided) == null);
+}
+
+test "firstMissingDependency: enforced only when the dependent option is supplied" {
+    const Options = struct {
+        output: ?[]const u8 = null,
+        output_format: ?enum { pretty, compact } = null,
+    };
+    const meta = .{ .options = .{ .output_format = .{ .requires = .{"output"} } } };
+    const before = Options{};
+
+    // output_format supplied, output not → violation.
+    {
+        const provided = [_]bool{ false, true };
+        const miss = firstMissingDependency(Options, meta, before, before, provided);
+        try std.testing.expect(miss != null);
+        try std.testing.expectEqualStrings("output-format", miss.?.option_name);
+        try std.testing.expectEqualStrings("output", miss.?.required_name);
+    }
+    // Both supplied → satisfied.
+    {
+        const provided = [_]bool{ true, true };
+        try std.testing.expect(firstMissingDependency(Options, meta, before, before, provided) == null);
+    }
+    // Dependent option absent → dependency not enforced.
+    {
+        const provided = [_]bool{ true, false };
+        try std.testing.expect(firstMissingDependency(Options, meta, before, before, provided) == null);
+    }
+    // Dependency satisfied by config (value changed between snapshots).
+    {
+        const after = Options{ .output = "out.txt" };
+        const provided = [_]bool{ false, true };
+        try std.testing.expect(firstMissingDependency(Options, meta, before, after, provided) == null);
+    }
+}
+
+test "firstMissingDependency: reports effective (custom/dashed) flag names" {
+    const Options = struct {
+        out: ?[]const u8 = null,
+        fmt: ?[]const u8 = null,
+    };
+    const meta = .{ .options = .{
+        .out = .{ .name = "output" },
+        .fmt = .{ .requires = .{"out"} },
+    } };
+    const before = Options{};
+    const provided = [_]bool{ false, true };
+    const miss = firstMissingDependency(Options, meta, before, before, provided);
+    try std.testing.expect(miss != null);
+    try std.testing.expectEqualStrings("fmt", miss.?.option_name);
+    // The dependency reports its custom flag name, not the field name.
+    try std.testing.expectEqualStrings("output", miss.?.required_name);
+}
+
+test "firstExclusiveViolation: at most one member of a set may be supplied" {
+    const Options = struct {
+        json: bool = false,
+        yaml: bool = false,
+        xml: bool = false,
+    };
+    const meta = .{ .exclusive = .{.{ "json", "yaml", "xml" }} };
+    const opts = Options{};
+
+    // Two members supplied → violation, reporting them in declaration order.
+    {
+        const provided = [_]bool{ true, false, true }; // json + xml
+        const ex = firstExclusiveViolation(Options, meta, opts, opts, provided);
+        try std.testing.expect(ex != null);
+        try std.testing.expectEqualStrings("json", ex.?.first);
+        try std.testing.expectEqualStrings("xml", ex.?.second);
+    }
+    // Exactly one supplied → fine.
+    {
+        const provided = [_]bool{ false, true, false };
+        try std.testing.expect(firstExclusiveViolation(Options, meta, opts, opts, provided) == null);
+    }
+    // None supplied → fine.
+    {
+        const provided = [_]bool{ false, false, false };
+        try std.testing.expect(firstExclusiveViolation(Options, meta, opts, opts, provided) == null);
+    }
+}
+
+test "firstExclusiveViolation: overlapping sets are checked independently" {
+    // a⊥b and b⊥c, but a+c is legal (non-clique graph, ADR example).
+    const Options = struct {
+        a: bool = false,
+        b: bool = false,
+        c: bool = false,
+    };
+    const meta = .{ .exclusive = .{ .{ "a", "b" }, .{ "b", "c" } } };
+    const opts = Options{};
+
+    // a + c: neither set has two supplied members → legal.
+    {
+        const provided = [_]bool{ true, false, true };
+        try std.testing.expect(firstExclusiveViolation(Options, meta, opts, opts, provided) == null);
+    }
+    // b + c: violates the second set.
+    {
+        const provided = [_]bool{ false, true, true };
+        const ex = firstExclusiveViolation(Options, meta, opts, opts, provided);
+        try std.testing.expect(ex != null);
+        try std.testing.expectEqualStrings("b", ex.?.first);
+        try std.testing.expectEqualStrings("c", ex.?.second);
+    }
 }
 
 test "parseArgs failure after array options were parsed does not leak them" {
