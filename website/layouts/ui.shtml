@@ -58,6 +58,7 @@
         <a href="#forms">Focusable widgets</a>
         <a href="#overlays">Overlays &amp; popups</a>
         <a href="#choose">Prompts vs widgets</a>
+        <a href="#ci">Works in CI</a>
         <p class="toc-label">Details</p>
         <a href="#standalone">Standalone use</a>
         <a href="#try">Try it</a>
@@ -271,6 +272,51 @@
           </table>
           </div>
           <p>In one line: <b>prompts are a question; widgets are a screen.</b> If you want to ask a few things and print a result, use <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> — they're shorter and degrade gracefully off a TTY. If you want a persistent, laid-out, keyboard-driven surface, build a <a href="#fullscreen">full-screen App</a> from the <a href="#forms">focusable widgets</a>.</p>
+        </section>
+
+        <section id="ci">
+          <h2>Works in CI</h2>
+          <p>The same code that draws an interactive UI at a terminal writes clean, greppable logs when it runs headless. There's no <code>--no-interactive</code> flag to remember and no branch to write in your command: zcli checks whether the stream is a TTY (<code>terminal.isStdinTty</code> for prompts, <code>terminal.isStdoutTty</code> for the App — both wired for you by <code>context.prompts()</code> and <code>context.ui()</code>) and picks the right shape. Pipe the command, redirect it to a file, or run it under CI and it degrades on its own.</p>
+          <div class="table-scroll">
+          <table class="ptable">
+            <thead><tr><th></th><th>at a terminal</th><th>piped / redirected / CI</th></tr></thead>
+            <tbody>
+              <tr><td class="name">prompts</td><td class="desc">raw-mode, one repainting line per question — arrows, live caret, highlight</td><td class="desc">line input: <code>text</code> reads a line, <code>confirm</code> a <code>y/n</code>, <code>select</code> prints a numbered list and reads a number. Same return type, same value.</td></tr>
+              <tr><td class="name">App <span style="color:var(--faint)">(hybrid)</span></td><td class="desc">static <code>emit</code> lines flow into scrollback while the live region repaints above them</td><td class="desc"><code>frame</code> becomes a no-op and the live region vanishes; <code>emit</code> prints its line plain — no escapes, no cursor moves, no retention. Your log is exactly the emitted lines, in order.</td></tr>
+              <tr><td class="name">App <span style="color:var(--faint)">(full-screen)</span></td><td class="desc">takes the alternate screen, raw input, an event loop</td><td class="desc">refuses — <code>initFullScreen</code> returns <code>error.NotATerminal</code> rather than spraying escapes at a file. A TUI into a pipe is meaningless; use the hybrid App or prompts for anything that must also run headless.</td></tr>
+            </tbody>
+          </table>
+          </div>
+          <p>A <code>select</code> at a terminal is an arrow-driven, highlighted list; piped, it's a numbered list that reads a line. Nothing in the calling code changes — the value comes back the same either way.</p>
+          <div class="contrast">
+            <div class="code">
+              <div class="code-head"><span class="fname">at a terminal (TTY)</span><span class="lang">prompt</span></div>
+<pre><span class="fn">?</span> Deploy to:
+  <span class="fn">❯</span> <span class="kw">staging</span>     <span class="cm">← ↑/↓, Enter</span>
+    production</pre>
+            </div>
+            <div class="code">
+              <div class="code-head"><span class="fname">piped / CI</span><span class="lang">stdin ≠ tty</span></div>
+<pre><span class="fn">?</span> Deploy to:
+  1) staging
+  2) production
+&gt; <span class="kw">1</span></pre>
+            </div>
+          </div>
+          <p>The hybrid App tells the same story. A deploy <code>emit</code>s a line at each milestone and repaints a progress gauge between them; off a TTY the gauge simply isn't drawn, and the milestones remain as a plain, ordered log.</p>
+          <div class="contrast">
+            <div class="code">
+              <div class="code-head"><span class="fname">at a terminal (TTY)</span><span class="lang">App frame</span></div>
+<pre><span class="str">✓</span> built api               <span class="cm">// emitted → scrollback</span>
+<span class="fn">⠹</span> deploying  <span class="fn">━━━━━</span>╌╌╌  3/5   <span class="cm">// live region, repaints in place</span></pre>
+            </div>
+            <div class="code">
+              <div class="code-head"><span class="fname">piped / CI</span><span class="lang">stdout ≠ tty</span></div>
+<pre><span class="str">✓</span> built api
+<span class="str">✓</span> deployed api</pre>
+            </div>
+          </div>
+          <div class="callout"><b>No flags, no branches</b> The fallback is the same code path, not a second one you maintain. You write the interactive version once; the piped output is what the framework does with it when no one's watching. That's the difference from prompt libraries that need an explicit non-interactive mode — here it's the default behavior of every prompt and every hybrid frame.</div>
         </section>
 
         <section id="standalone">

@@ -8,6 +8,8 @@
 
 zcli is a batteries-included framework for building polished command-line apps in Zig. Drop a `.zig` file in `commands/` and it becomes a command — help text, shell completions, typo suggestions, and typed argument parsing are generated at compile time. One dependency, one self-contained binary.
 
+**Full documentation lives at [zcli.sh](https://zcli.sh)** — [getting started](https://zcli.sh/getting-started/), the [docs](https://zcli.sh/docs/), [plugins](https://zcli.sh/plugins/), the [CLI/TUI hybrid](https://zcli.sh/ui/), [theming](https://zcli.sh/theming/), and [building CLIs with coding agents](https://zcli.sh/ai/). This README is the tour; the site is the reference.
+
 <img alt="Demo of a zcli app: interactive prompts, a colored task table, live search filtering, and a spinner" src="examples/tasks/demo.gif" width="600" />
 
 ## Your CLI is a directory
@@ -48,7 +50,7 @@ Deploying api to staging
 
 No routing tables, no builder calls, no registration. Commands are discovered at build time and routing is generated as ordinary Zig code — the parser is built for your exact structs, so reading an option that doesn't exist is a compile error, and a mistyped command gets a "did you mean?" at runtime.
 
-Variadic args, option types, typed `context`, aliases, and command groups: [docs/COMMANDS.md](docs/COMMANDS.md).
+Variadic args, option types, typed `context`, aliases, and command groups: [zcli.sh/docs](https://zcli.sh/docs/#commands) (repo summary in [docs/COMMANDS.md](docs/COMMANDS.md)).
 
 ## Quick start
 
@@ -237,7 +239,7 @@ try app.frame(try ui.column(app.arena(), .{ .border = .rounded }, &.{
 
 Boxes, wrapped text, spacers, and custom leaves; `fit`/`len`/`fill` sizing; viewport-clamped, resize-aware (the live region re-lays-out and the visible scrollback tail reflows), and piped output degrades to plain lines.
 
-When you want the whole terminal — a `top`-style dashboard, an interactive form — the same node tree, layout, and diff run in **full-screen mode**: `context.uiFullScreen(.{})` switches to the alternate screen and hands the `frame → event → update` loop to `app.run`. It comes with focusable widgets (`TextInput`, `Select`, `Checkbox`, `Button` — each a plain struct in your state, routed by a single `handle`-returns-`bool` contract), overlays via a `stack` of z-layers, scrollable viewports, mouse/focus/paste events, and anchored popups that flip and clamp to stay on screen. On exit the shell comes back exactly as it was. Design in [ADR-0013](docs/adr/0013-terminal-native-layout-engine.md) (full-screen and widgets in [ADRs 0015–0020](docs/adr/)), API in [packages/ui](packages/ui/).
+When you want the whole terminal — a `top`-style dashboard, an interactive form — the same node tree, layout, and diff run in **full-screen mode**: `context.uiFullScreen(.{})` switches to the alternate screen and hands the `frame → event → update` loop to `app.run`. It comes with focusable widgets (`TextInput`, `Select`, `Checkbox`, `Button` — each a plain struct in your state, routed by a single `handle`-returns-`bool` contract), overlays via a `stack` of z-layers, scrollable viewports, mouse/focus/paste events, and anchored popups that flip and clamp to stay on screen. On exit the shell comes back exactly as it was. Walkthrough at [zcli.sh/ui](https://zcli.sh/ui/); design in [ADR-0013](docs/adr/0013-terminal-native-layout-engine.md) (full-screen and widgets in [ADRs 0015–0020](docs/adr/)), API in [packages/ui](packages/ui/).
 
 ## Theming
 
@@ -261,7 +263,7 @@ try styled("Synced").success().render(writer, &context.theme);
 try styled("Error").red().bold().render(writer, &context.theme);
 ```
 
-Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) resolve at render time and adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Component tokens (`prompts.cursor`, `progress.spinner`, `surface.border`, …) default to palette roles, so one palette change restyles everything — including the chrome behind a full-screen panel. Styling defaults *derive* from the theme at compile time, so `ui.panel` and bordered boxes need no `Style` at the call site and `ui.text(ui.role(.success), …)` styles by meaning in one word. Full API in [packages/theme](packages/theme/).
+Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) resolve at render time and adapt to the terminal: true color, 256 color, 16 color, or no color (respects `NO_COLOR`). Component tokens (`prompts.cursor`, `progress.spinner`, `surface.border`, …) default to palette roles, so one palette change restyles everything — including the chrome behind a full-screen panel. Styling defaults *derive* from the theme at compile time, so `ui.panel` and bordered boxes need no `Style` at the call site and `ui.text(ui.role(.success), …)` styles by meaning in one word. Guide at [zcli.sh/theming](https://zcli.sh/theming/); full API in [packages/theme](packages/theme/).
 
 ## Config files
 
@@ -275,13 +277,13 @@ The `zcli_config` plugin transparently loads option defaults from JSON, TOML, or
 }
 ```
 
-Discovery order and formats in [docs/PLUGINS.md](docs/PLUGINS.md#config-file-plugin).
+Discovery order and formats: [zcli.sh/plugins](https://zcli.sh/plugins/#config).
 
 ## Plugins
 
 Cross-cutting features are plugins, added in one line of `build.zig`: help, version, "did you mean?", shell completions (bash/zsh/fish), config files, `--output` formatting (json/table/plain), OS-keychain secrets, and self-upgrade via GitHub releases all ship in the box. Plugins hook the command lifecycle, register global options, expose typed data as `context.plugins.<id>`, and can ship commands of their own.
 
-The full list and a guide to writing your own: [docs/PLUGINS.md](docs/PLUGINS.md).
+The full list and a guide to writing your own: [zcli.sh/plugins](https://zcli.sh/plugins/) (repo summary in [docs/PLUGINS.md](docs/PLUGINS.md)).
 
 ## Testing
 
