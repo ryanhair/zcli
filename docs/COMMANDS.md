@@ -75,11 +75,11 @@ pub const Options = struct {
 pub const meta = .{
     // At most one member of each set may be supplied.
     .exclusive = .{
-        .{ "json", "yaml", "xml" },
+        .{ .json, .yaml, .xml },
     },
     .options = .{
         // --output-format is meaningless without --output.
-        .output_format = .{ .requires = .{"output"} },
+        .output_format = .{ .requires = .{.output} },
     },
 };
 ```
@@ -87,7 +87,7 @@ pub const meta = .{
 - **`meta.exclusive`** — a list of *sets*; supplying two members of one set is an error (`Options '--json' and '--yaml' cannot be used together.`). Write a two-element set for a one-off "A conflicts with B".
 - **`meta.options.<field>.requires`** — the options that must accompany this one. Directional: `output_format` needs `output`, but `output` alone is fine (`Option '--output-format' requires '--output'.`).
 
-Names are Options field names, verified at compile time (`@hasField`) — a typo is a build error. The compiler also rejects the nonsensical: a field that requires itself, an `exclusive` set with fewer than two (or duplicated) members, and a *required* option in an `exclusive` set (it's always supplied, so it could never be the "at most one"). You don't need a constraint for exactly-one-of-a-mode — an enum with no default (`format: enum { json, yaml, xml }`) already is exactly-one, and `?enum … = null` is at-most-one.
+Options are named as enum literals (`.output`), the same way an option is keyed elsewhere in `meta` — verified at compile time (`@hasField`), so a typo is a build error. The compiler also rejects the nonsensical: a field that requires itself, an `exclusive` set with fewer than two (or duplicated) members, and a *required* option in an `exclusive` set (it's always supplied, so it could never be the "at most one"). You don't need a constraint for exactly-one-of-a-mode — an enum with no default (`format: enum { json, yaml, xml }`) already is exactly-one, and `?enum … = null` is at-most-one.
 
 ## Typing `context`
 

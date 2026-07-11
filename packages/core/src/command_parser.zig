@@ -994,7 +994,7 @@ test "firstMissingDependency: enforced only when the dependent option is supplie
         output: ?[]const u8 = null,
         output_format: ?enum { pretty, compact } = null,
     };
-    const meta = .{ .options = .{ .output_format = .{ .requires = .{"output"} } } };
+    const meta = .{ .options = .{ .output_format = .{ .requires = .{.output} } } };
     const before = Options{};
 
     // output_format supplied, output not → violation.
@@ -1030,7 +1030,7 @@ test "firstMissingDependency: reports effective (custom/dashed) flag names" {
     };
     const meta = .{ .options = .{
         .out = .{ .name = "output" },
-        .fmt = .{ .requires = .{"out"} },
+        .fmt = .{ .requires = .{.out} },
     } };
     const before = Options{};
     const provided = [_]bool{ false, true };
@@ -1047,7 +1047,7 @@ test "firstExclusiveViolation: at most one member of a set may be supplied" {
         yaml: bool = false,
         xml: bool = false,
     };
-    const meta = .{ .exclusive = .{.{ "json", "yaml", "xml" }} };
+    const meta = .{ .exclusive = .{.{ .json, .yaml, .xml }} };
     const opts = Options{};
 
     // Two members supplied → violation, reporting them in declaration order.
@@ -1077,7 +1077,7 @@ test "firstExclusiveViolation: overlapping sets are checked independently" {
         b: bool = false,
         c: bool = false,
     };
-    const meta = .{ .exclusive = .{ .{ "a", "b" }, .{ "b", "c" } } };
+    const meta = .{ .exclusive = .{ .{ .a, .b }, .{ .b, .c } } };
     const opts = Options{};
 
     // a + c: neither set has two supplied members → legal.

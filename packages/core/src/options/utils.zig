@@ -653,19 +653,21 @@ pub fn shortCharForField(comptime meta: anytype, comptime field_name: []const u8
 // Cross-field option constraints — `meta.exclusive` and `.<field>.requires`
 // ============================================================================
 //
-// Both constraints (ADR-0022) name Options *field* names as string literals in
-// comptime tuples. These accessors flatten those tuples into plain
-// `[]const []const u8` slices with static lifetime, so the comptime validator,
-// the runtime constraint walks, and help rendering all read one uniform shape.
+// Both constraints (ADR-0022) name Options *fields* as enum literals in comptime
+// tuples — `.{ .json, .yaml }`, mirroring how an option is keyed elsewhere in
+// meta (`.output_format = .{...}`). These accessors flatten those tuples into
+// plain `[]const []const u8` (field-name) slices with static lifetime, so the
+// comptime validator, the runtime constraint walks, and help rendering all read
+// one uniform shape.
 
-/// Flatten a comptime tuple of string literals (`.{ "a", "b" }`) into a
-/// `[]const []const u8`. The result has static lifetime.
+/// Flatten a comptime tuple of enum literals (`.{ .a, .b }`) into the
+/// `[]const []const u8` of their names. The result has static lifetime.
 pub fn tupleToStrings(comptime tuple: anytype) []const []const u8 {
     return comptime blk: {
         var list: []const []const u8 = &.{};
         for (@typeInfo(@TypeOf(tuple)).@"struct".fields) |f| {
-            const s: []const u8 = @field(tuple, f.name);
-            list = list ++ &[_][]const u8{s};
+            const name: []const u8 = @tagName(@field(tuple, f.name));
+            list = list ++ &[_][]const u8{name};
         }
         break :blk list;
     };
@@ -784,7 +786,7 @@ test "takes-value resolution matches parser semantics" {
 
 test "requiresFor flattens the dependency tuple, or null" {
     const meta = .{ .options = .{
-        .output_format = .{ .requires = .{"output"} },
+        .output_format = .{ .requires = .{.output} },
         .verbose = .{ .description = "loud" },
     } };
     const reqs = requiresFor(meta, "output_format").?;
@@ -798,8 +800,8 @@ test "requiresFor flattens the dependency tuple, or null" {
 
 test "exclusiveSets flattens the set-of-sets, or empty" {
     const meta = .{ .exclusive = .{
-        .{ "json", "yaml", "xml" },
-        .{ "a", "b" },
+        .{ .json, .yaml, .xml },
+        .{ .a, .b },
     } };
     const sets = exclusiveSets(meta);
     try std.testing.expectEqual(@as(usize, 2), sets.len);

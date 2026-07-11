@@ -1272,9 +1272,9 @@ const ConstraintCapturePlugin = struct {
 const ConstrainedCommand = struct {
     pub const meta = .{
         .description = "constrained",
-        .exclusive = .{.{ "json", "yaml", "xml" }},
+        .exclusive = .{.{ .json, .yaml, .xml }},
         .options = .{
-            .output_format = .{ .requires = .{"output"} },
+            .output_format = .{ .requires = .{.output} },
         },
     };
     pub const Args = struct {};

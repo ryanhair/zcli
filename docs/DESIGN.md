@@ -239,17 +239,18 @@ pub const Options = struct {
 
 pub const meta = .{
     .exclusive = .{
-        .{ "json", "yaml", "xml" },                     // at most one of these
+        .{ .json, .yaml, .xml },                        // at most one of these
     },
     .options = .{
-        .output_format = .{ .requires = .{"output"} },  // needs --output
+        .output_format = .{ .requires = .{.output} },   // needs --output
     },
 };
 ```
 
 Both key off the same notion of "supplied" that required options use — CLI flag,
-`.env` variable, or config file — not the option's *value*. Names are Options
-field names, checked at compile time with `@hasField` (a typo is a build error).
+`.env` variable, or config file — not the option's *value*. Options are named as
+enum literals (`.output`) — the same way an option is keyed elsewhere in `meta` —
+checked at compile time with `@hasField` (a typo is a build error).
 Further comptime guards reject the nonsensical: a field that lists itself in
 `requires`, a set with fewer than two members or a duplicated member, and a
 *required* option placed in an `exclusive` set (it is always supplied, so it

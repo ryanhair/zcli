@@ -654,17 +654,17 @@ test "validateCommand accepts a well-formed command" {
 //   Option constraints (ADR-0022). Each guard below is verified by hand:
 //
 //   command 'broken': `meta.exclusive` names 'yamlx', which is not a field ...
-//     pub const meta = .{ .exclusive = .{.{ "json", "yamlx" }} };
+//     pub const meta = .{ .exclusive = .{.{ .json, .yamlx }} };
 //
 //   command 'broken': `meta.exclusive` includes required option 'region' ...
-//     pub const meta = .{ .exclusive = .{.{ "region", "json" }} };
+//     pub const meta = .{ .exclusive = .{.{ .region, .json }} };
 //     pub const Options = struct { region: []const u8, json: bool = false };
 //
 //   command 'broken': `meta.exclusive` set #1 lists 1 option(s); a ... needs at least two
-//     pub const meta = .{ .exclusive = .{.{"json"}} };
+//     pub const meta = .{ .exclusive = .{.{.json}} };
 //
 //   command 'broken': option 'a' lists itself in `requires`
-//     pub const meta = .{ .options = .{ .a = .{ .requires = .{"a"} } } };
+//     pub const meta = .{ .options = .{ .a = .{ .requires = .{.a} } } };
 
 test "Context creation" {
     const allocator = testing.allocator;

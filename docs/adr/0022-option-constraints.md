@@ -38,13 +38,18 @@ pub const Options = struct {
 
 pub const meta = .{
     .exclusive = .{
-        .{ "json", "yaml", "xml" },   // at most one
+        .{ .json, .yaml, .xml },   // at most one
     },
     .options = .{
-        .output_format = .{ .requires = .{"output"} },  // directional
+        .output_format = .{ .requires = .{.output} },  // directional
     },
 };
 ```
+
+Options are named as enum literals (`.json`, `.output`) — the same `.name`
+spelling an option is keyed by elsewhere in `meta` — so one uniform rule ("an
+option is `.its_name`") holds across the block. `@tagName` recovers the field
+name at comptime for the `@hasField` check.
 
 Both constraints operate on the same notion of "provided" that `required`
 already uses — the `options_provided` set, filled by CLI / env / config. A
