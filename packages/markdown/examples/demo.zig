@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     var fmt = md.formatter(&stdout_writer.interface, .true_color);
 
     try stdout_writer.interface.writeAll("\n╔═══════════════════════════════════════════════════════════╗\n");
-    try stdout_writer.interface.writeAll("║         markdown: Comprehensive Feature Demo          ║\n");
+    try stdout_writer.interface.writeAll("║         markdown: Comprehensive Feature Demo              ║\n");
     try stdout_writer.interface.writeAll("╚═══════════════════════════════════════════════════════════╝\n\n");
 
     // Runtime data for examples
@@ -21,9 +21,9 @@ pub fn main(init: std.process.Init) !void {
     const build_time: f64 = 12.4;
     const coverage: f64 = 94.2;
 
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  📝 HEADERS\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\# Level 1 Header
@@ -36,9 +36,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{});
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  📋 LISTS\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\## Unordered Lists
@@ -60,9 +60,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{ tests_passed, tests_failed });
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  💻 CODE BLOCKS\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\## Fenced Code Blocks
@@ -79,9 +79,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{});
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  💬 BLOCKQUOTES\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\## Quotes
@@ -93,9 +93,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{});
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  ✏️  INLINE FORMATTING\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\**Bold text** and *italic text* and ~dim text~
@@ -108,9 +108,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{});
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  🔗 LINKS\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\Check out [our documentation](https://example.com/docs) for more info.
@@ -119,9 +119,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{});
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  ➖ HORIZONTAL RULES\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\Content above the rule
@@ -132,9 +132,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{});
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  🎨 SEMANTIC TAGS\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\<success>**{d}** tests passed</success>
@@ -153,9 +153,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{ tests_passed, tests_failed, coverage, build_time });
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  📊 REAL-WORLD EXAMPLE: BUILD REPORT\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     try fmt.write(
         \\# Build Report
@@ -191,9 +191,9 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{ build_time, tests_passed, tests_failed, coverage });
 
-    try stdout_writer.interface.writeAll("\n═══════════════════════════════════════════════════════════\n");
+    try stdout_writer.interface.writeAll("\n═════════════════════════════════════════════════════════════\n");
     try stdout_writer.interface.writeAll("  🔧 CUSTOM PALETTE EXAMPLE\n");
-    try stdout_writer.interface.writeAll("═══════════════════════════════════════════════════════════\n\n");
+    try stdout_writer.interface.writeAll("═════════════════════════════════════════════════════════════\n\n");
 
     const custom_palette = md.Palette{
         .success = .{ .foreground = .{ .rgb = .{ .r = 100, .g = 255, .b = 100 } }, .bold = true }, // Bright green
@@ -212,7 +212,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout_writer.interface.writeAll("\n╔═══════════════════════════════════════════════════════════╗\n");
     try stdout_writer.interface.writeAll("║                    FORMATTER API                          ║\n");
     try stdout_writer.interface.writeAll("╠═══════════════════════════════════════════════════════════╣\n");
-    try stdout_writer.interface.writeAll("║  const fmt = md.formatter(writer, cap);                        ║\n");
+    try stdout_writer.interface.writeAll("║  const fmt = md.formatter(writer, cap);                   ║\n");
     try stdout_writer.interface.writeAll("║  try fmt.write(\"**{s}**\", .{\"text\"});                     ║\n");
     try stdout_writer.interface.writeAll("║                                                           ║\n");
     try stdout_writer.interface.writeAll("║  ✨ Comptime parsing • Zero runtime overhead • Pure Zig   ║\n");
