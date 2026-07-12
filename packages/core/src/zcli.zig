@@ -583,32 +583,54 @@ pub fn validateMeta(
                 @compileError(loc ++ "meta.args describes '" ++ field.name ++ "', which is not a field in the Args struct");
             }
 
-            // Args metadata should be simple strings (descriptions)
+            // Args metadata is either a bare string description or a struct
+            // carrying named fields (currently just `description`), mirroring
+            // the options metadata shape so args can grow richer per-field
+            // configuration without another breaking change.
             const arg_meta = @field(args_meta, field.name);
             const arg_meta_type = @TypeOf(arg_meta);
             const arg_meta_info = @typeInfo(arg_meta_type);
 
-            // Allow string literals (*const [N:0]u8) or string slices ([]const u8)
-            const is_valid_type = blk: {
-                if (arg_meta_info == .pointer) {
-                    const ptr_info = arg_meta_info.pointer;
-                    // Check for slice of u8: []const u8
-                    if (ptr_info.size == .slice and ptr_info.child == u8) {
-                        break :blk true;
-                    }
-                    // Check for pointer to array of u8: *const [N:0]u8 or *const [N]u8
-                    if (ptr_info.size == .one) {
-                        const child_info = @typeInfo(ptr_info.child);
-                        if (child_info == .array and child_info.array.child == u8) {
-                            break :blk true;
+            if (arg_meta_info == .@"struct") {
+                const valid_arg_fields = .{"description"};
+
+                inline for (arg_meta_info.@"struct".fields) |arg_field| {
+                    const arg_is_valid = comptime blk: {
+                        for (valid_arg_fields) |valid| {
+                            if (std.mem.eql(u8, arg_field.name, valid)) {
+                                break :blk true;
+                            }
                         }
+                        break :blk false;
+                    };
+                    if (!arg_is_valid) {
+                        @compileError(loc ++ "unknown arg metadata field '" ++ arg_field.name ++ "' in arg '" ++ field.name ++ "'. Valid fields are: description");
                     }
                 }
-                break :blk false;
-            };
+            } else {
+                // Bare string form: a string literal (*const [N:0]u8) or a
+                // string slice ([]const u8).
+                const is_valid_type = blk: {
+                    if (arg_meta_info == .pointer) {
+                        const ptr_info = arg_meta_info.pointer;
+                        // Check for slice of u8: []const u8
+                        if (ptr_info.size == .slice and ptr_info.child == u8) {
+                            break :blk true;
+                        }
+                        // Check for pointer to array of u8: *const [N:0]u8 or *const [N]u8
+                        if (ptr_info.size == .one) {
+                            const child_info = @typeInfo(ptr_info.child);
+                            if (child_info == .array and child_info.array.child == u8) {
+                                break :blk true;
+                            }
+                        }
+                    }
+                    break :blk false;
+                };
 
-            if (!is_valid_type) {
-                @compileError(loc ++ "meta.args for '" ++ field.name ++ "' must be a string description");
+                if (!is_valid_type) {
+                    @compileError(loc ++ "meta.args for '" ++ field.name ++ "' must be a string description or a struct with a `description` field");
+                }
             }
         }
     }
@@ -622,8 +644,13 @@ test "validateCommand accepts a well-formed command" {
             .description = "Greet someone",
             .aliases = &.{"hi"},
             .options = .{ .loud = .{ .short = 'l', .description = "Shout it" } },
+            // Args metadata accepts both the bare-string and struct forms.
+            .args = .{
+                .name = .{ .description = "Who to greet" },
+                .title = "Optional honorific",
+            },
         };
-        pub const Args = struct { name: []const u8 };
+        pub const Args = struct { name: []const u8, title: ?[]const u8 = null };
         pub const Options = struct { loud: bool = false };
         pub fn execute(_: Args, _: Options, _: anytype) !void {}
     };
@@ -650,6 +677,10 @@ test "validateCommand accepts a well-formed command" {
 //   command 'broken': meta.options describes 'nope', which is not a field in the Options struct
 //     pub const meta = .{ .options = .{ .nope = .{ .short = 'x' } } };
 //     pub const Options = struct { real: bool = false };
+//
+//   command 'broken': unknown arg metadata field 'desc' in arg 'name'. Valid fields are: description
+//     pub const meta = .{ .args = .{ .name = .{ .desc = "typo" } } };
+//     pub const Args = struct { name: []const u8 };
 //
 //   Option constraints (ADR-0022). Each guard below is verified by hand:
 //
