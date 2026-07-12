@@ -72,8 +72,9 @@
         <h4>Plugins</h4>
         <a href="#plugins">Using plugins</a>
         <a href="#writing-plugins">Writing plugins</a>
-        <h4>Testing</h4>
+        <h4>Testing & errors</h4>
         <a href="#testing">Testing</a>
+        <a href="#errors">Error handling</a>
         <h4>Reference</h4>
         <a href="#docsgen">Docs generation</a>
         <a href="#the-zcli-cli">The zcli CLI</a>
@@ -413,7 +414,20 @@ all = <span class="num">true</span></pre>
     <span class="kw">try</span> std.testing.<span class="fn">expect</span>(result.term.<span class="fn">containsText</span>(<span class="str">"Deploying"</span>));
     <span class="kw">try</span> std.testing.<span class="fn">expect</span>(result.term.<span class="fn">hasAttribute</span>(<span class="num">0</span>, <span class="num">0</span>, .bold));</pre>
           </div>
-          <p><code>result.term</code> is a real ANSI-parsing terminal emulator — assert a cell is bold at row 0, check a foreground color, or match a wildcard pattern across the rendered screen. No other Zig CLI library ships this. Full API and the integration/e2e tiers: see <a href="https://github.com/ryanhair/zcli/blob/main/docs/TESTING.md" target="_blank" rel="noopener">docs/TESTING.md</a>.</p>
+          <p><code>result.term</code> is a real ANSI-parsing terminal emulator — assert a cell is bold at row 0, check a foreground color, or match a wildcard pattern across the rendered screen. No other Zig CLI library ships this. Full API and the integration/e2e tiers: see the <a href="$site.page('testing').link()">testing guide</a>.</p>
+        </section>
+
+        <!-- ============ ERROR HANDLING ============ -->
+        <section id="errors">
+          <h2>Error handling</h2>
+          <p>Parsing errors are handled for you: the framework parses and validates every argument and option before <code>execute()</code> runs, prints a user-friendly diagnostic on failure, and picks the exit code. A mistyped option or command gets a "did you mean?" suggestion computed by edit distance — the same machinery your commands get for free.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">$ myapp deploy --verbos</span><span class="lang">sh</span></div>
+<pre><span class="c-mut">Unknown option '--verbos'</span>
+Did you mean:
+  <span class="c-cmd">--verbose</span></pre>
+          </div>
+          <p>Under the hood everything is a standard Zig error union — a structured <code>ZcliError</code> plus an optional <code>ZcliDiagnostic</code> carrying the field, position, and expected type. When you parse outside the framework (<code>zcli.parseCommandLine</code>, <code>parseArgs</code>, <code>parseOptions</code>), <code>formatDiagnostic</code> renders the same messages. Full model and the standalone-parsing API: see the <a href="$site.page('errors').link()">error-handling guide</a>.</p>
         </section>
 
         <!-- ============ DOCS GENERATION ============ -->

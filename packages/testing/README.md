@@ -6,7 +6,7 @@ Three tiers of testing for zcli-built CLIs, from fast in-process command tests t
 2. **Integration** — `runSubprocess` runs the compiled binary and asserts on the full stack: parsing, routing, plugin hooks, exit codes. Includes snapshot testing.
 3. **E2E (PTY)** — `e2e.runInteractive` drives the binary through a real pseudo-terminal for prompts, hidden input, signals, and TTY-dependent formatting.
 
-The complete guide with worked examples per tier is [docs/TESTING.md](../../docs/TESTING.md).
+The complete guide with worked examples per tier is [zcli.sh/testing](https://zcli.sh/testing/).
 
 ## Getting it
 
