@@ -34,10 +34,15 @@ pub fn build(b: *std.Build) void {
     // The terminal-native layout engine (ADR-0013) — the substrate progress
     // and prompts render on, exposed for hybrid CLI/TUI apps.
     expose(b, "ui", ui_dep.module("ui"));
-    // The unit-testing tier for scaffolded projects (see `zcli.addCommandTests`):
-    // in-process command execution plus vterm-rendered assertions. Lazy — costs
-    // nothing unless a consumer imports it.
+    // The subprocess/snapshot testing tier (std-only): compile the CLI, run it,
+    // assert on stdout/stderr/exit code, and snapshot golden output. Lazy — costs
+    // nothing unless a consumer imports it, and pulls in no zcli/vterm.
     expose(b, "zcli_testing", testing_dep.module("testing"));
+    // The in-process unit-testing tier for scaffolded projects (see
+    // `zcli.addCommandTests`): `runCommand` executes a command's execute() with no
+    // subprocess, plus vterm-rendered assertions. Split from `zcli_testing` so the
+    // subprocess/PTY-only tiers stay free of zcli/vterm.
+    expose(b, "zcli_testing_unit", testing_dep.module("unit"));
     // The PTY-based interactive test harness alone (std-only), for CLI projects
     // that drive a real TTY in their e2e tests.
     expose(b, "testing_e2e", testing_dep.module("e2e"));

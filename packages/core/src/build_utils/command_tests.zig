@@ -25,8 +25,9 @@ const PluginInfo = types.PluginInfo;
 ///     builds the same TestContext) can invoke it. The real generated registry
 ///     is deliberately not used: a command's tests must not require the whole
 ///     app to compile.
-///   - `zcli-testing`     — the unit-testing tier, exposed by the zcli
-///     dependency, so no extra dependency is needed.
+///   - `zcli-testing`     — the in-process unit-testing tier (`zcli_testing_unit`),
+///     exposed by the zcli dependency, so no extra dependency is needed. (Command
+///     tests are in-process; the subprocess/PTY tiers live in separate modules.)
 ///   - any `shared_modules` the commands were generated with.
 ///
 /// Returns the created `test` step so the caller can attach more to it.
@@ -103,7 +104,7 @@ pub fn addCommandTests(
         .optimize = config.optimize,
         .zcli_module = zcli_module,
         .registry_stub = registry_stub,
-        .testing_module = zcli_dep.module("zcli_testing"),
+        .testing_module = zcli_dep.module("zcli_testing_unit"),
         .shared_modules = shared_modules,
     };
 
