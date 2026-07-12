@@ -1,6 +1,12 @@
 # Release integrity anchors on the GitHub release, unsigned (for now)
 
-Status: accepted
+Status: accepted — signing deferral resolved by [ADR-0023](0023-release-signing-minisign.md)
+
+> **Update:** the "Trigger to revisit" below is now met. Release signing landed as
+> [ADR-0023](0023-release-signing-minisign.md): `checksums.txt` is signed with a
+> minisign key held offline (never in CI) and verified against a client-pinned
+> public key. The trust model this ADR documents is the pre-signing baseline; the
+> checksum enforcement it describes still runs, now underneath the signature.
 
 zcli has two trust-establishing distribution paths: the `curl | sh` installer
 (`install.sh`) and the self-upgrade plugin (`zcli_github_upgrade`). Both fetch
