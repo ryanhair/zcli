@@ -4,6 +4,10 @@
 //! URL construction, gzip body decoding, release-JSON version selection,
 //! checksum parsing + SHA-256 hashing, version comparison, and the atomic
 //! backup/replace swap (against temp files, via replaceBinaryAt).
+//!
+//! The pure-Zig minisign verifier that authenticates checksums.txt is exercised
+//! separately in minisign.zig (against real minisign fixtures).
 test {
     _ = @import("plugins/zcli_github_upgrade/plugin.zig");
+    _ = @import("plugins/zcli_github_upgrade/minisign.zig");
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const zcli = @import("zcli");
+const minisign = @import("minisign.zig");
 
 /// All network traffic goes through zcli's safe-defaults HTTP client, which
 /// enforces TLS, bounded (decompressed) bodies, bounded redirects with
@@ -11,6 +12,7 @@ const http = zcli.http;
 const MAX_RELEASES_RESPONSE_SIZE = 20 * 1024 * 1024; // 20MB for the releases JSON
 const MAX_BINARY_SIZE = 100 * 1024 * 1024; // 100MB for binary downloads
 const MAX_CHECKSUMS_SIZE = 1024 * 1024; // 1MB for checksums file
+const MAX_SIGNATURE_SIZE = 4 * 1024; // 4KB — a minisign signature is ~300 bytes
 
 // Per-request deadlines. std.http.Client has no timeout of its own — an
 // unreachable or stalled peer would otherwise hang forever.
@@ -130,6 +132,21 @@ pub const Config = struct {
     /// Message to show when a newer version is available
     /// Use {current} and {latest} as placeholders
     out_of_date_message: []const u8 = "A new version of {app} is available: {latest} (current: {current})\nRun '{app} upgrade' to update.",
+
+    /// minisign public key (the base64 blob — the second line of a `.pub` file,
+    /// or the argument to `minisign -P`) used to verify release integrity.
+    ///
+    /// When set, `upgrade` fetches `checksums.txt.minisig` alongside
+    /// `checksums.txt` and verifies the signature under this pinned key **before**
+    /// trusting any checksum — and fails closed if the signature is missing,
+    /// malformed, or invalid. This closes the gap that `checksums.txt` alone
+    /// cannot: it ships in the same release as the binaries, so a compromised
+    /// publisher can swap both, whereas the signing key lives off the release
+    /// pipeline entirely (see ADR-0023).
+    ///
+    /// When null (the default), the upgrade verifies only the SHA-256 checksum —
+    /// appropriate for apps that do not sign their releases.
+    public_key: ?[]const u8 = null,
 };
 
 /// Initialize the plugin with configuration
@@ -265,9 +282,15 @@ pub fn init(config: Config) type {
             try stdout.print("Downloading {s}...\n", .{binary_name});
             try downloadBinary(allocator, context.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
 
-            // Verify checksum
-            try stdout.print("Verifying checksum...\n", .{});
-            try verifyChecksum(allocator, context.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
+            // Verify integrity. When a signing key is pinned, the signature over
+            // checksums.txt is checked first (fail closed) so the checksum we
+            // then compare against is one we've cryptographically authenticated.
+            if (plugin_config.public_key != null) {
+                try stdout.print("Verifying signature...\n", .{});
+            } else {
+                try stdout.print("Verifying checksum...\n", .{});
+            }
+            try verifyChecksum(allocator, context.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name, plugin_config.public_key);
 
             // Make binary executable before testing (Unix only - Windows uses .exe extension)
             if (builtin.os.tag != .windows) {
@@ -563,8 +586,13 @@ fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
     try temp_file.writeStreamingAll(io, response.body);
 }
 
-/// Verify the checksum of the downloaded binary at `binary_name` within `dir`.
-fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) !void {
+/// Verify the integrity of the downloaded binary at `binary_name` within `dir`.
+///
+/// When `public_key` is non-null, `checksums.txt` is first authenticated against
+/// its `checksums.txt.minisig` signature under the pinned key — fail closed —
+/// so the digest we compare the binary against is one we've cryptographically
+/// trusted, not merely one that happened to ship in the same release.
+fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8, public_key: ?[]const u8) !void {
     std.debug.print("Verifying checksum...\n", .{});
 
     // Download checksums.txt (published as a release asset alongside the binaries)
@@ -597,6 +625,13 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
         return error.FailedToDownloadChecksums;
     }
 
+    // Authenticate checksums.txt under the pinned signing key before trusting a
+    // single byte of it. This is the check that a compromised publisher — who
+    // can rewrite checksums.txt to match a swapped binary — cannot defeat.
+    if (public_key) |pinned_key| {
+        try verifyChecksumsSignature(allocator, io, repo, cli_name, version, response.body, pinned_key);
+    }
+
     // Find the checksum for our binary
     const expected_checksum = parseExpectedChecksum(response.body, binary_name) orelse {
         std.debug.print("Error: Checksum not found for binary: {s}\n", .{binary_name});
@@ -615,6 +650,62 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
         std.debug.print("The downloaded binary may be corrupted or tampered with.\n", .{});
         return error.ChecksumMismatch;
     }
+}
+
+/// Download `checksums.txt.minisig` and verify it against `checksums_body` under
+/// the pinned minisign `public_key_b64`. Fails closed on every unhappy path — a
+/// missing signature asset, a malformed pinned key, or an invalid signature all
+/// abort the upgrade rather than fall back to unverified checksums.
+fn verifyChecksumsSignature(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    repo: []const u8,
+    cli_name: []const u8,
+    version: []const u8,
+    checksums_body: []const u8,
+    public_key_b64: []const u8,
+) !void {
+    // A malformed pinned key is a build-time misconfiguration of the consuming
+    // app, not an attack — but it must still fail closed, never silently skip.
+    const pinned = minisign.PublicKey.parse(public_key_b64) catch {
+        std.debug.print("Error: the pinned minisign public key is malformed.\n", .{});
+        std.debug.print("This is a configuration error in the application's build.\n", .{});
+        return error.InvalidPinnedPublicKey;
+    };
+
+    const sig_url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, "checksums.txt.minisig");
+    defer allocator.free(sig_url);
+
+    var client = http.Client.init(allocator, io, .{
+        .max_response_bytes = MAX_SIGNATURE_SIZE,
+        .timeout = api_timeout,
+    });
+    defer client.deinit();
+
+    var response = try client.get(sig_url);
+    defer response.deinit();
+
+    if (response.status == .too_many_requests) {
+        std.debug.print("GitHub API rate limit exceeded while downloading signature.\n", .{});
+        return error.RateLimitExceeded;
+    }
+
+    if (response.status != .ok) {
+        switch (response.status) {
+            .not_found => {
+                std.debug.print("Error: Signature file not found at URL: {s}\n", .{sig_url});
+                std.debug.print("This release is unsigned; refusing to install an unverifiable binary.\n", .{});
+            },
+            else => std.debug.print("Failed to download signature from {s}, status: {}\n", .{ sig_url, response.status }),
+        }
+        return error.FailedToDownloadSignature;
+    }
+
+    minisign.verify(pinned, response.body, checksums_body) catch |err| {
+        std.debug.print("Error: signature verification failed for checksums.txt ({s}).\n", .{@errorName(err)});
+        std.debug.print("The release may have been tampered with. Refusing to install.\n", .{});
+        return error.SignatureVerificationFailed;
+    };
 }
 
 /// Find the expected checksum for `binary_name` in a `checksums.txt` body.
