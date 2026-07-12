@@ -16,6 +16,17 @@ REPO="ryanhair/zcli"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="zcli"
 
+# zcli's pinned minisign public key. The installer verifies checksums.txt against
+# its detached signature (checksums.txt.minisig) under this key when the
+# `minisign` tool is available — closing the gap that checksums alone cannot: a
+# compromised release can swap the binary AND its checksum, but not forge a
+# signature under a key that never lived in the release pipeline (see ADR-0023).
+#
+# Key id 1638B69B8EF680FD. The full key lives at docs/zcli-minisign.pub; if
+# empty, signature verification is skipped and the fail-closed SHA-256 checksum
+# check below still applies. Rotation/compromise: docs/RELEASE-SIGNING.md.
+MINISIGN_PUBKEY="RWT9gPaOm7Y4Fm5WFqqlWRpI4FgPTIjD5UhUsaZsdKHrWYuWa9jt8ESC"
+
 # Print functions
 print_info() {
     printf "${BLUE}==>${NC} %s\n" "$1" >&2
@@ -64,6 +75,50 @@ sha256_digest() {
     fi
 }
 
+# Verify checksums.txt against its detached minisign signature.
+#
+# Fail closed: returns 0 only when the signature actually verified (or signing is
+# not enabled for this project). Signature verification is REQUIRED when a key is
+# pinned — a missing `minisign` tool aborts the install rather than degrading to
+# checksum-only, so a compromised publisher (who can rewrite the same-origin
+# checksums) is defended against on every install path, not just `zcli upgrade`.
+verify_signature() {
+    local checksums="$1"
+    local checksum_url="$2"
+    local tmp_dir="$3"
+
+    # Signing not yet enabled for this project — nothing to verify.
+    if [ -z "${MINISIGN_PUBKEY}" ]; then
+        return 0
+    fi
+
+    if ! command -v minisign >/dev/null 2>&1; then
+        print_error "minisign is required to verify this release but was not found."
+        print_error "Install it and re-run:"
+        print_error "  macOS:         brew install minisign"
+        print_error "  Debian/Ubuntu: sudo apt install minisign"
+        print_error "  Other:         https://jedisct1.github.io/minisign/#installation"
+        print_error "Or upgrade an existing install via 'zcli upgrade', which verifies natively."
+        return 1
+    fi
+
+    local sig="${checksums}.minisig"
+    if ! curl -fsSL "${checksum_url}.minisig" -o "${sig}"; then
+        print_error "Signature file could not be downloaded (${checksum_url}.minisig)"
+        print_error "This release is unsigned or incomplete; refusing to install."
+        return 1
+    fi
+
+    if ! minisign -Vm "${checksums}" -x "${sig}" -P "${MINISIGN_PUBKEY}" >/dev/null 2>&1; then
+        print_error "Signature verification FAILED for checksums.txt"
+        print_error "The release may have been tampered with. Aborting."
+        return 1
+    fi
+
+    print_success "Signature verified"
+    return 0
+}
+
 # Get latest release version from GitHub
 get_latest_version() {
     if command -v curl >/dev/null 2>&1; then
@@ -102,6 +157,14 @@ download_binary() {
     local checksums="${tmp_dir}/checksums.txt"
     if ! curl -fsSL "${checksum_url}" -o "${checksums}"; then
         print_error "Failed to download checksums from ${checksum_url}"
+        rm -rf "${tmp_dir}"
+        exit 1
+    fi
+
+    # Authenticate checksums.txt against its signature before trusting it. Fail
+    # closed: a signature failure, or a missing minisign tool when a key is
+    # pinned, aborts the install.
+    if ! verify_signature "${checksums}" "${checksum_url}" "${tmp_dir}"; then
         rm -rf "${tmp_dir}"
         exit 1
     fi
