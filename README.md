@@ -374,6 +374,18 @@ zcli targets **stable Zig** — no nightly required. `main` and the latest relea
 
 Each release is tagged twice: `vX.Y.Z` is the framework library — the tag for your `build.zig.zon` — and `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries that `install.sh` downloads. The two ship in lockstep. Release history and the versioning policy live in [CHANGELOG.md](CHANGELOG.md).
 
+### Verifying a release
+
+CLI releases are signed. `checksums.txt` carries a SHA-256 for every binary and is itself signed with a [minisign](https://jedisct1.github.io/minisign/) key held offline — so a compromised release cannot forge a matching signature, not just a matching checksum. `install.sh` **requires `minisign`** and verifies the signature before installing (fail closed); `zcli upgrade` verifies it natively with no external tools. To check by hand:
+
+```bash
+gh release download zcli-vX.Y.Z -p 'checksums.txt*'
+minisign -Vm checksums.txt -p docs/zcli-minisign.pub   # verifies the signature
+sha256sum -c checksums.txt                              # then the binaries
+```
+
+The trust model and the key rotation/compromise procedure live in [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) ([ADR-0023](docs/adr/0023-release-signing-minisign.md)).
+
 ## License
 
 MIT

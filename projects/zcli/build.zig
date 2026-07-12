@@ -78,6 +78,11 @@ pub fn build(b: *std.Build) !void {
                 .repo = "ryanhair/zcli",
                 .command_name = "upgrade",
                 .inform_out_of_date = false,
+                // Release-signature enforcement: `zcli upgrade` verifies
+                // checksums.txt.minisig under this pinned key (fail closed)
+                // before installing. Key id 1638B69B8EF680FD; full key at
+                // docs/zcli-minisign.pub. Rotation: docs/RELEASE-SIGNING.md.
+                .public_key = "RWT9gPaOm7Y4Fm5WFqqlWRpI4FgPTIjD5UhUsaZsdKHrWYuWa9jt8ESC",
             }),
             zcli.builtin(.completions, .{}),
         },

@@ -266,16 +266,25 @@ jobs:
           cat *.sha256 > checksums.txt
           rm *.sha256
 
-      - name: Create Release
+      # Published as a DRAFT on purpose. The release is signed offline with a key
+      # that never touches CI (ADR-0023): the maintainer runs `scripts/sign-release.sh`
+      # to sign checksums.txt, upload checksums.txt.minisig, and flip the release
+      # to published. Drafting until signed means fail-closed clients never see an
+      # unsigned release. See docs/RELEASE-SIGNING.md.
+      - name: Create Release (draft — sign locally to publish)
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.setup.outputs.cli_tag }}
           files: release/*
           generate_release_notes: true
-          draft: false
+          draft: true
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Signing reminder
+        run: |
+          echo "::notice title=Sign this release::CLI release ${{ needs.setup.outputs.cli_tag }} is a DRAFT. Run 'scripts/sign-release.sh ${{ needs.setup.outputs.cli_tag }}' locally to sign checksums.txt and publish. See docs/RELEASE-SIGNING.md."
 
   library-release:
     name: Create Library Release

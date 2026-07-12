@@ -59,7 +59,7 @@
           <pre><span class="pr">$</span> curl -fsSL https://zcli.sh/install.sh | sh</pre>
           <button onclick="cp(this,'curl -fsSL https://zcli.sh/install.sh | sh')">copy</button>
         </div>
-        <p style="font-size:13.5px;">Requires <code class="mono" style="color:var(--accent)">curl</code>. The script reads the latest release from GitHub, verifies the checksum when available, and makes the binary executable.</p>
+        <p style="font-size:13.5px;">Requires <code class="mono" style="color:var(--accent)">curl</code> and <code class="mono" style="color:var(--accent)">minisign</code>. The script reads the latest release from GitHub, verifies the minisign signature over the checksums (fail closed) and the SHA-256 of the binary, then makes it executable. <code class="mono">zcli upgrade</code> verifies the signature natively. Details: <a href="https://github.com/ryanhair/zcli/blob/main/docs/RELEASE-SIGNING.md">release signing</a>.</p>
       </div>
 
       <!-- PKG -->
