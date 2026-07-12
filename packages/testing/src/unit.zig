@@ -4,8 +4,12 @@
 //! capturing stdout and stderr output for assertions. Includes a virtual
 //! terminal (VTerm) for testing colors, formatting, and cursor positioning.
 //!
+//! Exposed as its own module (`zcli_testing_unit`, imported as `zcli-testing` in
+//! scaffolded command tests) rather than folded into `zcli_testing`, so the
+//! subprocess/PTY tiers stay free of the zcli/vterm dependencies below.
+//!
 //! ```zig
-//! const testing = @import("testing");
+//! const testing = @import("zcli-testing");
 //!
 //! test "add command" {
 //!     var result = try testing.runCommand(AddCommand, .{

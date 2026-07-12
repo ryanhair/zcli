@@ -26,8 +26,10 @@ The unit-testing tier ships with the `zcli` dependency itself — no separate de
 
 ```zig
 // build.zig
-test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing"));
+test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing_unit"));
 ```
+
+The unit tier lives in its own module (`zcli_testing_unit`) because `runCommand` runs in-process and so needs zcli + vterm; the subprocess and PTY tiers below are std-only and live in separate modules, so importing them doesn't drag those dependencies into your test build.
 
 ### Writing tests
 
@@ -163,7 +165,7 @@ Test your compiled CLI binary as a subprocess. This validates the full stack —
 
 ### Setup
 
-The integration tier lives in the same `zcli-testing` module the unit tier uses — it ships with the `zcli` dependency, so the wiring is one line:
+The integration tier lives in the std-only `zcli_testing` module (separate from the unit tier's `zcli_testing_unit`) — it ships with the `zcli` dependency, so the wiring is one line:
 
 ```zig
 // build.zig

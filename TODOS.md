@@ -119,21 +119,16 @@ then the context tail `examples → guide → AGENTS.md`. **Parallelizable early
   starts pulling zcli toward static-site-generator concerns.
 - **Effort:** S–M (per item).
 
-### Split the unit-testing tier out of the `testing` package
-- **What:** The `testing` package was zero-dependency until the 2026-06-01 unit-tier move
-  (commit `703fd69`). It now depends on `core` + `vterm` (and transitively on serde and core's
-  whole sibling tree) solely because the **unit tier** (`testing.unit` / `runCommand`) needs
-  `zcli.Stdio`/`TestContext` + vterm. The **integration** and **E2E** tiers need none of that.
-  Consider splitting the unit tier into its own sub-module/package so consumers who only write
-  subprocess/PTY tests don't pull the entire framework + a remote serde dep into their test build.
-- **Why deferred:** Acceptable trade-off for putting the unit tier in its natural home; not worth
-  the extra package/module split pre-adoption. Flagged in the 2026-06-01 five-axis code review as
-  the one "Important" architectural item.
-- **Trigger to revisit:** A user complains about the testing package's dependency footprint, or
-  integration/E2E-only consumers report unwanted transitive deps (esp. the remote serde fetch).
-- **Effort:** S–M (module split within `packages/testing`, or a new `zcli-testing-unit` package).
-- **Context:** `packages/testing/build.zig.zon` (the new `zcli_core` + `vterm` deps);
-  `packages/testing/src/unit.zig` is the only tier needing core.
+### Split the unit-testing tier out of the `testing` package — DONE
+- **What:** The `testing` package depended on `core` + `vterm` (transitively serde + core's
+  whole sibling tree) solely because the **unit tier** (`runCommand`) needs
+  `zcli.Stdio`/`TestContext` + vterm — dragging those into every subprocess/PTY-only consumer's
+  test build.
+- **Done:** `unit.zig` is now its own module (`zcli_testing_unit`, root `build.zig`), and the
+  `testing` module (`zcli_testing`) is std-only again — subprocess/snapshot + a re-export of the
+  std-only e2e tier. `addCommandTests` wires the unit module into scaffolded command tests under
+  the import name `zcli-testing` (unchanged for authors). Integration/E2E-only consumers no longer
+  pull zcli/vterm/serde. See `packages/testing/README.md` for the per-tier wiring.
 
 ### Sign releases (checksums.txt) with a pinned client key — DONE
 
