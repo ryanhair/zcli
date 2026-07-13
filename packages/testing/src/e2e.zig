@@ -847,8 +847,27 @@ pub const InteractiveError = error{
     NoSavedSettings,
 } || std.mem.Allocator.Error;
 
+/// Why a script step stopped the run — carried out of `driveScriptSteps` so the
+/// driver can print a single loud diagnostic (which step, what kind, and the
+/// rendered screen) instead of letting the failure surface only as a nonzero
+/// child exit code. `.none` means every step passed.
+const StepFailure = union(enum) {
+    none,
+    expect: []const u8,
+    frame: FrameAssertion,
+    send: []const u8,
+    total_timeout,
+};
+
 /// Outcome of running the script's steps, before teardown.
-const ScriptOutcome = struct { success: bool, steps_executed: usize };
+const ScriptOutcome = struct {
+    success: bool,
+    steps_executed: usize,
+    /// Which step (0-based) broke the run, when `!success`.
+    failed_step: usize = 0,
+    /// Why it broke, for the diagnostic dump.
+    failure: StepFailure = .none,
+};
 
 /// POSIX session the step driver talks to: the PTY/pipe fds plus the child pid,
 /// behind the same pollRead/writeAll/sendSignal surface the Windows session
@@ -924,6 +943,8 @@ fn driveScriptSteps(
 ) InteractiveError!ScriptOutcome {
     var steps_executed: usize = 0;
     var script_success = true;
+    var failed_step: usize = 0;
+    var failure: StepFailure = .none;
 
     for (script.steps.items, 0..) |step, step_index| {
         if (transcript_buffer) |tb| {
@@ -945,6 +966,8 @@ fn driveScriptSteps(
 
             if (!found and !step.optional) {
                 script_success = false;
+                failed_step = step_index;
+                failure = .{ .expect = expected };
                 break;
             }
 
@@ -970,6 +993,8 @@ fn driveScriptSteps(
 
             if (!ok) {
                 script_success = false;
+                failed_step = step_index;
+                failure = .{ .send = input };
                 break;
             }
         }
@@ -1010,6 +1035,8 @@ fn driveScriptSteps(
             );
             if (!ok and !step.optional) {
                 script_success = false;
+                failed_step = step_index;
+                failure = .{ .frame = assertion };
                 break;
             }
         }
@@ -1025,11 +1052,18 @@ fn driveScriptSteps(
         const elapsed = nowMs(io) - start_time;
         if (elapsed > config.total_timeout_ms) {
             script_success = false;
+            failed_step = step_index;
+            failure = .total_timeout;
             break;
         }
     }
 
-    return .{ .success = script_success, .steps_executed = steps_executed };
+    return .{
+        .success = script_success,
+        .steps_executed = steps_executed,
+        .failed_step = failed_step,
+        .failure = failure,
+    };
 }
 
 /// Determine the VTerm geometry for a PTY run and allocate the terminal. Prefer
@@ -1241,6 +1275,12 @@ fn runInteractivePosix(
         else => 1,
     };
 
+    // A step that broke the run left the child blocked mid-prompt (we killed it
+    // above), so the only visible symptom in the test would be a nonzero exit
+    // code. Print the full diagnostic now — which step, the rendered screen, the
+    // raw tail — so CI shows exactly what the child drew.
+    if (!outcome.success) dumpScriptFailure(allocator, outcome, screen, output_buffer.items);
+
     const duration_ms: u64 = @intCast(nowMs(io) - start_time);
 
     if (config.save_transcript and config.transcript_path != null) {
@@ -1361,6 +1401,8 @@ fn runInteractiveWindows(
             break;
         }
     }
+
+    if (!outcome.success) dumpScriptFailure(allocator, outcome, screen, output_buffer.items);
 
     const duration_ms: u64 = @intCast(nowMs(io) - start_time);
 
@@ -1648,6 +1690,64 @@ fn printFrameMismatch(allocator: std.mem.Allocator, screen: *vterm.VTerm, assert
     defer allocator.free(framed);
     printBoxedScreen(framed);
     std.debug.print("\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
+}
+
+/// Loud, one-shot diagnostic for a script that did not run to completion. Prints
+/// which step broke, why, the vterm geometry + rendered screen (so a frame or
+/// prompt mismatch is legible), and the tail of the raw byte stream. Without
+/// this, a step failure only surfaces as a nonzero child exit code — the harness
+/// kills the still-blocked child, and the test's `expect(exit_code == 0)` fails
+/// with no clue what the child actually drew. This is the keeper: a failed frame
+/// (or expect) step must fail loudly with the screen, not cryptically.
+fn dumpScriptFailure(
+    allocator: std.mem.Allocator,
+    outcome: ScriptOutcome,
+    screen: ?*vterm.VTerm,
+    output: []const u8,
+) void {
+    if (outcome.failure == .none) return;
+    std.debug.print("\n\u{250c}\u{2500} INTERACTIVE SCRIPT FAILED at step {d} \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{outcome.failed_step + 1});
+    switch (outcome.failure) {
+        .none => {},
+        .expect => |e| std.debug.print("\u{2502} step kind: expect(\"{s}\") — text never appeared in the stream\n", .{e}),
+        .send => |s| std.debug.print("\u{2502} step kind: send(\"{s}\") — write to child failed\n", .{s}),
+        .total_timeout => std.debug.print("\u{2502} step kind: total interaction timeout exceeded\n", .{}),
+        .frame => |a| switch (a) {
+            .contains => |t| std.debug.print("\u{2502} step kind: expectFrameContains(\"{s}\") — not visible on the rendered screen\n", .{t}),
+            .row => |r| std.debug.print("\u{2502} step kind: expectRow({d}, \"{s}\")\n", .{ r.index, r.expected }),
+            .snapshot => |n| std.debug.print("\u{2502} step kind: expectFrame(\"{s}\")\n", .{n}),
+        },
+    }
+    if (screen) |term| {
+        std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ term.width, term.height });
+        if (term.getAllText(allocator)) |flat| {
+            defer allocator.free(flat);
+            if (reflowToRows(allocator, flat, term.width, term.height)) |framed| {
+                defer allocator.free(framed);
+                printBoxedScreen(framed);
+            } else |_| {}
+        } else |_| {}
+    } else {
+        std.debug.print("\u{2502} (no VTerm allocated — cannot render screen)\n", .{});
+    }
+    // Tail of the raw stream, escaped, so control/cursor bytes are legible.
+    const tail_len = @min(output.len, 512);
+    const tail = output[output.len - tail_len ..];
+    std.debug.print("\u{2502} raw byte-stream tail ({d} of {d} bytes), escaped:\n\u{2502}   ", .{ tail_len, output.len });
+    for (tail) |b| {
+        if (b == '\n') {
+            std.debug.print("\\n", .{});
+        } else if (b == '\r') {
+            std.debug.print("\\r", .{});
+        } else if (b == 0x1b) {
+            std.debug.print("\\e", .{});
+        } else if (b >= 0x20 and b < 0x7f) {
+            std.debug.print("{c}", .{b});
+        } else {
+            std.debug.print("\\x{x:0>2}", .{b});
+        }
+    }
+    std.debug.print("\n\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
 }
 
 fn printBoxedScreen(screen_text: []const u8) void {
