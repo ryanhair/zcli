@@ -1,41 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
 
-/// Maximum length for user input (version strings, branch names, etc.)
-const MAX_INPUT_LENGTH = 256;
-
-/// Read a line from stdin with validation and proper error handling
-/// Returns error.InputTooLong if input exceeds MAX_INPUT_LENGTH
-fn readLine(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
-    var read_buf: [4096]u8 = undefined;
-    var reader = std.Io.File.stdin().reader(io, &read_buf);
-    const r = &reader.interface;
-
-    var line_buffer: [MAX_INPUT_LENGTH]u8 = undefined;
-    var i: usize = 0;
-
-    while (i < line_buffer.len) {
-        const byte = r.takeByte() catch break;
-
-        if (byte == '\n') break;
-        if (byte == '\r') continue;
-
-        line_buffer[i] = byte;
-        i += 1;
-    }
-
-    if (i == line_buffer.len) {
-        // Drain remaining input until newline
-        while (true) {
-            const byte = r.takeByte() catch break;
-            if (byte == '\n') break;
-        }
-        return error.InputTooLong;
-    }
-
-    return try allocator.dupe(u8, line_buffer[0..i]);
-}
-
 pub const meta = .{
     .description = "Create and manage project releases",
     .examples = &.{
@@ -122,6 +87,10 @@ const Version = struct {
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
+    // Framework prompt instance: shares this command's stdout/stdin (Stdio-
+    // injectable, so confirmations are testable) instead of a hand-rolled
+    // stdin read.
+    const prompts = context.prompts();
 
     const io = context.io;
 
@@ -167,30 +136,28 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
                     break :blk initial_version;
                 }
 
-                try stdout.print("Create initial release tag? [Y/n]: ", .{});
-                try stdout.flush(); // the prompt must reach the terminal before we block on stdin
-                const response = readLine(allocator, io) catch |read_err| {
-                    if (read_err == error.InputTooLong)
-                        return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
-                    return read_err;
+                const create_it = prompts.confirm(.{
+                    .message = "Create initial release tag?",
+                    .default = true,
+                }) catch |perr| switch (perr) {
+                    error.EndOfStream => return context.fail("✗ Release requires a terminal to confirm (stdin closed).", .{}),
+                    else => return perr,
                 };
-                defer allocator.free(response);
-                const trimmed = std.mem.trim(u8, response, " \t\r\n");
-
-                if (std.mem.eql(u8, trimmed, "n") or std.mem.eql(u8, trimmed, "N")) {
+                if (!create_it) {
                     return context.fail("\nTo create manually:\n  git tag -a {s}-v0.1.0 -m \"Initial release\"", .{cli_name});
                 }
 
                 // If user provided explicit version, use it; otherwise prompt
                 const version_to_use = if (is_bump_type) blk2: {
-                    try stdout.print("  Initial version (default: 0.1.0): ", .{});
-                    try stdout.flush(); // the prompt must reach the terminal before we block on stdin
-                    const version_input = readLine(allocator, io) catch |read_err| {
-                        if (read_err == error.InputTooLong)
-                            return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
-                        return read_err;
+                    const version_input = prompts.text(.{
+                        .message = "  Initial version",
+                        .default = "0.1.0",
+                    }) catch |perr| switch (perr) {
+                        error.EndOfStream => return context.fail("✗ Release requires a terminal to enter a version (stdin closed).", .{}),
+                        else => return perr,
                     };
-                    defer allocator.free(version_input);
+                    // Owned by the command arena; the trimmed slice escapes this
+                    // block so it must not be freed here.
                     const initial_version_str = std.mem.trim(u8, version_input, " \t\r\n");
                     break :blk2 if (initial_version_str.len == 0) "0.1.0" else initial_version_str;
                 } else args.version;
@@ -300,18 +267,15 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 
     // 5.5. Confirm release (unless using --message flag or dry-run)
     if (options.message == null and !options.@"dry-run") {
-        try stdout.print("\nContinue with release {s}-v{s}? [Y/n]: ", .{ cli_name, new_version_str });
-        try stdout.flush(); // the prompt must reach the terminal before we block on stdin
-        const response = readLine(allocator, io) catch |read_err| {
-            if (read_err == error.InputTooLong)
-                return context.fail("✗ Input too long (max {d} characters)", .{MAX_INPUT_LENGTH});
-            return read_err;
+        const proceed = prompts.confirm(.{
+            .message = try std.fmt.allocPrint(allocator, "Continue with release {s}-v{s}?", .{ cli_name, new_version_str }),
+            .default = true,
+        }) catch |perr| switch (perr) {
+            error.EndOfStream => return context.fail("✗ Release requires a terminal to confirm (stdin closed).", .{}),
+            else => return perr,
         };
-        defer allocator.free(response);
-        const trimmed = std.mem.trim(u8, response, " \t\r\n");
-
-        // Default to yes - only abort if explicitly "n" or "N"
-        if (std.mem.eql(u8, trimmed, "n") or std.mem.eql(u8, trimmed, "N")) {
+        // Default to yes - only abort if the user explicitly declined.
+        if (!proceed) {
             try stdout.print("Release aborted.\n", .{});
             return;
         }
@@ -1010,18 +974,6 @@ test "tag name format with CLI name prefix" {
     defer allocator.free(tag_name2);
 
     try testing.expectEqualStrings("myapp-v0.1.0", tag_name2);
-}
-
-test "readLine - handles CRLF line endings" {
-    // Note: This test would require mocking stdin, which is complex in Zig
-    // The CRLF handling is covered by the implementation logic
-}
-
-test "readLine - MAX_INPUT_LENGTH constant is reasonable" {
-    // Verify the constant is set to a reasonable value
-    try testing.expect(MAX_INPUT_LENGTH == 256);
-    try testing.expect(MAX_INPUT_LENGTH > 0);
-    try testing.expect(MAX_INPUT_LENGTH < 65536); // Not too large
 }
 
 test "Version.parse - edge cases with whitespace" {
