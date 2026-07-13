@@ -35,7 +35,7 @@ test "help command displays usage information" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try runCli(&term,&.{"help"});
+    try runCli(&term, &.{"help"});
 
     // Test that help text is displayed
     try testing.expect(term.containsText("Demo CLI Tool"));
@@ -51,7 +51,7 @@ test "version command shows version info" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try runCli(&term,&.{"version"});
+    try runCli(&term, &.{"version"});
 
     try testing.expect(term.containsText("demo-cli version 1.0.0"));
     try testing.expect(term.containsText("Built with Zig"));
@@ -61,7 +61,7 @@ test "list command shows items" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try runCli(&term,&.{"list"});
+    try runCli(&term, &.{"list"});
 
     try testing.expect(term.containsText("Listing items:"));
     try testing.expect(term.containsText("config.json"));
@@ -74,7 +74,7 @@ test "list command with verbose flag" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try runCli(&term,&.{ "list", "-v" });
+    try runCli(&term, &.{ "list", "-v" });
 
     try testing.expect(term.containsText("[1]"));
     try testing.expect(term.containsText("[2]"));
@@ -89,7 +89,7 @@ test "status command clears screen and shows status" {
     // Put some initial content
     term.write("Initial content that should be cleared\n");
 
-    try runCli(&term,&.{"status"});
+    try runCli(&term, &.{"status"});
 
     // Screen should be cleared, so initial content is gone
     try testing.expect(!term.containsText("Initial content"));
@@ -109,7 +109,7 @@ test "unknown command shows error" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try runCli(&term,&.{"invalid"});
+    try runCli(&term, &.{"invalid"});
 
     try testing.expect(term.containsText("Error:"));
     try testing.expect(term.containsText("Unknown command 'invalid'"));
@@ -120,7 +120,7 @@ test "no arguments shows usage" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try runCli(&term,&.{});
+    try runCli(&term, &.{});
 
     try testing.expect(term.containsText("Usage: demo-cli"));
     try testing.expect(term.containsText("Try 'demo-cli help'"));
