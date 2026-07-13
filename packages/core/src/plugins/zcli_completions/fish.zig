@@ -57,9 +57,9 @@ pub fn generate(
         \\
     , .{app_name});
 
-    // Dynamic-completion helper (ADR-0026), emitted only when some command
-    // declares a `.complete` function hook.
-    if (tree.hasDynamicArg(root)) try writeDynamicHelper(writer, app_name);
+    // Dynamic-completion helper (ADR-0026), emitted only when some field (arg or
+    // option) declares a `.complete` function hook.
+    if (tree.hasDynamicHook(root) or tree.anyOptionHook(global_options)) try writeDynamicHelper(writer, app_name);
 
     // Global options: available everywhere, no condition.
     for (global_options) |opt| {
@@ -120,25 +120,32 @@ fn writeNode(
     for (node.children) |child| try writeNode(arena, writer, app_name, child);
 }
 
-/// Emit the leaf's first-positional completion: always `-f` (no file dump) at
-/// the command's own path, plus `-a`/`-d` for an enum first positional.
+/// Emit the leaf's first-positional completion. Suppresses fish's default file
+/// dump (`-f`) unless the arg is a `.file`/`.dir` builtin, and adds candidates for
+/// an enum, a dynamic hook, or a directory builtin.
 fn writePositional(
     arena: std.mem.Allocator,
     writer: anytype,
     app_name: []const u8,
     node: *const tree.CommandNode,
 ) !void {
-    try writer.print("complete -c {s} -f", .{app_name});
+    const arg: ?zcli.ArgInfo = if (node.args.len > 0) node.args[0] else null;
+    const spec: ?zcli.completion.Spec = if (arg) |a| a.complete else null;
+
+    // `.file` forces file completion (`-F`); everything else suppresses the file
+    // dump (`-f`) and offers only explicit candidates.
+    const files_flag = if (spec) |s| (if (s == .file) "-F" else "-f") else "-f";
+    try writer.print("complete -c {s} {s}", .{ app_name, files_flag });
     try writeCondition(arena, writer, app_name, node.path);
 
-    if (node.args.len > 0) {
-        const arg = node.args[0];
-        const is_hook = if (arg.complete) |c| c == .hook else false;
-        if (is_hook) {
-            // Live candidates from `__complete` (converted to fish's newline-list
-            // via `string split0`). Fish filters by the typed prefix itself.
-            try writer.print(" -a '(__{s}_zcli_complete)'", .{app_name});
-        } else if (arg.enum_values) |values| {
+    if (spec) |s| switch (s) {
+        // Live candidates from `__complete` (NUL stream → fish list via `string
+        // split0`). Fish filters by the typed prefix itself.
+        .hook => try writer.print(" -a '(__{s}_zcli_complete)'", .{app_name}),
+        .file => {}, // -F above already offers files
+        .dir => try writer.writeAll(" -a '(__fish_complete_directories)'"),
+    } else if (arg) |a| {
+        if (a.enum_values) |values| {
             try writer.writeAll(" -a '");
             for (values, 0..) |v, idx| {
                 if (idx > 0) try writer.writeByte(' ');
@@ -146,7 +153,7 @@ fn writePositional(
                 try writer.writeAll(esc);
             }
             try writer.writeAll("'");
-            if (arg.description) |d| {
+            if (a.description) |d| {
                 const esc = try escape.fish(arena, d);
                 try writer.print(" -d '{s}'", .{esc});
             }
@@ -194,7 +201,14 @@ fn writeOption(
         try writer.print(" -d '{s}'", .{esc});
     }
 
-    if (opt.enum_values) |values| {
+    if (opt.complete) |c| {
+        switch (c) {
+            // -x: requires a value AND forbids the default file completion.
+            .hook => try writer.print(" -x -a '(__{s}_zcli_complete)'", .{app_name}),
+            .file => try writer.writeAll(" -rF"), // -r require value, -F force files
+            .dir => try writer.writeAll(" -x -a '(__fish_complete_directories)'"),
+        }
+    } else if (opt.enum_values) |values| {
         // -x: requires an argument AND forbids file completion; -a lists choices.
         try writer.writeAll(" -x -a '");
         for (values, 0..) |v, idx| {

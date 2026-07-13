@@ -13,10 +13,22 @@ pub const meta = .{
     },
     .args = .{ .title = "Task title (omit for interactive mode)" },
     .options = .{
-        .priority = .{ .short = 'p', .description = "Priority: low, medium, high, critical" },
+        .priority = .{ .short = 'p', .description = "Priority: low, medium, high, critical", .complete = completePriority },
         .points = .{ .description = "Story points" },
     },
 };
+
+/// Dynamic completion for `--priority` (ADR-0026). The field is a plain string,
+/// not an enum, so its choices can't be baked in statically — a hook offers them.
+fn completePriority(req: *zcli.completion.Request) !zcli.completion.Result {
+    const choices = [_][]const u8{ "low", "medium", "high", "critical" };
+    var out: std.ArrayList(zcli.completion.Candidate) = .empty;
+    for (choices) |ch| {
+        if (!std.mem.startsWith(u8, ch, req.partial)) continue;
+        try out.append(req.allocator, .{ .value = ch });
+    }
+    return .{ .candidates = try out.toOwnedSlice(req.allocator) };
+}
 
 pub const Args = struct {
     title: ?[]const u8 = null,

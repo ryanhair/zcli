@@ -55,6 +55,10 @@ pub fn resolve(
     var positionals: std.ArrayList([]const u8) = .empty;
     defer positionals.deinit(allocator);
 
+    // Set when the cursor is the separately-typed value of a value-taking option
+    // (`--host <TAB>`): the option whose value we're completing.
+    var option_at_cursor: ?[]const u8 = null;
+
     var end_of_options = false;
     var i: usize = 1; // skip word[0] (app name)
     while (i < cword and i < words.len) {
@@ -74,6 +78,12 @@ pub fn resolve(
             }
             const cmd_options = optionsOfPath(commands, matched[0..matched_len]);
             if (optionTakesSeparateValue(tok, global_options, cmd_options)) {
+                // The value is the next token. If that next token IS the cursor,
+                // the cursor is this option's value — resolve to it.
+                if (i + 1 == cword) {
+                    option_at_cursor = tok;
+                    break;
+                }
                 i += 2;
             } else {
                 i += 1;
@@ -94,6 +104,22 @@ pub fn resolve(
         i += 1;
     }
 
+    const cmd_options = optionsOfPath(commands, matched[0..matched_len]);
+
+    // Option value, separated form: `--host <TAB>`.
+    if (option_at_cursor) |opt_tok| {
+        const spec = optionSpecFor(opt_tok, global_options, cmd_options) orelse return null;
+        return .{ .spec = spec, .positionals = try positionals.toOwnedSlice(allocator), .partial = partial };
+    }
+
+    // Option value, joined form: the cursor token itself is `--host=partial`.
+    if (!end_of_options and std.mem.startsWith(u8, partial, "--")) {
+        if (std.mem.indexOfScalar(u8, partial, '=')) |eq| {
+            const spec = optionSpecFor(partial[0..eq], global_options, cmd_options) orelse return null;
+            return .{ .spec = spec, .positionals = try positionals.toOwnedSlice(allocator), .partial = partial[eq + 1 ..] };
+        }
+    }
+
     const cmd = commandOfPath(commands, matched[0..matched_len]) orelse return null;
 
     // The cursor sits on positional slot `positionals.items.len`.
@@ -105,6 +131,28 @@ pub fn resolve(
         .positionals = try positionals.toOwnedSlice(allocator),
         .partial = partial,
     };
+}
+
+/// The completion `Spec` of the option named by `tok` (a `--long` or `-x` flag,
+/// optionally with a trailing `=`), looked up in the command's options then the
+/// globals, or null when unknown / no completion declared.
+fn optionSpecFor(
+    tok: []const u8,
+    global_options: []const zcli.OptionInfo,
+    cmd_options: []const zcli.OptionInfo,
+) ?zcli.completion.Spec {
+    if (std.mem.startsWith(u8, tok, "--")) {
+        const name = tok[2..];
+        if (lookupLong(cmd_options, name)) |o| return o.complete;
+        if (lookupLong(global_options, name)) |o| return o.complete;
+        return null;
+    }
+    if (tok.len == 2 and tok[0] == '-') {
+        const ch = tok[1];
+        if (lookupShort(cmd_options, ch)) |o| return o.complete;
+        if (lookupShort(global_options, ch)) |o| return o.complete;
+    }
+    return null;
 }
 
 /// True when `tok` is an option flag (starts with `-`, is not `-` alone, and is

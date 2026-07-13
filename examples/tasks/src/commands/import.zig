@@ -7,7 +7,7 @@ const themed = zcli.theme.styled;
 pub const meta = .{
     .description = "Import tasks from a JSON file",
     .examples = &.{"import tasks-backup.json"},
-    .args = .{ .file = "JSON file to import" },
+    .args = .{ .file = .{ .description = "JSON file to import", .complete = .file } },
 };
 
 pub const Args = struct { file: []const u8 };

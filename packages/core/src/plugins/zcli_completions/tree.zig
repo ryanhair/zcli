@@ -38,14 +38,24 @@ pub const CommandNode = struct {
     }
 };
 
-/// True if any command in the tree declares a positional arg with a dynamic
-/// completion hook (`complete == .hook`) — i.e. the generated script needs the
-/// `__complete` callback helper wired in.
-pub fn hasDynamicArg(node: *const CommandNode) bool {
-    for (node.args) |arg| {
-        if (arg.complete) |c| if (c == .hook) return true;
-    }
-    for (node.children) |child| if (hasDynamicArg(child)) return true;
+fn specIsHook(spec: ?zcli.completion.Spec) bool {
+    return if (spec) |c| c == .hook else false;
+}
+
+/// True if any command in the tree declares a positional arg OR an option with a
+/// dynamic completion hook — i.e. the generated script needs the `__complete`
+/// callback helper wired in.
+pub fn hasDynamicHook(node: *const CommandNode) bool {
+    for (node.args) |arg| if (specIsHook(arg.complete)) return true;
+    for (node.options) |opt| if (specIsHook(opt.complete)) return true;
+    for (node.children) |child| if (hasDynamicHook(child)) return true;
+    return false;
+}
+
+/// True if any option in `options` has a dynamic completion hook (used for the
+/// app-level global options, which live outside the command tree).
+pub fn anyOptionHook(options: []const zcli.OptionInfo) bool {
+    for (options) |opt| if (specIsHook(opt.complete)) return true;
     return false;
 }
 

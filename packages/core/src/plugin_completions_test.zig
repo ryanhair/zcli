@@ -86,7 +86,7 @@ const rc_move_args = [_]zcli.ArgInfo{
     .{ .name = "id", .complete = hook_spec },
     .{ .name = "sprint", .complete = hook_spec },
 };
-const rc_deploy_opts = [_]zcli.OptionInfo{.{ .name = "host", .short = 'H', .takes_value = true }};
+const rc_deploy_opts = [_]zcli.OptionInfo{.{ .name = "host", .short = 'H', .takes_value = true, .complete = hook_spec }};
 const rc_deploy_args = [_]zcli.ArgInfo{.{ .name = "target", .complete = hook_spec }};
 const rc_calc_args = [_]zcli.ArgInfo{
     .{ .name = "a", .complete = hook_spec },
@@ -106,7 +106,8 @@ const resolve_commands = [_]zcli.CommandInfo{
 
 const rc_globals = [_]zcli.OptionInfo{
     .{ .name = "verbose", .short = 'v' }, // boolean
-    .{ .name = "config", .short = 'c', .takes_value = true },
+    .{ .name = "config", .short = 'c', .takes_value = true }, // value, no completion
+    .{ .name = "profile", .takes_value = true, .complete = hook_spec }, // value + hook
 };
 
 fn expectResolve(words: []const []const u8, cword: usize) !resolve.Match {
@@ -207,6 +208,86 @@ test "resolve - a positional field with no .complete yields nothing" {
 
 test "resolve - cursor on the command name is not dynamic" {
     try expectNoResolve(&.{ "tasks", "ed" }, 1);
+}
+
+test "resolve - option value, separated long form (--host <TAB>)" {
+    const m = try expectResolve(&.{ "tasks", "deploy", "--host", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expect(m.spec == .hook);
+    try std.testing.expectEqualStrings("", m.partial);
+}
+
+test "resolve - option value, short form (-H <TAB>)" {
+    const m = try expectResolve(&.{ "tasks", "deploy", "-H", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expect(m.spec == .hook);
+}
+
+test "resolve - option value, joined form (--host=ab)" {
+    const m = try expectResolve(&.{ "tasks", "deploy", "--host=ab" }, 2);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expect(m.spec == .hook);
+    try std.testing.expectEqualStrings("ab", m.partial); // partial is the value part
+}
+
+test "resolve - global option value with a hook" {
+    const m = try expectResolve(&.{ "tasks", "--profile", "" }, 2);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expect(m.spec == .hook);
+}
+
+test "resolve - value-taking option without a hook yields nothing" {
+    try expectNoResolve(&.{ "tasks", "--config", "" }, 2);
+}
+
+test "resolve - a completed option value does not shift the positional slot" {
+    // `--host x` (x not the cursor) is consumed; target stays the positional hook.
+    const m = try expectResolve(&.{ "tasks", "deploy", "--host", "x", "" }, 4);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+}
+
+// ============================================================================
+// Layer 0b: option-value + `.file`/`.dir` generation (ADR-0026 increment 2)
+// ============================================================================
+
+// `deploy` with a dynamic-hook option (`--host`), a `.file` option (`--out`), and
+// a `.file` positional (`cfg`).
+const i2_deploy_opts = [_]zcli.OptionInfo{
+    .{ .name = "host", .takes_value = true, .complete = hook_spec },
+    .{ .name = "out", .takes_value = true, .complete = .file },
+};
+const i2_deploy_args = [_]zcli.ArgInfo{.{ .name = "cfg", .complete = .file }};
+const i2_commands = [_]zcli.CommandInfo{
+    .{ .path = &.{"deploy"}, .options = &i2_deploy_opts, .args = &i2_deploy_args },
+};
+
+test "zsh gen - option hook action, .file option + positional actions" {
+    const script = try zsh.generate(std.testing.allocator, "advapp", &i2_commands, &global_options);
+    defer std.testing.allocator.free(script);
+    try std.testing.expect(contains(script, "_advapp_zcli_complete()")); // helper present
+    try std.testing.expect(contains(script, ":host:_advapp_zcli_complete")); // dynamic option value
+    try std.testing.expect(contains(script, ":out:_files")); // .file option value
+    try std.testing.expect(contains(script, ":_files")); // .file positional action
+}
+
+test "bash gen - dynamic branch, .file positional + option compgen" {
+    const script = try bash.generate(std.testing.allocator, "advapp", &i2_commands, &global_options);
+    defer std.testing.allocator.free(script);
+    try std.testing.expect(contains(script, "__complete")); // dynamic branch for the hook option
+    try std.testing.expect(contains(script, "\"deploy\")")); // .file positional static case
+    try std.testing.expect(contains(script, "compgen -f")); // .file → files
+    try std.testing.expect(contains(script, "--out)")); // .file option $prev case
+}
+
+test "fish gen - option hook + .file option + .file positional" {
+    const script = try fish.generate(std.testing.allocator, "advapp", &i2_commands, &global_options);
+    defer std.testing.allocator.free(script);
+    try std.testing.expect(contains(script, "function __advapp_zcli_complete"));
+    try std.testing.expect(contains(script, "-l host -x -a '(__advapp_zcli_complete)'")); // dynamic option
+    try std.testing.expect(contains(script, "-l out -rF")); // .file option forces files
+    // .file positional: force-files at the command's own path, no `-f` suppression.
+    try std.testing.expect(contains(script, "complete -c advapp -F -n '__fish_advapp_using_command deploy'"));
 }
 
 // ============================================================================
