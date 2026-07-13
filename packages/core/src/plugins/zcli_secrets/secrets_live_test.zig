@@ -39,6 +39,22 @@ const MockContext = struct {
 const service = "zcli-secrets-ci-roundtrip";
 const name = "token";
 
+/// True when the active Linux backend is the Secret Service — either forced by
+/// CI via `ZCLI_SECRETS_BACKEND=secret-service` (how the two Linux live steps are
+/// made deterministic) or autodetected. The large-value assertion branches on
+/// this because the Secret Service caps a stored value at ~6 KiB while `pass` and
+/// the macOS Keychain do not. On non-Linux this is always false (Windows is
+/// handled by its own branch; macOS has no cap).
+fn isSecretServiceBackend(env: *const std.process.Environ.Map) bool {
+    if (builtin.os.tag != .linux) return false;
+    // CI forces the backend per step, so the override is the reliable signal.
+    if (env.get("ZCLI_SECRETS_BACKEND")) |choice|
+        return std.mem.eql(u8, choice, "secret-service");
+    // No override: a live session bus means the Secret Service is the autodetected
+    // choice. (Local ad-hoc runs; CI always sets the override.)
+    return env.get("DBUS_SESSION_BUS_ADDRESS") != null;
+}
+
 test "public API round-trips set / get / overwrite / delete via ContextData" {
     const a = std.testing.allocator;
 
@@ -102,11 +118,18 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
         try std.testing.expectEqualStrings("", v);
     }
 
-    // A large value (>64 KiB) exercises the shell-out subprocess past the OS
-    // pipe buffer — the payload size that used to deadlock the stdin write
-    // against an undrained stdout. Windows caps the blob well below this, so its
-    // Credential Manager rejects it with SecretTooLarge; that is the correct
-    // uniform contract, not a bug, so assert it per platform.
+    // Large-value behavior is backend-specific, so assert per backend:
+    //
+    //  - Windows Credential Manager caps a blob at 2560 bytes → SecretTooLarge.
+    //  - The Linux Secret Service backend caps a stored value at ~6 KiB
+    //    (`secret-tool` reads the secret into a fixed 8192-byte stdin buffer and
+    //    silently truncates the rest); we reject/verify that as SecretTooLarge
+    //    rather than store a corrupt value. A value comfortably under the cap must
+    //    still round-trip exactly.
+    //  - macOS Keychain and the Linux `pass` backend have no such cap, so a large
+    //    value must round-trip intact — this also exercises the shell-out
+    //    subprocess past the ~64 KiB OS pipe buffer (the size that used to
+    //    deadlock the stdin write against an undrained stdout).
     {
         const big = try a.alloc(u8, 200 * 1024);
         defer a.free(big);
@@ -114,7 +137,22 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
 
         if (builtin.os.tag == .windows) {
             try std.testing.expectError(plugin.Error.SecretTooLarge, data.set(&ctx, name, big));
+        } else if (isSecretServiceBackend(&env)) {
+            // 200 KiB is far past the ~6 KiB cap → must fail cleanly, never store
+            // a truncated secret.
+            try std.testing.expectError(plugin.Error.SecretTooLarge, data.set(&ctx, name, big));
+
+            // A value comfortably under the cap (4 KiB raw → ~5.5 KiB base64,
+            // within the 8192 stdin buffer) must round-trip exactly.
+            const under = try a.alloc(u8, 4 * 1024);
+            defer a.free(under);
+            for (under, 0..) |*b, i| b.* = @intCast('A' + (i % 26));
+            try data.set(&ctx, name, under);
+            const v = (try data.get(&ctx, name)).?;
+            defer a.free(v);
+            try std.testing.expectEqualSlices(u8, under, v);
         } else {
+            // macOS Keychain / Linux `pass`: no cap, round-trips the large value.
             try data.set(&ctx, name, big);
             const v = (try data.get(&ctx, name)).?;
             defer a.free(v);

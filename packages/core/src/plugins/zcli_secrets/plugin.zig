@@ -44,7 +44,8 @@
 //!
 //! - `InvalidSecretName` — the `name` is not valid UTF-8, or contains a NUL.
 //!   Validated up front (see below), before any backend is touched.
-//! - `SecretTooLarge` — the value exceeds what the backend can store.
+//! - `SecretTooLarge` — the value exceeds what the backend can store (Windows'
+//!   2560-byte blob cap; the Linux Secret Service backend's ~6 KiB stdin cap).
 //! - `BackendUnavailable` — no usable secure store on this system (Linux only:
 //!   no Secret Service and no initialized `pass`; or a bad `ZCLI_SECRETS_BACKEND`
 //!   override).
@@ -65,11 +66,19 @@
 //!   where an embedded NUL silently truncates the key. (A NUL is also invalid
 //!   UTF-16 target material.)
 //!
-//! Beyond the name: on **Windows** a value is capped at
-//! `CRED_MAX_CREDENTIAL_BLOB_SIZE` (2560 bytes) and fails with `SecretTooLarge`
-//! above it (macOS/Linux have no such practical cap). The Windows credential is
-//! keyed by an unambiguous length-prefixed encoding of `(app_name, name)`, so
-//! distinct app/name pairs never collide.
+//! Beyond the name, backends differ on how large a value they accept, and each
+//! that has a cap fails with `SecretTooLarge` above it:
+//!
+//! - **Windows** caps a value at `CRED_MAX_CREDENTIAL_BLOB_SIZE` (2560 bytes).
+//!   Its credential is keyed by an unambiguous length-prefixed encoding of
+//!   `(app_name, name)`, so distinct app/name pairs never collide.
+//! - The **Linux Secret Service** backend has a practical ~6 KiB cap: `secret-tool
+//!   store` reads the (base64-encoded) secret into a fixed 8192-byte stdin buffer
+//!   and silently truncates the overflow, so this backend rejects a value whose
+//!   encoded form exceeds that and verifies every store round-trips intact. Large
+//!   secrets on Linux belong in the `pass` backend (`ZCLI_SECRETS_BACKEND=pass`),
+//!   which has no such cap.
+//! - **macOS** (Keychain) and the Linux **`pass`** backend have no practical cap.
 //!
 //! ## Usage from command code
 //!

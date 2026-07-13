@@ -188,6 +188,15 @@ pub fn diagnostic(w: *std.Io.Writer, e: anyerror, environ: *const std.process.En
             );
             return true;
         },
+        secret_service.Error.SecretTooLarge => {
+            try w.writeAll(
+                "secret is too large for the Secret Service backend, which caps a stored value " ++
+                    "at ~6 KiB (`secret-tool` reads the secret into a fixed 8 KiB stdin buffer and " ++
+                    "silently truncates the rest). Use the `pass` backend for large secrets: " ++
+                    "ZCLI_SECRETS_BACKEND=pass.\n",
+            );
+            return true;
+        },
         else => return false,
     }
 }
@@ -324,6 +333,15 @@ test "diagnostic renders the actionable line for this backend's resolve errors" 
         try std.testing.expect(try diagnostic(&aw.writer, Error.SecretBackendUnavailable, &env));
         try std.testing.expect(std.mem.indexOf(u8, aw.written(), "no secret backend available") != null);
         try std.testing.expect(std.mem.indexOf(u8, aw.written(), "ZCLI_SECRETS_BACKEND=secret-service|pass") != null);
+    }
+
+    // A too-large secret on the Secret Service backend — points the user at pass.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(try diagnostic(&aw.writer, secret_service.Error.SecretTooLarge, &env));
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "too large") != null);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "ZCLI_SECRETS_BACKEND=pass") != null);
     }
 
     // An error this backend does not own: no message, returns false.
