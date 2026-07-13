@@ -10,7 +10,10 @@ pub fn build(b: *std.Build) void {
     const vterm_dep = b.dependency("vterm", .{ .target = target, .optimize = optimize });
     const vterm_mod = vterm_dep.module("vterm");
 
-    // Build the example CLI application
+    // Build the example CLI application. This is the *application under test*,
+    // not part of the vterm demo — a plain CLI that emits ANSI output, exactly
+    // like a real program you'd point vterm at. It deliberately does NOT depend
+    // on vterm (the tests do); a real CLI you test with vterm wouldn't either.
     const exe = b.addExecutable(.{
         .name = "demo-cli",
         .root_module = b.createModule(.{
@@ -19,7 +22,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    exe.root_module.addImport("vterm", vterm_mod);
     b.installArtifact(exe);
 
     // Create run command
