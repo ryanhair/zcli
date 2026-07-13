@@ -25,6 +25,13 @@ const MockContext = struct {
     io: std.Io,
     environ: *const std.process.Environ.Map,
     app_name: []const u8,
+    err_writer: *std.Io.Writer,
+
+    /// The plugin surfaces backend diagnostics via `context.stderr()`; the
+    /// live test discards them (they only fire on error paths).
+    pub fn stderr(self: *const MockContext) *std.Io.Writer {
+        return self.err_writer;
+    }
 };
 
 // A throwaway service name that will not collide with real credentials, cleaned
@@ -53,7 +60,8 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
         }
     }
 
-    var ctx = MockContext{ .allocator = a, .io = std.testing.io, .environ = &env, .app_name = service };
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    var ctx = MockContext{ .allocator = a, .io = std.testing.io, .environ = &env, .app_name = service, .err_writer = &discard.writer };
     var data: plugin.ContextData = .{};
 
     // Start from a clean slate even if a prior aborted run left an entry.
