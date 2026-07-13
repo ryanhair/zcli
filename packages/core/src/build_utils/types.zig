@@ -112,7 +112,6 @@ pub const Builtin = enum {
     not_found,
     completions,
     config,
-    output,
     secrets,
     github_upgrade,
 

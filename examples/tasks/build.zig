@@ -36,7 +36,6 @@ pub fn build(b: *std.Build) !void {
             zcli.builtin(.version, .{}),
             zcli.builtin(.not_found, .{}),
             zcli.builtin(.completions, .{}),
-            zcli.builtin(.output, .{}),
             zcli.builtin(.config, .{}),
         },
         .shared_modules = &[_]zcli.SharedModule{

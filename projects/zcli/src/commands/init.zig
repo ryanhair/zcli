@@ -16,7 +16,6 @@ const builtin_choices = [_]BuiltinChoice{
     .{ .tag = "not_found", .label = "zcli_not_found — \"did you mean?\" suggestions for mistyped commands", .default = true },
     .{ .tag = "completions", .label = "zcli_completions — shell completion scripts (bash/zsh/fish)", .default = false },
     .{ .tag = "config", .label = "zcli_config — load option defaults from a config file", .default = false },
-    .{ .tag = "output", .label = "zcli_output — --output flag for json/table/plain output", .default = false },
     .{ .tag = "github_upgrade", .label = "zcli_github_upgrade — self-update from GitHub releases", .default = false },
 };
 
