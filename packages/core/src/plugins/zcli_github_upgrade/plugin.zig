@@ -186,50 +186,50 @@ pub fn init(config: Config) type {
         /// Execute the upgrade command
         fn executeUpgrade(args: commands.upgrade.Args, options: commands.upgrade.Options, context: anytype) !void {
             const allocator = context.allocator;
-            var stdout = context.stdout();
+            const stdout = context.stdout();
 
             // Determine target version (explicit or latest)
             const current_version = context.app_version;
             const target_version = if (args.version) |v|
                 try allocator.dupe(u8, v)
             else
-                fetchLatestVersion(allocator, context.io, plugin_config.repo, context.app_name, api_timeout) catch |err| switch (err) {
+                fetchLatestVersion(allocator, context.io, stdout, plugin_config.repo, context.app_name, api_timeout) catch |err| switch (err) {
                     // Render the two "GitHub answered, but unusably" cases here,
                     // where we have a context — selectVersion is a pure helper
-                    // and must not print (its old std.debug.print bypassed
-                    // stream overrides and violated invariant #3).
+                    // and must not print (its old debug-print bypassed stream
+                    // overrides and violated invariant #3).
                     error.NoMatchingRelease => return context.fail("Error: No releases found with tag prefix '{s}-v'\nExpected tag format: {s}-v<version> (e.g., {s}-v1.0.0)", .{ context.app_name, context.app_name, context.app_name }),
                     error.UnexpectedResponse => return context.fail("Error: Unexpected response from the GitHub releases API (expected a JSON array of releases)", .{}),
+                    error.RateLimitExceeded => return context.fail("Error: GitHub API rate limit exceeded. Try again later.", .{}),
+                    error.FailedToFetchVersion => return context.fail("Error: Could not fetch the latest version from GitHub (repo '{s}').", .{plugin_config.repo}),
                     else => return err,
                 };
             defer allocator.free(target_version);
 
             if (options.check) {
-                if (args.version) |_| {
-                    // User specified a version, compare with current
-                    if (!std.mem.eql(u8, current_version, target_version)) {
-                        try stdout.print("Version {s} is available (current: {s})\n", .{ target_version, current_version });
-                        std.process.exit(0);
-                    } else {
-                        try stdout.print("You are already on version: {s}\n", .{current_version});
-                        std.process.exit(0);
-                    }
-                } else {
-                    // Check latest version
-                    if (isNewerVersion(current_version, target_version)) {
-                        try stdout.print("New version available: {s} (current: {s})\n", .{ target_version, current_version });
-                        std.process.exit(0);
-                    } else {
-                        try stdout.print("You are already on the latest version: {s}\n", .{current_version});
-                        std.process.exit(0);
-                    }
-                }
+                try writeCheckResult(stdout, current_version, target_version, args.version != null);
+                // Flush and exit cleanly via the context. Exiting the process
+                // directly would discard everything we just wrote to the
+                // buffered stdout — context.exit flushes first.
+                context.exit(0);
             }
 
             // Perform upgrade
             const is_downgrade = args.version != null and isNewerVersion(target_version, current_version);
             const is_same_version = std.mem.eql(u8, current_version, target_version);
             const needs_upgrade = args.version != null or isNewerVersion(current_version, target_version);
+
+            // Downgrade guard for the no-arg path: `upgrade` (no version) must
+            // NEVER install a version older than or equal to the current one,
+            // even with --force. The latest tag comes from the releases feed,
+            // which a stale or malicious mirror could point at an old but
+            // validly-signed release; refusing here keeps that from silently
+            // rolling a user back. Explicit `upgrade <version>` is still allowed
+            // to downgrade (it warns below).
+            if (args.version == null and !isNewerVersion(current_version, target_version)) {
+                try stdout.print("You are already on the latest version: {s}\n", .{current_version});
+                return;
+            }
 
             if (is_same_version and !options.force) {
                 try stdout.print("You are already on version: {s}\n", .{current_version});
@@ -280,17 +280,15 @@ pub fn init(config: Config) type {
 
             // Download binary
             try stdout.print("Downloading {s}...\n", .{binary_name});
-            try downloadBinary(allocator, context.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name);
-
-            // Verify integrity. When a signing key is pinned, the signature over
-            // checksums.txt is checked first (fail closed) so the checksum we
-            // then compare against is one we've cryptographically authenticated.
             if (plugin_config.public_key != null) {
                 try stdout.print("Verifying signature...\n", .{});
             } else {
                 try stdout.print("Verifying checksum...\n", .{});
             }
-            try verifyChecksum(allocator, context.io, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name, plugin_config.public_key);
+            // Fetch the asset, then verify its integrity into scratch_dir. When a
+            // signing key is pinned, checksums.txt is authenticated under it
+            // (fail closed) before any digest is trusted.
+            try downloadAndVerify(allocator, context.io, context.stderr(), github_download_base, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name, plugin_config.public_key);
 
             // Make binary executable before testing (Unix only - Windows uses .exe extension)
             if (builtin.os.tag != .windows) {
@@ -305,7 +303,6 @@ pub fn init(config: Config) type {
 
             // Replace current binary
             try stdout.print("Installing new version...\n", .{});
-            std.debug.print("Replacing binary at: {s}\n", .{exe_path});
             try replaceBinaryAt(allocator, context.io, scratch_dir, binary_name, exe_path);
 
             const action = if (is_downgrade) "downgraded" else "upgraded";
@@ -340,10 +337,12 @@ pub fn init(config: Config) type {
             }
 
             // Passive check: short deadline (startup_check_timeout) so a slow
-            // or black-holed network can never make the CLI feel hung.
-            const latest_version = fetchLatestVersion(allocator, io, plugin_config.repo, context.app_name, startup_check_timeout) catch |err| {
+            // or black-holed network can never make the CLI feel hung. Any
+            // diagnostic fetchLatestVersion would emit is discarded here — a
+            // passive probe must be silent on failure, not nag about a 404.
+            var discard = std.Io.Writer.Discarding.init(&.{});
+            const latest_version = fetchLatestVersion(allocator, io, &discard.writer, plugin_config.repo, context.app_name, startup_check_timeout) catch {
                 // Silently fail - don't interrupt the user's workflow
-                _ = err;
                 return;
             };
             defer allocator.free(latest_version);
@@ -392,9 +391,7 @@ pub fn init(config: Config) type {
 /// prefix. `timeout` bounds the whole request: the upgrade command passes
 /// `api_timeout`, while `onStartup` passes `startup_check_timeout` so a
 /// stalled network can never hang CLI startup.
-fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, cli_name: []const u8, timeout: std.Io.Duration) ![]const u8 {
-    std.debug.print("Checking for updates...\n", .{});
-
+fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, err_out: *std.Io.Writer, repo: []const u8, cli_name: []const u8, timeout: std.Io.Duration) ![]const u8 {
     // Fetch all releases and filter by tag prefix
     const url = try buildReleasesUrl(allocator, github_api_base, repo);
     defer allocator.free(url);
@@ -410,17 +407,17 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, repo: []const u8
 
     // Check for rate limiting
     if (response.status == .too_many_requests) {
-        std.debug.print("GitHub API rate limit exceeded.\n", .{});
+        err_out.print("GitHub API rate limit exceeded.\n", .{}) catch {};
         return error.RateLimitExceeded;
     }
 
     if (response.status != .ok) {
         // Provide specific error messages based on status code
         switch (response.status) {
-            .not_found => std.debug.print("GitHub repository not found: {s}\n", .{repo}),
-            .unauthorized => std.debug.print("GitHub API authentication failed (unauthorized)\n", .{}),
-            .forbidden => std.debug.print("GitHub API access forbidden (check permissions)\n", .{}),
-            else => std.debug.print("GitHub API request failed with status: {}\n", .{response.status}),
+            .not_found => err_out.print("GitHub repository not found: {s}\n", .{repo}) catch {},
+            .unauthorized => err_out.print("GitHub API authentication failed (unauthorized)\n", .{}) catch {},
+            .forbidden => err_out.print("GitHub API access forbidden (check permissions)\n", .{}) catch {},
+            else => err_out.print("GitHub API request failed with status: {}\n", .{response.status}) catch {},
         }
         return error.FailedToFetchVersion;
     }
@@ -428,101 +425,107 @@ fn fetchLatestVersion(allocator: std.mem.Allocator, io: std.Io, repo: []const u8
     return selectVersion(allocator, response.body, cli_name);
 }
 
+/// The single field of a GitHub release we care about. `ignore_unknown_fields`
+/// lets us model just this and skip the rest of the (large) release objects.
+const Release = struct { tag_name: []const u8 };
+
 /// Pick the version for `cli_name` from a GitHub releases JSON array body.
 /// Releases are tagged `{cli_name}-v{version}`; the first tag matching that
 /// prefix wins and its `{version}` suffix is returned (caller owns it).
-/// Returns `error.UnexpectedResponse` if the body isn't a JSON array (e.g. an
-/// error object) and `error.NoMatchingRelease` if nothing matches the prefix.
+///
+/// The body is parsed straight into `[]Release` (unknown fields ignored)
+/// rather than into a full `std.json.Value` tree — the releases feed can be
+/// megabytes, and we only ever read `tag_name`. A body that is not a JSON
+/// array of release objects (a `{"message":"Not Found"}` error object, an
+/// HTML error page, garbage) fails the typed parse and surfaces as
+/// `error.UnexpectedResponse`; `error.NoMatchingRelease` means the body was a
+/// well-formed release array but nothing matched the prefix.
 fn selectVersion(allocator: std.mem.Allocator, body: []const u8, cli_name: []const u8) ![]const u8 {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| {
-        // If JSON parsing fails, it might be an HTML error page (rate limit, etc)
-        return err;
+    const parsed = std.json.parseFromSlice([]Release, allocator, body, .{
+        .ignore_unknown_fields = true,
+    }) catch {
+        // Not a JSON array of release objects: a GitHub error object, an HTML
+        // error page, or otherwise unusable. The caller renders a diagnostic.
+        return error.UnexpectedResponse;
     };
     defer parsed.deinit();
-
-    // An array is expected; an object usually means a GitHub error response.
-    if (parsed.value != .array) {
-        return error.UnexpectedResponse;
-    }
 
     const tag_prefix = try std.fmt.allocPrint(allocator, "{s}-v", .{cli_name});
     defer allocator.free(tag_prefix);
 
-    for (parsed.value.array.items) |release| {
-        if (release != .object) continue;
-        const tag_name = release.object.get("tag_name") orelse continue;
-        if (tag_name != .string) continue;
-        const tag_str = tag_name.string;
-
-        if (std.mem.startsWith(u8, tag_str, tag_prefix)) {
+    for (parsed.value) |release| {
+        if (std.mem.startsWith(u8, release.tag_name, tag_prefix)) {
             // Strip prefix to get version (e.g., "zcli-v1.0.0" -> "1.0.0")
-            return try allocator.dupe(u8, tag_str[tag_prefix.len..]);
+            return try allocator.dupe(u8, release.tag_name[tag_prefix.len..]);
         }
     }
 
     return error.NoMatchingRelease;
 }
 
-/// Compare two version strings using semantic versioning rules
-/// Returns true if latest is newer than current
+/// Render the `--check` result line to `out`. When `explicit` is true the user
+/// named a version (compare for equality); otherwise `target` is the latest tag
+/// (compare for "newer"). Pure and writer-based so it is unit-testable without a
+/// live command context — and so the message actually reaches the user: the old
+/// code printed then exited the process directly, discarding the buffered line.
+fn writeCheckResult(out: *std.Io.Writer, current: []const u8, target: []const u8, explicit: bool) !void {
+    if (explicit) {
+        if (!std.mem.eql(u8, current, target)) {
+            try out.print("Version {s} is available (current: {s})\n", .{ target, current });
+        } else {
+            try out.print("You are already on version: {s}\n", .{current});
+        }
+    } else {
+        if (isNewerVersion(current, target)) {
+            try out.print("New version available: {s} (current: {s})\n", .{ target, current });
+        } else {
+            try out.print("You are already on the latest version: {s}\n", .{current});
+        }
+    }
+}
+
+/// Compare two version strings using full SemVer 2.0 precedence.
+/// Returns true if `latest` is strictly newer than `current`.
+///
+/// Backed by `std.SemanticVersion`, so pre-release versions order correctly:
+/// a pre-release is lower than its release (1.0.0-rc1 < 1.0.0), pre-release
+/// identifiers compare per SemVer 2.0 (numeric < alphanumeric, dot-separated),
+/// and build metadata is ignored. When either string is not valid SemVer
+/// (`std.SemanticVersion.parse` fails — e.g. a two-component "1.2" or a
+/// non-numeric core), we fall back to a plain string inequality: unknown vs
+/// unknown is the safest conservative answer, and the old parseInt-based
+/// parser mishandled every pre-release tag.
 fn isNewerVersion(current: []const u8, latest: []const u8) bool {
-    // Strip 'v' prefix if present
+    // Strip a leading 'v' if present (tags like v1.2.3).
     const current_clean = if (std.mem.startsWith(u8, current, "v")) current[1..] else current;
     const latest_clean = if (std.mem.startsWith(u8, latest, "v")) latest[1..] else latest;
 
-    // Parse versions - if parsing fails, fall back to string comparison
-    const current_ver = parseVersion(current_clean) catch {
+    const current_ver = std.SemanticVersion.parse(current_clean) catch {
         return !std.mem.eql(u8, current_clean, latest_clean);
     };
-    const latest_ver = parseVersion(latest_clean) catch {
+    const latest_ver = std.SemanticVersion.parse(latest_clean) catch {
         return !std.mem.eql(u8, current_clean, latest_clean);
     };
 
-    // Compare major.minor.patch
-    if (latest_ver.major > current_ver.major) return true;
-    if (latest_ver.major < current_ver.major) return false;
-
-    if (latest_ver.minor > current_ver.minor) return true;
-    if (latest_ver.minor < current_ver.minor) return false;
-
-    return latest_ver.patch > current_ver.patch;
+    return latest_ver.order(current_ver) == .gt;
 }
 
-/// Parse a semantic version string (major.minor.patch)
-fn parseVersion(version_str: []const u8) !struct { major: u32, minor: u32, patch: u32 } {
-    var parts = std.mem.splitScalar(u8, version_str, '.');
-    const major_str = parts.next() orelse return error.InvalidVersion;
-    const minor_str = parts.next() orelse return error.InvalidVersion;
-    const patch_str = parts.next() orelse return error.InvalidVersion;
-
-    return .{
-        .major = try std.fmt.parseInt(u32, major_str, 10),
-        .minor = try std.fmt.parseInt(u32, minor_str, 10),
-        .patch = try std.fmt.parseInt(u32, patch_str, 10),
-    };
-}
-
-/// Detect current platform (OS and architecture)
+/// Detect current platform (OS and architecture). OS and CPU arch are
+/// comptime-known, so an unsupported target is a build-time error for the
+/// consuming app rather than a runtime failure — you can never ship an
+/// upgrade command whose asset name it cannot construct.
 fn detectPlatform(allocator: std.mem.Allocator) ![]const u8 {
     const os = switch (builtin.os.tag) {
         .linux => "linux",
         .macos => "macos",
         .windows => "windows",
-        else => {
-            std.debug.print("Error: Unsupported operating system: {s}\n", .{@tagName(builtin.os.tag)});
-            std.debug.print("Supported platforms: linux, macos, windows\n", .{});
-            return error.UnsupportedPlatform;
-        },
+        else => @compileError("zcli_github_upgrade: unsupported OS '" ++ @tagName(builtin.os.tag) ++ "' (supported: linux, macos, windows)"),
     };
 
     const arch = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
         .aarch64 => "aarch64",
-        else => {
-            std.debug.print("Error: Unsupported CPU architecture: {s}\n", .{@tagName(builtin.cpu.arch)});
-            std.debug.print("Supported architectures: x86_64, aarch64\n", .{});
-            return error.UnsupportedArchitecture;
-        },
+        else => @compileError("zcli_github_upgrade: unsupported CPU arch '" ++ @tagName(builtin.cpu.arch) ++ "' (supported: x86_64, aarch64)"),
     };
 
     return std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, os });
@@ -544,12 +547,38 @@ fn randomScratchName(io: std.Io, buf: *[scratch_name_len]u8) []const u8 {
     return std.fmt.bufPrint(buf, ".upgrade-{s}", .{hex}) catch unreachable;
 }
 
-/// Download the release binary into `dir` (the private scratch directory) as a
-/// file named `binary_name`.
-fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) !void {
-    std.debug.print("Downloading binary... (this may take a while on slow connections)\n", .{});
+/// Fetch and integrity-check the release asset into `dir` (the private scratch
+/// directory), leaving a verified `binary_name` behind on success. This is the
+/// security-load-bearing pipeline: download the asset, then `verifyChecksum`
+/// (which — when `public_key` is set — first authenticates checksums.txt under
+/// the pinned minisign key, fail closed). Every failure aborts before the file
+/// is trusted; the caller's atomic swap runs only if this returns cleanly.
+///
+/// `download_base` is the release-download host (`github_download_base` in
+/// production; a loopback base in tests). Factored out of `executeUpgrade` so
+/// the whole fetch→download→verify path can be driven against a fake GitHub in
+/// an integration test without a live command context.
+pub fn downloadAndVerify(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    err_out: *std.Io.Writer,
+    download_base: []const u8,
+    dir: std.Io.Dir,
+    repo: []const u8,
+    cli_name: []const u8,
+    version: []const u8,
+    binary_name: []const u8,
+    public_key: ?[]const u8,
+) !void {
+    try downloadBinary(allocator, io, err_out, download_base, dir, repo, cli_name, version, binary_name);
+    try verifyChecksum(allocator, io, err_out, download_base, dir, repo, cli_name, version, binary_name, public_key);
+}
 
-    const url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, binary_name);
+/// Download the release binary into `dir` (the private scratch directory) as a
+/// file named `binary_name`. `download_base` is the release-download host
+/// (`github_download_base` in production; a loopback base in tests).
+fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, err_out: *std.Io.Writer, download_base: []const u8, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8) !void {
+    const url = try buildDownloadUrl(allocator, download_base, repo, cli_name, version, binary_name);
     defer allocator.free(url);
 
     var client = http.Client.init(allocator, io, .{
@@ -563,18 +592,18 @@ fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
 
     // Check for rate limiting
     if (response.status == .too_many_requests) {
-        std.debug.print("GitHub API rate limit exceeded while downloading binary.\n", .{});
+        err_out.print("GitHub API rate limit exceeded while downloading binary.\n", .{}) catch {};
         return error.RateLimitExceeded;
     }
 
     if (response.status != .ok) {
         switch (response.status) {
             .not_found => {
-                std.debug.print("Error: Binary not found at URL: {s}\n", .{url});
-                std.debug.print("Expected binary name: {s}\n", .{binary_name});
-                std.debug.print("Verify that the release contains binaries for your platform.\n", .{});
+                err_out.print("Error: Binary not found at URL: {s}\n", .{url}) catch {};
+                err_out.print("Expected binary name: {s}\n", .{binary_name}) catch {};
+                err_out.print("Verify that the release contains binaries for your platform.\n", .{}) catch {};
             },
-            else => std.debug.print("Failed to download binary from {s}, status: {}\n", .{ url, response.status }),
+            else => err_out.print("Failed to download binary from {s}, status: {}\n", .{ url, response.status }) catch {},
         }
         return error.FailedToDownloadBinary;
     }
@@ -592,11 +621,9 @@ fn downloadBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
 /// its `checksums.txt.minisig` signature under the pinned key — fail closed —
 /// so the digest we compare the binary against is one we've cryptographically
 /// trusted, not merely one that happened to ship in the same release.
-fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8, public_key: ?[]const u8) !void {
-    std.debug.print("Verifying checksum...\n", .{});
-
+fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, err_out: *std.Io.Writer, download_base: []const u8, dir: std.Io.Dir, repo: []const u8, cli_name: []const u8, version: []const u8, binary_name: []const u8, public_key: ?[]const u8) !void {
     // Download checksums.txt (published as a release asset alongside the binaries)
-    const checksums_url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, "checksums.txt");
+    const checksums_url = try buildDownloadUrl(allocator, download_base, repo, cli_name, version, "checksums.txt");
     defer allocator.free(checksums_url);
 
     var client = http.Client.init(allocator, io, .{
@@ -610,17 +637,17 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
 
     // Check for rate limiting
     if (response.status == .too_many_requests) {
-        std.debug.print("GitHub API rate limit exceeded while downloading checksums.\n", .{});
+        err_out.print("GitHub API rate limit exceeded while downloading checksums.\n", .{}) catch {};
         return error.RateLimitExceeded;
     }
 
     if (response.status != .ok) {
         switch (response.status) {
             .not_found => {
-                std.debug.print("Error: Checksums file not found at URL: {s}\n", .{checksums_url});
-                std.debug.print("Refusing to install an unverifiable binary.\n", .{});
+                err_out.print("Error: Checksums file not found at URL: {s}\n", .{checksums_url}) catch {};
+                err_out.print("Refusing to install an unverifiable binary.\n", .{}) catch {};
             },
-            else => std.debug.print("Failed to download checksums from {s}, status: {}\n", .{ checksums_url, response.status }),
+            else => err_out.print("Failed to download checksums from {s}, status: {}\n", .{ checksums_url, response.status }) catch {},
         }
         return error.FailedToDownloadChecksums;
     }
@@ -629,13 +656,13 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
     // single byte of it. This is the check that a compromised publisher — who
     // can rewrite checksums.txt to match a swapped binary — cannot defeat.
     if (public_key) |pinned_key| {
-        try verifyChecksumsSignature(allocator, io, repo, cli_name, version, response.body, pinned_key);
+        try verifyChecksumsSignature(allocator, io, err_out, download_base, repo, cli_name, version, response.body, pinned_key);
     }
 
     // Find the checksum for our binary
     const expected_checksum = parseExpectedChecksum(response.body, binary_name) orelse {
-        std.debug.print("Error: Checksum not found for binary: {s}\n", .{binary_name});
-        std.debug.print("The checksums.txt file may be incomplete or corrupted.\n", .{});
+        err_out.print("Error: Checksum not found for binary: {s}\n", .{binary_name}) catch {};
+        err_out.print("The checksums.txt file may be incomplete or corrupted.\n", .{}) catch {};
         return error.ChecksumNotFound;
     };
 
@@ -644,10 +671,10 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
 
     // Compare checksums
     if (!std.mem.eql(u8, expected_checksum, &actual_checksum)) {
-        std.debug.print("Error: Checksum mismatch for binary: {s}\n", .{binary_name});
-        std.debug.print("Expected: {s}\n", .{expected_checksum});
-        std.debug.print("Actual:   {s}\n", .{&actual_checksum});
-        std.debug.print("The downloaded binary may be corrupted or tampered with.\n", .{});
+        err_out.print("Error: Checksum mismatch for binary: {s}\n", .{binary_name}) catch {};
+        err_out.print("Expected: {s}\n", .{expected_checksum}) catch {};
+        err_out.print("Actual:   {s}\n", .{&actual_checksum}) catch {};
+        err_out.print("The downloaded binary may be corrupted or tampered with.\n", .{}) catch {};
         return error.ChecksumMismatch;
     }
 }
@@ -659,6 +686,8 @@ fn verifyChecksum(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, rep
 fn verifyChecksumsSignature(
     allocator: std.mem.Allocator,
     io: std.Io,
+    err_out: *std.Io.Writer,
+    download_base: []const u8,
     repo: []const u8,
     cli_name: []const u8,
     version: []const u8,
@@ -668,12 +697,12 @@ fn verifyChecksumsSignature(
     // A malformed pinned key is a build-time misconfiguration of the consuming
     // app, not an attack — but it must still fail closed, never silently skip.
     const pinned = minisign.PublicKey.parse(public_key_b64) catch {
-        std.debug.print("Error: the pinned minisign public key is malformed.\n", .{});
-        std.debug.print("This is a configuration error in the application's build.\n", .{});
+        err_out.print("Error: the pinned minisign public key is malformed.\n", .{}) catch {};
+        err_out.print("This is a configuration error in the application's build.\n", .{}) catch {};
         return error.InvalidPinnedPublicKey;
     };
 
-    const sig_url = try buildDownloadUrl(allocator, github_download_base, repo, cli_name, version, "checksums.txt.minisig");
+    const sig_url = try buildDownloadUrl(allocator, download_base, repo, cli_name, version, "checksums.txt.minisig");
     defer allocator.free(sig_url);
 
     var client = http.Client.init(allocator, io, .{
@@ -686,24 +715,24 @@ fn verifyChecksumsSignature(
     defer response.deinit();
 
     if (response.status == .too_many_requests) {
-        std.debug.print("GitHub API rate limit exceeded while downloading signature.\n", .{});
+        err_out.print("GitHub API rate limit exceeded while downloading signature.\n", .{}) catch {};
         return error.RateLimitExceeded;
     }
 
     if (response.status != .ok) {
         switch (response.status) {
             .not_found => {
-                std.debug.print("Error: Signature file not found at URL: {s}\n", .{sig_url});
-                std.debug.print("This release is unsigned; refusing to install an unverifiable binary.\n", .{});
+                err_out.print("Error: Signature file not found at URL: {s}\n", .{sig_url}) catch {};
+                err_out.print("This release is unsigned; refusing to install an unverifiable binary.\n", .{}) catch {};
             },
-            else => std.debug.print("Failed to download signature from {s}, status: {}\n", .{ sig_url, response.status }),
+            else => err_out.print("Failed to download signature from {s}, status: {}\n", .{ sig_url, response.status }) catch {},
         }
         return error.FailedToDownloadSignature;
     }
 
     minisign.verify(pinned, response.body, checksums_body) catch |err| {
-        std.debug.print("Error: signature verification failed for checksums.txt ({s}).\n", .{@errorName(err)});
-        std.debug.print("The release may have been tampered with. Refusing to install.\n", .{});
+        err_out.print("Error: signature verification failed for checksums.txt ({s}).\n", .{@errorName(err)}) catch {};
+        err_out.print("The release may have been tampered with. Refusing to install.\n", .{}) catch {};
         return error.SignatureVerificationFailed;
     };
 }
@@ -783,10 +812,12 @@ fn testBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, binary_
 /// Common prologue: copy the new binary to `{target}.new` and (on Unix) mark it
 /// executable, so a failure before the swap never touches the live binary.
 ///
-/// Unix: back up the target to `{target}.backup` (best-effort), then a single
-/// atomic rename of `{target}.new` over the target does the swap (atomic on the
-/// same filesystem — a crash mid-swap leaves the original binary intact), then
-/// remove the backup.
+/// Unix: a single atomic rename of `{target}.new` over the target does the swap.
+/// rename() is atomic on the same filesystem, so at every instant the target is
+/// either the whole old binary or the whole new one — a crash mid-swap leaves
+/// the original intact. That property already IS the crash-recovery guarantee,
+/// so no separate `{target}.backup` copy is made: it only doubled disk usage
+/// and was the weakest link (a best-effort copy that could silently fail).
 ///
 /// Windows: the running .exe can't be overwritten or deleted, but it CAN be
 /// renamed. So rename the target to `{target}.backup` (moving the live image
@@ -797,9 +828,7 @@ fn testBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, binary_
 ///
 /// Takes the directory and paths as parameters so the swap can be exercised
 /// against temp files instead of the live executable.
-fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, new_binary_path: []const u8, target_path: []const u8) !void {
-    const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{target_path});
-    defer allocator.free(backup_path);
+pub fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, new_binary_path: []const u8, target_path: []const u8) !void {
     const temp_path = try std.fmt.allocPrint(allocator, "{s}.new", .{target_path});
     defer allocator.free(temp_path);
 
@@ -813,6 +842,9 @@ fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, ne
     }
 
     if (builtin.os.tag == .windows) {
+        const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{target_path});
+        defer allocator.free(backup_path);
+
         // Move the live image aside (allowed even while running), then move the
         // new binary into place. rename() replaces any unlocked stale backup.
         try dir.rename(target_path, dir, backup_path, io);
@@ -823,18 +855,9 @@ fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, ne
         // deleted now — leave it; the next upgrade's rename overwrites it.
         dir.deleteFile(io, backup_path) catch {};
     } else {
-        // Back up the current binary (best-effort — nice-to-have).
-        dir.copyFile(target_path, dir, backup_path, io, .{}) catch |err| {
-            std.debug.print("Warning: Failed to create backup: {}\n", .{err});
-        };
-
-        // Atomically swap the new binary over the old one.
+        // Atomically swap the new binary over the old one. On a crash mid-swap
+        // the target is still the untouched original (rename is atomic).
         try dir.rename(temp_path, dir, target_path, io);
-
-        // Clean up the backup on success (kept on error for recovery).
-        dir.deleteFile(io, backup_path) catch |err| {
-            std.debug.print("Note: Backup kept at {s} (cleanup error: {})\n", .{ backup_path, err });
-        };
     }
 }
 
@@ -842,31 +865,48 @@ fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, ne
 // Tests
 // ============================================================================
 
-test "parseVersion - valid semantic versions" {
-    const v1 = try parseVersion("1.2.3");
-    try std.testing.expectEqual(@as(u32, 1), v1.major);
-    try std.testing.expectEqual(@as(u32, 2), v1.minor);
-    try std.testing.expectEqual(@as(u32, 3), v1.patch);
+test "writeCheckResult - --check output reaches stdout (was silently dropped)" {
+    const a = std.testing.allocator;
 
-    const v2 = try parseVersion("0.0.1");
-    try std.testing.expectEqual(@as(u32, 0), v2.major);
-    try std.testing.expectEqual(@as(u32, 0), v2.minor);
-    try std.testing.expectEqual(@as(u32, 1), v2.patch);
+    // Helper: render into an Allocating writer and return the captured bytes.
+    const render = struct {
+        fn go(alloc: std.mem.Allocator, current: []const u8, target: []const u8, explicit: bool) ![]u8 {
+            var aw = std.Io.Writer.Allocating.init(alloc);
+            errdefer aw.deinit();
+            try writeCheckResult(&aw.writer, current, target, explicit);
+            return aw.toOwnedSlice();
+        }
+    }.go;
 
-    const v3 = try parseVersion("10.20.30");
-    try std.testing.expectEqual(@as(u32, 10), v3.major);
-    try std.testing.expectEqual(@as(u32, 20), v3.minor);
-    try std.testing.expectEqual(@as(u32, 30), v3.patch);
-}
-
-test "parseVersion - invalid formats" {
-    try std.testing.expectError(error.InvalidVersion, parseVersion(""));
-    try std.testing.expectError(error.InvalidVersion, parseVersion("1.2"));
-    try std.testing.expectError(error.InvalidVersion, parseVersion("1"));
-
-    // parseInt returns InvalidCharacter for non-numeric input
-    const result = parseVersion("a.b.c");
-    try std.testing.expectError(error.InvalidCharacter, result);
+    // No-arg check, a newer version is available.
+    {
+        const out = try render(a, "1.0.0", "1.2.0", false);
+        defer a.free(out);
+        try std.testing.expectEqualStrings("New version available: 1.2.0 (current: 1.0.0)\n", out);
+    }
+    // No-arg check, already on the latest (equal, and a stale older "latest").
+    {
+        const out = try render(a, "1.2.0", "1.2.0", false);
+        defer a.free(out);
+        try std.testing.expectEqualStrings("You are already on the latest version: 1.2.0\n", out);
+    }
+    {
+        const out = try render(a, "2.0.0", "1.9.0", false); // feed points at an older tag
+        defer a.free(out);
+        try std.testing.expectEqualStrings("You are already on the latest version: 2.0.0\n", out);
+    }
+    // Explicit version that differs from current.
+    {
+        const out = try render(a, "1.0.0", "1.5.0", true);
+        defer a.free(out);
+        try std.testing.expectEqualStrings("Version 1.5.0 is available (current: 1.0.0)\n", out);
+    }
+    // Explicit version equal to current.
+    {
+        const out = try render(a, "1.5.0", "1.5.0", true);
+        defer a.free(out);
+        try std.testing.expectEqualStrings("You are already on version: 1.5.0\n", out);
+    }
 }
 
 test "isNewerVersion - semantic comparison" {
@@ -928,20 +968,23 @@ test "randomScratchName - hidden, fixed-length, unpredictable" {
 }
 
 test "replaceBinaryAt - atomic replacement strategy" {
-    // This test documents the atomic replacement strategy
-    // Actual testing would require filesystem mocking
+    // This test documents the atomic replacement strategy; the behavioral tests
+    // below exercise it against temp files.
 
-    // The function implements a safe replacement strategy:
-    // 1. Backup current binary (best-effort)
-    // 2. Copy new binary to temp location (.new suffix)
-    // 3. Atomic rename over old binary
-    // 4. Clean up backup on success
+    // Unix strategy:
+    // 1. Copy new binary to temp location (.new suffix), mark executable
+    // 2. Single atomic rename of .new over the old binary
     //
     // Benefits:
-    // - rename() is atomic on Unix if same filesystem
-    // - If process crashes mid-upgrade, old binary is still intact
-    // - If rename fails, old binary is unchanged
-    // - Backup allows manual recovery if needed
+    // - rename() is atomic on Unix if same filesystem, so the target is always
+    //   either the whole old binary or the whole new one
+    // - If the process crashes mid-upgrade, the old binary is still intact —
+    //   that atomicity IS the crash-recovery guarantee, so no separate .backup
+    //   copy is made (it only doubled disk use and could silently fail)
+    // - If the rename fails, the old binary is unchanged (errdefer cleans up .new)
+    //
+    // Windows can't overwrite a running .exe, so there it renames the target to
+    // .backup first, then renames .new into place (see the fn doc-comment).
 }
 
 test "rate limiting - handles HTTP 429 responses" {
@@ -963,28 +1006,48 @@ test "rate limiting - handles HTTP 429 responses" {
     // - Authenticated: 5000 requests/hour
 }
 
-test "parseVersion - edge cases with whitespace" {
-    // Version strings with leading/trailing whitespace should fail
-    // (caller should trim before passing to parseVersion). The whitespace makes
-    // the numeric parse fail, so the error is InvalidCharacter — same as any
-    // other non-numeric component.
-    try std.testing.expectError(error.InvalidCharacter, parseVersion(" 1.2.3"));
-    try std.testing.expectError(error.InvalidCharacter, parseVersion("1.2.3 "));
-    try std.testing.expectError(error.InvalidCharacter, parseVersion(" 1.2.3 "));
+test "isNewerVersion - pre-release precedence (SemVer 2.0)" {
+    // A pre-release is LOWER than its own release: 1.0.0-rc1 < 1.0.0.
+    try std.testing.expect(isNewerVersion("1.0.0-rc1", "1.0.0")); // release beats its rc
+    try std.testing.expect(!isNewerVersion("1.0.0", "1.0.0-rc1")); // rc does NOT beat release
+
+    // Pre-release identifiers ordered per SemVer: rc1 < rc2, numeric ordering.
+    try std.testing.expect(isNewerVersion("1.0.0-rc1", "1.0.0-rc2"));
+    try std.testing.expect(!isNewerVersion("1.0.0-rc2", "1.0.0-rc1"));
+    try std.testing.expect(isNewerVersion("1.0.0-alpha", "1.0.0-beta")); // alpha < beta (ASCII)
+    // Numeric identifiers rank below alphanumeric ones.
+    try std.testing.expect(isNewerVersion("1.0.0-1", "1.0.0-alpha"));
+    // A larger set of pre-release fields outranks a prefix of it.
+    try std.testing.expect(isNewerVersion("1.0.0-alpha", "1.0.0-alpha.1"));
+
+    // Equal pre-releases are not "newer".
+    try std.testing.expect(!isNewerVersion("1.0.0-rc1", "1.0.0-rc1"));
+
+    // The core bug this fixes: the old parseInt path could not parse these and
+    // fell back to raw string inequality, so 2.0.0-a "beat" 1.0.0-b. Now the
+    // numeric core wins first.
+    try std.testing.expect(!isNewerVersion("2.0.0-a", "1.0.0-b"));
+    try std.testing.expect(isNewerVersion("1.0.0-b", "2.0.0-a"));
+
+    // A pre-release tag must not make a passive "newer" check misfire when the
+    // core is the same and only differs by pre-release.
+    try std.testing.expect(!isNewerVersion("1.2.3", "1.2.3-rc1"));
 }
 
-test "parseVersion - zero versions" {
-    const v = try parseVersion("0.0.0");
-    try std.testing.expectEqual(@as(u32, 0), v.major);
-    try std.testing.expectEqual(@as(u32, 0), v.minor);
-    try std.testing.expectEqual(@as(u32, 0), v.patch);
+test "isNewerVersion - build metadata is ignored" {
+    // Build metadata does not affect precedence (SemVer 2.0 §10).
+    try std.testing.expect(!isNewerVersion("1.0.0+build.1", "1.0.0+build.2"));
+    try std.testing.expect(!isNewerVersion("1.0.0", "1.0.0+build.9"));
+    try std.testing.expect(isNewerVersion("1.0.0+x", "1.0.1+y"));
 }
 
-test "parseVersion - large version numbers" {
-    const v = try parseVersion("999.999.999");
-    try std.testing.expectEqual(@as(u32, 999), v.major);
-    try std.testing.expectEqual(@as(u32, 999), v.minor);
-    try std.testing.expectEqual(@as(u32, 999), v.patch);
+test "isNewerVersion - malformed tags fall back to string inequality" {
+    // Non-SemVer strings (two-component, non-numeric) can't be parsed; the
+    // comparison degrades to a plain inequality rather than a bogus order.
+    try std.testing.expect(!isNewerVersion("abc", "abc")); // equal → not newer
+    try std.testing.expect(isNewerVersion("abc", "def")); // different → "newer" (conservative)
+    try std.testing.expect(!isNewerVersion("1.2", "1.2")); // two-component, equal
+    try std.testing.expect(isNewerVersion("1.2", "1.3")); // two-component, different
 }
 
 test "isNewerVersion - edge cases" {
@@ -1198,21 +1261,29 @@ test "selectVersion - no matching prefix and empty array both error" {
     try std.testing.expectError(error.NoMatchingRelease, selectVersion(a, "[]", "myapp"));
 }
 
-test "selectVersion - skips malformed entries instead of crashing" {
+test "selectVersion - ignores unknown fields, keeps well-formed entries" {
     const a = std.testing.allocator;
-    // Non-object entries, a numeric tag_name, and a missing tag are all skipped.
-    const body = "[1, \"x\", {\"tag_name\":123}, {\"no_tag\":true}, {\"tag_name\":\"myapp-v3.1.4\"}]";
+    // Extra fields on each release object are ignored (ignore_unknown_fields);
+    // only tag_name is modeled. The first matching prefix wins.
+    const body = "[{\"tag_name\":\"other-v9.9.9\",\"draft\":false}," ++
+        "{\"tag_name\":\"myapp-v3.1.4\",\"name\":\"v3.1.4\",\"assets\":[]}]";
     const v = try selectVersion(a, body, "myapp");
     defer a.free(v);
     try std.testing.expectEqualStrings("3.1.4", v);
 }
 
-test "selectVersion - non-JSON body (e.g. an HTML error page) is an error" {
+test "selectVersion - a malformed release array fails closed (UnexpectedResponse)" {
     const a = std.testing.allocator;
-    if (selectVersion(a, "<html>rate limited</html>", "myapp")) |v| {
-        a.free(v);
-        try std.testing.expect(false); // must not succeed
-    } else |_| {}
+    // A real GitHub feed never mixes non-objects or a numeric tag_name into the
+    // releases array; a body that does is not a trustworthy release list, so the
+    // typed parse fails closed rather than trying to salvage entries.
+    try std.testing.expectError(error.UnexpectedResponse, selectVersion(a, "[1, \"x\", {\"tag_name\":\"myapp-v3.1.4\"}]", "myapp"));
+    try std.testing.expectError(error.UnexpectedResponse, selectVersion(a, "[{\"tag_name\":123}]", "myapp"));
+}
+
+test "selectVersion - non-JSON body (e.g. an HTML error page) is UnexpectedResponse" {
+    const a = std.testing.allocator;
+    try std.testing.expectError(error.UnexpectedResponse, selectVersion(a, "<html>rate limited</html>", "myapp"));
 }
 
 // ----------------------------------------------------------------------------

@@ -89,6 +89,17 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    // Real-socket integration tests for the github-upgrade download→verify→
+    // install pipeline, driven against a loopback fake-GitHub. Isolated and
+    // built ReleaseSafe for the same reasons as http_loopback_test above; it
+    // imports plugin.zig so it needs the "zcli" module.
+    {
+        const upgrade_integration_imports = [_]TestDep{.{ .name = "zcli", .module = zcli_module }} ++ dep_imports;
+        const run_tests = addTestRun(b, "test-", "src/plugin_github_upgrade_integration_test.zig", target, .ReleaseSafe, &upgrade_integration_imports);
+        test_plugins_step.dependOn(&run_tests.step);
+        test_step.dependOn(&run_tests.step);
+    }
+
     // NOTE: A previous `plugin_test_files` list referenced five src/plugin_*_test.zig
     // files that were dropped in the monorepo refactor (commit 0aa79f7) and never
     // re-added. They targeted a since-replaced plugin/context API, so they were
