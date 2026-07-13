@@ -6,6 +6,7 @@ pub const ZcliError = error{
     ArgumentMissingRequired,
     ArgumentInvalidValue,
     ArgumentTooMany,
+    ArgumentValidationFailed,
 
     // Option parsing errors
     OptionUnknown,
@@ -16,6 +17,7 @@ pub const ZcliError = error{
     OptionMissingRequired,
     OptionMutuallyExclusive,
     OptionMissingDependency,
+    OptionValidationFailed,
 
     // Command routing errors
     CommandNotFound,
@@ -58,6 +60,16 @@ pub const ZcliDiagnostic = union(enum) {
     ArgumentTooMany: struct {
         expected_count: usize,
         actual_count: usize,
+    },
+    /// A positional arg's `meta.args.<field>.validate` rejected the parsed value.
+    /// `field_name` is the Args field name; `position` is 0-based;
+    /// `provided_value` is the rejected value rendered to a string; `reason` is
+    /// the author-provided message, rendered verbatim.
+    ArgumentValidationFailed: struct {
+        field_name: []const u8,
+        position: usize,
+        provided_value: []const u8,
+        reason: []const u8,
     },
 
     // Option parsing errors
@@ -105,6 +117,15 @@ pub const ZcliDiagnostic = union(enum) {
     OptionMissingDependency: struct {
         option_name: []const u8,
         required_name: []const u8,
+    },
+    /// A field's `meta.options.<field>.validate` rejected the resolved value.
+    /// `option_name` is the effective long flag name (without `--`);
+    /// `provided_value` is the rejected value rendered to a string; `reason` is
+    /// the author-provided message, rendered verbatim.
+    OptionValidationFailed: struct {
+        option_name: []const u8,
+        provided_value: []const u8,
+        reason: []const u8,
     },
 
     // Command routing errors
@@ -291,6 +312,7 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
         else
             std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
         .ArgumentTooMany => |ctx| std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments, got {d}", .{ ctx.expected_count, ctx.actual_count }),
+        .ArgumentValidationFailed => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}: {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, ctx.reason }),
         .OptionUnknown => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name });
 
@@ -320,6 +342,7 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
         .OptionMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required option '--{s}'. Expected {s}.", .{ ctx.option_name, humanType(ctx.expected_type) }),
         .OptionMutuallyExclusive => |ctx| std.fmt.allocPrint(allocator, "Options '--{s}' and '--{s}' cannot be used together.", .{ ctx.first, ctx.second }),
         .OptionMissingDependency => |ctx| std.fmt.allocPrint(allocator, "Option '--{s}' requires '--{s}'.", .{ ctx.option_name, ctx.required_name }),
+        .OptionValidationFailed => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '--{s}': {s}.", .{ ctx.provided_value, ctx.option_name, ctx.reason }),
         .CommandNotFound => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown command '{s}'", .{ctx.attempted_command});
 
@@ -483,6 +506,22 @@ test "OptionMissingDependency names the supplied option and its missing requirem
     const msg = try formatDiagnostic(diag, allocator);
     defer allocator.free(msg);
     try std.testing.expect(std.mem.indexOf(u8, msg, "'--output-format' requires '--output'") != null);
+}
+
+test "ArgumentValidationFailed renders the field, 1-based position, and reason" {
+    const allocator = std.testing.allocator;
+    const diag = ZcliDiagnostic{ .ArgumentValidationFailed = .{ .field_name = "count", .position = 1, .provided_value = "99", .reason = "must be 10 or less" } };
+    const msg = try formatDiagnostic(diag, allocator);
+    defer allocator.free(msg);
+    try std.testing.expectEqualStrings("Invalid value '99' for argument 'count' at position 2: must be 10 or less.", msg);
+}
+
+test "OptionValidationFailed renders the flag and the author's reason" {
+    const allocator = std.testing.allocator;
+    const diag = ZcliDiagnostic{ .OptionValidationFailed = .{ .option_name = "replicas", .provided_value = "0", .reason = "must be between 1 and 100" } };
+    const msg = try formatDiagnostic(diag, allocator);
+    defer allocator.free(msg);
+    try std.testing.expectEqualStrings("Invalid value '0' for option '--replicas': must be between 1 and 100.", msg);
 }
 
 test "invalid enum value messages carry a did-you-mean" {

@@ -490,7 +490,7 @@ pub fn validateMeta(
             const option_meta_info = @typeInfo(@TypeOf(option_meta));
 
             if (option_meta_info == .@"struct") {
-                const valid_option_fields = .{ "description", "short", "name", "env", "requires" };
+                const valid_option_fields = .{ "description", "short", "name", "env", "requires", "validate" };
 
                 inline for (option_meta_info.@"struct".fields) |opt_field| {
                     const opt_is_valid = comptime blk: {
@@ -502,7 +502,37 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires");
+                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires, validate");
+                    }
+                }
+
+                // `validate`: an optional per-field hook run after the value is
+                // resolved from every source. Its signature must be
+                // `fn(Base) ?[]const u8`, where Base is the Options field type
+                // with one optional level removed (the hook sees a present value,
+                // never null). Null means valid; a returned string is the reason.
+                if (@hasField(@TypeOf(option_meta), "validate")) {
+                    const FieldT = comptime blk: {
+                        for (options_fields) |of| {
+                            if (std.mem.eql(u8, of.name, field.name)) break :blk of.type;
+                        }
+                        unreachable;
+                    };
+                    const Base = switch (@typeInfo(FieldT)) {
+                        .optional => |o| o.child,
+                        else => FieldT,
+                    };
+                    const v_info = @typeInfo(@TypeOf(option_meta.validate));
+                    const sig_ok = comptime blk: {
+                        if (v_info != .@"fn") break :blk false;
+                        const f = v_info.@"fn";
+                        if (f.params.len != 1) break :blk false;
+                        const param_ok = if (f.params[0].type) |pt| pt == Base else false;
+                        const ret_ok = if (f.return_type) |rt| rt == ?[]const u8 else false;
+                        break :blk param_ok and ret_ok;
+                    };
+                    if (!sig_ok) {
+                        @compileError(loc ++ "option '" ++ field.name ++ "' `validate` must have signature `fn(" ++ @typeName(Base) ++ ") ?[]const u8`");
                     }
                 }
 
@@ -592,7 +622,7 @@ pub fn validateMeta(
             const arg_meta_info = @typeInfo(arg_meta_type);
 
             if (arg_meta_info == .@"struct") {
-                const valid_arg_fields = .{"description"};
+                const valid_arg_fields = .{ "description", "validate" };
 
                 inline for (arg_meta_info.@"struct".fields) |arg_field| {
                     const arg_is_valid = comptime blk: {
@@ -604,7 +634,35 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!arg_is_valid) {
-                        @compileError(loc ++ "unknown arg metadata field '" ++ arg_field.name ++ "' in arg '" ++ field.name ++ "'. Valid fields are: description");
+                        @compileError(loc ++ "unknown arg metadata field '" ++ arg_field.name ++ "' in arg '" ++ field.name ++ "'. Valid fields are: description, validate");
+                    }
+                }
+
+                // `validate`: same per-field hook as options, run on the parsed
+                // positional value. Signature `fn(Base) ?[]const u8`, Base = the
+                // Args field type with one optional level removed.
+                if (@hasField(@TypeOf(arg_meta), "validate")) {
+                    const FieldT = comptime blk: {
+                        for (args_fields) |af| {
+                            if (std.mem.eql(u8, af.name, field.name)) break :blk af.type;
+                        }
+                        unreachable;
+                    };
+                    const Base = switch (@typeInfo(FieldT)) {
+                        .optional => |o| o.child,
+                        else => FieldT,
+                    };
+                    const v_info = @typeInfo(@TypeOf(arg_meta.validate));
+                    const sig_ok = comptime blk: {
+                        if (v_info != .@"fn") break :blk false;
+                        const f = v_info.@"fn";
+                        if (f.params.len != 1) break :blk false;
+                        const param_ok = if (f.params[0].type) |pt| pt == Base else false;
+                        const ret_ok = if (f.return_type) |rt| rt == ?[]const u8 else false;
+                        break :blk param_ok and ret_ok;
+                    };
+                    if (!sig_ok) {
+                        @compileError(loc ++ "arg '" ++ field.name ++ "' `validate` must have signature `fn(" ++ @typeName(Base) ++ ") ?[]const u8`");
                     }
                 }
             } else {

@@ -275,6 +275,43 @@ Exactly-one-of-a-mode needs no constraint: an enum with no default
 (`format: enum { json, yaml, xml }`) is already exactly-one, and `?enum … = null`
 is at-most-one.
 
+**Per-field validation:**
+
+A field whose *type* is right but whose *value* needs a further rule declares a
+`validate` hook — on `meta.options.<field>` or `meta.args.<field>` (ADR-0024):
+
+```zig
+pub const Args = struct { name: []const u8 };
+pub const Options = struct { port: u16 = 8080 };
+
+pub const meta = .{
+    .args = .{ .name = .{ .validate = validateName } },
+    .options = .{ .port = .{ .validate = validatePort } },
+};
+
+fn validateName(name: []const u8) ?[]const u8 {
+    return if (name.len == 0) "must not be empty" else null;
+}
+fn validatePort(port: u16) ?[]const u8 {
+    return if (port == 0) "must be between 1 and 65535" else null;
+}
+```
+
+The hook is `fn(Base) ?[]const u8`, where `Base` is the field type with one
+optional level removed (a `?T` field's hook sees a present value, never null, and
+is skipped when absent). Returning `null` means valid; a returned string is the
+reason shown to the user. Unlike the constraints above, validation keys off the
+*value*: it runs on the finally-resolved value from any source — CLI, env, config,
+or default — so no source can slip an invalid value through. A failure is reported
+like any other bad-value parse error, with the offending value and a usage hint:
+
+- `Invalid value '0' for option '--port': must be between 1 and 65535.`
+
+Reach for `validate` when the field's native type already parses the input and you
+only need an extra rule. When turning the string into your value needs custom
+logic (`"5m30s"` → a duration), that is *parsing*, and belongs in a custom type —
+see ADR-0024.
+
 **Context Structure:**
 
 The context provides access to system resources and framework features:
