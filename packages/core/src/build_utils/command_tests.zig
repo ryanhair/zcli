@@ -50,7 +50,7 @@ pub fn addCommandTests(
     //     backend). The real keychain plugin is what the app links and runs; this
     //     stands in only for `zig build test`.
     const local_plugins: []const PluginInfo =
-        if (config.plugins_dir) |dir| plugin_system.scanLocalPlugins(b, dir) catch &.{} else &.{};
+        if (config.plugins_dir) |dir| (plugin_system.scanLocalPlugins(b, dir) catch &.{}) orelse &.{} else &.{};
 
     var stub_plugins = std.ArrayList(*std.Build.Module).empty;
     defer stub_plugins.deinit(b.allocator);

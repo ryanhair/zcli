@@ -117,9 +117,28 @@ fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.
     const command_configs = config.command_configs orelse &.{};
     config_application.applyCommandConfigsToExecutable(b, exe, command_configs);
 
-    // 1. Discover local plugins
-    const local_plugins = if (config.plugins_dir) |dir|
-        plugin_system.scanLocalPlugins(b, dir) catch &.{}
+    // 1. Discover local plugins. A missing plugins_dir is optional (scan
+    //    returns null → no local plugins). Any real failure is surfaced loudly
+    //    with the offending path so a broken plugins_dir can't silently build
+    //    an app with zero plugins (mirrors the command-discovery reporting
+    //    below). We hard-fail via @panic because scanLocalPlugins returns an
+    //    error set (not GenerateError) and there is no recoverable state.
+    const local_plugins: []const types.PluginInfo = if (config.plugins_dir) |dir|
+        (plugin_system.scanLocalPlugins(b, dir) catch |err| switch (err) {
+            error.InvalidPath => {
+                logging.buildError("Plugin Discovery Error", dir, "Invalid plugins directory path.\nPath contains '..' which is not allowed for security reasons", "Please use a relative path without '..' or an absolute path");
+                std.debug.panic("Plugin discovery failed for '{s}': {s}", .{ dir, @errorName(err) });
+            },
+            error.AccessDenied => {
+                logging.buildError("Plugin Discovery Error", dir, "Access denied to plugins directory", "Please check file permissions for the directory");
+                std.debug.panic("Plugin discovery failed for '{s}': {s}", .{ dir, @errorName(err) });
+            },
+            error.OutOfMemory => @panic("OOM"),
+            else => {
+                logging.buildError("Plugin Discovery Error", dir, "Failed to discover plugins", "Check the plugins directory structure and file permissions");
+                std.debug.panic("Plugin discovery failed for '{s}': {s}", .{ dir, @errorName(err) });
+            },
+        }) orelse &.{}
     else
         &.{};
 
