@@ -801,6 +801,15 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
 pub fn postExecute(context: anytype, result: anytype) !void { }
 pub fn onError(context: anytype, err: anyerror) !bool { }
 
+// Fill option fields from a lower-precedence source (e.g. a config file) after
+// CLI + env parsing but before required/dependency validation. `provided` has
+// one flag per Options field (declaration order), true when CLI or the field's
+// env fallback already set it — the hook MUST skip those fields, which is what
+// makes CLI > env > config hold. `options` is mutated in place; no error union,
+// so a malformed source warns-and-skips rather than bricking the command. Any
+// values written must outlive execution (zcli_config uses a ContextData arena).
+pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool) void { }
+
 // Plugin can provide commands (also app-agnostic, so `context: anytype`)
 pub const commands = struct {
     pub const help = struct {
@@ -832,9 +841,10 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 1. Plugins are sorted by priority at compile time — a plugin may declare `pub const priority: i32` (default 50); higher values run first, and ties keep registration order
 2. All `handleGlobalOption` hooks called for each global option
 3. All `preExecute` hooks called before command execution
-4. Command executes
-5. All `postExecute` hooks called after successful execution
-6. On error, `onError` hooks called until one handles the error
+4. All `applyConfigDefaults` hooks called after CLI/env parse — filling options no higher-precedence source set — then required/dependency/exclusive validation runs
+5. Command executes
+6. All `postExecute` hooks called after successful execution
+7. On error, `onError` hooks called until one handles the error
 
 **Built-in Plugins:**
 
