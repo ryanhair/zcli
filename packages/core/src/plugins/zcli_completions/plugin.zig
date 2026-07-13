@@ -11,7 +11,9 @@ pub const commands = struct {
     /// Hidden dynamic-completion entry point (ADR-0026). The generated shell
     /// scripts call `app __complete <cword> -- <COMP_WORDS…>` at `<TAB>`; this
     /// resolves the field the cursor is on and runs its `complete` hook, printing
-    /// candidates NUL-delimited (`value \t description` per record). The single
+    /// a NUL-delimited stream: the FIRST record is a directive token (`default` /
+    /// `also_files` / `also_dirs`), and every record after it is a candidate
+    /// (`value` then optional `\t description`) — see `wire.writeResult`. The single
     /// `--` protects words that start with `-` from being parsed as this command's
     /// own options; any `--` the user typed is just another word after it.
     pub const __complete = struct {
