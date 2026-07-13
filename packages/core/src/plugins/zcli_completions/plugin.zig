@@ -265,6 +265,9 @@ fn printEnableInstructions(shell_type: ShellType, context: anytype) !void {
 
     switch (shell_type) {
         .bash => {
+            try stdout.writeAll("The bash-completion package is recommended (it auto-loads scripts from\n");
+            try stdout.writeAll("the completions directory). The generated script also works without it —\n");
+            try stdout.writeAll("it falls back to reading COMP_WORDS directly — but you must source it.\n\n");
             try stdout.writeAll("To enable completions, add the following to your ~/.bashrc:\n\n");
             try stdout.writeAll("  if [ -f ~/.local/share/bash-completion/completions/");
             try stdout.print("{s}", .{context.app_name});
