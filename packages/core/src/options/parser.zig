@@ -13,36 +13,6 @@ const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 const ResourceLimits = @import("../resource_limits.zig").ResourceLimits;
 const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 
-/// Parse command-line options based on the provided Options struct type
-///
-/// ## Memory Management
-///
-/// Array fields will accumulate values and return owned slices that MUST be freed.
-/// The zcli framework generates automatic cleanup in the command registry, but if you're
-/// using parseOptions directly, you must free array fields manually.
-///
-/// ### Supported Array Types:
-/// - `[][]const u8` - Array of strings
-/// - `[]i32`, `[]u32`, `[]i64`, `[]u64` - Integer arrays
-/// - `[]i16`, `[]u16`, `[]i8`, `[]u8` - Small integer arrays
-/// - `[]f32`, `[]f64` - Float arrays
-///
-/// ### Manual Usage Example:
-/// ```zig
-/// const Options = struct {
-///     files: [][]const u8 = &.{},     // Array field - needs cleanup
-///     counts: []i32 = &.{},           // Array field - needs cleanup
-///     verbose: bool = false,          // Non-array field - no cleanup needed
-/// };
-///
-/// const parsed = try parseOptions(Options, allocator, args, null);
-/// defer allocator.free(parsed.options.files);  // REQUIRED
-/// defer allocator.free(parsed.options.counts); // REQUIRED
-/// ```
-///
-/// ### Automatic Cleanup (when using zcli framework):
-/// When commands are executed through the zcli framework, array cleanup is automatic.
-/// The generated command registry includes cleanup code that frees all array fields.
 /// Parse command-line options into a struct using default field names.
 ///
 /// This function parses command-line flags and options (e.g., --verbose, --output file.txt)
@@ -64,6 +34,12 @@ const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 /// - Array options: `[][]const u8`, `[]i32` (--files a.txt b.txt)
 /// - Optional options: `?T` for any supported type T
 ///
+/// ### Supported Array Element Types:
+/// - `[][]const u8` - Array of strings
+/// - `[]i32`, `[]u32`, `[]i64`, `[]u64` - Integer arrays
+/// - `[]i16`, `[]u16`, `[]i8`, `[]u8` - Small integer arrays
+/// - `[]f32`, `[]f64` - Float arrays
+///
 /// ## Examples
 /// ```zig
 /// const Options = struct {
@@ -80,7 +56,10 @@ const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
 /// ```
 ///
 /// ## Memory Management
-/// **IMPORTANT**: Array options allocate memory. Always call `cleanupOptions` when done:
+/// **IMPORTANT**: Array options allocate memory. Array fields accumulate values and
+/// return owned slices that MUST be freed. When commands are executed through the zcli
+/// framework, array cleanup is automatic (the generated command registry frees all array
+/// fields). When calling `parseOptions` directly, always call `cleanupOptions` when done:
 /// ```zig
 /// const result = try parseOptions(Options, allocator, args, null);
 /// defer cleanupOptions(Options, result.options, allocator);
@@ -475,6 +454,47 @@ fn suggestLongOptions(
     return result;
 }
 
+/// Record a "boolean flag given a value" diagnostic and return its error.
+///
+/// Shared by every parsing path (long, negated `--no-`, short) so the diagnostic
+/// shape stays identical: a boolean flag never takes a value.
+fn booleanWithValueError(
+    diag: ?*?ZcliDiagnostic,
+    option_name: []const u8,
+    is_short: bool,
+    provided_value: []const u8,
+) error{BooleanOptionWithValue} {
+    if (diag) |d| d.* = .{ .OptionBooleanWithValue = .{
+        .option_name = option_name,
+        .is_short = is_short,
+        .provided_value = provided_value,
+    } };
+    return error.BooleanOptionWithValue;
+}
+
+/// Enforce at-most-once usage of a boolean flag, marking it seen on success.
+///
+/// Shared by every parsing path (long, negated `--no-`, bundled short, single
+/// short) so the duplicate diagnostic and its bookkeeping can't drift apart.
+/// On a repeat it records an `OptionDuplicate` diagnostic and returns the error;
+/// otherwise it sets the field's usage count to 1.
+fn markBooleanFlagOnce(
+    diag: ?*?ZcliDiagnostic,
+    option_counts: *std.StringHashMap(u32),
+    field_name: []const u8,
+    option_name: []const u8,
+    is_short: bool,
+) !void {
+    if ((option_counts.get(field_name) orelse 0) >= 1) {
+        if (diag) |d| d.* = .{ .OptionDuplicate = .{
+            .option_name = option_name,
+            .is_short = is_short,
+        } };
+        return error.DuplicateOption;
+    }
+    try option_counts.put(field_name, 1);
+}
+
 /// Parse a long option with metadata support (--option or --option=value)
 fn parseLongOptions(
     comptime OptionsType: type,
@@ -515,22 +535,8 @@ fn parseLongOptions(
             // including the contradictory `--flag --no-flag` pair, which shares this
             // field's count — is a usage error, not last-wins).
             if (comptime utils.isBooleanFlag(field.type)) {
-                if (option_value != null) {
-                    if (diag) |d| d.* = .{ .OptionBooleanWithValue = .{
-                        .option_name = option_name,
-                        .is_short = false,
-                        .provided_value = option_value.?,
-                    } };
-                    return error.BooleanOptionWithValue;
-                }
-                if ((option_counts.get(field.name) orelse 0) >= 1) {
-                    if (diag) |d| d.* = .{ .OptionDuplicate = .{
-                        .option_name = option_name,
-                        .is_short = false,
-                    } };
-                    return error.DuplicateOption;
-                }
-                try option_counts.put(field.name, 1);
+                if (option_value) |val| return booleanWithValueError(diag, option_name, false, val);
+                try markBooleanFlagOnce(diag, option_counts, field.name, option_name, false);
                 @field(result, field.name) = true;
                 return 1;
             }
@@ -586,22 +592,8 @@ fn parseLongOptions(
             // like the positive form, takes no value and must not repeat.
             if (utils.negatedLongNameMatchesField(meta, field.name, option_name)) {
                 found = true;
-                if (option_value != null) {
-                    if (diag) |d| d.* = .{ .OptionBooleanWithValue = .{
-                        .option_name = option_name,
-                        .is_short = false,
-                        .provided_value = option_value.?,
-                    } };
-                    return error.BooleanOptionWithValue;
-                }
-                if ((option_counts.get(field.name) orelse 0) >= 1) {
-                    if (diag) |d| d.* = .{ .OptionDuplicate = .{
-                        .option_name = option_name,
-                        .is_short = false,
-                    } };
-                    return error.DuplicateOption;
-                }
-                try option_counts.put(field.name, 1);
+                if (option_value) |val| return booleanWithValueError(diag, option_name, false, val);
+                try markBooleanFlagOnce(diag, option_counts, field.name, option_name, false);
                 @field(result, field.name) = false;
                 return 1;
             }
@@ -678,14 +670,7 @@ fn parseShortOptionsWithMeta(
 
                 if (matches) {
                     if (comptime utils.isBooleanFlag(field.type)) {
-                        if ((option_counts.get(field.name) orelse 0) >= 1) {
-                            if (diag) |d| d.* = .{ .OptionDuplicate = .{
-                                .option_name = options_part[ci .. ci + 1],
-                                .is_short = true,
-                            } };
-                            return error.DuplicateOption;
-                        }
-                        try option_counts.put(field.name, 1);
+                        try markBooleanFlagOnce(diag, option_counts, field.name, options_part[ci .. ci + 1], true);
                         @field(result, field.name) = true;
                     }
                     break;
@@ -708,14 +693,7 @@ fn parseShortOptionsWithMeta(
                 char_found = true;
 
                 if (comptime utils.isBooleanFlag(field.type)) {
-                    if ((option_counts.get(field.name) orelse 0) >= 1) {
-                        if (diag) |d| d.* = .{ .OptionDuplicate = .{
-                            .option_name = options_part[0..1],
-                            .is_short = true,
-                        } };
-                        return error.DuplicateOption;
-                    }
-                    try option_counts.put(field.name, 1);
+                    try markBooleanFlagOnce(diag, option_counts, field.name, options_part[0..1], true);
                     @field(result, field.name) = true;
                     return 1;
                 } else {
