@@ -42,3 +42,8 @@ zig build examples          # binaries land in zig-out/bin/prompts-<name>
   stdin isn't a TTY, so the examples also work when piped
   (e.g. `printf '2\n' | zig-out/bin/prompts-select`). The live-only features
   (`preview`, custom cursor glyphs) are simply skipped in that mode.
+- **EOF is an error, not an empty answer.** When stdin closes with nothing left
+  to read (a closed pipe, `</dev/null`, or an exhausted redirect), every prompt
+  returns `error.EndOfStream` instead of an empty entry. That keeps a closed
+  stream distinguishable from a submitted blank line, so a re-prompt loop can
+  break on it rather than spin forever — see `password.zig` for the idiom.

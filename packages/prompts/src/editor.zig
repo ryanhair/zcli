@@ -19,7 +19,8 @@ pub const EditorConfig = struct {
     io: std.Io,
 };
 
-/// Launch the user's editor for multiline input. Returns owned string.
+/// Launch the user's editor for multiline input. Returns owned string, or
+/// `error.EndOfStream` if stdin closes with no input to submit.
 pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
@@ -28,7 +29,7 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
 
     if (!is_tty) {
         try writer.print("{s}{s}", .{ config.prefix, config.message });
-        // Non-TTY: read all remaining input
+        // Non-TTY: read all remaining input until EOF.
         try writer.writeAll("\n");
         var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
@@ -36,9 +37,9 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
             const byte = terminal.key.readByteFn(reader) catch break;
             try buf.append(allocator, byte);
         }
-        if (buf.items.len == 0) {
-            if (config.default) |def| return try allocator.dupe(u8, def);
-        }
+        // Nothing typed on a closed stdin surfaces rather than masquerading as
+        // an empty document (the `default` is pre-fill content, not a fallback).
+        if (buf.items.len == 0) return error.EndOfStream;
         return try buf.toOwnedSlice(allocator);
     }
 
@@ -121,6 +122,36 @@ test "EditorConfig defaults" {
     const cfg = EditorConfig{ .message = "Edit:", .io = std.testing.io };
     try std.testing.expect(cfg.default == null);
     try std.testing.expectEqualStrings(".txt", cfg.extension);
+}
+
+test "non-TTY: EOF with no input errors" {
+    const allocator = std.testing.allocator;
+    var input = "".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [256]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    try std.testing.expectError(error.EndOfStream, editor(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
+        .message = "Edit:",
+        .default = "prefill",
+        .io = std.testing.io,
+    }));
+}
+
+test "non-TTY: reads piped multiline input" {
+    const allocator = std.testing.allocator;
+    var input = "line one\nline two".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [256]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    const result = try editor(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
+        .message = "Edit:",
+        .io = std.testing.io,
+    });
+    defer allocator.free(result);
+
+    try std.testing.expectEqualStrings("line one\nline two", result);
 }
 
 fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: EditorConfig) !void {

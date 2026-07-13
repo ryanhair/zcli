@@ -22,8 +22,9 @@ pub const NumberConfig = struct {
     interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for numeric input. Returns the entered number, or `error.Interrupted`
-/// if the user presses one of `config.interrupt_keys`.
+/// Prompt for numeric input. Returns the entered number, `error.Interrupted`
+/// if the user presses one of `config.interrupt_keys`, or `error.EndOfStream`
+/// if stdin closes with no line to submit.
 pub fn number(p: Prompts, config: NumberConfig) !i64 {
     const writer = p.writer;
     const reader = p.reader;
@@ -177,7 +178,7 @@ fn persistLine(app: *ui.App, config: NumberConfig, input: []const u8) !void {
 
 fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
     var buf: [32]u8 = undefined;
-    const line = readLine(reader, &buf);
+    const line = try readLine(reader, &buf);
     if (line.len == 0) {
         return config.default orelse return error.InvalidNumber;
     }
@@ -187,11 +188,16 @@ fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
 /// Read a line (sans trailing newline) into the caller-owned `buf`, returning
 /// the filled slice. The slice borrows `buf`, so it stays valid as long as the
 /// caller's buffer does — never return a slice into a local buffer from here.
-/// Stops at '\n', on read error/EOF, or when `buf` is full.
-fn readLine(reader: anytype, buf: []u8) []const u8 {
+/// Stops at '\n' or when `buf` is full. Returns `error.EndOfStream` if the
+/// stream closes before any byte is read; a partial line terminated by EOF is
+/// returned as-is.
+fn readLine(reader: anytype, buf: []u8) ![]const u8 {
     var len: usize = 0;
     while (len < buf.len) {
-        const byte = terminal.key.readByteFn(reader) catch break;
+        const byte = terminal.key.readByteFn(reader) catch {
+            if (len == 0) return error.EndOfStream;
+            break;
+        };
         if (byte == '\n') break;
         if (byte != '\r') {
             buf[len] = byte;
@@ -258,6 +264,20 @@ test "non-TTY: empty input with no default errors" {
 
     try std.testing.expectError(error.InvalidNumber, number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Port:",
+    }));
+}
+
+test "non-TTY: EOF errors instead of falling back to the default" {
+    var input = "".*;
+    var reader_stream: std.Io.Reader = .fixed(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream: std.Io.Writer = .fixed(&output);
+
+    // A closed stdin surfaces even when a default exists — a retry loop would
+    // otherwise spin forever re-prompting a dead stream.
+    try std.testing.expectError(error.EndOfStream, number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
+        .message = "Port:",
+        .default = 3000,
     }));
 }
 
