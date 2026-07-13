@@ -71,6 +71,7 @@ pub fn build(b: *std.Build) void {
     const core_test_files = [_][]const u8{
         "src/zcli.zig", // Main entry point - imports args, options, errors, execution, etc.
         "src/build_utils.zig", // Standalone utility (has its own tests)
+        "src/doc_escape.zig", // Doc-generator escaping rules (std-only, unit-tested here)
     };
 
     // Real-socket http.Client tests live in their own binary, built ReleaseSafe.
