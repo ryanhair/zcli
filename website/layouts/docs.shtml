@@ -64,6 +64,8 @@
         <h4>Guide</h4>
         <a href="#commands">Commands</a>
         <a href="#options">Args & options</a>
+        <a href="#validation">Validation</a>
+        <a href="#custom-types">Custom types</a>
         <a href="#context">The context</a>
         <a href="#prompts">Prompts</a>
         <a href="#progress">Progress & theming</a>
@@ -215,6 +217,55 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
     verbose: <span class="fn">bool</span> = <span class="num">false</span>,        <span class="cm">// --verbose (flag)</span>
 };</pre>
           </div>
+        </section>
+
+        <section id="validation">
+          <h2>Validation</h2>
+          <p>When a field's <em>type</em> already parses the input but the <em>value</em> needs a further rule — a port in range, a non-empty name — add a <code>validate</code> hook in <code>meta</code>, on any option or arg. It is <code>fn(T) ?[]const u8</code>: return <code>null</code> when the value is fine, or the message to show. It runs on the finally-resolved value from <b>every source</b> — the CLI flag, its <code>.env</code> variable, a config file, or the default — so no source can slip an invalid value through.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">validate a value</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> Options = <span class="kw">struct</span> { port: <span class="fn">u16</span> = <span class="num">8080</span> };
+
+<span class="kw">pub const</span> meta = .{
+    .options = .{ .port = .{ .validate = validatePort } },
+};
+
+<span class="kw">fn</span> <span class="fn">validatePort</span>(port: <span class="fn">u16</span>) ?[]<span class="kw">const</span> <span class="fn">u8</span> {
+    <span class="kw">return if</span> (port == <span class="num">0</span>) <span class="str">"must be between 1 and 65535"</span> <span class="kw">else null</span>;
+}</pre>
+          </div>
+          <p>A failure reads like any other bad-value error — the offending value, then your message, then a usage hint — and exits non-zero:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">terminal</span><span class="lang">sh</span></div>
+<pre>$ myapp serve --port 0
+<span class="cm">Error: Invalid value '0' for option '--port': must be between 1 and 65535.</span>
+<span class="cm">Run 'myapp serve --help' for usage.</span></pre>
+          </div>
+        </section>
+
+        <section id="custom-types">
+          <h2>Custom types</h2>
+          <p>When turning the string into your value needs real logic — <code>"5m30s"</code> into a duration, <code>"4GiB"</code> into a byte count, an email address — give the field a type that builds itself with <code>pub fn parse</code>. The command then receives your domain type, <b>valid by construction</b>. <code>parse</code> returns an error union, so it composes with <code>try</code> over smaller parsers; add an optional <code>hint</code> (the “Expected …” phrase, also used in <code>--help</code>) and <code>describe</code> for a message per failure.</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">a type that parses itself</span><span class="lang">zig</span></div>
+<pre><span class="kw">const</span> Duration = <span class="kw">struct</span> {
+    secs: <span class="fn">u64</span>,
+    <span class="kw">pub const</span> hint = <span class="str">"a duration like 5m30s"</span>;
+
+    <span class="kw">pub fn</span> <span class="fn">parse</span>(s: []<span class="kw">const</span> <span class="fn">u8</span>) <span class="kw">error</span>{ BadFormat, TooLong }!Duration { <span class="cm">// …</span> }
+
+    <span class="kw">pub fn</span> <span class="fn">describe</span>(err: <span class="kw">error</span>{ BadFormat, TooLong }) []<span class="kw">const</span> <span class="fn">u8</span> {
+        <span class="kw">return switch</span> (err) {
+            <span class="kw">error</span>.BadFormat =&gt; <span class="str">"use a form like 5m30s"</span>,
+            <span class="kw">error</span>.TooLong =&gt; <span class="str">"must be under an hour"</span>,
+        };
+    }
+};
+
+<span class="kw">pub const</span> Options = <span class="kw">struct</span> { timeout: Duration = .{ .secs = <span class="num">30</span> } };</pre>
+          </div>
+          <p>Every source builds it the same way — the CLI and <code>.env</code> parse the string, and a config file does too. An unparseable value from <code>.env</code> or config is ignored (the default stays), so a bad source can never inject an invalid value.</p>
+          <p><b>Which one?</b> If the field's native type already parses the input and you only need an extra rule, use <code>validate</code>. If producing the value from text needs your own logic — or you want a reusable domain type — make a custom type. Both work on args and options.</p>
         </section>
 
         <section id="context">
