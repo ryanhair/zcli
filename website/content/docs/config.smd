@@ -25,7 +25,9 @@ The first match wins:
 
 1. `--config <path>` — an explicit file passed on the command line (a global option the plugin contributes)
 2. `./{app}.config.json|toml|yaml` — a project-local file in the working directory
-3. `$XDG_CONFIG_HOME/{app}/config.json|toml|yaml` — the user-level config
+3. `{user config dir}/{app}/config.json|toml|yaml` — the user-level config (`$XDG_CONFIG_HOME` or `~/.config` on POSIX; `%APPDATA%`, else `%USERPROFILE%`, on Windows)
+
+If more than one candidate exists, the first in this order is used and the plugin prints a notice naming the file it chose.
 
 ## Global and per-command values
 
@@ -49,7 +51,13 @@ Config sits between explicit user input and your struct defaults:
 CLI flag  >  env var  >  command-scoped config  >  global config  >  struct default
 ```
 
-Config can satisfy a [required option]($link.page('docs/args-options')) and participates in [validation and constraints]($link.page('docs/validation')) like any other source — a `validate` hook runs on the final value wherever it came from, and a config value counts as "supplied" for `exclusive`/`requires` checks. An unparseable config value for a [custom type]($link.page('docs/validation')) is ignored rather than trusted — the default stays.
+A value set on the command line — or read from an option's `env` fallback — always wins, even when it happens to equal the struct default; the plugin only fills fields the CLI and env left unset.
+
+**Every option type coerces from config.** A config scalar is stringified and run through the *same* value parser the CLI and env use, so bools, all integer widths, floats, enums (including optionals), [custom `parse` types]($link.page('docs/validation')), and arrays / multi-value options (from a config list) all work — no per-type wiring.
+
+**Failures are loud, never silent.** A malformed config file, an unrecognized extension, an out-of-range number, or an unknown enum variant is **skipped with a warning on stderr** — the default stays — rather than crashing the CLI or being trusted. A value that won't parse is never injected.
+
+Config can satisfy a [required option]($link.page('docs/args-options')) and participates in [validation and constraints]($link.page('docs/validation')) like any other source — a `validate` hook runs on the final value wherever it came from, and a config value counts as "supplied" for `exclusive`/`requires` checks.
 
 ## Next
 

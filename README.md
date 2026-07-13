@@ -277,7 +277,7 @@ The `zcli_config` plugin transparently loads option defaults from JSON, TOML, or
 }
 ```
 
-Discovery order and formats: [zcli.sh/plugins](https://zcli.sh/plugins/#config).
+Discovery order and formats: [zcli.sh/docs/config](https://zcli.sh/docs/config/).
 
 ## Plugins
 

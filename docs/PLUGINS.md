@@ -28,4 +28,4 @@ if (context.plugins.zcli_help.help_requested) { ... }
 
 A plugin is a Zig module with a `plugin_id` and any of the lifecycle exports (`global_options`, `handleGlobalOption`, `preExecute`, `onError`); it can also ship its own commands. Hook parameters are typed `anytype` — a plugin is compiled independently of the app that hosts it.
 
-For the full built-in list, config-file discovery and cascade, `plugins_dir` auto-discovery, and the complete plugin-authoring guide, see **[zcli.sh/plugins](https://zcli.sh/plugins/)**. For how plugins are discovered and merged into the generated registry, see [BUILD.md](BUILD.md).
+For the full built-in list, `plugins_dir` auto-discovery, and the complete plugin-authoring guide, see **[zcli.sh/plugins](https://zcli.sh/plugins/)**; config-file discovery and the value cascade have their own guide at **[zcli.sh/docs/config](https://zcli.sh/docs/config/)**. For how plugins are discovered and merged into the generated registry, see [BUILD.md](BUILD.md).
