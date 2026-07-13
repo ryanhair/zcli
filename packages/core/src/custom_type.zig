@@ -1,4 +1,4 @@
-//! Custom parse types (ADR-0024, increment 2).
+//! Custom parse types (ADR-0025, increment 2).
 //!
 //! A field type is *custom-parsed* when — after unwrapping one optional level —
 //! it is a struct declaring `pub fn parse(s: []const u8) E!@This()`. The field

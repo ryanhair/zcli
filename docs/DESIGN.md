@@ -278,7 +278,7 @@ is at-most-one.
 **Per-field validation:**
 
 A field whose *type* is right but whose *value* needs a further rule declares a
-`validate` hook — on `meta.options.<field>` or `meta.args.<field>` (ADR-0024):
+`validate` hook — on `meta.options.<field>` or `meta.args.<field>` (ADR-0025):
 
 ```zig
 pub const Args = struct { name: []const u8 };
@@ -347,7 +347,7 @@ present, else the hint:
 - `Invalid value 'nope' for option '--timeout': use a form like 5m30s.`
 
 This is the division: `validate` refines a value of an existing type; a custom
-type *is* the value and owns how it's built. See ADR-0024.
+type *is* the value and owns how it's built. See ADR-0025.
 
 **Context Structure:**
 
