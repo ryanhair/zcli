@@ -387,6 +387,45 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
         }
 
+        /// Extract a field's description from either arg-meta shape: a bare
+        /// string (`.id = "Task ID"`) or a struct with a `.description`.
+        fn argDescriptionOf(comptime field_meta: anytype) ?[]const u8 {
+            const T = @TypeOf(field_meta);
+            if (@typeInfo(T) == .@"struct") {
+                return if (@hasField(T, "description")) field_meta.description else null;
+            }
+            return field_meta;
+        }
+
+        /// Build the completion `Spec` from a struct-form field-meta's `.complete`
+        /// value (ADR-0026). A function → `.hook`, wrapped in a thunk with the
+        /// stored `anyerror!Result` signature so an inferred error set coerces
+        /// cleanly; `.file`/`.dir` enum literals → the matching builtin. Non-struct
+        /// meta (a bare description string) carries no completion.
+        fn completeSpecOf(comptime field_meta: anytype) ?zcli.completion.Spec {
+            const T = @TypeOf(field_meta);
+            if (@typeInfo(T) != .@"struct") return null;
+            if (!@hasField(T, "complete")) return null;
+            const cv = field_meta.complete;
+            const CV = @TypeOf(cv);
+            if (@typeInfo(CV) == .@"fn") {
+                const Thunk = struct {
+                    fn call(req: *zcli.completion.Request) anyerror!zcli.completion.Result {
+                        return cv(req);
+                    }
+                };
+                return .{ .hook = Thunk.call };
+            }
+            if (CV == @TypeOf(.enum_literal)) {
+                return switch (cv) {
+                    .file => .file,
+                    .dir => .dir,
+                    else => @compileError("meta field .complete: unknown builtin ." ++ @tagName(cv) ++ " (expected .file, .dir, or a function)"),
+                };
+            }
+            @compileError("meta field .complete must be a function or the builtin .file/.dir");
+        }
+
         fn buildGlobalOptionsInfo() []const zcli.OptionInfo {
             var opts: []const zcli.OptionInfo = &.{};
             for (global_options) |global_opt| {
@@ -435,6 +474,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                             const base_type = if (@typeInfo(field.type) == .optional) @typeInfo(field.type).optional.child else field.type;
                             var opt_desc: ?[]const u8 = null;
                             var opt_short: ?u8 = null;
+                            var opt_complete: ?zcli.completion.Spec = null;
                             if (@hasDecl(cmd.module, "meta")) {
                                 const meta = cmd.module.meta;
                                 if (@hasField(@TypeOf(meta), "options")) {
@@ -442,10 +482,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                         const opt_meta = @field(meta.options, field.name);
                                         if (@hasField(@TypeOf(opt_meta), "description")) opt_desc = opt_meta.description;
                                         if (@hasField(@TypeOf(opt_meta), "short")) opt_short = opt_meta.short;
+                                        opt_complete = completeSpecOf(opt_meta);
                                     }
                                 }
                             }
-                            options = options ++ .{zcli.OptionInfo{ .name = field.name, .short = opt_short, .description = opt_desc, .takes_value = base_type != bool, .enum_values = enumValuesOf(field.type) }};
+                            options = options ++ .{zcli.OptionInfo{ .name = field.name, .short = opt_short, .description = opt_desc, .takes_value = base_type != bool, .enum_values = enumValuesOf(field.type), .complete = opt_complete }};
                         }
                     }
                 }
@@ -458,11 +499,14 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     if (args_type_info == .@"struct") {
                         for (args_type_info.@"struct".fields) |field| {
                             var arg_desc: ?[]const u8 = null;
+                            var arg_complete: ?zcli.completion.Spec = null;
                             if (@hasDecl(cmd.module, "meta")) {
                                 const meta = cmd.module.meta;
                                 if (@hasField(@TypeOf(meta), "args")) {
                                     if (@hasField(@TypeOf(meta.args), field.name)) {
-                                        arg_desc = @field(meta.args, field.name);
+                                        const arg_meta = @field(meta.args, field.name);
+                                        arg_desc = argDescriptionOf(arg_meta);
+                                        arg_complete = completeSpecOf(arg_meta);
                                     }
                                 }
                             }
@@ -471,7 +515,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                 const ft = @typeInfo(field.type);
                                 break :vblk ft == .pointer and ft.pointer.size == .slice and ft.pointer.child != u8;
                             };
-                            arg_infos = arg_infos ++ .{zcli.ArgInfo{ .name = field.name, .description = arg_desc, .is_optional = is_opt, .is_variadic = is_variadic, .enum_values = enumValuesOf(field.type) }};
+                            arg_infos = arg_infos ++ .{zcli.ArgInfo{ .name = field.name, .description = arg_desc, .is_optional = is_opt, .is_variadic = is_variadic, .enum_values = enumValuesOf(field.type), .complete = arg_complete }};
                         }
                     }
                 }

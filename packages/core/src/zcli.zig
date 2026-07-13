@@ -76,6 +76,12 @@ pub const command_discovery = @import("build_utils/command_discovery.zig");
 /// the CLI parser does.
 pub const custom_type = @import("custom_type.zig");
 
+/// Dynamic shell-completion contract (ADR-0026): the `Request`/`Candidate`/
+/// `Result`/`Directive` types a `meta.<field>.complete` function hook uses, and
+/// the `Spec` union the introspection stores. The `zcli_completions` plugin's
+/// `__complete` command runs a field's hook at `<TAB>`.
+pub const completion = @import("completion.zig");
+
 /// Option value-coercion surface for the zcli_config plugin. A config file
 /// stores scalars in a format-native shape (JSON/TOML/YAML); the plugin
 /// stringifies them and routes through *the same* parser the CLI and env use,
@@ -139,6 +145,10 @@ pub const OptionInfo = struct {
     /// For an enum-typed option, its variant names (the valid choices), else
     /// `null`. Shell completions offer these as the option's argument values.
     enum_values: ?[]const []const u8 = null,
+    /// A dynamic/native completion source declared via `meta.options.<field>.complete`
+    /// (ADR-0026), else `null`. Drives the callback wiring the generators emit and
+    /// the hook `__complete` runs.
+    complete: ?completion.Spec = null,
 };
 
 /// Argument information for introspection and documentation
@@ -150,6 +160,10 @@ pub const ArgInfo = struct {
     /// For an enum-typed positional argument, its variant names, else `null`.
     /// Shell completions offer these as the positional's values.
     enum_values: ?[]const []const u8 = null,
+    /// A dynamic/native completion source declared via `meta.args.<field>.complete`
+    /// (ADR-0026), else `null`. Drives the callback wiring the generators emit and
+    /// the hook `__complete` runs.
+    complete: ?completion.Spec = null,
 };
 
 /// Command information for introspection, completions, and documentation
@@ -522,7 +536,7 @@ pub fn validateMeta(
             const option_meta_info = @typeInfo(@TypeOf(option_meta));
 
             if (option_meta_info == .@"struct") {
-                const valid_option_fields = .{ "description", "short", "name", "env", "requires", "validate" };
+                const valid_option_fields = .{ "description", "short", "name", "env", "requires", "validate", "complete" };
 
                 inline for (option_meta_info.@"struct".fields) |opt_field| {
                     const opt_is_valid = comptime blk: {
@@ -534,7 +548,7 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires, validate");
+                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires, validate, complete");
                     }
                 }
 
@@ -654,7 +668,7 @@ pub fn validateMeta(
             const arg_meta_info = @typeInfo(arg_meta_type);
 
             if (arg_meta_info == .@"struct") {
-                const valid_arg_fields = .{ "description", "validate" };
+                const valid_arg_fields = .{ "description", "validate", "complete" };
 
                 inline for (arg_meta_info.@"struct".fields) |arg_field| {
                     const arg_is_valid = comptime blk: {
@@ -666,7 +680,7 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!arg_is_valid) {
-                        @compileError(loc ++ "unknown arg metadata field '" ++ arg_field.name ++ "' in arg '" ++ field.name ++ "'. Valid fields are: description, validate");
+                        @compileError(loc ++ "unknown arg metadata field '" ++ arg_field.name ++ "' in arg '" ++ field.name ++ "'. Valid fields are: description, validate, complete");
                     }
                 }
 

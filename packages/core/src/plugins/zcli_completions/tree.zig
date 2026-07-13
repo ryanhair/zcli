@@ -38,6 +38,17 @@ pub const CommandNode = struct {
     }
 };
 
+/// True if any command in the tree declares a positional arg with a dynamic
+/// completion hook (`complete == .hook`) — i.e. the generated script needs the
+/// `__complete` callback helper wired in.
+pub fn hasDynamicArg(node: *const CommandNode) bool {
+    for (node.args) |arg| {
+        if (arg.complete) |c| if (c == .hook) return true;
+    }
+    for (node.children) |child| if (hasDynamicArg(child)) return true;
+    return false;
+}
+
 /// Build the command tree from the flat command-info list. Hidden commands are
 /// dropped entirely. Intermediate path segments that have no CommandInfo of
 /// their own (pure groups) still get a node so children are reachable.

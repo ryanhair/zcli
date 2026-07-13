@@ -4,8 +4,68 @@ const zcli = @import("zcli");
 const bash = @import("bash.zig");
 const zsh = @import("zsh.zig");
 const fish = @import("fish.zig");
+const resolve = @import("resolve.zig");
+const wire = @import("wire.zig");
 
 pub const commands = struct {
+    /// Hidden dynamic-completion entry point (ADR-0026). The generated shell
+    /// scripts call `app __complete <cword> -- <COMP_WORDS…>` at `<TAB>`; this
+    /// resolves the field the cursor is on and runs its `complete` hook, printing
+    /// candidates NUL-delimited (`value \t description` per record). The single
+    /// `--` protects words that start with `-` from being parsed as this command's
+    /// own options; any `--` the user typed is just another word after it.
+    pub const __complete = struct {
+        pub const meta = .{
+            .hidden = true,
+            .description = "Internal: emit dynamic completion candidates",
+        };
+
+        pub const Args = struct {
+            /// Cursor word index (COMP_CWORD-style) into `words`.
+            cword: usize,
+            /// The shell's word array, `words[0]` = app name.
+            words: []const []const u8 = &.{},
+        };
+        pub const Options = struct {};
+
+        pub fn execute(args: Args, _: Options, context: anytype) !void {
+            const commands_info = context.getAvailableCommandInfo();
+            const global_options = context.getGlobalOptions();
+
+            const match = resolve.resolve(context.allocator, commands_info, global_options, args.words, args.cword) catch |err| {
+                debugLog(context, "resolve failed: {s}", .{@errorName(err)});
+                return;
+            } orelse return;
+
+            switch (match.spec) {
+                .hook => |hook| {
+                    var req: zcli.completion.Request = .{
+                        .allocator = context.allocator,
+                        .io = context.io,
+                        .environ = context.environ,
+                        .partial = match.partial,
+                        .args = match.positionals,
+                    };
+                    const result = hook(&req) catch |err| {
+                        debugLog(context, "hook error: {s}", .{@errorName(err)});
+                        return;
+                    };
+                    const out = context.stdout();
+                    try wire.writeRecords(out, result.candidates);
+                },
+                // Builtins are resolved statically at generation time and never
+                // reach `__complete`.
+                .file, .dir => {},
+            }
+        }
+
+        fn debugLog(context: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
+            const v = context.environ.get("ZCLI_COMPLETE_DEBUG") orelse return;
+            if (v.len == 0 or std.mem.eql(u8, v, "0")) return;
+            context.stderr().print("zcli __complete: " ++ fmt ++ "\n", fmt_args) catch {};
+        }
+    };
+
     pub const completions = struct {
         pub const meta = .{
             .description = "Manage shell completions for bash, zsh, and fish",

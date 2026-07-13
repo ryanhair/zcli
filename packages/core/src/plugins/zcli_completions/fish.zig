@@ -57,6 +57,10 @@ pub fn generate(
         \\
     , .{app_name});
 
+    // Dynamic-completion helper (ADR-0026), emitted only when some command
+    // declares a `.complete` function hook.
+    if (tree.hasDynamicArg(root)) try writeDynamicHelper(writer, app_name);
+
     // Global options: available everywhere, no condition.
     for (global_options) |opt| {
         try writeOption(arena, writer, app_name, null, opt);
@@ -129,7 +133,12 @@ fn writePositional(
 
     if (node.args.len > 0) {
         const arg = node.args[0];
-        if (arg.enum_values) |values| {
+        const is_hook = if (arg.complete) |c| c == .hook else false;
+        if (is_hook) {
+            // Live candidates from `__complete` (converted to fish's newline-list
+            // via `string split0`). Fish filters by the typed prefix itself.
+            try writer.print(" -a '(__{s}_zcli_complete)'", .{app_name});
+        } else if (arg.enum_values) |values| {
             try writer.writeAll(" -a '");
             for (values, 0..) |v, idx| {
                 if (idx > 0) try writer.writeByte(' ');
@@ -144,6 +153,25 @@ fn writePositional(
         }
     }
     try writer.writeAll("\n");
+}
+
+/// Emit the fish dynamic-completion helper. It reconstructs the shell's word
+/// array + cursor index from `commandline`, calls `<app> __complete`, and turns
+/// the NUL-framed records into fish's newline list via `string split0` (each
+/// record is `value \t description`, which fish reads as value + description).
+///
+/// Fish splits command-substitution output on newlines, so a candidate value
+/// containing a literal newline cannot be represented — such values are dropped
+/// (never mangled). This is the one documented fish limitation of the protocol.
+fn writeDynamicHelper(writer: anytype, app_name: []const u8) !void {
+    try writer.print("function __{s}_zcli_complete\n", .{app_name});
+    // `commandline -opc` is the tokens BEFORE the cursor (partial excluded), so the
+    // cursor's word index is exactly their count; `-ct` is the partial (an empty
+    // string is dropped, which `__complete` reads back as an empty partial). One
+    // call covers both the mid-token and word-boundary cases.
+    try writer.writeAll("    set -l toks (commandline -opc)\n");
+    try writer.writeAll("    command $toks[1] __complete (count $toks) -- $toks (commandline -ct) 2>/dev/null | string split0\n");
+    try writer.writeAll("end\n\n");
 }
 
 /// Emit one `complete` directive for an option. `path` null means global (no
