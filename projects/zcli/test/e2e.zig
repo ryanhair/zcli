@@ -982,6 +982,59 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement server status");
     }
+    {
+        // `server` is both executable (a landing execute) AND a group (it has
+        // `server status`). Its `--help` renders command help whose sections run
+        // OPTIONS before COMMANDS — the command's own contract first, navigation
+        // to children last — and closes with a "run <sub> --help" hint under the
+        // subcommand list. Explicit help → stdout.
+        var r = try run(proj, &.{ demo_bin, "server", "--help" });
+        defer r.deinit();
+        try expectOk(r);
+        const i_opts = std.mem.indexOf(u8, r.stdout, "OPTIONS:") orelse return error.NoOptionsSection;
+        const i_cmds = std.mem.indexOf(u8, r.stdout, "COMMANDS:") orelse return error.NoCommandsSection;
+        try testing.expect(i_opts < i_cmds);
+        try expectContains(r.stdout, "status"); // the subcommand
+        // The follow-up hint lands under the subcommand list.
+        const i_hint = std.mem.indexOf(u8, r.stdout, "for more information on a subcommand") orelse return error.NoSubcommandHint;
+        try testing.expect(i_hint > i_cmds);
+    }
+
+    // A pure command group (no `--with-landing`): bare `demo cfg` isn't runnable
+    // on its own, so it resolves to CommandNotFound → the help plugin's onError
+    // detects the group and renders group help. That help path threads through
+    // onError, which is exactly the real-plugin group rendering the audit found
+    // untested (only a mock covered it).
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "group", "cfg", "-d", "Configuration" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ zcli_exe, "add", "command", "cfg/show", "-d", "Show configuration" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    {
+        // Bare group invocation. A pure group's CommandNotFound is handled by the
+        // help plugin (shows help, doesn't propagate), so the process exits 0 —
+        // but the rendered group help (header + USAGE + subcommand list) is
+        // error-triggered, so it goes to STDERR (#236 convention), keeping a
+        // piped stdout clean.
+        var r = try run(proj, &.{ demo_bin, "cfg" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stderr, "is a command group");
+        try expectContains(r.stderr, "SUBCOMMANDS:");
+        try expectContains(r.stderr, "show"); // the subcommand under cfg
+        // Group help is an error reaction → stderr only. stdout stays empty.
+        try testing.expect(r.stdout.len == 0);
+    }
 
     // `add plugin` drops a file into the convention-discovered src/plugins/ dir
     // (init wired `.plugins_dir`). The generated skeleton must compile and be

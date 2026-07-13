@@ -265,21 +265,9 @@ fn showHelp(context: anytype, help_type: HelpType, to_stdout: bool) !void {
         }
     }
 
-    // Show commands/subcommands
-    switch (help_type) {
-        .app, .root => {
-            try showCommandList(context, &fmt, .top_level);
-        },
-        .command_group => |group_name| {
-            try showCommandList(context, &fmt, .{ .subcommands_of = group_name });
-        },
-        .command => {
-            // Show subcommands if any
-            try showSubcommands(context, &fmt);
-        },
-    }
-
-    // Show options (for non-root commands)
+    // Show options (for non-root commands) — the command's own contract comes
+    // before navigation to any children, so OPTIONS precedes the subcommand
+    // list below for a command that is both executable and a group.
     if (help_type == .command) {
         try fmt.write("<header>OPTIONS:</header>\n", .{});
         if (context.command_module_info) |module_info| {
@@ -291,6 +279,27 @@ fn showHelp(context: anytype, help_type: HelpType, to_stdout: bool) !void {
             }
         }
         try fmt.write("    <flag>--help</flag>, <flag>-h</flag>{s:<6} Show this help message\n\n", .{""});
+    }
+
+    // Show commands/subcommands (last: navigation to children)
+    switch (help_type) {
+        .app, .root => {
+            try showCommandList(context, &fmt, .top_level);
+        },
+        .command_group => |group_name| {
+            try showCommandList(context, &fmt, .{ .subcommands_of = group_name });
+        },
+        .command => {
+            // Show subcommands if any
+            const had_subcommands = try showSubcommands(context, &fmt);
+            // For a command that is both executable and a group, point at its
+            // children — mirrors the group/app "run --help for more" footer.
+            if (had_subcommands) {
+                const cmd_path = try std.mem.join(context.allocator, " ", context.command_path);
+                defer context.allocator.free(cmd_path);
+                try fmt.write("Run '<command>{s}</command> <command>{s}</command> <subcommand> <flag>--help</flag>' for more information on a subcommand.\n\n", .{ app_name, cmd_path });
+            }
+        },
     }
 
     // Show global options (for app and root help)
@@ -643,8 +652,9 @@ fn generateUsage(context: anytype) ![]const u8 {
     return try al.toOwnedSlice(context.allocator);
 }
 
-/// Show available subcommands for the current command
-fn showSubcommands(context: anytype, fmt: anytype) !void {
+/// Show available subcommands for the current command. Returns whether any were
+/// displayed, so the caller can render a follow-up hint only when they exist.
+fn showSubcommands(context: anytype, fmt: anytype) !bool {
     const command_infos = context.getAvailableCommandInfo();
     var displayed_names: std.ArrayList([]const u8) = .empty;
     defer displayed_names.deinit(context.allocator);
@@ -713,6 +723,7 @@ fn showSubcommands(context: anytype, fmt: anytype) !void {
     if (has_commands) {
         try fmt.write("\n", .{});
     }
+    return has_commands;
 }
 
 /// Generate args pattern from command module info (e.g., "IMAGE [COMMAND] [ARG...]")
@@ -1105,6 +1116,106 @@ test "showCommandList: dedups, sorts alphabetically, and renders aliases" {
 
     // The nested subcommand does not leak into the top-level list.
     try std.testing.expect(std.mem.indexOf(u8, out, "sub") == null);
+}
+
+// ============================================================================
+// showHelp(.command): section ordering + options-less rendering
+// ============================================================================
+
+/// Render `.command` help (to stdout) and return the captured buffer.
+fn renderCommandHelp(ctx: anytype, aw: *std.Io.Writer.Allocating) ![]const u8 {
+    try showHelp(ctx, .command, true);
+    try ctx.stdout().flush();
+    return aw.written();
+}
+
+test "showHelp .command orders sections ARGUMENTS -> OPTIONS -> COMMANDS for an exec+group command" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // `server` is both executable (has its own args + options) AND a group (a
+    // `server status` subcommand exists) — the exact case whose ordering this
+    // fix pins down.
+    ctx.app_name = "myapp";
+    ctx.command_path = &.{"server"};
+    ctx.command_module_info = .{
+        .has_args = true,
+        .args_fields = &.{
+            .{ .name = "target", .is_optional = false, .is_array = false, .type_name = "[]const u8", .description = "The target" },
+        },
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "force", .is_optional = false, .is_array = false, .type_name = "bool", .default_value = "false", .description = "Force it" },
+        },
+    };
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"server"}, .description = "Manage the server" },
+        .{ .path = &.{ "server", "status" }, .description = "Show status" },
+    };
+
+    const out = try renderCommandHelp(&ctx, &aw);
+
+    const i_args = std.mem.indexOf(u8, out, "ARGUMENTS:").?;
+    const i_opts = std.mem.indexOf(u8, out, "OPTIONS:").?;
+    const i_cmds = std.mem.indexOf(u8, out, "COMMANDS:").?;
+    // The command's own contract first (arguments, then options), navigation to
+    // children last.
+    try std.testing.expect(i_args < i_opts);
+    try std.testing.expect(i_opts < i_cmds);
+
+    // The subcommand and the follow-up hint both render under COMMANDS.
+    try std.testing.expect(std.mem.indexOf(u8, out, "status") != null);
+    const i_hint = std.mem.indexOf(u8, out, "for more information on a subcommand").?;
+    try std.testing.expect(i_hint > i_cmds);
+}
+
+test "showHelp .command renders a clean OPTIONS block for an options-less command" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // A leaf command with `Options = struct {}` and no subcommands: the OPTIONS
+    // block still lists the implicit --help (it IS an option; every CLI shows
+    // -h). Decision (a) from the audit — locked here so the single-line OPTIONS
+    // block is intentional, not accidental.
+    ctx.app_name = "myapp";
+    ctx.command_path = &.{"noop"};
+    ctx.command_module_info = .{ .has_args = false, .has_options = false };
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"noop"}, .description = "Does nothing" },
+    };
+
+    const out = try renderCommandHelp(&ctx, &aw);
+
+    // The OPTIONS header is present and immediately followed by the --help line
+    // (no blank line between them, no stray trailing blanks — the block is one
+    // header + one entry).
+    const opts_at = std.mem.indexOf(u8, out, "OPTIONS:\n").?;
+    const after = out[opts_at + "OPTIONS:\n".len ..];
+    try std.testing.expect(std.mem.startsWith(u8, std.mem.trimLeft(u8, after, " "), "--help"));
+    // With no declared options and no subcommands, --help is the only OPTIONS
+    // entry and no COMMANDS section renders.
+    try std.testing.expect(std.mem.indexOf(u8, out, "--help") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "COMMANDS:") == null);
 }
 
 // ============================================================================
