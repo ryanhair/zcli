@@ -70,6 +70,62 @@ fn noServiceSignal(stderr: []const u8) bool {
     return false;
 }
 
+/// True when *every* non-blank line of `stderr` is a benign artifact of a
+/// concurrent mutation of the same item — i.e. nothing here is a genuine Secret
+/// Service operation error. Two kinds of line qualify:
+///
+///   1. **GLib assertion noise.** libsecret's async path can double-complete an
+///      internal `GTask` when two operations touch the same item, so `secret-tool`
+///      prints, e.g.
+///
+///          (secret-tool:5656): GLib-GIO-CRITICAL **: g_task_return_boolean:
+///          assertion '!task->ever_returned' failed
+///
+///      and exits nonzero. That is a glibc-level warning, not a store error.
+///
+///   2. **"the item vanished" messages.** When a `clear`/`lookup` races a
+///      concurrent `delete`, the item's D-Bus object is removed out from under the
+///      call and `secret-tool` reports one of:
+///
+///          secret-tool: Object does not exist at path "/…/collection/login/134"
+///          secret-tool: No such interface "org.freedesktop.Secret.Item" on object…
+///
+///      Both mean "the target is already gone" — exactly the no-op a `delete` is
+///      documented to succeed at, and an "absent" for a `get`.
+///
+/// A caller whose operation is idempotent under concurrency (`delete`, `get`
+/// treated as "absent", `set`'s store which then retries + verifies) must not read
+/// these as `SecretBackendFailure`.
+///
+/// Deliberately strict: a *real* error line ("prompt dismissed", "locked", a
+/// no-service phrasing, or anything not on this list) makes it return `false`, so
+/// genuine failures are never swallowed. Empty stderr is not benign-race — callers
+/// handle the quiet nonzero-exit case separately.
+fn isBenignRace(stderr: []const u8) bool {
+    var saw_line = false;
+    var lines = std.mem.splitScalar(u8, stderr, '\n');
+    while (lines.next()) |raw| {
+        const line = trimmed(raw);
+        if (line.len == 0) continue; // blank / trailing newline
+
+        // (1) A GLib assertion warning: "(prog:pid): GLib…-CRITICAL **: …". Match on
+        // "GLib" + severity marker rather than exact wording so a WARNING variant or
+        // a reworded assertion is still recognized.
+        const is_glib = std.mem.indexOf(u8, line, "GLib") != null and
+            (std.mem.indexOf(u8, line, "CRITICAL") != null or
+                std.mem.indexOf(u8, line, "WARNING") != null);
+        // (2) The "item vanished mid-op" phrasings (quotes are non-ASCII in
+        // secret-tool's output, so match on the stable ASCII substrings only).
+        const is_vanished = std.mem.indexOf(u8, line, "Object does not exist at path") != null or
+            (std.mem.indexOf(u8, line, "No such interface") != null and
+                std.mem.indexOf(u8, line, "on object at path") != null);
+
+        if (!is_glib and !is_vanished) return false; // a genuine message → not benign
+        saw_line = true;
+    }
+    return saw_line;
+}
+
 /// Retrieve a secret. Returns `null` if no matching item exists. The returned
 /// bytes are owned by `allocator`.
 pub fn get(
@@ -93,6 +149,11 @@ pub fn get(
     // stderr). Treat the quiet case as "not found", the noisy case as an error.
     if (trimmed(out.stderr).len == 0) return null;
     if (noServiceSignal(out.stderr)) return Error.ServiceUnavailable;
+    // A `lookup` racing a concurrent delete can exit nonzero with only benign-race
+    // noise on stderr (GLib GTask warning and/or "item vanished mid-op"). The
+    // item's presence is in flux, so the benign read is "absent" (null) rather than
+    // an opaque backend failure — get is idempotent this way.
+    if (isBenignRace(out.stderr)) return null;
     logStderr(out.stderr);
     return Error.SecretBackendFailure;
 }
@@ -129,13 +190,25 @@ pub fn set(
     defer allocator.free(label);
 
     // `secret-tool store` reads the secret from stdin; we feed it the base64.
-    var out = subprocess.run(allocator, io, environ, &.{
-        "secret-tool", "store", "--label", label, "service", service, "account", name,
-    }, encoded) catch |e| return mapError(e);
-    defer out.deinit();
+    // Under a concurrent mutation of the same key, libsecret can double-complete
+    // an internal GTask and `store` exits nonzero printing only a GLib assertion
+    // warning — a transient that clears once the racing op settles. Unlike
+    // `get`/`delete` (idempotent no-ops), `set` must actually leave the value
+    // stored, so a bare GLib-noise failure is *retried* rather than accepted: retry
+    // re-issues the write after the contention window, and the authoritative
+    // verify-after-store below still confirms the result. A non-GLib error is a
+    // real failure and is surfaced immediately.
+    const store_attempts = 2;
+    var attempt: usize = 0;
+    while (true) : (attempt += 1) {
+        var out = subprocess.run(allocator, io, environ, &.{
+            "secret-tool", "store", "--label", label, "service", service, "account", name,
+        }, encoded) catch |e| return mapError(e);
+        defer out.deinit();
 
-    if (!out.ok()) {
+        if (out.ok()) break;
         if (noServiceSignal(out.stderr)) return Error.ServiceUnavailable;
+        if (isBenignRace(out.stderr) and attempt + 1 < store_attempts) continue;
         logStderr(out.stderr);
         return Error.SecretBackendFailure;
     }
@@ -145,24 +218,49 @@ pub fn set(
     // stdin cap, so a zero exit is not proof the store is correct — this read-back
     // is. Store operations are rare and user-triggered, so the extra roundtrip is
     // cheap insurance against a silent corrupt write.
-    if (!try verifyStored(allocator, io, environ, service, name, value)) {
-        // Best-effort remove the truncated entry so a later `get` can't hand back
-        // a corrupt secret; ignore its outcome (the truncation is the real error).
-        delete(allocator, io, environ, service, name) catch {};
-        return Error.SecretTooLarge;
+    switch (try verifyStored(allocator, io, environ, service, name, value)) {
+        // The read-back exactly matched — the store round-tripped intact.
+        .intact => {},
+        // The read-back found nothing. This is NOT truncation (truncation leaves a
+        // present-but-shorter value): the item is simply gone. The only way `store`
+        // can exit 0 and yet the value be absent a moment later is a concurrent
+        // `delete` that landed between our write and our read-back — a legal
+        // serialization of `set` then `delete`. The store itself succeeded, so this
+        // is benign; treat it as success rather than misreporting `SecretTooLarge`.
+        .missing => {},
+        // The read-back returned a value that differs from what we wrote (or one
+        // that no longer decodes) — the `secret-tool` stdin-truncation signature.
+        // Best-effort remove the truncated entry so a later `get` can't hand back a
+        // corrupt secret; ignore its outcome (the truncation is the real error).
+        .mismatch => {
+            delete(allocator, io, environ, service, name) catch {};
+            return Error.SecretTooLarge;
+        },
     }
 }
 
-/// Read the just-stored secret back and compare it byte-for-byte against `want`.
-/// Returns `true` when they match, `false` when the store returned something
-/// different (i.e. the value was truncated) or nothing at all. Split out so the
-/// truncation-detection compare is unit-testable via `verifyAgainst`.
+/// The three distinguishable outcomes of the verify-after-store read-back. Kept
+/// separate because they demand opposite handling: `.mismatch` is the truncation
+/// bug and must fail the `set`, while `.missing` is a benign concurrent delete and
+/// must NOT — conflating them (as an earlier `bool` did) turned a legal
+/// set/delete race into a spurious `SecretTooLarge`.
+const Verified = enum { intact, missing, mismatch };
+
+/// Read the just-stored secret back and classify it against `want`. Split out so
+/// the truncation-detection compare is unit-testable via `verifyAgainst`.
+///
+///   - `.intact`   — the read-back exactly equals `want`; the store round-tripped.
+///   - `.missing`  — nothing came back (`get` returned `null`). Under concurrency
+///                   this is a `delete` that landed between our store and our
+///                   read-back — benign, NOT truncation.
+///   - `.mismatch` — a value came back that differs from `want`. That is the
+///                   `secret-tool` stdin-truncation signature the caller must fail.
 ///
 /// A truncated base64 read-back often no longer decodes, so `get` can fail with
 /// `SecretBackendFailure` on exactly the corrupt-store case we are checking for;
-/// that counts as a failed verification (`false`), NOT a propagated error. Only a
-/// genuinely different problem — the service going away between the store and the
-/// read-back — is surfaced, so a real infra fault is never masked as "too large".
+/// that counts as `.mismatch`, NOT a propagated error. Only a genuinely different
+/// problem — the service going away between the store and the read-back — is
+/// surfaced, so a real infra fault is never masked as "too large".
 fn verifyStored(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -170,12 +268,15 @@ fn verifyStored(
     service: []const u8,
     name: []const u8,
     want: []const u8,
-) !bool {
+) !Verified {
     const maybe = get(allocator, io, environ, service, name) catch |e| switch (e) {
         Error.ServiceUnavailable => return e,
-        else => return false, // corrupt/undecodable read-back ⇒ verification failed
+        // A corrupt/undecodable read-back is a value that came back but is not
+        // `want` — the truncation signature, so `.mismatch` (never `.missing`,
+        // which would be silently accepted as a benign delete).
+        else => return .mismatch,
     };
-    const got = maybe orelse return false;
+    const got = maybe orelse return .missing;
     defer {
         // `got` holds the (decoded) secret read back from the store — wipe it
         // before the allocator reclaims the pages, not just free it. It is
@@ -183,7 +284,7 @@ fn verifyStored(
         std.crypto.secureZero(u8, @constCast(got));
         allocator.free(got);
     }
-    return verifyAgainst(got, want);
+    return if (verifyAgainst(got, want)) .intact else .mismatch;
 }
 
 /// The core truncation-detection compare, factored out so it can be unit-tested
@@ -211,6 +312,13 @@ pub fn delete(
     if (out.ok()) return;
     if (trimmed(out.stderr).len == 0) return;
     if (noServiceSignal(out.stderr)) return Error.ServiceUnavailable;
+    // A `clear` racing a concurrent `clear`/`delete` of the same key can exit
+    // nonzero with only benign-race stderr: a GLib GTask double-completion warning
+    // and/or an "item vanished mid-op" message ("Object does not exist" / "No such
+    // interface … on object at path") once the racing deleter removes the D-Bus
+    // object first. `clear` is a documented no-op when nothing matches, so all of
+    // those are benign — the delete's whole contract is idempotent-under-concurrency.
+    if (isBenignRace(out.stderr)) return;
     logStderr(out.stderr);
     return Error.SecretBackendFailure;
 }
@@ -242,6 +350,46 @@ test "noServiceSignal distinguishes 'no service' from operation errors" {
     try std.testing.expect(!noServiceSignal("The prompt was dismissed."));
     try std.testing.expect(!noServiceSignal("Collection is locked."));
     try std.testing.expect(!noServiceSignal(""));
+}
+
+test "isBenignRace recognizes concurrent-mutation artifacts but not real errors" {
+    // The exact libsecret GTask double-completion warning observed under a
+    // concurrent set/delete race — pure noise, must be recognized.
+    try std.testing.expect(isBenignRace(
+        "(secret-tool:5656): GLib-GIO-CRITICAL **: 19:26:31.886: " ++
+            "g_task_return_boolean: assertion '!task->ever_returned' failed",
+    ));
+    // A plain GLib-CRITICAL (no -GIO) and a WARNING variant are also just noise.
+    try std.testing.expect(isBenignRace("(secret-tool:1): GLib-CRITICAL **: something"));
+    try std.testing.expect(isBenignRace("(secret-tool:1): GLib-GObject-WARNING **: x"));
+
+    // The "item vanished mid-op" messages a `clear`/`lookup` sees when a concurrent
+    // delete removes the D-Bus object first — both benign (the target is gone).
+    try std.testing.expect(isBenignRace(
+        "secret-tool: Object does not exist at path \"/org/freedesktop/secrets/collection/login/134\"",
+    ));
+    try std.testing.expect(isBenignRace(
+        "secret-tool: No such interface \"org.freedesktop.Secret.Item\" " ++
+            "on object at path /org/freedesktop/secrets/collection/login/210",
+    ));
+    // The real observed combination: GLib warning line THEN a vanished-item line.
+    try std.testing.expect(isBenignRace(
+        "(secret-tool:1): GLib-GIO-CRITICAL **: assertion failed\n" ++
+            "secret-tool: Object does not exist at path \"/x\"\n",
+    ));
+
+    // Empty stderr is NOT benign-race — the quiet nonzero-exit case is handled apart.
+    try std.testing.expect(!isBenignRace(""));
+    try std.testing.expect(!isBenignRace("   \n\n"));
+    // A genuine operation error must never be mistaken for benign — even alongside
+    // a GLib warning line, the real message wins and the op must still fail.
+    try std.testing.expect(!isBenignRace("The prompt was dismissed."));
+    try std.testing.expect(!isBenignRace("Collection is locked."));
+    try std.testing.expect(!isBenignRace(
+        "(secret-tool:1): GLib-GIO-CRITICAL **: noise\nThe prompt was dismissed.",
+    ));
+    // "No such interface" WITHOUT the object-path tail is not the vanished signature.
+    try std.testing.expect(!isBenignRace("secret-tool: No such interface bar"));
 }
 
 test "verifyAgainst detects a truncated read-back" {

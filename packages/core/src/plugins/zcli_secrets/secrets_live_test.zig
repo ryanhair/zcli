@@ -275,13 +275,17 @@ fn runRaceChild(role: []const u8) u8 {
     defer env.deinit();
     loadEnviron(&env) catch return 2;
 
-    var discard: std.Io.Writer.Discarding = .init(&.{});
+    // A racing child's error path is exactly what we want to see when this test
+    // regresses, so route the plugin's backend diagnostics to the child's real
+    // stderr (which the parent captures and echoes) rather than discarding them.
+    var err_buf: [4096]u8 = undefined;
+    var child_stderr = std.Io.File.stderr().writerStreaming(std.testing.io, &err_buf);
     var ctx = MockContext{
         .allocator = a,
         .io = std.testing.io,
         .environ = &env,
         .app_name = service,
-        .err_writer = &discard.writer,
+        .err_writer = &child_stderr.interface,
     };
     var data: plugin.ContextData = .{};
 
@@ -294,14 +298,44 @@ fn runRaceChild(role: []const u8) u8 {
             // Only success is acceptable: even when a concurrent `delete` removes
             // the item mid-`set`, the retry must re-Add (or Modify) and succeed —
             // never surface a backend failure.
-            data.set(&ctx, race_name, value) catch return 1;
+            data.set(&ctx, race_name, value) catch |e| {
+                childFail(&child_stderr.interface, role, i, e);
+                return 1;
+            };
         } else {
             // A delete of an absent key is a documented no-op (success), so every
             // iteration must succeed regardless of what the setter is doing.
-            data.delete(&ctx, race_name) catch return 1;
+            data.delete(&ctx, race_name) catch |e| {
+                childFail(&child_stderr.interface, role, i, e);
+                return 1;
+            };
         }
     }
     return 0;
+}
+
+/// Print *why* a racing child is about to exit nonzero to its real stderr (which
+/// the parent captures and echoes), then let the caller return the exit code. The
+/// parent otherwise sees only a bare ".{ .exited = 1 }" — the whole reason CI was
+/// unexplained before. Any backend diagnostic (`context.stderr()`) already landed
+/// on the same stream above this line.
+fn childFail(w: *std.Io.Writer, role: []const u8, iteration: usize, e: anyerror) void {
+    w.print(
+        "race child [{s}] iteration {d} failed: {s}\n",
+        .{ role, iteration, @errorName(e) },
+    ) catch {};
+    w.flush() catch {};
+}
+
+/// Read a spawned child's stderr pipe to EOF. Returns the captured bytes (caller
+/// frees) or `null` if the child had no stderr pipe / the read failed — a
+/// best-effort diagnostic aid, never fatal to the test. Must be called before
+/// `child.wait` so the pipe is drained while the child can still be writing.
+fn drainChildStderr(a: std.mem.Allocator, io: std.Io, child: *std.process.Child) ?[]u8 {
+    const file = child.stderr orelse return null;
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    return reader.interface.allocRemaining(a, .limited(64 * 1024)) catch null;
 }
 
 test "concurrent set / delete race is benign and leaves the store usable" {
@@ -348,13 +382,17 @@ test "concurrent set / delete race is benign and leaves the store usable" {
     // Spawn all children first (so the single setter and the deleters actually
     // overlap on the shared store), then reap them all. The setter occupies slot 0,
     // the deleters the rest.
+    // Capture each child's stderr (`.pipe`, not `.ignore`) so a failing child's
+    // diagnostic — the op, iteration, and error name it printed via `childFail`,
+    // plus any backend diagnostic — is echoed here. Without this the parent sees
+    // only ".{ .exited = 1 }", which is what made the original CI failure opaque.
     var children: [1 + race_deleters]std.process.Child = undefined;
     children[0] = try std.process.spawn(io, .{
         .argv = &.{exe},
         .environ_map = &setter_env,
         .stdin = .ignore,
         .stdout = .ignore,
-        .stderr = .ignore,
+        .stderr = .pipe,
     });
     for (1..children.len) |k| {
         children[k] = try std.process.spawn(io, .{
@@ -362,7 +400,7 @@ test "concurrent set / delete race is benign and leaves the store usable" {
             .environ_map = &deleter_env,
             .stdin = .ignore,
             .stdout = .ignore,
-            .stderr = .ignore,
+            .stderr = .pipe,
         });
     }
 
@@ -370,16 +408,27 @@ test "concurrent set / delete race is benign and leaves the store usable" {
     // key-not-found). A nonzero exit is the pre-#234 opaque `BackendFailure`
     // surfacing under the race — the exact regression this test guards. Reap all
     // children before asserting so none is left as a zombie on an early failure.
+    // A racing child prints at most a few short lines to stderr and only on the
+    // failure path, so draining each pipe just before that child's `wait` (rather
+    // than concurrently) stays well under the OS pipe buffer and cannot deadlock.
     var all_ok = true;
-    for (&children) |*child| {
+    for (&children, 0..) |*child, idx| {
+        const child_err = drainChildStderr(a, io, child);
+        defer if (child_err) |bytes| a.free(bytes);
+
         const term = child.wait(io) catch |e| {
             all_ok = false;
-            std.debug.print("child wait failed: {s}\n", .{@errorName(e)});
+            std.debug.print("child {d} wait failed: {s}\n", .{ idx, @errorName(e) });
             continue;
         };
         if (!(term == .exited and term.exited == 0)) {
             all_ok = false;
-            std.debug.print("a racing child exited abnormally: {any}\n", .{term});
+            std.debug.print(
+                "a racing child (slot {d}) exited abnormally: {any}\n",
+                .{ idx, term },
+            );
+            if (child_err) |bytes| if (bytes.len > 0)
+                std.debug.print("  child stderr:\n{s}", .{bytes});
         }
     }
     try std.testing.expect(all_ok);
