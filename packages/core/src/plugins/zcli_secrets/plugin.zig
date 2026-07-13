@@ -154,6 +154,23 @@ fn validateName(name: []const u8) Error!void {
     if (!std.unicode.utf8ValidateSlice(name)) return Error.InvalidSecretName;
 }
 
+/// Surface a native backend's raised error to the user, then collapse it into
+/// the shared `Error` set.
+///
+/// A backend owns the human-readable explanation of its own resolve failures
+/// (e.g. Linux: which secret store to install, how to force one). Rather than
+/// emit that from a side-channel `std.log` — which both breaks the stream
+/// contract (output must flow through context streams) and fails Zig's test
+/// runner on error-path unit tests — the backend renders the line here and it is
+/// written to `context.stderr()`. A backend that exposes no `diagnostic` (macOS,
+/// Windows) simply skips this and maps as before.
+fn reportAndMap(context: anytype, e: anyerror) Error {
+    if (@hasDecl(native, "diagnostic")) {
+        _ = native.diagnostic(context.stderr(), e, context.environ) catch {};
+    }
+    return mapBackendError(e);
+}
+
 /// Collapse whatever a native backend raised into the shared `Error` set. Each
 /// backend's own error names map to a uniform meaning; `OutOfMemory` is never
 /// masked. Callers own any returned value; this only touches the error channel.
@@ -189,7 +206,7 @@ pub const ContextData = struct {
     pub fn get(_: *ContextData, context: anytype, name: []const u8) Error!?[]const u8 {
         try validateName(name);
         return native.get(context.allocator, context.io, context.environ, context.app_name, name) catch |e|
-            return mapBackendError(e);
+            return reportAndMap(context, e);
     }
 
     /// Store (or overwrite) a secret. The value is copied; the caller retains
@@ -197,14 +214,14 @@ pub const ContextData = struct {
     pub fn set(_: *ContextData, context: anytype, name: []const u8, value: []const u8) Error!void {
         try validateName(name);
         return native.set(context.allocator, context.io, context.environ, context.app_name, name, value) catch |e|
-            return mapBackendError(e);
+            return reportAndMap(context, e);
     }
 
     /// Remove a secret. A no-op (success) if it does not exist.
     pub fn delete(_: *ContextData, context: anytype, name: []const u8) Error!void {
         try validateName(name);
         return native.delete(context.allocator, context.io, context.environ, context.app_name, name) catch |e|
-            return mapBackendError(e);
+            return reportAndMap(context, e);
     }
 };
 

@@ -149,24 +149,47 @@ fn resolve(
         // An explicit override is honored as-is (even if the store turns out to
         // be unusable — the operation then fails with the store's own error,
         // which is clearer than silently picking a different one).
-        const backend = parseOverride(choice) orelse {
-            log.err("ZCLI_SECRETS_BACKEND='{s}' is not recognized; use 'secret-service' or 'pass'.", .{choice});
-            return Error.InvalidBackendOverride;
-        };
+        const backend = parseOverride(choice) orelse return Error.InvalidBackendOverride;
         return .{ .backend = backend, .from_override = true };
     }
     if (probes.secretServiceAvailable(allocator, io, environ))
         return .{ .backend = .secret_service, .from_override = false };
     if (probes.passAvailable(allocator, io, environ))
         return .{ .backend = .pass, .from_override = false };
-    log.err(
-        "no secret backend available. zcli_secrets needs either a running freedesktop " ++
-            "Secret Service (a desktop keyring such as gnome-keyring or KWallet on the " ++
-            "session D-Bus, with `secret-tool` installed) or `pass` with an initialized " ++
-            "store (`pass init <gpg-id>`). Force one with ZCLI_SECRETS_BACKEND=secret-service|pass.",
-        .{},
-    );
     return Error.SecretBackendUnavailable;
+}
+
+/// Render this backend's resolve failures as an actionable, user-facing line.
+///
+/// The diagnostic is produced here (not emitted here) so it flows through the
+/// caller's context stream rather than `std.log` — output belongs on
+/// `context.stderr()`, and a side-channel `log.err` both violates that contract
+/// and fails Zig's test runner on the error-path unit tests. `environ` recovers
+/// the offending override value for the `InvalidBackendOverride` message.
+///
+/// Returns `false` for any error this backend does not own a message for (and
+/// writes nothing), so the caller can fall back to its generic handling.
+pub fn diagnostic(w: *std.Io.Writer, e: anyerror, environ: *const std.process.Environ.Map) std.Io.Writer.Error!bool {
+    switch (e) {
+        Error.InvalidBackendOverride => {
+            const choice = environ.get("ZCLI_SECRETS_BACKEND") orelse "";
+            try w.print(
+                "ZCLI_SECRETS_BACKEND='{s}' is not recognized; use 'secret-service' or 'pass'.\n",
+                .{choice},
+            );
+            return true;
+        },
+        Error.SecretBackendUnavailable => {
+            try w.writeAll(
+                "no secret backend available. zcli_secrets needs either a running freedesktop " ++
+                    "Secret Service (a desktop keyring such as gnome-keyring or KWallet on the " ++
+                    "session D-Bus, with `secret-tool` installed) or `pass` with an initialized " ++
+                    "store (`pass init <gpg-id>`). Force one with ZCLI_SECRETS_BACKEND=secret-service|pass.\n",
+            );
+            return true;
+        },
+        else => return false,
+    }
 }
 
 fn secretServiceAvailable(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) bool {
@@ -277,6 +300,39 @@ test "resolve: an unrecognized override is a hard error" {
         Error.InvalidBackendOverride,
         resolve(a, std.testing.io, &env, real_probes),
     );
+}
+
+test "diagnostic renders the actionable line for this backend's resolve errors" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("ZCLI_SECRETS_BACKEND", "vault");
+
+    // Unrecognized override — names the offending value recovered from environ.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(try diagnostic(&aw.writer, Error.InvalidBackendOverride, &env));
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "'vault'") != null);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "not recognized") != null);
+    }
+
+    // No backend available — names both stores and the override escape hatch.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(try diagnostic(&aw.writer, Error.SecretBackendUnavailable, &env));
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "no secret backend available") != null);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "ZCLI_SECRETS_BACKEND=secret-service|pass") != null);
+    }
+
+    // An error this backend does not own: no message, returns false.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(!try diagnostic(&aw.writer, error.SomethingElse, &env));
+        try std.testing.expectEqualStrings("", aw.written());
+    }
 }
 
 test "resolve: autodetect prefers Secret Service when available" {
