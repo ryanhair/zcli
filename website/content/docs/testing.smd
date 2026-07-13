@@ -303,7 +303,7 @@ Masking prevents snapshots from breaking due to dynamic content like timestamps 
 
 - Testing argument parsing and validation
 - Testing command routing (correct command is dispatched)
-- Testing global options (--help, --version, --output)
+- Testing global options (--help, --version)
 - Testing plugin behavior end-to-end
 - Testing exit codes
 - Verifying output stability with snapshots

@@ -1,0 +1,78 @@
+---
+.title = "zcli — The context",
+.description = "The Context every command receives: a per-command arena allocator, buffered I/O, the environment, typed plugin data, and pre-wired builders for prompts, progress, markdown, and the UI engine.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# The context
+
+Every command's `execute` takes a concrete `context: *Context`, imported from the generated registry. It's your handle to I/O, memory, the environment, the active theme, and plugin data — a real type, not `anytype`, so the compiler checks your usage and your editor autocompletes it.
+
+```zig
+const Context = @import("command_registry").Context;
+
+pub fn execute(args: Args, options: Options, context: *Context) !void {
+    const allocator = context.allocator;     // arena, freed after this command
+    const out = context.stdout();
+    if (args.name.len == 0) return context.fail("name is required", .{});
+    try out.print("{s}\n", .{args.name});
+}
+```
+
+## Memory: the arena
+
+`context.allocator` is an **arena scoped to the command**: everything allocated from it is reclaimed wholesale when `execute` returns. The idiom is *never call free* — no ownership tracking, no leaks, no double-frees in command code. (Non-memory resources — files, processes — still want their `defer close`.)
+
+This is a deliberate design choice (ADR-0001), and it's a large part of why [AI-written commands]($link.page('ai')) are safe by construction: an agent can't leak what the arena reclaims.
+
+## I/O
+
+- `context.io` — the `std.Io` for anything that needs it (spawning processes, timers, the HTTP client)
+- `context.stdout()` / `context.stderr()` — buffered writers; the framework flushes them on normal exit
+- `context.stdin()` — buffered reader
+
+## Failing well
+
+`return context.fail("no note: {s}", .{name})` prints your formatted message to stderr and zcli reports a clean non-zero exit — just the message, no `error:` line, no stack trace, in every build mode. Use it for expected failures a user should read. A plain `return error.X` is for unexpected bugs and gets the error name plus a Debug-only trace. `context.exit(code)` is the low-level escape hatch; it flushes buffered output first (a bare `std.process.exit` would silently drop it).
+
+## The environment
+
+`context.environ` is the process environment as a map — no ambient `getenv` reaching around your back. Option fields can bind env vars declaratively with [`meta.options.<field>.env`]($link.page('docs/args-options')); `environ` is for everything else:
+
+```zig
+const home = context.environ.get("HOME") orelse ".";
+```
+
+## App and command metadata
+
+- `context.app_name`, `context.app_version` — version read from `build.zig.zon` at build time
+- `context.command_path` — the resolved path of the running command (e.g. `{"users", "create"}`)
+- `context.getAvailableCommandInfo()`, `context.getGlobalOptions()` — the registry's command and global-option metadata, useful for meta-commands and error hooks
+
+## Pre-wired builders
+
+The context hands you each terminal package already wired to the command's streams, allocator, theme, and detected capabilities:
+
+| Builder | Returns | Guide |
+|---|---|---|
+| `context.prompts()` | all 8 interactive prompt types | [Prompts]($link.page('docs/prompts')) |
+| `context.progress()` | spinners, progress bars, multi-bars | [Progress]($link.page('docs/progress')) |
+| `context.ui(.{})` | a hybrid CLI/TUI `App` (static + live region) | [The CLI/TUI hybrid]($link.page('docs/ui')) |
+| `context.uiFullScreen(.{})` | a full-screen `App` (alt-screen, event loop) | [Full-screen mode]($link.page('docs/ui')) |
+| `context.markdown()` | a markdown-to-ANSI formatter on your palette | — |
+
+`context.theme` carries the app's [theme]($link.page('docs/theming')) plus the terminal capabilities detected once per run — every builder above consumes it, so `NO_COLOR`, piped output, and 16-color terminals are handled uniformly.
+
+## Plugin data
+
+Anything a plugin stores in its `ContextData` is namespaced under `context.plugins.<plugin_id>` and fully typed:
+
+```zig
+if (context.plugins.timing.started_ns != 0) {
+    // the --time flag was set; the timing plugin is tracking this run
+}
+```
+
+The [secrets plugin]($link.page('docs/secrets')) is the same shape: `context.plugins.zcli_secrets.get(context, "token")`. See [Plugins]($link.page('docs/plugins')) for the full model.

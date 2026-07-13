@@ -1,0 +1,57 @@
+---
+.title = "zcli — Config files",
+.description = "Transparent config-file support with the zcli_config plugin: JSON, TOML, or YAML, discovered from --config, the working directory, or XDG config, with per-command scoping and a clear precedence cascade.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Config files
+
+The `zcli_config` plugin loads option defaults from a config file — JSON, TOML, or YAML — with **no changes to command code**. Your `Options` structs stay exactly as they are; the plugin fills in unset fields before `execute` runs.
+
+Enable it in `build.zig`:
+
+```zig
+.plugins = &.{
+    zcli.builtin(.help, .{}),
+    zcli.builtin(.config, .{}),
+},
+```
+
+## Discovery
+
+The first match wins:
+
+1. `--config <path>` — an explicit file passed on the command line (a global option the plugin contributes)
+2. `./{app}.config.json|toml|yaml` — a project-local file in the working directory
+3. `$XDG_CONFIG_HOME/{app}/config.json|toml|yaml` — the user-level config
+
+## Global and per-command values
+
+Top-level keys apply to every command; a table named after a command scopes values to just that command:
+
+```toml
+# .myapp.config.toml
+output = "json"     # global — applies to all commands
+
+[list]              # scoped — applies only to `myapp list`
+all = true
+```
+
+Keys match option field names. A scoped value beats a global one for its command.
+
+## Precedence
+
+Config sits between explicit user input and your struct defaults:
+
+```
+CLI flag  >  env var  >  command-scoped config  >  global config  >  struct default
+```
+
+Config can satisfy a [required option]($link.page('docs/args-options')) and participates in [validation and constraints]($link.page('docs/validation')) like any other source — a `validate` hook runs on the final value wherever it came from, and a config value counts as "supplied" for `exclusive`/`requires` checks. An unparseable config value for a [custom type]($link.page('docs/validation')) is ignored rather than trusted — the default stays.
+
+## Next
+
+- [Args & options]($link.page('docs/args-options')) — the full value cascade
+- [Plugins]($link.page('docs/plugins')) — how plugins like this one work

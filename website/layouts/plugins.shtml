@@ -80,7 +80,7 @@
 
         <section id="builtin">
           <h2>Built-in defaults</h2>
-          <p>zcli ships eight plugins. A project scaffolded with <code>zcli init</code> turns on the first three (and completions); the rest you opt into when you need them.</p>
+          <p>zcli ships seven plugins. A project scaffolded with <code>zcli init</code> turns on the first three (and completions); the rest you opt into when you need them.</p>
           <div class="table-scroll">
           <table class="ptable">
             <thead><tr><th>Plugin</th><th>Provides</th><th>Default</th></tr></thead>
@@ -139,7 +139,7 @@
     .app_description = <span class="str">"My CLI application"</span>,
 });</pre>
           </div>
-          <div class="callout"><b>Note</b> <code>.plugins</code> is optional — omit it entirely and rely on <code>.plugins_dir</code>, or use only the list. Auto-discovered and listed plugins merge into one registry. The eight shipped plugins map to tags <code>.help · .version · .not_found · .completions · .config · .output · .secrets · .github_upgrade</code>.</div>
+          <div class="callout"><b>Note</b> <code>.plugins</code> is optional — omit it entirely and rely on <code>.plugins_dir</code>, or use only the list. Auto-discovered and listed plugins merge into one registry. The seven shipped plugins map to tags <code>.help · .version · .not_found · .completions · .config · .secrets · .github_upgrade</code>.</div>
         </section>
 
         <section id="discover">
@@ -274,7 +274,7 @@
 };</pre>
           </div>
           <div class="nextlinks">
-            <a href="$site.page('docs').link().suffix('#commands')"><span class="k">→ commands</span><span class="t">File-based command discovery</span></a>
+            <a href="$site.page('docs/commands').link()"><span class="k">→ commands</span><span class="t">File-based command discovery</span></a>
             <a href="https://github.com/ryanhair/zcli/tree/main/packages/core/src/plugins" target="_blank" rel="noopener"><span class="k">→ source</span><span class="t">Read the built-in plugins</span></a>
           </div>
         </section>

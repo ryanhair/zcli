@@ -1,0 +1,100 @@
+---
+.title = "zcli — Commands & structure",
+.description = "How zcli turns files into commands: file-based discovery, nested groups, index.zig landing pages, aliases, hidden commands, and the scaffolder that keeps structure changes mechanical.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Commands & structure
+
+Commands are `.zig` files in your commands directory; **the file path becomes the command path**. There is no routing table and no registration call — the build scans the directory, validates every command at compile time, and generates direct dispatch code. Zero runtime reflection.
+
+- `init.zig` → `myapp init`
+- `users/create.zig` → `myapp users create`
+- `users/index.zig` → describes the `users` group (no `execute` = shows subcommands)
+
+Groups nest as deep as you need (`gh/add/workflow/release.zig` → `myapp gh add workflow release`). Files starting with `_` are skipped — use them for helpers shared by sibling commands.
+
+## Anatomy of a command
+
+Every command has up to four exports. `Args` and `Options` are required whenever `execute` is present (empty is spelled `struct {}`); `meta` carries descriptions and per-field metadata.
+
+```zig
+const Context = @import("command_registry").Context;
+
+pub const meta = .{
+    .description = "Deploy your application",
+    .examples = &.{ "deploy api --env staging" },
+};
+
+pub const Args = struct {
+    service: []const u8,
+};
+
+pub const Options = struct {
+    env: []const u8 = "dev",
+};
+
+pub fn execute(args: Args, options: Options, context: *Context) !void {
+    try context.stdout().print("Deploying {s} to {s}\n", .{ args.service, options.env });
+}
+```
+
+The contract is checked at compile time: a command with `execute` but no `Args`, an `Options` that isn't a struct, or a `meta` entry naming a field that doesn't exist all fail the build with an error that names the file and the fix.
+
+## Group landing pages
+
+A directory is a group. Add an `index.zig` to give it a description — and optionally a landing command:
+
+```zig
+// src/commands/users/index.zig — pure group: describes it, lists subcommands
+pub const meta = .{
+    .description = "Manage users",
+};
+```
+
+Without an `execute`, running `myapp users` shows the group's help and subcommands. Give `index.zig` an `execute` (plus empty `Args`/`Options`) and the group itself becomes runnable. Landing commands take no positional arguments — a positional would be ambiguous with a subcommand name.
+
+## Aliases and hidden commands
+
+Two more `meta` fields shape how a command is reached:
+
+```zig
+pub const meta = .{
+    .description = "Remove a resource",
+    .aliases = &.{ "delete", "del" },  // alternate names for the same command
+    .hidden = true,                    // runs normally, but not listed in help
+};
+```
+
+Aliases route like the real name; hidden commands are for internal or deprecated entry points you don't want advertised.
+
+## Typos get suggestions
+
+A mistyped command gets a "did you mean?" computed by edit distance, followed by the available commands — wired up by the `zcli_not_found` plugin, on by default in scaffolded projects:
+
+```sh
+$ myapp usrs list
+Unknown command 'usrs'
+Did you mean 'users'?
+```
+
+## Change structure with the scaffolder
+
+The file layout *is* your CLI's structure, so structure changes are file operations — and the meta-CLI does them mechanically, keeping the struct fields, `meta` entries, and argument order in sync:
+
+```sh
+zcli add command users/create   # new command file (wizard or flags)
+zcli add arg users/create name  # splice a positional into Args
+zcli mv users/create people/new # move/rename, tidying empty groups
+zcli rm command people/new      # remove the file
+zcli tree --show-options        # read the current shape, no build needed
+```
+
+`zcli add`/`rm`/`mv` edit command files via an AST splice engine that preserves your hand-written `execute` body. Full reference: [the zcli CLI]($link.page('docs/cli')).
+
+## Next
+
+- [Args & options]($link.page('docs/args-options')) — typed parsing, required options, arrays, env vars
+- [The context]($link.page('docs/context')) — what your `execute` gets to work with

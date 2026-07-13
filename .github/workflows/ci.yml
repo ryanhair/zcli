@@ -57,30 +57,28 @@ jobs:
           fi
 
       # The website's getting-started page shows a demo `install` transcript with
-      # a hardcoded release version ("Fetching latest release… zcli vX.Y.Z" and a
-      # `zcli --version` line). The site builds from a prebuilt Zine binary — not
-      # zig build — so nothing recompiles these strings against the zon; they drift
-      # silently. Pin them to the released version (root build.zig.zon) here.
-      - name: Website transcript version matches the release
+      # release-version lines ("Fetching latest release… zcli vX.Y.Z" and a
+      # `zcli --version` line). Those versions are injected at build time from
+      # assets/site-data.json, which sync-site-data.sh regenerates from the root
+      # build.zig.zon before every zine build (locally via build.zig, in deploy
+      # via deploy-docs.yml) — so they can't drift. What CAN regress is someone
+      # hardcoding a version back into the transcript, so forbid that form and
+      # require the injection to still be present.
+      - name: Website transcript injects the release version (no hardcoded zcli versions)
         shell: bash
         run: |
-          root=$(grep -m1 -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' build.zig.zon | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           gs=website/layouts/getting-started.shtml
-          # Every version string in the demo transcript's two release lines.
-          strings=$(grep -oE 'zcli v?[0-9]+\.[0-9]+\.[0-9]+' "$gs" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -u)
-          if [ -z "$strings" ]; then
-            echo "::error::could not find any 'zcli <version>' string in $gs — did the transcript change shape?"
+          hardcoded=$(grep -nE 'zcli v?[0-9]+\.[0-9]+\.[0-9]+' "$gs" || true)
+          if [ -n "$hardcoded" ]; then
+            echo "::error::hardcoded zcli version in $gs — inject it from site-data.json instead ($site.asset('site-data.json').ziggy().get('version')):"
+            echo "$hardcoded"
             exit 1
           fi
-          echo "root build.zig.zon:              $root"
-          echo "$gs transcript versions:"
-          echo "$strings" | sed 's/^/  /'
-          for v in $strings; do
-            if [ "$v" != "$root" ]; then
-              echo "::error::version drift: $gs shows zcli $v but the release is $root — update the demo transcript"
-              exit 1
-            fi
-          done
+          if ! grep -q "site-data.json" "$gs"; then
+            echo "::error::$gs no longer reads site-data.json — did the transcript lose its version injection?"
+            exit 1
+          fi
+          echo "$gs: no hardcoded versions; site-data.json injection present"
 
       # The one-line curl installer standardises on the branded zcli.sh host
       # (https://zcli.sh/install.sh) across README + every website layout. The

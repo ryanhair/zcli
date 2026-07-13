@@ -1,0 +1,70 @@
+---
+.title = "zcli — Interactive prompts",
+.description = "Eight prompt types — text, confirm, select, multiSelect, password, search, number, editor — themed, resize-aware, interrupt-friendly, and automatically degrading to line input when stdin isn't a TTY.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Interactive prompts
+
+The `prompts` package is a complete question toolkit: eight prompt types that render as live, repainting lines at a terminal — and **fall back to plain line input automatically** when stdin isn't a TTY, so the same command works in a pipe, a script, or CI without a non-interactive flag.
+
+In a command, `context.prompts()` returns an instance pre-wired to the command's streams, arena allocator, and [theme]($link.page('docs/theming')):
+
+```zig
+// Pre-wired to the command's streams, allocator, and theme.
+const p = context.prompts();
+
+const name = try p.text(.{
+    .message = "Project name:", .default = "my-project",
+});
+const features = try p.multiSelect(.{
+    .message = "Features:",
+    .choices = &.{ "typescript", "eslint", "prettier" },
+    .defaults = &.{ true, true, false },
+});
+const pw = try p.password(.{
+    .message = "Token:",
+});
+```
+
+## The eight types
+
+| Prompt | Asks | Returns |
+|---|---|---|
+| `text` | free-form input, optional default and live preview hint | the entered string |
+| `confirm` | yes/no with a default (`Y/n` hint, single keypress) | `bool` |
+| `select` | one choice from a list — ↑/↓ to move, Enter to pick | the chosen index |
+| `multiSelect` | several choices — Space toggles, per-item defaults | the chosen indices |
+| `password` | masked input, never echoed | the entered string |
+| `search` | type-to-filter over a long list, then pick | the chosen index |
+| `number` | numeric input with optional `min`/`max`, validation inline | the parsed number |
+| `editor` | opens `$EDITOR` on a seeded temp file | the edited text |
+
+## Terminal behavior, handled
+
+- **Wrapping & resize** — long messages word-wrap at the terminal width (grapheme- and ANSI-aware), and every prompt re-lays-out live on window resize.
+- **Unicode-correct editing** — backspace deletes one *visual* character; wide characters and combining sequences count correctly.
+- **Answers persist** — a completed prompt emits its styled question-and-answer as a static line into scrollback, so the transcript reads cleanly afterward.
+- **Interrupts are yours** — pass `interrupt_keys` and the prompt returns `error.Interrupted` when one is pressed; the caller decides whether that means cancel, back, or help.
+
+## Off a TTY
+
+Every prompt degrades to a line-based equivalent with the **same return type and value** — there is no second code path to write:
+
+| | at a terminal | piped / CI |
+|---|---|---|
+| `text` / `password` | live editing, masked for password | reads a line |
+| `confirm` | single keypress | reads `y`/`n` from a line |
+| `select` / `search` | arrow-key highlighted list | numbered list, reads a number |
+| `multiSelect` | Space-toggle list | prints the list, reads selections |
+| `editor` | opens `$EDITOR` | reads remaining stdin |
+
+## Prompts or widgets?
+
+Prompts are one-shot questions: they block, return a value, and move on — right for a wizard, a scaffold, a few sequential questions. For a persistent, laid-out, keyboard-driven surface — a live form, a dashboard — build a full-screen App from the interactive widgets instead: see [prompts vs widgets]($link.page('docs/ui').unsafeRef('choose')).
+
+## Standalone use
+
+Like every zcli package, `prompts` works without the framework — construct a `Prompts` value with your own writer, reader, allocator, and theme context, and every prompt type behaves identically. The package's `examples/` directory has a runnable example per prompt type.
