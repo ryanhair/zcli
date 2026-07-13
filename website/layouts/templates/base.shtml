@@ -49,7 +49,7 @@
             <div class="col">
                 <h4>Docs</h4>
                 <a href="$site.page('docs').link().suffix('#quick-start')">Quick start</a>
-                <a href="$site.page('docs').link().suffix('#commands')">Commands</a>
+                <a href="$site.page('docs/commands').link()">Commands</a>
                 <a href="$site.page('ai').link()">AI agents</a>
                 <a href="$site.page('install').link()">Install</a>
             </div>
@@ -62,9 +62,9 @@
             </div>
             <div class="col">
                 <h4>Packages</h4>
-                <a href="$site.page('docs').link().suffix('#prompts')">prompts</a>
-                <a href="$site.page('docs').link().suffix('#progress')">progress</a>
-                <a href="$site.page('ui').link()">ui</a>
+                <a href="$site.page('docs/prompts').link()">prompts</a>
+                <a href="$site.page('docs/progress').link()">progress</a>
+                <a href="$site.page('docs/ui').link()">ui</a>
                 <a href="https://github.com/ryanhair/zcli/blob/main/LICENSE" target="_blank" rel="noopener">License (MIT)</a>
             </div>
         </div>

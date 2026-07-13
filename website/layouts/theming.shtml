@@ -138,7 +138,7 @@
 
         <section id="surface">
           <h2>Surface chrome</h2>
-          <p>Prompts and progress are line-oriented. A full-screen <a href="$site.page('ui').link()">UI</a> also draws <em>surfaces</em> — panels, modals, dropdowns, the border around a box. Those get their own token group, <code>surface</code>: the one place you set "the panel look" instead of repeating styles at every call site.</p>
+          <p>Prompts and progress are line-oriented. A full-screen <a href="$site.page('docs/ui').link()">UI</a> also draws <em>surfaces</em> — panels, modals, dropdowns, the border around a box. Those get their own token group, <code>surface</code>: the one place you set "the panel look" instead of repeating styles at every call site.</p>
           <div class="table-scroll">
           <table class="ptable">
             <thead><tr><th>Token</th><th>Styles</th><th>Default</th></tr></thead>
@@ -243,7 +243,7 @@ spinner.<span class="fn">succeed</span>(<span class="str">"Deployed"</span>);  <
 <span class="kw">try</span> theme.<span class="fn">styled</span>(<span class="str">"done"</span>).<span class="fn">success</span>().<span class="fn">render</span>(writer, &ctx);</pre>
           </div>
           <div class="nextlinks">
-            <a href="$site.page('docs').link().suffix('#progress')"><span class="k">→ docs</span><span class="t">Progress &amp; theming in the guide</span></a>
+            <a href="$site.page('docs/progress').link()"><span class="k">→ progress</span><span class="t">Progress indicators in the guide</span></a>
             <a href="https://github.com/ryanhair/zcli/tree/main/packages/theme" target="_blank" rel="noopener"><span class="k">→ source</span><span class="t">The theme package</span></a>
           </div>
         </section>

@@ -1,0 +1,75 @@
+---
+.title = "zcli — Ship & distribute",
+.description = "The release pipeline for a zcli app: zcli release for version-bump-tag-push, a scaffolded GitHub Actions workflow that builds signed multi-platform binaries, minisign release signing, self-upgrade, and shell completions.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Ship & distribute
+
+Building the CLI is half the job; getting binaries to users — versioned, verifiable, updatable — is the other half. zcli ships that half too: a release command, a CI workflow scaffold, a signing story with teeth, a self-upgrade plugin, and shell completions.
+
+## One-time setup: the CI workflow
+
+```sh
+zcli gh add workflow release
+```
+
+Scaffolds `.github/workflows/release.yml`: on any `*-v*` tag it builds your app for **x86_64-linux and aarch64-linux (static musl), x86_64-macos, and aarch64-macos** with `ReleaseFast`, names each artifact `{app}-{target}`, writes a `checksums.txt`, and publishes a GitHub release with everything attached. Commit it once and releases are tag-driven from then on.
+
+## Cutting a release
+
+```sh
+zcli release patch          # or minor, major, or an explicit 1.5.0
+```
+
+One command runs the whole checklist:
+
+1. verifies you're in a zcli project, on the release branch, with a clean tree
+2. runs `zig build test`
+3. opens your `$EDITOR` for release notes, pre-filled with the commits since the last tag (or takes `--message`)
+4. bumps `.version` in `build.zig.zon` and commits it
+5. creates the annotated tag `{app}-vX.Y.Z` and pushes — which triggers the workflow above
+
+`--dry-run` previews every step; `--skip-tests`, `--skip-checks`, `--no-push`, `--sign` (GPG-sign the tag), and `--branch` adjust the strictness. The version in `build.zig.zon` is the same one [`zcli.generate`]($link.page('docs/build')) bakes into `--version` — nothing to keep in sync.
+
+## Signing releases
+
+Checksums alone can't survive a compromised publisher — `checksums.txt` ships in the same release as the binaries, so whoever can swap a binary can rewrite its hash. zcli's trust model (ADR-0023) closes that hole with **minisign**: a signature under a key that never enters the release pipeline.
+
+- Generate the keypair **offline**, once: `minisign -G`. The secret key lives in a password manager — never a CI secret.
+- Pin the public key where verification happens: your install script and your `github_upgrade` plugin config.
+- Sign each release locally: the release is created as a draft, you sign its `checksums.txt`, upload `checksums.txt.minisig`, and publish.
+
+Verification is **fail-closed**: when a public key is pinned, a missing or invalid signature aborts the install or upgrade — it never falls back to "unsigned but probably fine". zcli's own releases work exactly this way, and `install.sh` verifies both the minisign signature and the SHA-256 checksum before moving a binary into place.
+
+## Self-upgrade for your users
+
+Enable the `github_upgrade` plugin and your app gains an `upgrade` command:
+
+```zig
+zcli.builtin(.github_upgrade, .{
+    .repo = "you/yourapp",
+    .command_name = "upgrade",
+    .inform_out_of_date = true,      // optional: startup notice, max once/day
+    .public_key = "RWT…",            // optional: pin your minisign key — fail-closed verify
+}),
+```
+
+`myapp upgrade` resolves the latest release (or an explicit version), downloads the right `{app}-{target}` artifact, verifies — minisign signature when a key is pinned, SHA-256 always — test-runs the new binary, then replaces itself atomically with a backup of the old one. `myapp upgrade --check` only reports. With `inform_out_of_date`, the app mentions new versions on startup: checked at most once per 24 hours, with a 3-second timeout so a dead network can never hang your users' commands.
+
+## Shell completions
+
+Enable the `completions` plugin and users install tab-completion themselves:
+
+```sh
+myapp completions install          # detects bash, zsh, or fish
+myapp completions generate zsh     # or print the script to stdout
+```
+
+Completion data — commands, subcommands, flags — is generated from the same registry as everything else, at build time.
+
+## Generated docs
+
+`zig build docs` renders markdown, man pages, and an HTML site from your command metadata — see [Build integration]($link.page('docs/build')). Man pages belong in release artifacts; the HTML output is deployable as-is.

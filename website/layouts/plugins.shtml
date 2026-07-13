@@ -275,7 +275,7 @@
 };</pre>
           </div>
           <div class="nextlinks">
-            <a href="$site.page('docs').link().suffix('#commands')"><span class="k">→ commands</span><span class="t">File-based command discovery</span></a>
+            <a href="$site.page('docs/commands').link()"><span class="k">→ commands</span><span class="t">File-based command discovery</span></a>
             <a href="https://github.com/ryanhair/zcli/tree/main/packages/core/src/plugins" target="_blank" rel="noopener"><span class="k">→ source</span><span class="t">Read the built-in plugins</span></a>
           </div>
         </section>

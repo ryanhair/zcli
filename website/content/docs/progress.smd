@@ -1,0 +1,66 @@
+---
+.title = "zcli — Progress indicators",
+.description = "Spinners in nine styles, progress bars with ETA, and multi-bars for parallel work — self-animating, themed through the app palette, and quietly degrading to plain lines when output is piped.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Progress indicators
+
+The `progress` package covers the three shapes of "still working": a **spinner** when you can't measure, a **progress bar** when you can, and a **multi-bar** when several things run at once. All three render on the [UI engine]($link.page('docs/ui'))'s live region — diffed repaints, resize-aware — and animations auto-disable when output isn't a TTY.
+
+In a command, `context.progress()` returns an instance pre-wired to the command's stdout, io, arena allocator, and [theme]($link.page('docs/theming')):
+
+```zig
+// Pre-wired to the command's stdout, io, allocator, and theme.
+const p = context.progress();
+
+var spinner = try p.spinner(.{ .style = .dots });
+spinner.start("Connecting to server...");
+spinner.succeed("Synced successfully");  // or .fail() / .warn() / .info()
+
+var bar = try p.progressBar(.{ .total = items.len, .show_eta = true });
+for (items, 0..) |item, i| { process(item); bar.update(i + 1, null); }
+```
+
+## Spinners
+
+A spinner animates on its own — no tick loop in your command — and finishes by replacing itself with a result line:
+
+- `start(msg)` begins the animation with a message
+- `succeed(msg)` / `fail(msg)` / `warn(msg)` / `info(msg)` stop it with the matching symbol (✔ ✖ ⚠ ℹ, ASCII fallbacks off-unicode), styled through the palette's `success`/`err`/`warning`/`info` roles
+
+Nine styles: `dots` (default), `dots2`, `dots3`, `line`, `arrow`, `bounce`, `clock`, `moon`, `simple`.
+
+## Progress bars
+
+For a known total: `update(current, message)` advances the bar (with an optional message swap), `finish()` emits the final state as a static line. `show_eta` adds an estimated-time-remaining readout.
+
+## Multi-bars
+
+For parallel work — downloads, builds, uploads — a multi-bar stacks one labeled bar per task:
+
+```zig
+var mb = try p.multiBar(.{});
+const a = try mb.add("api", 100);
+const b = try mb.add("web", 100);
+// from your work loop:
+mb.set(a, 42);
+mb.set(b, 87);
+mb.finish();
+```
+
+Labels align, each row shows its own percentage, and the whole block repaints as one frame.
+
+## Piped output
+
+Off a TTY there is nothing to animate, so the indicators print what a log wants instead: a spinner prints its status line once, a bar stays silent until a single completion line, and escape codes never reach the file. Same code, clean logs.
+
+## Theming
+
+Spinner glyphs and bar fill/track render through the theme's `progress` tokens (`spinner`, `bar_fill`, `bar_empty` — accent and muted by default), and result symbols use the palette roles — so a rebrand in [`zcli_theme`]($link.page('docs/theming')) restyles every indicator at once.
+
+## Standalone use
+
+Like every zcli package, `progress` works without the framework: construct a `Progress` with your own writer, io, allocator, and theme context. For progress rendered *inside* a larger live layout — a status frame with a spinner, task list, and gauges — use the [UI engine's progress widgets]($link.page('docs/ui')) directly.

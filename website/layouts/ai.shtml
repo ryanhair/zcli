@@ -51,6 +51,7 @@
         <a href="#arena">Leak-free by construction</a>
         <a href="#contract">Errors that name the fix</a>
         <a href="#scaffold">Mechanical edits</a>
+        <a href="#loop">The loop, live</a>
         <a href="#context">Drift-proof context</a>
         <a href="#testing">Headless verification</a>
         <p class="toc-label">Details</p>
@@ -62,7 +63,7 @@
           <h1>Built for coding agents</h1>
           <p class="sub">CLIs are increasingly written with — and increasingly by — coding agents. zcli is designed so that's safe and productive by construction, not by hoping the model gets Zig right.</p>
           <p>This isn't an AI feature bolted on. It's a set of decisions made early, each aimed at one question: when a coding agent writes a command, what goes wrong, and who catches it? Zig gives an agent no garbage collector and a manual-memory model it has little training data for. A runtime CLI framework gives it a builder API to misremember. zcli's answer is to remove those failure modes at the level where they occur — the allocator, the compiler, the scaffolder, and the reference the agent reads — so the loop of <em>write → verify → fix</em> closes without a human decoding a type error in the middle.</p>
-          <p>Every mechanism below is real and shipping. This page is for a human deciding on a framework; the <a href="$site.page('docs').link().suffix('#ai-agents')">AI agents section of the docs</a> shows the agent-facing loop in practice.</p>
+          <p>Every mechanism below is real and shipping. This page is for a human deciding on a framework; <a href="#loop">the transcript below</a> shows the agent-facing loop in practice.</p>
         </section>
 
         <section id="arena">
@@ -102,6 +103,24 @@
 <span class="c-prompt">$</span> <span class="c-cmd">zcli</span> rm command users/create</pre>
           </div>
           <p>The division of labor is the point: the agent uses <code>add</code>/<code>rm</code>/<code>mv</code> to change structure, and writes freeform code only inside <code>execute()</code> bodies — where the arena has already made it safe. Renaming a command becomes a well-defined operation instead of a multi-file refactor an agent might do halfway.</p>
+        </section>
+
+        <section id="loop">
+          <h2>An agent adding a command, first try</h2>
+          <p>The loop <code>zcli guide</code> teaches an agent: read what exists, change structure with the scaffolder, write logic freeform, verify with <code>zig build test</code>.</p>
+          <div class="transcript">
+<span class="t-you">you:</span> add a "users create" command that takes a name and an --admin flag
+<span class="t-agent">agent:</span> <span class="t-cmd">zcli tree --show-options</span>
+<span class="t-agent">agent:</span> <span class="t-cmd">zcli add command users/create --description "Create a user"</span>
+<span class="t-ok">  ✔</span> Created src/commands/users/create.zig
+<span class="t-agent">agent:</span> <span class="t-cmd">zcli add arg users/create name --type []const u8</span>
+<span class="t-ok">  ✔</span> Added argument 'name' to src/commands/users/create.zig
+<span class="t-agent">agent:</span> <span class="t-cmd">zcli add option users/create admin --type bool --default false --short a</span>
+<span class="t-ok">  ✔</span> Added option --admin to src/commands/users/create.zig
+<span class="t-agent">agent:</span> <span class="t-mut">writes execute() body freeform</span>
+<span class="t-agent">agent:</span> <span class="t-cmd">zig build test</span>
+<span class="t-ok">  ✓</span> All tests passed
+          </div>
         </section>
 
         <section id="context">
@@ -158,7 +177,7 @@ arena — the per-command allocator
           </div>
           <p>The full set of AI-authoring decisions is <a href="https://github.com/ryanhair/zcli/tree/main/docs/adr" target="_blank" rel="noopener">ADRs 0001–0008</a>.</p>
           <div class="nextlinks">
-            <a href="$site.page('docs').link().suffix('#ai-agents')"><span class="k">→ docs</span><span class="t">The agent loop, in practice</span></a>
+            <a href="$site.page('docs/cli').link()"><span class="k">→ the zcli cli</span><span class="t">The scaffolder the agent drives</span></a>
             <a href="https://github.com/ryanhair/zcli/tree/main/examples" target="_blank" rel="noopener"><span class="k">→ examples</span><span class="t">The CI-compiled canonical CLIs</span></a>
           </div>
         </section>

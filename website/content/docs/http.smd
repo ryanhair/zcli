@@ -1,0 +1,76 @@
+---
+.title = "zcli — HTTP client",
+.description = "zcli.http.Client — an HTTP client with safe defaults baked in: enforced TLS verification, request timeouts, bounded response bodies, redirect limits, and credential stripping on cross-origin redirects.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# HTTP client
+
+CLIs talk to APIs, and hand-rolled HTTP code tends to skip the unglamorous parts — timeouts, response limits, redirect hygiene. `zcli.http.Client` wraps `std.http` with **safe defaults you can't accidentally lose**:
+
+- **TLS verification is mandatory.** There is no knob to disable it.
+- **Requests time out** — 30 seconds by default, configurable per client or per request.
+- **Response bodies are bounded** — 10 MiB by default (`error.ResponseTooLarge` beyond it), so a misbehaving server can't balloon your process.
+- **Redirects are bounded** (3) and only followed for bodyless requests — and `Authorization`, `Cookie`, and `Proxy-Authorization` headers are **stripped on cross-origin redirects**, so a redirect can't exfiltrate a token.
+- Responses decompress (gzip/deflate) within the same bounds.
+
+## Using it
+
+Construct a client from the command's arena and io — no plugin needed, it's part of the core:
+
+```zig
+var client = zcli.http.Client.init(context.allocator, context.io, .{});
+defer client.deinit();
+
+var response = try client.request(.GET, url, .{
+    .headers = &.{
+        .{ .name = "User-Agent", .value = "myapp" },
+        .{ .name = "Accept", .value = "application/vnd.github+json" },
+    },
+});
+defer response.deinit();
+
+if (response.status != .ok) return context.fail("request failed: {d}", .{@intFromEnum(response.status)});
+```
+
+Shorthands cover the common verbs:
+
+```zig
+var res = try client.get(url);                 // GET
+var res2 = try client.post(url, .{ .body = payload, .content_type = "text/plain" });
+var res3 = try client.postJson(url, .{ .name = "box", .count = 3 });  // serializes for you
+```
+
+## Typed JSON responses
+
+`Response.json` parses the body straight into your struct, ignoring unknown fields — declare only what you use:
+
+```zig
+const Repo = struct {
+    full_name: []const u8,
+    stargazers_count: u64 = 0,
+};
+
+const parsed = try response.json(Repo, context.allocator);
+try context.stdout().print("{s}: {d} stars\n", .{ parsed.value.full_name, parsed.value.stargazers_count });
+```
+
+The `examples/repostat` example is this exact shape end to end — a GitHub stats command in one file.
+
+## Tuning the bounds
+
+Both knobs widen (or tighten) per client, and the timeout also per request:
+
+```zig
+var client = zcli.http.Client.init(context.allocator, context.io, .{
+    .max_response_bytes = 64 * 1024 * 1024,
+    .timeout = .fromSeconds(120),
+});
+
+// or for one slow call only:
+var res = try client.request(.GET, url, .{ .timeout = .{ .after = .fromSeconds(300) } });
+```
+
+Failures surface as typed errors — `error.Timeout`, `error.ResponseTooLarge`, `error.TooManyRedirects` — so a command can turn each into a [clean user-facing message]($link.page('docs/context')).

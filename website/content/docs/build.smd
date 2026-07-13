@@ -1,0 +1,125 @@
+---
+.title = "zcli — Build integration",
+.description = "Wiring zcli in build.zig: zcli.generate and its config, shared modules across commands, per-command unit tests with addCommandTests, and docs generation to markdown, man, and HTML with generateDocs.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Build integration
+
+All of zcli's wiring happens in `build.zig`, at build time: command discovery, plugin registration, registry generation, contract validation. `zcli init` writes this file for you — this page is the reference for when you customize it.
+
+## zcli.generate
+
+The one required call. It scans your commands directory, validates every command, folds in plugins, and returns the generated registry module:
+
+```zig
+const zcli = @import("zcli");
+
+const zcli_dep = b.dependency("zcli", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("zcli", zcli_dep.module("zcli"));
+
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .plugins = &.{
+        zcli.builtin(.help, .{}),
+        zcli.builtin(.version, .{}),
+        zcli.builtin(.not_found, .{}),
+    },
+    .app_name = "myapp",
+    .app_description = "My CLI application",
+});
+exe.root_module.addImport("command_registry", cmd_registry);
+```
+
+The config:
+
+| Field | Type | Notes |
+|---|---|---|
+| `commands_dir` | required | directory scanned for command files |
+| `app_name` | required | your binary's name, used in help and errors |
+| `app_description` | required | one-liner shown at the top of `--help` |
+| `plugins` | `&.{}` | explicit plugin list — `zcli.builtin(...)` tags and `.{ .name, .path }` entries |
+| `plugins_dir` | `null` | a folder of your own plugins, auto-discovered |
+| `shared_modules` | `null` | modules importable from every command |
+
+**There is no version field.** The app version is read from `build.zig.zon`'s `.version` at build time — one source of truth, surfaced as `context.app_version` and `--version`.
+
+Commands import the result as `command_registry` — that's where the concrete [`Context`]($link.page('docs/context')) type lives:
+
+```zig
+const Context = @import("command_registry").Context;
+```
+
+### What the build checks
+
+Discovery and validation run at build time, so a malformed command is a compile error that names the file and the fix — `execute` without `Args`/`Options`, a `meta.options` entry naming a field that doesn't exist, a boolean named `no_x` (collides with the generated negation), an ill-formed [`exclusive` set]($link.page('docs/validation')). Helpers prefixed `_` are skipped; nesting is capped at 6 levels.
+
+## Shared modules
+
+Commands often share code — a storage layer, an API client. Declare it once and every command can import it by name:
+
+```zig
+const store_module = b.createModule(.{
+    .root_source_file = b.path("src/store.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .shared_modules = &[_]zcli.SharedModule{
+        .{ .name = "store", .module = store_module },
+    },
+    // ...
+});
+```
+
+```zig
+// in any command:
+const store = @import("store");
+```
+
+## Per-command unit tests
+
+`addCommandTests` discovers every command file and compiles each one's `test` blocks against the [testing harness]($link.page('docs/testing')) — with the `zcli-testing` module, your shared modules, and an in-memory secrets stub wired in:
+
+```zig
+_ = zcli.addCommandTests(b, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .target = target,
+    .optimize = optimize,
+    .shared_modules = &[_]zcli.SharedModule{
+        .{ .name = "store", .module = store_module },
+    },
+});
+```
+
+Then `zig build test` runs a test binary per command — a `test "creates a task"` block sitting right next to the `execute` it verifies.
+
+## Docs generation
+
+`generateDocs` adds a `docs` build step that renders your command metadata — descriptions, args, options, examples — as documentation:
+
+```zig
+zcli.generateDocs(b, cmd_registry, zcli_dep, .{
+    .formats = &.{ "markdown", "man", "html" },
+    .output_dir = "docs",
+});
+```
+
+Run it with `zig build docs` (it's off the default step, so ordinary builds stay fast). Each format gets a subdirectory: `docs/markdown/`, `docs/man/` (a section-1 page per command), and `docs/html/` — a styled static site with navigation. Because it reads the same registry your binary compiles from, generated docs can't drift from the commands they describe.
+
+## Built-in plugin tags
+
+`zcli.builtin(tag, config)` registers a shipped plugin. Eight tags: `.help`, `.version`, `.not_found`, `.completions`, `.config`, `.output`, `.secrets`, `.github_upgrade`. Most take no config (`.{}`); `github_upgrade` takes its repo and options:
+
+```zig
+zcli.builtin(.github_upgrade, .{
+    .repo = "you/yourapp",
+    .command_name = "upgrade",
+}),
+```
+
+See [Plugins]($link.page('docs/plugins')) for what each provides and [Ship & distribute]($link.page('docs/shipping')) for the upgrade/signing story.

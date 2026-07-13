@@ -1,0 +1,128 @@
+---
+.title = "zcli — Args & options",
+.description = "Type-driven argument and option parsing: struct fields become flags, defaults become optional, required options satisfied from CLI, env, or config, multi-value arrays with comma or repeat syntax, boolean negation, and enum suggestions.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Args & options
+
+Declare `Args` and `Options` as plain structs. The field **types drive the parser** — generated at compile time for exactly your command, type-checked end to end. Field defaults become option defaults; a field with no way to be absent becomes a required option.
+
+```zig
+pub const meta = .{
+    .description = "Add files to the index",
+    .examples = &.{ "add file.txt", "add --all" },
+    .options = .{
+        .all = .{ .short = 'a', .description = "Add all files" },
+    },
+};
+
+pub const Args = struct {
+    files: []const []const u8,    // variadic: captures remaining args
+};
+
+pub const Options = struct {
+    region: []const u8,           // --region <value>  (required — no default)
+    all: bool = false,            // --all / -a        (flag)
+    output: []const u8 = "text",  // --output <value>
+    count: u32 = 1,               // --count <number>
+    verbose: bool = false,        // --verbose         (flag)
+};
+```
+
+Parsing is GNU-style: options and positionals interleave freely, `--option value` and `--option=value` both work, and `--` ends option parsing so everything after it is positional.
+
+## Positional args
+
+`Args` fields bind positionals in declaration order:
+
+- **Required** — a bare field: `service: []const u8`
+- **Optional** — an optional with a default: `tag: ?[]const u8 = null` (must come after required args)
+- **Variadic** — a final `[]const []const u8` captures everything remaining
+
+Required args come first, optionals after, a variadic last — the scaffolder (`zcli add arg`) enforces the ordering for you.
+
+## Option shapes
+
+The field's type says how the flag behaves:
+
+| Field | CLI shape |
+|---|---|
+| `verbose: bool = false` | flag: `--verbose`, and auto-negation `--no-verbose` |
+| `port: u16 = 8080` | valued, parsed as integer: `--port 3000` |
+| `env: ?[]const u8 = null` | valued, absent = `null` |
+| `region: []const u8` | **required** — no default means a value must arrive from somewhere |
+| `format: enum { json, text }` | valued, only listed variants accepted |
+| `tag: []const []const u8` | **multi-value** — repeat or comma-separate |
+
+Per-field metadata lives in `meta.options`: `.short` for a one-letter flag, `.description` for help, `.name` to override the long flag spelling, `.env` to bind an environment variable, plus [`.validate` and `.requires`]($link.page('docs/validation')).
+
+### Boolean negation
+
+Every boolean flag gets a generated `--no-<flag>` twin, so users can override a config-file or env default back to false: `--verbose` / `--no-verbose`. (Naming a field `no_something` is a compile error — it would collide with the generated negation.)
+
+### Multi-value options
+
+An array field accepts multiple values, by repetition or comma-separated — and the two compose:
+
+```sh
+myapp deploy --tag a --tag b     # [a, b]
+myapp deploy --tag a,b           # [a, b]
+myapp deploy --tag a,b --tag c   # [a, b, c]
+```
+
+Element types beyond strings parse too: `[]u32`, `[]f64`, and friends. Greedy space-separated lists (`--tag a b c`) are deliberately not supported — they're ambiguous with interleaved positionals. Empty segments (`--tag a,,b`) are rejected. Help marks these options `(repeatable)`.
+
+### Enums: only valid values, helpful failures
+
+An enum option documents itself — help shows `(one of: dev, staging, prod)` — and a near-miss gets a suggestion:
+
+```sh
+$ myapp deploy --env stagin
+Invalid value 'stagin' for option '--env'. Expected one of: dev, staging, prod. Did you mean 'staging'?
+```
+
+## Environment variables
+
+Bind an option to an env var with `.env` — the name is used verbatim, no implicit prefixing:
+
+```zig
+pub const Options = struct {
+    api_key: []const u8,   // required — but satisfiable via the env var
+};
+
+pub const meta = .{
+    .options = .{
+        .api_key = .{ .env = "MYAPP_API_KEY" },
+    },
+};
+```
+
+For booleans, the env value accepts `1/true/yes` and `0/false/no` (case-insensitive). For arrays, a single env value is comma-split like a CLI value.
+
+## Where values come from
+
+Every option resolves through the same cascade, highest priority first:
+
+1. **CLI flag**
+2. **Environment variable** (if the field declares `.env`)
+3. **Config file** (with the [`zcli_config` plugin]($link.page('docs/config')) — command-scoped over global)
+4. **Struct default**
+
+## Required options
+
+A field that is not a `bool`, not optional, not an array, and has no default is **required**: the type says a value must exist, and any source in the cascade can supply it. If none does:
+
+```sh
+$ myapp deploy
+Missing required option '--region'. Expected text.
+```
+
+Help marks these `(required)`. This is the type system doing the work — there's no `.required = true` annotation to forget.
+
+## Next
+
+- [Validation & constraints]($link.page('docs/validation')) — value rules, custom parse types, mutually-exclusive sets
+- [Config files]($link.page('docs/config')) — the file half of the cascade

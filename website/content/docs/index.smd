@@ -1,7 +1,7 @@
 ---
 .title = "zcli — Documentation",
-.description = "zcli documentation: quick start, commands, prompts, progress & theming, config files, plugins, testing, error handling, docs generation, the meta-CLI, and building with AI agents.",
-.date = @date("2026-07-05"),
+.description = "zcli documentation: quick start plus guides for commands, args & options, validation, the context, errors, build integration, prompts, progress, the CLI/TUI hybrid, theming, config, secrets, HTTP, plugins, testing, the meta-CLI, and shipping.",
+.date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "docs.shtml",
 ---

@@ -74,7 +74,7 @@
             <li><b>A live region</b> repaints in place just above the scrollback — anything from a one-line spinner to a full-viewport layout. It's positioned above committed output, not a fixed strip, and shares the screen rather than taking it over, so your scrollback survives.</li>
             <li><b>Immediate mode</b> means a component is just a function returning a node. You rebuild the tree every frame from your own state; the engine diffs it and sends only the cells that changed.</li>
           </ul>
-          <div class="callout"><b>Built on it</b> The <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> and <a href="$site.page('docs').link().suffix('#progress')">progress</a> packages both render on this engine — so cursor hygiene, diffed repaints, and resize re-layout are solved once, in one place.</div>
+          <div class="callout"><b>Built on it</b> The <a href="$site.page('docs/prompts').link()">prompts</a> and <a href="$site.page('docs/progress').link()">progress</a> packages both render on this engine — so cursor hygiene, diffed repaints, and resize re-layout are solved once, in one place.</div>
         </section>
 
         <section id="model">
@@ -112,7 +112,7 @@
           </div>
           <p>Every dimension is one of three words. <code>fit</code> shrinks to content, <code>len(n)</code> pins an exact column count, and <code>fill(weight)</code> shares leftover space by weight — so percentages are fill weights and right-alignment is a spacer, not special-cased geometry.</p>
           <div class="callout"><b>Whitespace</b> The default <code>.wrap</code> mode word-wraps and drops break spaces. Labels with significant whitespace — padded numbers, aligned columns — want <code>.clip</code> or <code>.truncate</code> via <code>ui.textOpts</code>.</div>
-          <p>Everything else is composition. <code>center</code> and <code>positioned</code> place a child with spacer scaffolding; <code>panel</code> is a box whose border and fill come from the <a href="$site.page('theming').link()">theme</a>; <code>viewport</code> scrolls content taller than its window; <code>probe</code> and <code>anchored</code> float a popup at a widget's rendered position. None of them is a new node kind — they're helpers built from the four above, so the engine core stays four kinds and three words.</p>
+          <p>Everything else is composition. <code>center</code> and <code>positioned</code> place a child with spacer scaffolding; <code>panel</code> is a box whose border and fill come from the <a href="$site.page('docs/theming').link()">theme</a>; <code>viewport</code> scrolls content taller than its window; <code>probe</code> and <code>anchored</code> float a popup at a widget's rendered position. None of them is a new node kind — they're helpers built from the four above, so the engine core stays four kinds and three words.</p>
         </section>
 
         <section id="app">
@@ -253,12 +253,12 @@
 });</pre>
           </div>
           <p>Two more helpers build on the same idea. A <code>viewport</code> is a scrolling window onto content taller than the space it's granted — a log pane, a long list — with the scroll offset held in your own state, and an opt-in <code>scrollbar</code> that paints a proportional thumb in a reserved right column. And <code>probe</code> reports where a node actually rendered, which <code>anchored</code> then uses to pin a popup to it: a dropdown that opens under a button, <b>flips above</b> when it would run off the bottom, and <b>clamps left</b> when it would run off the right — smart placement as pure composition, no new primitive.</p>
-          <div class="callout"><b>Chrome comes from the theme</b> <code>ui.panel</code>'s border and fill, and any bordered box's border color, derive from your app's <code>zcli_theme</code> surface tokens — so a modal or dropdown needs no style mentions to look right, and one theme change reskins every overlay at once. See <a href="$site.page('theming').link().suffix('#surface')">theming → surface chrome</a>.</div>
+          <div class="callout"><b>Chrome comes from the theme</b> <code>ui.panel</code>'s border and fill, and any bordered box's border color, derive from your app's <code>zcli_theme</code> surface tokens — so a modal or dropdown needs no style mentions to look right, and one theme change reskins every overlay at once. See <a href="$site.page('docs/theming').link().suffix('#surface')">theming → surface chrome</a>.</div>
         </section>
 
         <section id="choose">
           <h2>Prompts vs widgets</h2>
-          <p>zcli has two ways to ask the user something, and they solve different problems. The <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> package asks a question; the full-screen widgets above build a screen. Reach for the right one:</p>
+          <p>zcli has two ways to ask the user something, and they solve different problems. The <a href="$site.page('docs/prompts').link()">prompts</a> package asks a question; the full-screen widgets above build a screen. Reach for the right one:</p>
           <div class="table-scroll">
           <table class="ptable">
             <thead><tr><th></th><th>prompts</th><th>ui widgets</th></tr></thead>
@@ -271,7 +271,7 @@
             </tbody>
           </table>
           </div>
-          <p>In one line: <b>prompts are a question; widgets are a screen.</b> If you want to ask a few things and print a result, use <a href="$site.page('docs').link().suffix('#prompts')">prompts</a> — they're shorter and degrade gracefully off a TTY. If you want a persistent, laid-out, keyboard-driven surface, build a <a href="#fullscreen">full-screen App</a> from the <a href="#forms">focusable widgets</a>.</p>
+          <p>In one line: <b>prompts are a question; widgets are a screen.</b> If you want to ask a few things and print a result, use <a href="$site.page('docs/prompts').link()">prompts</a> — they're shorter and degrade gracefully off a TTY. If you want a persistent, laid-out, keyboard-driven surface, build a <a href="#fullscreen">full-screen App</a> from the <a href="#forms">focusable widgets</a>.</p>
         </section>
 
         <section id="ci">

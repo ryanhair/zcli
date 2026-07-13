@@ -1,0 +1,102 @@
+---
+.title = "zcli — The zcli CLI",
+.description = "The meta-CLI reference: init, add, rm, mv, tree, dev, guide, release, gh, and upgrade — the scaffolding and workflow tool for zcli projects, itself built on zcli.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# The zcli CLI
+
+The meta-CLI you [install]($link.page('install')) with `curl | sh` scaffolds projects, restructures commands, watches builds, and cuts releases. It is itself a zcli app — every command below is a file in its own `commands/` directory, running on the framework's own help, completions, "did you mean?", and self-upgrade plugins. It's a build-time tool: your finished CLI never depends on it.
+
+```
+zcli
+├── init         scaffold a new project
+├── add          command · group · arg · option · plugin
+├── rm           command · arg · option
+├── mv           move/rename a command
+├── tree         show the command tree (no build needed)
+├── dev          watch, rebuild, optionally re-run
+├── guide        version-matched reference, by topic
+├── release      version-bump, tag, and push a release
+├── gh           add workflow release — GitHub Actions scaffold
+└── upgrade      self-update from GitHub releases
+```
+
+## zcli init
+
+```sh
+zcli init myapp --description "My awesome CLI"
+zcli init .    # initialize the current directory
+```
+
+Scaffolds a complete, buildable project — `build.zig.zon`, a `build.zig` wired with [`zcli.generate`]($link.page('docs/build')), `src/main.zig`, an example command — and fetches dependencies so `zig build` works immediately. Options: `-d/--description`, `--version` (initial version, default `0.1.0`).
+
+On a TTY it asks which built-in plugins to enable (help, version, not-found, and completions are the defaults). It also scaffolds an `AGENTS.md` with a marker-delimited zcli section pointing coding agents at `zcli guide` — re-running `init` refreshes just that section, never clobbering the rest of the file. See [AI agents]($link.page('ai')).
+
+## zcli add / rm / mv
+
+Structure changes are mechanical edits — these commands splice command files via an AST engine that keeps struct fields, `meta` entries, and argument ordering in sync, and **preserves your hand-written `execute` body**.
+
+```sh
+zcli add command users/create -d "Create a user"   # wizard when run bare on a TTY
+zcli add group users -d "Manage users"             # a directory + index.zig
+zcli add arg users/create name --type []const u8   # positional, spliced into Args
+zcli add option users/create admin --type bool --default false --short a
+zcli add plugin timing                             # skeleton in src/plugins/
+
+zcli rm option users/create admin                  # one or more names, atomic
+zcli rm arg users/create name
+zcli rm command users/create                       # removes file, tidies empty dirs
+
+zcli mv users/create people/new                    # move/rename, creates/tidies groups
+```
+
+Details worth knowing:
+
+- `add arg` — `--multiple` makes a variadic (last position only), `--nullable` an optional, `--before`/`--after` control placement; ordering rules (required → optional → variadic) are validated on every edit.
+- `add option` — omit `--default` on a non-nullable scalar to create a [required option]($link.page('docs/args-options')); `--multiple` builds an array option; `--short` claims a one-letter flag.
+- `rm arg`/`rm option` — take several names and apply all-or-nothing; a typo rejects the whole batch rather than half-editing a file.
+
+## zcli tree
+
+```sh
+zcli tree                  # the discovered hierarchy, with descriptions
+zcli tree --show-options   # plus each command's args & options signature
+```
+
+Reads command structure straight from source (`std.zig.Ast`) — no build required — using the same discovery rules as the framework itself. The output is ANSI-free on purpose: it's the read-back format agents and scripts consume.
+
+## zcli dev
+
+```sh
+zcli dev                          # watch src/, rebuild on change
+zcli dev -- ./zig-out/bin/myapp serve   # …and (re)run this after each build
+```
+
+Native file watching (FSEvents/kqueue/inotify) with an ~80 ms debounce to coalesce editor bursts. With `-- <cmd>`, the spawned process is killed and restarted after each successful rebuild; status lines go to stderr so redirecting stdout stays clean.
+
+## zcli guide
+
+```sh
+zcli guide            # list topics
+zcli guide structure  # a worked example for one topic
+```
+
+A version-matched reference: the content ships inside the binary and matches the zcli you're compiling against, so it can't drift the way training data or old blog posts do. Topics: `structure`, `sharing`, `storage`, `arena`, `output`, `prompts`, `ui`, `http`, `secrets`, `plugins`, `testing`.
+
+## zcli release & zcli gh
+
+The release workflow lives in the meta-CLI too — versioning, tagging, CI scaffolding:
+
+```sh
+zcli gh add workflow release   # once: scaffold .github/workflows/release.yml
+zcli release patch             # bump, test, tag, push — CI builds & publishes
+```
+
+Full walkthrough, including binary signing and self-upgrade for your users: [Ship & distribute]($link.page('docs/shipping')).
+
+## zcli upgrade
+
+The meta-CLI updates itself from GitHub releases — `zcli upgrade` (or `--check`), with minisign-verified artifacts. Your own CLI can offer the same command by enabling the `github_upgrade` plugin.

@@ -1,0 +1,136 @@
+---
+.title = "zcli — Validation & constraints",
+.description = "Correct-by-construction values: per-field validate hooks, custom types that parse themselves, mutually-exclusive option sets with meta.exclusive, and directional dependencies with requires.",
+.date = @date("2026-07-12"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Validation & constraints
+
+Types get values parsed; this page is about the rules *beyond* parsing. zcli gives you four tools, in increasing order of structure: a `validate` hook for a rule on one value, a custom type when producing the value needs logic, `requires` when one option only makes sense with another, and `exclusive` when options are alternatives. All of them run on the finally-resolved value — whatever source it came from (CLI, env, config, or default), no source can slip past the rule.
+
+## Per-field validate hooks
+
+When a field's *type* already parses the input but the *value* needs a further rule — a port in range, a non-empty name — add a `validate` hook in `meta`, on any option or arg. It is `fn(T) ?[]const u8`: return `null` when the value is fine, or the message to show.
+
+```zig
+pub const Options = struct { port: u16 = 8080 };
+
+pub const meta = .{
+    .options = .{ .port = .{ .validate = validatePort } },
+};
+
+fn validatePort(port: u16) ?[]const u8 {
+    return if (port == 0) "must be between 1 and 65535" else null;
+}
+```
+
+A failure reads like any other bad-value error — the offending value, then your message, then a usage hint — and exits non-zero:
+
+```sh
+$ myapp serve --port 0
+Error: Invalid value '0' for option '--port': must be between 1 and 65535.
+Run 'myapp serve --help' for usage.
+```
+
+## Custom types
+
+When turning the string into your value needs real logic — `"5m30s"` into a duration, `"4GiB"` into a byte count, an email address — give the field a type that builds itself with `pub fn parse`. The command then receives your domain type, **valid by construction**. `parse` returns an error union, so it composes with `try` over smaller parsers; add an optional `hint` (the "Expected …" phrase, also used in `--help`) and `describe` for a message per failure.
+
+```zig
+const Duration = struct {
+    secs: u64,
+    pub const hint = "a duration like 5m30s";
+
+    pub fn parse(s: []const u8) error{ BadFormat, TooLong }!Duration { // …
+    }
+
+    pub fn describe(err: error{ BadFormat, TooLong }) []const u8 {
+        return switch (err) {
+            error.BadFormat => "use a form like 5m30s",
+            error.TooLong => "must be under an hour",
+        };
+    }
+};
+
+pub const Options = struct { timeout: Duration = .{ .secs = 30 } };
+```
+
+Every source builds it the same way — the CLI and `.env` parse the string, and a config file does too. An unparseable value from `.env` or config is ignored (the default stays), so a bad source can never inject an invalid value.
+
+**Which one?** If the field's native type already parses the input and you only need an extra rule, use `validate`. If producing the value from text needs your own logic — or you want a reusable domain type — make a custom type. Both work on args and options.
+
+## Dependencies: requires
+
+Some options only make sense in the presence of another — a `--output-format` without `--output` is a contradiction. Declare it with `.requires` on the field's `meta` entry, naming the fields it depends on:
+
+```zig
+pub const Options = struct {
+    output: ?[]const u8 = null,
+    output_format: ?enum { pretty, compact } = null,
+};
+
+pub const meta = .{
+    .options = .{
+        .output_format = .{ .requires = .{.output} },  // needs --output too
+    },
+};
+```
+
+The rule is only enforced when the requiring option is actually supplied — from any source — and each named dependency must be supplied too:
+
+```sh
+$ myapp export --output-format pretty
+Option '--output-format' requires '--output'.
+```
+
+Help renders the dependency inline: `--output-format (requires --output)`. A field can require several options (`.requires = .{ .output, .style }`), and the field names are checked at compile time — a typo in `requires`, or a field requiring itself, fails the build.
+
+## Mutually-exclusive sets: exclusive
+
+When options are alternatives — `--json`, `--yaml`, `--xml` — declare the set at the top of `meta`. Each set is a list of field names, and **at most one** member of a set may be supplied:
+
+```zig
+pub const Options = struct {
+    json: bool = false,
+    yaml: bool = false,
+    xml: bool = false,
+};
+
+pub const meta = .{
+    .exclusive = .{
+        .{ .json, .yaml, .xml },
+    },
+};
+```
+
+```sh
+$ myapp export --json --yaml
+Options '--json' and '--yaml' cannot be used together.
+```
+
+Help gets a section per set:
+
+```
+Mutually exclusive:
+  --json, --yaml, --xml (at most one)
+```
+
+`meta.exclusive` takes multiple sets. Membership is compile-checked: naming a field that doesn't exist, listing a member twice, or a set with fewer than two members is a build error. So is putting a *required* option in a set — a required option is always supplied, so "at most one of several" would be unsatisfiable; the compile error tells you to give it a default, make it optional, or drop it from the set.
+
+## What runs when
+
+| Check | When | On failure |
+|---|---|---|
+| `requires`/`exclusive` name real fields, sets well-formed | compile time | build error naming the command and field |
+| `validate` hook returns a message | runtime, after the value resolves | bad-value error with your message |
+| custom type `parse` fails on CLI input | runtime | error with the type's `hint`/`describe` |
+| custom type `parse` fails on env/config input | runtime | value ignored, default stays |
+| exclusive set has ≥2 supplied members | runtime, after all sources | "cannot be used together" |
+| supplied option's dependency missing | runtime, after all sources | "requires '--…'" |
+
+## Next
+
+- [Args & options]($link.page('docs/args-options')) — the type-driven parsing these rules sit on
+- [Error handling]($link.page('docs/errors')) — the diagnostic machinery behind the messages
