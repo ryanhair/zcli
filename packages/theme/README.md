@@ -18,6 +18,20 @@ gracefully from true color down to plain text.
 - **Fluent API**: `styled("text").red().bold().underline()`
 - **Cross-platform**: Windows, macOS, and Linux terminal detection
 
+## Examples
+
+Four runnable programs in [`examples/`](examples/) show the whole system:
+
+```sh
+zig build run-showcase       # every role + the fluent API on one screen
+zig build run-degradation    # the same output at true_color / 256 / 16 / plain
+zig build run-custom-theme   # a branded palette applied to unchanged code
+zig build run-detect         # live terminal-capability detection
+zig build examples           # build all four -> zig-out/bin/theme-<name>
+```
+
+See [`examples/README.md`](examples/README.md) for what each demonstrates.
+
 ## Theming a zcli app
 
 Declare a theme in your app's root source file (next to `main`), the same way

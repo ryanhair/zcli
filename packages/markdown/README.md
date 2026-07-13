@@ -369,26 +369,27 @@ try fmt.write(
 - Use **pure string slicing** (no allocators needed at comptime)
 - Support **all common markdown features** out of the box
 
-## Demo
+## Examples
+
+Six focused, heavily-commented examples live in [`examples/`](examples/) — see
+[`examples/README.md`](examples/README.md) for the full index. Each doubles as
+documentation for one slice of the API.
 
 ```bash
-zig build demo      # Run comprehensive demo showing all features
-zig build test      # Run all tests
+zig build examples          # build them all (binaries in zig-out/bin/markdown-<name>)
+zig build run-elements      # or: semantic, interpolation, palette,
+                            #     capabilities, build_report
+zig build test              # run all tests (also compile-checks every example)
 ```
 
-The demo showcases:
-
-- Headers (all 6 levels)
-- Lists (ordered, unordered, nested)
-- Code blocks with language labels
-- Blockquotes with formatting
-- Inline formatting (bold, italic, dim, code, strikethrough)
-- Links (clickable terminal links)
-- Horizontal rules
-- Semantic colors
-- Runtime interpolation
-- Custom palettes
-- Real-world build report example
+| Example         | Shows off                                                                 |
+| --------------- | ------------------------------------------------------------------------- |
+| `elements`      | every block + inline element: headers, lists, code, quotes, rules, links  |
+| `semantic`      | all 13 semantic roles + composing them with inline markdown + values      |
+| `interpolation` | runtime `{s}`/`{d}`/`{d:.2}`/`{x}` interpolation across every context      |
+| `palette`       | custom palettes + the low-level `parse` / `writeWithPalette` / `print`     |
+| `capabilities`  | the same markdown at `no_color` / `ansi_16` / `ansi_256` / `true_color`   |
+| `build_report`  | a realistic CLI report combining everything end-to-end                    |
 
 ## Custom Palettes
 

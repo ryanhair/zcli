@@ -1,4 +1,9 @@
-//! `Prompts.search` — type to fuzzy-filter a list, arrow keys to pick, Enter to select.
+//! `Prompts.search` — type to filter a list, arrow keys to pick, Enter to select.
+//!
+//! The filter is a case-insensitive *substring* match (not fuzzy): typing "ta"
+//! keeps "TypeScript" but not "Rust". Returns the index into the ORIGINAL
+//! `choices` array, regardless of how the list was filtered. Best when the list
+//! is long enough that plain `select` scrolling is awkward.
 
 const std = @import("std");
 const Prompts = @import("prompts");
@@ -19,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
     const idx = p.search(.{
         .message = "Search languages (type to filter):",
         .choices = &languages,
+        .unicode = true, // set false for an ASCII cursor glyph
     }) catch |err| {
         try t.w().print("\n({s})\n", .{@errorName(err)});
         return;
