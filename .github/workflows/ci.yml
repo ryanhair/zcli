@@ -23,20 +23,44 @@ jobs:
       - name: Check formatting
         run: zig fmt --check packages projects examples build.zig
 
-      # Plugins must route ALL output and process exit through the command
-      # context (context.stdout()/stderr()/exit()/fail()), never std.debug.print
-      # or std.process.exit: those bypass the framework's buffered streams (so
-      # output is silently dropped on exit) and defeat stream overrides. Test
-      # files are exempt — they legitimately use std.testing plumbing.
-      - name: No std.debug.print / std.process.exit in plugins
+      # Output-contract invariant: runtime code must route ALL output and
+      # process exit through the command context (context.stdout()/stderr()/
+      # exit()/fail()), never std.debug.print or std.process.exit. Those bypass
+      # the framework's buffered streams — output is silently dropped when the
+      # process exits without flushing — and defeat stream overrides.
+      #
+      # Scope widened beyond plugins (PR #237) to all of packages/core/src plus
+      # the CLI's own commands, both non-test. Exempt, with reasons:
+      #   - *_test.zig and the two mixed files with in-file test blocks
+      #     (options/array_utils.zig, commands/add/_generate.zig): test
+      #     diagnostics, not runtime output.
+      #   - comment / doc-example / multiline-string ('\\') lines: not code.
+      #   - context.zig: THE sanctioned exit — it flushes buffered output first.
+      #   - registry/compiled.zig: the CLI entry point's exit(1) after a reported
+      #     error, which runs only once executeWithStdio's `defer stdio.flush()`
+      #     has fired and the console has been restored.
+      #   - build_utils/: runs at build time (*std.Build) — no io, no context,
+      #     no buffered stream exists; std.debug.print is the build-time channel.
+      - name: No std.debug.print / std.process.exit outside the context (output contract)
+        shell: bash
         run: |
-          if grep -rnE 'std\.debug\.print|std\.process\.exit' \
+          offenders=$(grep -rnE 'std\.debug\.print|std\.process\.exit' \
                --include='*.zig' \
                --exclude='*_test.zig' \
-               packages/core/src/plugins/; then
-            echo "::error::plugins must use context streams/exit, not std.debug.print/std.process.exit"
+               packages/core/src/ projects/zcli/src/commands/ \
+             | grep -vE ':[0-9]+:[[:space:]]*(///?|\\\\)' \
+             | grep -vE 'packages/core/src/context\.zig:' \
+             | grep -vE 'packages/core/src/registry/compiled\.zig:' \
+             | grep -vE 'packages/core/src/build_utils/' \
+             | grep -vE 'packages/core/src/options/array_utils\.zig:' \
+             | grep -vE 'projects/zcli/src/commands/add/_generate\.zig:' \
+             || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::route output/exit through the command context (context.stdout()/stderr()/exit()/fail()), not std.debug.print/std.process.exit:"
+            echo "$offenders"
             exit 1
           fi
+          echo "output contract holds: no raw std.debug.print/std.process.exit in runtime code"
 
   # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
   # ship in lockstep and MUST declare the same version — the CLI's `--version`
@@ -129,11 +153,25 @@ jobs:
         with:
           version: 0.16.0
 
+      # No CI runner (nor a typical dev box) ships fish, so the completion
+      # suite's `fish --no-execute` validation had never once run — the fish
+      # generator's only coverage was escaping unit tests. Install it on the
+      # cheapest leg (Linux) so the real-shell branch actually exercises fish,
+      # and set ZCLI_REQUIRE_FISH=1 so a missing binary here is a hard failure
+      # rather than a silent per-shell skip (guarding against regression to
+      # never-validated). Other OS legs leave the flag unset — fish stays
+      # optional there.
+      - name: Install fish (Linux — enables the completion suite's fish branch)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
+
       # Runs the test suites for every package (packages/*) AND projects/zcli's
       # own unit tests on all three OSes. Windows is a first-class leg now that
       # the interactive `testing` harness compiles there (ConPTY backend); the
       # terminal stack is libc-free, so this guards portability across the board.
       - name: Run tests
+        env:
+          ZCLI_REQUIRE_FISH: ${{ runner.os == 'Linux' && '1' || '' }}
         run: zig build test
 
   windows-release-build:

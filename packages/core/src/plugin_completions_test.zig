@@ -300,6 +300,26 @@ fn runExit(a: std.mem.Allocator, argv: []const []const u8) u8 {
     };
 }
 
+/// Whether the environment demands that the fish branch actually run (i.e. fish
+/// MUST be present). Set by the CI job that installs fish so a missing binary
+/// there turns from a silent skip into a hard failure — the fish generator has
+/// never once been validated against real fish otherwise (no runner ships it).
+///
+/// The test root module has no direct env access under the 0.16 explicit-IO
+/// model (env arrives via `std.process.Init`, which unit tests don't get), so
+/// we read the flag the same way we reach every other shell here: by spawning
+/// one. A spawned child inherits our environment by default, so `bash -c` echoes
+/// the value back. bash is guaranteed present on the (Linux) job that sets the
+/// flag; anywhere without bash this returns false, which only relaxes the
+/// requirement — it can never spuriously demand fish.
+fn ciRequiresFish(a: std.mem.Allocator) bool {
+    const bash_sh = findShell("bash") orelse return false;
+    const result = std.process.run(a, io, .{
+        .argv = &.{ bash_sh, "-c", "printf %s \"$ZCLI_REQUIRE_FISH\"" },
+    }) catch return false;
+    return std.mem.eql(u8, std.mem.trim(u8, result.stdout, " \t\r\n"), "1");
+}
+
 test "shell syntax - bash -n / zsh -n / fish --no-execute accept generated scripts" {
     const bash_sh = findShell("bash");
     const zsh_sh = findShell("zsh");
@@ -313,6 +333,15 @@ test "shell syntax - bash -n / zsh -n / fish --no-execute accept generated scrip
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    // No CI runner ships fish, so this is the ONE job that installs it — refuse
+    // to let the fish branch skip there, or the fish generator regresses to
+    // never-validated (its only other coverage is escaping unit tests). Anywhere
+    // the flag is unset (dev machines, the other OS legs) fish stays optional.
+    if (fish_sh == null and ciRequiresFish(a)) {
+        std.debug.print("ZCLI_REQUIRE_FISH=1 but no fish binary found in the known locations\n", .{});
+        return error.FishRequiredButMissing;
+    }
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
