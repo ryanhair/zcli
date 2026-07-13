@@ -7,6 +7,16 @@
 //! backend, this *executes `secret-tool`* rather than linking `libsecret`, so a
 //! zcli binary stays static and musl-clean (see ADR-0010). The value is
 //! base64-encoded (see `subprocess.encodeValue`).
+//!
+//! Note on argument terminators: unlike the `pass` backend, the argv here take
+//! no `--` terminator. The user-controlled `name` is passed as an attribute
+//! *value* (`account <name>`), which follows a keyword token rather than sitting
+//! in option position, and `secret-tool` is a GOption program whose subcommand
+//! grammar (`store`/`lookup`/`clear` as the first arg) does not cleanly accept a
+//! `--` before those keyword/value triples. The plugin boundary's leading-dash
+//! rejection already prevents a `name` from being read as a flag, so no `--` is
+//! needed — and none is added rather than one whose placement GOption may not
+//! honour.
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
