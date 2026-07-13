@@ -551,7 +551,7 @@ fn parseLongOptions(
                 // Handle array accumulation
                 const element_type = @typeInfo(field.type).pointer.child;
                 if (array_lists[i]) |*list_union| {
-                    try array_utils.appendToArrayListUnion(element_type, allocator, list_union, value, option_name);
+                    try array_utils.appendCsvToArrayListUnion(element_type, allocator, list_union, value, option_name);
                 }
             } else {
                 // Handle single values
@@ -738,7 +738,7 @@ fn parseShortOptionsWithMeta(
                         // For array types, accumulate values
                         if (array_lists.*[i]) |*list_union| {
                             const element_type = @typeInfo(field.type).pointer.child;
-                            try array_utils.appendToArrayListUnionShort(element_type, allocator, list_union, value, char);
+                            try array_utils.appendCsvToArrayListUnionShort(element_type, allocator, list_union, value, char);
                         }
                     } else {
                         const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
@@ -1202,6 +1202,53 @@ test "parseOptions array accumulation with short flags" {
     try std.testing.expectEqual(@as(usize, 2), parsed.options.numbers.len);
     try std.testing.expectEqual(@as(i32, 10), parsed.options.numbers[0]);
     try std.testing.expectEqual(@as(i32, 20), parsed.options.numbers[1]);
+}
+
+test "parseOptions comma-separated array values" {
+    const TestOptions = struct {
+        files: [][]const u8 = &.{},
+        numbers: []i32 = &.{},
+        label: ?[]const u8 = null,
+    };
+
+    const allocator = std.testing.allocator;
+
+    // Long, short, attached-short, and equals forms all split on comma; a comma
+    // repetition composes; and a comma in a *scalar* option stays literal.
+    const args = [_][]const u8{
+        "--files", "a.txt,b.txt", // long space form
+        "-f", "c.txt", // repetition composes with the comma form
+        "--numbers=1,2,3", // equals form
+        "-n3,4", // attached short form
+        "--label", "x,y", // scalar option — NOT split
+    };
+    const parsed = try parseOptions(TestOptions, allocator, &args, null);
+    defer cleanupOptions(TestOptions, parsed.options, allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), parsed.options.files.len);
+    try std.testing.expectEqualStrings("a.txt", parsed.options.files[0]);
+    try std.testing.expectEqualStrings("b.txt", parsed.options.files[1]);
+    try std.testing.expectEqualStrings("c.txt", parsed.options.files[2]);
+
+    try std.testing.expectEqual(@as(usize, 5), parsed.options.numbers.len);
+    try std.testing.expectEqualSlices(i32, &.{ 1, 2, 3, 3, 4 }, parsed.options.numbers);
+
+    // Scalar option keeps the comma as a literal character.
+    try std.testing.expectEqualStrings("x,y", parsed.options.label.?);
+}
+
+test "parseOptions comma-separated rejects empty segments" {
+    const TestOptions = struct {
+        files: [][]const u8 = &.{},
+    };
+
+    const allocator = std.testing.allocator;
+
+    // Interior, leading, and trailing empty segments are all invalid.
+    inline for (.{ "a,,b", ",a", "a," }) |bad| {
+        const args = [_][]const u8{ "--files", bad };
+        try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(TestOptions, allocator, &args, null));
+    }
 }
 
 test "parseOptionsWithMeta custom name mapping" {
