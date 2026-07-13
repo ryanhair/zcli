@@ -76,6 +76,26 @@ pub const command_discovery = @import("build_utils/command_discovery.zig");
 /// the CLI parser does.
 pub const custom_type = @import("custom_type.zig");
 
+/// Option value-coercion surface for the zcli_config plugin. A config file
+/// stores scalars in a format-native shape (JSON/TOML/YAML); the plugin
+/// stringifies them and routes through *the same* parser the CLI and env use,
+/// so every option type coerces identically from every source (single source of
+/// truth — no per-type ladder in the plugin). Plugin modules import only "zcli",
+/// so this is the entire coercion surface they need.
+pub const config_coerce = struct {
+    /// Parse a string into an option field type `T` exactly as a CLI/env value
+    /// would be: ints (all widths, checked), floats, enums, `[]const u8`,
+    /// optionals, and custom `parse` types. Errors (bad format, out of range,
+    /// unknown enum variant) surface as `error.InvalidOptionValue` so config can
+    /// stay lenient (skip + warn) per DESIGN.md.
+    pub const parseOptionValue = option_utils.parseOptionValue;
+    /// True for accumulating array fields (`[]T` where `T != u8`) — a multi-value
+    /// option. `[]const u8` is a string, not an array.
+    pub const isArrayType = option_utils.isArrayType;
+    /// True for `bool`/`?bool` flags, which coerce from a config boolean directly.
+    pub const isBooleanFlag = option_utils.isBooleanFlag;
+};
+
 const testing = std.testing;
 
 // Re-export error types

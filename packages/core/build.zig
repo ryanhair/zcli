@@ -146,6 +146,7 @@ pub fn build(b: *std.Build) void {
         "src/plugin_github_upgrade_test.zig",
         "src/plugin_pipeline_test.zig",
         "src/plugins/zcli_config/plugin.zig",
+        "src/plugin_config_integration_test.zig",
     };
     const plugin_test_imports = [_]TestDep{.{ .name = "zcli", .module = zcli_module }} ++ dep_imports;
     for (feature_plugin_test_files) |test_file| {

@@ -267,7 +267,7 @@ Semantic roles (`success`, `err`, `warning`, `command`, `path`, …) resolve at 
 
 ## Config files
 
-The `zcli_config` plugin transparently loads option defaults from JSON, TOML, or YAML — zero changes to command code. Values cascade: **CLI flags > command config > global config > struct defaults**.
+The `zcli_config` plugin transparently loads option defaults from JSON, TOML, or YAML — zero changes to command code. Values cascade: **CLI flags > env vars > command config > global config > struct defaults**. A CLI flag or env var wins even when its value equals the struct default. Every option type coerces from config the same way it parses on the command line — bools, all int widths, floats, enums, arrays, and custom parse types.
 
 ```json
 // .myapp.config.json
