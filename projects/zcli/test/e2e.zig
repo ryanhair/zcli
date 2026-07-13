@@ -1708,9 +1708,16 @@ test "interactive: add command drives the wizard and echoes typed input" {
         // drawn frame while stray bytes could still satisfy a stream grep. This
         // walks the terminal cells, so it only passes if the answer is on screen.
         .expectFrameContains("Deploy the app")
-        .expect("Add a positional argument?").delay(settle_ms).sendRaw("n")
-        .expect("Add an option?").delay(settle_ms).sendRaw("n")
-        .expect("What next?").delay(settle_ms).sendRaw("\r");
+        // Gate the confirm-prompt sends on the RENDERED screen, not a raw-stream
+        // grep. ConPTY delivers these prompts as cursor-addressed diffs — the
+        // text lands on the terminal cells, but the bytes are fragmented and
+        // never contiguous in the stream, so `expect("Add a positional
+        // argument?")` (a substring search) times out on Windows even though the
+        // prompt is plainly on screen. The vterm reassembles the frame the way a
+        // terminal would, so the frame check sees the prompt on every backend.
+        .expectFrameContains("Add a positional argument?").delay(settle_ms).sendRaw("n")
+        .expectFrameContains("Add an option?").delay(settle_ms).sendRaw("n")
+        .expectFrameContains("What next?").delay(settle_ms).sendRaw("\r");
 
     var result = harness.runInteractive(
         testing.allocator,
@@ -1779,9 +1786,13 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
         // match the stream. containsText walks the rendered cells, so it only
         // passes if the final "Description: Cafe" is what a terminal shows.
         .expectFrameContains("Description: Cafe")
-        .expect("Add a positional argument?").delay(settle_ms).sendRaw("n")
-        .expect("Add an option?").delay(settle_ms).sendRaw("n")
-        .expect("What next?").delay(settle_ms).sendRaw("\r");
+        // Confirm-prompt gates on the rendered screen — see the wizard test
+        // above: ConPTY fragments these prompts into cursor-addressed diffs, so a
+        // raw-stream `expect` substring times out on Windows though the prompt is
+        // on screen. The vterm frame check is backend-robust.
+        .expectFrameContains("Add a positional argument?").delay(settle_ms).sendRaw("n")
+        .expectFrameContains("Add an option?").delay(settle_ms).sendRaw("n")
+        .expectFrameContains("What next?").delay(settle_ms).sendRaw("\r");
 
     var result = harness.runInteractive(
         testing.allocator,
