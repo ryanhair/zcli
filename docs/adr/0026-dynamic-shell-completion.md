@@ -1,6 +1,6 @@
 # Dynamic shell completion
 
-Status: proposed
+Status: accepted (implemented — all three increments shipped)
 
 Shell completion (the `zcli_completions` plugin) generates a static bash/zsh/fish
 script from the app's compiled command tree. It knows everything derivable at
