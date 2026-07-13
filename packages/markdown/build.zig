@@ -31,20 +31,31 @@ pub fn build(b: *std.Build) void {
     const run_main_tests = b.addRunArtifact(main_tests);
     test_step.dependOn(&run_main_tests.step);
 
-    // Example/demo
-    const demo = b.addExecutable(.{
-        .name = "markdown-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("examples/demo.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    demo.root_module.addImport("markdown", markdown_mod);
+    // Runnable examples — one per topic. `zig build examples` builds them all;
+    // `zig build run-<name>` runs one (they print styled ANSI, so a real
+    // terminal shows color — piping still works). Each is also compiled by
+    // `test` so the examples can't bitrot against the API.
+    const example_names = [_][]const u8{
+        "elements", "semantic",     "interpolation",
+        "palette",  "capabilities", "build_report",
+    };
+    const examples_step = b.step("examples", "Build all markdown examples");
+    for (example_names) |name| {
+        const exe = b.addExecutable(.{
+            .name = b.fmt("markdown-{s}", .{name}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        exe.root_module.addImport("markdown", markdown_mod);
 
-    const demo_step = b.step("demo", "Run comprehensive markdown demo");
-    const run_demo = b.addRunArtifact(demo);
-    demo_step.dependOn(&run_demo.step);
+        examples_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
+        test_step.dependOn(&exe.step); // compile-check in CI without running
 
-    b.installArtifact(demo);
+        const run = b.addRunArtifact(exe);
+        const run_step = b.step(b.fmt("run-{s}", .{name}), b.fmt("Run the {s} example", .{name}));
+        run_step.dependOn(&run.step);
+    }
 }

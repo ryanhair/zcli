@@ -57,6 +57,17 @@ while (true) {
 }
 ```
 
+## Examples
+
+Runnable examples live in [`examples/`](examples/) — build and run each with `zig build run-<name>` from this directory:
+
+- **`report`** — capability report: TTY detection, window size, `unicodeSupported`, and the adaptive `symbols.*` set. Non-interactive; degrades gracefully when piped (`zig build run-report | cat`).
+- **`wrap`** — `displayWidth` / `wrapToWidth` / `wrapCount` on mixed ASCII, CJK, emoji (ZWJ, modifiers), and ANSI-colored text. Non-interactive.
+- **`keys`** — key-event inspector: the raw-mode + `guard` + `readKeyOpt` lifecycle. Press keys to see decoded `Key` values; `q` quits. **Needs a real TTY.**
+- **`resize`** — resize-aware `readEvent` loop: `ResizeWatcher` multiplexing keys and SIGWINCH resizes in one blocking call. **Needs a real TTY.**
+
+Every example is compiled by `zig build test`, so they can't bitrot.
+
 ## Dependencies
 
 - [`zg`](https://codeberg.org/atman/zg) — grapheme iteration and Unicode display-width data (used by the wrapping/width API)

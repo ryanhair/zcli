@@ -42,4 +42,32 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    // Runnable examples — one per indicator, plus a combined multi-step flow.
+    // `zig build examples` builds them all; `zig build run-<name>` runs one
+    // (they animate, so they want a real terminal). Each is also compiled by
+    // `test` so it can't bitrot in CI.
+    const example_names = [_][]const u8{
+        "spinner",   "spinner_styles", "bar",
+        "multi_bar", "tasks",
+    };
+    const examples_step = b.step("examples", "Build all progress examples");
+    for (example_names) |name| {
+        const exe = b.addExecutable(.{
+            .name = b.fmt("progress-{s}", .{name}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        exe.root_module.addImport("progress", progress_mod);
+
+        examples_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
+        test_step.dependOn(&exe.step); // compile-check in CI without running
+
+        const run = b.addRunArtifact(exe);
+        const run_step = b.step(b.fmt("run-{s}", .{name}), b.fmt("Run the {s} example (needs a TTY)", .{name}));
+        run_step.dependOn(&run.step);
+    }
 }

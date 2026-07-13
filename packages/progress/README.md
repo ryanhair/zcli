@@ -63,7 +63,29 @@ mb.set(api, downloaded);
 mb.finish();
 ```
 
-See [examples/tasks](../../examples/tasks/) (`sync`, `import` commands) for these running in a real CLI.
+## Examples
+
+Runnable, focused examples live in [`examples/`](examples/) — one per indicator
+plus a multi-step flow. Build them all with `zig build examples`, or run one:
+
+```sh
+zig build run-spinner       # or: spinner_styles, bar, multi_bar, tasks
+```
+
+| Example                                        | Demonstrates                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------ |
+| [`spinner`](examples/spinner.zig)              | A self-animating spinner through phases → `succeed`                |
+| [`spinner_styles`](examples/spinner_styles.zig)| All nine styles + every finish state (`succeed`/`fail`/`warn`/`info`/`persist`/`stop`) |
+| [`bar`](examples/bar.zig)                      | A caller-driven bar with percentage, ETA, elapsed, and rate stats  |
+| [`multi_bar`](examples/multi_bar.zig)          | Stacked labelled bars updated concurrently from worker threads     |
+| [`tasks`](examples/tasks.zig)                  | A realistic multi-step command mixing spinners and a bar           |
+
+They animate on a TTY and degrade to plain lines when piped, so
+`zig build run-spinner | cat` still works. See
+[`examples/README.md`](examples/README.md) for details.
+
+See also [examples/tasks](../../examples/tasks/) (`sync`, `import` commands) for
+these running inside a real zcli CLI.
 
 ## Theming
 

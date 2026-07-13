@@ -8,6 +8,18 @@ Three tiers of testing for zcli-built CLIs, from fast in-process command tests t
 
 The complete guide with worked examples per tier is [zcli.sh/testing](https://zcli.sh/testing/).
 
+## Runnable examples
+
+`examples/` has a heavily-commented sample test file per tier, each importing the
+tier under the same alias a real project uses:
+
+- [`examples/unit_example.zig`](examples/unit_example.zig) — `runCommand`: args/options, failure and `context.fail`, vterm rendered-output assertions, plugin state.
+- [`examples/snapshot_example.zig`](examples/snapshot_example.zig) — `runSubprocess` + assertions, and `expectSnapshot` compare/update with masking and `ansi=false`.
+- [`examples/e2e_example.zig`](examples/e2e_example.zig) — `InteractiveScript` + `runInteractive` over pipes and a real PTY (the PTY case skips gracefully where no TTY exists).
+
+Run them with `zig build examples` (they're also folded into `zig build test`, so
+they can't drift from the API they document).
+
 ## Getting it
 
 The testing tiers ship with the zcli dependency — no separate dependency entry. Each
