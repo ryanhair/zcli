@@ -8,6 +8,9 @@
 //!     codes — the real thing, end to end.
 //!   * `expectSnapshot` compares output against a golden file, with dynamic
 //!     content (UUIDs, timestamps, addresses) masked so goldens don't churn.
+//!     It also drives the update path (writing the golden) and the
+//!     mismatch/missing error paths — kept noise-free here via
+//!     `.report = false`, a first-class quiet switch on `SnapshotOptions`.
 //!
 //! `zig build examples` runs every `test` below. Because a package-test
 //! environment has no CLI binary of its own to point `runSubprocess` at, the
@@ -72,15 +75,18 @@ test "runSubprocess sees a non-zero exit" {
 //     a missing golden returns error.SnapshotMissing.
 //   * Update (`.{ .update = true }`): WRITE the golden instead of comparing.
 //     Thread this from a build option in a real project —
-//     `zig build test -Dupdate-snapshots` — and prints a confirmation line.
+//     `zig build test -Dupdate-snapshots` — and it prints a confirmation line.
 //
-// The update and mismatch paths intentionally write to stderr (that's the
-// human-facing diagnostic real callers want). To keep THIS example's build step
-// quiet, the test below pre-seeds the golden by hand and then exercises only the
-// compare-match path — the interesting part (masking makes a match survive
-// changing UUIDs/timestamps) without the diagnostic noise.
+// The update, mismatch, and missing paths print human-facing diagnostics to
+// stderr — exactly what you want when driving them by hand. But an *always-on*
+// example that exercises the update path would spew that confirmation line into
+// `zig build examples`, which trips the build runner into echoing a misleading
+// `failed command: …` even though every test passed. So these examples pass
+// `.report = false` on the paths they drive on purpose: a first-class quiet
+// switch on `SnapshotOptions`. In your own project you'd leave it at the loud
+// default and let the diagnostics guide you.
 
-test "expectSnapshot compare path: masking makes a match stable across runs" {
+test "expectSnapshot round-trip: update writes the golden, compare then matches" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -91,22 +97,19 @@ test "expectSnapshot compare path: masking makes a match stable across runs" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    // Pre-seed the golden the harness would look up for this file+name. It stores
-    // the *masked* form: the real UUID/timestamp become [UUID]/[TIMESTAMP]. (In a
-    // real project you'd generate this once with `.update = true` instead of
-    // writing it by hand.)
-    try tmp.dir.createDirPath(io, "tests/snapshots/snapshot_example");
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "tests/snapshots/snapshot_example/profile.txt",
-        .data = "user id=[UUID] created [TIMESTAMP]",
-    });
+    // First run: `.update = true` WRITES the golden (masked form). This is the
+    // real update workflow — no hand-seeding. `.report = false` keeps the
+    // confirmation line out of the examples build; drop it in a real project.
+    // `@src()` tells the harness which file this is (it derives the snapshot
+    // subdirectory `snapshot_example` from the file name).
+    const first = "user id=550e8400-e29b-41d4-a716-446655440000 created 2024-01-15T10:30:00Z";
+    try testing.expectSnapshot(allocator, io, tmp.dir, first, @src(), "profile", .{ .update = true, .report = false });
 
-    // Compare mode: a run with a DIFFERENT UUID and timestamp still MATCHES,
-    // because both are masked before comparison — only the stable structure is
-    // asserted. `@src()` tells the harness which file this is (it derives the
-    // snapshot subdirectory `snapshot_example` from the file name).
-    const output = "user id=00000000-1111-2222-3333-444444444444 created 2025-09-09T00:00:00Z";
-    try testing.expectSnapshot(allocator, io, tmp.dir, output, @src(), "profile", .{});
+    // Later run: a DIFFERENT UUID and timestamp still MATCHES against the golden
+    // just written, because both are masked before comparison — only the stable
+    // structure is asserted. A match prints nothing, so the loud default is fine.
+    const later = "user id=00000000-1111-2222-3333-444444444444 created 2025-09-09T00:00:00Z";
+    try testing.expectSnapshot(allocator, io, tmp.dir, later, @src(), "profile", .{});
 }
 
 test "SnapshotOptions.ansi=false compares only visible text" {
@@ -118,14 +121,26 @@ test "SnapshotOptions.ansi=false compares only visible text" {
 
     // With `.ansi = false`, escape codes are stripped before comparison, so a
     // color change doesn't churn the golden — only the rendered text matters.
-    // Pre-seed the golden as the stripped text, then compare a differently-colored
-    // string against it: still a match.
-    try tmp.dir.createDirPath(io, "tests/snapshots/snapshot_example");
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "tests/snapshots/snapshot_example/message.txt",
-        .data = "ERROR: nope",
-    });
+    // Write the golden from one colored string, then compare a differently-colored
+    // string against it: still a match once both are stripped.
+    try testing.expectSnapshot(allocator, io, tmp.dir, "\x1b[31mERROR\x1b[0m: nope", @src(), "message", .{ .ansi = false, .update = true, .report = false });
     try testing.expectSnapshot(allocator, io, tmp.dir, "\x1b[33mERROR\x1b[0m: nope", @src(), "message", .{ .ansi = false });
+}
+
+test "expectSnapshot compare path: mismatch and missing goldens error" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Seed a golden via the update path, then feed a genuinely different value:
+    // that's `error.SnapshotMismatch` (in a loud run it also prints a diff box).
+    try testing.expectSnapshot(allocator, io, tmp.dir, "stable output", @src(), "diagnostics", .{ .update = true, .report = false });
+    try std.testing.expectError(error.SnapshotMismatch, testing.expectSnapshot(allocator, io, tmp.dir, "changed output", @src(), "diagnostics", .{ .report = false }));
+
+    // A golden that was never written is `error.SnapshotMissing`.
+    try std.testing.expectError(error.SnapshotMissing, testing.expectSnapshot(allocator, io, tmp.dir, "anything", @src(), "never-written", .{ .report = false }));
 }
 
 // ---------------------------------------------------------------------------
