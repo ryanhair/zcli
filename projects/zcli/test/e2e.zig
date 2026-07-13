@@ -1701,6 +1701,13 @@ test "interactive: add command drives the wizard and echoes typed input" {
     _ = script
         .expect("Command path:").delay(settle_ms).send("deploy")
         .expect("Description:").delay(settle_ms).send("Deploy the app")
+        // The typed description must be visible on the RENDERED screen, not just
+        // present somewhere in the byte stream. The wizard enables raw mode
+        // (kernel echo OFF) and repaints frame diffs, so a regression that
+        // stopped echoing keystrokes would leave "Deploy the app" out of the
+        // drawn frame while stray bytes could still satisfy a stream grep. This
+        // walks the terminal cells, so it only passes if the answer is on screen.
+        .expectFrameContains("Deploy the app")
         .expect("Add a positional argument?").delay(settle_ms).sendRaw("n")
         .expect("Add an option?").delay(settle_ms).sendRaw("n")
         .expect("What next?").delay(settle_ms).sendRaw("\r");
@@ -1724,10 +1731,9 @@ test "interactive: add command drives the wizard and echoes typed input" {
     };
     defer result.deinit();
 
-    // Regression for the buffered-writer bug: the wizard enables raw mode (kernel
-    // echo OFF), so the description text can only appear in the PTY output if the
-    // program flushed its own per-keystroke echo. Before the fix, this was blank.
-    try expectContains(result.output, "Deploy the app");
+    // Regression for the buffered-writer bug (per-keystroke echo under raw mode)
+    // is now asserted on the rendered frame mid-script via expectFrameContains
+    // above — strictly stronger than the old raw-stream substring here.
 
     // And the wizard ran to completion against the typed answers.
     try testing.expect(result.exit_code == 0);
@@ -1763,7 +1769,16 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
     defer script.deinit();
     _ = script
         .expect("Command path:").delay(settle_ms).send("greet")
+        // Type "Café", then backspace (erases the whole é grapheme) + "e".
         .expect("Description:").delay(settle_ms).sendRaw("Caf\xc3\xa9").delay(settle_ms).sendRaw("\x7fe\r")
+        // Frame assertion: after the grapheme-aware backspace, the description
+        // line as DRAWN must read exactly "Café" (with é already erased →
+        // "Cafe"). A raw substring can't prove this — the pre-backspace "Café"
+        // frame and the deleted bytes both linger in the byte soup, so a
+        // rendering regression that left half-glyph debris on screen would still
+        // match the stream. containsText walks the rendered cells, so it only
+        // passes if the final "Description: Cafe" is what a terminal shows.
+        .expectFrameContains("Description: Cafe")
         .expect("Add a positional argument?").delay(settle_ms).sendRaw("n")
         .expect("Add an option?").delay(settle_ms).sendRaw("n")
         .expect("What next?").delay(settle_ms).sendRaw("\r");
@@ -1790,11 +1805,13 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
     // The é was echoed intact — its two UTF-8 bytes emitted together, never
     // torn across writes. (Prompts paint frame *diffs* now, so a typed word is
     // never contiguous in the byte stream — each keystroke emits only its new
-    // cell — but any single grapheme always is.)
+    // cell — but any single grapheme always is.) Raw-stream is the right tool
+    // here: the point is the byte pairing, which the rendered screen erases.
     try expectContains(result.output, "é");
-    // The persisted answer line shows the grapheme-aware backspace on screen:
-    // é deleted whole, no half-glyph debris before the final "e".
-    try expectContains(result.output, "Description: Cafe");
+    // The "Description: Cafe" screen line is now asserted mid-script via
+    // expectFrameContains above — a rendered-cell check, strictly stronger than
+    // the old raw-stream substring, which the cursor-diff stream could satisfy
+    // without the text ever being visible in place.
 
     try testing.expect(result.exit_code == 0);
     const generated = try readFile(tmp.dir, arena.allocator(), "src/commands/greet.zig");

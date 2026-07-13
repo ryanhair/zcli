@@ -4,7 +4,7 @@ Three tiers of testing for zcli-built CLIs, from fast in-process command tests t
 
 1. **Unit** — `runCommand` executes a command's `execute()` in-process and captures stdout/stderr (plus a `vterm` screen for rendered-output assertions). No binary, fastest loop.
 2. **Integration** — `runSubprocess` runs the compiled binary and asserts on the full stack: parsing, routing, plugin hooks, exit codes. Includes snapshot testing.
-3. **E2E (PTY)** — `e2e.runInteractive` drives the binary through a real pseudo-terminal for prompts, hidden input, signals, and TTY-dependent formatting.
+3. **E2E (PTY)** — `e2e.runInteractive` drives the binary through a real pseudo-terminal for prompts, hidden input, signals, and TTY-dependent formatting. Assert on the raw byte stream (`.expect`) *or* on the rendered screen (`.expectFrameContains` / `.expectRow` / `.expectFrame`): the harness feeds the PTY/ConPTY output through a `vterm` sized to the session, so a frame assertion only passes if the text is actually visible where it was drawn — closing the gap where a cursor-movement regression leaves the expected bytes *somewhere* in the stream and a raw substring still matches.
 
 The complete guide with worked examples per tier is [zcli.sh/testing](https://zcli.sh/testing/).
 
@@ -24,8 +24,9 @@ they can't drift from the API they document).
 
 The testing tiers ship with the zcli dependency — no separate dependency entry. Each
 tier is its own module, so you only pull the dependencies the tier actually needs: the
-**unit** tier (`zcli_testing_unit`) needs zcli + vterm; the **integration/snapshot**
-(`zcli_testing`) and **e2e** (`testing_e2e`) tiers are std-only.
+**unit** tier (`zcli_testing_unit`) and the **e2e** tier (`testing_e2e`, for its
+rendered-frame assertions) need vterm — the unit tier also needs zcli; the
+**integration/snapshot** tier (`zcli_testing`) is std-only.
 
 - **Scaffolded projects are already wired**: `zcli.addCommandTests(...)` (emitted by `zcli init`) compiles each command file as its own test root with the unit tier importable as `zcli-testing`, so `zig build test` just works.
 - **Manual wiring** — pick the tier your test module uses (the import name is just a local alias):
@@ -37,7 +38,7 @@ tier is its own module, so you only pull the dependencies the tier actually need
   // Subprocess + snapshot tests (runSubprocess, expectSnapshot): std-only.
   test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing"));
 
-  // PTY harness alone (e2e.runInteractive): std-only.
+  // PTY harness alone (e2e.runInteractive): pulls in vterm for frame assertions.
   test_module.addImport("testing_e2e", zcli_dep.module("testing_e2e"));
   ```
 
@@ -49,7 +50,7 @@ tier is its own module, so you only pull the dependencies the tier actually need
 - **Integration**: `runSubprocess(allocator, io, exe_path, args)` → `Result` (`.stdout`, `.stderr`, `.exit_code`)
 - **Assertions**: `expectExitCode`, `expectExitCodeNot`, `expectContains`, `expectNotContains`, `expectEqualStrings`, `expectValidJson`, `expectStdoutEmpty`, `expectStderrEmpty`
 - **Snapshots**: `expectSnapshot(...)` against golden files, with `maskDynamicContent` (UUIDs, timestamps, addresses) and `stripAnsi`; update by threading `.update = true` from a build option (`zig build test -Dupdate-snapshots`)
-- **E2E**: `e2e.InteractiveScript` builder (`.expect`, `.send`, `.sendHidden`, `.sendControl`, `.sendSignal`, `.delay`, `.withTimeout`, `.optional`), executed by `e2e.runInteractive(...)` → `InteractiveResult` (`.exit_code`, `.output`, `.success`, `.transcript`); `runInteractiveDualMode` runs the same script with and without a PTY
+- **E2E**: `e2e.InteractiveScript` builder — stream steps (`.expect`, `.send`, `.sendHidden`, `.sendControl`, `.sendSignal`, `.delay`, `.withTimeout`, `.optional`) and rendered-frame steps (`.expectFrameContains(text)`, `.expectRow(index, expected)`, `.expectFrame(snapshot_name)`) — executed by `e2e.runInteractive(...)` → `InteractiveResult` (`.exit_code`, `.output`, `.success`, `.transcript`); `runInteractiveDualMode` runs the same script with and without a PTY. Frame steps poll until the rendered screen matches or the step times out (no fixed sleeps); `.expectFrame` reuses the snapshot masking/update flow (`config.snapshot_root` + `config.update_snapshots`)
 
 ## Quick taste
 
@@ -96,8 +97,9 @@ test "login prompts for credentials" {
 
 ## Dependencies
 
-Only the **unit** tier (`zcli_testing_unit`) depends on these; the subprocess/snapshot
-and e2e tiers are std-only.
+The **unit** tier (`zcli_testing_unit`) depends on both; the **e2e** tier
+(`testing_e2e`) depends on vterm alone (for rendered-frame assertions); the
+subprocess/snapshot tier (`zcli_testing`) is std-only.
 
-- [`core`](../core/) — `Stdio`, `TestContext` for in-process execution
-- [`vterm`](../vterm/) — terminal emulation for rendered-output assertions
+- [`core`](../core/) — `Stdio`, `TestContext` for in-process execution (unit tier only)
+- [`vterm`](../vterm/) — terminal emulation for rendered-output assertions (unit + e2e tiers)
