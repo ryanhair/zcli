@@ -338,35 +338,43 @@ test "pipeline: checksum-only mode still rejects a mismatched binary" {
 // `builtin.os.tag == .windows`.
 // ----------------------------------------------------------------------------
 
-/// A minimal helper executable: it blocks reading one byte from stdin, then
-/// exits 0. Compiled fresh into the temp dir and copied to the "installed"
-/// path so a spawned instance holds that on-disk image open while we replace
-/// it. Closing the child's stdin is the clean-exit signal (EOF), letting us
-/// prove the process survived having its image swapped and terminated normally
-/// — a `kill` would mask a crash. kernel32.ReadFile is declared here because
-/// this std version does not surface it, and a freestanding `main` has no
-/// `std.Io` to reach a higher-level read through.
+/// The sentinel file the waiter polls for. When the test creates it in the
+/// waiter's working directory, the waiter sees it and exits 0. This replaces the
+/// old stdin/EOF handshake — no stdin plumbing, no kernel32 externs, no PEB
+/// layout assumptions — with the most boring cross-platform mechanism there is:
+/// look for a file, sleep, repeat.
+const waiter_go_sentinel = "go";
+
+/// A minimal helper executable: it polls its working directory for a sentinel
+/// file, sleeping between checks, and exits 0 the moment it appears. Compiled
+/// fresh into the temp dir and copied to the "installed" path so a spawned
+/// instance holds that on-disk image open while we replace it. Creating the
+/// sentinel is the clean-exit signal, letting us prove the process survived
+/// having its image swapped and terminated normally — a `kill` would mask a
+/// crash.
+///
+/// It uses the idiomatic 0.16 `main(init: std.process.Init)` entry point, so it
+/// has a real `std.Io` (`init.io`) for both the sleep and the file check — no
+/// hand-rolled syscalls. A hard cap of ~30s of polling guards against a wedged
+/// test: if the sentinel never arrives the waiter exits non-zero so the test
+/// fails loudly instead of hanging CI.
 const waiter_source =
     \\const std = @import("std");
-    \\const builtin = @import("builtin");
     \\
-    \\extern "kernel32" fn ReadFile(
-    \\    hFile: *anyopaque,
-    \\    lpBuffer: [*]u8,
-    \\    nNumberOfBytesToRead: u32,
-    \\    lpNumberOfBytesRead: ?*u32,
-    \\    lpOverlapped: ?*anyopaque,
-    \\) callconv(.winapi) i32;
-    \\
-    \\pub fn main() void {
-    \\    var buf: [1]u8 = undefined;
-    \\    if (builtin.os.tag == .windows) {
-    \\        const h = std.os.windows.peb().ProcessParameters.hStdInput;
-    \\        var n: u32 = 0;
-    \\        _ = ReadFile(h, &buf, 1, &n, null);
-    \\    } else {
-    \\        _ = std.posix.read(std.posix.STDIN_FILENO, &buf) catch {};
+    \\pub fn main(init: std.process.Init) !void {
+    \\    const io = init.io;
+    \\    const dir = std.Io.Dir.cwd();
+    \\    var elapsed_ms: u64 = 0;
+    \\    const poll_ms: u64 = 20;
+    \\    const cap_ms: u64 = 30_000;
+    \\    while (elapsed_ms < cap_ms) : (elapsed_ms += poll_ms) {
+    \\        if (dir.access(io, "go", .{})) |_| return else |err| switch (err) {
+    \\            error.FileNotFound => {},
+    \\            else => return err,
+    \\        }
+    \\        io.sleep(.fromMilliseconds(poll_ms), .awake) catch return;
     \\    }
+    \\    std.process.exit(1);
     \\}
 ;
 
@@ -409,37 +417,51 @@ fn absPath(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, sub_path: 
     return dir.realPathFileAlloc(io, sub_path, allocator);
 }
 
-/// Spawn `abs_path` as a long-running process with a pipe stdin (it blocks on
-/// the read, so its image file stays in-use until we close that pipe).
-fn spawnWaiter(io: std.Io, abs_path: []const u8) !std.process.Child {
+/// Spawn `abs_path` as a long-running process, keyed off `abs_path` (an explicit
+/// image path) while its working directory is set to `dir` — the directory it
+/// polls for the sentinel file, and the same temp dir the swap happens in. It
+/// stays alive (holding its on-disk image in-use) until that sentinel appears.
+fn spawnWaiter(io: std.Io, abs_path: []const u8, dir: std.Io.Dir) !std.process.Child {
     return std.process.spawn(io, .{
         .argv = &.{abs_path},
-        .stdin = .pipe,
+        .cwd = .{ .dir = dir },
+        .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
     });
 }
 
-/// Close the child's stdin (EOF → the waiter returns from its read and exits),
-/// then wait; assert it terminated normally with exit code 0. Proves the
-/// running process kept running through the swap and exited cleanly rather than
-/// crashing from having its image replaced underneath it.
-fn expectCleanExit(io: std.Io, child: *std.process.Child) !void {
-    if (child.stdin) |*in| {
-        in.close(io);
-        child.stdin = null;
-    }
+/// Drop the sentinel file into the waiter's working directory (its poll loop
+/// sees it and returns 0), then wait; assert it terminated normally with exit
+/// code 0. Proves the running process kept running through the swap and exited
+/// cleanly rather than crashing from having its image replaced underneath it (a
+/// crash surfaces as a signal/non-zero term here instead of being masked).
+fn expectCleanExit(io: std.Io, dir: std.Io.Dir, child: *std.process.Child) !void {
+    dir.writeFile(io, .{ .sub_path = waiter_go_sentinel, .data = "" }) catch |err| {
+        std.debug.print("failed to write sentinel to signal waiter exit: {s}\n", .{@errorName(err)});
+        return err;
+    };
     const term = child.wait(io) catch |err| {
         std.debug.print("waiter did not exit cleanly: {s}\n", .{@errorName(err)});
         return err;
     };
+    if (term != .exited or term.exited != 0) {
+        std.debug.print("waiter terminated abnormally: {any}\n", .{term});
+    }
     try testing.expect(term == .exited);
     try testing.expectEqual(@as(u8, 0), term.exited);
+    // Clean up the sentinel so a second waiter in the same dir doesn't exit
+    // immediately on the stale file.
+    dir.deleteFile(io, waiter_go_sentinel) catch {};
 }
 
 test "install: replace a binary whose image a running process holds open" {
     const allocator = testing.allocator;
     const io = testing.io;
+
+    // "Failed without output" on the Windows CI leg is nearly impossible to
+    // diagnose after the fact, so each major step logs on the way out.
+    errdefer std.debug.print("[in-use replace] test aborted; see step logs above\n", .{});
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -447,7 +469,10 @@ test "install: replace a binary whose image a running process holds open" {
     // Build the waiter, then copy it to the "installed" path — the copy is what
     // a live process runs from and what the upgrade replaces.
     const waiter_name = "waiter" ++ exe_suffix;
-    try buildWaiter(allocator, io, tmp.dir, waiter_name);
+    buildWaiter(allocator, io, tmp.dir, waiter_name) catch |err| {
+        std.debug.print("[in-use replace] buildWaiter failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
 
     const target_name = "app" ++ exe_suffix;
     try tmp.dir.copyFile(waiter_name, tmp.dir, target_name, io, .{});
@@ -468,11 +493,17 @@ test "install: replace a binary whose image a running process holds open" {
     const target_abs = try absPath(allocator, io, tmp.dir, target_name);
     defer allocator.free(target_abs);
 
-    var child = try spawnWaiter(io, target_abs);
+    var child = spawnWaiter(io, target_abs, tmp.dir) catch |err| {
+        std.debug.print("[in-use replace] spawnWaiter failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
     errdefer child.kill(io);
 
     // The replacement must succeed even though `target_name` is a running image.
-    try plugin.replaceBinaryAt(allocator, io, tmp.dir, new_name, target_name);
+    plugin.replaceBinaryAt(allocator, io, tmp.dir, new_name, target_name) catch |err| {
+        std.debug.print("[in-use replace] first replaceBinaryAt failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
 
     // The installed path now holds the new bytes.
     const got = try tmp.dir.readFileAlloc(io, target_name, allocator, read_cap);
@@ -484,7 +515,10 @@ test "install: replace a binary whose image a running process holds open" {
         // mapped (and thus undeletable) until the process exits, so the swap
         // leaves it behind on purpose — deferred delete.
         const backup_name = target_name ++ ".backup";
-        const backup = try tmp.dir.readFileAlloc(io, backup_name, allocator, read_cap);
+        const backup = tmp.dir.readFileAlloc(io, backup_name, allocator, read_cap) catch |err| {
+            std.debug.print("[in-use replace] reading {s} failed: {s}\n", .{ backup_name, @errorName(err) });
+            return err;
+        };
         defer allocator.free(backup);
         // The backup is the ORIGINAL binary (== the waiter it was copied from).
         const waiter_bytes = try tmp.dir.readFileAlloc(io, waiter_name, allocator, read_cap);
@@ -492,17 +526,21 @@ test "install: replace a binary whose image a running process holds open" {
         try testing.expectEqualSlices(u8, waiter_bytes, backup);
     }
 
-    // The running process survived the swap and exits cleanly on EOF.
-    try expectCleanExit(io, &child);
+    // The running process survived the swap and exits cleanly on the sentinel.
+    try expectCleanExit(io, tmp.dir, &child);
 
     // A SECOND upgrade after the old process has exited: on Windows the stale
     // `{target}.backup` from the first swap is now unlocked, so rename-aside
     // replaces it rather than tripping over it (the deferred-delete reality the
-    // strategy is built around). On POSIX there is no backup; this simply
-    // confirms back-to-back upgrades work.
+    // strategy is built around — this is the faithful scenario: the process that
+    // held the old image has already exited before the next upgrade runs). On
+    // POSIX there is no backup; this simply confirms back-to-back upgrades work.
     const new2_contents = "SECOND-NEW-VERSION";
     try tmp.dir.writeFile(io, .{ .sub_path = new_name, .data = new2_contents });
-    try plugin.replaceBinaryAt(allocator, io, tmp.dir, new_name, target_name);
+    plugin.replaceBinaryAt(allocator, io, tmp.dir, new_name, target_name) catch |err| {
+        std.debug.print("[in-use replace] second replaceBinaryAt (stale backup) failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
 
     const got2 = try tmp.dir.readFileAlloc(io, target_name, allocator, read_cap);
     defer allocator.free(got2);
@@ -533,7 +571,7 @@ test "install: a missing new binary leaves a running target intact and runnable"
     const target_abs = try absPath(allocator, io, tmp.dir, target_name);
     defer allocator.free(target_abs);
 
-    var child = try spawnWaiter(io, target_abs);
+    var child = try spawnWaiter(io, target_abs, tmp.dir);
     errdefer child.kill(io);
 
     // Replacing with a nonexistent new binary must fail during staging, before
@@ -553,5 +591,5 @@ test "install: a missing new binary leaves a running target intact and runnable"
     }
 
     // The process is unharmed and still exits cleanly.
-    try expectCleanExit(io, &child);
+    try expectCleanExit(io, tmp.dir, &child);
 }
