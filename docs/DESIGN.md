@@ -310,7 +310,44 @@ like any other bad-value parse error, with the offending value and a usage hint:
 Reach for `validate` when the field's native type already parses the input and you
 only need an extra rule. When turning the string into your value needs custom
 logic (`"5m30s"` → a duration), that is *parsing*, and belongs in a custom type —
-see ADR-0024.
+see below.
+
+**Custom parse types:**
+
+When the argument string doesn't map straight to a native scalar, give the field a
+type that constructs itself, by declaring `pub fn parse`:
+
+```zig
+const Duration = struct {
+    secs: u64,
+    pub const hint = "a duration like 5m30s";
+    pub fn parse(s: []const u8) error{ BadFormat, TooLong }!Duration { … }
+    pub fn describe(err: error{ BadFormat, TooLong }) []const u8 {
+        return switch (err) {
+            error.BadFormat => "use a form like 5m30s",
+            error.TooLong => "must be under an hour",
+        };
+    }
+};
+
+pub const Options = struct { timeout: Duration = .{ .secs = 30 } };
+```
+
+A field type is *custom-parsed* when (after unwrapping one optional level) it is a
+struct/union/enum with `pub fn parse(s: []const u8) E!@This()` — an error union, so
+it composes with `try` over sub-parsers. `execute` then receives the domain type
+itself, valid by construction. Optional companions: `pub const hint` (the
+"Expected …" phrase and help placeholder) and `pub fn describe(err)` (a humane
+message per failure variant). Every source builds it the same way — CLI and env
+parse the string through `parse`, and config does too when the value is a string
+(env/config stay lenient: an unparseable value is ignored, never injected). A parse
+failure is reported like any other bad value, showing `describe`'s reason when
+present, else the hint:
+
+- `Invalid value 'nope' for option '--timeout': use a form like 5m30s.`
+
+This is the division: `validate` refines a value of an existing type; a custom
+type *is* the value and owns how it's built. See ADR-0024.
 
 **Context Structure:**
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const levenshtein = @import("levenshtein.zig");
+const custom_type = @import("custom_type.zig");
 
 pub const ZcliError = error{
     // Argument parsing errors
@@ -56,6 +57,9 @@ pub const ZcliDiagnostic = union(enum) {
         /// Nearest valid choice for a mistyped enum value ("did you mean … ?"),
         /// or null. A comptime variant name with static lifetime — never freed.
         suggestion: ?[]const u8 = null,
+        /// A custom type's `describe(err)` reason for why parsing failed, or null.
+        /// When set it replaces the "Expected …" clause (and any suggestion).
+        reason: ?[]const u8 = null,
     },
     ArgumentTooMany: struct {
         expected_count: usize,
@@ -91,6 +95,9 @@ pub const ZcliDiagnostic = union(enum) {
         /// Nearest valid choice for a mistyped enum value ("did you mean … ?"),
         /// or null. A comptime variant name with static lifetime — never freed.
         suggestion: ?[]const u8 = null,
+        /// A custom type's `describe(err)` reason for why parsing failed, or null.
+        /// When set it replaces the "Expected …" clause (and any suggestion).
+        reason: ?[]const u8 = null,
     },
     OptionBooleanWithValue: struct {
         option_name: []const u8,
@@ -225,6 +232,8 @@ pub fn expectedTypeName(comptime T: type) []const u8 {
         .optional => |o| o.child,
         else => T,
     };
+    // A custom type describes its own expectation via `hint` (else its type name).
+    if (comptime custom_type.isCustomParsed(Bare)) return custom_type.hintFor(Bare);
     return switch (@typeInfo(Bare)) {
         .@"enum" => |e| comptime blk: {
             var list: []const u8 = "one of: ";
@@ -300,6 +309,11 @@ fn humanType(type_name: []const u8) []const u8 {
         'f' => if (bare.len > 1 and allDigits(bare[1..])) return "a number",
         else => {},
     }
+    // A custom-type `hint` is author-written text — a plain phrase (has a space,
+    // no brackets/dots of a raw type name). Pass it through verbatim; anything
+    // else (a qualified or unusual type name) becomes the generic phrase.
+    if (std.mem.indexOfScalar(u8, type_name, ' ') != null and
+        std.mem.indexOfAny(u8, type_name, "[].") == null) return type_name;
     return "a value";
 }
 
@@ -307,7 +321,9 @@ fn humanType(type_name: []const u8) []const u8 {
 pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator) ![]u8 {
     return switch (diagnostic) {
         .ArgumentMissingRequired => |ctx| std.fmt.allocPrint(allocator, "Missing required argument '{s}' at position {d}. Expected {s}.", .{ ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
-        .ArgumentInvalidValue => |ctx| if (ctx.suggestion) |s|
+        .ArgumentInvalidValue => |ctx| if (ctx.reason) |r|
+            std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}: {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, r })
+        else if (ctx.suggestion) |s|
             std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}. Did you mean '{s}'?", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type), s })
         else
             std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
@@ -333,7 +349,9 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
             }
         },
         .OptionMissingValue => |ctx| std.fmt.allocPrint(allocator, "Option '{s}{s}' requires {s}.", .{ if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type) }),
-        .OptionInvalidValue => |ctx| if (ctx.suggestion) |s|
+        .OptionInvalidValue => |ctx| if (ctx.reason) |r|
+            std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}': {s}.", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, r })
+        else if (ctx.suggestion) |s|
             std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected {s}. Did you mean '{s}'?", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type), s })
         else
             std.fmt.allocPrint(allocator, "Invalid value '{s}' for option '{s}{s}'. Expected {s}.", .{ ctx.provided_value, if (ctx.is_short) "-" else "--", ctx.option_name, humanType(ctx.expected_type) }),
@@ -514,6 +532,47 @@ test "ArgumentValidationFailed renders the field, 1-based position, and reason" 
     const msg = try formatDiagnostic(diag, allocator);
     defer allocator.free(msg);
     try std.testing.expectEqualStrings("Invalid value '99' for argument 'count' at position 2: must be 10 or less.", msg);
+}
+
+test "expectedTypeName uses a custom type's hint" {
+    const Dur = struct {
+        secs: u64,
+        pub const hint = "a duration like 5m30s";
+        pub fn parse(s: []const u8) error{Bad}!@This() {
+            return .{ .secs = std.fmt.parseInt(u64, s, 10) catch return error.Bad };
+        }
+    };
+    try std.testing.expectEqualStrings("a duration like 5m30s", expectedTypeName(Dur));
+    try std.testing.expectEqualStrings("a duration like 5m30s", expectedTypeName(?Dur));
+}
+
+test "OptionInvalidValue renders a custom type's describe reason, else its hint" {
+    const allocator = std.testing.allocator;
+    // With a describe reason: shown after the colon, no "Expected" clause.
+    {
+        const diag = ZcliDiagnostic{ .OptionInvalidValue = .{
+            .option_name = "timeout",
+            .is_short = false,
+            .provided_value = "25h",
+            .expected_type = "a duration",
+            .reason = "hours must be less than 24",
+        } };
+        const msg = try formatDiagnostic(diag, allocator);
+        defer allocator.free(msg);
+        try std.testing.expectEqualStrings("Invalid value '25h' for option '--timeout': hours must be less than 24.", msg);
+    }
+    // Without a reason, the hint (a phrase) passes through humanType verbatim.
+    {
+        const diag = ZcliDiagnostic{ .OptionInvalidValue = .{
+            .option_name = "timeout",
+            .is_short = false,
+            .provided_value = "nope",
+            .expected_type = "a duration like 5m30s",
+        } };
+        const msg = try formatDiagnostic(diag, allocator);
+        defer allocator.free(msg);
+        try std.testing.expectEqualStrings("Invalid value 'nope' for option '--timeout'. Expected a duration like 5m30s.", msg);
+    }
 }
 
 test "OptionValidationFailed renders the flag and the author's reason" {
