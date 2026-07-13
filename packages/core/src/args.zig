@@ -1,6 +1,7 @@
 const std = @import("std");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 const type_utils = @import("type_utils.zig");
+const custom_type = @import("custom_type.zig");
 
 pub const ZcliError = diagnostic_errors.ZcliError;
 pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
@@ -135,6 +136,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                             .provided_value = args[pos],
                             .expected_type = diagnostic_errors.expectedTypeName(field_type),
                             .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
+                            .reason = custom_type.describeError(field_type, args[pos]),
                         } };
                     }
                     return err;
@@ -156,6 +158,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                             .provided_value = args[pos],
                             .expected_type = diagnostic_errors.expectedTypeName(field_type),
                             .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
+                            .reason = custom_type.describeError(field_type, args[pos]),
                         } };
                     }
                     return err;
@@ -184,6 +187,7 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
                         .provided_value = args[pos],
                         .expected_type = diagnostic_errors.expectedTypeName(field_type),
                         .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
+                        .reason = custom_type.describeError(field_type, args[pos]),
                     } };
                 }
                 return err;
@@ -244,6 +248,17 @@ fn parseValue(comptime T: type, value: []const u8) ZcliError!T {
         .optional => |opt_info| {
             // Parse the underlying type
             return try parseValue(opt_info.child, value);
+        },
+        .@"struct", .@"union" => {
+            // Custom type: build itself from the string via `pub fn parse`. The
+            // specific error collapses to the canonical ArgumentInvalidValue; the
+            // humane reason is recovered at the diagnostic site via describeError.
+            if (comptime custom_type.isCustomParsed(T)) {
+                custom_type.assertValidParse(T);
+                return T.parse(value) catch return ZcliError.ArgumentInvalidValue;
+            }
+            @compileError("Unsupported argument type: " ++ @typeName(T) ++
+                " — a struct/union field must declare `pub fn parse(s: []const u8) !@This()`");
         },
         else => {
             @compileError("Unsupported argument type: " ++ @typeName(T));

@@ -1,6 +1,6 @@
 # Field validation and custom parse types
 
-Status: accepted (validation shipped; custom parse types are a planned follow-up)
+Status: accepted (both increments shipped)
 
 zcli derives a command's inputs from its `Args`/`Options` structs: a field's type
 drives parsing, its enum variants are the valid choices, `?T`/default decide
@@ -27,7 +27,7 @@ Two complementary features, because they are two different jobs:
 - **Custom parse types** — *producing the value from text needs your code.* A
   user-defined type declares `pub fn parse`, so a string that doesn't map to a
   native scalar (`"5m30s"` → `Duration`, `"4GiB"` → `ByteSize`, `Email`) becomes a
-  typed, valid-by-construction value. Parsing validates as it builds. **Planned as
+  typed, valid-by-construction value. Parsing validates as it builds. **Shipped as
   the second increment.**
 
 They are not redundant: a `validate` fn *cannot* do a custom parse (declare the
@@ -91,6 +91,44 @@ introspection), and validation is its natural extension.
 By contrast, `parse` *constructs* and composes with `try` over sub-parsers, so it
 returns an error union — the asymmetry mirrors what each function actually does.
 
+### The `parse` contract
+
+```zig
+const Duration = struct {
+    secs: u64,
+    pub const hint = "a duration like 5m30s";
+    pub fn parse(s: []const u8) error{ BadFormat, TooLong }!Duration { … }
+    pub fn describe(err: error{ BadFormat, TooLong }) []const u8 {
+        return switch (err) {
+            error.BadFormat => "use a form like 5m30s",
+            error.TooLong => "must be under an hour",
+        };
+    }
+};
+
+pub const Options = struct { timeout: Duration = .{ .secs = 30 } };
+```
+
+- A field type is *custom-parsed* when — after unwrapping one optional level — it
+  is a struct/union/enum declaring `pub fn parse(s: []const u8) E!@This()`. The
+  error union is idiomatic Zig, composes with `try`, and matches zcli's own
+  `parseOptionValue`. The signature is checked at comptime with a friendly message.
+- Optional companions: `pub const hint` (the "Expected …" phrase and help
+  placeholder; defaults to the type name) and `pub fn describe(err)` (a humane
+  message per failure variant).
+- Every source constructs the type the same way — CLI and env parse the string
+  through `parse`; config does too when the value is a string. Because the field
+  *is* the domain type, `execute` receives a value that is valid by construction.
+- A parse failure reuses the existing `OptionInvalidValue`/`ArgumentInvalidValue`
+  diagnostics: the specific error collapses to the canonical reported error (clean
+  exit), while the humane reason is recovered at the diagnostic site — `describe`'s
+  message when present, else the hint:
+  `Invalid value 'nope' for option '--timeout': use a form like 5m30s.`
+  We deliberately never render `@errorName` (camelCase would break the #206 tone).
+- env and config are *lenient*, exactly as they already are for every scalar: an
+  unparseable value is ignored and the default stays, so no source can inject an
+  *invalid* value (there simply is no value), preserving valid-by-construction.
+
 ## Consequences
 
 - One way to constrain an existing type (`validate`) and one way to parse a new
@@ -104,7 +142,11 @@ returns an error union — the asymmetry mirrors what each function actually doe
   (`OptionMutuallyExclusive`, `OptionMissingDependency`) were absent from the
   clean-exit set, so a violation printed its message *and then* a raw error trace.
   They now exit cleanly like every other reported parse error.
-- Deferred: the custom `parse` protocol (`pub fn parse(s) E!@This()` + optional
-  `hint`/`describe`), which will touch the parse sites and the config
-  deserializer, and gives valid-by-construction domain types. Documented here so
-  the two features stay coherent when it lands.
+- Custom `parse` types reuse the invalid-value diagnostics (a `reason` field was
+  added to `OptionInvalidValue`/`ArgumentInvalidValue`) and extend the three
+  string→value sites (`parseOptionValue`, args `parseValue`, `applyEnvValue`) plus
+  the config deserializer to construct a type from its string. `expectedTypeName`
+  returns a custom type's `hint`. No new diagnostic variant.
+- Detection/construction helpers live in `custom_type.zig`, re-exported as
+  `zcli.custom_type` so the config plugin (which imports only "zcli") can build a
+  custom-typed field the same way the parser does.

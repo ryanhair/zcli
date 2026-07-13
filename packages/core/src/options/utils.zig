@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const logging = @import("../logging.zig");
+const custom_type = @import("../custom_type.zig");
 
 /// Convert dashes to underscores in option names
 pub fn dashesToUnderscores(buf: []u8, input: []const u8) ![]const u8 {
@@ -289,6 +290,18 @@ pub fn parseOptionValue(comptime T: type, value: []const u8) !T {
         .optional => |opt_info| {
             return try parseOptionValue(opt_info.child, value);
         },
+        .@"struct", .@"union" => {
+            // A custom type constructs itself from the string via `pub fn parse`.
+            // Its specific error is collapsed to the canonical InvalidOptionValue
+            // (so it classifies as a reported CLI error); the humane reason is
+            // recovered by `custom_type.describeError` at the diagnostic site.
+            if (comptime custom_type.isCustomParsed(T)) {
+                custom_type.assertValidParse(T);
+                return T.parse(value) catch return error.InvalidOptionValue;
+            }
+            @compileError("Unsupported option type: " ++ @typeName(T) ++
+                " — a struct/union field must declare `pub fn parse(s: []const u8) !@This()`");
+        },
         else => {
             @compileError("Unsupported option type: " ++ @typeName(T));
         },
@@ -542,6 +555,25 @@ test "parseOptionValue optional types" {
 
     const value2 = try parseOptionValue(?[]const u8, "test");
     try std.testing.expectEqualStrings("test", value2.?);
+}
+
+test "parseOptionValue builds a custom type via its parse" {
+    const Port = struct {
+        value: u16,
+        pub const hint = "a port (1-65535)";
+        pub fn parse(s: []const u8) error{ Empty, Range }!@This() {
+            if (s.len == 0) return error.Empty;
+            const n = std.fmt.parseInt(u16, s, 10) catch return error.Range;
+            if (n == 0) return error.Range;
+            return .{ .value = n };
+        }
+    };
+    try std.testing.expectEqual(@as(u16, 8080), (try parseOptionValue(Port, "8080")).value);
+    // Optional wrapper parses through to the base type.
+    try std.testing.expectEqual(@as(u16, 443), (try parseOptionValue(?Port, "443")).?.value);
+    // Any parse failure collapses to the canonical InvalidOptionValue.
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(Port, "0"));
+    try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(Port, "xyz"));
 }
 
 test "isBooleanType function" {

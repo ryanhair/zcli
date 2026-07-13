@@ -165,6 +165,15 @@ fn applyJsonObject(comptime OptionsType: type, options: *OptionsType, obj: std.j
                     if (value == .integer) @field(options, field.name) = @intCast(value.integer);
                 } else if (field.type == ?bool) {
                     if (value == .bool) @field(options, field.name) = value.bool;
+                } else if (comptime zcli.custom_type.isCustomParsed(field.type)) {
+                    // A custom type is written as a string in config; build it via
+                    // its own `parse`, the same path CLI/env take. Unparseable →
+                    // leave the default (config is best-effort here).
+                    if (value == .string) {
+                        if (zcli.custom_type.Base(field.type).parse(value.string)) |v| {
+                            @field(options, field.name) = v;
+                        } else |_| {}
+                    }
                 }
             }
         }
@@ -263,6 +272,15 @@ fn applyDynamicMap(comptime OptionsType: type, options: *OptionsType, map: anyty
                     if (value == .integer) @field(options, field.name) = @intCast(value.integer);
                 } else if (field.type == ?bool) {
                     if (value == .boolean) @field(options, field.name) = value.boolean;
+                } else if (comptime zcli.custom_type.isCustomParsed(field.type)) {
+                    // A custom type is written as a string in config; build it via
+                    // its own `parse`, the same path CLI/env take. Unparseable →
+                    // leave the default (config is best-effort here).
+                    if (value == .string) {
+                        if (zcli.custom_type.Base(field.type).parse(value.string)) |v| {
+                            @field(options, field.name) = v;
+                        } else |_| {}
+                    }
                 }
             }
         }

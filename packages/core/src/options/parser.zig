@@ -5,6 +5,7 @@ const array_utils = @import("array_utils.zig");
 const logging = @import("../logging.zig");
 const args_parser = @import("../args.zig");
 const diagnostic_errors = @import("../diagnostic_errors.zig");
+const custom_type = @import("../custom_type.zig");
 const type_utils = @import("../type_utils.zig");
 const levenshtein = @import("../levenshtein.zig");
 const ZcliError = diagnostic_errors.ZcliError;
@@ -418,6 +419,14 @@ fn applyEnvValue(comptime T: type, target: *T, env_value: []const u8) bool {
         return true;
     }
 
+    // Custom type: construct from the env string via `pub fn parse`, the same
+    // path a CLI value takes. A value that doesn't parse is ignored (default
+    // kept), matching how env handles every other unparseable value.
+    if (comptime custom_type.isCustomParsed(T)) {
+        target.* = T.parse(env_value) catch return false;
+        return true;
+    }
+
     // Unsupported type (accumulating arrays, etc.)
     return false;
 }
@@ -562,6 +571,7 @@ fn parseLongOptions(
                         .provided_value = value,
                         .expected_type = diagnostic_errors.expectedTypeName(field.type),
                         .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
+                        .reason = custom_type.describeError(field.type, value),
                     } };
                     return err;
                 };
@@ -748,6 +758,7 @@ fn parseShortOptionsWithMeta(
                                 .provided_value = value,
                                 .expected_type = diagnostic_errors.expectedTypeName(field.type),
                                 .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
+                                .reason = custom_type.describeError(field.type, value),
                             } };
                             return err;
                         };
@@ -1717,6 +1728,25 @@ test "applyEnvValue numeric, optional, and enum types" {
     try std.testing.expect(applyEnvValue(Mode, &mode, "fast"));
     try std.testing.expectEqual(Mode.fast, mode);
     try std.testing.expect(!applyEnvValue(Mode, &mode, "warp"));
+}
+
+test "applyEnvValue builds a custom type, and keeps the default when it won't parse" {
+    const Port = struct {
+        value: u16,
+        pub fn parse(s: []const u8) error{Bad}!@This() {
+            const n = std.fmt.parseInt(u16, s, 10) catch return error.Bad;
+            if (n == 0) return error.Bad;
+            return .{ .value = n };
+        }
+    };
+    var port: ?Port = null;
+    try std.testing.expect(applyEnvValue(?Port, &port, "8080"));
+    try std.testing.expectEqual(@as(u16, 8080), port.?.value);
+    // Unparseable env value is ignored — the default (null) stays, matching how
+    // env treats every other type. No invalid value is ever injected.
+    port = null;
+    try std.testing.expect(!applyEnvValue(?Port, &port, "0"));
+    try std.testing.expect(port == null);
 }
 
 test "diagnostics: option error sites fill precise context" {
