@@ -32,13 +32,26 @@ const add_options = [_]zcli.OptionInfo{
     .{ .name = "force", .short = 'f', .description = "Skip confirmation" },
 };
 
+const statuses = [_][]const u8{ "open", "done" };
+
+// `edit` takes a plain (non-enum) id → completions show a hint, not files.
+const edit_args = [_]zcli.ArgInfo{
+    .{ .name = "id", .description = "Task ID" },
+};
+// `list` takes an enum status → completions offer the choices as values.
+const list_args = [_]zcli.ArgInfo{
+    .{ .name = "status", .description = "Filter by status", .enum_values = &statuses },
+};
+
 /// A representative tree: root leaves (add/list/edit) with an alias and enum
 /// option, plus a nested group (sprint create / sprint list). `edit`'s
-/// description contains an apostrophe — the adversarial case for fish.
+/// description contains an apostrophe — the adversarial case for fish. `edit`
+/// and `list` declare positional args (a plain id and an enum status) to
+/// exercise positional-argument completion.
 const commands = [_]zcli.CommandInfo{
     .{ .path = &.{"add"}, .description = "Add a task", .options = &add_options, .aliases = &.{"a"} },
-    .{ .path = &.{"list"}, .description = "List tasks" },
-    .{ .path = &.{"edit"}, .description = "Edit a task's title" },
+    .{ .path = &.{"list"}, .description = "List tasks", .args = &list_args },
+    .{ .path = &.{"edit"}, .description = "Edit a task's title", .args = &edit_args },
     .{ .path = &.{ "sprint", "create" }, .description = "Create a sprint" },
     .{ .path = &.{ "sprint", "list" }, .description = "List sprints" },
 };
@@ -207,6 +220,12 @@ test "bash.generate - emits a root case and single-word case subjects" {
     // Enum values are completable via compgen -W.
     try std.testing.expect(contains(script, "low medium high"));
 
+    // A leaf's enum positional is offered at its command path...
+    try std.testing.expect(contains(script, "\"list\")"));
+    try std.testing.expect(contains(script, "open done"));
+    // ...and the blanket file fallback is gone (no more CWD dump for positionals).
+    try std.testing.expect(!contains(script, "compgen -f"));
+
     // bash-completion fallback present.
     try std.testing.expect(contains(script, "declare -F _init_completion"));
 }
@@ -224,6 +243,14 @@ test "zsh.generate - compdef header, describe, and enum action" {
     try std.testing.expect(contains(script, ":priority:(low medium high)"));
     // Alias appears as an alternation in the case pattern.
     try std.testing.expect(contains(script, "add|a)"));
+
+    // A plain positional force-displays its description as a hint via _message -r
+    // (an empty action would render nothing without a `format` zstyle set).
+    try std.testing.expect(contains(script, "'1: : _message -r \"Task ID\"'"));
+    // An enum positional offers its choices as an action group.
+    try std.testing.expect(contains(script, "'1:Filter by status:(open done)'"));
+    // The blanket file fallback is gone.
+    try std.testing.expect(!contains(script, "_files"));
 }
 
 test "fish.generate - escapes apostrophes and uses positional conditions" {
@@ -243,6 +270,12 @@ test "fish.generate - escapes apostrophes and uses positional conditions" {
     try std.testing.expect(contains(script, "-x -a 'low medium high'"));
     // Alias offered alongside the command name in a single -a argument.
     try std.testing.expect(contains(script, "-a 'add a'"));
+
+    // A leaf suppresses file completion at its first positional (`-f` at the
+    // command's own path condition).
+    try std.testing.expect(contains(script, "complete -c tasks -f -n '__fish_tasks_using_command edit'"));
+    // An enum positional additionally offers its choices.
+    try std.testing.expect(contains(script, "__fish_tasks_using_command list' -a 'open done'"));
 }
 
 test "generators - empty command set still yields a valid skeleton" {
@@ -366,6 +399,7 @@ test "functional bash - COMPREPLY at root and at depth 2" {
         \\
         \\echo "ROOT:$(run tasks '')"
         \\echo "DEPTH2:$(run tasks sprint '')"
+        \\echo "LISTARG:$(run tasks list '')"
         \\
     , .{script_path});
     const harness_path = try writeTemp(a, tmp.dir, "zcli_func_harness.bash", harness);
@@ -377,14 +411,17 @@ test "functional bash - COMPREPLY at root and at depth 2" {
 
     var root_line: ?[]const u8 = null;
     var depth2_line: ?[]const u8 = null;
+    var listarg_line: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, out, '\n');
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "ROOT:")) root_line = line["ROOT:".len..];
         if (std.mem.startsWith(u8, line, "DEPTH2:")) depth2_line = line["DEPTH2:".len..];
+        if (std.mem.startsWith(u8, line, "LISTARG:")) listarg_line = line["LISTARG:".len..];
     }
 
     try std.testing.expect(root_line != null);
     try std.testing.expect(depth2_line != null);
+    try std.testing.expect(listarg_line != null);
 
     // Root completions include every top-level command.
     try std.testing.expect(contains(root_line.?, "add"));
@@ -397,4 +434,8 @@ test "functional bash - COMPREPLY at root and at depth 2" {
     try std.testing.expect(contains(depth2_line.?, "create"));
     try std.testing.expect(contains(depth2_line.?, "list"));
     try std.testing.expect(!contains(depth2_line.?, "add"));
+
+    // `tasks list <TAB>` completes the enum positional's values, NOT files.
+    try std.testing.expect(contains(listarg_line.?, "open"));
+    try std.testing.expect(contains(listarg_line.?, "done"));
 }

@@ -78,6 +78,15 @@ fn writeNode(
     app_name: []const u8,
     node: *const tree.CommandNode,
 ) !void {
+    // Leaf positional completion. The `using_command` condition matches only when
+    // the token sequence equals this exact path — i.e. the cursor is at the first
+    // positional. `-f` there suppresses fish's default file completion (so a
+    // command that takes an id doesn't dump the CWD); an enum arg additionally
+    // offers its choices.
+    if (node.isLeaf() and node.path.len > 0) {
+        try writePositional(arena, writer, app_name, node);
+    }
+
     // Offer this node's children as subcommands, conditioned on being exactly at
     // this node's path (empty path for the root → the bare `-c` condition).
     for (node.children) |child| {
@@ -105,6 +114,36 @@ fn writeNode(
     }
 
     for (node.children) |child| try writeNode(arena, writer, app_name, child);
+}
+
+/// Emit the leaf's first-positional completion: always `-f` (no file dump) at
+/// the command's own path, plus `-a`/`-d` for an enum first positional.
+fn writePositional(
+    arena: std.mem.Allocator,
+    writer: anytype,
+    app_name: []const u8,
+    node: *const tree.CommandNode,
+) !void {
+    try writer.print("complete -c {s} -f", .{app_name});
+    try writeCondition(arena, writer, app_name, node.path);
+
+    if (node.args.len > 0) {
+        const arg = node.args[0];
+        if (arg.enum_values) |values| {
+            try writer.writeAll(" -a '");
+            for (values, 0..) |v, idx| {
+                if (idx > 0) try writer.writeByte(' ');
+                const esc = try escape.fish(arena, v);
+                try writer.writeAll(esc);
+            }
+            try writer.writeAll("'");
+            if (arg.description) |d| {
+                const esc = try escape.fish(arena, d);
+                try writer.print(" -d '{s}'", .{esc});
+            }
+        }
+    }
+    try writer.writeAll("\n");
 }
 
 /// Emit one `complete` directive for an option. `path` null means global (no
