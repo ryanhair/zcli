@@ -23,6 +23,21 @@ jobs:
       - name: Check formatting
         run: zig fmt --check packages projects examples build.zig
 
+      # Plugins must route ALL output and process exit through the command
+      # context (context.stdout()/stderr()/exit()/fail()), never std.debug.print
+      # or std.process.exit: those bypass the framework's buffered streams (so
+      # output is silently dropped on exit) and defeat stream overrides. Test
+      # files are exempt — they legitimately use std.testing plumbing.
+      - name: No std.debug.print / std.process.exit in plugins
+        run: |
+          if grep -rnE 'std\.debug\.print|std\.process\.exit' \
+               --include='*.zig' \
+               --exclude='*_test.zig' \
+               packages/core/src/plugins/; then
+            echo "::error::plugins must use context streams/exit, not std.debug.print/std.process.exit"
+            exit 1
+          fi
+
   # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
   # ship in lockstep and MUST declare the same version — the CLI's `--version`
   # reads its own zon, the website + library tag read the root's. The README's
