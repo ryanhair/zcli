@@ -1216,11 +1216,11 @@ test "parseOptions comma-separated array values" {
     // Long, short, attached-short, and equals forms all split on comma; a comma
     // repetition composes; and a comma in a *scalar* option stays literal.
     const args = [_][]const u8{
-        "--files",  "a.txt,b.txt", // long space form
-        "-f",       "c.txt", // repetition composes with the comma form
+        "--files", "a.txt,b.txt", // long space form
+        "-f", "c.txt", // repetition composes with the comma form
         "--numbers=1,2,3", // equals form
         "-n3,4", // attached short form
-        "--label",  "x,y", // scalar option — NOT split
+        "--label", "x,y", // scalar option — NOT split
     };
     const parsed = try parseOptions(TestOptions, allocator, &args, null);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
