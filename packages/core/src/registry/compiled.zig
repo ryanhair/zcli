@@ -368,6 +368,25 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         pub const command_info = buildCommandInfo();
         pub const global_options_info = buildGlobalOptionsInfo();
 
+        /// Extract the variant names of an enum-typed field (`enum` or `?enum`)
+        /// as a static slice of strings, or `null` for any other type. Shared by
+        /// options, args, and global options so completions can offer choices.
+        fn enumValuesOf(comptime T: type) ?[]const []const u8 {
+            const Bare = switch (@typeInfo(T)) {
+                .optional => |o| o.child,
+                else => T,
+            };
+            switch (@typeInfo(Bare)) {
+                .@"enum" => |e| {
+                    var names: [e.fields.len][]const u8 = undefined;
+                    for (e.fields, 0..) |f, i| names[i] = f.name;
+                    const frozen = names;
+                    return &frozen;
+                },
+                else => return null,
+            }
+        }
+
         fn buildGlobalOptionsInfo() []const zcli.OptionInfo {
             var opts: []const zcli.OptionInfo = &.{};
             for (global_options) |global_opt| {
@@ -376,6 +395,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .short = global_opt.short,
                     .description = global_opt.description,
                     .takes_value = global_opt.type != bool,
+                    .enum_values = enumValuesOf(global_opt.type),
                 }};
             }
             return opts;
@@ -425,7 +445,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                     }
                                 }
                             }
-                            options = options ++ .{zcli.OptionInfo{ .name = field.name, .short = opt_short, .description = opt_desc, .takes_value = base_type != bool }};
+                            options = options ++ .{zcli.OptionInfo{ .name = field.name, .short = opt_short, .description = opt_desc, .takes_value = base_type != bool, .enum_values = enumValuesOf(field.type) }};
                         }
                     }
                 }
@@ -451,7 +471,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                 const ft = @typeInfo(field.type);
                                 break :vblk ft == .pointer and ft.pointer.size == .slice and ft.pointer.child != u8;
                             };
-                            arg_infos = arg_infos ++ .{zcli.ArgInfo{ .name = field.name, .description = arg_desc, .is_optional = is_opt, .is_variadic = is_variadic }};
+                            arg_infos = arg_infos ++ .{zcli.ArgInfo{ .name = field.name, .description = arg_desc, .is_optional = is_opt, .is_variadic = is_variadic, .enum_values = enumValuesOf(field.type) }};
                         }
                     }
                 }

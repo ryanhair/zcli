@@ -116,6 +116,9 @@ pub const OptionInfo = struct {
     short: ?u8 = null,
     description: ?[]const u8 = null,
     takes_value: bool = false,
+    /// For an enum-typed option, its variant names (the valid choices), else
+    /// `null`. Shell completions offer these as the option's argument values.
+    enum_values: ?[]const []const u8 = null,
 };
 
 /// Argument information for introspection and documentation
@@ -124,6 +127,9 @@ pub const ArgInfo = struct {
     description: ?[]const u8 = null,
     is_optional: bool = false,
     is_variadic: bool = false,
+    /// For an enum-typed positional argument, its variant names, else `null`.
+    /// Shell completions offer these as the positional's values.
+    enum_values: ?[]const []const u8 = null,
 };
 
 /// Command information for introspection, completions, and documentation
