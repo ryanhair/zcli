@@ -21,7 +21,7 @@ pub const priority = 100;
 const NAME_COLUMN_WIDTH: usize = 16;
 
 // Helper struct for collecting command information
-const CommandInfo = struct {
+const CommandListEntry = struct {
     name: []const u8,
     description: ?[]const u8,
     is_group: bool,

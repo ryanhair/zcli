@@ -5,7 +5,7 @@ const types = @import("discovery_types.zig");
 // Re-exported so runtime consumers (e.g. the `zcli tree` tool) can name the
 // types returned by discovery. discovery_types.zig is runtime-safe — the
 // std.Build-only build_utils/types.zig never enters the runtime module graph.
-pub const CommandInfo = types.CommandInfo;
+pub const DiscoveredCommand = types.DiscoveredCommand;
 pub const CommandType = types.CommandType;
 pub const DiscoveredCommands = types.DiscoveredCommands;
 
@@ -49,7 +49,7 @@ fn scanDirectory(
     allocator: std.mem.Allocator,
     io: std.Io,
     dir: std.Io.Dir,
-    commands: *std.StringHashMap(CommandInfo),
+    commands: *std.StringHashMap(DiscoveredCommand),
     current_path: []const []const u8, // Array of path components
     depth: u32,
     max_depth: u32,
@@ -107,7 +107,7 @@ fn scanDirectory(
                     try fs_path_list.append(allocator, entry.name);
                     const file_path = try std.mem.join(allocator, "/", fs_path_list.items);
 
-                    const command_info = CommandInfo{
+                    const command_info = DiscoveredCommand{
                         .name = try allocator.dupe(u8, name_without_ext),
                         .path = try path_list.toOwnedSlice(allocator),
                         .file_path = file_path,
@@ -137,7 +137,7 @@ fn scanDirectory(
                 defer subdir.close(io);
 
                 // Create subcommand map
-                var subcommands = std.StringHashMap(CommandInfo).init(allocator);
+                var subcommands = std.StringHashMap(DiscoveredCommand).init(allocator);
 
                 // Build new path as array of components
                 var new_path_list = std.ArrayList([]const u8).empty;
@@ -174,7 +174,7 @@ fn scanDirectory(
                     // Determine command type based on presence of index.zig
                     const command_type: CommandType = if (has_index) .optional_group else .pure_group;
 
-                    const command_info = CommandInfo{
+                    const command_info = DiscoveredCommand{
                         .name = try allocator.dupe(u8, entry.name),
                         .path = new_path,
                         .file_path = group_file_path,

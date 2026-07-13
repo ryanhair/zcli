@@ -20,15 +20,15 @@ pub const CommandType = enum {
 };
 
 /// Information about a discovered command
-pub const CommandInfo = struct {
+pub const DiscoveredCommand = struct {
     name: []const u8,
     path: []const []const u8, // Array of command path components
     file_path: []const u8, // Filesystem path for module loading
     command_type: CommandType,
     hidden: bool = false, // Whether this command should be hidden from help/completions
-    subcommands: ?std.StringHashMap(CommandInfo),
+    subcommands: ?std.StringHashMap(DiscoveredCommand),
 
-    pub fn deinit(self: *CommandInfo, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *DiscoveredCommand, allocator: std.mem.Allocator) void {
         // Free allocated strings
         allocator.free(self.name);
         allocator.free(self.file_path);
@@ -61,8 +61,8 @@ pub const CommandInfo = struct {
 /// completions — lists commands by name rather than by filesystem-iteration
 /// order. `zcli tree` sorts its own display nodes; help re-buckets command info
 /// through its own map and sorts there. Caller owns the returned slice.
-pub fn sortedByName(allocator: std.mem.Allocator, map: *const std.StringHashMap(CommandInfo)) ![]CommandInfo {
-    const entries = try allocator.alloc(CommandInfo, map.count());
+pub fn sortedByName(allocator: std.mem.Allocator, map: *const std.StringHashMap(DiscoveredCommand)) ![]DiscoveredCommand {
+    const entries = try allocator.alloc(DiscoveredCommand, map.count());
     errdefer allocator.free(entries);
 
     var it = map.iterator();
@@ -71,23 +71,23 @@ pub fn sortedByName(allocator: std.mem.Allocator, map: *const std.StringHashMap(
         entries[i] = entry.value_ptr.*;
     }
 
-    std.mem.sort(CommandInfo, entries, {}, lessByName);
+    std.mem.sort(DiscoveredCommand, entries, {}, lessByName);
     return entries;
 }
 
-fn lessByName(_: void, a: CommandInfo, b: CommandInfo) bool {
+fn lessByName(_: void, a: DiscoveredCommand, b: DiscoveredCommand) bool {
     return std.mem.lessThan(u8, a.name, b.name);
 }
 
 /// Container for all discovered commands
 pub const DiscoveredCommands = struct {
     allocator: std.mem.Allocator,
-    root: std.StringHashMap(CommandInfo),
+    root: std.StringHashMap(DiscoveredCommand),
 
     pub fn init(allocator: std.mem.Allocator) DiscoveredCommands {
         return DiscoveredCommands{
             .allocator = allocator,
-            .root = std.StringHashMap(CommandInfo).init(allocator),
+            .root = std.StringHashMap(DiscoveredCommand).init(allocator),
         };
     }
 

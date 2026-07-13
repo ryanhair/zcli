@@ -6,7 +6,7 @@ const plugin_system = @import("plugin_system.zig");
 const command_discovery = @import("command_discovery.zig");
 const code_generation = @import("code_generation.zig");
 
-const CommandInfo = types.CommandInfo;
+const DiscoveredCommand = types.DiscoveredCommand;
 const BuildConfig = types.BuildConfig;
 const DiscoveredCommands = types.DiscoveredCommands;
 const GenerateConfig = types.GenerateConfig;
