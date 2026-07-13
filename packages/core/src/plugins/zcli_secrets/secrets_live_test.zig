@@ -39,6 +39,10 @@ const MockContext = struct {
 const service = "zcli-secrets-ci-roundtrip";
 const name = "token";
 
+// A distinct key for the concurrency test so it can never collide with the
+// round-trip test's `token` (the two tests can run back to back in one process).
+const race_name = "race-token";
+
 /// True when the active Linux backend is the Secret Service — either forced by
 /// CI via `ZCLI_SECRETS_BACKEND=secret-service` (how the two Linux live steps are
 /// made deterministic) or autodetected. The large-value assertion branches on
@@ -55,26 +59,47 @@ fn isSecretServiceBackend(env: *const std.process.Environ.Map) bool {
     return env.get("DBUS_SESSION_BUS_ADDRESS") != null;
 }
 
+/// Populate `env` from the real process environment.
+///
+/// The Linux backend shells out to secret-tool / pass / gpg, which need the real
+/// process environment (session bus, HOME, gpg-agent) that CI set up. 0.16
+/// exposes the environment only via `std.process.Init` (unavailable in a test) or
+/// the libc `std.c.environ`, so this CI-only test links libc to read it (see
+/// build.zig). On macOS/Windows the keychain backends ignore `environ`, so an
+/// empty map on Windows is fine.
+fn loadEnviron(env: *std.process.Environ.Map) !void {
+    if (builtin.os.tag == .windows) return;
+    var i: usize = 0;
+    while (std.c.environ[i]) |entry| : (i += 1) {
+        const pair = std.mem.span(entry); // "KEY=VALUE"
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        if (eq == 0) continue;
+        try env.put(pair[0..eq], pair[eq + 1 ..]);
+    }
+}
+
+/// Look up a single environment variable via libc's `getenv` (this test links
+/// libc on every target). Used only to read the concurrency-test's own role
+/// control variable in the parent and each re-exec'd child — a spot where there is
+/// no context to thread `environ` through yet. `getenv` (unlike iterating
+/// `std.c.environ`) links uniformly across OSes, including Windows where the POSIX
+/// `environ` symbol is absent.
+fn envValue(key: [*:0]const u8) ?[]const u8 {
+    const v = std.c.getenv(key) orelse return null;
+    return std.mem.span(v);
+}
+
 test "public API round-trips set / get / overwrite / delete via ContextData" {
+    // In a re-exec'd child of the concurrency test below, this process is only
+    // meant to run one racing loop — skip the (unrelated) round-trip so the child
+    // does no extra keychain work and does not race its own sentinel.
+    if (envValue(race_role_env) != null) return error.SkipZigTest;
+
     const a = std.testing.allocator;
 
-    // The Linux backend shells out to secret-tool / pass / gpg, which need the
-    // real process environment (session bus, HOME, gpg-agent) that CI set up.
-    // 0.16 exposes the environment only via `std.process.Init` (unavailable in a
-    // test) or the libc `std.c.environ`, so this CI-only test links libc to read
-    // it (see build.zig). On macOS/Windows the keychain backends ignore
-    // `environ`, so an empty map on Windows is fine.
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
-    if (builtin.os.tag != .windows) {
-        var i: usize = 0;
-        while (std.c.environ[i]) |entry| : (i += 1) {
-            const pair = std.mem.span(entry); // "KEY=VALUE"
-            const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
-            if (eq == 0) continue;
-            try env.put(pair[0..eq], pair[eq + 1 ..]);
-        }
-    }
+    try loadEnviron(&env);
 
     var discard: std.Io.Writer.Discarding = .init(&.{});
     var ctx = MockContext{ .allocator = a, .io = std.testing.io, .environ = &env, .app_name = service, .err_writer = &discard.writer };
@@ -167,4 +192,215 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
 
     // A NUL in the *name* is rejected before any backend call.
     try std.testing.expectError(plugin.Error.InvalidSecretName, data.get(&ctx, "bad\x00name"));
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent-access race
+// ---------------------------------------------------------------------------
+//
+// This exercises the macOS Keychain `set` retry (PR #234): its store path is
+// Add → (on duplicate) Find → Modify, which has *two* TOCTOU windows — a
+// concurrent `delete` landing between our Add and our Find, or between our Find
+// and our Modify, makes the later call return `errSecItemNotFound`; the bounded
+// retry re-Adds rather than surfacing an opaque `KeychainFailure`. Nothing raced
+// `set` against `delete` before, so that retry had never actually run. This drives
+// it live: one worker hammers `set` with distinct values while two others hammer
+// `delete`, all against the same key.
+//
+// ## Why the racers are separate *processes*, not threads
+//
+// The realistic scenario the retry defends against is two CLI *invocations*
+// racing (a `login` writing a token while a `logout` deletes it) — separate
+// processes contending on the shared OS store, which is exactly what a keychain /
+// Secret Service is built to serialize. It is NOT two threads in one process:
+// macOS's legacy `SecKeychain*GenericPassword` API (what `keychain_macos.zig`
+// uses) is not safe for concurrent same-process mutation of one item — two threads
+// doing Add/Modify vs Delete deadlock inside Security.framework's own
+// `securityd`-side mutex (observed via `sample`: both threads blocked in
+// `_pthread_mutex_firstfit_lock_wait` under `SecKeychainItemDelete` /
+// `SecKeychainItemModifyAttributesAndData`). That deadlock is an Apple-API
+// limitation, not a zcli bug, and a CLI is single-threaded anyway — so racing with
+// threads would only manufacture a hang that no product code path can hit. Racing
+// with processes models the real contention and lets the OS store arbitrate it.
+//
+// The test re-exec's *itself*: `std.process.executablePath` gives this test
+// binary's path, and each child is spawned with `ZCLI_SECRETS_RACE_ROLE` set to
+// `set` or `delete`, which the `main`-level guard below turns into a single racing
+// loop. (This also naturally covers Linux — its backends already fork a helper per
+// op — and Windows.)
+//
+// ## Acceptable outcomes
+//
+// The store is inherently concurrent, so the *only* acceptable per-op outcomes are
+// success or benign key-not-found semantics (`get` → null, `delete` of an absent
+// key → ok) — both `void`/`ok` through this public API (a missing key is never an
+// error; see plugin.zig). A child that hit anything else (notably `BackendFailure`,
+// the pre-#234 symptom) exits nonzero, which the parent asserts against. What is
+// NOT acceptable: an opaque backend failure, a hang (bounded loops + the parent
+// `wait`s), or a final state that is neither "present and readable" nor "absent".
+
+/// Env var naming the child's racing role: `set` or `delete`. Absent in the parent.
+const race_role_env = "ZCLI_SECRETS_RACE_ROLE";
+
+/// Iterations per racing child. Each `set`/`delete` is a full store round-trip
+/// (an FFI pair on macOS/Windows, a spawned helper on Linux), so this is kept
+/// modest to keep wall time to a couple of seconds while still giving many chances
+/// for a `delete` to land in a `set`'s window (and for the deleters to race each
+/// other). The Linux per-op subprocess is heavier, so it runs fewer passes.
+const race_iterations: usize = if (builtin.os.tag == .linux) 40 else 150;
+
+/// The race is deliberately **one setter vs two deleters** — the realistic shape of
+/// the contention this hardening defends against (one `login` writing a token while
+/// `logout`/expiry race it), with a second deleter for two reasons: it widens the
+/// odds a `delete` lands inside the setter's tiny cross-process Add→Find→Modify
+/// window (which `securityd`'s per-op serialization otherwise makes rare), and the
+/// two deleters also race *each other* — exercising `delete`'s own Find→Delete
+/// TOCTOU (a concurrent delete between our Find and our Delete → `errSecItemNotFound`,
+/// which must read as success, not a failure).
+///
+/// It is intentionally **not** multiple concurrent *setters*: two setters racing
+/// each other surface a *different* keychain outcome (`SecKeychainItemModify` →
+/// `errSecDuplicateItem` when a second writer's Add lands mid-modify), a distinct
+/// multi-writer conflict rather than the delete-under-set TOCTOU in scope here.
+const race_deleters: usize = 2;
+
+/// One racing child's body: loop the given op against the shared key. The child
+/// builds its own context from the inherited real environment. Returns a nonzero
+/// exit code on any *unacceptable* error — success and benign key-not-found are
+/// both `void` here, so reaching the end means every op was acceptable.
+fn runRaceChild(role: []const u8) u8 {
+    const a = std.heap.smp_allocator;
+
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    loadEnviron(&env) catch return 2;
+
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    var ctx = MockContext{
+        .allocator = a,
+        .io = std.testing.io,
+        .environ = &env,
+        .app_name = service,
+        .err_writer = &discard.writer,
+    };
+    var data: plugin.ContextData = .{};
+
+    const is_setter = std.mem.eql(u8, role, "set");
+    var buf: [32]u8 = undefined;
+    var i: usize = 0;
+    while (i < race_iterations) : (i += 1) {
+        if (is_setter) {
+            const value = std.fmt.bufPrint(&buf, "v-{d}", .{i}) catch unreachable;
+            // Only success is acceptable: even when a concurrent `delete` removes
+            // the item mid-`set`, the retry must re-Add (or Modify) and succeed —
+            // never surface a backend failure.
+            data.set(&ctx, race_name, value) catch return 1;
+        } else {
+            // A delete of an absent key is a documented no-op (success), so every
+            // iteration must succeed regardless of what the setter is doing.
+            data.delete(&ctx, race_name) catch return 1;
+        }
+    }
+    return 0;
+}
+
+test "concurrent set / delete race is benign and leaves the store usable" {
+    const io = std.testing.io;
+
+    // A re-exec'd child: run one racing loop and exit with its result code. This
+    // returns before touching the parent-only spawn logic below. (The child skips
+    // the round-trip test via the same env guard.)
+    if (envValue(race_role_env)) |role| {
+        std.process.exit(runRaceChild(role));
+    }
+
+    // ---- Parent: spawn the racing children and arbitrate the outcome. ----
+    const a = std.testing.allocator;
+
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try loadEnviron(&env);
+
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    var ctx = MockContext{ .allocator = a, .io = io, .environ = &env, .app_name = service, .err_writer = &discard.writer };
+    var data: plugin.ContextData = .{};
+
+    // Start from a clean slate even if a prior aborted run left an entry.
+    try data.delete(&ctx, race_name);
+
+    // This test binary's own path — what we re-exec as the racing children.
+    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_len = try std.process.executablePath(io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
+
+    // The children inherit this process's environment (so the Linux backend still
+    // sees the session bus / HOME / gpg-agent CI set up) plus the role selector.
+    var setter_env = std.process.Environ.Map.init(a);
+    defer setter_env.deinit();
+    try loadEnviron(&setter_env);
+    try setter_env.put(race_role_env, "set");
+
+    var deleter_env = std.process.Environ.Map.init(a);
+    defer deleter_env.deinit();
+    try loadEnviron(&deleter_env);
+    try deleter_env.put(race_role_env, "delete");
+
+    // Spawn all children first (so the single setter and the deleters actually
+    // overlap on the shared store), then reap them all. The setter occupies slot 0,
+    // the deleters the rest.
+    var children: [1 + race_deleters]std.process.Child = undefined;
+    children[0] = try std.process.spawn(io, .{
+        .argv = &.{exe},
+        .environ_map = &setter_env,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    for (1..children.len) |k| {
+        children[k] = try std.process.spawn(io, .{
+            .argv = &.{exe},
+            .environ_map = &deleter_env,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+    }
+
+    // Each child exits 0 only if every op it did was acceptable (success or benign
+    // key-not-found). A nonzero exit is the pre-#234 opaque `BackendFailure`
+    // surfacing under the race — the exact regression this test guards. Reap all
+    // children before asserting so none is left as a zombie on an early failure.
+    var all_ok = true;
+    for (&children) |*child| {
+        const term = child.wait(io) catch |e| {
+            all_ok = false;
+            std.debug.print("child wait failed: {s}\n", .{@errorName(e)});
+            continue;
+        };
+        if (!(term == .exited and term.exited == 0)) {
+            all_ok = false;
+            std.debug.print("a racing child exited abnormally: {any}\n", .{term});
+        }
+    }
+    try std.testing.expect(all_ok);
+
+    // The final state must be one of the two acceptable outcomes: the key is
+    // present and readable, or absent. Reading it back (whatever it is) must not
+    // fail — anything else means the store is wedged.
+    if (try data.get(&ctx, race_name)) |v| a.free(v);
+
+    // Deterministic cleanup, then a full round-trip proving the store still works
+    // (not wedged/locked by the racing): set a sentinel, read it back, delete it,
+    // confirm gone.
+    try data.delete(&ctx, race_name);
+    try std.testing.expect((try data.get(&ctx, race_name)) == null);
+
+    try data.set(&ctx, race_name, "post-race-sentinel");
+    {
+        const v = (try data.get(&ctx, race_name)).?;
+        defer a.free(v);
+        try std.testing.expectEqualStrings("post-race-sentinel", v);
+    }
+    try data.delete(&ctx, race_name);
+    try std.testing.expect((try data.get(&ctx, race_name)) == null);
 }

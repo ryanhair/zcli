@@ -138,13 +138,21 @@ pub fn set(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, s
     const service_len = try castLen(service.len);
     const name_len = try castLen(name.len);
 
-    // Add → (on duplicate) Find+Modify is a read-modify-write with a TOCTOU
-    // window: a concurrent `delete` between our Add and our Find makes Find
-    // return `errSecItemNotFound`, and the item genuinely no longer exists — so
-    // the correct action is simply to Add again, not to fail. Retry the whole
-    // Add/Find/Modify cycle a bounded number of times; if it keeps flipping
-    // (another writer racing us every pass) give up with a real failure rather
-    // than loop forever.
+    // Add → (on duplicate) Find → Modify is a read-modify-write with *two* TOCTOU
+    // windows against a concurrent `delete`: the item can vanish between our Add
+    // and our Find (Find → `errSecItemNotFound`), or between our Find and our
+    // Modify (Modify → `errSecItemNotFound`). In both cases the item genuinely no
+    // longer exists, so the correct action is simply to Add again, not to fail.
+    //
+    // Retry the whole Add/Find/Modify cycle on those benign not-found races. Each
+    // pass makes forward progress (a fresh Add), and a race only recurs if another
+    // writer deletes in our window *again* — independent events, so the loop
+    // converges in practice within one or two passes. `max_attempts` is only a
+    // livelock backstop against a pathological adversary that manages to delete in
+    // our window on every consecutive pass; it is set well above any realistic
+    // contention (two CLIs each doing a single op collide at most once) so a benign
+    // race never exhausts it and surfaces as a spurious failure.
+    const max_attempts = 16;
     var attempts: u8 = 0;
     while (true) : (attempts += 1) {
         const status = SecKeychainAddGenericPassword(
@@ -175,15 +183,19 @@ pub fn set(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, s
         // The item was deleted out from under us between Add and Find; loop to
         // re-Add rather than surface an opaque failure for a benign race.
         if (find == errSecItemNotFound) {
-            if (attempts < 3) continue;
+            if (attempts < max_attempts) continue;
             return keychainFailure(find);
         }
         if (find != errSecSuccess) return keychainFailure(find);
         defer CFRelease(item);
 
         const modify = SecKeychainItemModifyAttributesAndData(item, null, value_len, value.ptr);
-        if (modify != errSecSuccess) return keychainFailure(modify);
-        return;
+        if (modify == errSecSuccess) return;
+        // Same benign race, one window later: the item was deleted between our
+        // Find and this Modify. Loop to re-Add rather than fail. (`item` is still
+        // released by the `defer` above as this iteration's scope exits.)
+        if (modify == errSecItemNotFound and attempts < max_attempts) continue;
+        return keychainFailure(modify);
     }
 }
 
@@ -206,7 +218,13 @@ pub fn delete(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map
     defer CFRelease(item);
 
     const status = SecKeychainItemDelete(item);
-    if (status != errSecSuccess) return keychainFailure(status);
+    if (status == errSecSuccess) return;
+    // Find→Delete has the mirror of `set`'s TOCTOU: the item can be removed
+    // (by a concurrent `delete`, or a `set` that re-Added over it) between our
+    // Find and this Delete, so Delete returns `errSecItemNotFound`. The caller
+    // asked for the item to be gone and it is — that is success, not a failure.
+    if (status == errSecItemNotFound) return;
+    return keychainFailure(status);
 }
 
 test "keychain backend compiles and links against Security.framework" {
