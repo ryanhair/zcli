@@ -109,7 +109,7 @@ zcli.generateDocs(b, cmd_registry, zcli_dep, .{
 });
 ```
 
-Run it with `zig build docs` (it's off the default step, so ordinary builds stay fast). Each format gets a subdirectory: `docs/markdown/`, `docs/man/` (a section-1 page per command), and `docs/html/` — a styled static site with navigation. Because it reads the same registry your binary compiles from, generated docs can't drift from the commands they describe.
+Run it with `zig build docs` (it's off the default step, so ordinary builds stay fast). Each format gets a subdirectory: `docs/markdown/`, `docs/man/` (a section-1 page per command), and `docs/html/` — a static site styled to match this documentation, dark and terminal-native, with breadcrumb navigation. Enum-typed options and arguments list their valid choices in every format, and man-page dates honor `SOURCE_DATE_EPOCH` so the output is byte-for-byte reproducible. Because it reads the same registry your binary compiles from, generated docs can't drift from the commands they describe.
 
 ## Built-in plugin tags
 
