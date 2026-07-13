@@ -45,6 +45,35 @@ pub fn linkSecretsBackend(module: *std.Build.Module, target: std.Target) void {
 // VERSION MANAGEMENT - Read version from build.zig.zon
 // ============================================================================
 
+/// Compute the build date (`YYYY-MM-DD`) stamped into the registry for the man
+/// page `.TH` field. Honors `SOURCE_DATE_EPOCH` (the reproducible-builds
+/// convention) when set, otherwise stamps the current build time. Either way
+/// the date is fixed at build time, so `zig build docs` is reproducible across
+/// runs of the same build.
+fn computeBuildDate(b: *std.Build) []const u8 {
+    const epoch_secs: u64 = blk: {
+        if (b.graph.environ_map.get("SOURCE_DATE_EPOCH")) |raw| {
+            const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+            if (std.fmt.parseInt(u64, trimmed, 10)) |secs| {
+                break :blk secs;
+            } else |_| {
+                logging.logBuildWarning("SOURCE_DATE_EPOCH is not a valid integer ('{s}'); using build time", .{trimmed});
+            }
+        }
+        const ns = std.Io.Clock.real.now(b.graph.io).nanoseconds;
+        break :blk @intCast(@divTrunc(ns, std.time.ns_per_s));
+    };
+
+    const epoch_day = (std.time.epoch.EpochSeconds{ .secs = epoch_secs }).getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    return std.fmt.allocPrint(b.allocator, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+    }) catch @panic("OOM");
+}
+
 /// Read version from the project's build.zig.zon file
 fn readVersionFromZon(b: *std.Build) []const u8 {
     // Read the file from build root
@@ -185,6 +214,7 @@ fn generatePluginRegistry(
 pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Build.Dependency, config: GenerateConfig) GenerateError!*std.Build.Module {
     const zcli_module = zcli_dep.module("zcli");
     const app_version = readVersionFromZon(b);
+    const build_date = computeBuildDate(b);
 
     // Convert plugin configs to PluginInfo array
     var plugins = std.ArrayList(types.PluginInfo).empty;
@@ -226,6 +256,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         .app_name = config.app_name,
         .app_version = app_version,
         .app_description = config.app_description,
+        .build_date = build_date,
     };
 
     return buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);
