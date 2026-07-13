@@ -208,6 +208,12 @@ pub fn hasOnError(comptime T: type) bool {
     return @hasDecl(T, "onError");
 }
 
+/// Check if a type has an applyConfigDefaults hook. See `hook_names` below for
+/// the full contract.
+pub fn hasApplyConfigDefaults(comptime T: type) bool {
+    return @hasDecl(T, "applyConfigDefaults");
+}
+
 /// Check if a type has command extensions
 pub fn hasCommands(comptime T: type) bool {
     return @hasDecl(T, "commands");
@@ -224,6 +230,33 @@ pub fn getPriority(comptime T: type) i32 {
 /// The lifecycle hooks detected by exact name above. Kept next to the has*
 /// functions so a new hook is added to both or the validator complains about
 /// nothing.
+///
+/// Signatures (all take `context: anytype` because plugins compile independently
+/// of the host app):
+///
+///   transformArgs(context, args: []const []const u8) !zcli.TransformResult
+///   handleGlobalOption(context, name: []const u8, value: anytype) !void
+///   preParse(context, args: []const []const u8) ![]const []const u8
+///   postParse(context, args: zcli.ParsedArgs) !?zcli.ParsedArgs
+///   preExecute(context, args: zcli.ParsedArgs) !?zcli.ParsedArgs
+///   postExecute(context, result: anytype) !void
+///   onError(context, err: anyerror) !bool
+///
+///   applyConfigDefaults(context, comptime OptionsType: type,
+///                       options: *OptionsType, provided: []const bool) void
+///     Fills option fields from a lower-precedence source (e.g. a config file)
+///     after CLI + env parsing but before required/dependency/exclusive
+///     validation. `provided` has one flag per Options field, in field-
+///     declaration order, true when the CLI or the field's env fallback already
+///     set it. The precedence obligation: the hook MUST skip any field whose
+///     `provided` flag is true — this single check is what makes
+///     CLI > env > hook hold. `options` is mutated in place; `provided` is a
+///     read-only view. The hook does not return an error union — a malformed or
+///     unreadable source is a warning-and-skip, never a hard failure (a config
+///     typo must not brick every command). Any values it writes into `options`
+///     (e.g. coerced strings/arrays) must outlive the command's execution;
+///     the built-in zcli_config plugin allocates them from a parse arena tied
+///     to its ContextData so they die with `deinitContextData`.
 const hook_names = [_][]const u8{
     "transformArgs",
     "handleGlobalOption",
@@ -232,6 +265,7 @@ const hook_names = [_][]const u8{
     "preExecute",
     "postExecute",
     "onError",
+    "applyConfigDefaults",
 };
 
 /// Non-hook decl names that are part of the plugin contract (never flagged).
@@ -252,6 +286,10 @@ const contract_names = hook_names ++ [_][]const u8{
 /// with a pointer at the hook it resembles.
 pub fn validatePlugin(comptime Plugin: type) void {
     comptime {
+        // The per-decl edit-distance DP over every hook name is cheap
+        // individually but adds up across a plugin with many decls; give it
+        // headroom above the 1000 default so adding a hook name never trips it.
+        @setEvalBranchQuota(10_000);
         if (@typeInfo(Plugin) != .@"struct") return;
         for (@typeInfo(Plugin).@"struct".decls) |decl| {
             if (isContractName(decl.name)) continue;
@@ -384,6 +422,28 @@ test "validatePlugin accepts a well-formed plugin with helpers" {
     comptime validatePlugin(Plugin);
 }
 
+test "editDistance flags an applyConfigDefaults typo" {
+    comptime {
+        // The transposition the typo-guard exists to catch: this misspelling
+        // compiles fine but would never be dispatched (hooks match by exact name).
+        std.debug.assert(editDistance("applyConfigDefualts", "applyConfigDefaults") == 2);
+        // A far-off helper in the same plugin must stay clear of the guard.
+        std.debug.assert(editDistance("applyFromJsonScoped", "applyConfigDefaults") > 2);
+    }
+}
+
+test "validatePlugin accepts a well-formed applyConfigDefaults hook" {
+    const Plugin = struct {
+        pub const plugin_id = "cfg_plugin";
+        pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool) void {
+            _ = context;
+            _ = options;
+            _ = provided;
+        }
+    };
+    comptime validatePlugin(Plugin);
+}
+
 test "validatePlugin accepts ContextData paired with a valid plugin_id" {
     const Plugin = struct {
         pub const plugin_id = "my_plugin";
@@ -431,6 +491,7 @@ pub fn PluginEntry(comptime T: type) type {
         pub const has_pre_execute = hasPreExecute(T);
         pub const has_post_execute = hasPostExecute(T);
         pub const has_on_error = hasOnError(T);
+        pub const has_apply_config_defaults = hasApplyConfigDefaults(T);
         pub const has_commands = hasCommands(T);
         pub const priority = getPriority(T);
 
