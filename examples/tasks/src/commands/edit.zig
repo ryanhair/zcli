@@ -7,11 +7,30 @@ const themed = zcli.theme.styled;
 pub const meta = .{
     .description = "Edit a task's title and description in your editor",
     .examples = &.{"edit 1"},
-    .args = .{ .id = "Task ID" },
+    .args = .{ .id = .{ .description = "Task ID", .complete = completeId } },
 };
 
 pub const Args = struct { id: u32 };
 pub const Options = struct {};
+
+/// Dynamic completion (ADR-0026): offer the live task ids, each labelled with its
+/// title. Values/labels are duped into the request arena because the parsed store
+/// owns them and is freed on return.
+fn completeId(req: *zcli.completion.Request) !zcli.completion.Result {
+    var parsed = try store.load(req.allocator, req.io);
+    defer parsed.deinit();
+
+    var out: std.ArrayList(zcli.completion.Candidate) = .empty;
+    for (parsed.value.tasks) |task| {
+        const id_str = try std.fmt.allocPrint(req.allocator, "{d}", .{task.id});
+        if (!std.mem.startsWith(u8, id_str, req.partial)) continue;
+        try out.append(req.allocator, .{
+            .value = id_str,
+            .description = try req.allocator.dupe(u8, task.title),
+        });
+    }
+    return .{ .candidates = try out.toOwnedSlice(req.allocator) };
+}
 
 pub fn execute(args: Args, _: Options, context: *Context) !void {
     const allocator = context.allocator;

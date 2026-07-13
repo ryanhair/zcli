@@ -85,17 +85,33 @@ pub fn generate(
     try writeCommandCases(arena, writer, root);
     try writer.writeAll("    esac\n\n");
 
+    const has_dynamic = tree.hasDynamicArg(root);
+    const has_pos_enums = hasPositionalEnums(root);
+
     try writer.writeAll("    if [[ -n \"$completions\" ]]; then\n");
     try writer.writeAll("        COMPREPLY=($(compgen -W \"$completions\" -- \"$cur\"))\n");
-    if (hasPositionalEnums(root)) {
-        // Positional value completion for leaf commands. Keyed on the exact
-        // command path — i.e. the first positional slot — since bash has no way
-        // to display a descriptive hint, only candidate values. Non-enum
-        // positionals intentionally offer nothing rather than dumping files.
+    if (has_dynamic or has_pos_enums) {
         try writer.writeAll("    else\n");
-        try writer.writeAll("        case \"$key\" in\n");
-        try writePositionalCases(arena, writer, root);
-        try writer.writeAll("        esac\n");
+        if (has_dynamic) {
+            // Dynamic positional completion: ask the program for live candidates.
+            // `__complete` resolves the exact field the cursor is on (returning
+            // nothing when there is no hook), so one call covers every position.
+            // NUL-framed read (`read -d ''`) so a value may contain spaces/globs;
+            // bash keeps only the value (COMPREPLY has no description channel).
+            try writer.writeAll("        local __rec\n");
+            try writer.writeAll("        while IFS= read -r -d '' __rec; do\n");
+            try writer.writeAll("            COMPREPLY+=(\"${__rec%%$'\\t'*}\")\n");
+            try writer.writeAll("        done < <(\"${words[0]}\" __complete \"$cword\" -- \"${words[@]}\" 2>/dev/null)\n");
+        }
+        if (has_pos_enums) {
+            // Static enum positionals (first slot). Only when the dynamic pass
+            // produced nothing, so a hook always wins for its own field.
+            if (has_dynamic) try writer.writeAll("        if [[ ${#COMPREPLY[@]} -eq 0 ]]; then\n");
+            try writer.writeAll("        case \"$key\" in\n");
+            try writePositionalCases(arena, writer, root);
+            try writer.writeAll("        esac\n");
+            if (has_dynamic) try writer.writeAll("        fi\n");
+        }
     }
     try writer.writeAll("    fi\n");
     try writer.writeAll("    return 0\n");

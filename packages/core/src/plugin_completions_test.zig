@@ -17,6 +17,13 @@ const zsh = @import("plugins/zcli_completions/zsh.zig");
 const fish = @import("plugins/zcli_completions/fish.zig");
 const tree = @import("plugins/zcli_completions/tree.zig");
 const escape = @import("plugins/zcli_completions/escape.zig");
+const resolve = @import("plugins/zcli_completions/resolve.zig");
+const wire = @import("plugins/zcli_completions/wire.zig");
+
+// Pull the wire module's own tests (NUL framing / scrubbing) into this binary.
+test {
+    _ = wire;
+}
 
 const app_name = "tasks";
 
@@ -58,6 +65,148 @@ const commands = [_]zcli.CommandInfo{
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
+}
+
+// ============================================================================
+// Layer 0: cursor resolution (dynamic completion, ADR-0026)
+// ============================================================================
+
+fn dummyHook(_: *zcli.completion.Request) anyerror!zcli.completion.Result {
+    return .{};
+}
+
+const hook_spec: zcli.completion.Spec = .{ .hook = dummyHook };
+
+// A command set exercising the resolver: `edit <id>` (one dynamic arg),
+// `move <id> <sprint>` (two), `deploy --host <v> <target>` (a value-taking
+// option before a dynamic positional), `calc <a> <b>`, `sprint create <name>`
+// (nested), and `list <status>` with NO completion (a plain arg).
+const rc_edit_args = [_]zcli.ArgInfo{.{ .name = "id", .complete = hook_spec }};
+const rc_move_args = [_]zcli.ArgInfo{
+    .{ .name = "id", .complete = hook_spec },
+    .{ .name = "sprint", .complete = hook_spec },
+};
+const rc_deploy_opts = [_]zcli.OptionInfo{.{ .name = "host", .short = 'H', .takes_value = true }};
+const rc_deploy_args = [_]zcli.ArgInfo{.{ .name = "target", .complete = hook_spec }};
+const rc_calc_args = [_]zcli.ArgInfo{
+    .{ .name = "a", .complete = hook_spec },
+    .{ .name = "b", .complete = hook_spec },
+};
+const rc_sprint_create_args = [_]zcli.ArgInfo{.{ .name = "name", .complete = hook_spec }};
+const rc_list_args = [_]zcli.ArgInfo{.{ .name = "status" }}; // no .complete
+
+const resolve_commands = [_]zcli.CommandInfo{
+    .{ .path = &.{"edit"}, .args = &rc_edit_args },
+    .{ .path = &.{"move"}, .args = &rc_move_args },
+    .{ .path = &.{"deploy"}, .options = &rc_deploy_opts, .args = &rc_deploy_args },
+    .{ .path = &.{"calc"}, .args = &rc_calc_args },
+    .{ .path = &.{ "sprint", "create" }, .args = &rc_sprint_create_args },
+    .{ .path = &.{"list"}, .args = &rc_list_args },
+};
+
+const rc_globals = [_]zcli.OptionInfo{
+    .{ .name = "verbose", .short = 'v' }, // boolean
+    .{ .name = "config", .short = 'c', .takes_value = true },
+};
+
+fn expectResolve(words: []const []const u8, cword: usize) !resolve.Match {
+    const m = try resolve.resolve(std.testing.allocator, &resolve_commands, &rc_globals, words, cword);
+    return m orelse error.NoMatch;
+}
+
+fn expectNoResolve(words: []const []const u8, cword: usize) !void {
+    const m = try resolve.resolve(std.testing.allocator, &resolve_commands, &rc_globals, words, cword);
+    if (m) |mm| {
+        std.testing.allocator.free(mm.positionals);
+        return error.UnexpectedMatch;
+    }
+}
+
+test "resolve - first positional of a leaf command" {
+    const m = try expectResolve(&.{ "tasks", "edit", "" }, 2);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expect(m.spec == .hook);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+    try std.testing.expectEqualStrings("", m.partial);
+}
+
+test "resolve - carries the partial prefix" {
+    const m = try expectResolve(&.{ "tasks", "edit", "ta" }, 2);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqualStrings("ta", m.partial);
+}
+
+test "resolve - second positional resolves the second arg" {
+    const m = try expectResolve(&.{ "tasks", "move", "3", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 1), m.positionals.len);
+    try std.testing.expectEqualStrings("3", m.positionals[0]);
+}
+
+test "resolve - past the last non-variadic arg yields nothing" {
+    // edit has one arg; the second positional slot has no field.
+    try expectNoResolve(&.{ "tasks", "edit", "5", "" }, 3);
+}
+
+test "resolve - a boolean option before the cursor does not shift the slot" {
+    const m = try expectResolve(&.{ "tasks", "edit", "--verbose", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+}
+
+test "resolve - a value-taking option consumes its value (arity-aware)" {
+    // `--host x` must not count `x` as a positional; target stays slot 0.
+    const m = try expectResolve(&.{ "tasks", "deploy", "--host", "x", "" }, 4);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+    try std.testing.expect(m.spec == .hook);
+}
+
+test "resolve - short value-taking option consumes its value" {
+    const m = try expectResolve(&.{ "tasks", "deploy", "-H", "x", "" }, 4);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+}
+
+test "resolve - --flag=value is self-contained" {
+    const m = try expectResolve(&.{ "tasks", "deploy", "--host=x", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+}
+
+test "resolve - a global value-taking option before the command is skipped" {
+    const m = try expectResolve(&.{ "tasks", "--config", "f.toml", "edit", "" }, 4);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+    try std.testing.expect(m.spec == .hook);
+}
+
+test "resolve - a negative number is a positional, not an option" {
+    const m = try expectResolve(&.{ "tasks", "calc", "-5", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 1), m.positionals.len);
+    try std.testing.expectEqualStrings("-5", m.positionals[0]);
+}
+
+test "resolve - -- ends option parsing" {
+    const m = try expectResolve(&.{ "tasks", "edit", "--", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+}
+
+test "resolve - nested group command" {
+    const m = try expectResolve(&.{ "tasks", "sprint", "create", "" }, 3);
+    defer std.testing.allocator.free(m.positionals);
+    try std.testing.expect(m.spec == .hook);
+    try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+}
+
+test "resolve - a positional field with no .complete yields nothing" {
+    try expectNoResolve(&.{ "tasks", "list", "" }, 2);
+}
+
+test "resolve - cursor on the command name is not dynamic" {
+    try expectNoResolve(&.{ "tasks", "ed" }, 1);
 }
 
 // ============================================================================
@@ -438,4 +587,103 @@ test "functional bash - COMPREPLY at root and at depth 2" {
     // `tasks list <TAB>` completes the enum positional's values, NOT files.
     try std.testing.expect(contains(listarg_line.?, "open"));
     try std.testing.expect(contains(listarg_line.?, "done"));
+}
+
+// ============================================================================
+// Layer 3c: dynamic-completion escaping (ADR-0026) — the generated read paths
+// must pass adversarial candidate values through as SINGLE candidates, verbatim.
+// ============================================================================
+
+// A fixture app with one dynamic-hook positional so the generators emit the
+// `__complete` callback wiring. The hook itself is never run here — a stub binary
+// named `advapp` stands in for `__complete` and emits the adversarial records.
+const adv_pick_args = [_]zcli.ArgInfo{.{ .name = "thing", .complete = hook_spec }};
+const adv_commands = [_]zcli.CommandInfo{.{ .path = &.{"pick"}, .description = "Pick", .args = &adv_pick_args }};
+
+// A POSIX `sh` stub that answers any `__complete` invocation with five nasty
+// values, NUL-separated: a space, a leading dash, glob chars, a quote, a dollar.
+const adv_stub =
+    \\#!/bin/sh
+    \\printf '%s\0' 'a b c' '-wip' 'x*y?' "it's" '$HOME'
+    \\
+;
+
+fn advContains(hay: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, hay, needle) != null;
+}
+
+/// Assert every adversarial value survived as its own `<...>`-wrapped line.
+fn assertAdvExact(out: []const u8) !void {
+    try std.testing.expect(advContains(out, "<a b c>")); // space kept, one candidate
+    try std.testing.expect(advContains(out, "<-wip>")); // leading dash not an option
+    try std.testing.expect(advContains(out, "<x*y?>")); // glob not expanded
+    try std.testing.expect(advContains(out, "<it's>")); // quote intact
+    try std.testing.expect(advContains(out, "<$HOME>")); // dollar not expanded
+}
+
+test "functional bash - dynamic candidates survive adversarial values verbatim" {
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try bash.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp_completion.bash", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", adv_stub);
+
+    // Source the completion WITHOUT bash-completion (exercises the fallback), point
+    // COMP_WORDS[0] at the stub, and drive the completion at the `pick` positional.
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\source "{s}"
+        \\COMP_WORDS=("{s}" pick "")
+        \\COMP_CWORD=2
+        \\COMPREPLY=()
+        \\_advapp_completions
+        \\printf '<%s>\n' "${{COMPREPLY[@]}}"
+        \\
+    , .{ stub_path, script_path, stub_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_harness.bash", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try assertAdvExact(result.stdout);
+    // Exactly five candidates — no glob split the `x*y?` into filenames, no split
+    // of `a b c` on spaces.
+    try std.testing.expectEqual(@as(usize, 5), std.mem.count(u8, result.stdout, "<"));
+}
+
+test "functional fish - dynamic candidates survive adversarial values verbatim" {
+    const sh = findShell("fish") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try fish.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp.fish", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", adv_stub);
+    const dir_path = std.fs.path.dirname(stub_path).?;
+
+    // Put the stub dir on PATH (the fish helper invokes `advapp` by name), then ask
+    // fish for the completions of `advapp pick `, wrapping each in <...>.
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\set -x PATH "{s}" $PATH
+        \\source "{s}"
+        \\for c in (complete -C "advapp pick ")
+        \\    printf '<%s>\n' (string split -- \t $c)[1]
+        \\end
+        \\
+    , .{ stub_path, dir_path, script_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_harness.fish", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try assertAdvExact(result.stdout);
 }
