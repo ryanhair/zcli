@@ -98,10 +98,18 @@ pub fn generate(
             // nothing when there is no hook), so one call covers every position.
             // NUL-framed read (`read -d ''`) so a value may contain spaces/globs;
             // bash keeps only the value (COMPREPLY has no description channel).
-            try writer.writeAll("        local __rec\n");
+            try writer.writeAll("        local __rec __dir=default __first=1\n");
             try writer.writeAll("        while IFS= read -r -d '' __rec; do\n");
+            // The first record is the directive; the rest are candidate values.
+            try writer.writeAll("            if [[ $__first == 1 ]]; then __dir=\"$__rec\"; __first=0; continue; fi\n");
             try writer.writeAll("            COMPREPLY+=(\"${__rec%%$'\\t'*}\")\n");
             try writer.writeAll("        done < <(\"${words[0]}\" __complete \"$cword\" -- \"${words[@]}\" 2>/dev/null)\n");
+            // Combine directive: also offer native file/dir completion.
+            try writer.writeAll("        if [[ \"$__dir\" == also_files ]]; then\n");
+            try writer.writeAll("            COMPREPLY+=($(compgen -f -- \"$cur\"))\n");
+            try writer.writeAll("        elif [[ \"$__dir\" == also_dirs ]]; then\n");
+            try writer.writeAll("            COMPREPLY+=($(compgen -d -- \"$cur\"))\n");
+            try writer.writeAll("        fi\n");
         }
         if (has_pos_enums) {
             // Static enum positionals (first slot). Only when the dynamic pass

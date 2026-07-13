@@ -177,7 +177,18 @@ fn writeDynamicHelper(writer: anytype, app_name: []const u8) !void {
     // string is dropped, which `__complete` reads back as an empty partial). One
     // call covers both the mid-token and word-boundary cases.
     try writer.writeAll("    set -l toks (commandline -opc)\n");
-    try writer.writeAll("    command $toks[1] __complete (count $toks) -- $toks (commandline -ct) 2>/dev/null | string split0\n");
+    try writer.writeAll("    set -l out (command $toks[1] __complete (count $toks) -- $toks (commandline -ct) 2>/dev/null | string split0)\n");
+    // First record is the directive; the rest are candidates.
+    try writer.writeAll("    test (count $out) -ge 1; or return\n");
+    try writer.writeAll("    if test (count $out) -gt 1\n");
+    try writer.writeAll("        printf '%s\\n' $out[2..-1]\n");
+    try writer.writeAll("    end\n");
+    try writer.writeAll("    switch $out[1]\n");
+    try writer.writeAll("        case also_files\n");
+    try writer.writeAll("            __fish_complete_path (commandline -ct)\n");
+    try writer.writeAll("        case also_dirs\n");
+    try writer.writeAll("            __fish_complete_directories\n");
+    try writer.writeAll("    end\n");
     try writer.writeAll("end\n\n");
 }
 

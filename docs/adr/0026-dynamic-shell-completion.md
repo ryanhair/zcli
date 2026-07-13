@@ -224,29 +224,38 @@ positions call back is staged across increments (below).
 
 ## The `__complete` wire format and escaping
 
-`__complete` prints a **NUL-delimited** list: each candidate is `value` then,
-optionally, a tab and `description`, terminated by a NUL byte; a final record
-carries the directive (`default` / `also_files` / `also_dirs`). NUL — not newline —
-because candidate values are arbitrary runtime strings (a task title, a branch, a
-path) that can legally contain newlines and tabs. Stripping them, as an earlier
-draft proposed, is *data corruption*: it would offer a value that differs from the
-real one and insert a broken string on the command line. NUL is the only byte a
-value cannot contain, so it is the only correct delimiter.
+`__complete` prints a **NUL-delimited** stream: the **first** record is a directive
+token (`default` / `also_files` / `also_dirs`); every record after it is a candidate
+— `value` then, optionally, a tab and `description`. NUL — not newline — because
+candidate values are arbitrary runtime strings (a task title, a branch, a path)
+that can legally contain newlines and tabs. Stripping them, as an earlier draft
+proposed, is *data corruption*: it would offer a value that differs from the real
+one and insert a broken string on the command line. NUL is the only byte a value
+cannot contain, so it is the only correct delimiter. (The directive leads rather
+than trails so the scripts can read it before deciding whether to also invoke
+native file completion, and so a stream is never mistaken for candidates-only.)
 
 Value quoting is the place completion bugs live (the Tier-1 static work proved it),
 and dynamic values are the worst case. The naive `COMPREPLY=($(…))` **word-splits
-on `IFS` and glob-expands**. So the protocol and scripts are designed together:
+on `IFS` and glob-expands**. So the protocol and scripts are designed together —
+each reads NUL records directly (never re-splitting a `$(…)` blob):
 
-- **bash:** `mapfile -d '' -t COMPREPLY < <(…)` — NUL-delimited read, no split, no
-  glob. Never `COMPREPLY=($(…))`.
-- **zsh:** split the stream on NUL (`${(0)…}`) and feed `compadd`, with a `--`
-  guard so a value that starts with `-` is not read as an option; descriptions via
-  the `-d` array.
-- **fish:** fish command-substitution splits on newlines only, so the fish path
-  falls back to newline framing and therefore **cannot represent a value containing
-  a literal newline** — documented as a fish limitation, not a silent corruption
-  (such values are dropped, not mangled). Leading-`-` values are guarded the same
-  way.
+- **bash:** a `while IFS= read -r -d '' rec` loop appends quoted values to
+  `COMPREPLY` (a `read -d ''` loop rather than `mapfile -d ''` so it also works on
+  bash 3.2, the macOS system bash). Never `COMPREPLY=($(…))`.
+- **zsh:** the same `read -r -d ''` loop feeds `compadd -d … --`, the `--` guarding
+  a value that starts with `-` from being read as an option; descriptions via the
+  `-d` display array.
+- **fish:** `string split0` turns the NUL stream into a list; fish command
+  substitution then splits it on newlines, so the fish path **cannot represent a
+  value containing a literal newline** — documented as a fish limitation, not a
+  silent corruption (such values are dropped, not mangled).
+
+For the **combine** directive (`.also_files`/`.also_dirs`), after emitting the
+candidates each script additionally invokes the shell's native file/dir
+completion. On an **empty** partial the directive is downgraded to `default` at the
+source (in `__complete`), so a bare `<TAB>` in combine mode shows only the dynamic
+candidates, not the whole CWD — the flood guard.
 
 Increment 1 must include **functional per-shell tests** (the Tier-1 `expect` /
 `bash -n` / `zsh -n` harness) asserting that a value containing a space, a quote, a

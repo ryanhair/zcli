@@ -681,11 +681,12 @@ test "functional bash - COMPREPLY at root and at depth 2" {
 const adv_pick_args = [_]zcli.ArgInfo{.{ .name = "thing", .complete = hook_spec }};
 const adv_commands = [_]zcli.CommandInfo{.{ .path = &.{"pick"}, .description = "Pick", .args = &adv_pick_args }};
 
-// A POSIX `sh` stub that answers any `__complete` invocation with five nasty
-// values, NUL-separated: a space, a leading dash, glob chars, a quote, a dollar.
+// A POSIX `sh` stub that answers any `__complete` invocation with the directive
+// record (`default`) followed by five nasty values, NUL-separated: a space, a
+// leading dash, glob chars, a quote, a dollar.
 const adv_stub =
     \\#!/bin/sh
-    \\printf '%s\0' 'a b c' '-wip' 'x*y?' "it's" '$HOME'
+    \\printf '%s\0' 'default' 'a b c' '-wip' 'x*y?' "it's" '$HOME'
     \\
 ;
 
@@ -767,4 +768,232 @@ test "functional fish - dynamic candidates survive adversarial values verbatim" 
 
     const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
     try assertAdvExact(result.stdout);
+}
+
+// A stub whose `__complete` returns the `also_files` directive plus two dynamic
+// candidates — exercising the combine path (candidates AND native files). The
+// candidates share the `zz` prefix the test completes with, since a real hook
+// filters by the partial and fish's `complete -C` filters candidates by the token.
+const comb_stub =
+    \\#!/bin/sh
+    \\printf '%s\0' 'also_files' 'zzalpha' 'zzbeta'
+    \\
+;
+
+test "functional bash - also_files directive adds file completion to candidates" {
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try bash.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp_completion.bash", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", comb_stub);
+    _ = try writeTemp(a, tmp.dir, "zzfile", "x"); // a file for the combine path to find
+    const dir_path = std.fs.path.dirname(stub_path).?;
+
+    // Complete `advapp pick zz` — the stub yields alpha/beta AND `also_files`, so
+    // the file `zzfile` (matching `zz`) must join the candidates.
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\source "{s}"
+        \\cd "{s}"
+        \\COMP_WORDS=("{s}" pick "zz")
+        \\COMP_CWORD=2
+        \\COMPREPLY=()
+        \\_advapp_completions
+        \\printf '<%s>\n' "${{COMPREPLY[@]}}"
+        \\
+    , .{ stub_path, script_path, dir_path, stub_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_comb_harness.bash", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try std.testing.expect(advContains(result.stdout, "<zzalpha>")); // dynamic candidate
+    try std.testing.expect(advContains(result.stdout, "<zzbeta>")); // the other dynamic candidate
+    try std.testing.expect(advContains(result.stdout, "<zzfile>")); // native file
+}
+
+test "functional fish - also_files directive adds file completion to candidates" {
+    const sh = findShell("fish") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try fish.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp.fish", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", comb_stub);
+    _ = try writeTemp(a, tmp.dir, "zzfile", "x");
+    const dir_path = std.fs.path.dirname(stub_path).?;
+
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\set -x PATH "{s}" $PATH
+        \\cd "{s}"
+        \\source "{s}"
+        \\for c in (complete -C "advapp pick zz")
+        \\    printf '<%s>\n' (string split -- \t $c)[1]
+        \\end
+        \\
+    , .{ stub_path, dir_path, dir_path, script_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_comb_harness.fish", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try std.testing.expect(advContains(result.stdout, "<zzalpha>"));
+    try std.testing.expect(advContains(result.stdout, "<zzbeta>"));
+    try std.testing.expect(advContains(result.stdout, "<zzfile>"));
+}
+
+// A stub whose `__complete` returns `default` + a matching candidate — used to
+// prove the shells only add native files when the DIRECTIVE says so (the shell
+// half of the flood guard: no directive combine → no file completion).
+const default_stub =
+    \\#!/bin/sh
+    \\printf '%s\0' 'default' 'zzalpha'
+    \\
+;
+
+// A stub emitting `also_files` plus the adversarial values — for the zsh helper,
+// which is exercised by stubbing `compadd`/`_files`.
+const zsh_comb_stub =
+    \\#!/bin/sh
+    \\printf '%s\0' 'also_files' 'a b c' '-wip' 'x*y?' "it's" '$HOME'
+    \\
+;
+
+test "gen - combine directive branches present in bash, zsh, fish" {
+    const b = try bash.generate(std.testing.allocator, "advapp", &adv_commands, &global_options);
+    defer std.testing.allocator.free(b);
+    try std.testing.expect(contains(b, "also_files") and contains(b, "compgen -f"));
+    try std.testing.expect(contains(b, "also_dirs") and contains(b, "compgen -d"));
+
+    const z = try zsh.generate(std.testing.allocator, "advapp", &adv_commands, &global_options);
+    defer std.testing.allocator.free(z);
+    try std.testing.expect(contains(z, "also_files) _files"));
+    try std.testing.expect(contains(z, "also_dirs) _files -/"));
+
+    const f = try fish.generate(std.testing.allocator, "advapp", &adv_commands, &global_options);
+    defer std.testing.allocator.free(f);
+    try std.testing.expect(contains(f, "case also_files") and contains(f, "__fish_complete_path"));
+    try std.testing.expect(contains(f, "case also_dirs") and contains(f, "__fish_complete_directories"));
+}
+
+test "functional zsh - dynamic candidates verbatim + combine invokes _files" {
+    const sh = findShell("zsh") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try zsh.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "_advapp", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", zsh_comb_stub);
+
+    // Drive the helper directly with `compadd`/`_files` stubbed to capture their
+    // args — deterministic, unlike interactive completion. `_advapp_*` globals are
+    // set AFTER sourcing because `_advapp()` clears them (it captures `$words`).
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\compadd() {{ while (( $# )); do print -r -- "ARG:$1"; shift; done }}
+        \\_files() {{ print -r -- "FILES:$@" }}
+        \\source "{s}" 2>/dev/null
+        \\_advapp_words=("{s}" pick "x")
+        \\_advapp_current=3
+        \\_advapp_zcli_complete
+        \\
+    , .{ stub_path, script_path, stub_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_zharness.zsh", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, "-f", harness_path } });
+    const out = result.stdout;
+    // Each adversarial value reached compadd as one verbatim argument.
+    try std.testing.expect(advContains(out, "ARG:a b c"));
+    try std.testing.expect(advContains(out, "ARG:-wip"));
+    try std.testing.expect(advContains(out, "ARG:x*y?"));
+    try std.testing.expect(advContains(out, "ARG:it's"));
+    try std.testing.expect(advContains(out, "ARG:$HOME"));
+    // The combine directive invoked native file completion.
+    try std.testing.expect(advContains(out, "FILES:"));
+}
+
+test "functional bash - default directive adds NO file completion (guard, shell half)" {
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try bash.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp_completion.bash", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", default_stub);
+    _ = try writeTemp(a, tmp.dir, "zzfile", "x");
+    const dir_path = std.fs.path.dirname(stub_path).?;
+
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\source "{s}"
+        \\cd "{s}"
+        \\COMP_WORDS=("{s}" pick "zz")
+        \\COMP_CWORD=2
+        \\COMPREPLY=()
+        \\_advapp_completions
+        \\printf '<%s>\n' "${{COMPREPLY[@]}}"
+        \\
+    , .{ stub_path, script_path, dir_path, stub_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_default_harness.bash", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try std.testing.expect(advContains(result.stdout, "<zzalpha>")); // dynamic candidate present
+    try std.testing.expect(!advContains(result.stdout, "<zzfile>")); // NO file: directive was default
+}
+
+test "functional fish - also_dirs directive offers directories" {
+    const sh = findShell("fish") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try fish.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp.fish", script);
+    const dir_stub =
+        \\#!/bin/sh
+        \\printf '%s\0' 'also_dirs' 'zzcand'
+        \\
+    ;
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", dir_stub);
+    try tmp.dir.createDir(io, "zzdir", .default_dir);
+    const dir_path = std.fs.path.dirname(stub_path).?;
+
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\set -x PATH "{s}" $PATH
+        \\cd "{s}"
+        \\source "{s}"
+        \\for c in (complete -C "advapp pick zz")
+        \\    printf '<%s>\n' (string split -- \t $c)[1]
+        \\end
+        \\
+    , .{ stub_path, dir_path, dir_path, script_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_dirs_harness.fish", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try std.testing.expect(advContains(result.stdout, "<zzcand>")); // dynamic candidate
+    try std.testing.expect(advContains(result.stdout, "<zzdir/>")); // directory (fish appends /)
 }
