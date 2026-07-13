@@ -70,7 +70,7 @@ pub const http = @import("http.zig");
 /// tree without building it (e.g. the `zcli tree` command).
 pub const command_discovery = @import("build_utils/command_discovery.zig");
 
-/// Custom parse-type helpers (ADR-0024): detection and construction for fields
+/// Custom parse-type helpers (ADR-0025): detection and construction for fields
 /// whose type declares `pub fn parse`. Exposed so the config plugin — which may
 /// import only "zcli" — can build such a field from a config string the same way
 /// the CLI parser does.
