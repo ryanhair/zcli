@@ -993,11 +993,14 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // check below can see which fields the config pass filled in.
             const before_config = options_instance;
 
-            // Config defaults override struct defaults; CLI-provided values
-            // (already parsed) still take precedence.
+            // Config defaults fill only options no higher source set. The
+            // provided bitset (CLI + env, keyed by Options field order) is the
+            // single mechanism enforcing CLI > env > config: config skips any
+            // field whose flag is true. Passed by value copy — the plugin reads,
+            // never mutates it.
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "applyConfigDefaults")) {
-                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance);
+                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance, &parse_result.options_provided);
                 }
             }
 
