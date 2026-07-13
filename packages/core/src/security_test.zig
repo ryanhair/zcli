@@ -275,19 +275,19 @@ test "security: resource exhaustion - processing time limits" {
     const io = std.testing.io;
     const start = std.Io.Timestamp.now(io, .awake);
 
-    // Test that suggestion algorithm has reasonable performance
+    // Test that the edit-distance kernel (the core of suggestion matching) has
+    // reasonable performance across many candidates.
     const command_count = 50; // Reasonable test size
     const similar_commands = try generateSimilarStrings(allocator, command_count, "command");
     defer freeSimilarStrings(allocator, similar_commands);
 
-    // Test command suggestion with typo
-    const suggestions = levenshtein.findSimilarCommands("commnd", similar_commands, allocator) catch |err| switch (err) {
-        error.OutOfMemory => {
-            // Acceptable - ran out of memory during suggestion generation
-            return;
-        },
-    };
-    defer allocator.free(suggestions); // Free the suggestions memory
+    // Score every candidate against a typo, mirroring the suggestion hot loop.
+    var closest: usize = std.math.maxInt(usize);
+    for (similar_commands) |candidate| {
+        const distance = levenshtein.editDistance("commnd", candidate);
+        if (distance < closest) closest = distance;
+    }
+    try testing.expect(closest != std.math.maxInt(usize));
 
     const elapsed = start.untilNow(io, .awake).nanoseconds;
 

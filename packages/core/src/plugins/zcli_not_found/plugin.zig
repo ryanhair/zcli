@@ -4,43 +4,126 @@ const levenshtein = zcli.levenshtein;
 
 /// zcli-not-found Plugin
 ///
-/// Handles command-not-found errors with intelligent "did you mean" suggestions
-/// using Levenshtein distance algorithm to find similar commands.
-/// Error hook - handles command not found errors with suggestions
+/// Answers `error.CommandNotFound` — the single origin for three distinct
+/// situations the registry funnels through it (see registry/compiled.zig):
+///
+///   1. A genuinely unknown command (`command_path` is the mistyped argv).
+///      Renders "Unknown command '<x>'" with Levenshtein "did you mean"
+///      suggestions and the available-command list, then returns `false` so
+///      the error propagates and the process exits non-zero. The registry
+///      prints no bare fallback on this path — this block is the sole output.
+///
+///   2. A known command *group* accessed bare (`command_path` is a real
+///      prefix of one or more commands, but names no executable leaf).
+///      Renders the group's subcommands. This is NOT a typo, so no
+///      suggestions — and it returns `true` (handled) so the registry does
+///      not also print its own "'<x>' is a command group" line on top.
+///
+///   3. No command at all (`command_path` is empty). Renders the top-level
+///      command list, returns `true` so the registry's bare "No command
+///      specified" line is suppressed.
+///
+/// The plugin is self-contained: it handles all three sensibly on its own,
+/// with or without zcli_help registered. When help IS registered it runs at
+/// higher priority and answers cases 2 and 3 with richer, themed help,
+/// suppressing the error before this plugin is consulted; this plugin then
+/// only reaches case 1. When help is absent, this plugin covers all three.
 pub fn onError(
     context: anytype,
     err: anyerror,
 ) !bool {
-    if (err == error.CommandNotFound) {
-        // Get available commands and filter out hidden ones
-        const all_command_info = context.getAvailableCommandInfo();
-        var visible_commands = std.ArrayList([]const []const u8).empty;
-        defer visible_commands.deinit(context.allocator);
+    if (err != error.CommandNotFound) return false;
 
-        for (all_command_info) |cmd_info| {
-            if (!cmd_info.hidden) {
-                try visible_commands.append(context.allocator, cmd_info.path);
-            }
+    // Collect visible (non-hidden) command paths once — every branch needs them.
+    const all_command_info = context.getAvailableCommandInfo();
+    var visible_commands = std.ArrayList([]const []const u8).empty;
+    defer visible_commands.deinit(context.allocator);
+    for (all_command_info) |cmd_info| {
+        if (!cmd_info.hidden) {
+            try visible_commands.append(context.allocator, cmd_info.path);
         }
-
-        const attempted_command = if (context.command_path.len > 0)
-            try std.mem.join(context.allocator, " ", context.command_path)
-        else
-            try context.allocator.dupe(u8, "unknown");
-        defer context.allocator.free(attempted_command);
-        try generateCommandNotFoundHelp(context, attempted_command, visible_commands.items);
-
-        // We've rendered the styled block (the single source of truth for
-        // command-not-found). Let the error keep propagating so the entry point
-        // exits non-zero — but the framework must NOT print its own bare
-        // fallback line on top of ours (see the routing site).
-        return false;
     }
 
-    return false; // Error not handled
+    // Case 3: no command named at all.
+    if (context.command_path.len == 0) {
+        try generateNoCommandHelp(context, visible_commands.items);
+        return true; // Handled — suppress the registry's bare fallback line.
+    }
+
+    // Case 2: the named path is a known command group (a strict prefix of at
+    // least one command), not a typo. Show its subcommands.
+    if (isCommandGroup(context.command_path, visible_commands.items)) {
+        const group_name = try std.mem.join(context.allocator, " ", context.command_path);
+        try generateCommandGroupHelp(context, group_name, visible_commands.items);
+        return true; // Handled — suppress the registry's group line.
+    }
+
+    // Case 1: a genuinely unknown command.
+    const attempted_command = try std.mem.join(context.allocator, " ", context.command_path);
+    try generateCommandNotFoundHelp(context, attempted_command, visible_commands.items);
+
+    // We've rendered the styled block (the single source of truth for
+    // command-not-found). Let the error keep propagating so the entry point
+    // exits non-zero — the registry prints no bare fallback on this path.
+    return false;
 }
 
-/// Generate help text for command not found errors
+/// True when `path` names a known command *group* — i.e. it is a strict prefix
+/// of at least one available command, but not an executable command itself.
+fn isCommandGroup(path: []const []const u8, available_commands: []const []const []const u8) bool {
+    for (available_commands) |cmd_parts| {
+        if (cmd_parts.len <= path.len) continue;
+        var is_prefix = true;
+        for (path, 0..) |part, i| {
+            if (!std.mem.eql(u8, part, cmd_parts[i])) {
+                is_prefix = false;
+                break;
+            }
+        }
+        if (is_prefix) return true;
+    }
+    return false;
+}
+
+/// Render help for a bare group access (case 2): its direct subcommands.
+fn generateCommandGroupHelp(
+    context: anytype,
+    group_name: []const u8,
+    available_commands: []const []const []const u8,
+) !void {
+    var writer = context.stderr();
+    try writer.print("'{s}' is a command group.\n\n", .{group_name});
+    try writer.print("Subcommands:\n", .{});
+
+    const depth = std.mem.count(u8, group_name, " ") + 1;
+    for (available_commands) |cmd_parts| {
+        if (cmd_parts.len != depth + 1) continue;
+        var matches = true;
+        var i: usize = 0;
+        var iter = std.mem.splitScalar(u8, group_name, ' ');
+        while (iter.next()) |part| : (i += 1) {
+            if (!std.mem.eql(u8, part, cmd_parts[i])) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) try writer.print("    {s}\n", .{cmd_parts[depth]});
+    }
+
+    try writer.print("\nRun '{s} {s} <subcommand> --help' for more information.\n", .{ context.app_name, group_name });
+}
+
+/// Render help when no command was named at all (case 3): the command list.
+fn generateNoCommandHelp(
+    context: anytype,
+    available_commands: []const []const []const u8,
+) !void {
+    var writer = context.stderr();
+    try writer.print("No command specified.\n\n", .{});
+    try printAvailableCommands(context, writer, available_commands);
+}
+
+/// Generate help text for a genuinely unknown command (case 1).
 fn generateCommandNotFoundHelp(
     context: anytype,
     attempted_command: []const u8,
@@ -58,55 +141,63 @@ fn generateCommandNotFoundHelp(
         return;
     }
 
-    // Convert hierarchical commands to flat strings for suggestion processing
+    // Convert hierarchical commands to flat strings for suggestion processing.
+    // Both the suggestion list and the returned strings live in the arena-per-
+    // command allocator, so nothing here needs an explicit free.
     var flat_commands = std.ArrayList([]const u8).empty;
-    defer {
-        for (flat_commands.items) |cmd| {
-            context.allocator.free(cmd);
-        }
-        flat_commands.deinit(context.allocator);
-    }
-
+    defer flat_commands.deinit(context.allocator);
     for (available_commands) |cmd_parts| {
         const joined_cmd = try std.mem.join(context.allocator, " ", cmd_parts);
         try flat_commands.append(context.allocator, joined_cmd);
     }
 
-    // Find similar commands
-    const suggestions = findBestSuggestions(
+    // Find similar commands.
+    const suggestions = try findBestSuggestions(
         attempted_command,
         flat_commands.items,
         context.allocator,
         3, // max suggestions
         3, // max edit distance
-    ) catch null;
+    );
 
-    if (suggestions) |suggs| {
-        defer context.allocator.free(suggs);
-
-        if (suggs.len > 0) {
-            if (suggs.len == 1) {
-                try writer.print("Did you mean '{s}'?\n\n", .{suggs[0]});
-            } else {
-                try writer.print("Did you mean one of these?\n", .{});
-                for (suggs) |suggestion| {
-                    try writer.print("    {s}\n", .{suggestion});
-                }
-                try writer.print("\n", .{});
+    if (suggestions.len > 0) {
+        if (suggestions.len == 1) {
+            try writer.print("Did you mean '{s}'?\n\n", .{suggestions[0]});
+        } else {
+            try writer.print("Did you mean one of these?\n", .{});
+            for (suggestions) |suggestion| {
+                try writer.print("    {s}\n", .{suggestion});
             }
+            try writer.print("\n", .{});
         }
     }
 
-    // Show available commands
-    try writer.print("Available commands:\n", .{});
-    for (flat_commands.items) |cmd| {
-        try writer.print("    {s}\n", .{cmd});
-    }
+    try printAvailableCommands(context, writer, available_commands);
+}
 
+/// Print the "Available commands" section shared by cases 1 and 3.
+fn printAvailableCommands(
+    context: anytype,
+    writer: *std.Io.Writer,
+    available_commands: []const []const []const u8,
+) !void {
+    try writer.print("Available commands:\n", .{});
+    for (available_commands) |cmd_parts| {
+        const joined = try std.mem.join(context.allocator, " ", cmd_parts);
+        try writer.print("    {s}\n", .{joined});
+    }
     try writer.print("\nRun '{s} --help' to see all available commands.\n", .{context.app_name});
 }
 
-/// Find best command suggestions using Levenshtein distance
+/// Find best command suggestions using Levenshtein distance. Returned strings
+/// are duped into `allocator` (the arena-per-command allocator), so the caller
+/// never holds a borrow into a shorter-lived buffer.
+///
+/// A candidate is suggested only when its edit distance is within
+/// `max_distance` AND strictly less than the input length. That second guard
+/// stops short inputs from matching everything at a fixed distance — e.g. `i`
+/// against `init` and `run` is distance 3 to both, but suggesting either is
+/// noise, so neither is offered.
 fn findBestSuggestions(
     input: []const u8,
     commands: []const []const u8,
@@ -114,12 +205,10 @@ fn findBestSuggestions(
     max_suggestions: usize,
     max_distance: usize,
 ) ![][]const u8 {
-    // Safety checks
     if (commands.len == 0 or input.len == 0) {
         return allocator.alloc([]const u8, 0);
     }
 
-    // Structure to hold command and its distance
     const ScoredCommand = struct {
         command: []const u8,
         distance: usize,
@@ -133,18 +222,12 @@ fn findBestSuggestions(
     defer allocator.free(scored);
 
     var valid_count: usize = 0;
-
-    // Calculate distances for all commands
     for (commands) |cmd| {
-        // Safety check for each command
         if (cmd.len == 0) continue;
 
         const distance = levenshtein.editDistance(input, cmd);
-        if (distance <= max_distance) {
-            scored[valid_count] = .{
-                .command = cmd,
-                .distance = distance,
-            };
+        if (distance <= max_distance and distance < input.len) {
+            scored[valid_count] = .{ .command = cmd, .distance = distance };
             valid_count += 1;
         }
     }
@@ -153,15 +236,15 @@ fn findBestSuggestions(
         return allocator.alloc([]const u8, 0);
     }
 
-    // Sort by distance
     std.sort.pdq(ScoredCommand, scored[0..valid_count], {}, ScoredCommand.lessThan);
 
-    // Return top suggestions
     const result_count = @min(valid_count, max_suggestions);
     var result = try allocator.alloc([]const u8, result_count);
-
     for (0..result_count) |i| {
-        result[i] = scored[i].command;
+        // Dupe: the source strings live in a caller buffer (`flat_commands`)
+        // that may outlive this call only by statement ordering. Copying into
+        // the arena makes the returned slice self-owning.
+        result[i] = try allocator.dupe(u8, scored[i].command);
     }
 
     return result;
@@ -179,7 +262,7 @@ test "find best suggestions" {
 
     // Test with typo "serach" -> should suggest "search"
     const suggestions = try findBestSuggestions("serach", &commands, allocator, 3, 3);
-    defer allocator.free(suggestions);
+    defer freeSuggestions(allocator, suggestions);
 
     try std.testing.expect(suggestions.len > 0);
     try std.testing.expectEqualStrings("search", suggestions[0]);
@@ -190,9 +273,8 @@ test "find best suggestions with empty input" {
 
     const commands = [_][]const u8{ "list", "search", "create" };
 
-    // Test with empty input
     const suggestions = try findBestSuggestions("", &commands, allocator, 3, 3);
-    defer allocator.free(suggestions);
+    defer freeSuggestions(allocator, suggestions);
 
     try std.testing.expect(suggestions.len == 0);
 }
@@ -202,9 +284,46 @@ test "find best suggestions with no commands" {
 
     const commands = [_][]const u8{};
 
-    // Test with no available commands
     const suggestions = try findBestSuggestions("test", &commands, allocator, 3, 3);
-    defer allocator.free(suggestions);
+    defer freeSuggestions(allocator, suggestions);
 
     try std.testing.expect(suggestions.len == 0);
+}
+
+test "find best suggestions guards short inputs against noise" {
+    const allocator = std.testing.allocator;
+
+    // `i` is edit-distance 3 from both "init" and "run", but the
+    // `distance < input.len` guard rejects both — a single letter should not
+    // suggest anything. Without the guard this returned two false positives.
+    const commands = [_][]const u8{ "init", "run" };
+    const suggestions = try findBestSuggestions("i", &commands, allocator, 3, 3);
+    defer freeSuggestions(allocator, suggestions);
+
+    try std.testing.expect(suggestions.len == 0);
+}
+
+test "isCommandGroup detects prefixes but not leaves or unknowns" {
+    const commands = [_][]const []const u8{
+        &.{ "remote", "add" },
+        &.{ "remote", "remove" },
+        &.{"status"},
+    };
+
+    // "remote" is a strict prefix of two commands -> a group.
+    try std.testing.expect(isCommandGroup(&.{"remote"}, &commands));
+    // "status" is an executable leaf, not a prefix of anything longer.
+    try std.testing.expect(!isCommandGroup(&.{"status"}, &commands));
+    // "bogus" matches nothing.
+    try std.testing.expect(!isCommandGroup(&.{"bogus"}, &commands));
+    // "remote add" is itself a leaf, not a group.
+    try std.testing.expect(!isCommandGroup(&.{ "remote", "add" }, &commands));
+}
+
+/// Free a suggestion slice from `findBestSuggestions` when the caller owns the
+/// allocator (tests use `std.testing.allocator`; the plugin uses the arena and
+/// never frees). Each element is a dupe, so both levels are freed.
+fn freeSuggestions(allocator: std.mem.Allocator, suggestions: [][]const u8) void {
+    for (suggestions) |s| allocator.free(s);
+    allocator.free(suggestions);
 }

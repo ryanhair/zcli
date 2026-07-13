@@ -18,6 +18,11 @@ const std = @import("std");
 const zcli = @import("zcli");
 const testing = std.testing;
 
+// The real plugins under test, imported by source so the behavioral tests below
+// exercise the shipped code, not a re-implementation.
+const NotFound = @import("plugins/zcli_not_found/plugin.zig");
+const Version = @import("plugins/zcli_version/plugin.zig");
+
 // ---------------------------------------------------------------------------
 // Test harness
 // ---------------------------------------------------------------------------
@@ -63,6 +68,48 @@ fn run(comptime App: type, argv: []const []const u8) !void {
     stdio.stdout_override = &out_aw.writer;
     stdio.stderr_override = &err_aw.writer;
     try app.executeWithStdio(testing.allocator, std.testing.io, &environ, argv, &stdio);
+}
+
+/// Like `run`, but returns the captured stdout and stderr (arena-freed by the
+/// caller). Also reports whether the invocation errored, so tests can assert
+/// both the output and the propagation behavior in one call.
+const Captured = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+    err: ?anyerror,
+
+    fn deinit(self: Captured, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+fn runCapture(comptime App: type, argv: []const []const u8) !Captured {
+    var app = App.init();
+    const environ = std.process.Environ.Map.init(testing.allocator);
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
+
+    const maybe_err: ?anyerror = blk: {
+        app.executeWithStdio(testing.allocator, std.testing.io, &environ, argv, &stdio) catch |e| break :blk e;
+        break :blk null;
+    };
+
+    return .{
+        .stdout = try testing.allocator.dupe(u8, out_aw.written()),
+        .stderr = try testing.allocator.dupe(u8, err_aw.written()),
+        .err = maybe_err,
+    };
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
 const test_config = zcli.Config{
@@ -738,4 +785,250 @@ test "pipeline security: an oversized argument vector does not crash the pipelin
     // Echo wants a single positional, so this errors — but it must not panic,
     // leak, or corrupt state while scanning thousands of args.
     run(App, args.items) catch {};
+}
+
+// ===========================================================================
+// zcli_version behavioral tests (the real plugin, in a real registry)
+// ===========================================================================
+
+test "version: --version prints '<name> v<version>' and skips the command" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(Version)
+        .build();
+
+    Greet.executed = false;
+    const cap = try runCapture(App, &.{ "--version", "greet" });
+    defer cap.deinit(testing.allocator);
+
+    try testing.expect(cap.err == null);
+    try testing.expect(!Greet.executed); // preExecute cancels before the command runs
+    try testing.expectEqualStrings("test v1.0.0\n", cap.stdout);
+}
+
+test "version: -V short flag works too" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(Version)
+        .build();
+
+    Greet.executed = false;
+    const cap = try runCapture(App, &.{"-V"});
+    defer cap.deinit(testing.allocator);
+
+    try testing.expect(cap.err == null);
+    try testing.expect(contains(cap.stdout, "test v1.0.0"));
+}
+
+test "version: --version with a valid command still shows the version" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(Version)
+        .build();
+
+    Greet.executed = false;
+    const cap = try runCapture(App, &.{ "greet", "--version" });
+    defer cap.deinit(testing.allocator);
+
+    try testing.expect(cap.err == null);
+    try testing.expect(!Greet.executed);
+    try testing.expect(contains(cap.stdout, "test v1.0.0"));
+}
+
+test "version: --version on a bogus command shows the version via onError (regression: was 'command not found')" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(Version)
+        .build();
+
+    const cap = try runCapture(App, &.{ "--version", "does-not-exist" });
+    defer cap.deinit(testing.allocator);
+
+    // onError caught CommandNotFound, printed the version, and suppressed the
+    // error — the user gets what they asked for, not a not-found message.
+    try testing.expect(cap.err == null);
+    try testing.expect(contains(cap.stdout, "test v1.0.0"));
+    try testing.expect(!contains(cap.stderr, "Unknown command"));
+}
+
+test "version: declares priority 90 so a higher-priority plugin's preExecute wins" {
+    // The priority mechanism orders EVERY dispatched hook highest-first (see the
+    // "descending priority order" test above). Version sits at 90 so that when
+    // help (priority 100, added on help's own branch) also fires for
+    // `--help --version`, help's preExecute cancels first and the version line
+    // never prints. We can't register the real Help here (its priority isn't 100
+    // on this branch), so assert the value directly and prove the ordering with
+    // a stand-in higher-priority cancel plugin.
+    try testing.expectEqual(@as(i32, 90), Version.priority);
+
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(Version)
+        .registerPlugin(OrderPlugin("cancel", 100)) // a 100-priority preExecute
+        .build();
+
+    // OrderPlugin records but returns the args unchanged, so version still runs;
+    // the point is the *order*: the 100-priority hook is consulted before
+    // version's 90-priority preExecute.
+    Trace.reset();
+    const cap = try runCapture(App, &.{ "--version", "greet" });
+    defer cap.deinit(testing.allocator);
+    try testing.expect(cap.err == null);
+    // The 100-priority plugin ran (its preExecute fired before version's).
+    try testing.expect(Trace.len >= 1);
+    try testing.expectEqualStrings("cancel", Trace.events[0]);
+}
+
+// ===========================================================================
+// zcli_not_found behavioral tests (the real plugin, WITHOUT help so the plugin
+// must be self-contained across all three CommandNotFound origins)
+// ===========================================================================
+
+const Init = struct {
+    pub const meta = .{ .description = "init" };
+    pub const Args = struct {};
+    pub const Options = struct {};
+    pub fn execute(_: Args, _: Options, _: anytype) !void {}
+};
+
+const Run = struct {
+    pub const meta = .{ .description = "run" };
+    pub const Args = struct {};
+    pub const Options = struct {};
+    pub fn execute(_: Args, _: Options, _: anytype) !void {}
+};
+
+/// A metadata-only group with two subcommands, for the bare-group origin.
+const RemoteProvider = struct {
+    pub const commands = struct {
+        pub const remote = struct {
+            pub const meta = .{ .description = "manage remotes" };
+            pub const add = struct {
+                pub const meta = .{ .description = "add a remote" };
+                pub const Args = struct { name: []const u8 };
+                pub const Options = struct {};
+                pub fn execute(_: Args, _: Options, _: anytype) !void {}
+            };
+            pub const remove = struct {
+                pub const meta = .{ .description = "remove a remote" };
+                pub const Args = struct { name: []const u8 };
+                pub const Options = struct {};
+                pub fn execute(_: Args, _: Options, _: anytype) !void {}
+            };
+        };
+    };
+};
+
+test "not_found: an unknown command reports it and suggests the closest match" {
+    const App = zcli.Registry.init(test_config)
+        .register("search", Greet)
+        .register("status", Checkout)
+        .registerPlugin(NotFound)
+        .build();
+
+    // "serach" is one transposition from "search".
+    const cap = try runCapture(App, &.{"serach"});
+    defer cap.deinit(testing.allocator);
+
+    // The error propagates (not_found returns false on the genuine-unknown path).
+    try testing.expectEqual(@as(?anyerror, error.CommandNotFound), cap.err);
+    try testing.expect(contains(cap.stderr, "Unknown command 'serach'"));
+    try testing.expect(contains(cap.stderr, "Did you mean 'search'?"));
+}
+
+test "not_found: multiple close matches list several suggestions" {
+    const App = zcli.Registry.init(test_config)
+        .register("start", Greet)
+        .register("status", Checkout)
+        .registerPlugin(NotFound)
+        .build();
+
+    // "stat" is within distance 3 of both "start" and "status" (and < input.len).
+    const cap = try runCapture(App, &.{"stat"});
+    defer cap.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(?anyerror, error.CommandNotFound), cap.err);
+    try testing.expect(contains(cap.stderr, "Did you mean one of these?"));
+    try testing.expect(contains(cap.stderr, "start"));
+    try testing.expect(contains(cap.stderr, "status"));
+}
+
+test "not_found: a short input offers no suggestions (guard against noise)" {
+    const App = zcli.Registry.init(test_config)
+        .register("init", Init)
+        .register("run", Run)
+        .registerPlugin(NotFound)
+        .build();
+
+    // "i" is distance 3 from both "init" and "run"; the length guard rejects
+    // both, so there is no "Did you mean" line at all.
+    const cap = try runCapture(App, &.{"i"});
+    defer cap.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(?anyerror, error.CommandNotFound), cap.err);
+    try testing.expect(contains(cap.stderr, "Unknown command 'i'"));
+    try testing.expect(!contains(cap.stderr, "Did you mean"));
+}
+
+test "not_found: nothing close offers no suggestions but still lists commands" {
+    const App = zcli.Registry.init(test_config)
+        .register("search", Greet)
+        .registerPlugin(NotFound)
+        .build();
+
+    const cap = try runCapture(App, &.{"zzzzzzzz"});
+    defer cap.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(?anyerror, error.CommandNotFound), cap.err);
+    try testing.expect(contains(cap.stderr, "Unknown command 'zzzzzzzz'"));
+    try testing.expect(!contains(cap.stderr, "Did you mean"));
+    try testing.expect(contains(cap.stderr, "Available commands:"));
+    try testing.expect(contains(cap.stderr, "search"));
+}
+
+test "not_found (self-contained): a bare command group lists its subcommands, no double output" {
+    const App = zcli.Registry.init(test_config)
+        .registerPlugin(NotFound)
+        .registerPlugin(RemoteProvider)
+        .build();
+
+    // "remote" is a real group — not a typo. Accessing it bare must show its
+    // subcommands and suppress the registry's own "'remote' is a command group"
+    // line (the not_found plugin returns true), so it appears exactly once.
+    const cap = try runCapture(App, &.{"remote"});
+    defer cap.deinit(testing.allocator);
+
+    try testing.expect(cap.err == null); // handled -> suppressed
+    try testing.expect(contains(cap.stderr, "'remote' is a command group"));
+    try testing.expect(contains(cap.stderr, "add"));
+    try testing.expect(contains(cap.stderr, "remove"));
+    // Not a typo, so no suggestions and no "Unknown command" framing.
+    try testing.expect(!contains(cap.stderr, "Unknown command"));
+    try testing.expect(!contains(cap.stderr, "Did you mean"));
+    // The registry's own group line ("Use --help to see available subcommands")
+    // must not appear on top of ours.
+    try testing.expect(!contains(cap.stderr, "Use --help to see available subcommands"));
+}
+
+test "not_found (self-contained): no command at all lists commands, no bare fallback" {
+    const App = zcli.Registry.init(test_config)
+        .register("search", Greet)
+        .register("status", Checkout)
+        .registerPlugin(NotFound)
+        .build();
+
+    // Empty argv -> no command, no root. not_found renders the command list and
+    // suppresses the registry's bare "No command specified. Use --help..." line.
+    const cap = try runCapture(App, &.{});
+    defer cap.deinit(testing.allocator);
+
+    try testing.expect(cap.err == null); // handled -> suppressed
+    try testing.expect(contains(cap.stderr, "No command specified."));
+    try testing.expect(contains(cap.stderr, "Available commands:"));
+    try testing.expect(contains(cap.stderr, "search"));
+    try testing.expect(contains(cap.stderr, "status"));
+    // Never the useless "Unknown command 'unknown'".
+    try testing.expect(!contains(cap.stderr, "Unknown command 'unknown'"));
+    // The registry's own bare fallback must not double-print.
+    try testing.expect(!contains(cap.stderr, "Use --help for usage information"));
 }
