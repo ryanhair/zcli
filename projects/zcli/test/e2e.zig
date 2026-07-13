@@ -756,12 +756,26 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try testing.expect(second > first);
     }
 
-    // Help lists the discovered command (the help plugin writes to stderr).
+    // Help lists the discovered command. Explicitly-requested help goes to
+    // stdout (GNU convention), not stderr.
     {
         var r = try run(proj, &.{ demo_bin, "--help" });
         defer r.deinit();
         try expectOk(r);
-        try expectContains(r.stderr, "hello");
+        try expectContains(r.stdout, "hello");
+    }
+
+    // `help <cmd>` shows help for THAT command (its usage line), not for the
+    // `help` command itself. Regression test for the argv-rewrite fix.
+    {
+        var r = try run(proj, &.{ demo_bin, "help", "hello" });
+        defer r.deinit();
+        try expectOk(r);
+        // The usage line names the target command, and the description of the
+        // help command ("Show help for commands") must NOT appear.
+        try expectContains(r.stdout, "hello");
+        try expectContains(r.stdout, "USAGE:");
+        try testing.expect(std.mem.indexOf(u8, r.stdout, "Show help for commands") == null);
     }
 
     // Round-trip: add a command, rebuild, and run it.
@@ -1166,14 +1180,14 @@ test "required options and enum args: end-user messages and help" {
     }
 
     // Help shows the required option marker + usage placement, and the enum
-    // choices for the positional arg. (Help renders to stderr.)
+    // choices for the positional arg. Explicit help renders to stdout.
     {
         var r = try run(proj, &.{ demo_bin, "deploy", "--help" });
         defer r.deinit();
         try expectOk(r);
-        try expectContains(r.stderr, "--region <value>"); // usage line
-        try expectContains(r.stderr, "(required)"); // OPTIONS marker
-        try expectContains(r.stderr, "one of: dev, staging, prod"); // ARGUMENTS choices
+        try expectContains(r.stdout, "--region <value>"); // usage line
+        try expectContains(r.stdout, "(required)"); // OPTIONS marker
+        try expectContains(r.stdout, "one of: dev, staging, prod"); // ARGUMENTS choices
     }
 }
 
@@ -1215,13 +1229,13 @@ test "root zcli_theme declaration themes help output" {
         try expectOk(r);
     }
 
-    // Piped (non-TTY) output stays completely plain.
+    // Piped (non-TTY) output stays completely plain. Explicit help → stdout.
     {
         var r = try run(proj, &.{ demo_bin, "--help" });
         defer r.deinit();
         try expectOk(r);
-        try expectContains(r.stderr, "hello");
-        try testing.expect(std.mem.indexOf(u8, r.stderr, "\x1b[") == null);
+        try expectContains(r.stdout, "hello");
+        try testing.expect(std.mem.indexOf(u8, r.stdout, "\x1b[") == null);
     }
 
     // The PTY harness needs an absolute binary path: ConPTY's CreateProcessW

@@ -12,6 +12,11 @@ const app_palette = zcli.appTheme().palette;
 /// Unique identifier for this plugin (required for type-safe context data)
 pub const plugin_id = "zcli_help";
 
+/// Help wins over --version when both are present: the plugin pipeline sorts
+/// plugins by priority (higher first) and runs their hooks in that order, so a
+/// value above the version plugin's 90 makes our preExecute render help first.
+pub const priority = 100;
+
 // Width for command/option name columns (content width, excluding indent)
 const NAME_COLUMN_WIDTH: usize = 16;
 
@@ -49,12 +54,34 @@ pub fn handleGlobalOption(
     option_name: []const u8,
     value: anytype,
 ) !void {
-    if (std.mem.eql(u8, option_name, "help")) {
-        const bool_val = if (@TypeOf(value) == bool) value else false;
-        if (bool_val) {
-            context.plugins.zcli_help.help_requested = true;
-        }
+    // The registry dispatches --help with its declared bool type, so `value` is
+    // always a bool here — no runtime type guard needed.
+    if (std.mem.eql(u8, option_name, "help") and value) {
+        context.plugins.zcli_help.help_requested = true;
     }
+}
+
+/// Rewrite `myapp help <cmd...>` into `myapp <cmd...>` with help requested, so
+/// the target command resolves normally and populates the context (meta,
+/// module_info) that the help renderer reads. Without this, `help <cmd>` would
+/// resolve the `help` command itself and describe *it* instead of the target.
+///
+/// Multi-word paths work for free — `help remote add` drops the leading `help`
+/// and lets normal resolution match `remote add`. Bare `help` (or `help` with a
+/// trailing option like `help --foo`) is left untouched: it routes to the help
+/// command below, which shows app help.
+pub fn transformArgs(
+    context: anytype,
+    args: []const []const u8,
+) !zcli.TransformResult {
+    if (args.len > 1 and
+        std.mem.eql(u8, args[0], "help") and
+        !std.mem.startsWith(u8, args[1], "-"))
+    {
+        context.plugins.zcli_help.help_requested = true;
+        return .{ .args = args[1..] };
+    }
+    return .{ .args = args };
 }
 
 /// Pre-execute hook to show help if requested
@@ -63,14 +90,18 @@ pub fn preExecute(
     args: zcli.ParsedArgs,
 ) !?zcli.ParsedArgs {
     if (context.plugins.zcli_help.help_requested) {
-        // If command_path is empty, show app help; otherwise show command help
+        // If command_path is empty, show app help. The root command resolves
+        // to the "root" pseudo-path and gets root help (app help + root's own
+        // options). Otherwise the resolved command's context drives the command
+        // help — payload-free, everything renders from context.command_meta /
+        // command_module_info.
+        // Explicit help request → stdout.
         if (context.command_path.len == 0) {
-            try showAppHelp(context);
+            try showAppHelp(context, true);
+        } else if (context.command_path.len == 1 and std.mem.eql(u8, context.command_path[0], "root")) {
+            try showHelp(context, .root, true);
         } else {
-            // Join command parts with spaces for display
-            const command_string = try std.mem.join(context.allocator, " ", context.command_path);
-            defer context.allocator.free(command_string);
-            try showCommandHelp(context, command_string);
+            try showHelp(context, .command, true);
         }
 
         // Return null to stop execution
@@ -87,9 +118,10 @@ pub fn onError(
     err: anyerror,
 ) !bool {
     if (err == error.CommandNotFound) {
-        // If no command was provided at all, show app help
+        // If no command was provided at all, show app help. This is an error
+        // reaction (CommandNotFound), so it goes to stderr.
         if (context.command_path.len == 0) {
-            try showAppHelp(context);
+            try showAppHelp(context, false);
             return true; // Error handled, don't let it propagate
         }
 
@@ -139,9 +171,14 @@ pub fn onError(
     return false; // Error not handled
 }
 
-/// Unified help display function that handles all help scenarios
-fn showHelp(context: anytype, help_type: HelpType) !void {
-    var writer = context.stderr();
+/// Unified help display function that handles all help scenarios.
+///
+/// `to_stdout` selects the stream: explicitly-requested help (`--help`, `-h`,
+/// the `help` command) goes to stdout (GNU convention, matches the version
+/// plugin); help emitted as a reaction to an error (a bare command group, an
+/// unknown command) goes to stderr so it doesn't pollute a piped stdout.
+fn showHelp(context: anytype, help_type: HelpType, to_stdout: bool) !void {
+    var writer = if (to_stdout) context.stdout() else context.stderr();
     var fmt = md.formatterWithPalette(writer, context.theme.capability(), app_palette);
     const app_name = context.app_name;
     const app_version = context.app_version;
@@ -163,8 +200,7 @@ fn showHelp(context: anytype, help_type: HelpType) !void {
         .command_group => |group_name| {
             try fmt.write("'<command>{s}</command>' is a command group. Available subcommands:\n\n", .{group_name});
         },
-        .command => |command_name| {
-            _ = command_name;
+        .command => {
             // Lead with the description (like the root help), then USAGE below.
             // No "Help for command:" label — the usage line already names it.
             if (context.command_meta) |meta| {
@@ -321,7 +357,7 @@ const HelpType = union(enum) {
     app, // General application help
     root, // Root command help (app help with root's options)
     command_group: []const u8, // Command group help (shows subcommands)
-    command: []const u8, // Specific command help
+    command, // Specific command help (renders from the resolved command's context)
 };
 
 /// List type for showCommandList
@@ -488,16 +524,18 @@ fn showCommandList(context: anytype, fmt: anytype, list_type: CommandListType) !
 
 /// Show help for a command group with subcommands
 fn showCommandGroupHelp(context: anytype, group_name: []const u8) !void {
-    try showHelp(context, .{ .command_group = group_name });
+    // Reached only from onError (a bare command group) → stderr.
+    try showHelp(context, .{ .command_group = group_name }, false);
 }
 
 /// Commands provided by this plugin
 pub const commands = struct {
-    /// The help command itself
+    /// The help command itself. `help <cmd...>` is handled earlier by
+    /// transformArgs (which rewrites it to the target command with help
+    /// requested), so this command only ever runs for a bare `help` and shows
+    /// application help.
     pub const help = struct {
-        pub const Args = struct {
-            command: ?[]const u8 = null,
-        };
+        pub const Args = struct {};
 
         pub const Options = struct {};
 
@@ -506,35 +544,18 @@ pub const commands = struct {
         };
 
         pub fn execute(args: Args, options: Options, context: anytype) !void {
+            _ = args;
             _ = options;
-            if (args.command) |cmd| {
-                try showCommandHelp(context, cmd);
-            } else {
-                try showAppHelp(context);
-            }
+            // Explicitly invoked → stdout.
+            try showAppHelp(context, true);
         }
     };
 };
 
-/// Show help for the entire application
-fn showAppHelp(context: anytype) !void {
-    try showHelp(context, .app);
-}
-
-/// Show help for root command (special case - shows app-level help with root's options)
-fn showRootCommandHelp(context: anytype) !void {
-    try showHelp(context, .root);
-}
-
-/// Show help for a specific command
-fn showCommandHelp(context: anytype, command: []const u8) !void {
-    // Special handling for root command
-    if (std.mem.eql(u8, command, "root")) {
-        try showRootCommandHelp(context);
-        return;
-    }
-
-    try showHelp(context, .{ .command = command });
+/// Show help for the entire application. `to_stdout` follows the same
+/// explicit-vs-error stream rule as showHelp.
+fn showAppHelp(context: anytype, to_stdout: bool) !void {
+    try showHelp(context, .app, to_stdout);
 }
 
 /// Generate usage string based on command structure
@@ -797,14 +818,15 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
 
     // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {
-        // Convert underscores to dashes in field name
+        // Convert underscores to dashes in field name. Clamp to the buffer so a
+        // pathologically long field name truncates instead of overflowing the
+        // stack (mirrors generateArgsPattern's @min guard).
         var option_name_buf: [64]u8 = undefined;
-        var i: usize = 0;
-        for (field_info.name) |c| {
+        const dashed_len = @min(field_info.name.len, option_name_buf.len);
+        for (field_info.name[0..dashed_len], 0..) |c, i| {
             option_name_buf[i] = if (c == '_') '-' else c;
-            i += 1;
         }
-        const dashed = option_name_buf[0..field_info.name.len];
+        const dashed = option_name_buf[0..dashed_len];
 
         // A boolean flag that defaults to true is turned off with its `--no-`
         // negation, so that (long-form only, no short) is the spelling we show —
@@ -1003,6 +1025,146 @@ test "help marks array options as repeatable but not scalars" {
     try std.testing.expect(std.mem.indexOf(u8, help, "--tags") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "(repeatable)") != null);
     try std.testing.expect(std.mem.lastIndexOf(u8, help, "(repeatable)").? == std.mem.indexOf(u8, help, "(repeatable)").?);
+}
+
+test "help option rendering does not overflow on a >64-char field name" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // A field name longer than the 64-byte dashed-name buffer must truncate,
+    // not corrupt the stack. (70 chars.)
+    const long_name = "a_very_" ++ "long_" ** 12 ++ "field";
+    comptime std.debug.assert(long_name.len > 64);
+
+    const module_info = zcli.CommandModuleInfo{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = long_name, .is_optional = true, .is_array = false, .type_name = "?[]const u8", .description = "Long" },
+        },
+    };
+
+    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    defer allocator.free(help);
+
+    // The truncated (64-char, underscores→dashes) prefix is present; the render
+    // completed without a panic.
+    try std.testing.expect(std.mem.indexOf(u8, help, "--a-very-long-") != null);
+}
+
+// ============================================================================
+// showCommandList: dedup, alphabetical sort, alias rendering
+// ============================================================================
+
+test "showCommandList: dedups, sorts alphabetically, and renders aliases" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    // Capture the formatter's output via the stdout override.
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // Two top-level commands plus a nested one under `list`. `list` has an
+    // alias `ls`, which should render as `(aliases: ls)` and be deduped away as
+    // its own entry. `zebra` comes before `apple` in source but must sort after.
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"zebra"}, .description = "Zebra command" },
+        .{ .path = &.{"apple"}, .description = "Apple command" },
+        .{ .path = &.{"list"}, .description = "List things", .aliases = &.{"ls"} },
+        .{ .path = &.{ "list", "sub" }, .description = "A subcommand" },
+    };
+
+    var fmt = md.formatterWithPalette(ctx.stdout(), ctx.theme.capability(), app_palette);
+    try showCommandList(&ctx, &fmt, .top_level);
+    try ctx.stdout().flush();
+
+    const out = aw.written();
+
+    // Alphabetical order: apple before list before zebra.
+    const i_apple = std.mem.indexOf(u8, out, "apple").?;
+    const i_list = std.mem.indexOf(u8, out, "list").?;
+    const i_zebra = std.mem.indexOf(u8, out, "zebra").?;
+    try std.testing.expect(i_apple < i_list);
+    try std.testing.expect(i_list < i_zebra);
+
+    // Alias rendered on the primary, not as its own command row.
+    try std.testing.expect(std.mem.indexOf(u8, out, "aliases: ls") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\n    ls") == null);
+
+    // The nested subcommand does not leak into the top-level list.
+    try std.testing.expect(std.mem.indexOf(u8, out, "sub") == null);
+}
+
+// ============================================================================
+// generateUsage: required-option folding + subcommand detection
+// ============================================================================
+
+test "generateUsage: folds optional options, shows required ones explicitly" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    ctx.app_name = "myapp";
+    ctx.command_path = &.{"deploy"};
+    ctx.command_module_info = .{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "region", .is_optional = false, .is_array = false, .type_name = "[]const u8", .is_required = true },
+            .{ .name = "verbose", .is_optional = false, .is_array = false, .type_name = "bool", .default_value = "false" },
+        },
+    };
+
+    const usage = try generateUsage(&ctx);
+    defer allocator.free(usage);
+
+    // Required option is spelled out (dash-converted); the rest fold into
+    // [OPTIONS].
+    try std.testing.expect(std.mem.indexOf(u8, usage, "--region <value>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, usage, "[OPTIONS]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, usage, "myapp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, usage, "deploy") != null);
+}
+
+test "generateUsage: a command with subcommands shows COMMAND, not its options" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    ctx.app_name = "myapp";
+    ctx.command_path = &.{"remote"};
+    // `remote add` exists → `remote` is a group.
+    ctx.available_commands = &.{
+        &.{ "remote", "add" },
+    };
+    ctx.command_module_info = .{ .has_options = false, .has_args = false };
+
+    const usage = try generateUsage(&ctx);
+    defer allocator.free(usage);
+
+    try std.testing.expect(std.mem.indexOf(u8, usage, "remote") != null);
+    try std.testing.expect(std.mem.indexOf(u8, usage, "COMMAND") != null);
 }
 
 // Note: Integration tests for handleGlobalOption and help command execution
