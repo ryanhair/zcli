@@ -41,6 +41,14 @@ pub fn build(b: *std.Build) void {
     });
     test_exe.root_module.addImport("vterm", vterm_mod);
 
+    // Hand the tests the real demo-cli binary path so they can spawn it and
+    // feed its actual stdout into VTerm — no hand-maintained "simulated" output
+    // that silently drifts from what the CLI really prints. The LazyPath wires
+    // the dependency edge, so the exe is always built before the tests run.
+    const test_opts = b.addOptions();
+    test_opts.addOptionPath("cli_path", exe.getEmittedBin());
+    test_exe.root_module.addOptions("build_options", test_opts);
+
     const test_cmd = b.addRunArtifact(test_exe);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&test_cmd.step);

@@ -2,102 +2,29 @@ const std = @import("std");
 const testing = std.testing;
 const vterm = @import("vterm");
 const VTerm = vterm.VTerm;
+const build_options = @import("build_options");
 
-// Helper to simulate CLI output
-fn simulateCliOutput(term: *VTerm, args: []const []const u8) !void {
-    // This simulates what the CLI would output for given args
-    const cmd = if (args.len > 0) args[0] else "";
+// Spawn the REAL demo-cli binary (path injected by build.zig) with `args`,
+// capture its stdout, and replay those exact bytes — ANSI escapes and all —
+// into `term`. This is the whole point of the example: every assertion below
+// runs against what the CLI actually prints, not a hand-maintained copy of its
+// output that silently drifts from the code.
+fn runCli(term: *VTerm, args: []const []const u8) !void {
+    const gpa = testing.allocator;
+    const io = testing.io;
 
-    if (std.mem.eql(u8, cmd, "help")) {
-        try simulateHelp(term);
-    } else if (std.mem.eql(u8, cmd, "version")) {
-        try simulateVersion(term);
-    } else if (std.mem.eql(u8, cmd, "list")) {
-        try simulateList(term, args[1..]);
-    } else if (std.mem.eql(u8, cmd, "status")) {
-        try simulateStatus(term);
-    } else if (cmd.len == 0) {
-        term.write("Usage: demo-cli <command> [options]\n");
-        term.write("Try 'demo-cli help' for more information.\n");
-    } else {
-        term.write("\x1b[31mError:\x1b[0m Unknown command '");
-        term.write(cmd);
-        term.write("'\n");
-        term.write("Try 'demo-cli help' for a list of available commands.\n");
-    }
-}
+    const argv = try gpa.alloc([]const u8, args.len + 1);
+    defer gpa.free(argv);
+    argv[0] = build_options.cli_path;
+    for (args, 0..) |arg, i| argv[i + 1] = arg;
 
-fn simulateHelp(term: *VTerm) !void {
-    term.write("\x1b[1;34mDemo CLI Tool v1.0.0\x1b[0m\n");
-    term.write("\x1b[90m");
-    for (0..60) |_| term.write("=");
-    term.write("\x1b[0m\n\n");
+    const result = try std.process.run(gpa, io, .{ .argv = argv });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
 
-    term.write("\x1b[1mUSAGE:\x1b[0m\n");
-    term.write("  demo-cli <command> [options]\n\n");
+    try testing.expect(result.term == .exited and result.term.exited == 0);
 
-    term.write("\x1b[1mCOMMANDS:\x1b[0m\n");
-    term.write("  \x1b[32mhelp\x1b[0m       Show this help message\n");
-    term.write("  \x1b[32mversion\x1b[0m    Show version information\n");
-    term.write("  \x1b[32mlist\x1b[0m       List items (use -v for verbose)\n");
-    term.write("  \x1b[32mstatus\x1b[0m     Show current status\n\n");
-
-    term.write("\x1b[1mOPTIONS:\x1b[0m\n");
-    term.write("  \x1b[33m-h, --help\x1b[0m     Show help for a command\n");
-    term.write("  \x1b[33m-v, --verbose\x1b[0m  Enable verbose output\n\n");
-
-    term.write("\x1b[1mEXAMPLES:\x1b[0m\n");
-    term.write("  demo-cli list\n");
-    term.write("  demo-cli list -v\n");
-    term.write("  demo-cli status\n");
-}
-
-fn simulateVersion(term: *VTerm) !void {
-    term.write("demo-cli version 1.0.0\n");
-    term.write("Built with Zig\n");
-}
-
-fn simulateList(term: *VTerm, args: []const []const u8) !void {
-    var verbose = false;
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
-            verbose = true;
-        }
-    }
-
-    term.write("\x1b[1mListing items:\x1b[0m\n");
-
-    const items = [_][]const u8{ "config.json", "data.txt", "README.md" };
-
-    for (items, 0..) |item, i| {
-        if (verbose) {
-            var buf: [100]u8 = undefined;
-            const line = try std.fmt.bufPrint(&buf, "  [{d}] \x1b[36m{s}\x1b[0m (file)\n", .{ i + 1, item });
-            term.write(line);
-        } else {
-            term.write("  ");
-            term.write(item);
-            term.write("\n");
-        }
-    }
-
-    term.write("\n");
-    term.write("Total: 3 items\n");
-}
-
-fn simulateStatus(term: *VTerm) !void {
-    // Clear screen and move cursor home
-    term.write("\x1b[2J\x1b[H");
-
-    term.write("\x1b[1;35m[STATUS REPORT]\x1b[0m\n\n");
-    term.write("System: \x1b[32m● Online\x1b[0m\n");
-    term.write("Database: \x1b[32m● Connected\x1b[0m\n");
-    term.write("API: \x1b[33m● Warning\x1b[0m (high latency)\n");
-    term.write("Cache: \x1b[31m● Error\x1b[0m (needs restart)\n");
-
-    // Move cursor to specific position
-    term.write("\x1b[6;1H\n");
-    term.write("Last updated: just now\n");
+    term.write(result.stdout);
 }
 
 // ============================================================================
@@ -108,7 +35,7 @@ test "help command displays usage information" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try simulateCliOutput(&term, &.{"help"});
+    try runCli(&term, &.{"help"});
 
     // Test that help text is displayed
     try testing.expect(term.containsText("Demo CLI Tool"));
@@ -124,7 +51,7 @@ test "version command shows version info" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try simulateCliOutput(&term, &.{"version"});
+    try runCli(&term, &.{"version"});
 
     try testing.expect(term.containsText("demo-cli version 1.0.0"));
     try testing.expect(term.containsText("Built with Zig"));
@@ -134,7 +61,7 @@ test "list command shows items" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try simulateCliOutput(&term, &.{"list"});
+    try runCli(&term, &.{"list"});
 
     try testing.expect(term.containsText("Listing items:"));
     try testing.expect(term.containsText("config.json"));
@@ -147,7 +74,7 @@ test "list command with verbose flag" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try simulateCliOutput(&term, &.{ "list", "-v" });
+    try runCli(&term, &.{ "list", "-v" });
 
     try testing.expect(term.containsText("[1]"));
     try testing.expect(term.containsText("[2]"));
@@ -162,7 +89,7 @@ test "status command clears screen and shows status" {
     // Put some initial content
     term.write("Initial content that should be cleared\n");
 
-    try simulateCliOutput(&term, &.{"status"});
+    try runCli(&term, &.{"status"});
 
     // Screen should be cleared, so initial content is gone
     try testing.expect(!term.containsText("Initial content"));
@@ -182,7 +109,7 @@ test "unknown command shows error" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try simulateCliOutput(&term, &.{"invalid"});
+    try runCli(&term, &.{"invalid"});
 
     try testing.expect(term.containsText("Error:"));
     try testing.expect(term.containsText("Unknown command 'invalid'"));
@@ -193,7 +120,7 @@ test "no arguments shows usage" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    try simulateCliOutput(&term, &.{});
+    try runCli(&term, &.{});
 
     try testing.expect(term.containsText("Usage: demo-cli"));
     try testing.expect(term.containsText("Try 'demo-cli help'"));
