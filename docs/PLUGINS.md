@@ -4,7 +4,7 @@
 > orientation; the website is the single source of truth for the built-in list,
 > config-file behavior, and the plugin-authoring contract.
 
-Plugins extend every command in an app with lifecycle hooks, global options, and their own commands. zcli ships with a set of built-ins — the help/version/not-found trio is what most apps start with, and completions, config files, `--output` formatting, OS-keychain secrets, and GitHub self-upgrade are opt-in. Enable them in `build.zig`:
+Plugins extend every command in an app with lifecycle hooks, global options, and their own commands. zcli ships with a set of built-ins — the help/version/not-found trio is what most apps start with, and completions, config files, OS-keychain secrets, and GitHub self-upgrade are opt-in. Enable them in `build.zig`:
 
 ```zig
 const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{

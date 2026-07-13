@@ -35,7 +35,7 @@ Top-level keys apply to every command; a table named after a command scopes valu
 
 ```toml
 # .myapp.config.toml
-output = "json"     # global — applies to all commands
+verbose = true      # global — applies to all commands
 
 [list]              # scoped — applies only to `myapp list`
 all = true

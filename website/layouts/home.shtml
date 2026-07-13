@@ -138,7 +138,7 @@ Deploying api to staging
 <span class="c-prompt">$</span> <span class="c-cmd">myapp</span> users create <span class="c-flag">--help</span>
 <span class="c-mut">USAGE</span>  myapp users create &lt;name&gt; [options]
   <span class="c-flag">-a, --admin</span>     Grant admin role
-  <span class="c-flag">    --output</span>   json · table · plain
+  <span class="c-flag">    --role</span>     owner · admin · member
 <span class="c-ok">✔</span> generated from your command metadata<span class="cursor"></span></pre>
 				</div>
 			</div>

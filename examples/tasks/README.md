@@ -25,8 +25,8 @@ What it demonstrates:
 - **theme** — semantic colors and status badges via `context.theme`.
 - **A shared module** — `src/store.zig` (JSON persistence to `tasks.json`)
   registered once as a `shared_modules` entry in `build.zig`.
-- **Six built-in plugins** — `zcli.builtin(.help/.version/.not_found/
-  .completions/.output/.config, .{})`, including per-command defaults from
+- **Five built-in plugins** — `zcli.builtin(.help/.version/.not_found/
+  .completions/.config, .{})`, including per-command defaults from
   `.tasks.config.json`.
 - **Doc generation** — `zcli.generateDocs` writes markdown + HTML docs on
   every build.

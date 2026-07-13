@@ -325,7 +325,7 @@ jobs:
 
           - Core zcli framework
           - Build utilities for command generation
-          - Built-in plugins (help, version, not-found, completions, github-upgrade)
+          - Built-in plugins (help, version, not-found, completions, config, secrets, github-upgrade)
           - All supporting packages (vterm, markdown, etc.)
 
           ## Getting Started

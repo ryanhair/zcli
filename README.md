@@ -272,7 +272,7 @@ The `zcli_config` plugin transparently loads option defaults from JSON, TOML, or
 ```json
 // .myapp.config.json
 {
-  "output": "json",         // global — applies to all commands
+  "verbose": true,          // global — applies to all commands
   "list": { "all": true }   // scoped — applies only to "myapp list"
 }
 ```
@@ -281,7 +281,7 @@ Discovery order and formats: [zcli.sh/docs/config](https://zcli.sh/docs/config/)
 
 ## Plugins
 
-Cross-cutting features are plugins, added in one line of `build.zig`: help, version, "did you mean?", shell completions (bash/zsh/fish), config files, `--output` formatting (json/table/plain), OS-keychain secrets, and self-upgrade via GitHub releases all ship in the box. Plugins hook the command lifecycle, register global options, expose typed data as `context.plugins.<id>`, and can ship commands of their own.
+Cross-cutting features are plugins, added in one line of `build.zig`: help, version, "did you mean?", shell completions (bash/zsh/fish), config files, OS-keychain secrets, and self-upgrade via GitHub releases all ship in the box. Plugins hook the command lifecycle, register global options, expose typed data as `context.plugins.<id>`, and can ship commands of their own.
 
 The full list and a guide to writing your own: [zcli.sh/plugins](https://zcli.sh/plugins/) (repo summary in [docs/PLUGINS.md](docs/PLUGINS.md)).
 
