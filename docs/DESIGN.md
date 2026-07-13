@@ -199,6 +199,14 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
   at most once; repeating it (including `--flag` together with `--no-flag`) is an
   error. `--help` lists the useful spelling: `--flag` for a default-`false` flag,
   `--no-flag` for a default-`true` flag; the other is accepted but hidden.
+- An **accumulating array** option (`[][]const u8`, `[]u32`, …) collects multiple
+  values two ways, which compose: by **repeating** the flag (`--tag a --tag b`) or
+  by a **comma-separated** value (`--tag a,b`, `--tag=a,b`, `-t a,b`). Every value
+  token is split on `,`; an empty segment (`a,,b`, `,a`, `a,`) is a value error. A
+  literal comma is therefore always a separator here — it cannot appear inside an
+  element. `--help` marks these options `(repeatable)`. zcli deliberately does *not*
+  support the greedy space-separated form (`--tag a b`): it is ambiguous with zcli's
+  interleaved positionals (see ADR-0024).
 - Two compile-time guards keep the above coherent: a boolean field's name may not
   start with `no_` (it would collide with a `--no-` negation), and an optional
   field must default to `null` (that `null` is the "not passed" state; use a

@@ -96,6 +96,34 @@ pub fn appendToArrayListUnionShort(comptime ElementType: type, allocator: std.me
     }
 }
 
+/// Split a single option token on `,` and append each element, so an
+/// array-typed option accepts `--opt a,b` as shorthand for `--opt a --opt b`.
+/// An empty segment (`a,,b`, `,a`, `a,`) is rejected as an invalid value.
+/// Delegates to `appendToArrayListUnion` per segment, reusing its per-element
+/// parsing and diagnostics unchanged.
+pub fn appendCsvToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
+    var it = std.mem.splitScalar(u8, value, ',');
+    while (it.next()) |segment| {
+        if (segment.len == 0) {
+            logging.invalidOptionValue(option_name, value, "value");
+            return error.InvalidOptionValue;
+        }
+        try appendToArrayListUnion(ElementType, allocator, list_union, segment, option_name);
+    }
+}
+
+/// Comma-splitting append for short options (see `appendCsvToArrayListUnion`).
+pub fn appendCsvToArrayListUnionShort(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, char: u8) !void {
+    var it = std.mem.splitScalar(u8, value, ',');
+    while (it.next()) |segment| {
+        if (segment.len == 0) {
+            logging.invalidShortOptionValue(char, value, "value");
+            return error.InvalidOptionValue;
+        }
+        try appendToArrayListUnionShort(ElementType, allocator, list_union, segment, char);
+    }
+}
+
 /// Generic helper to convert ArrayListUnion to owned slice
 /// Replaces ~15 lines of repetitive switch cases with clean generic code
 pub fn arrayListUnionToOwnedSlice(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion) !ElementType {
@@ -186,6 +214,60 @@ test "appendToArrayListUnionShort" {
     try std.testing.expectEqual(@as(usize, 2), result.len);
     try std.testing.expectEqualStrings("value1", result[0]);
     try std.testing.expectEqualStrings("value2", result[1]);
+}
+
+test "appendCsvToArrayListUnion splits on comma and rejects empty segments" {
+    const allocator = std.testing.allocator;
+
+    // Strings split into elements.
+    {
+        var list = createArrayListUnion([]const u8);
+        defer list.deinit(allocator);
+
+        try appendCsvToArrayListUnion([]const u8, allocator, &list, "a,b,c", "tags");
+        const result = try arrayListUnionToOwnedSlice([][]const u8, allocator, &list);
+        defer allocator.free(result);
+
+        try std.testing.expectEqual(@as(usize, 3), result.len);
+        try std.testing.expectEqualStrings("a", result[0]);
+        try std.testing.expectEqualStrings("b", result[1]);
+        try std.testing.expectEqualStrings("c", result[2]);
+    }
+
+    // A single value (no comma) yields one element.
+    {
+        var list = createArrayListUnion([]const u8);
+        defer list.deinit(allocator);
+
+        try appendCsvToArrayListUnion([]const u8, allocator, &list, "solo", "tags");
+        const result = try arrayListUnionToOwnedSlice([][]const u8, allocator, &list);
+        defer allocator.free(result);
+
+        try std.testing.expectEqual(@as(usize, 1), result.len);
+        try std.testing.expectEqualStrings("solo", result[0]);
+    }
+
+    // Numeric elements are parsed per-segment.
+    {
+        var list = createArrayListUnion(i32);
+        defer list.deinit(allocator);
+
+        try appendCsvToArrayListUnion(i32, allocator, &list, "1,-2,3", "nums");
+        const result = try arrayListUnionToOwnedSlice([]i32, allocator, &list);
+        defer allocator.free(result);
+
+        try std.testing.expectEqualSlices(i32, &.{ 1, -2, 3 }, result);
+    }
+
+    // Empty segments (interior, leading, trailing) are rejected.
+    {
+        var list = createArrayListUnion([]const u8);
+        defer list.deinit(allocator);
+
+        try std.testing.expectError(error.InvalidOptionValue, appendCsvToArrayListUnion([]const u8, allocator, &list, "a,,b", "tags"));
+        try std.testing.expectError(error.InvalidOptionValue, appendCsvToArrayListUnionShort([]const u8, allocator, &list, ",a", 't'));
+        try std.testing.expectError(error.InvalidOptionValue, appendCsvToArrayListUnion([]const u8, allocator, &list, "a,", "tags"));
+    }
 }
 
 // Tests migrated from array_options_test.zig

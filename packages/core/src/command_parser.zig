@@ -565,6 +565,27 @@ test "e2e: multiple array values" {
     try testing.expectEqualStrings("c.txt", result.options.files[2]);
 }
 
+test "e2e: comma-separated array values through the pre-split" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const ArrayOptions = struct {
+        files: [][]const u8 = &.{},
+        numbers: []i32 = &.{},
+    };
+
+    // The pre-split must feed the comma token through intact so the options
+    // parser can split it; repetition composes with the comma form.
+    const result = try parseCommandLine(struct {}, ArrayOptions, null, allocator, null, &.{ "--files", "a.txt,b.txt", "--files", "c.txt", "--numbers", "1,2,3" }, null);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 3), result.options.files.len);
+    try testing.expectEqualStrings("a.txt", result.options.files[0]);
+    try testing.expectEqualStrings("b.txt", result.options.files[1]);
+    try testing.expectEqualStrings("c.txt", result.options.files[2]);
+    try testing.expectEqualSlices(i32, &.{ 1, 2, 3 }, result.options.numbers);
+}
+
 test "e2e: array options mixed with other options" {
     const testing = std.testing;
     const allocator = testing.allocator;

@@ -855,6 +855,11 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
         if (field_info.is_required) {
             try buf_fmt.write(" (required)", .{});
         }
+        // Array-typed options accept several values — via `--opt a,b` or by
+        // repeating the flag — so mark them as such at a glance.
+        if (field_info.is_array) {
+            try buf_fmt.write(" (repeatable)", .{});
+        }
         if (field_info.requires) |deps| {
             try buf_fmt.write(" (requires ", .{});
             for (deps, 0..) |dep, di| {
@@ -970,6 +975,34 @@ test "help renders requires markers and mutually-exclusive sets" {
     try std.testing.expect(std.mem.indexOf(u8, help, "Mutually exclusive:") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "--json") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "--yaml") != null);
+}
+
+test "help marks array options as repeatable but not scalars" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    const module_info = zcli.CommandModuleInfo{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "tags", .is_optional = false, .is_array = true, .type_name = "[][]const u8", .description = "Tags to apply" },
+            .{ .name = "output", .is_optional = true, .is_array = false, .type_name = "?[]const u8", .description = "Output path" },
+        },
+    };
+
+    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    defer allocator.free(help);
+
+    // The array option carries the marker; the scalar option does not (there is
+    // exactly one occurrence of "(repeatable)" in the whole block).
+    try std.testing.expect(std.mem.indexOf(u8, help, "--tags") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "(repeatable)") != null);
+    try std.testing.expect(std.mem.lastIndexOf(u8, help, "(repeatable)").? == std.mem.indexOf(u8, help, "(repeatable)").?);
 }
 
 // Note: Integration tests for handleGlobalOption and help command execution

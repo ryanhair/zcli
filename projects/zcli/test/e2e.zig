@@ -819,6 +819,19 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
         try expectContains(r.stdout, "TODO: Implement ping");
     }
+    // The comma-separated multi-value form is accepted by the real binary
+    // (equivalent to repeating --tags), while an empty segment is rejected.
+    {
+        var r = try run(proj, &.{ demo_bin, "ping", "--tags", "a,b", "--tags", "c" });
+        defer r.deinit();
+        try expectOk(r);
+        try expectContains(r.stdout, "TODO: Implement ping");
+    }
+    {
+        var r = try run(proj, &.{ demo_bin, "ping", "--tags", "a,,b" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+    }
 
     // A second command assembled entirely from atomic `add arg`/`add option`
     // edits — the flag interface that replaced the JSON blob (ADR-0005). This
