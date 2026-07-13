@@ -69,11 +69,10 @@ fn handleList(io: std.Io, args: []const [:0]const u8) !void {
     const items = [_][]const u8{ "config.json", "data.txt", "README.md" };
 
     for (items, 0..) |item, i| {
-        _ = i;
         if (verbose) {
-            try stdout.writeStreamingAll(io, "  ");
-            try stdout.writeStreamingAll(io, item);
-            try stdout.writeStreamingAll(io, " (file)\n");
+            var buf: [128]u8 = undefined;
+            const line = try std.fmt.bufPrint(&buf, "  [{d}] \x1b[36m{s}\x1b[0m (file)\n", .{ i + 1, item });
+            try stdout.writeStreamingAll(io, line);
         } else {
             try stdout.writeStreamingAll(io, "  ");
             try stdout.writeStreamingAll(io, item);
@@ -86,6 +85,9 @@ fn handleList(io: std.Io, args: []const [:0]const u8) !void {
 
 fn printStatus(io: std.Io) !void {
     const stdout = std.Io.File.stdout();
+    // Clear the screen and home the cursor so `status` presents a fresh report
+    // rather than scrolling under whatever preceded it.
+    try stdout.writeStreamingAll(io, "\x1b[2J\x1b[H");
     try stdout.writeStreamingAll(io, "\x1b[1;35m[STATUS REPORT]\x1b[0m\n\n");
     try stdout.writeStreamingAll(io, "System: \x1b[32m● Online\x1b[0m\n");
     try stdout.writeStreamingAll(io, "Database: \x1b[32m● Connected\x1b[0m\n");
