@@ -30,7 +30,7 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 }
 ```
 
-- **`meta`** — help text and parsing metadata (`description`, `examples`, per-arg/option descriptions, `short` flags, `aliases`).
+- **`meta`** — help text and parsing metadata (`description`, `examples`, per-arg/option descriptions, `short` flags, `aliases`, `.env` fallbacks, cross-field constraints, and per-field `validate` hooks).
 - **`Args`** — positional arguments as a struct; a `[]const []const u8` field is variadic.
 - **`Options`** — `bool`/`?bool` fields are flags; other types take values, with defaults from the initializers.
 - **`execute`** — the command body, receiving the parsed, typed `Args` and `Options` plus the app context.

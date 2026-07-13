@@ -319,6 +319,104 @@ pub fn firstExclusiveViolation(
     return null;
 }
 
+/// A field whose `validate` hook rejected the resolved value. `name` is the
+/// effective long flag name (options) or field name (args); `provided_value` is
+/// the rejected value rendered to a string (for the "Invalid value 'X'" clause);
+/// `reason` is the author's message; `position` is the 0-based positional index
+/// for args.
+pub const ValidationFailure = struct {
+    name: []const u8,
+    reason: []const u8,
+    provided_value: []const u8 = "",
+    position: usize = 0,
+};
+
+/// Render a validated value to a string for the diagnostic. Strings pass through
+/// as-is; enums via `@tagName`; scalars are formatted. The result lives on
+/// `allocator` (an arena in practice, like the rendered diagnostic message) or is
+/// static — never individually freed.
+fn renderValidatedValue(allocator: std.mem.Allocator, comptime T: type, value: T) []const u8 {
+    return switch (@typeInfo(T)) {
+        .pointer => |p| if (p.child == u8) value else (std.fmt.allocPrint(allocator, "{any}", .{value}) catch "?"),
+        .@"enum" => @tagName(value),
+        .int, .float => std.fmt.allocPrint(allocator, "{d}", .{value}) catch "?",
+        .bool => if (value) "true" else "false",
+        else => std.fmt.allocPrint(allocator, "{any}", .{value}) catch "?",
+    };
+}
+
+/// The first Options field whose `meta.options.<field>.validate` rejected the
+/// resolved value (in field order), or null. Runs after required/requires/
+/// exclusive, on the final value from any source; a `?T` field is validated
+/// only when a value is present (null is skipped, since absence is governed by
+/// required/optional, not by the value hook).
+pub fn firstOptionValidationError(
+    allocator: std.mem.Allocator,
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    options: OptionsType,
+) ?ValidationFailure {
+    const info = @typeInfo(OptionsType);
+    if (info != .@"struct") return null;
+    inline for (info.@"struct".fields) |field| {
+        if (comptime option_utils.hasValidate(meta, field.name)) {
+            const validate_fn = @field(meta.options, field.name).validate;
+            const value = @field(options, field.name);
+            switch (@typeInfo(field.type)) {
+                .optional => if (value) |v| {
+                    if (validate_fn(v)) |r| return .{
+                        .name = comptime option_utils.effectiveLongName(meta, field.name),
+                        .reason = r,
+                        .provided_value = renderValidatedValue(allocator, @TypeOf(v), v),
+                    };
+                },
+                else => if (validate_fn(value)) |r| return .{
+                    .name = comptime option_utils.effectiveLongName(meta, field.name),
+                    .reason = r,
+                    .provided_value = renderValidatedValue(allocator, field.type, value),
+                },
+            }
+        }
+    }
+    return null;
+}
+
+/// The first positional Args field whose `meta.args.<field>.validate` rejected
+/// the parsed value (in positional order), or null. Same value-hook semantics as
+/// options; `position` is the 0-based field index for the diagnostic.
+pub fn firstArgValidationError(
+    allocator: std.mem.Allocator,
+    comptime ArgsType: type,
+    comptime meta: anytype,
+    args: ArgsType,
+) ?ValidationFailure {
+    const info = @typeInfo(ArgsType);
+    if (info != .@"struct") return null;
+    inline for (info.@"struct".fields, 0..) |field, i| {
+        if (comptime option_utils.hasValidateArg(meta, field.name)) {
+            const validate_fn = @field(meta.args, field.name).validate;
+            const value = @field(args, field.name);
+            switch (@typeInfo(field.type)) {
+                .optional => if (value) |v| {
+                    if (validate_fn(v)) |r| return .{
+                        .name = field.name,
+                        .reason = r,
+                        .provided_value = renderValidatedValue(allocator, @TypeOf(v), v),
+                        .position = i,
+                    };
+                },
+                else => if (validate_fn(value)) |r| return .{
+                    .name = field.name,
+                    .reason = r,
+                    .provided_value = renderValidatedValue(allocator, field.type, value),
+                    .position = i,
+                },
+            }
+        }
+    }
+    return null;
+}
+
 /// Check if an options type has any array fields that need cleanup
 fn hasArrayFields(comptime OptionsType: type) bool {
     const type_info = @typeInfo(OptionsType);
@@ -1093,6 +1191,98 @@ test "firstExclusiveViolation: overlapping sets are checked independently" {
         try std.testing.expectEqualStrings("b", ex.?.first);
         try std.testing.expectEqualStrings("c", ex.?.second);
     }
+}
+
+test "firstOptionValidationError: reports the first field the hook rejects" {
+    const V = struct {
+        fn port(p: u16) ?[]const u8 {
+            return if (p == 0) "must be between 1 and 65535" else null;
+        }
+    };
+    const Options = struct { port: u16 = 8080 };
+    const meta = .{ .options = .{ .port = .{ .validate = V.port } } };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A valid value (from any source — the sweep sees only the final value).
+    try std.testing.expect(firstOptionValidationError(a, Options, meta, .{ .port = 8080 }) == null);
+
+    // An invalid value → failure carrying the reason, flag name, and rendered value.
+    const f = firstOptionValidationError(a, Options, meta, .{ .port = 0 });
+    try std.testing.expect(f != null);
+    try std.testing.expectEqualStrings("port", f.?.name);
+    try std.testing.expectEqualStrings("must be between 1 and 65535", f.?.reason);
+    try std.testing.expectEqualStrings("0", f.?.provided_value);
+}
+
+test "firstOptionValidationError: optional field is validated only when present" {
+    const V = struct {
+        fn nonzero(n: u32) ?[]const u8 {
+            return if (n == 0) "must not be zero" else null;
+        }
+    };
+    const Options = struct { limit: ?u32 = null };
+    const meta = .{ .options = .{ .limit = .{ .validate = V.nonzero } } };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try std.testing.expect(firstOptionValidationError(a, Options, meta, .{ .limit = null }) == null);
+    try std.testing.expect(firstOptionValidationError(a, Options, meta, .{ .limit = 5 }) == null);
+    try std.testing.expect(firstOptionValidationError(a, Options, meta, .{ .limit = 0 }) != null);
+}
+
+test "firstOptionValidationError: reports the effective (custom) flag name" {
+    const V = struct {
+        fn nonempty(s: []const u8) ?[]const u8 {
+            return if (s.len == 0) "must not be empty" else null;
+        }
+    };
+    const Options = struct { output_dir: []const u8 = "" };
+    const meta = .{ .options = .{ .output_dir = .{ .name = "out", .validate = V.nonempty } } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const f = firstOptionValidationError(arena.allocator(), Options, meta, .{ .output_dir = "" });
+    try std.testing.expect(f != null);
+    try std.testing.expectEqualStrings("out", f.?.name);
+}
+
+test "firstArgValidationError: reports the field, reason, and position" {
+    const V = struct {
+        fn nonempty(s: []const u8) ?[]const u8 {
+            return if (s.len == 0) "must not be empty" else null;
+        }
+        fn small(n: u8) ?[]const u8 {
+            return if (n > 10) "must be 10 or less" else null;
+        }
+    };
+    const Args = struct { name: []const u8, count: u8 };
+    const meta = .{ .args = .{
+        .name = .{ .validate = V.nonempty },
+        .count = .{ .description = "how many", .validate = V.small },
+    } };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // All valid.
+    try std.testing.expect(firstArgValidationError(a, Args, meta, .{ .name = "x", .count = 3 }) == null);
+
+    // Second positional rejected → position 1 (0-based), reported after name passes.
+    const f = firstArgValidationError(a, Args, meta, .{ .name = "x", .count = 99 });
+    try std.testing.expect(f != null);
+    try std.testing.expectEqualStrings("count", f.?.name);
+    try std.testing.expectEqualStrings("must be 10 or less", f.?.reason);
+    try std.testing.expectEqualStrings("99", f.?.provided_value);
+    try std.testing.expectEqual(@as(usize, 1), f.?.position);
+
+    // Bare-string arg meta (no validate) is simply skipped.
+    const meta2 = .{ .args = .{ .name = "just a description" } };
+    try std.testing.expect(firstArgValidationError(a, Args, meta2, .{ .name = "", .count = 0 }) == null);
 }
 
 test "parseArgs failure after array options were parsed does not leak them" {

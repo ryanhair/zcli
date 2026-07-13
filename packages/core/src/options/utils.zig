@@ -686,6 +686,31 @@ pub fn requiresFor(comptime meta: anytype, comptime field_name: []const u8) ?[]c
     return tupleToStrings(field_meta.requires);
 }
 
+/// Whether `meta.options.<field>` declares a `validate` hook. The hook's type is
+/// verified by `validateCommand` to be `fn(Base) ?[]const u8` (Base = the field
+/// type with one optional level removed); the validation sweep reads the decl
+/// directly once this gate passes.
+pub fn hasValidate(comptime meta: anytype, comptime field_name: []const u8) bool {
+    if (@TypeOf(meta) == @TypeOf(null)) return false;
+    if (!@hasField(@TypeOf(meta), "options")) return false;
+    if (!@hasField(@TypeOf(meta.options), field_name)) return false;
+    const field_meta = @field(meta.options, field_name);
+    if (@typeInfo(@TypeOf(field_meta)) != .@"struct") return false;
+    return @hasField(@TypeOf(field_meta), "validate");
+}
+
+/// Whether `meta.args.<field>` declares a `validate` hook. The struct form of
+/// args metadata (a bare string carries none) may carry the same `fn(Base)
+/// ?[]const u8` hook as options; `validateCommand` verifies its signature.
+pub fn hasValidateArg(comptime meta: anytype, comptime field_name: []const u8) bool {
+    if (@TypeOf(meta) == @TypeOf(null)) return false;
+    if (!@hasField(@TypeOf(meta), "args")) return false;
+    if (!@hasField(@TypeOf(meta.args), field_name)) return false;
+    const field_meta = @field(meta.args, field_name);
+    if (@typeInfo(@TypeOf(field_meta)) != .@"struct") return false;
+    return @hasField(@TypeOf(field_meta), "validate");
+}
+
 /// The `meta.exclusive` mutually-exclusive sets — each a list of Options field
 /// names, at most one of which may be supplied — or an empty slice when none are
 /// declared.

@@ -65,9 +65,16 @@ fn isReportedCliError(err: anyerror) bool {
         error.OptionBooleanWithValue,
         error.OptionDuplicate,
         error.OptionMissingRequired,
+        // Cross-field constraint violations (ADR-0022) and per-field validation
+        // failures also print their own diagnostic via reportParseError, so they
+        // exit cleanly like every other reported parse error.
+        error.OptionMutuallyExclusive,
+        error.OptionMissingDependency,
+        error.OptionValidationFailed,
         error.ArgumentMissingRequired,
         error.ArgumentInvalidValue,
         error.ArgumentTooMany,
+        error.ArgumentValidationFailed,
         error.ResourceLimitExceeded,
         // A command that failed via context.fail() already printed its own
         // user-facing message; exit non-zero without the name/trace.
@@ -80,6 +87,11 @@ fn isReportedCliError(err: anyerror) bool {
 test "isReportedCliError: context.fail's error exits cleanly, unexpected errors don't" {
     try std.testing.expect(isReportedCliError(error.CommandFailed));
     try std.testing.expect(isReportedCliError(error.ArgumentMissingRequired));
+    // Constraint + validation violations self-report, so they exit cleanly too.
+    try std.testing.expect(isReportedCliError(error.OptionMutuallyExclusive));
+    try std.testing.expect(isReportedCliError(error.OptionMissingDependency));
+    try std.testing.expect(isReportedCliError(error.OptionValidationFailed));
+    try std.testing.expect(isReportedCliError(error.ArgumentValidationFailed));
     // An unexpected failure keeps its name + trace (propagated, not swallowed).
     try std.testing.expect(!isReportedCliError(error.OutOfMemory));
 }
@@ -1027,6 +1039,34 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 if (try runOnErrorHooks(context, error.OptionMutuallyExclusive)) return;
                 try reportParseError(context, diag);
                 return error.OptionMutuallyExclusive;
+            }
+
+            // Per-field validation (meta.args/options.<field>.validate), run last
+            // on the fully-resolved values so the hooks see every source's effect.
+            // Args first (positional), then options — mirroring their parse order.
+            if (command_parser.firstArgValidationError(context.allocator, ArgsType, cmd_meta, args_instance)) |failure| {
+                const diag: zcli.ZcliDiagnostic = .{ .ArgumentValidationFailed = .{
+                    .field_name = failure.name,
+                    .position = failure.position,
+                    .provided_value = failure.provided_value,
+                    .reason = failure.reason,
+                } };
+                context.diagnostic = diag;
+                if (try runOnErrorHooks(context, error.ArgumentValidationFailed)) return;
+                try reportParseError(context, diag);
+                return error.ArgumentValidationFailed;
+            }
+
+            if (command_parser.firstOptionValidationError(context.allocator, OptionsType, cmd_meta, options_instance)) |failure| {
+                const diag: zcli.ZcliDiagnostic = .{ .OptionValidationFailed = .{
+                    .option_name = failure.name,
+                    .provided_value = failure.provided_value,
+                    .reason = failure.reason,
+                } };
+                context.diagnostic = diag;
+                if (try runOnErrorHooks(context, error.OptionValidationFailed)) return;
+                try reportParseError(context, diag);
+                return error.OptionValidationFailed;
             }
 
             // Execute. A handled error (onError returns true) is suppressed
