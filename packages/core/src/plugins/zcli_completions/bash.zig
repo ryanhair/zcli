@@ -87,9 +87,16 @@ pub fn generate(
 
     try writer.writeAll("    if [[ -n \"$completions\" ]]; then\n");
     try writer.writeAll("        COMPREPLY=($(compgen -W \"$completions\" -- \"$cur\"))\n");
-    try writer.writeAll("    else\n");
-    // Positional fallback: offer files for leaf commands with no further subcommands.
-    try writer.writeAll("        COMPREPLY=($(compgen -f -- \"$cur\"))\n");
+    if (hasPositionalEnums(root)) {
+        // Positional value completion for leaf commands. Keyed on the exact
+        // command path — i.e. the first positional slot — since bash has no way
+        // to display a descriptive hint, only candidate values. Non-enum
+        // positionals intentionally offer nothing rather than dumping files.
+        try writer.writeAll("    else\n");
+        try writer.writeAll("        case \"$key\" in\n");
+        try writePositionalCases(arena, writer, root);
+        try writer.writeAll("        esac\n");
+    }
     try writer.writeAll("    fi\n");
     try writer.writeAll("    return 0\n");
     try writer.writeAll("}\n\n");
@@ -135,6 +142,34 @@ fn writeCommandCases(arena: std.mem.Allocator, writer: anytype, node: *const tre
         try writer.writeAll("            ;;\n");
     }
     for (node.children) |child| try writeCommandCases(arena, writer, child);
+}
+
+/// Emit a `"path")` case offering the enum values of a leaf command's FIRST
+/// positional. Matching on the exact command path means the case fires when the
+/// cursor sits at that first positional. Leaves whose first positional is not an
+/// enum contribute no case (they complete nothing — deliberately not files).
+fn writePositionalCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
+    if (node.isLeaf() and node.args.len > 0) {
+        if (node.args[0].enum_values) |values| {
+            try writer.print("            \"{s}\")\n", .{try joinPath(arena, node.path)});
+            try writer.writeAll("                COMPREPLY=($(compgen -W \"");
+            for (values, 0..) |v, idx| {
+                if (idx > 0) try writer.writeByte(' ');
+                try writer.writeAll(v);
+            }
+            try writer.writeAll("\" -- \"$cur\"))\n");
+            try writer.writeAll("                ;;\n");
+        }
+    }
+    for (node.children) |child| try writePositionalCases(arena, writer, child);
+}
+
+/// True if any leaf command declares an enum as its first positional — i.e. we
+/// need a positional `case "$key"` block to offer those values.
+fn hasPositionalEnums(node: *const tree.CommandNode) bool {
+    if (node.isLeaf() and node.args.len > 0 and node.args[0].enum_values != null) return true;
+    for (node.children) |child| if (hasPositionalEnums(child)) return true;
+    return false;
 }
 
 /// True if any command option OR global option is an enum with values — i.e. we

@@ -105,29 +105,53 @@ fn writeArgsDispatch(
     try writer.print("{s}esac\n", .{indent});
 }
 
-/// Emit the `_arguments` call for a leaf command (its options + a file fallback
-/// for positionals).
+/// Emit the `_arguments` call for a leaf command: its options plus a spec for
+/// each declared positional. Enum positionals offer their choices; every other
+/// positional shows its name/description as a hint (an empty action = describe
+/// but complete nothing). There is deliberately NO file fallback — a command
+/// that takes an id or an enum should not dump the working directory.
 fn writeLeafArguments(
     arena: std.mem.Allocator,
     writer: anytype,
     indent: []const u8,
     node: *const tree.CommandNode,
 ) !void {
+    var specs = std.ArrayList([]const u8).empty;
+    try appendOptionSpecs(arena, &specs, node.options);
+    try appendPositionalSpecs(arena, &specs, node.args);
+
+    // Nothing declared → nothing to complete for this command.
+    if (specs.items.len == 0) return;
+
     // Namespace the context so option state doesn't leak between commands.
     const ctx = try std.mem.join(arena, "-", node.path);
     try writer.print("{s}        curcontext=\"${{curcontext%:*:*}}:{s}:\"\n", .{ indent, ctx });
     try writer.print("{s}        _arguments -S \\\n", .{indent});
     const spec_indent = try std.mem.concat(arena, u8, &.{ indent, "            " });
-    try writeOptionSpecs(arena, writer, spec_indent, node.options);
-    // Positional fallback: complete files for any remaining args.
-    try writer.print("{s}'*::arg:_files'\n", .{spec_indent});
+    for (specs.items, 0..) |spec, i| {
+        const cont = if (i + 1 < specs.items.len) " \\" else "";
+        try writer.print("{s}'{s}'{s}\n", .{ spec_indent, spec, cont });
+    }
 }
 
-/// Emit `_arguments` option specs (one line per form, `\`-continued) at `indent`.
+/// Emit `_arguments` option specs (one `\`-continued line per form) at `indent`.
+/// Used by the top-level `_arguments` where fixed specs always follow, so every
+/// line keeps its trailing backslash.
 fn writeOptionSpecs(
     arena: std.mem.Allocator,
     writer: anytype,
     indent: []const u8,
+    options: []const zcli.OptionInfo,
+) !void {
+    var specs = std.ArrayList([]const u8).empty;
+    try appendOptionSpecs(arena, &specs, options);
+    for (specs.items) |spec| try writer.print("{s}'{s}' \\\n", .{ indent, spec });
+}
+
+/// Append one `_arguments` spec string (unquoted, unindented) per option form.
+fn appendOptionSpecs(
+    arena: std.mem.Allocator,
+    specs: *std.ArrayList([]const u8),
     options: []const zcli.OptionInfo,
 ) !void {
     for (options) |opt| {
@@ -135,14 +159,82 @@ fn writeOptionSpecs(
         const action = try optionAction(arena, opt);
 
         if (opt.short) |short| {
-            try writer.print("{s}'-{c}", .{ indent, short });
-            if (esc_desc) |d| try writer.print("[{s}]", .{d});
-            try writer.print("{s}' \\\n", .{action});
+            const spec = if (esc_desc) |d|
+                try std.fmt.allocPrint(arena, "-{c}[{s}]{s}", .{ short, d, action })
+            else
+                try std.fmt.allocPrint(arena, "-{c}{s}", .{ short, action });
+            try specs.append(arena, spec);
         }
-        try writer.print("{s}'--{s}", .{ indent, opt.name });
-        if (esc_desc) |d| try writer.print("[{s}]", .{d});
-        try writer.print("{s}' \\\n", .{action});
+        const spec = if (esc_desc) |d|
+            try std.fmt.allocPrint(arena, "--{s}[{s}]{s}", .{ opt.name, d, action })
+        else
+            try std.fmt.allocPrint(arena, "--{s}{s}", .{ opt.name, action });
+        try specs.append(arena, spec);
     }
+}
+
+/// Append one positional `_arguments` spec per declared arg. `pos` is the 1-based
+/// index, or `*` for a variadic arg that soaks up the rest:
+///   'N:message:(a b c)'          → an enum arg; offer its choices
+///   'N: : _message -r "message"' → any other arg; force-display a hint
+///
+/// Non-enum positionals use `_message -r` rather than an empty action because an
+/// empty action's message only renders when the user has a `format`/`descriptions`
+/// zstyle set (most don't) — so it would silently show nothing. `_message -r`
+/// displays unconditionally. There is deliberately no `_files` fallback.
+fn appendPositionalSpecs(
+    arena: std.mem.Allocator,
+    specs: *std.ArrayList([]const u8),
+    args: []const zcli.ArgInfo,
+) !void {
+    for (args, 1..) |arg, idx| {
+        const pos = if (arg.is_variadic)
+            try arena.dupe(u8, "*")
+        else
+            try std.fmt.allocPrint(arena, "{d}", .{idx});
+
+        const msg = arg.description orelse arg.name;
+
+        const spec = if (arg.enum_values) |values| blk: {
+            const esc_msg = try escape.zsh(arena, msg);
+            const group = try enumActionGroup(arena, values);
+            break :blk try std.fmt.allocPrint(arena, "{s}:{s}:{s}", .{ pos, esc_msg, group });
+        } else blk: {
+            // Build `pos: : _message -r "<msg>"`, then dance single quotes so the
+            // whole token is safe inside the outer '…' the caller wraps it in. The
+            // message sits in double quotes (dq-escaped); its single quotes are
+            // handled by the dance — two non-overlapping escape layers.
+            const raw = try std.fmt.allocPrint(arena, "{s}: : _message -r \"{s}\"", .{ pos, try dquoteEscape(arena, msg) });
+            break :blk try danceSingleQuotes(arena, raw);
+        };
+        try specs.append(arena, spec);
+    }
+}
+
+/// Escape for placement inside a zsh double-quoted string: backslash-escape the
+/// four chars zsh expands there (`\`, `"`, `$`, `` ` ``).
+fn dquoteEscape(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    for (s) |c| {
+        switch (c) {
+            '\\', '"', '$', '`' => {
+                try out.append(arena, '\\');
+                try out.append(arena, c);
+            },
+            else => try out.append(arena, c),
+        }
+    }
+    return out.items;
+}
+
+/// Replace each single quote with the `'\''` sequence so the string is safe to
+/// place inside an outer `'…'` (the classic shell single-quote dance).
+fn danceSingleQuotes(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    for (s) |c| {
+        if (c == '\'') try out.appendSlice(arena, "'\\''") else try out.append(arena, c);
+    }
+    return out.items;
 }
 
 /// The zsh `_arguments` action suffix for an option:
@@ -151,22 +243,27 @@ fn writeOptionSpecs(
 ///   ":name:(a b c)"             → takes one of the enum values
 fn optionAction(arena: std.mem.Allocator, opt: zcli.OptionInfo) ![]const u8 {
     if (opt.enum_values) |values| {
-        var out = std.ArrayList(u8).empty;
-        try out.appendSlice(arena, ":");
-        try out.appendSlice(arena, opt.name);
-        try out.appendSlice(arena, ":(");
-        for (values, 0..) |v, idx| {
-            if (idx > 0) try out.append(arena, ' ');
-            const esc = try escape.zsh(arena, v);
-            try out.appendSlice(arena, esc);
-        }
-        try out.appendSlice(arena, ")");
-        return out.items;
+        const group = try enumActionGroup(arena, values);
+        return std.mem.concat(arena, u8, &.{ ":", opt.name, ":", group });
     }
     if (opt.takes_value) {
         return std.mem.concat(arena, u8, &.{ ":", opt.name, ":" });
     }
     return "";
+}
+
+/// A parenthesised, space-separated zsh action group of escaped enum values,
+/// e.g. `(low medium high)`. The parens are literal zsh spec syntax, so only the
+/// individual values are escaped — never the group as a whole.
+fn enumActionGroup(arena: std.mem.Allocator, values: []const []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    try out.append(arena, '(');
+    for (values, 0..) |v, idx| {
+        if (idx > 0) try out.append(arena, ' ');
+        try out.appendSlice(arena, try escape.zsh(arena, v));
+    }
+    try out.append(arena, ')');
+    return out.items;
 }
 
 /// Emit `_describe` entries (`'name:desc'`, aliases as separate entries) for a
