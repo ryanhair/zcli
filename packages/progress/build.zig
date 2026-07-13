@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
     // (they animate, so they want a real terminal). Each is also compiled by
     // `test` so it can't bitrot in CI.
     const example_names = [_][]const u8{
-        "spinner",  "spinner_styles", "bar",
+        "spinner",   "spinner_styles", "bar",
         "multi_bar", "tasks",
     };
     const examples_step = b.step("examples", "Build all progress examples");
