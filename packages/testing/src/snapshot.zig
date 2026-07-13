@@ -12,6 +12,15 @@ pub const SnapshotOptions = struct {
     /// `@import("build_options")`). zcli style is explicit configuration;
     /// there is no ambient environment-variable check.
     update: bool = false,
+    /// Whether to print human-facing diagnostics on the update, mismatch, and
+    /// missing paths (the update-confirmation line and the diff/missing boxes).
+    /// Defaults to `true` because interactive diagnostics are the right default
+    /// for humans debugging a failing snapshot. Set `false` when a test
+    /// deliberately drives those paths and expects them (asserting the returned
+    /// error) — writing to stderr in an otherwise-passing run makes Zig's build
+    /// runner echo a misleading `failed command: …` even though every test
+    /// passed.
+    report: bool = true,
 };
 
 /// Unified snapshot testing function with configurable options.
@@ -19,6 +28,12 @@ pub const SnapshotOptions = struct {
 /// `snapshot_root` is the directory `tests/snapshots/...` paths are resolved
 /// against — pass `std.Io.Dir.cwd()` in a normal test suite (the package
 /// root, when run via `zig build test`).
+/// By default real callers get the human-facing diagnostics on the update,
+/// mismatch, and missing paths (the update confirmation and the diff/missing
+/// boxes). Tests that deliberately drive those paths — and assert the returned
+/// error rather than reading the diagnostics — pass `.{ .report = false }` so a
+/// passing run stays quiet (writing to stderr here would otherwise make the
+/// build runner echo `failed command: …` even though every test passed).
 pub fn expectSnapshot(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -28,24 +43,7 @@ pub fn expectSnapshot(
     comptime snapshot_name: []const u8,
     options: SnapshotOptions,
 ) !void {
-    // Real callers get the human-facing diagnostics (the update confirmation and
-    // the mismatch/missing boxes). This module's own tests, which deliberately
-    // drive the update and error paths, call the impl with `report = false` so a
-    // passing run stays quiet (writing to stderr here would otherwise make the
-    // build runner echo `failed command: …` even though every test passed).
-    return expectSnapshotImpl(allocator, io, snapshot_root, actual, location, snapshot_name, options, true);
-}
-
-fn expectSnapshotImpl(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    snapshot_root: std.Io.Dir,
-    actual: []const u8,
-    comptime location: std.builtin.SourceLocation,
-    comptime snapshot_name: []const u8,
-    options: SnapshotOptions,
-    comptime report: bool,
-) !void {
+    const report = options.report;
     // Build snapshot file path based on test file location
     const test_file_path = location.file;
     const snapshot_dir = comptime getSnapshotDir(test_file_path);
@@ -529,22 +527,22 @@ test "expectSnapshot round-trip: update writes, compare matches, mismatch and mi
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    // The update and error paths are driven through the quiet impl so this
+    // The update and error paths are driven with `.report = false` so this
     // passing test doesn't spew the update confirmation and diff boxes (which
     // would also trip the build runner into printing `failed command: …`).
 
     // Update mode creates the snapshot file (ANSI preserved by default).
-    try expectSnapshotImpl(a, io, tmp.dir, "hello \x1b[1mworld\x1b[0m", @src(), "roundtrip", .{ .update = true }, false);
+    try expectSnapshot(a, io, tmp.dir, "hello \x1b[1mworld\x1b[0m", @src(), "roundtrip", .{ .update = true, .report = false });
 
-    // Compare mode passes against what was just written (public entry point;
-    // a match prints nothing regardless).
+    // Compare mode passes against what was just written (a match prints nothing
+    // regardless, so the default loud `report` is fine here).
     try expectSnapshot(a, io, tmp.dir, "hello \x1b[1mworld\x1b[0m", @src(), "roundtrip", .{});
 
     // A differing value is a mismatch.
-    try testing.expectError(error.SnapshotMismatch, expectSnapshotImpl(a, io, tmp.dir, "different", @src(), "roundtrip", .{}, false));
+    try testing.expectError(error.SnapshotMismatch, expectSnapshot(a, io, tmp.dir, "different", @src(), "roundtrip", .{ .report = false }));
 
     // A snapshot that was never written is its own error.
-    try testing.expectError(error.SnapshotMissing, expectSnapshotImpl(a, io, tmp.dir, "x", @src(), "never-written", .{}, false));
+    try testing.expectError(error.SnapshotMissing, expectSnapshot(a, io, tmp.dir, "x", @src(), "never-written", .{ .report = false }));
 }
 
 test "expectSnapshot with ansi=false compares stripped content" {
@@ -553,7 +551,7 @@ test "expectSnapshot with ansi=false compares stripped content" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try expectSnapshotImpl(a, io, tmp.dir, "\x1b[31mred\x1b[0m text", @src(), "stripped", .{ .ansi = false, .update = true }, false);
+    try expectSnapshot(a, io, tmp.dir, "\x1b[31mred\x1b[0m text", @src(), "stripped", .{ .ansi = false, .update = true, .report = false });
     // Different coloring, same visible text: still a match once stripped.
     try expectSnapshot(a, io, tmp.dir, "\x1b[32mred\x1b[0m text", @src(), "stripped", .{ .ansi = false });
 }
