@@ -14,8 +14,16 @@
 //! verifies a genuine signature over checksums whose digests really match the
 //! served binary. The fail-closed cases (missing .minisig, tampered checksums,
 //! binary/checksum mismatch) each abort before the swap.
+//!
+//! A second group ("install: …") closes the #114 gap by driving
+//! `plugin.replaceBinaryAt` against a binary whose image is held open by a
+//! RUNNING process — the real self-upgrade scenario the unit tests can't reach
+//! (they swap dormant files). This is where Windows's rename-aside strategy for
+//! a live .exe actually gets exercised, on the Windows CI leg of `zig build
+//! test`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 
 const plugin = @import("plugins/zcli_github_upgrade/plugin.zig");
@@ -311,4 +319,277 @@ test "pipeline: checksum-only mode still rejects a mismatched binary" {
         error.ChecksumMismatch,
         runDownloadVerify(allocator, io, tmp.dir, assets, null),
     );
+}
+
+// ----------------------------------------------------------------------------
+// In-use binary replacement — the actual self-upgrade scenario
+//
+// The unit tests in plugin.zig swap DORMANT files; this closes the #114 gap by
+// replacing a binary whose image is held open by a RUNNING process — exactly
+// what happens when `zcli upgrade` overwrites the very executable it is running
+// from. That is the case Windows's rename-aside strategy exists for: a live
+// .exe cannot be overwritten or deleted, only renamed, so `replaceBinaryAt`
+// moves it to `{target}.backup` before moving the new binary into place, and
+// the still-mapped old image lingers until the process exits (deferred delete).
+//
+// The test is cross-platform, not Windows-gated, so the harness itself runs
+// everywhere (on POSIX, rename over a running binary is legal and the swap is a
+// single atomic rename); the Windows-specific assertions sit behind
+// `builtin.os.tag == .windows`.
+// ----------------------------------------------------------------------------
+
+/// The sentinel file the waiter polls for. When the test creates it in the
+/// waiter's working directory, the waiter sees it and exits 0. This replaces the
+/// old stdin/EOF handshake — no stdin plumbing, no kernel32 externs, no PEB
+/// layout assumptions — with the most boring cross-platform mechanism there is:
+/// look for a file, sleep, repeat.
+const waiter_go_sentinel = "go";
+
+/// A minimal helper executable: it polls its working directory for a sentinel
+/// file, sleeping between checks, and exits 0 the moment it appears. Compiled
+/// fresh into the temp dir and copied to the "installed" path so a spawned
+/// instance holds that on-disk image open while we replace it. Creating the
+/// sentinel is the clean-exit signal, letting us prove the process survived
+/// having its image swapped and terminated normally — a `kill` would mask a
+/// crash.
+///
+/// It uses the idiomatic 0.16 `main(init: std.process.Init)` entry point, so it
+/// has a real `std.Io` (`init.io`) for both the sleep and the file check — no
+/// hand-rolled syscalls. A hard cap of ~30s of polling guards against a wedged
+/// test: if the sentinel never arrives the waiter exits non-zero so the test
+/// fails loudly instead of hanging CI.
+const waiter_source =
+    \\const std = @import("std");
+    \\
+    \\pub fn main(init: std.process.Init) !void {
+    \\    const io = init.io;
+    \\    const dir = std.Io.Dir.cwd();
+    \\    var elapsed_ms: u64 = 0;
+    \\    const poll_ms: u64 = 20;
+    \\    const cap_ms: u64 = 30_000;
+    \\    while (elapsed_ms < cap_ms) : (elapsed_ms += poll_ms) {
+    \\        if (dir.access(io, "go", .{})) |_| return else |err| switch (err) {
+    \\            error.FileNotFound => {},
+    \\            else => return err,
+    \\        }
+    \\        io.sleep(.fromMilliseconds(poll_ms), .awake) catch return;
+    \\    }
+    \\    std.process.exit(1);
+    \\}
+;
+
+/// Executable-name suffix for the current platform (Windows carries `.exe`).
+const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+
+/// Read cap for slurping a whole binary back for comparison. The waiter is a
+/// real (debug-built, so multi-MB) executable, so this is generous.
+const read_cap: std.Io.Limit = .limited(64 << 20);
+
+/// Compile `waiter_source` into `out_name` inside `dir` using the `zig` on
+/// PATH (guaranteed present — these tests run under `zig build`). Returns
+/// error.SkipZigTest if `zig` cannot be launched, so a stripped-down CI image
+/// without a zig-on-PATH degrades to a skip rather than a spurious failure.
+fn buildWaiter(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, out_name: []const u8) !void {
+    try dir.writeFile(io, .{ .sub_path = "waiter.zig", .data = waiter_source });
+
+    // Keep every build artifact (the emitted exe, cache, .o) inside the temp
+    // dir by running the compiler with its cwd set there.
+    const emit = try std.fmt.allocPrint(allocator, "-femit-bin={s}", .{out_name});
+    defer allocator.free(emit);
+
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "zig", "build-exe", "waiter.zig", emit },
+        .cwd = .{ .dir = dir },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    const term = child.wait(io) catch return error.SkipZigTest;
+    if (term != .exited or term.exited != 0) return error.NewBinaryFailedToRun;
+}
+
+/// Absolute path to `sub_path` within `dir`, so spawned children key off an
+/// explicit image path rather than a cwd-relative one (whose resolution
+/// differs across platforms). Returns the sentinel-terminated slice as-is so
+/// the caller frees the exact allocation (freeing it as a plain `[]u8` would
+/// drop the terminator byte and trip the allocator's size check).
+fn absPath(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, sub_path: []const u8) ![:0]u8 {
+    return dir.realPathFileAlloc(io, sub_path, allocator);
+}
+
+/// Spawn `abs_path` as a long-running process, keyed off `abs_path` (an explicit
+/// image path) while its working directory is set to `dir` — the directory it
+/// polls for the sentinel file, and the same temp dir the swap happens in. It
+/// stays alive (holding its on-disk image in-use) until that sentinel appears.
+fn spawnWaiter(io: std.Io, abs_path: []const u8, dir: std.Io.Dir) !std.process.Child {
+    return std.process.spawn(io, .{
+        .argv = &.{abs_path},
+        .cwd = .{ .dir = dir },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+}
+
+/// Drop the sentinel file into the waiter's working directory (its poll loop
+/// sees it and returns 0), then wait; assert it terminated normally with exit
+/// code 0. Proves the running process kept running through the swap and exited
+/// cleanly rather than crashing from having its image replaced underneath it (a
+/// crash surfaces as a signal/non-zero term here instead of being masked).
+fn expectCleanExit(io: std.Io, dir: std.Io.Dir, child: *std.process.Child) !void {
+    dir.writeFile(io, .{ .sub_path = waiter_go_sentinel, .data = "" }) catch |err| {
+        std.debug.print("failed to write sentinel to signal waiter exit: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    const term = child.wait(io) catch |err| {
+        std.debug.print("waiter did not exit cleanly: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    if (term != .exited or term.exited != 0) {
+        std.debug.print("waiter terminated abnormally: {any}\n", .{term});
+    }
+    try testing.expect(term == .exited);
+    try testing.expectEqual(@as(u8, 0), term.exited);
+    // Clean up the sentinel so a second waiter in the same dir doesn't exit
+    // immediately on the stale file.
+    dir.deleteFile(io, waiter_go_sentinel) catch {};
+}
+
+test "install: replace a binary whose image a running process holds open" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    // "Failed without output" on the Windows CI leg is nearly impossible to
+    // diagnose after the fact, so each major step logs on the way out.
+    errdefer std.debug.print("[in-use replace] test aborted; see step logs above\n", .{});
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Build the waiter, then copy it to the "installed" path — the copy is what
+    // a live process runs from and what the upgrade replaces.
+    const waiter_name = "waiter" ++ exe_suffix;
+    buildWaiter(allocator, io, tmp.dir, waiter_name) catch |err| {
+        std.debug.print("[in-use replace] buildWaiter failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
+
+    const target_name = "app" ++ exe_suffix;
+    try tmp.dir.copyFile(waiter_name, tmp.dir, target_name, io, .{});
+    if (builtin.os.tag != .windows) {
+        const tf = try tmp.dir.openFile(io, target_name, .{});
+        defer tf.close(io);
+        try tf.setPermissions(io, .executable_file);
+    }
+
+    // The "new version" the upgrade installs. Its bytes only need to land
+    // correctly; the swap copies bytes and does not run it (testBinary, the
+    // exec smoke test, is a separate step exercised elsewhere).
+    const new_name = "new" ++ exe_suffix;
+    const new_contents = "NEW-VERSION-BYTES\x00\x01\x02";
+    try tmp.dir.writeFile(io, .{ .sub_path = new_name, .data = new_contents });
+
+    // Launch the target so its on-disk image is in-use, then replace it.
+    const target_abs = try absPath(allocator, io, tmp.dir, target_name);
+    defer allocator.free(target_abs);
+
+    var child = spawnWaiter(io, target_abs, tmp.dir) catch |err| {
+        std.debug.print("[in-use replace] spawnWaiter failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    errdefer child.kill(io);
+
+    // The replacement must succeed even though `target_name` is a running image.
+    plugin.replaceBinaryAt(allocator, io, tmp.dir, new_name, target_name) catch |err| {
+        std.debug.print("[in-use replace] first replaceBinaryAt failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
+
+    // The installed path now holds the new bytes.
+    const got = try tmp.dir.readFileAlloc(io, target_name, allocator, read_cap);
+    defer allocator.free(got);
+    try testing.expectEqualStrings(new_contents, got);
+
+    if (builtin.os.tag == .windows) {
+        // Rename-aside: the live image was moved to `{target}.backup`. It stays
+        // mapped (and thus undeletable) until the process exits, so the swap
+        // leaves it behind on purpose — deferred delete.
+        const backup_name = target_name ++ ".backup";
+        const backup = tmp.dir.readFileAlloc(io, backup_name, allocator, read_cap) catch |err| {
+            std.debug.print("[in-use replace] reading {s} failed: {s}\n", .{ backup_name, @errorName(err) });
+            return err;
+        };
+        defer allocator.free(backup);
+        // The backup is the ORIGINAL binary (== the waiter it was copied from).
+        const waiter_bytes = try tmp.dir.readFileAlloc(io, waiter_name, allocator, read_cap);
+        defer allocator.free(waiter_bytes);
+        try testing.expectEqualSlices(u8, waiter_bytes, backup);
+    }
+
+    // The running process survived the swap and exits cleanly on the sentinel.
+    try expectCleanExit(io, tmp.dir, &child);
+
+    // A SECOND upgrade after the old process has exited: on Windows the stale
+    // `{target}.backup` from the first swap is now unlocked, so rename-aside
+    // replaces it rather than tripping over it (the deferred-delete reality the
+    // strategy is built around — this is the faithful scenario: the process that
+    // held the old image has already exited before the next upgrade runs). On
+    // POSIX there is no backup; this simply confirms back-to-back upgrades work.
+    const new2_contents = "SECOND-NEW-VERSION";
+    try tmp.dir.writeFile(io, .{ .sub_path = new_name, .data = new2_contents });
+    plugin.replaceBinaryAt(allocator, io, tmp.dir, new_name, target_name) catch |err| {
+        std.debug.print("[in-use replace] second replaceBinaryAt (stale backup) failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
+
+    const got2 = try tmp.dir.readFileAlloc(io, target_name, allocator, read_cap);
+    defer allocator.free(got2);
+    try testing.expectEqualStrings(new2_contents, got2);
+}
+
+test "install: a missing new binary leaves a running target intact and runnable" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const waiter_name = "waiter" ++ exe_suffix;
+    try buildWaiter(allocator, io, tmp.dir, waiter_name);
+
+    const target_name = "app" ++ exe_suffix;
+    try tmp.dir.copyFile(waiter_name, tmp.dir, target_name, io, .{});
+    if (builtin.os.tag != .windows) {
+        const tf = try tmp.dir.openFile(io, target_name, .{});
+        defer tf.close(io);
+        try tf.setPermissions(io, .executable_file);
+    }
+
+    const original = try tmp.dir.readFileAlloc(io, target_name, allocator, read_cap);
+    defer allocator.free(original);
+
+    const target_abs = try absPath(allocator, io, tmp.dir, target_name);
+    defer allocator.free(target_abs);
+
+    var child = try spawnWaiter(io, target_abs, tmp.dir);
+    errdefer child.kill(io);
+
+    // Replacing with a nonexistent new binary must fail during staging, before
+    // the live image is ever renamed aside...
+    try testing.expectError(
+        error.FileNotFound,
+        plugin.replaceBinaryAt(allocator, io, tmp.dir, "does-not-exist" ++ exe_suffix, target_name),
+    );
+
+    // ...leaving the still-running target byte-for-byte intact (never renamed
+    // over), and on Windows no backup created.
+    const after = try tmp.dir.readFileAlloc(io, target_name, allocator, read_cap);
+    defer allocator.free(after);
+    try testing.expectEqualSlices(u8, original, after);
+    if (builtin.os.tag == .windows) {
+        try testing.expectError(error.FileNotFound, tmp.dir.openFile(io, target_name ++ ".backup", .{}));
+    }
+
+    // The process is unharmed and still exits cleanly.
+    try expectCleanExit(io, tmp.dir, &child);
 }

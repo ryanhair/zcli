@@ -826,6 +826,13 @@ fn testBinary(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, binary_
 /// process exits, so cleanup is best-effort and the next upgrade's rename
 /// simply replaces it.
 ///
+/// The move-aside of the live image must go through Win32 `MoveFileExW`, NOT
+/// std's `dir.rename`: std opens the source with GENERIC_WRITE-class access to
+/// perform a FileRenameInformation set, and the OS refuses that on the image
+/// file of a running process (`error.FileBusy`). `MoveFileExW` opens the source
+/// with DELETE access only, which the OS *does* permit on a running image — the
+/// one Win32 detail this function turns on. See `moveFileReplaceWindows`.
+///
 /// Takes the directory and paths as parameters so the swap can be exercised
 /// against temp files instead of the live executable.
 pub fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, new_binary_path: []const u8, target_path: []const u8) !void {
@@ -845,20 +852,80 @@ pub fn replaceBinaryAt(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir
         const backup_path = try std.fmt.allocPrint(allocator, "{s}.backup", .{target_path});
         defer allocator.free(backup_path);
 
-        // Move the live image aside (allowed even while running), then move the
-        // new binary into place. rename() replaces any unlocked stale backup.
-        try dir.rename(target_path, dir, backup_path, io);
-        errdefer dir.rename(backup_path, dir, target_path, io) catch {};
+        // Move the live image aside (DELETE-access rename via MoveFileExW, which
+        // is legal on a running image where std's rename is not). REPLACE flag
+        // overwrites any unlocked stale backup left by a prior upgrade whose
+        // process has since exited.
+        try moveFileReplaceWindows(allocator, io, dir, target_path, backup_path);
+        errdefer moveFileReplaceWindows(allocator, io, dir, backup_path, target_path) catch {};
+        // The new binary is not a running image, so a plain rename into place is
+        // fine (and target no longer exists after the move-aside).
         try dir.rename(temp_path, dir, target_path, io);
 
         // The old image stays mapped until this process exits, so it can't be
-        // deleted now — leave it; the next upgrade's rename overwrites it.
+        // deleted now — leave it; the next upgrade's move-aside overwrites it.
         dir.deleteFile(io, backup_path) catch {};
     } else {
         // Atomically swap the new binary over the old one. On a crash mid-swap
         // the target is still the untouched original (rename is atomic).
         try dir.rename(temp_path, dir, target_path, io);
     }
+}
+
+/// `MoveFileExW` (kernel32). We call it only to rename the image of a *running*
+/// process aside — the one operation std's `dir.rename` cannot do, because it
+/// opens the source with GENERIC_WRITE-class access, which the OS denies on a
+/// running image. `MoveFileExW` opens the source with DELETE access only, which
+/// is permitted. `BOOL` return / `callconv(.winapi)` mirror the other win32
+/// declarations in this repo (see zcli_secrets/credential_manager_windows.zig).
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+extern "kernel32" fn MoveFileExW(
+    lpExistingFileName: [*:0]const u16,
+    lpNewFileName: ?[*:0]const u16,
+    dwFlags: u32,
+) callconv(.winapi) std.os.windows.BOOL;
+
+/// Rename `src_sub` → `dst_sub` (both within `dir`) via `MoveFileExW` with
+/// REPLACE_EXISTING. `MoveFileExW` takes absolute paths, not dir-relative
+/// handles, so we resolve `dir`'s own real path and join each sub-path onto it.
+/// Resolving the *directory* (not the files) is deliberate: it avoids opening
+/// the running image itself just to canonicalize its path. Used for the
+/// live-image move-aside — see `replaceBinaryAt`.
+fn moveFileReplaceWindows(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    src_sub: []const u8,
+    dst_sub: []const u8,
+) !void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try dir.realPath(io, &buf);
+    const dir_abs = buf[0..dir_len];
+
+    // The sub-paths may already be absolute (production passes the exe's full
+    // path) or relative (the tests pass a bare name within `dir`). Anchor a
+    // relative one to `dir`; use an absolute one as-is (path.join concatenates
+    // naively and would double the root of an absolute component).
+    const src_abs = try absWithin(allocator, dir_abs, src_sub);
+    defer allocator.free(src_abs);
+    const dst_abs = try absWithin(allocator, dir_abs, dst_sub);
+    defer allocator.free(dst_abs);
+
+    const src_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, src_abs);
+    defer allocator.free(src_w);
+    const dst_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, dst_abs);
+    defer allocator.free(dst_w);
+
+    if (!MoveFileExW(src_w.ptr, dst_w.ptr, MOVEFILE_REPLACE_EXISTING).toBool()) {
+        return error.FileBusy;
+    }
+}
+
+/// Return `sub` as an absolute path: unchanged (duped) if already absolute,
+/// otherwise joined onto `dir_abs`. Caller owns the result.
+fn absWithin(allocator: std.mem.Allocator, dir_abs: []const u8, sub: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(sub)) return allocator.dupe(u8, sub);
+    return std.fs.path.join(allocator, &.{ dir_abs, sub });
 }
 
 // ============================================================================
