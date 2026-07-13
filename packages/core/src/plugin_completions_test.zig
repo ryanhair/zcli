@@ -681,11 +681,12 @@ test "functional bash - COMPREPLY at root and at depth 2" {
 const adv_pick_args = [_]zcli.ArgInfo{.{ .name = "thing", .complete = hook_spec }};
 const adv_commands = [_]zcli.CommandInfo{.{ .path = &.{"pick"}, .description = "Pick", .args = &adv_pick_args }};
 
-// A POSIX `sh` stub that answers any `__complete` invocation with five nasty
-// values, NUL-separated: a space, a leading dash, glob chars, a quote, a dollar.
+// A POSIX `sh` stub that answers any `__complete` invocation with the directive
+// record (`default`) followed by five nasty values, NUL-separated: a space, a
+// leading dash, glob chars, a quote, a dollar.
 const adv_stub =
     \\#!/bin/sh
-    \\printf '%s\0' 'a b c' '-wip' 'x*y?' "it's" '$HOME'
+    \\printf '%s\0' 'default' 'a b c' '-wip' 'x*y?' "it's" '$HOME'
     \\
 ;
 
@@ -767,4 +768,83 @@ test "functional fish - dynamic candidates survive adversarial values verbatim" 
 
     const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
     try assertAdvExact(result.stdout);
+}
+
+// A stub whose `__complete` returns the `also_files` directive plus two dynamic
+// candidates — exercising the combine path (candidates AND native files). The
+// candidates share the `zz` prefix the test completes with, since a real hook
+// filters by the partial and fish's `complete -C` filters candidates by the token.
+const comb_stub =
+    \\#!/bin/sh
+    \\printf '%s\0' 'also_files' 'zzalpha' 'zzbeta'
+    \\
+;
+
+test "functional bash - also_files directive adds file completion to candidates" {
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try bash.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp_completion.bash", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", comb_stub);
+    _ = try writeTemp(a, tmp.dir, "zzfile", "x"); // a file for the combine path to find
+    const dir_path = std.fs.path.dirname(stub_path).?;
+
+    // Complete `advapp pick zz` — the stub yields alpha/beta AND `also_files`, so
+    // the file `zzfile` (matching `zz`) must join the candidates.
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\source "{s}"
+        \\cd "{s}"
+        \\COMP_WORDS=("{s}" pick "zz")
+        \\COMP_CWORD=2
+        \\COMPREPLY=()
+        \\_advapp_completions
+        \\printf '<%s>\n' "${{COMPREPLY[@]}}"
+        \\
+    , .{ stub_path, script_path, dir_path, stub_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_comb_harness.bash", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try std.testing.expect(advContains(result.stdout, "<zzalpha>")); // dynamic candidate
+    try std.testing.expect(advContains(result.stdout, "<zzfile>")); // native file
+}
+
+test "functional fish - also_files directive adds file completion to candidates" {
+    const sh = findShell("fish") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try fish.generate(a, "advapp", &adv_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp.fish", script);
+    const stub_path = try writeTemp(a, tmp.dir, "advapp", comb_stub);
+    _ = try writeTemp(a, tmp.dir, "zzfile", "x");
+    const dir_path = std.fs.path.dirname(stub_path).?;
+
+    const harness = try std.fmt.allocPrint(a,
+        \\chmod +x "{s}"
+        \\set -x PATH "{s}" $PATH
+        \\cd "{s}"
+        \\source "{s}"
+        \\for c in (complete -C "advapp pick zz")
+        \\    printf '<%s>\n' (string split -- \t $c)[1]
+        \\end
+        \\
+    , .{ stub_path, dir_path, dir_path, script_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_comb_harness.fish", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try std.testing.expect(advContains(result.stdout, "<zzalpha>"));
+    try std.testing.expect(advContains(result.stdout, "<zzfile>"));
 }

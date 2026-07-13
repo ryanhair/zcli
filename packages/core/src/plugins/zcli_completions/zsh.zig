@@ -130,8 +130,10 @@ fn writeDynamicHelper(writer: anytype, app_name: []const u8) !void {
     try writer.print("_{s}_zcli_complete() {{\n", .{app_name});
     try writer.print("    local cword=$(( _{s}_current - 1 ))\n", .{app_name});
     try writer.writeAll("    local -a __vals __disp\n");
-    try writer.writeAll("    local __rec __val __desc\n");
+    try writer.writeAll("    local __rec __val __desc __dir=default __first=1\n");
     try writer.writeAll("    while IFS= read -r -d '' __rec; do\n");
+    // The first record is the directive; the rest are candidates.
+    try writer.writeAll("        if (( __first )); then __dir=$__rec; __first=0; continue; fi\n");
     try writer.writeAll("        __val=${__rec%%$'\\t'*}\n");
     try writer.writeAll("        __vals+=(\"$__val\")\n");
     try writer.writeAll("        if [[ \"$__rec\" == *$'\\t'* ]]; then\n");
@@ -142,6 +144,11 @@ fn writeDynamicHelper(writer: anytype, app_name: []const u8) !void {
     try writer.writeAll("        fi\n");
     try writer.print("    done < <(\"${{_{s}_words[1]}}\" __complete \"$cword\" -- \"${{_{s}_words[@]}}\" 2>/dev/null)\n", .{ app_name, app_name });
     try writer.writeAll("    (( ${#__vals} )) && compadd -d __disp -- \"${__vals[@]}\"\n");
+    // Combine directive: also offer native file/dir completion.
+    try writer.writeAll("    case $__dir in\n");
+    try writer.writeAll("        also_files) _files ;;\n");
+    try writer.writeAll("        also_dirs) _files -/ ;;\n");
+    try writer.writeAll("    esac\n");
     try writer.writeAll("}\n\n");
 }
 

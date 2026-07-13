@@ -51,7 +51,7 @@ pub const commands = struct {
                         return;
                     };
                     const out = context.stdout();
-                    try wire.writeRecords(out, result.candidates);
+                    try wire.writeResult(out, result, match.partial);
                 },
                 // Builtins are resolved statically at generation time and never
                 // reach `__complete`.

@@ -1,17 +1,39 @@
 //! The `__complete` output wire format (ADR-0026).
 //!
-//! Records are **NUL-framed**: each candidate is `value` optionally followed by a
-//! tab and `description`, then a NUL byte. NUL is the delimiter because candidate
-//! values are arbitrary runtime strings that may legally contain spaces, globs,
-//! quotes, or newlines — only NUL cannot appear in one. A literal tab inside a
-//! value (which would be read as the value/description separator) and any stray
-//! NUL are scrubbed; everything else passes through verbatim so the shell offers
-//! the exact string.
+//! Records are **NUL-framed**: the FIRST record is a directive token
+//! (`default` / `also_files` / `also_dirs`); every record after it is a candidate
+//! — `value` optionally followed by a tab and `description`. NUL is the delimiter
+//! because candidate values are arbitrary runtime strings that may legally contain
+//! spaces, globs, quotes, or newlines — only NUL cannot appear in one. A literal
+//! tab inside a value (which would be read as the value/description separator) and
+//! any stray NUL are scrubbed; everything else passes through verbatim so the
+//! shell offers the exact string.
 
 const std = @import("std");
 const zcli = @import("zcli");
 
-/// Write `candidates` as NUL-framed records to `writer`.
+const Directive = zcli.completion.Directive;
+
+fn directiveToken(d: Directive) []const u8 {
+    return switch (d) {
+        .default => "default",
+        .also_files => "also_files",
+        .also_dirs => "also_dirs",
+    };
+}
+
+/// Write a completion `Result` to `writer`: the directive record first, then the
+/// NUL-framed candidates. On an EMPTY partial the `also_*` directive is downgraded
+/// to `default` — so a bare `<TAB>` in combine mode shows only the dynamic
+/// candidates, not the entire CWD (the flood guard the static work established).
+pub fn writeResult(writer: anytype, result: zcli.completion.Result, partial: []const u8) !void {
+    const directive = if (partial.len == 0) Directive.default else result.directive;
+    try writer.writeAll(directiveToken(directive));
+    try writer.writeByte(0);
+    try writeRecords(writer, result.candidates);
+}
+
+/// Write `candidates` as NUL-framed records to `writer` (no directive).
 pub fn writeRecords(writer: anytype, candidates: []const zcli.completion.Candidate) !void {
     for (candidates) |c| {
         try writeScrubbed(writer, c.value, true);
@@ -77,4 +99,25 @@ test "writeRecords - drops a stray NUL in a value" {
     defer aw.deinit();
     try writeRecords(&aw.writer, &.{.{ .value = "a\x00b" }});
     try std.testing.expectEqualStrings("ab\x00", aw.written());
+}
+
+test "writeResult - directive record precedes the candidates" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeResult(&aw.writer, .{ .candidates = &.{.{ .value = "x" }}, .directive = .also_files }, "p");
+    try std.testing.expectEqualStrings("also_files\x00x\x00", aw.written());
+}
+
+test "writeResult - empty partial downgrades also_* to default (flood guard)" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeResult(&aw.writer, .{ .candidates = &.{.{ .value = "x" }}, .directive = .also_files }, "");
+    try std.testing.expectEqualStrings("default\x00x\x00", aw.written());
+}
+
+test "writeResult - default directive with no candidates is just the directive" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeResult(&aw.writer, .{}, "p");
+    try std.testing.expectEqualStrings("default\x00", aw.written());
 }
