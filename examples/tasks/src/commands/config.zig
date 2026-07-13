@@ -17,7 +17,6 @@ const CONFIG_FILE = ".tasks.config.json";
 /// Mirrors the `tasks` config schema. `add` and `list` are command-scoped:
 /// the zcli_config plugin applies them as defaults for `tasks add` / `tasks list`.
 const Config = struct {
-    output: []const u8 = "text",
     add: struct {
         priority: []const u8 = "medium",
         points: u32 = 1,
@@ -74,7 +73,6 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     });
 
     const new_config = Config{
-        .output = current.output, // preserve existing global setting
         .add = .{ .priority = priorities[priority_idx], .points = @intCast(points) },
         .list = .{ .all = show_done },
     };

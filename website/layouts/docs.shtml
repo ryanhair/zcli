@@ -397,7 +397,6 @@ all = <span class="num">true</span></pre>
               <tr><td class="name">zcli_not_found</td><td class="desc">"Did you mean?" suggestions for typos</td><td><span class="badge on">default</span></td></tr>
               <tr><td class="name">zcli_completions</td><td class="desc">Generate & install completions for bash, zsh, fish</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_config</td><td class="desc">Transparent config loading — JSON, TOML, YAML, per-command scoping</td><td><span class="badge opt">optional</span></td></tr>
-              <tr><td class="name">zcli_output</td><td class="desc"><code>--output</code> flag — json, table, plain</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_secrets</td><td class="desc">OS-keychain credential storage — macOS Keychain, Linux Secret Service, Windows Credential Manager</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_github_upgrade</td><td class="desc"><code>upgrade</code> command via GitHub releases</td><td><span class="badge opt">optional</span></td></tr>
             </tbody>
