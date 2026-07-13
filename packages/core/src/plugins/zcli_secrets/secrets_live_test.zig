@@ -86,6 +86,34 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
         try std.testing.expectEqualSlices(u8, &binary, v);
     }
 
+    // An empty value must round-trip (a distinct edge from "key absent" → null).
+    try data.set(&ctx, name, "");
+    {
+        const v = (try data.get(&ctx, name)).?;
+        defer a.free(v);
+        try std.testing.expectEqualStrings("", v);
+    }
+
+    // A large value (>64 KiB) exercises the shell-out subprocess past the OS
+    // pipe buffer — the payload size that used to deadlock the stdin write
+    // against an undrained stdout. Windows caps the blob well below this, so its
+    // Credential Manager rejects it with SecretTooLarge; that is the correct
+    // uniform contract, not a bug, so assert it per platform.
+    {
+        const big = try a.alloc(u8, 200 * 1024);
+        defer a.free(big);
+        for (big, 0..) |*b, i| b.* = @intCast('A' + (i % 26));
+
+        if (builtin.os.tag == .windows) {
+            try std.testing.expectError(plugin.Error.SecretTooLarge, data.set(&ctx, name, big));
+        } else {
+            try data.set(&ctx, name, big);
+            const v = (try data.get(&ctx, name)).?;
+            defer a.free(v);
+            try std.testing.expectEqualSlices(u8, big, v);
+        }
+    }
+
     // Delete, confirm gone, and confirm a second delete is a no-op.
     try data.delete(&ctx, name);
     try std.testing.expect((try data.get(&ctx, name)) == null);

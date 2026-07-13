@@ -67,9 +67,18 @@ fn credentialFailure() Error {
     return Error.CredentialManagerFailure;
 }
 
-/// Build the UTF-16, NUL-terminated target name `service:account`.
+/// Build the UTF-8 target name as a length-prefixed encoding of `(service,
+/// name)`: `"<len(service)>:<service>:<name>"`. The leading count makes the
+/// split point unambiguous, so distinct pairs never collide — a plain
+/// `"service:name"` would let `("a:b","c")` and `("a","b:c")` share one entry.
+/// Caller owns the result.
+fn encodeTarget(allocator: std.mem.Allocator, service: []const u8, name: []const u8) std.mem.Allocator.Error![]u8 {
+    return std.fmt.allocPrint(allocator, "{d}:{s}:{s}", .{ service.len, service, name });
+}
+
+/// Build the UTF-16, NUL-terminated Credential Manager target name.
 fn makeTarget(allocator: std.mem.Allocator, service: []const u8, name: []const u8) ![:0]u16 {
-    const utf8 = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ service, name });
+    const utf8 = try encodeTarget(allocator, service, name);
     defer allocator.free(utf8);
     return std.unicode.utf8ToUtf16LeAllocZ(allocator, utf8) catch |err| switch (err) {
         error.InvalidUtf8 => return Error.CredentialManagerFailure,
@@ -140,4 +149,24 @@ test "credential manager backend compiles and links against advapi32" {
     _ = &get;
     _ = &set;
     _ = &delete;
+}
+
+test "encodeTarget length-prefix disambiguates the service/name split" {
+    const a = std.testing.allocator;
+
+    const t1 = try encodeTarget(a, "a:b", "c");
+    defer a.free(t1);
+    const t2 = try encodeTarget(a, "a", "b:c");
+    defer a.free(t2);
+
+    // The classic flattening `"a:b:c"` collides for both pairs; the length
+    // prefix makes them distinct.
+    try std.testing.expect(!std.mem.eql(u8, t1, t2));
+    try std.testing.expectEqualStrings("3:a:b:c", t1);
+    try std.testing.expectEqualStrings("1:a:b:c", t2);
+
+    // An empty service or name is still unambiguous.
+    const t3 = try encodeTarget(a, "", "token");
+    defer a.free(t3);
+    try std.testing.expectEqualStrings("0::token", t3);
 }

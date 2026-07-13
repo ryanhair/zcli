@@ -135,36 +135,56 @@ pub fn get(allocator: std.mem.Allocator, _: std.Io, _: *const std.process.Enviro
 /// backend shares one interface.
 pub fn set(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8, value: []const u8) !void {
     const value_len = try castLen(value.len);
-    const status = SecKeychainAddGenericPassword(
-        null,
-        try castLen(service.len),
-        service.ptr,
-        try castLen(name.len),
-        name.ptr,
-        value_len,
-        value.ptr,
-        null,
-    );
-    if (status == errSecSuccess) return;
-    if (status != errSecDuplicateItem) return keychainFailure(status);
+    const service_len = try castLen(service.len);
+    const name_len = try castLen(name.len);
 
-    // Item exists — find it and modify its data in place.
-    var item: SecKeychainItemRef = null;
-    const find = SecKeychainFindGenericPassword(
-        null,
-        try castLen(service.len),
-        service.ptr,
-        try castLen(name.len),
-        name.ptr,
-        null,
-        null,
-        &item,
-    );
-    if (find != errSecSuccess) return keychainFailure(find);
-    defer CFRelease(item);
+    // Add → (on duplicate) Find+Modify is a read-modify-write with a TOCTOU
+    // window: a concurrent `delete` between our Add and our Find makes Find
+    // return `errSecItemNotFound`, and the item genuinely no longer exists — so
+    // the correct action is simply to Add again, not to fail. Retry the whole
+    // Add/Find/Modify cycle a bounded number of times; if it keeps flipping
+    // (another writer racing us every pass) give up with a real failure rather
+    // than loop forever.
+    var attempts: u8 = 0;
+    while (true) : (attempts += 1) {
+        const status = SecKeychainAddGenericPassword(
+            null,
+            service_len,
+            service.ptr,
+            name_len,
+            name.ptr,
+            value_len,
+            value.ptr,
+            null,
+        );
+        if (status == errSecSuccess) return;
+        if (status != errSecDuplicateItem) return keychainFailure(status);
 
-    const modify = SecKeychainItemModifyAttributesAndData(item, null, value_len, value.ptr);
-    if (modify != errSecSuccess) return keychainFailure(modify);
+        // Item exists — find it and modify its data in place.
+        var item: SecKeychainItemRef = null;
+        const find = SecKeychainFindGenericPassword(
+            null,
+            service_len,
+            service.ptr,
+            name_len,
+            name.ptr,
+            null,
+            null,
+            &item,
+        );
+        // The item was deleted out from under us between Add and Find; loop to
+        // re-Add rather than surface an opaque failure for a benign race.
+        if (find == errSecItemNotFound) {
+            if (attempts < 3) continue;
+            return keychainFailure(find);
+        }
+        if (find != errSecSuccess) return keychainFailure(find);
+        defer CFRelease(item);
+
+        const modify = SecKeychainItemModifyAttributesAndData(item, null, value_len, value.ptr);
+        if (modify != errSecSuccess) return keychainFailure(modify);
+        return;
+    }
 }
 
 /// Remove a secret. Succeeds (no-op) if no item exists. `allocator` is unused
