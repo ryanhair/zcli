@@ -69,11 +69,12 @@ test "add command fails on empty name" {
 A command takes a concrete `context: *Context` (the type `zcli add command` scaffolds), and `runCommand` derives that Context from the command — so your project's plugins are already in scope. If your command reads plugin data through `context.plugins`, set that state directly with `.plugins`:
 
 ```zig
-test "command respects output mode" {
+test "command respects verbose mode" {
     var result = try testing.runCommand(list, .{
         .args = .{},
         .options = .{},
-        .plugins = .{ .output = .{ .mode = .json } },
+        // Keyed by each plugin's `plugin_id`.
+        .plugins = .{ .verbose = .{ .enabled = true } },
     });
     defer result.deinit();
 
@@ -302,7 +303,7 @@ Masking prevents snapshots from breaking due to dynamic content like timestamps 
 
 - Testing argument parsing and validation
 - Testing command routing (correct command is dispatched)
-- Testing global options (--help, --version, --output)
+- Testing global options (--help, --version)
 - Testing plugin behavior end-to-end
 - Testing exit codes
 - Verifying output stability with snapshots

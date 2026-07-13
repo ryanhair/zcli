@@ -192,7 +192,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
         <section id="extend">
           <h2>Extend &amp; verify</h2>
           <div class="guides">
-            <a href="$site.page('docs/plugins').link()"><span class="k">plugins</span><span class="t">Plugins</span><span class="d">The eight built-ins, three ways to enable them, and writing your own with lifecycle hooks.</span></a>
+            <a href="$site.page('docs/plugins').link()"><span class="k">plugins</span><span class="t">Plugins</span><span class="d">The seven built-ins, three ways to enable them, and writing your own with lifecycle hooks.</span></a>
             <a href="$site.page('docs/testing').link()"><span class="k">testing</span><span class="t">Testing your CLI</span><span class="d">In-process unit tests against a virtual terminal, subprocess integration, PTY-backed E2E.</span></a>
           </div>
         </section>

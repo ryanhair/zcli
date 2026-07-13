@@ -113,7 +113,7 @@ Run it with `zig build docs` (it's off the default step, so ordinary builds stay
 
 ## Built-in plugin tags
 
-`zcli.builtin(tag, config)` registers a shipped plugin. Eight tags: `.help`, `.version`, `.not_found`, `.completions`, `.config`, `.output`, `.secrets`, `.github_upgrade`. Most take no config (`.{}`); `github_upgrade` takes its repo and options:
+`zcli.builtin(tag, config)` registers a shipped plugin. Seven tags: `.help`, `.version`, `.not_found`, `.completions`, `.config`, `.secrets`, `.github_upgrade`. Most take no config (`.{}`); `github_upgrade` takes its repo and options:
 
 ```zig
 zcli.builtin(.github_upgrade, .{

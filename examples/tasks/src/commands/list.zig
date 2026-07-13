@@ -6,7 +6,7 @@ const themed = zcli.theme.styled;
 
 pub const meta = .{
     .description = "List all tasks",
-    .examples = &.{ "list", "list --status todo", "list --output json", "ls" },
+    .examples = &.{ "list", "list --status todo", "ls" },
     .options = .{
         .status = .{ .short = 's', .description = "Filter by status: todo, in_progress, done" },
         .all = .{ .short = 'a', .description = "Show all tasks including done" },
