@@ -16,7 +16,8 @@ pub const PasswordConfig = struct {
     prefix: []const u8 = "? ",
 };
 
-/// Prompt for password input with masking. Returns owned string.
+/// Prompt for password input with masking. Returns owned string, or
+/// `error.EndOfStream` if stdin closes with no line to submit.
 pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
@@ -26,7 +27,7 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     if (!is_tty) {
         // Non-TTY: read line (no masking possible)
         try writer.print("{s}{s} ", .{ config.prefix, config.message });
-        const line = readLine(reader, allocator) catch return try allocator.dupe(u8, "");
+        const line = try readLine(reader, allocator);
         try writer.writeAll("\n");
         return line;
     }
@@ -104,11 +105,17 @@ fn persistLine(app: *ui.App, config: PasswordConfig, input: []const u8) !void {
     try app.emit("{s}", .{line});
 }
 
+/// Read a line byte by byte until newline. Returns `error.EndOfStream` if the
+/// stream closes before any byte is read; a partial line terminated by EOF is
+/// returned as the submitted line.
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
-        const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);
+        const byte = terminal.key.readByteFn(reader) catch {
+            if (buf.items.len == 0) return error.EndOfStream;
+            return try buf.toOwnedSlice(allocator);
+        };
         if (byte == '\n') break;
         if (byte != '\r') try buf.append(allocator, byte);
     }
@@ -135,19 +142,17 @@ test "non-TTY: reads password line" {
     try std.testing.expectEqualStrings("secret123", result);
 }
 
-test "non-TTY: EOF returns empty" {
+test "non-TTY: EOF errors instead of returning empty" {
     const allocator = std.testing.allocator;
     var input = "".*;
     var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
+    // A closed stdin must not masquerade as an empty password.
+    try std.testing.expectError(error.EndOfStream, password(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Password:",
-    });
-    defer allocator.free(result);
-
-    try std.testing.expectEqualStrings("", result);
+    }));
 }
 
 test "prompt shows message" {

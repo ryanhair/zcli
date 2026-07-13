@@ -32,8 +32,9 @@ pub const TextConfig = struct {
     interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for text input. Returns an owned string (caller frees), or
-/// `error.Interrupted` if the user presses one of `config.interrupt_keys`.
+/// Prompt for text input. Returns an owned string (caller frees),
+/// `error.Interrupted` if the user presses one of `config.interrupt_keys`, or
+/// `error.EndOfStream` if stdin closes with no line to submit.
 pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
@@ -47,12 +48,7 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
             try writer.print(" ({s})", .{def});
         }
         try writer.writeAll(" ");
-        const line = readLine(reader, allocator) catch {
-            return if (config.default) |def|
-                try allocator.dupe(u8, def)
-            else
-                try allocator.dupe(u8, "");
-        };
+        const line = try readLine(reader, allocator);
         defer allocator.free(line);
         if (line.len == 0) {
             if (config.default) |def| return try allocator.dupe(u8, def);
@@ -167,12 +163,18 @@ fn persistLine(app: *ui.App, config: TextConfig, input: []const u8) !void {
     try app.emit("{s}", .{line});
 }
 
-/// Read a line from a reader byte by byte until newline.
+/// Read a line from a reader byte by byte until newline. Returns
+/// `error.EndOfStream` if the stream closes before any byte is read (nothing to
+/// submit); a partial line terminated by EOF (bytes but no trailing newline) is
+/// returned as the submitted line.
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
-        const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);
+        const byte = terminal.key.readByteFn(reader) catch {
+            if (buf.items.len == 0) return error.EndOfStream;
+            return try buf.toOwnedSlice(allocator);
+        };
         if (byte == '\n') break;
         if (byte != '\r') try buf.append(allocator, byte);
     }
@@ -216,20 +218,34 @@ test "text: non-TTY uses default on empty input" {
     try std.testing.expectEqualStrings("world", result);
 }
 
-test "text: non-TTY uses default on EOF" {
+test "text: non-TTY EOF errors even with a default" {
     const allocator = std.testing.allocator;
     var input = "".*;
     var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try text(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
+    // EOF is distinct from an empty submission: it must surface, not silently
+    // fall back to the default (a retry loop would spin forever otherwise).
+    try std.testing.expectError(error.EndOfStream, text(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Name:",
         .default = "fallback",
+    }));
+}
+
+test "text: non-TTY partial line without trailing newline still submits" {
+    const allocator = std.testing.allocator;
+    var input = "typed".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [256]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    const result = try text(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
+        .message = "Name:",
     });
     defer allocator.free(result);
 
-    try std.testing.expectEqualStrings("fallback", result);
+    try std.testing.expectEqualStrings("typed", result);
 }
 
 test "text: prompt message appears in output" {

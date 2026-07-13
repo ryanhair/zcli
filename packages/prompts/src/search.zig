@@ -16,7 +16,9 @@ pub const SearchConfig = struct {
     unicode: bool = true,
 };
 
-/// Prompt with search filtering. Returns the index of the selected item in the original choices array.
+/// Prompt with search filtering. Returns the index of the selected item in the
+/// original choices array, or `error.EndOfStream` if stdin closes with no line
+/// to submit.
 pub fn search(p: Prompts, config: SearchConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
@@ -31,7 +33,7 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
             try writer.print("  {d}) {s}\n", .{ i, choice });
         }
         try writer.writeAll("> ");
-        const line = readLine(reader, allocator) catch return 0;
+        const line = try readLine(reader, allocator);
         defer allocator.free(line);
         const num = std.fmt.parseInt(usize, line, 10) catch return 0;
         if (num >= 1 and num <= config.choices.len) return num - 1;
@@ -219,11 +221,17 @@ pub fn frameNode(
     return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
 }
 
+/// Read a line byte by byte until newline. Returns `error.EndOfStream` if the
+/// stream closes before any byte is read; a partial line terminated by EOF is
+/// returned as the submitted line.
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
-        const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);
+        const byte = terminal.key.readByteFn(reader) catch {
+            if (buf.items.len == 0) return error.EndOfStream;
+            return try buf.toOwnedSlice(allocator);
+        };
         if (byte == '\n') break;
         if (byte != '\r') try buf.append(allocator, byte);
     }
@@ -258,6 +266,18 @@ test "buildFiltered filters by substring" {
 test "SearchConfig defaults" {
     const cfg = SearchConfig{ .message = "Pick:", .choices = &.{ "a", "b" } };
     try std.testing.expectEqualStrings("? ", cfg.prefix);
+}
+
+test "non-TTY: EOF errors instead of defaulting to index 0" {
+    var input = "".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    try std.testing.expectError(error.EndOfStream, search(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
+        .message = "Pick:",
+        .choices = &.{ "a", "b" },
+    }));
 }
 
 const FrameHarness = struct {

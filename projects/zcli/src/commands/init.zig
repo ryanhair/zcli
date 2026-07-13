@@ -149,11 +149,16 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         defaults[i] = choice.default;
     }
     const p = context.prompts();
-    const selected = try p.multiSelect(.{
+    const selected = p.multiSelect(.{
         .message = "Select built-in plugins to include:",
         .choices = &choices,
         .defaults = &defaults,
-    });
+    }) catch |err| switch (err) {
+        // Non-interactive invocation (piped/closed stdin): take the preselected
+        // defaults rather than aborting — `init` must work in scripts and CI.
+        error.EndOfStream => try collectDefaultPlugins(allocator, &defaults),
+        else => return err,
+    };
     defer allocator.free(selected);
 
     // Build the `zcli.builtin(...)` registration lines for build.zig.
@@ -478,6 +483,25 @@ const AgentsResult = enum { created, appended, refreshed };
 /// has no zcli section yet.
 /// Render `s` escaped for the inside of a double-quoted Zig/zon string
 /// literal (same rule as the registry codegen's escapeStringLiteral).
+/// Owned slice of the indices whose `defaults` bit is set — the non-interactive
+/// fallback for the plugin picker (mirrors what `multiSelect` returns for a
+/// submitted-defaults selection).
+fn collectDefaultPlugins(allocator: std.mem.Allocator, defaults: []const bool) ![]usize {
+    var list = std.ArrayList(usize).empty;
+    errdefer list.deinit(allocator);
+    for (defaults, 0..) |on, i| {
+        if (on) try list.append(allocator, i);
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+test "collectDefaultPlugins returns only the preselected indices" {
+    const allocator = std.testing.allocator;
+    const selected = try collectDefaultPlugins(allocator, &.{ true, false, true, false });
+    defer allocator.free(selected);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2 }, selected);
+}
+
 fn escapeStringLiteral(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();

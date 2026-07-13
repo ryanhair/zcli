@@ -18,7 +18,8 @@ pub const MultiSelectConfig = struct {
     unicode: bool = true,
 };
 
-/// Prompt to select multiple items. Returns owned slice of selected indices.
+/// Prompt to select multiple items. Returns owned slice of selected indices,
+/// or `error.EndOfStream` if stdin closes with no line to submit.
 pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
     const writer = p.writer;
     const reader = p.reader;
@@ -36,7 +37,8 @@ pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
         }
         try writer.writeAll("> ");
 
-        const line = readLine(reader, allocator) catch return collectDefaults(allocator, config);
+        // A submitted blank line accepts the defaults; a closed stdin errors.
+        const line = try readLine(reader, allocator);
         defer allocator.free(line);
         if (line.len == 0) return collectDefaults(allocator, config);
 
@@ -210,11 +212,17 @@ pub fn frameNode(
     return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
 }
 
+/// Read a line byte by byte until newline. Returns `error.EndOfStream` if the
+/// stream closes before any byte is read; a partial line terminated by EOF is
+/// returned as the submitted line.
 fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     while (true) {
-        const byte = terminal.key.readByteFn(reader) catch return try buf.toOwnedSlice(allocator);
+        const byte = terminal.key.readByteFn(reader) catch {
+            if (buf.items.len == 0) return error.EndOfStream;
+            return try buf.toOwnedSlice(allocator);
+        };
         if (byte == '\n') break;
         if (byte != '\r') try buf.append(allocator, byte);
     }
@@ -287,6 +295,21 @@ test "non-TTY: no defaults returns empty" {
     defer allocator.free(result);
 
     try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "non-TTY: EOF errors instead of returning defaults" {
+    const allocator = std.testing.allocator;
+    var input = "".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    // A blank line accepts defaults, but a closed stdin surfaces instead.
+    try std.testing.expectError(error.EndOfStream, multiSelect(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
+        .message = "Pick:",
+        .choices = &.{ "a", "b", "c" },
+        .defaults = &.{ true, false, true },
+    }));
 }
 
 // ---------------------------------------------------------------------------

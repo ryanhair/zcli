@@ -18,8 +18,9 @@ pub const ConfirmConfig = struct {
     interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt for yes/no confirmation. Returns the answer, or `error.Interrupted`
-/// if the user presses one of `config.interrupt_keys`.
+/// Prompt for yes/no confirmation. Returns the answer, `error.Interrupted`
+/// if the user presses one of `config.interrupt_keys`, or `error.EndOfStream`
+/// if stdin closes with no answer to submit.
 pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     const writer = p.writer;
     const reader = p.reader;
@@ -29,7 +30,9 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
 
     if (!is_tty) {
         try writer.print("{s}{s} {s} ", .{ config.prefix, config.message, hint });
-        const first = terminal.key.readByteFn(reader) catch return config.default;
+        // A closed stdin (nothing to read) errors; a submitted blank line
+        // (leading '\n') takes the default like an empty text entry.
+        const first = terminal.key.readByteFn(reader) catch return error.EndOfStream;
         // Read rest of line
         while (true) {
             const b = terminal.key.readByteFn(reader) catch break;
@@ -174,17 +177,17 @@ test "non-TTY: empty input uses default false" {
     try std.testing.expect(result == false);
 }
 
-test "non-TTY: EOF uses default" {
+test "non-TTY: EOF errors instead of using default" {
     var input = "".*;
     var input_reader: std.Io.Reader = .fixed(&input);
     var output: [256]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
+    // A closed stdin surfaces rather than silently taking the default.
+    try std.testing.expectError(error.EndOfStream, confirm(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Continue?",
         .default = true,
-    });
-    try std.testing.expect(result == true);
+    }));
 }
 
 test "prompt shows Y/n when default is true" {
