@@ -72,10 +72,10 @@ pub fn generate(
     try writer.writeAll("        return 0\n");
     try writer.writeAll("    fi\n\n");
 
-    // ---- Enum value completion (previous word is a value-taking enum opt) -----
-    if (try hasEnumOptions(root, global_options)) {
+    // ---- Static option-value completion (prev word is an enum/.file/.dir opt) --
+    if (hasStaticOptionValues(root, global_options)) {
         try writer.writeAll("    case \"$prev\" in\n");
-        try writeEnumValueCases(writer, root, global_options);
+        try writeStaticOptionValueCases(arena, writer, root, global_options);
         try writer.writeAll("    esac\n\n");
     }
 
@@ -85,8 +85,8 @@ pub fn generate(
     try writeCommandCases(arena, writer, root);
     try writer.writeAll("    esac\n\n");
 
-    const has_dynamic = tree.hasDynamicArg(root);
-    const has_pos_enums = hasPositionalEnums(root);
+    const has_dynamic = tree.hasDynamicHook(root) or tree.anyOptionHook(global_options);
+    const has_pos_enums = hasPositionalStatic(root);
 
     try writer.writeAll("    if [[ -n \"$completions\" ]]; then\n");
     try writer.writeAll("        COMPREPLY=($(compgen -W \"$completions\" -- \"$cur\"))\n");
@@ -160,68 +160,96 @@ fn writeCommandCases(arena: std.mem.Allocator, writer: anytype, node: *const tre
     for (node.children) |child| try writeCommandCases(arena, writer, child);
 }
 
-/// Emit a `"path")` case offering the enum values of a leaf command's FIRST
-/// positional. Matching on the exact command path means the case fires when the
-/// cursor sits at that first positional. Leaves whose first positional is not an
-/// enum contribute no case (they complete nothing — deliberately not files).
+/// The `compgen` operand for a field's STATIC completion — its enum choices
+/// (`-W "a b c"`) or the `.file`/`.dir` builtin (`-f`/`-d`) — or null when the
+/// field completes dynamically (a hook, handled by the callback branch) or not at
+/// all. Arena-owned.
+fn staticCompgenArgs(arena: std.mem.Allocator, enum_values: ?[]const []const u8, complete: ?zcli.completion.Spec) !?[]const u8 {
+    if (complete) |c| {
+        switch (c) {
+            .hook => return null,
+            .file => return "-f",
+            .dir => return "-d",
+        }
+    }
+    if (enum_values) |values| {
+        var out = std.ArrayList(u8).empty;
+        try out.appendSlice(arena, "-W \"");
+        for (values, 0..) |v, idx| {
+            if (idx > 0) try out.append(arena, ' ');
+            try out.appendSlice(arena, v);
+        }
+        try out.append(arena, '"');
+        return out.items;
+    }
+    return null;
+}
+
+/// Emit a `"path")` case offering a leaf command's FIRST positional's static
+/// completion (enum choices or a `.file`/`.dir` builtin). Matching on the exact
+/// command path means the case fires at that first positional. A hook positional
+/// contributes no case (the dynamic callback branch handles it).
 fn writePositionalCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
     if (node.isLeaf() and node.args.len > 0) {
-        if (node.args[0].enum_values) |values| {
+        if (try staticCompgenArgs(arena, node.args[0].enum_values, node.args[0].complete)) |gen| {
             try writer.print("            \"{s}\")\n", .{try joinPath(arena, node.path)});
-            try writer.writeAll("                COMPREPLY=($(compgen -W \"");
-            for (values, 0..) |v, idx| {
-                if (idx > 0) try writer.writeByte(' ');
-                try writer.writeAll(v);
-            }
-            try writer.writeAll("\" -- \"$cur\"))\n");
+            try writer.print("                COMPREPLY=($(compgen {s} -- \"$cur\"))\n", .{gen});
             try writer.writeAll("                ;;\n");
         }
     }
     for (node.children) |child| try writePositionalCases(arena, writer, child);
 }
 
-/// True if any leaf command declares an enum as its first positional — i.e. we
-/// need a positional `case "$key"` block to offer those values.
-fn hasPositionalEnums(node: *const tree.CommandNode) bool {
-    if (node.isLeaf() and node.args.len > 0 and node.args[0].enum_values != null) return true;
-    for (node.children) |child| if (hasPositionalEnums(child)) return true;
+/// True if any leaf command's first positional has a static completion (enum or
+/// `.file`/`.dir`) — i.e. we need a positional `case "$key"` block.
+fn hasPositionalStatic(node: *const tree.CommandNode) bool {
+    if (node.isLeaf() and node.args.len > 0) {
+        const a = node.args[0];
+        if (a.enum_values != null) return true;
+        if (a.complete) |c| return c != .hook;
+    }
+    for (node.children) |child| if (hasPositionalStatic(child)) return true;
     return false;
 }
 
-/// True if any command option OR global option is an enum with values — i.e. we
-/// need a `$prev` case to offer those values after the flag.
-fn hasEnumOptions(node: *const tree.CommandNode, global_options: []const zcli.OptionInfo) !bool {
-    for (global_options) |opt| if (opt.enum_values != null) return true;
-    for (node.options) |opt| if (opt.enum_values != null) return true;
-    for (node.children) |child| if (try hasEnumOptions(child, global_options)) return true;
+/// True if any option (command or global) takes a value with static completion
+/// (enum or `.file`/`.dir`) — i.e. we need a `$prev` case for it.
+fn hasStaticOptionValues(node: *const tree.CommandNode, global_options: []const zcli.OptionInfo) bool {
+    if (anyStaticOptionValue(global_options)) return true;
+    if (anyStaticOptionValue(node.options)) return true;
+    for (node.children) |child| if (hasStaticOptionValues(child, global_options)) return true;
     return false;
 }
 
-/// Emit `--name|-s)` cases that `compgen -W` the enum values for value-taking
-/// enum options. Keyed on the previous word regardless of command path (a small,
-/// pragmatic simplification — enum option names rarely collide).
-fn writeEnumValueCases(writer: anytype, node: *const tree.CommandNode, global_options: []const zcli.OptionInfo) !void {
-    try writeEnumValueCasesFor(writer, global_options);
-    try writeEnumValueCasesRec(writer, node);
-}
-
-fn writeEnumValueCasesRec(writer: anytype, node: *const tree.CommandNode) !void {
-    try writeEnumValueCasesFor(writer, node.options);
-    for (node.children) |child| try writeEnumValueCasesRec(writer, child);
-}
-
-fn writeEnumValueCasesFor(writer: anytype, options: []const zcli.OptionInfo) !void {
+fn anyStaticOptionValue(options: []const zcli.OptionInfo) bool {
     for (options) |opt| {
-        const values = opt.enum_values orelse continue;
+        if (opt.enum_values != null) return true;
+        if (opt.complete) |c| if (c != .hook) return true;
+    }
+    return false;
+}
+
+/// Emit `--name|-s)` cases whose value completes statically (enum choices, or the
+/// `.file`/`.dir` builtin), keyed on the previous word regardless of command path
+/// (a small, pragmatic simplification — option names rarely collide). Hook options
+/// are omitted here; the dynamic callback branch resolves them.
+fn writeStaticOptionValueCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode, global_options: []const zcli.OptionInfo) !void {
+    try writeStaticOptionValueCasesFor(arena, writer, global_options);
+    try writeStaticOptionValueCasesRec(arena, writer, node);
+}
+
+fn writeStaticOptionValueCasesRec(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
+    try writeStaticOptionValueCasesFor(arena, writer, node.options);
+    for (node.children) |child| try writeStaticOptionValueCasesRec(arena, writer, child);
+}
+
+fn writeStaticOptionValueCasesFor(arena: std.mem.Allocator, writer: anytype, options: []const zcli.OptionInfo) !void {
+    for (options) |opt| {
+        const gen = (try staticCompgenArgs(arena, opt.enum_values, opt.complete)) orelse continue;
         try writer.print("        --{s}", .{opt.name});
         if (opt.short) |short| try writer.print("|-{c}", .{short});
         try writer.writeAll(")\n");
-        try writer.writeAll("            COMPREPLY=($(compgen -W \"");
-        for (values, 0..) |v, idx| {
-            if (idx > 0) try writer.writeByte(' ');
-            try writer.writeAll(v);
-        }
-        try writer.writeAll("\" -- \"$cur\"))\n");
+        try writer.print("            COMPREPLY=($(compgen {s} -- \"$cur\"))\n", .{gen});
         try writer.writeAll("            return 0\n");
         try writer.writeAll("            ;;\n");
     }
