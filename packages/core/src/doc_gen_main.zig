@@ -29,6 +29,12 @@ pub fn main(init: std.process.Init) !void {
     const commands = registry.command_info;
     const global_opts = registry.global_options_info;
 
+    // Route progress through the io model, not std.debug.print — buffered here
+    // and flushed at the end, consistent with the framework's output contract.
+    var err_buf: [512]u8 = undefined;
+    var stderr = std.Io.File.stderr().writer(io, &err_buf);
+    const errw = &stderr.interface;
+
     for (formats) |format| {
         const dir = if (formats.len > 1)
             try std.fmt.allocPrint(allocator, "{s}/{s}", .{ output_dir, format })
@@ -47,8 +53,9 @@ pub fn main(init: std.process.Init) !void {
             try writeMarkdown(allocator, io, dir, commands, global_opts);
         }
 
-        std.debug.print("Generated {s} docs in {s}/\n", .{ format, dir });
+        try errw.print("Generated {s} docs in {s}/\n", .{ format, dir });
     }
+    try errw.flush();
 }
 
 /// Build the display description for an option/argument: the base description

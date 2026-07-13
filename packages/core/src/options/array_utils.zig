@@ -285,10 +285,7 @@ test "parseOptions with array of strings (filter option)" {
     // Test case 1: No filter options provided
     {
         const args = [_][]const u8{"--all"};
-        const parsed = options.parseOptions(TestOptions, allocator, &args, null) catch |err| {
-            std.debug.print("Parse error: {any}\n", .{err});
-            return error.ParseFailed;
-        };
+        const parsed = try options.parseOptions(TestOptions, allocator, &args, null);
         defer options.cleanupOptions(TestOptions, parsed.options, allocator);
 
         try std.testing.expect(parsed.options.all == true);
@@ -299,10 +296,7 @@ test "parseOptions with array of strings (filter option)" {
     // Test case 2: Single filter option
     {
         const args = [_][]const u8{ "--filter", "status=running" };
-        const parsed = options.parseOptions(TestOptions, allocator, &args, null) catch |err| {
-            std.debug.print("Parse error: {any}\n", .{err});
-            return error.ParseFailed;
-        };
+        const parsed = try options.parseOptions(TestOptions, allocator, &args, null);
         defer options.cleanupOptions(TestOptions, parsed.options, allocator);
 
         try std.testing.expect(parsed.options.all == false);
@@ -313,10 +307,7 @@ test "parseOptions with array of strings (filter option)" {
     // Test case 3: Multiple filter options
     {
         const args = [_][]const u8{ "--filter", "status=running", "--filter", "name=web" };
-        const parsed = options.parseOptions(TestOptions, allocator, &args, null) catch |err| {
-            std.debug.print("Parse error: {any}\n", .{err});
-            return error.ParseFailed;
-        };
+        const parsed = try options.parseOptions(TestOptions, allocator, &args, null);
         defer options.cleanupOptions(TestOptions, parsed.options, allocator);
 
         try std.testing.expect(parsed.options.filter.len == 2);
@@ -327,10 +318,7 @@ test "parseOptions with array of strings (filter option)" {
     // Test case 4: Mixed options with filters
     {
         const args = [_][]const u8{ "--all", "--filter", "status=exited", "--quiet" };
-        const parsed = options.parseOptions(TestOptions, allocator, &args, null) catch |err| {
-            std.debug.print("Parse error: {any}\n", .{err});
-            return error.ParseFailed;
-        };
+        const parsed = try options.parseOptions(TestOptions, allocator, &args, null);
         defer options.cleanupOptions(TestOptions, parsed.options, allocator);
 
         try std.testing.expect(parsed.options.all == true);
@@ -352,10 +340,7 @@ test "array options default initialization" {
 
     // Parse with no arguments - should use defaults
     const args = [_][]const u8{};
-    const parsed = options.parseOptions(TestOptions, allocator, &args, null) catch |err| {
-        std.debug.print("Parse error: {any}\n", .{err});
-        return error.ParseFailed;
-    };
+    const parsed = try options.parseOptions(TestOptions, allocator, &args, null);
     defer options.cleanupOptions(TestOptions, parsed.options, allocator);
 
     // All array options should be empty but valid (not null/undefined)
@@ -387,10 +372,7 @@ test "basic array options iteration" {
     // Test with no options provided
     {
         const args = [_][]const u8{};
-        const parsed = options.parseOptions(TestOptions, allocator, &args, null) catch |err| {
-            std.debug.print("Parse error: {any}\n", .{err});
-            return error.ParseFailed;
-        };
+        const parsed = try options.parseOptions(TestOptions, allocator, &args, null);
         defer options.cleanupOptions(TestOptions, parsed.options, allocator);
 
         // This should not crash even with default empty arrays
@@ -410,10 +392,7 @@ test "basic array options iteration" {
     // Test with array options provided
     {
         const args = [_][]const u8{ "--filter", "test=value", "--env", "FOO=bar" };
-        const parsed = options.parseOptions(TestOptions, allocator, &args, null) catch |err| {
-            std.debug.print("Parse error: {any}\n", .{err});
-            return error.ParseFailed;
-        };
+        const parsed = try options.parseOptions(TestOptions, allocator, &args, null);
         defer options.cleanupOptions(TestOptions, parsed.options, allocator);
 
         try std.testing.expect(parsed.options.filter.len == 1);
@@ -449,10 +428,7 @@ test "actual container ls options parsing" {
     // Test the exact case that was causing segfault
     {
         const args = [_][]const u8{"--all"};
-        const parsed = options.parseOptions(ContainerLsOptions, allocator, &args, null) catch |err| {
-            std.debug.print("Parse error: {any}\n", .{err});
-            return error.ParseFailed;
-        };
+        const parsed = try options.parseOptions(ContainerLsOptions, allocator, &args, null);
         defer options.cleanupOptions(ContainerLsOptions, parsed.options, allocator);
 
         try std.testing.expect(parsed.options.all == true);
