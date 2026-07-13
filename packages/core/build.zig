@@ -146,6 +146,7 @@ pub fn build(b: *std.Build) void {
         "src/plugin_completions_test.zig",
         "src/plugin_github_upgrade_test.zig",
         "src/plugin_pipeline_test.zig",
+        "src/plugins/zcli_help/plugin.zig",
         "src/plugins/zcli_config/plugin.zig",
         "src/plugin_config_integration_test.zig",
     };
