@@ -35,17 +35,50 @@
 //! store, not a plaintext file; so registering this plugin for any other target
 //! is a **compile-time error** rather than a silent, insecure store.
 //!
+//! ## Uniform cross-platform contract
+//!
+//! Every backend fails through **one** shared error set (`Error`), so command
+//! code writes the same handling on every OS instead of catching a per-backend
+//! taxonomy (`KeychainFailure` vs `CredentialManagerFailure` vs …). The public
+//! surface is:
+//!
+//! - `InvalidSecretName` — the `name` is not valid UTF-8, or contains a NUL.
+//!   Validated up front (see below), before any backend is touched.
+//! - `SecretTooLarge` — the value exceeds what the backend can store (Windows'
+//!   2560-byte blob cap; the Linux Secret Service backend's ~6 KiB stdin cap).
+//! - `BackendUnavailable` — no usable secure store on this system (Linux only:
+//!   no Secret Service and no initialized `pass`; or a bad `ZCLI_SECRETS_BACKEND`
+//!   override).
+//! - `BackendFailure` — the store rejected the operation for some other reason.
+//! - `OutOfMemory` — allocation failed.
+//!
+//! A *missing* key is never an error: `get` returns `null`, `delete` is a no-op.
+//!
 //! ## Key and value constraints
 //!
-//! A secret `name` must not contain a NUL byte (`InvalidSecretName`) — the
-//! backends key on C strings, so an embedded NUL would silently truncate the key
-//! and cross backends inconsistently. Beyond that, keep two portability limits
-//! in mind: on **Windows** a value is capped at `CRED_MAX_CREDENTIAL_BLOB_SIZE`
-//! (2560 bytes) and fails with `SecretTooLarge` above it (macOS/Linux have no
-//! such practical cap); and the Windows credential is keyed by the flattened
-//! string `"{app_name}:{name}"`, so two different apps whose `app_name`/`name`
-//! concatenate to the same string would share an entry (a non-issue within one
-//! app, whose `app_name` is fixed).
+//! A secret `name` is validated **once, here**, before any backend call, so a
+//! name either works on every OS or is rejected on every OS:
+//!
+//! - It must be valid UTF-8. Windows stores the target name as UTF-16, so an
+//!   invalid-UTF-8 name that "works" on macOS/Linux would fail only on Windows;
+//!   requiring UTF-8 up front makes the contract uniform.
+//! - It must not contain a NUL byte — the macOS/Linux backends key on C strings,
+//!   where an embedded NUL silently truncates the key. (A NUL is also invalid
+//!   UTF-16 target material.)
+//!
+//! Beyond the name, backends differ on how large a value they accept, and each
+//! that has a cap fails with `SecretTooLarge` above it:
+//!
+//! - **Windows** caps a value at `CRED_MAX_CREDENTIAL_BLOB_SIZE` (2560 bytes).
+//!   Its credential is keyed by an unambiguous length-prefixed encoding of
+//!   `(app_name, name)`, so distinct app/name pairs never collide.
+//! - The **Linux Secret Service** backend has a practical ~6 KiB cap: `secret-tool
+//!   store` reads the (base64-encoded) secret into a fixed 8192-byte stdin buffer
+//!   and silently truncates the overflow, so this backend rejects a value whose
+//!   encoded form exceeds that and verifies every store round-trips intact. Large
+//!   secrets on Linux belong in the `pass` backend (`ZCLI_SECRETS_BACKEND=pass`),
+//!   which has no such cap.
+//! - **macOS** (Keychain) and the Linux **`pass`** backend have no practical cap.
 //!
 //! ## Usage from command code
 //!
@@ -108,15 +141,68 @@ comptime {
     _ = active_backend;
 }
 
-/// Errors raised by the plugin before it reaches a backend.
+/// The single, backend-agnostic error set every `get`/`set`/`delete` maps into.
+/// Command code catches these on every OS — see the module doc.
 pub const Error = error{
-    /// A secret name contained a NUL byte, which the C-string-keyed backends
-    /// cannot represent unambiguously.
+    /// A secret name is not valid UTF-8, or contains a NUL byte. Rejected up
+    /// front, before any backend call.
     InvalidSecretName,
+    /// The value exceeds what the active backend can store.
+    SecretTooLarge,
+    /// No usable secure store is available (Linux: no Secret Service and no
+    /// initialized `pass`; or an unrecognized `ZCLI_SECRETS_BACKEND` override).
+    BackendUnavailable,
+    /// The store rejected the operation for a reason other than a missing key.
+    BackendFailure,
+    /// Allocation failed.
+    OutOfMemory,
 };
 
 fn validateName(name: []const u8) Error!void {
     if (std.mem.indexOfScalar(u8, name, 0) != null) return Error.InvalidSecretName;
+    if (!std.unicode.utf8ValidateSlice(name)) return Error.InvalidSecretName;
+}
+
+/// Surface a native backend's raised error to the user, then collapse it into
+/// the shared `Error` set.
+///
+/// A backend owns the human-readable explanation of its own resolve failures
+/// (e.g. Linux: which secret store to install, how to force one). Rather than
+/// emit that from a side-channel `std.log` — which both breaks the stream
+/// contract (output must flow through context streams) and fails Zig's test
+/// runner on error-path unit tests — the backend renders the line here and it is
+/// written to `context.stderr()`. A backend that exposes no `diagnostic` (macOS,
+/// Windows) simply skips this and maps as before.
+fn reportAndMap(context: anytype, e: anyerror) Error {
+    if (@hasDecl(native, "diagnostic")) {
+        _ = native.diagnostic(context.stderr(), e, context.environ) catch {};
+    }
+    return mapBackendError(e);
+}
+
+/// Collapse whatever a native backend raised into the shared `Error` set. Each
+/// backend's own error names map to a uniform meaning; `OutOfMemory` is never
+/// masked. Callers own any returned value; this only touches the error channel.
+fn mapBackendError(e: anyerror) Error {
+    return switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.SecretTooLarge => error.SecretTooLarge,
+        // Linux runtime-selection failures (no store / bad override), and a
+        // Secret Service that turned out to be unreachable with no `pass` to
+        // fall through to.
+        error.SecretBackendUnavailable,
+        error.InvalidBackendOverride,
+        error.ServiceUnavailable,
+        => error.BackendUnavailable,
+        // Every backend's "the store call failed" variant.
+        error.KeychainFailure,
+        error.CredentialManagerFailure,
+        error.SecretBackendFailure,
+        => error.BackendFailure,
+        // Anything unforeseen (e.g. a decode error surfaced raw) is still a
+        // backend failure to the caller — never a silent success.
+        else => error.BackendFailure,
+    };
 }
 
 /// Per-context data. Holds no state today, but exists so the plugin's storage
@@ -126,22 +212,25 @@ pub const ContextData = struct {
     /// Retrieve a secret by name. Returns `null` if it was never stored. The
     /// returned bytes are owned by `context.allocator` (the per-command arena),
     /// so they are freed when the command returns; free earlier if desired.
-    pub fn get(_: *ContextData, context: anytype, name: []const u8) !?[]const u8 {
+    pub fn get(_: *ContextData, context: anytype, name: []const u8) Error!?[]const u8 {
         try validateName(name);
-        return native.get(context.allocator, context.io, context.environ, context.app_name, name);
+        return native.get(context.allocator, context.io, context.environ, context.app_name, name) catch |e|
+            return reportAndMap(context, e);
     }
 
     /// Store (or overwrite) a secret. The value is copied; the caller retains
     /// ownership of the passed slice.
-    pub fn set(_: *ContextData, context: anytype, name: []const u8, value: []const u8) !void {
+    pub fn set(_: *ContextData, context: anytype, name: []const u8, value: []const u8) Error!void {
         try validateName(name);
-        return native.set(context.allocator, context.io, context.environ, context.app_name, name, value);
+        return native.set(context.allocator, context.io, context.environ, context.app_name, name, value) catch |e|
+            return reportAndMap(context, e);
     }
 
     /// Remove a secret. A no-op (success) if it does not exist.
-    pub fn delete(_: *ContextData, context: anytype, name: []const u8) !void {
+    pub fn delete(_: *ContextData, context: anytype, name: []const u8) Error!void {
         try validateName(name);
-        return native.delete(context.allocator, context.io, context.environ, context.app_name, name);
+        return native.delete(context.allocator, context.io, context.environ, context.app_name, name) catch |e|
+            return reportAndMap(context, e);
     }
 };
 
@@ -160,8 +249,25 @@ test "plugin exposes the storage surface" {
     try testing.expectEqualStrings("zcli_secrets", plugin_id);
 }
 
-test "validateName rejects an embedded NUL" {
+test "validateName rejects an embedded NUL and invalid UTF-8" {
     try validateName("token"); // ok
     try validateName(""); // ok (empty is a valid, if odd, key)
+    try validateName("café/ключ/名前"); // multibyte UTF-8 is fine
     try testing.expectError(Error.InvalidSecretName, validateName("to\x00ken"));
+    // A lone continuation byte is not valid UTF-8 — rejected on every OS rather
+    // than working on macOS/Linux and failing only on Windows's UTF-16 store.
+    try testing.expectError(Error.InvalidSecretName, validateName("bad\xffname"));
+    try testing.expectError(Error.InvalidSecretName, validateName(&[_]u8{0x80}));
+}
+
+test "mapBackendError collapses every backend taxonomy into the shared set" {
+    try testing.expectEqual(Error.OutOfMemory, mapBackendError(error.OutOfMemory));
+    try testing.expectEqual(Error.SecretTooLarge, mapBackendError(error.SecretTooLarge));
+    try testing.expectEqual(Error.BackendUnavailable, mapBackendError(error.SecretBackendUnavailable));
+    try testing.expectEqual(Error.BackendUnavailable, mapBackendError(error.InvalidBackendOverride));
+    try testing.expectEqual(Error.BackendFailure, mapBackendError(error.KeychainFailure));
+    try testing.expectEqual(Error.BackendFailure, mapBackendError(error.CredentialManagerFailure));
+    try testing.expectEqual(Error.BackendFailure, mapBackendError(error.SecretBackendFailure));
+    // An unforeseen error still surfaces as a failure, never a silent success.
+    try testing.expectEqual(Error.BackendFailure, mapBackendError(error.InvalidBase64));
 }

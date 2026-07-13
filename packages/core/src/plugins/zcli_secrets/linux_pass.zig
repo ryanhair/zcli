@@ -56,7 +56,12 @@ pub fn set(
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
     const encoded = try subprocess.encodeValue(allocator, value);
-    defer allocator.free(encoded);
+    // `encoded` is base64 of the secret — wipe it before the allocator reclaims
+    // the pages, not just free it.
+    defer {
+        std.crypto.secureZero(u8, encoded);
+        allocator.free(encoded);
+    }
 
     // `insert --multiline` reads the entry body from stdin until EOF; `--force`
     // overwrites an existing entry without an interactive prompt.

@@ -13,6 +13,16 @@
 //!   3. `pass` — when the `pass` binary is present *and* the store is
 //!      initialized (a `.gpg-id` exists).
 //!   4. Neither — an actionable error naming both options and the override.
+//!
+//! Detecting the Secret Service reliably up front is impossible without actually
+//! talking to it: `DBUS_SESSION_BUS_ADDRESS` can be set on a session that runs
+//! *no* keyring (nothing owns `org.freedesktop.secrets`). So when the Secret
+//! Service is chosen by autodetection (not by an explicit override) and the
+//! operation comes back reporting the service is unreachable, this falls through
+//! to `pass` if it is usable. The fall-through is deliberately narrow: only the
+//! `ServiceUnavailable` signal (see `linux_secret_service.noServiceSignal`)
+//! triggers it — a real error such as a locked or access-denied keyring is
+//! surfaced, never masked by silently trying a different store.
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
@@ -30,6 +40,23 @@ pub const Error = error{
 
 const Backend = enum { secret_service, pass };
 
+/// How a backend was chosen — an explicit override must NOT fall through to a
+/// different store on failure (the user asked for that one specifically), but an
+/// autodetected Secret Service may fall through to `pass`.
+const Selection = struct { backend: Backend, from_override: bool };
+
+/// Probe seam. Real code uses `real_probes`; tests inject deterministic answers
+/// to exercise the full resolve matrix without a live D-Bus / `pass` store.
+pub const Probes = struct {
+    secretServiceAvailable: *const fn (std.mem.Allocator, std.Io, *const std.process.Environ.Map) bool,
+    passAvailable: *const fn (std.mem.Allocator, std.Io, *const std.process.Environ.Map) bool,
+};
+
+const real_probes = Probes{
+    .secretServiceAvailable = secretServiceAvailable,
+    .passAvailable = passAvailable,
+};
+
 /// Retrieve a secret. Returns `null` if it was never stored. The returned bytes
 /// are owned by `allocator`.
 pub fn get(
@@ -39,8 +66,13 @@ pub fn get(
     service: []const u8,
     name: []const u8,
 ) !?[]const u8 {
-    return switch (try resolve(allocator, io, environ)) {
-        .secret_service => secret_service.get(allocator, io, environ, service, name),
+    const sel = try resolve(allocator, io, environ, real_probes);
+    return switch (sel.backend) {
+        .secret_service => secret_service.get(allocator, io, environ, service, name) catch |e| {
+            if (canFallThrough(sel, e, allocator, io, environ))
+                return pass.get(allocator, io, environ, service, name);
+            return e;
+        },
         .pass => pass.get(allocator, io, environ, service, name),
     };
 }
@@ -54,8 +86,13 @@ pub fn set(
     name: []const u8,
     value: []const u8,
 ) !void {
-    return switch (try resolve(allocator, io, environ)) {
-        .secret_service => secret_service.set(allocator, io, environ, service, name, value),
+    const sel = try resolve(allocator, io, environ, real_probes);
+    return switch (sel.backend) {
+        .secret_service => secret_service.set(allocator, io, environ, service, name, value) catch |e| {
+            if (canFallThrough(sel, e, allocator, io, environ))
+                return pass.set(allocator, io, environ, service, name, value);
+            return e;
+        },
         .pass => pass.set(allocator, io, environ, service, name, value),
     };
 }
@@ -68,10 +105,31 @@ pub fn delete(
     service: []const u8,
     name: []const u8,
 ) !void {
-    return switch (try resolve(allocator, io, environ)) {
-        .secret_service => secret_service.delete(allocator, io, environ, service, name),
+    const sel = try resolve(allocator, io, environ, real_probes);
+    return switch (sel.backend) {
+        .secret_service => secret_service.delete(allocator, io, environ, service, name) catch |e| {
+            if (canFallThrough(sel, e, allocator, io, environ))
+                return pass.delete(allocator, io, environ, service, name);
+            return e;
+        },
         .pass => pass.delete(allocator, io, environ, service, name),
     };
+}
+
+/// True when an autodetected Secret Service op failed *because the service is
+/// absent* and `pass` is usable — the one case a fall-through is warranted.
+fn canFallThrough(
+    sel: Selection,
+    e: anyerror,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+) bool {
+    if (sel.from_override) return false; // user pinned this store; don't second-guess
+    if (e != secret_service.Error.ServiceUnavailable) return false;
+    if (!passAvailable(allocator, io, environ)) return false;
+    log.debug("Secret Service unreachable; falling through to pass", .{});
+    return true;
 }
 
 /// Parse a `ZCLI_SECRETS_BACKEND` override value, or `null` if unrecognized.
@@ -81,31 +139,73 @@ fn parseOverride(choice: []const u8) ?Backend {
     return null;
 }
 
-fn resolve(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) Error!Backend {
+fn resolve(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+    probes: Probes,
+) Error!Selection {
     if (environ.get("ZCLI_SECRETS_BACKEND")) |choice| {
         // An explicit override is honored as-is (even if the store turns out to
         // be unusable — the operation then fails with the store's own error,
         // which is clearer than silently picking a different one).
-        return parseOverride(choice) orelse {
-            log.err("ZCLI_SECRETS_BACKEND='{s}' is not recognized; use 'secret-service' or 'pass'.", .{choice});
-            return Error.InvalidBackendOverride;
-        };
+        const backend = parseOverride(choice) orelse return Error.InvalidBackendOverride;
+        return .{ .backend = backend, .from_override = true };
     }
-    if (secretServiceAvailable(allocator, io, environ)) return .secret_service;
-    if (passAvailable(allocator, io, environ)) return .pass;
-    log.err(
-        "no secret backend available. zcli_secrets needs either a running freedesktop " ++
-            "Secret Service (a desktop keyring such as gnome-keyring or KWallet on the " ++
-            "session D-Bus, with `secret-tool` installed) or `pass` with an initialized " ++
-            "store (`pass init <gpg-id>`). Force one with ZCLI_SECRETS_BACKEND=secret-service|pass.",
-        .{},
-    );
+    if (probes.secretServiceAvailable(allocator, io, environ))
+        return .{ .backend = .secret_service, .from_override = false };
+    if (probes.passAvailable(allocator, io, environ))
+        return .{ .backend = .pass, .from_override = false };
     return Error.SecretBackendUnavailable;
+}
+
+/// Render this backend's resolve failures as an actionable, user-facing line.
+///
+/// The diagnostic is produced here (not emitted here) so it flows through the
+/// caller's context stream rather than `std.log` — output belongs on
+/// `context.stderr()`, and a side-channel `log.err` both violates that contract
+/// and fails Zig's test runner on the error-path unit tests. `environ` recovers
+/// the offending override value for the `InvalidBackendOverride` message.
+///
+/// Returns `false` for any error this backend does not own a message for (and
+/// writes nothing), so the caller can fall back to its generic handling.
+pub fn diagnostic(w: *std.Io.Writer, e: anyerror, environ: *const std.process.Environ.Map) std.Io.Writer.Error!bool {
+    switch (e) {
+        Error.InvalidBackendOverride => {
+            const choice = environ.get("ZCLI_SECRETS_BACKEND") orelse "";
+            try w.print(
+                "ZCLI_SECRETS_BACKEND='{s}' is not recognized; use 'secret-service' or 'pass'.\n",
+                .{choice},
+            );
+            return true;
+        },
+        Error.SecretBackendUnavailable => {
+            try w.writeAll(
+                "no secret backend available. zcli_secrets needs either a running freedesktop " ++
+                    "Secret Service (a desktop keyring such as gnome-keyring or KWallet on the " ++
+                    "session D-Bus, with `secret-tool` installed) or `pass` with an initialized " ++
+                    "store (`pass init <gpg-id>`). Force one with ZCLI_SECRETS_BACKEND=secret-service|pass.\n",
+            );
+            return true;
+        },
+        secret_service.Error.SecretTooLarge => {
+            try w.writeAll(
+                "secret is too large for the Secret Service backend, which caps a stored value " ++
+                    "at ~6 KiB (`secret-tool` reads the secret into a fixed 8 KiB stdin buffer and " ++
+                    "silently truncates the rest). Use the `pass` backend for large secrets: " ++
+                    "ZCLI_SECRETS_BACKEND=pass.\n",
+            );
+            return true;
+        },
+        else => return false,
+    }
 }
 
 fn secretServiceAvailable(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) bool {
     // Without a session bus the Secret Service daemon is unreachable — the
-    // common headless / SSH case — so skip it and let `pass` be tried.
+    // common headless / SSH case — so skip it and let `pass` be tried. Even with
+    // a bus present the service may still be absent; that case is caught at
+    // operation time and falls through to `pass` (see `canFallThrough`).
     if (environ.get("DBUS_SESSION_BUS_ADDRESS") == null) return false;
     return toolPresent(allocator, io, environ, &.{ "secret-tool", "--version" });
 }
@@ -154,14 +254,146 @@ test "backend override parsing" {
     try std.testing.expect(parseOverride("nonsense") == null);
 }
 
-test "resolve honors an explicit override without probing" {
+// ---------------------------------------------------------------------------
+// resolve matrix — driven through the probe seam so no live store is needed.
+// ---------------------------------------------------------------------------
+
+fn probesReturning(comptime ss: bool, comptime ps: bool) Probes {
+    const S = struct {
+        fn secretService(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
+            return ss;
+        }
+        fn passAvail(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
+            return ps;
+        }
+    };
+    return .{ .secretServiceAvailable = S.secretService, .passAvailable = S.passAvail };
+}
+
+test "resolve: explicit override wins and is marked from_override (no probing)" {
     const a = std.testing.allocator;
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
 
+    // Probes that would panic if consulted — an override must not probe.
+    const trap = Probes{
+        .secretServiceAvailable = struct {
+            fn f(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
+                unreachable;
+            }
+        }.f,
+        .passAvailable = struct {
+            fn f(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
+                unreachable;
+            }
+        }.f,
+    };
+
     try env.put("ZCLI_SECRETS_BACKEND", "pass");
-    try std.testing.expectEqual(Backend.pass, try resolve(a, std.testing.io, &env));
+    const p = try resolve(a, std.testing.io, &env, trap);
+    try std.testing.expectEqual(Backend.pass, p.backend);
+    try std.testing.expect(p.from_override);
 
     try env.put("ZCLI_SECRETS_BACKEND", "secret-service");
-    try std.testing.expectEqual(Backend.secret_service, try resolve(a, std.testing.io, &env));
+    const s = try resolve(a, std.testing.io, &env, trap);
+    try std.testing.expectEqual(Backend.secret_service, s.backend);
+    try std.testing.expect(s.from_override);
+}
+
+test "resolve: an unrecognized override is a hard error" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("ZCLI_SECRETS_BACKEND", "vault");
+    try std.testing.expectError(
+        Error.InvalidBackendOverride,
+        resolve(a, std.testing.io, &env, real_probes),
+    );
+}
+
+test "diagnostic renders the actionable line for this backend's resolve errors" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("ZCLI_SECRETS_BACKEND", "vault");
+
+    // Unrecognized override — names the offending value recovered from environ.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(try diagnostic(&aw.writer, Error.InvalidBackendOverride, &env));
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "'vault'") != null);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "not recognized") != null);
+    }
+
+    // No backend available — names both stores and the override escape hatch.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(try diagnostic(&aw.writer, Error.SecretBackendUnavailable, &env));
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "no secret backend available") != null);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "ZCLI_SECRETS_BACKEND=secret-service|pass") != null);
+    }
+
+    // A too-large secret on the Secret Service backend — points the user at pass.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(try diagnostic(&aw.writer, secret_service.Error.SecretTooLarge, &env));
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "too large") != null);
+        try std.testing.expect(std.mem.indexOf(u8, aw.written(), "ZCLI_SECRETS_BACKEND=pass") != null);
+    }
+
+    // An error this backend does not own: no message, returns false.
+    {
+        var aw = std.Io.Writer.Allocating.init(a);
+        defer aw.deinit();
+        try std.testing.expect(!try diagnostic(&aw.writer, error.SomethingElse, &env));
+        try std.testing.expectEqualStrings("", aw.written());
+    }
+}
+
+test "resolve: autodetect prefers Secret Service when available" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    const sel = try resolve(a, std.testing.io, &env, probesReturning(true, true));
+    try std.testing.expectEqual(Backend.secret_service, sel.backend);
+    try std.testing.expect(!sel.from_override);
+}
+
+test "resolve: autodetect falls to pass when Secret Service is absent" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    const sel = try resolve(a, std.testing.io, &env, probesReturning(false, true));
+    try std.testing.expectEqual(Backend.pass, sel.backend);
+    try std.testing.expect(!sel.from_override);
+}
+
+test "resolve: neither store available is a clear error" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try std.testing.expectError(
+        Error.SecretBackendUnavailable,
+        resolve(a, std.testing.io, &env, probesReturning(false, false)),
+    );
+}
+
+test "canFallThrough only for autodetected ServiceUnavailable with pass present" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    // Note: passAvailable here probes the real host, which without an
+    // initialized store returns false — so this asserts the guards that do NOT
+    // depend on `pass` being present.
+    const auto = Selection{ .backend = .secret_service, .from_override = false };
+    const pinned = Selection{ .backend = .secret_service, .from_override = true };
+
+    // An override never falls through, even on ServiceUnavailable.
+    try std.testing.expect(!canFallThrough(pinned, secret_service.Error.ServiceUnavailable, a, std.testing.io, &env));
+    // A real operation error never falls through.
+    try std.testing.expect(!canFallThrough(auto, secret_service.Error.SecretBackendFailure, a, std.testing.io, &env));
 }
