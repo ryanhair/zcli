@@ -532,3 +532,108 @@ test "full_screen resize repaints the whole new viewport" {
     try testing.expect(!h.vt.containsText("before"));
     try testing.expect(h.vt.cursorAt(0, 0));
 }
+
+// ---- Short-terminal Table clipping regression ------------------------------
+//
+// The fullscreen example (`examples/fullscreen.zig`) once passed the process
+// `Table` a hand-counted `visible_rows = 8` for both `view` and `handle`. On a
+// terminal too short to fit the whole grid, the surrounding box clipped the
+// table's bottom body row, but the widget still believed it owned 8 rows — so
+// walking the selection down parked it on a row the layout never painted (the
+// selection sat "one row below the view", scrolling but staying out of sight).
+//
+// The fix sizes the window from the *measured* space: the table node fills the
+// vertical gap, `ui.probe` reports how many rows it actually got, and the next
+// frame's window is `probed.h - header_rows`. These tests reproduce the demo's
+// shape at a deliberately short height and assert the highlighted row's text is
+// always painted while walking the selection to the bottom.
+
+const Table = ui.widgets.Table;
+
+const clip_cols = [_]Table.Column{
+    .{ .header = "PID", .width = .{ .len = 5 } },
+    .{ .header = "NAME", .width = .{ .fill = 1 } },
+};
+
+const clip_rows_n = 28;
+
+/// A frame shaped like the fullscreen demo: title + tab-bar row + blank, then
+/// the process `Table`, then a status line. `fill` mirrors the fixed example
+/// (table node fills the gap so `probe` measures the real body height); when
+/// false it reproduces the old hand-counted layout for the failing test.
+fn clipFrame(a: std.mem.Allocator, table: *Table, visible: usize, rect: *ui.Rect, fill: bool) !ui.Node {
+    var rows = std.ArrayList(ui.Node).empty;
+    try rows.append(a, ui.text(.{ .bold = true }, "zcli top"));
+    try rows.append(a, ui.text(.{}, "1 Processes  2 About"));
+    try rows.append(a, ui.text(.{}, ""));
+
+    const grid = try a.alloc([]const []const u8, clip_rows_n);
+    for (grid, 0..) |*cells, i| {
+        const rc = try a.alloc([]const u8, 2);
+        rc[0] = try std.fmt.allocPrint(a, "{d}", .{1000 + i});
+        rc[1] = try std.fmt.allocPrint(a, "row{d:0>2}", .{i});
+        cells.* = rc;
+    }
+    var node = try table.view(a, .{
+        .focused = true,
+        .columns = &clip_cols,
+        .rows = grid,
+        .height = @intCast(visible),
+        .scrollbar = true,
+    });
+    if (fill) node.height = .{ .fill = 1 };
+    try rows.append(a, try ui.probe(a, rect, node));
+    if (!fill) try rows.append(a, ui.spacer());
+    try rows.append(a, ui.text(.{}, "status line here"));
+
+    return ui.column(a, .{ .width = .{ .fill = 1 }, .height = .{ .fill = 1 }, .padding = .all(1) }, rows.items);
+}
+
+fn selectionVisible(h: *Harness, table: *const Table) !bool {
+    const want = try std.fmt.allocPrint(testing.allocator, "row{d:0>2}", .{table.highlighted});
+    defer testing.allocator.free(want);
+    return h.vt.containsText(want);
+}
+
+test "short-terminal Table keeps the selection painted (fill + probed window)" {
+    // 13 rows: two rows short of fitting the header + 8-row window plus chrome.
+    var h = try Harness.initMode(80, 13, .full_screen);
+    defer h.deinit();
+
+    var table = Table{};
+    var rect = ui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    var visible: usize = 8; // seed; overwritten from the probe below
+
+    // Walk the selection from the top to the last row; the highlighted row must
+    // stay on screen the whole way down.
+    for (0..clip_rows_n) |_| {
+        if (rect.h > Table.header_rows) visible = @max(1, rect.h - Table.header_rows);
+        try h.app.frame(try clipFrame(h.app.arena(), &table, visible, &rect, true));
+        h.replay();
+        try testing.expect(try selectionVisible(h, &table));
+        _ = table.handle(.down, clip_rows_n, @intCast(visible));
+    }
+}
+
+test "REGRESSION: hand-counted window clips the selection on a short terminal" {
+    // The pre-fix layout: a fixed visible = 8 passed to both view and handle,
+    // with the table at natural height + a trailing spacer. On this short
+    // terminal the box clips the bottom body row, so the selection parks off
+    // screen — this asserts the broken behavior the fix removes, so the fixed
+    // test above is a genuine guard.
+    var h = try Harness.initMode(80, 13, .full_screen);
+    defer h.deinit();
+
+    var table = Table{};
+    var rect = ui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    const visible: usize = 8;
+
+    var ever_missed = false;
+    for (0..clip_rows_n) |_| {
+        try h.app.frame(try clipFrame(h.app.arena(), &table, visible, &rect, false));
+        h.replay();
+        if (!(try selectionVisible(h, &table))) ever_missed = true;
+        _ = table.handle(.down, clip_rows_n, @intCast(visible));
+    }
+    try testing.expect(ever_missed); // the bug: selection went off screen
+}

@@ -34,9 +34,13 @@ pub const panic = ui.panic;
 
 const tick_ms: u32 = 250;
 
-/// Visible body rows in the process `Table` — the height its scroll window pages
-/// by, passed to both `Table.view` and `Table.handle` so they stay in step.
-const visible_rows: usize = 8;
+/// The process `Table`'s window height *before the first frame measures the real
+/// space* — a floor, not a constant. `view` overwrites `State.visible_rows` from
+/// the probed rect every frame so the window is exactly the body rows the layout
+/// actually granted (never more, or the widget would keep the selection on a row
+/// the box clipped — the short-terminal bug), and `handle` reads the same field
+/// so selection and scroll page by the very count that's painted.
+const min_visible_rows: usize = 1;
 
 const proc_names = [_][]const u8{
     "zig",      "zls",        "kernel_task",  "WindowServer",
@@ -74,7 +78,12 @@ const State = struct {
     table: ui.widgets.Table = .{},
     /// The process table's rendered rect (written by `ui.probe` each frame), so a
     /// click hit-tests against the very layout it's reacting to — no magic offsets.
+    /// It also feeds `visible_rows`: the body height the layout actually granted.
     table_rect: ui.Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    /// Visible body rows in the table — derived from `table_rect` each frame, not
+    /// hand-counted, so `view` and `handle` always agree with what's painted even
+    /// when the terminal is too short to fit the whole grid.
+    visible_rows: usize = 8,
     show_help: bool = false,
     procs: [proc_names.len]Proc = undefined,
     last_mouse: ?ui.Mouse = null,
@@ -132,6 +141,17 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
     }));
     try rows.append(a, ui.text(.{}, ""));
 
+    // The window height is measured, not hand-counted: last frame's `ui.probe`
+    // recorded how many rows the layout actually gave the table (`table_rect.h`),
+    // so the window is exactly that minus the fixed header row. On the very first
+    // frame (no probe yet) it holds its `visible_rows` seed. This is the idiom to
+    // reach for over a chrome-counting constant — a mis-count silently clips the
+    // bottom row while the widget still thinks it owns it (the short-terminal bug
+    // this example used to have).
+    if (state.table_rect.h > ui.widgets.Table.header_rows) {
+        state.visible_rows = @max(min_visible_rows, state.table_rect.h - ui.widgets.Table.header_rows);
+    }
+
     // Tab 0 is the live process grid; tab 1 is a static About pane. The tab bar
     // is chrome; this switch is what "owns the content" means in the ADR.
     if (state.active_tab == 0) {
@@ -150,24 +170,35 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
             row_cells[3] = p.name;
             cells.* = row_cells;
         }
-        // Wrap the table in `ui.probe` so its rendered rect lands in `table_rect`
-        // for click hit-testing (see `update`'s mouse arm). The probe is layout-
-        // transparent — it reports the rect, it doesn't change the layout.
-        try rows.append(a, try ui.probe(a, &state.table_rect, try state.table.view(a, .{
+        // The table window is rendered at exactly `visible_rows` body rows (the
+        // count `view` measured from last frame's probe), and its node fills the
+        // vertical gap between the tab bar and the status line so *this frame's*
+        // probe reports the full body space available — the measurement the next
+        // frame's `visible_rows` derives from. Filling here is what closes the
+        // loop: it's why we never ask for more rows than the layout can paint.
+        var table_node = try state.table.view(a, .{
             .focused = true,
             .columns = &proc_columns,
             .rows = grid,
-            .height = @intCast(visible_rows),
+            .height = @intCast(state.visible_rows),
             .scrollbar = true,
-        })));
+        });
+        table_node.height = .{ .fill = 1 };
+        // Wrap the table in `ui.probe` so its rendered rect lands in `table_rect`,
+        // feeding both the click hit-test (see `update`'s mouse arm) and next
+        // frame's window height. The probe is layout-transparent — it reports the
+        // rect, it doesn't change the layout.
+        try rows.append(a, try ui.probe(a, &state.table_rect, table_node));
     } else {
         try rows.append(a, ui.text(.{ .bold = true }, "About"));
         try rows.append(a, ui.text(.{}, ""));
         try rows.append(a, ui.text(.{ .dim = true }, "A full-screen zcli/ui demo: Table + Tabs + an overlay,"));
         try rows.append(a, ui.text(.{ .dim = true }, "all on the same immediate-mode layout engine (ADR-0021)."));
+        // The process grid fills the vertical gap itself; the static About pane
+        // needs a spacer to push the status line to the bottom.
+        try rows.append(a, ui.spacer());
     }
 
-    try rows.append(a, ui.spacer());
     const mouse = if (state.last_mouse) |m|
         try std.fmt.allocPrint(a, "{s} @ {d},{d}", .{ @tagName(m.button), m.x, m.y })
     else
@@ -234,7 +265,7 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             // form-level navigation (q, ?, Ctrl-C) below.
             if (state.tabs.handle(k, &state.active_tab, tab_labels.len)) return .keep;
             if (state.active_tab == 0 and
-                state.table.handle(k, state.procs.len, @intCast(visible_rows))) return .keep;
+                state.table.handle(k, state.procs.len, @intCast(state.visible_rows))) return .keep;
             switch (k) {
                 .char => |c| switch (c) {
                     'q' => return .quit,
