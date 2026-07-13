@@ -274,11 +274,13 @@ fn findShell(name: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Write `content` under the temp dir and return its absolute path (arena-owned).
-fn writeTemp(arena: std.mem.Allocator, name: []const u8, content: []const u8) ![]const u8 {
-    const path = try std.fmt.allocPrint(arena, "/tmp/{s}", .{name});
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = content });
-    return path;
+/// Write `content` as `name` inside `dir` and return its absolute path
+/// (arena-owned). The path is resolved via realpath so shell processes spawned
+/// with a different cwd can still find it — on Windows a relative write to cwd
+/// fails outright, so a real temp dir is mandatory, not merely tidy.
+fn writeTemp(arena: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, content: []const u8) ![]const u8 {
+    try dir.writeFile(io, .{ .sub_path = name, .data = content });
+    return dir.realPathFileAlloc(io, name, arena);
 }
 
 /// Run argv, returning the exit code (or 255 if the process could not be run
@@ -299,29 +301,38 @@ fn runExit(a: std.mem.Allocator, argv: []const []const u8) u8 {
 }
 
 test "shell syntax - bash -n / zsh -n / fish --no-execute accept generated scripts" {
+    const bash_sh = findShell("bash");
+    const zsh_sh = findShell("zsh");
+    const fish_sh = findShell("fish");
+
+    // On platforms with no shell at all (e.g. Windows CI) there is nothing to
+    // check — skip cleanly before touching the filesystem so the build harness
+    // stays quiet. Per-shell absence below just skips that one shell silently.
+    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
     const bash_script = try bash.generate(a, app_name, &commands, &global_options);
     const zsh_script = try zsh.generate(a, app_name, &commands, &global_options);
     const fish_script = try fish.generate(a, app_name, &commands, &global_options);
 
-    const bash_path = try writeTemp(a, "zcli_test_completion.bash", bash_script);
-    const zsh_path = try writeTemp(a, "zcli_test_completion.zsh", zsh_script);
-    const fish_path = try writeTemp(a, "zcli_test_completion.fish", fish_script);
-
-    if (findShell("bash")) |sh| {
-        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", bash_path }));
-    } else std.log.warn("bash not found; skipping bash -n syntax check", .{});
-
-    if (findShell("zsh")) |sh| {
-        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", zsh_path }));
-    } else std.log.warn("zsh not found; skipping zsh -n syntax check", .{});
-
-    if (findShell("fish")) |sh| {
-        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "--no-execute", fish_path }));
-    } else std.log.warn("fish not found; skipping fish --no-execute syntax check", .{});
+    if (bash_sh) |sh| {
+        const path = try writeTemp(a, tmp.dir, "zcli_test_completion.bash", bash_script);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", path }));
+    }
+    if (zsh_sh) |sh| {
+        const path = try writeTemp(a, tmp.dir, "zcli_test_completion.zsh", zsh_script);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", path }));
+    }
+    if (fish_sh) |sh| {
+        const path = try writeTemp(a, tmp.dir, "zcli_test_completion.fish", fish_script);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "--no-execute", path }));
+    }
 }
 
 test "functional bash - COMPREPLY at root and at depth 2" {
@@ -329,13 +340,13 @@ test "functional bash - COMPREPLY at root and at depth 2" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const sh = findShell("bash") orelse {
-        std.log.warn("bash not found; skipping functional completion test", .{});
-        return;
-    };
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
     const script = try bash.generate(a, app_name, &commands, &global_options);
-    const script_path = try writeTemp(a, "zcli_func_completion.bash", script);
+    const script_path = try writeTemp(a, tmp.dir, "zcli_func_completion.bash", script);
 
     // A harness that sources the script WITHOUT the bash-completion package (so
     // the generated _init_completion fallback path is exercised), drives the
@@ -357,7 +368,7 @@ test "functional bash - COMPREPLY at root and at depth 2" {
         \\echo "DEPTH2:$(run tasks sprint '')"
         \\
     , .{script_path});
-    const harness_path = try writeTemp(a, "zcli_func_harness.bash", harness);
+    const harness_path = try writeTemp(a, tmp.dir, "zcli_func_harness.bash", harness);
 
     const result = try std.process.run(a, io, .{
         .argv = &.{ sh, harness_path },
