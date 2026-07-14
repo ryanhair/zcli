@@ -29,7 +29,7 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
-    const is_tty = terminal.isStdinTty();
+    const is_tty = terminal.isInteractiveTty();
 
     if (!is_tty) {
         try writer.print("{s}{s}", .{ config.prefix, config.message });

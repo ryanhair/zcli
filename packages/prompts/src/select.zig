@@ -29,7 +29,7 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
     if (config.choices.len == 0) return error.NoChoices;
-    const is_tty = terminal.isStdinTty();
+    const is_tty = terminal.isInteractiveTty();
 
     if (!is_tty) {
         // Non-TTY: numbered list

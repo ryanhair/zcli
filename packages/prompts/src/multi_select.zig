@@ -25,7 +25,7 @@ pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
     const reader = p.reader;
     const allocator = p.allocator;
     if (config.choices.len == 0) return error.NoChoices;
-    const is_tty = terminal.isStdinTty();
+    const is_tty = terminal.isInteractiveTty();
 
     if (!is_tty) {
         // Non-TTY: numbered list, accept comma-separated numbers

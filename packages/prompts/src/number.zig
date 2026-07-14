@@ -28,7 +28,7 @@ pub const NumberConfig = struct {
 pub fn number(p: Prompts, config: NumberConfig) !i64 {
     const writer = p.writer;
     const reader = p.reader;
-    const is_tty = terminal.isStdinTty();
+    const is_tty = terminal.isInteractiveTty();
 
     if (is_tty) return numberTty(p, config);
 
