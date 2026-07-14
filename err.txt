@@ -1,0 +1,2 @@
+error: the following build command terminated with signal KILL:
+.zig-cache/o/92a2676355f14361cd4f2319a7ccfd23/build /Users/ryanhair/.local/share/mise/installs/zig/0.16.0/zig /Users/ryanhair/.local/share/mise/installs/zig/0.16.0/lib /Users/ryanhair/Projects/zcli/.claude/worktrees/agent-a2fc2356dbc415c27 .zig-cache /Users/ryanhair/.cache/zig --seed 0x2538e015 -Za67764ea59cb5517 test

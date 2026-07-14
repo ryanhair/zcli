@@ -483,14 +483,15 @@ test "add command outside a project fails clearly" {
     try testing.expect(std.mem.indexOf(u8, r.stderr, "error: NotInZcliProject") == null);
 }
 
-test "unknown option prints the diagnostic message, exits 1, no error trace" {
+test "unknown option prints the diagnostic message, exits 2 (misuse), no error trace" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try makeProjectDirs(tmp.dir);
 
     var r = try run(tmp.dir, &.{ zcli_exe, "tree", "--bogus" });
     defer r.deinit();
-    try testing.expect(r.exit_code == 1);
+    // CLI misuse (a bad option) exits 2 by convention.
+    try testing.expect(r.exit_code == 2);
     // The wired diagnostic names the exact flag...
     try expectContains(r.stderr, "Unknown option '--bogus'");
     // ...and the raw Zig error trace no longer follows the friendly message.

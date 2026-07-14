@@ -83,6 +83,26 @@ fn isReportedCliError(err: anyerror) bool {
     };
 }
 
+/// Process exit status for a reported CLI error, following the conventional
+/// sysexits-flavoured split most CLIs use:
+///   2 — misuse: the argv itself is wrong (bad/unknown/missing options and
+///       arguments, constraint and validation failures). The user should fix
+///       the command line.
+///   3 — the named (sub)command doesn't exist at all.
+///   1 — a general failure the command itself reported via context.fail(): the
+///       command was well-formed, but the work couldn't be done.
+/// Caller must have already established `isReportedCliError(err)` is true.
+fn exitCodeForReportedError(err: anyerror) u8 {
+    return switch (err) {
+        error.CommandNotFound,
+        error.SubcommandNotFound,
+        => 3,
+        error.CommandFailed => 1,
+        // Everything else reported is CLI misuse (see isReportedCliError).
+        else => 2,
+    };
+}
+
 /// Conventional exit status for a process terminated by SIGPIPE (128 + 13).
 /// A zcli CLI whose stdout/stderr pipe is closed by a downstream reader (the
 /// classic `yourcli cmd | head` case) mimics that status so shell pipelines
@@ -122,6 +142,19 @@ test "isReportedCliError: context.fail's error exits cleanly, unexpected errors 
     try std.testing.expect(isReportedCliError(error.ArgumentValidationFailed));
     // An unexpected failure keeps its name + trace (propagated, not swallowed).
     try std.testing.expect(!isReportedCliError(error.OutOfMemory));
+}
+
+test "exitCodeForReportedError: misuse=2, not-found=3, general=1" {
+    // A missing/wrong command line is misuse.
+    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.OptionUnknown));
+    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.ArgumentMissingRequired));
+    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.OptionMutuallyExclusive));
+    try std.testing.expectEqual(@as(u8, 2), exitCodeForReportedError(error.ArgumentValidationFailed));
+    // A non-existent (sub)command gets its own status.
+    try std.testing.expectEqual(@as(u8, 3), exitCodeForReportedError(error.CommandNotFound));
+    try std.testing.expectEqual(@as(u8, 3), exitCodeForReportedError(error.SubcommandNotFound));
+    // A well-formed command that reported its own failure is a general error.
+    try std.testing.expectEqual(@as(u8, 1), exitCodeForReportedError(error.CommandFailed));
 }
 
 test "isBrokenPipe: only BrokenPipe counts as a broken pipe" {
@@ -712,14 +745,15 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 }
                 // CLI-entry semantics: some failures already showed the user a
                 // message — parse/routing diagnostics, a plugin, the framework
-                // fallback, or a command's own context.fail(). Exit(1) without
-                // letting a raw error trace follow that friendly message.
-                // Anything else is an unexpected failure; propagate it so the
-                // name and trace aid debugging. Library/test callers who want
-                // the error itself use execute() directly.
+                // fallback, or a command's own context.fail(). Exit non-zero
+                // with the conventional status (2 misuse / 3 command-not-found
+                // / 1 general) without letting a raw error trace follow that
+                // friendly message. Anything else is an unexpected failure;
+                // propagate it so the name and trace aid debugging. Library/test
+                // callers who want the error itself use execute() directly.
                 if (isReportedCliError(err)) {
                     console.restore();
-                    std.process.exit(1);
+                    std.process.exit(exitCodeForReportedError(err));
                 }
                 return err;
             };
