@@ -36,21 +36,14 @@ fn reportParseError(context: anytype, diag: ?zcli.ZcliDiagnostic) !void {
     try stderr.flush();
 }
 
-/// Convert a global option's argv string to its declared type. Covers the
-/// full set plugin_types.option() accepts (validated at declaration, so the
-/// compile-error backstop here is unreachable for declared options).
+/// Convert a global option's argv string to its declared type through the
+/// single source of truth — the same `parseOptionValue` command options, env,
+/// and config use — so enums, ints, floats, strings, optionals, and custom
+/// `parse` types all coerce identically. A `bool` global is the one exception:
+/// it is a presence flag whose value is the sentinel "true" (no token consumed).
 fn convertGlobalValue(comptime T: type, value: []const u8) !T {
-    return switch (@typeInfo(T)) {
-        .bool => std.mem.eql(u8, value, "true"),
-        .int => try std.fmt.parseInt(T, value, 10),
-        .float => try std.fmt.parseFloat(T, value),
-        .optional => |opt| try convertGlobalValue(opt.child, value),
-        .pointer => |ptr| if (ptr.size == .slice and ptr.child == u8)
-            value
-        else
-            @compileError("Unsupported global option type: " ++ @typeName(T)),
-        else => @compileError("Unsupported global option type: " ++ @typeName(T)),
-    };
+    if (T == bool) return std.mem.eql(u8, value, "true");
+    return option_utils.parseOptionValue(T, value);
 }
 
 /// Errors that execute() reports to the user before returning them — the
