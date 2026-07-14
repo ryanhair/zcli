@@ -2047,6 +2047,81 @@ test "interactive: init's plugin multi-select toggles an opt-in plugin" {
     try expectContains(build_zig, "zcli.builtin(.completions");
 }
 
+test "interactive: init's plugin multi-select toggles github_upgrade and the scaffold compiles" {
+    // Regression for issue #329: the only prior coverage of the picker's
+    // github_upgrade path (init.zig's "renderPluginsBlock scaffolds a
+    // compiling github_upgrade config" unit test) asserts the emitted
+    // *string*, not that it actually compiles against the plugin's real
+    // `Config` — a future rename of `.repo`/`.verification`/`.checksum_only`
+    // would break the picker output silently, only surfacing when a user
+    // selects it. github_upgrade is the one opt-in plugin with *required*
+    // config fields (no defaults), so unlike the sibling toggle test above
+    // (which picks `completions`, a configless `.{}` plugin), this drives the
+    // wizard all the way to a real `zig build` of the resulting scaffold.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpSubdirAbs(arena.allocator(), tmp, "myapp");
+
+    // Choice order (init.zig's builtin_choices): help, version, not_found,
+    // completions, config, github_upgrade — five Down arrows from the
+    // cursor's starting position (help) land on github_upgrade.
+    const settle_ms = 400;
+    var script = harness.InteractiveScript.init(testing.allocator);
+    defer script.deinit();
+    _ = script
+        .expect("Select built-in plugins").delay(settle_ms)
+        .sendRaw("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B \r");
+
+    var result = harness.runInteractive(
+        testing.allocator,
+        io,
+        &.{ zcli_exe, "init", "myapp" },
+        script,
+        .{ .cwd = try tmpDirAbs(arena.allocator(), tmp), .allocate_pty = true, .total_timeout_ms = 30000 },
+    ) catch |err| switch (err) {
+        // PTY allocation can be denied in some sandboxes; skip rather than fail
+        // here, unless ZCLI_REQUIRE_INTERACTIVE=1 demands this tier actually
+        // run. Every other error is a real harness/test failure — a catch-all
+        // here made harness bugs read as skips.
+        error.PtyAllocationFailed => {
+            if (harness.interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
+    };
+    defer result.deinit();
+
+    try testing.expect(result.exit_code == 0);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    const build_zig = try readFile(proj, arena.allocator(), "build.zig");
+    try expectContains(build_zig, "zcli.builtin(.help");
+    try expectContains(build_zig, "zcli.builtin(.version");
+    try expectContains(build_zig, "zcli.builtin(.not_found");
+    try expectContains(build_zig, "zcli.builtin(.github_upgrade");
+    try expectContains(build_zig, ".repo = \"OWNER/REPO\"");
+    try expectContains(build_zig, ".verification = .checksum_only");
+
+    // The point of this test: build the scaffold for real, against the local
+    // zcli tree, so a Config field rename would fail here instead of only at
+    // a user's first `zig build` after picking this plugin.
+    try pointDependencyAtLocalTree(proj, proj_abs);
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+    try testing.expect(fileExists(proj, "zig-out/bin/myapp" ++ exe_ext));
+}
+
 // ============================================================================
 // Layer 2 — `dev` watch/rebuild loop (long-running; driven over a PTY)
 // ============================================================================
