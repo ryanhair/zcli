@@ -28,4 +28,10 @@ test "deploy command" {
 }
 ```
 
+Unit tests only run under `zig build test` if `build.zig` wires
+`zcli.addCommandTests(b, zcli_dep, .{ .commands_dir = "src/commands", ... })` —
+a scaffolded project (`zcli init`) already does this. See
+[BUILD.md](BUILD.md#command-unit-tests-addcommandtests) for the full config
+and how commands are compiled for testing.
+
 For the full VTerm assertion API, the integration/E2E tiers, snapshot testing, and the recommended per-command strategy, see **[zcli.sh/testing](https://zcli.sh/testing/)**.

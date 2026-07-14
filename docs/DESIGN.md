@@ -410,45 +410,53 @@ Plugins can provide global options. For example, the zcli_help plugin provides:
 **Naming Convention:**
 
 - CLI flags: underscores become dashes (`no_color` → `--no-color`)
-- Zig access: accessed through typed globals struct (`context.globals.no_color`)
+- Zig access: read the value back from the declaring plugin's `ContextData`
 
 **Context Access:**
 
-Global options are accessible to all commands through the strongly-typed `context.globals` struct:
+There is no generated `context.globals` struct. A global option is owned by
+the plugin that declares it: `handleGlobalOption` stashes the value on that
+plugin's own `ContextData` (see §12, "Type-Safe Context Extensions"), and any
+command or hook reads it back through `context.plugins.<plugin_id>`:
+
+```zig
+// In the declaring plugin:
+pub const plugin_id = "my_plugin";
+
+pub const ContextData = struct {
+    verbose: bool = false,
+    config: ?[]const u8 = null,
+};
+
+pub fn handleGlobalOption(context: anytype, option_name: []const u8, value: anytype) !void {
+    if (std.mem.eql(u8, option_name, "verbose")) {
+        context.plugins.my_plugin.verbose = value;
+    } else if (std.mem.eql(u8, option_name, "config")) {
+        context.plugins.my_plugin.config = value;
+    }
+}
+```
 
 ```zig
 // In any command file (e.g., commands/deploy.zig)
 pub fn execute(args: Args, options: Options, context: *Context) !void {
-    // Access global options with full type safety
-    if (context.globals.verbose) {
+    // Access global options through the plugin that owns them.
+    if (context.plugins.my_plugin.verbose) {
         try context.stdout().print("Verbose mode enabled\n", .{});
     }
 
     // Optional globals use Zig's optional syntax
-    if (context.globals.config) |config_path| {
+    if (context.plugins.my_plugin.config) |config_path| {
         try loadConfig(config_path);
     }
 }
 ```
 
-**Generated Globals Struct:**
-
-Based on the `global_options` definition in build.zig, zcli generates a strongly-typed `Globals` struct at build time:
-
-```zig
-// Generated from your global_options config
-pub const Globals = struct {
-    verbose: bool,           // .default = false
-    config: ?[]const u8,     // Optional type, no default
-    no_color: bool,          // .default = false
-};
-```
-
 **Global vs Command-Specific Options:**
 
-- **Global options**: Available to all commands via `context.globals`
+- **Global options**: Declared by a plugin, stored on that plugin's `ContextData`, and read via `context.plugins.<plugin_id>`
 - **Command-specific options**: Defined per-command in the `Options` struct
-- **Plugin-provided globals**: Handled by plugins (like `--help`) and typically don't need explicit access
+- **Plugin-provided globals**: Handled by plugins (like `--help`, owned by `zcli_help`'s `ContextData`) and typically don't need explicit access from your own commands
 
 ```zig
 // Command-specific options stay in the Options struct
@@ -458,8 +466,8 @@ pub const Options = struct {
 };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
-    // Mix command-specific and global options naturally
-    if (context.globals.verbose or options.force) {
+    // Mix command-specific options with a plugin-owned global naturally
+    if (context.plugins.my_plugin.verbose or options.force) {
         try context.stdout().print("Executing with force\n", .{});
     }
 }
@@ -482,7 +490,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
    - Handles --help and --version automatically
    - Parses global options
    - Looks up command in static table
-   - Calls appropriate handler with parsed args and globals
+   - Calls appropriate handler with parsed args and options (plugins read their own globals off `context.plugins.<plugin_id>`)
 
 ## 6. Option Parsing Behavior
 
@@ -548,7 +556,7 @@ files: [][]const u8
 **Context System:**
 
 - Pass a context struct to all commands
-- Contains: stdout, stderr, stdin, globals, environment
+- Contains: stdout, stderr, stdin, environment, and per-plugin `ContextData` (via `context.plugins.<plugin_id>`)
 - Enables testing and different output modes
 
 **Progressive Enhancement:**
@@ -766,18 +774,14 @@ const registry = @import("command_registry");
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-
     var app = registry.init();
-
-    app.run(init.gpa, init.io, init.environ_map, args) catch |err| switch (err) {
-        error.CommandNotFound => {
-            // Error was already handled by plugins or registry
-            std.process.exit(1);
-        },
-        else => return err,
-    };
+    try app.run(init.gpa, init.io, init.environ_map, args);
 }
 ```
+
+`run` already reports the error, dispatches `onError` hooks, and calls
+`std.process.exit` with the appropriate status (see "Exit Codes" above) —
+there is no error to catch in `main`.
 
 ## 11. Plugin System
 
@@ -843,12 +847,16 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 **Plugin Execution Order:**
 
 1. Plugins are sorted by priority at compile time — a plugin may declare `pub const priority: i32` (default 50); higher values run first, and ties keep registration order
-2. All `handleGlobalOption` hooks called for each global option
-3. All `preExecute` hooks called before command execution
-4. All `applyConfigDefaults` hooks called after CLI/env parse — filling options no higher-precedence source set — then required/dependency/exclusive validation runs
-5. Command executes
-6. All `postExecute` hooks called after successful execution
-7. On error, `onError` hooks called until one handles the error
+2. All `preParse` hooks called, threading each plugin's rewritten argv into the next
+3. Global options are extracted from argv and dispatched to each declaring plugin's `handleGlobalOption`
+4. All `transformArgs` hooks called (each may rewrite argv or stop processing)
+5. Command resolution routes to the matched command, then all `postParse` hooks called, threading each plugin's replacement `ParsedArgs`
+6. All `preExecute` hooks called before command execution (a plugin may cancel execution by returning `null`)
+7. Argv is parsed into the command's `Args`/`Options`
+8. All `applyConfigDefaults` hooks called after CLI/env parse — filling options no higher-precedence source set — then required/dependency/exclusive/per-field validation runs
+9. Command executes
+10. All `postExecute` hooks called after execution (success or a handled failure)
+11. On error at any stage above, `onError` hooks called until one handles the error
 
 **Built-in Plugins:**
 
@@ -920,8 +928,8 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 `ContextData` structs must be default-constructible; the generated `Context`
 initializes each plugin's field to `.{}`, then — for plugins that declare
 `initContextData` — the dispatcher calls that hook once per invocation (via
-`context.initPluginData()`) before any lifecycle hook. See `ComputedContextType`
-in `packages/core/src/registry.zig`.
+`context.initPluginData()`) before any lifecycle hook. See `ContextFor`
+in `packages/core/src/context.zig`.
 
 **Typing the `context` parameter:**
 
