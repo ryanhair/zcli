@@ -1,6 +1,7 @@
 const std = @import("std");
 const levenshtein = @import("levenshtein.zig");
 const custom_type = @import("custom_type.zig");
+const Writer = std.Io.Writer;
 
 pub const ZcliError = error{
     // Argument parsing errors
@@ -317,6 +318,25 @@ fn humanType(type_name: []const u8) []const u8 {
     return "a value";
 }
 
+/// Write `s` to `w`, dropping C0 control bytes (0x00-0x1F) and DEL (0x7F)
+/// except `\t` (0x09) and `\n` (0x0A). Every diagnostic-rendering boundary
+/// runs the user-controlled slice of its message (an unknown command name,
+/// an unknown option name, a rejected argument/option value) through this
+/// before it reaches the terminal. Without it, a crafted value containing an
+/// ESC byte can smuggle a raw ANSI/OSC escape sequence — e.g. a window-title
+/// set or an OSC 52 clipboard write — straight through to the user's
+/// terminal. UTF-8 multibyte sequences pass through untouched: both
+/// continuation bytes (0x80-0xBF) and lead bytes (0xC0 and up) fall outside
+/// the stripped range.
+pub fn writeSanitized(w: *Writer, s: []const u8) Writer.Error!void {
+    for (s) |c| {
+        switch (c) {
+            0x00...0x08, 0x0B...0x1F, 0x7F => {}, // drop control bytes, incl. ESC (0x1b); \t/\n fall through below
+            else => try w.writeByte(c),
+        }
+    }
+}
+
 /// Get a user-friendly description of a diagnostic
 pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator) ![]u8 {
     return switch (diagnostic) {
@@ -612,6 +632,38 @@ test "invalid enum value messages carry a did-you-mean" {
         defer allocator.free(msg);
         try std.testing.expect(std.mem.indexOf(u8, msg, "Did you mean 'info'?") != null);
     }
+}
+
+test "writeSanitized strips ESC and other C0 control bytes" {
+    var aw: Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeSanitized(&aw.writer, "before\x1bafter");
+    try std.testing.expectEqualStrings("beforeafter", aw.written());
+}
+
+test "writeSanitized neuters a full OSC escape sequence" {
+    var aw: Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    // OSC 0 (set window title), BEL-terminated — the ESC and BEL are the
+    // bytes a terminal parses as the start/end of the sequence; stripping
+    // them leaves inert text behind instead of a live escape sequence.
+    try writeSanitized(&aw.writer, "\x1b]0;pwned\x07");
+    try std.testing.expectEqualStrings("]0;pwned", aw.written());
+}
+
+test "writeSanitized drops DEL but preserves \\n and \\t" {
+    var aw: Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try writeSanitized(&aw.writer, "a\tb\nc\x7fd");
+    try std.testing.expectEqualStrings("a\tb\ncd", aw.written());
+}
+
+test "writeSanitized leaves plain UTF-8 (including multibyte) untouched" {
+    var aw: Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const s = "caf\xc3\xa9 \xe4\xbd\xa0\xe5\xa5\xbd \xf0\x9f\x9a\x80"; // "café 你好 🚀"
+    try writeSanitized(&aw.writer, s);
+    try std.testing.expectEqualStrings(s, aw.written());
 }
 
 test "expectedTypeName lists enum variants" {

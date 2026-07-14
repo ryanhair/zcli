@@ -21,7 +21,13 @@ fn reportParseError(context: anytype, diag: ?zcli.ZcliDiagnostic) !void {
     const d = diag orelse return;
     const message = zcli.formatDiagnostic(d, context.allocator) catch return;
     var stderr = context.stderr();
-    try stderr.print("Error: {s}\n", .{message});
+    // The message embeds user-controlled argv text (an unknown option name,
+    // a rejected argument/option value) alongside framework-authored prose —
+    // sanitize the whole rendered string so a crafted value can't smuggle a
+    // raw terminal escape sequence through.
+    try stderr.print("Error: ", .{});
+    try zcli.writeSanitized(stderr, message);
+    try stderr.print("\n", .{});
 
     // A one-line usage pointer, mirroring the not-found plugin's closing line.
     // Points at the resolved command's own --help when we're inside a command,
