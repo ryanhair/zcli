@@ -350,11 +350,11 @@ const topics = [_]Topic{
         \\store, read, and delete an opaque credential — never a plaintext file — via
         \\the context, no import:
         \\
-        \\  try context.plugins.zcli_secrets.set(context, "token", token);
-        \\  if (try context.plugins.zcli_secrets.get(context, "token")) |token| {
+        \\  try context.plugins.zcli_secrets.set("token", token);
+        \\  if (try context.plugins.zcli_secrets.get("token")) |token| {
         \\      // token is arena-owned — no free
         \\  }
-        \\  try context.plugins.zcli_secrets.delete(context, "token"); // no-op if absent
+        \\  try context.plugins.zcli_secrets.delete("token"); // no-op if absent
         \\
         \\The plugin only stores/reads the credential. The auth FLOW that produces it
         \\(reading an env var, an OAuth device-code exchange, ...) is your own command

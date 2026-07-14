@@ -75,4 +75,4 @@ if (context.plugins.timing.started_ns != 0) {
 }
 ```
 
-The [secrets plugin]($link.page('docs/secrets')) is the same shape: `context.plugins.zcli_secrets.get(context, "token")`. See [Plugins]($link.page('docs/plugins')) for the full model.
+The [secrets plugin]($link.page('docs/secrets')) is the same shape: `context.plugins.zcli_secrets.get("token")`. See [Plugins]($link.page('docs/plugins')) for the full model.

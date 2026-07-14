@@ -28,7 +28,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
 
     // zcli_secrets only stores/reads the opaque credential — it puts it in the
     // OS keychain, never a plaintext file.
-    try context.plugins.zcli_secrets.set(context, "token", token);
+    try context.plugins.zcli_secrets.set("token", token);
 
     try context.stdout().print("Saved your GitHub token to the OS keychain. Try `ghauth whoami`.\n", .{});
 }

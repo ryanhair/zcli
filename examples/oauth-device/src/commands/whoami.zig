@@ -23,7 +23,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     // The stored bytes are owned by the arena, so no free is needed. The token
     // got here via the `login` device flow — but `whoami` neither knows nor
     // cares how it was minted; it just reads the opaque credential back.
-    const token = (try context.plugins.zcli_secrets.get(context, "token")) orelse
+    const token = (try context.plugins.zcli_secrets.get("token")) orelse
         return context.fail("Not logged in. Run `oauth-device login` first.", .{});
 
     var client = zcli.http.Client.init(arena, io, .{});

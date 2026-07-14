@@ -168,6 +168,13 @@ pub fn runCommand(
     };
     defer context.deinit();
 
+    // Mirror production: run plugin initContextData hooks before the command so
+    // `context.plugins.<id>` methods work without manual setup. This runs even
+    // when `config.plugins` seeded fields — an initContextData hook may overwrite
+    // them, so a test that needs pre-baked state should set it via a hook or a
+    // test double that declares no initContextData.
+    try context.initPluginData();
+
     // Execute the command
     var success = true;
     var err: ?anyerror = null;

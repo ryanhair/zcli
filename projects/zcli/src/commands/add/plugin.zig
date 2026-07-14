@@ -156,6 +156,24 @@ fn generatePlugin(arena: std.mem.Allocator, name: []const u8, description: []con
     );
     try w.print("// pub const plugin_id = \"{s}\";\n", .{name});
     try w.writeAll("// pub const ContextData = struct {};\n");
+    try w.writeAll(
+        \\
+        \\// Capture references off the context into ContextData once per invocation,
+        \\// before any hook — lets `context.plugins.<plugin_id>` methods serve calls
+        \\// without re-threading `context`. Optional; requires ContextData.
+        \\// pub fn initContextData(data: *ContextData, context: anytype) !void {
+        \\//     _ = data;
+        \\//     _ = context;
+        \\// }
+        \\
+        \\// Cleanup hook for ContextData, called from Context.deinit(). Only needed
+        \\// when ContextData owns resources (allocations, handles). Requires ContextData.
+        \\// pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
+        \\//     _ = data;
+        \\//     _ = allocator;
+        \\// }
+        \\
+    );
 
     return aw.written();
 }
