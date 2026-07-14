@@ -1127,7 +1127,9 @@ test "global option defaults" {
         var ran: bool = false;
         pub const Args = struct {};
         pub const Options = struct {};
-        pub fn execute(_: Args, _: Options, _: anytype) !void { ran = true; }
+        pub fn execute(_: Args, _: Options, _: anytype) !void {
+            ran = true;
+        }
     };
 
     const TestRegistry = registry.Registry.init(.{
