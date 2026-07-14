@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in zcli isn't working as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Minimal steps to reproduce — ideally a snippet of `Args`/`Options`/`meta`
+        or a `build.zig` config that triggers it. Paste the exact command and
+        output if it's a runtime behavior.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: zig-version
+    attributes:
+      label: Zig version
+      placeholder: "0.16.0"
+    validations:
+      required: true
+
+  - type: input
+    id: zcli-version
+    attributes:
+      label: zcli version / commit
+      description: The `vX.Y.Z` tag, `zcli-vX.Y.Z` tag, or commit hash you're on.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      multiple: true
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Logs, stack traces, or context that might help.
