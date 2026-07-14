@@ -13,6 +13,8 @@ Did you mean:
   --verbose
 ```
 
+The exit code follows the conventional CLI split: `0` success, `2` misuse (a bad/unknown/missing option or argument, or a constraint/validation failure), `3` an unknown (sub)command, and `1` a general failure a command reported itself via `context.fail()`. A closed downstream pipe (`myapp cmd | head`) exits `141` like any well-behaved unix program.
+
 Under the hood everything is a standard Zig error union — a structured `ZcliError` plus an optional `ZcliDiagnostic` carrying the field, position, and expected type. When you parse outside the framework (`zcli.parseCommandLine`, `parseArgs`, `parseOptions`), `formatDiagnostic` renders the same messages.
 
 For the full `ZcliError` set, diagnostic-driven messages, memory/cleanup rules, and a complete standalone parser, see **[zcli.sh/errors](https://zcli.sh/errors/)**.
