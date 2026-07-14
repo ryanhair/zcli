@@ -442,8 +442,8 @@ test "a Tabs bar paints its labels in a spaced row through the renderer" {
     const rctx = ui.RenderCtx{ .allocator = a };
 
     const labels = [_][]const u8{ "One", "Two", "Three" };
-    var tabs = ui.widgets.Tabs{};
-    const node = try tabs.view(a, .{ .focused = true, .labels = &labels, .active = 1 });
+    var tabs = ui.widgets.Tabs{ .active = 1 };
+    const node = try tabs.view(a, .{ .focused = true, .labels = &labels });
     try ui.render(&rctx, &node, s.root());
     try paintInto(&vt, .{ .capability = .ansi_16 }, null, &s);
 
