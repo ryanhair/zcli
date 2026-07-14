@@ -55,10 +55,10 @@
 //!
 //! ## Memory
 //!
-//! `Response.body` is owned by the allocator passed to `Client.init`. In a
-//! command that allocator is the arena-per-command, so the body is reclaimed
-//! when the command returns; `Response.deinit` is still provided for callers
-//! (like tests) using a tracking allocator.
+//! `Response.body` and `Response.headers` are owned by the allocator passed to
+//! `Client.init`. In a command that allocator is the arena-per-command, so they
+//! are reclaimed when the command returns; `Response.deinit` is still provided
+//! for callers (like tests) using a tracking allocator.
 
 const std = @import("std");
 
@@ -214,10 +214,31 @@ pub const Response = struct {
     allocator: std.mem.Allocator,
     status: Status,
     body: []u8,
+    /// The response headers of the final hop (after any redirects were
+    /// followed), copied out of the connection buffer so they outlive the read.
+    /// A header sent more than once (e.g. `Link`, `Set-Cookie`) appears once per
+    /// occurrence, in order — iterate this slice to see them all; `header()`
+    /// returns only the first.
+    headers: []const Header,
 
     pub fn deinit(self: *Response) void {
+        for (self.headers) |h| {
+            self.allocator.free(h.name);
+            self.allocator.free(h.value);
+        }
+        self.allocator.free(self.headers);
         self.allocator.free(self.body);
         self.* = undefined;
+    }
+
+    /// The value of the first header named `name` (case-insensitive), or null if
+    /// the server sent no such header. For a header that can repeat, iterate
+    /// `headers` instead to see every value.
+    pub fn header(self: Response, name: []const u8) ?[]const u8 {
+        for (self.headers) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
+        }
+        return null;
     }
 
     /// Parse the response body as JSON into `T`. The returned `Parsed(T)` owns
@@ -462,6 +483,12 @@ pub const Client = struct {
                 }
             }
 
+            // Copy the response headers out of the connection buffer while it is
+            // still valid — obtaining the reader below overwrites it. Done only
+            // for the final hop, after redirects have been resolved.
+            const response_headers = try dupeHeaders(allocator, response.head);
+            errdefer freeHeaders(allocator, response_headers);
+
             // Size a decompression buffer per the negotiated content encoding,
             // the same way std.http.Client.fetch does.
             const decompress_buffer: []u8 = switch (content_encoding) {
@@ -489,10 +516,43 @@ pub const Client = struct {
                 .allocator = allocator,
                 .status = status,
                 .body = body,
+                .headers = response_headers,
             };
         }
     }
 };
+
+/// Copy every response header (name and value) into `allocator`. The slices the
+/// header iterator hands back point into the connection's read buffer, which the
+/// body read overwrites, so each string is duped to outlive it.
+fn dupeHeaders(allocator: std.mem.Allocator, head: std.http.Client.Response.Head) ![]Header {
+    var list: std.ArrayList(Header) = .empty;
+    errdefer {
+        for (list.items) |h| {
+            allocator.free(h.name);
+            allocator.free(h.value);
+        }
+        list.deinit(allocator);
+    }
+
+    var it = head.iterateHeaders();
+    while (it.next()) |h| {
+        const name = try allocator.dupe(u8, h.name);
+        errdefer allocator.free(name);
+        const value = try allocator.dupe(u8, h.value);
+        errdefer allocator.free(value);
+        try list.append(allocator, .{ .name = name, .value = value });
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+fn freeHeaders(allocator: std.mem.Allocator, headers: []Header) void {
+    for (headers) |h| {
+        allocator.free(h.name);
+        allocator.free(h.value);
+    }
+    allocator.free(headers);
+}
 
 const testing = std.testing;
 
@@ -503,6 +563,7 @@ test "Response.json parses body into a struct, ignoring unknown fields" {
         .body = try testing.allocator.dupe(u8,
             \\{"name":"zcli","stars":42,"extra":"ignored"}
         ),
+        .headers = &.{},
     };
     defer response.deinit();
 
@@ -512,6 +573,58 @@ test "Response.json parses body into a struct, ignoring unknown fields" {
 
     try testing.expectEqualStrings("zcli", parsed.value.name);
     try testing.expectEqual(@as(u32, 42), parsed.value.stars);
+}
+
+test "Response.header looks up case-insensitively and returns the first of a repeated header" {
+    const headers = [_]Header{
+        .{ .name = "Content-Type", .value = "application/json" },
+        .{ .name = "Link", .value = "<https://api/next>; rel=next" },
+        .{ .name = "Link", .value = "<https://api/last>; rel=last" },
+    };
+    const response: Response = .{
+        .allocator = testing.allocator,
+        .status = .ok,
+        .body = &.{},
+        .headers = &headers,
+    };
+    // Case-insensitive on the header name.
+    try testing.expectEqualStrings("application/json", response.header("content-type").?);
+    try testing.expectEqualStrings("application/json", response.header("CONTENT-TYPE").?);
+    // A repeated header returns the first occurrence via header().
+    try testing.expectEqualStrings("<https://api/next>; rel=next", response.header("link").?);
+    // Missing headers are null, not an error.
+    try testing.expect(response.header("x-nope") == null);
+}
+
+test "dupeHeaders copies every header out of a parsed head so they outlive the buffer" {
+    // A response head as it sits in the connection buffer. dupeHeaders must copy
+    // each header's name and value so they survive the buffer being reused.
+    const bytes = try testing.allocator.dupe(u8, "HTTP/1.1 401 Unauthorized\r\n" ++
+        "WWW-Authenticate: Bearer realm=\"https://auth.example.com/token\",service=\"registry\"\r\n" ++
+        "Content-Type: application/json\r\n" ++
+        "Link: <https://api/tags?n=100&last=z>; rel=next\r\n\r\n");
+    const head = try std.http.Client.Response.Head.parse(bytes);
+
+    const headers = try dupeHeaders(testing.allocator, head);
+    defer freeHeaders(testing.allocator, headers);
+
+    // Scribble over the source buffer to prove the copies are independent.
+    @memset(bytes, 0);
+    testing.allocator.free(bytes);
+
+    const response: Response = .{
+        .allocator = testing.allocator,
+        .status = .unauthorized,
+        .body = &.{},
+        .headers = headers,
+    };
+    try testing.expectEqualStrings(
+        "Bearer realm=\"https://auth.example.com/token\",service=\"registry\"",
+        response.header("www-authenticate").?,
+    );
+    try testing.expectEqualStrings("application/json", response.header("Content-Type").?);
+    try testing.expectEqualStrings("<https://api/tags?n=100&last=z>; rel=next", response.header("link").?);
+    try testing.expectEqual(@as(usize, 3), response.headers.len);
 }
 
 test "postJson serializes a value the same way it is read back" {
