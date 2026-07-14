@@ -8,7 +8,7 @@
 //! section instead of duplicating the field loops.
 //!
 //! The visible arg-token convention (`<NAME>`/`[NAME]`/`[NAME]...`) comes from
-//! the shared `zcli.usage` module, so help agrees with the doc generator's
+//! the shared `zcli.plugin_abi.usage` module, so help agrees with the doc generator's
 //! markdown/man/HTML synopses.
 
 const std = @import("std");
@@ -27,7 +27,7 @@ pub const NAME_COLUMN_WIDTH: usize = 16;
 /// `<TITLE> [TAGS]...`). Returns null when there are no args to display — an
 /// empty `Args = struct {}` yields no pattern.
 ///
-/// The token spelling is the shared `zcli.usage` convention, uppercase, so help
+/// The token spelling is the shared `zcli.plugin_abi.usage` convention, uppercase, so help
 /// matches the doc generator's synopses verbatim.
 pub fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u8 {
     if (!module_info.has_args or module_info.args_fields.len == 0) return null;
@@ -44,8 +44,8 @@ pub fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: anytype
         // A positional's `is_array` is its variadic-ness; `is_optional` its
         // optionality. The shared classifier picks the bracket set, uppercased.
         var name_buf: [64]u8 = undefined;
-        const name = zcli.usage.upperInto(&name_buf, field_info.name);
-        const d = zcli.usage.delims(zcli.usage.classify(field_info.is_optional, field_info.is_array));
+        const name = zcli.plugin_abi.usage.upperInto(&name_buf, field_info.name);
+        const d = zcli.plugin_abi.usage.delims(zcli.plugin_abi.usage.classify(field_info.is_optional, field_info.is_array));
         try writer.print("{s}{s}{s}", .{ d.open, name, d.close });
     }
 

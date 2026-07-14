@@ -160,7 +160,7 @@ fn optionSpecFor(
 fn isOption(tok: []const u8) bool {
     if (tok.len < 2) return false;
     if (tok[0] != '-') return false;
-    if (zcli.isNegativeNumber(tok)) return false;
+    if (zcli.plugin_abi.isNegativeNumber(tok)) return false;
     return true;
 }
 

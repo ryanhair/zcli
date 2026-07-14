@@ -211,7 +211,7 @@ fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, conten
     // string values point into it, mirroring the JSON path.
     const arena = ctx_in.allocator.create(std.heap.ArenaAllocator) catch return;
     arena.* = std.heap.ArenaAllocator.init(ctx_in.allocator);
-    const table = zcli.config_parse.parseToml(arena.allocator(), content) catch |err| {
+    const table = zcli.plugin_abi.config_parse.parseToml(arena.allocator(), content) catch |err| {
         arena.deinit();
         ctx_in.allocator.destroy(arena);
         warnParse(ctx_in, err);
@@ -244,7 +244,7 @@ fn applyFromTomlScoped(comptime OptionsType: type, options: *OptionsType, conten
 fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, content: []const u8, ctx_in: ApplyCtx, data: *ContextData, cmd_path: []const []const u8, provided: []const bool, applied: []bool) void {
     const arena = ctx_in.allocator.create(std.heap.ArenaAllocator) catch return;
     arena.* = std.heap.ArenaAllocator.init(ctx_in.allocator);
-    const root = zcli.config_parse.parseYaml(arena.allocator(), content) catch |err| {
+    const root = zcli.plugin_abi.config_parse.parseYaml(arena.allocator(), content) catch |err| {
         arena.deinit();
         ctx_in.allocator.destroy(arena);
         warnParse(ctx_in, err);
@@ -402,14 +402,14 @@ fn applyMap(comptime OptionsType: type, options: *OptionsType, map: anytype, ctx
 /// Coerce and store one field. Returns true when a value was actually applied
 /// (so the caller marks it), false on a lenient skip (bad value, wrong shape).
 fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, ctx: ApplyCtx) bool {
-    if (comptime zcli.config_coerce.isArrayType(T)) {
+    if (comptime zcli.plugin_abi.config_coerce.isArrayType(T)) {
         // Multi-value option: coerce each element through the element parser.
         const Child = @typeInfo(T).pointer.child;
         switch (fv) {
             .list => |items| {
                 const out = ctx.allocator.alloc(Child, items.len) catch return false;
                 for (items, 0..) |s, idx| {
-                    out[idx] = zcli.config_coerce.parseOptionValue(Child, s) catch {
+                    out[idx] = zcli.plugin_abi.config_coerce.parseOptionValue(Child, s) catch {
                         warnValue(ctx, field_name, s);
                         return false; // Lenient: one bad element skips the whole option.
                     };
@@ -419,7 +419,7 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
             },
             // A scalar for an array option: treat as a single-element list.
             .scalar => |s| {
-                const parsed = zcli.config_coerce.parseOptionValue(Child, s) catch {
+                const parsed = zcli.plugin_abi.config_coerce.parseOptionValue(Child, s) catch {
                     warnValue(ctx, field_name, s);
                     return false;
                 };
@@ -435,7 +435,7 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
     // Boolean flags parse by presence on the CLI, so the value parser doesn't
     // handle them; a config boolean maps directly. `bool`/`?bool` both accept
     // the "true"/"false" strings the adapters render for a config boolean.
-    if (comptime zcli.config_coerce.isBooleanFlag(T)) {
+    if (comptime zcli.plugin_abi.config_coerce.isBooleanFlag(T)) {
         switch (fv) {
             .scalar => |s| {
                 if (std.mem.eql(u8, s, "true")) {
@@ -455,7 +455,7 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
     // Scalar option (ints, floats, enums, strings, optionals, custom parse).
     switch (fv) {
         .scalar => |s| {
-            dest.* = zcli.config_coerce.parseOptionValue(T, s) catch {
+            dest.* = zcli.plugin_abi.config_coerce.parseOptionValue(T, s) catch {
                 warnValue(ctx, field_name, s);
                 return false;
             };
