@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zcli = @import("zcli");
 const nightwatch = @import("nightwatch");
 
@@ -56,21 +57,31 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     const cwd_len = try std.process.currentPath(io, &cwd_buf);
     const cwd = cwd_buf[0..cwd_len];
 
-    var state = WatchState{ .io = io };
+    var state = WatchState{ .io = io, .root_len = cwd.len };
     var watcher = try nightwatch.Default.init(io, gpa, &state.handler);
     defer watcher.deinit();
 
     // Watch src/ (the command tree) plus the build description itself: editing
     // build.zig or build.zig.zon (e.g. adding a shared module or dependency)
-    // needs a rebuild just as much as editing a command file does.
+    // needs a rebuild just as much as editing a command file does. Events are
+    // filtered down to those paths in the handler either way.
     var watched = std.ArrayList([]const u8).empty;
     defer {
         for (watched.items) |p| gpa.free(p);
         watched.deinit(gpa);
     }
-    try watchPath(&watcher, io, gpa, cwd, "src", &watched);
-    try watchPath(&watcher, io, gpa, cwd, "build.zig", &watched);
-    try watchPath(&watcher, io, gpa, cwd, "build.zig.zon", &watched);
+    if (builtin.os.tag == .windows) {
+        // ReadDirectoryChangesW only watches directories, so plain-file watches
+        // (build.zig) fail on Windows. One recursive watch on the project root
+        // is a single handle; the handler filter discards zig-out/.zig-cache
+        // noise. On POSIX this would be wasteful (kqueue opens an fd per
+        // directory), so only Windows takes this path.
+        try watcher.watch(cwd);
+    } else {
+        try watchPath(&watcher, io, gpa, cwd, "src", &watched);
+        try watchPath(&watcher, io, gpa, cwd, "build.zig", &watched);
+        try watchPath(&watcher, io, gpa, cwd, "build.zig.zon", &watched);
+    }
 
     try paint(status, theme, "zcli dev", .header);
     try status.writeAll(" — watching src/, build.zig, build.zig.zon (Ctrl-C to stop)\n");
@@ -125,10 +136,26 @@ const vtable = nightwatch.Default.Handler.VTable{ .change = onChange, .rename = 
 /// lets the loop block instead of spin.
 const WatchState = struct {
     io: std.Io,
+    /// Length of the absolute project-root path that prefixes every event.
+    root_len: usize = 0,
     mutex: std.Io.Mutex = .init,
     cond: std.Io.Condition = .init,
     dirty: bool = false,
     handler: nightwatch.Default.Handler = .{ .vtable = &vtable },
+
+    /// Whether an event path warrants a rebuild: anything under src/, or the
+    /// build files themselves. On Windows the watch covers the whole project
+    /// root (see execute), so this discards zig-out/ and .zig-cache/ churn —
+    /// including the very builds this command runs, which would otherwise
+    /// retrigger forever.
+    fn isInteresting(self: *const WatchState, path: []const u8) bool {
+        if (path.len <= self.root_len + 1) return false;
+        const rel = path[self.root_len + 1 ..];
+        if (std.mem.eql(u8, rel, "build.zig") or std.mem.eql(u8, rel, "build.zig.zon")) return true;
+        if (std.mem.startsWith(u8, rel, "src") and
+            (rel.len == 3 or rel[3] == '/' or rel[3] == '\\')) return true;
+        return false;
+    }
 
     fn mark(self: *WatchState) void {
         self.mutex.lockUncancelable(self.io);
@@ -164,19 +191,16 @@ const WatchState = struct {
 };
 
 fn onChange(h: *nightwatch.Default.Handler, path: []const u8, event: nightwatch.EventType, obj: nightwatch.ObjectType) error{HandlerFailed}!void {
-    _ = path;
     _ = event;
     _ = obj;
     const self: *WatchState = @fieldParentPtr("handler", h);
-    self.mark();
+    if (self.isInteresting(path)) self.mark();
 }
 
 fn onRename(h: *nightwatch.Default.Handler, src: []const u8, dst: []const u8, obj: nightwatch.ObjectType) error{HandlerFailed}!void {
-    _ = src;
-    _ = dst;
     _ = obj;
     const self: *WatchState = @fieldParentPtr("handler", h);
-    self.mark();
+    if (self.isInteresting(src) or self.isInteresting(dst)) self.mark();
 }
 
 // ============================================================================
@@ -374,6 +398,23 @@ test "appArgv with no command is just the binary" {
     const argv = try appArgv(arena_state.allocator(), "zig-out/bin/app", &.{});
     try testing.expectEqual(@as(usize, 1), argv.len);
     try testing.expectEqualStrings("zig-out/bin/app", argv[0]);
+}
+
+test "isInteresting filters events to src/ and the build files" {
+    const root = "/home/me/proj";
+    const s = WatchState{ .io = std.testing.io, .root_len = root.len };
+
+    try testing.expect(s.isInteresting(root ++ "/src"));
+    try testing.expect(s.isInteresting(root ++ "/src/commands/hello.zig"));
+    try testing.expect(s.isInteresting(root ++ "\\src\\commands\\hello.zig"));
+    try testing.expect(s.isInteresting(root ++ "/build.zig"));
+    try testing.expect(s.isInteresting(root ++ "/build.zig.zon"));
+
+    try testing.expect(!s.isInteresting(root ++ "/zig-out/bin/app"));
+    try testing.expect(!s.isInteresting(root ++ "/.zig-cache/o/abc/foo.o"));
+    try testing.expect(!s.isInteresting(root ++ "/srcs/other.zig")); // prefix, not src/
+    try testing.expect(!s.isInteresting(root ++ "/build.zig.bak"));
+    try testing.expect(!s.isInteresting(root)); // the root itself
 }
 
 test "WatchState coalesces and consumes the dirty signal" {
