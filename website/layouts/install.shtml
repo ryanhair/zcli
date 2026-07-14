@@ -93,7 +93,7 @@
       <!-- COMPLETIONS -->
       <div class="panel" id="p-completions">
         <h3>Shell completions</h3>
-        <p>Usually the first thing people want right after install — tab-complete commands, subcommands, and flags in bash, zsh, or fish.</p>
+        <p>Usually the first thing people want right after install — tab-complete commands, subcommands, and flags in bash, zsh, fish, or PowerShell.</p>
         <div class="cmdbox">
           <pre><span class="pr">$</span> myapp completions install</pre>
           <button onclick="cp(this,'myapp completions install')">copy</button>

@@ -15,6 +15,7 @@ const zcli = @import("zcli");
 const bash = @import("plugins/zcli_completions/bash.zig");
 const zsh = @import("plugins/zcli_completions/zsh.zig");
 const fish = @import("plugins/zcli_completions/fish.zig");
+const powershell = @import("plugins/zcli_completions/powershell.zig");
 const tree = @import("plugins/zcli_completions/tree.zig");
 const escape = @import("plugins/zcli_completions/escape.zig");
 const resolve = @import("plugins/zcli_completions/resolve.zig");
@@ -420,6 +421,25 @@ test "escape.zsh - escapes quotes, brackets, parens, colon, backslash" {
     try std.testing.expectEqualStrings("a\\:b", cout);
 }
 
+test "escape.powershell - doubles single quotes, nothing else" {
+    const out = try escape.powershell(std.testing.allocator, adversarial);
+    defer std.testing.allocator.free(out);
+    // The apostrophe is doubled (PowerShell single-quoted-string escape).
+    try std.testing.expect(contains(out, "a''b"));
+    // Everything else passes through literally (safe inside single quotes).
+    try std.testing.expect(contains(out, "\"c$d`e(f)g[h]i\\j k"));
+    // No lone apostrophe remains that could terminate the surrounding '…'.
+    var i: usize = 0;
+    var run: usize = 0;
+    while (i < out.len) : (i += 1) {
+        if (out[i] == '\'') run += 1 else {
+            try std.testing.expect(run % 2 == 0); // quotes only appear in even runs
+            run = 0;
+        }
+    }
+    try std.testing.expect(run % 2 == 0);
+}
+
 // ============================================================================
 // Layer 3a: structural assertions
 // ============================================================================
@@ -508,12 +528,64 @@ test "fish.generate - escapes apostrophes and uses positional conditions" {
     try std.testing.expect(contains(script, "__fish_tasks_using_command list' -a 'open done'"));
 }
 
+test "powershell.generate - native completer, describe, enum, and escaping" {
+    const script = try powershell.generate(std.testing.allocator, app_name, &commands, &global_options);
+    defer std.testing.allocator.free(script);
+
+    // Registered as a native argument completer for the app.
+    try std.testing.expect(contains(script, "Register-ArgumentCompleter -Native -CommandName 'tasks'"));
+    try std.testing.expect(contains(script, "param($wordToComplete, $commandAst, $cursorPosition)"));
+
+    // Subcommands (with description tooltips) keyed on the command path.
+    try std.testing.expect(contains(script, "Complete-Command 'add' 'Add a task'"));
+    // Alias surfaces as its own command completion.
+    try std.testing.expect(contains(script, "Complete-Command 'a' 'Add a task'"));
+    // Nested group dispatch on the path key.
+    try std.testing.expect(contains(script, "switch -CaseSensitive ($key)"));
+    try std.testing.expect(contains(script, "Complete-Command 'create' 'Create a sprint'"));
+
+    // The apostrophe in "Edit a task's title" is DOUBLED, not left raw.
+    try std.testing.expect(contains(script, "Edit a task''s title"));
+    try std.testing.expect(!contains(script, "task's title"));
+
+    // Enum option: name completion + value completion.
+    try std.testing.expect(contains(script, "Complete-Option '--priority' 'Task priority'"));
+    try std.testing.expect(contains(script, "Complete-Value 'low'"));
+    try std.testing.expect(contains(script, "Complete-Value 'high'"));
+
+    // Enum positional offers its choices.
+    try std.testing.expect(contains(script, "Complete-Value 'open'"));
+    try std.testing.expect(contains(script, "Complete-Value 'done'"));
+
+    // Global option with its short form and tooltip.
+    try std.testing.expect(contains(script, "Complete-Option '--verbose' 'Verbose output'"));
+    try std.testing.expect(contains(script, "Complete-Option '-v' 'Verbose output'"));
+}
+
+test "powershell gen - dynamic block, .file option + .file positional" {
+    const script = try powershell.generate(std.testing.allocator, "advapp", &i2_commands, &global_options);
+    defer std.testing.allocator.free(script);
+    // Hook option (`--host`) is resolved dynamically → the __complete block is present.
+    try std.testing.expect(contains(script, "& $exe __complete $cword '--' @dynWords"));
+    // `.file` option value → dir-inclusive file completion in the $prev switch.
+    try std.testing.expect(contains(script, "'--out' {"));
+    try std.testing.expect(contains(script, "Complete-Files $false"));
+    // `.file` positional → file completion at the command's path key.
+    try std.testing.expect(contains(script, "'deploy' {"));
+}
+
 test "generators - empty command set still yields a valid skeleton" {
     const empty = [_]zcli.CommandInfo{};
     const script = try bash.generate(std.testing.allocator, app_name, &empty, &global_options);
     defer std.testing.allocator.free(script);
     try std.testing.expect(contains(script, "_tasks_completions()"));
     try std.testing.expect(contains(script, "--verbose"));
+
+    // PowerShell skeleton is valid too (no commands → just globals + registration).
+    const ps = try powershell.generate(std.testing.allocator, app_name, &empty, &global_options);
+    defer std.testing.allocator.free(ps);
+    try std.testing.expect(contains(ps, "Register-ArgumentCompleter -Native -CommandName 'tasks'"));
+    try std.testing.expect(contains(ps, "Complete-Option '--verbose' 'Verbose output'"));
 }
 
 // ============================================================================
@@ -625,6 +697,37 @@ test "shell syntax - bash -n / zsh -n / fish --no-execute accept generated scrip
         const path = try writeTemp(a, tmp.dir, "zcli_test_completion.fish", fish_script);
         try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "--no-execute", path }));
     }
+}
+
+/// Find the PowerShell (`pwsh`) binary in common locations, or null. Kept separate
+/// from `findShell` (which keys off the first letter) because pwsh's parse-check is
+/// invoked differently from the POSIX shells' `-n`.
+fn findPwsh() ?[]const u8 {
+    const candidates: []const []const u8 = &.{ "/usr/bin/pwsh", "/usr/local/bin/pwsh", "/opt/homebrew/bin/pwsh", "/snap/bin/pwsh" };
+    for (candidates) |path| {
+        std.Io.Dir.cwd().access(io, path, .{}) catch continue;
+        return path;
+    }
+    return null;
+}
+
+test "shell syntax - pwsh accepts the generated PowerShell script" {
+    const pwsh = findPwsh() orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Exercise the full feature surface: dynamic hooks, enum/.file options, nested
+    // groups. `[scriptblock]::Create` parses the whole scriptblock and throws on a
+    // syntax error, so a non-zero exit means the generator emitted invalid syntax.
+    const script = try powershell.generate(a, "advapp", &i2_commands, &global_options);
+    const path = try writeTemp(a, tmp.dir, "advapp_completion.ps1", script);
+    const cmd = try std.fmt.allocPrint(a, "$null = [scriptblock]::Create((Get-Content -Raw -LiteralPath '{s}')); exit 0", .{path});
+    try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ pwsh, "-NoProfile", "-NonInteractive", "-Command", cmd }));
 }
 
 test "functional bash - COMPREPLY at root and at depth 2" {
@@ -912,6 +1015,11 @@ test "gen - combine directive branches present in bash, zsh, fish" {
     defer std.testing.allocator.free(f);
     try std.testing.expect(contains(f, "case also_files") and contains(f, "__fish_complete_path"));
     try std.testing.expect(contains(f, "case also_dirs") and contains(f, "__fish_complete_directories"));
+
+    const p = try powershell.generate(std.testing.allocator, "advapp", &adv_commands, &global_options);
+    defer std.testing.allocator.free(p);
+    try std.testing.expect(contains(p, "$directive -eq 'also_files'") and contains(p, "Complete-Files $false"));
+    try std.testing.expect(contains(p, "$directive -eq 'also_dirs'") and contains(p, "Complete-Files $true"));
 }
 
 test "functional zsh - dynamic candidates verbatim + combine invokes _files" {

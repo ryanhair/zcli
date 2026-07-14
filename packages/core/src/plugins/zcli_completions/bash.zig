@@ -62,9 +62,11 @@ pub fn generate(
 
     // ---- Option completion ---------------------------------------------------
     try writer.writeAll("    if [[ \"$cur\" == -* ]]; then\n");
-    try writer.writeAll("        local opts=\"");
-    try writeOptionNames(writer, global_options);
-    try writer.writeAll("\"\n");
+    // Single-quoted literal: option names are escape.bash'd so an exotic `@"…"`
+    // identifier can't break out of the quote.
+    try writer.writeAll("        local opts='");
+    try writeOptionNames(arena, writer, global_options);
+    try writer.writeAll("'\n");
     try writer.writeAll("        case \"$key\" in\n");
     try writeOptionCases(arena, writer, root);
     try writer.writeAll("        esac\n");
@@ -131,38 +133,41 @@ pub fn generate(
     return al.toOwnedSlice(allocator);
 }
 
-/// Emit `--name -s ` for each option into a space-separated list.
-fn writeOptionNames(writer: anytype, options: []const zcli.OptionInfo) !void {
+/// Emit `--name -s ` for each option into a space-separated list. Names are
+/// escape.bash'd for the single-quoted context the callers place them in.
+fn writeOptionNames(arena: std.mem.Allocator, writer: anytype, options: []const zcli.OptionInfo) !void {
     for (options) |opt| {
-        try writer.print("--{s} ", .{opt.name});
+        try writer.print("--{s} ", .{try escape.bash(arena, opt.name)});
         if (opt.short) |short| try writer.print("-{c} ", .{short});
     }
 }
 
 /// Emit a `"path")` case for every node that declares options, appending them to
-/// the running `$opts` list (which already holds the global options).
+/// the running `$opts` list (which already holds the global options). The literal
+/// names are single-quoted (escape.bash'd) while `"$opts "` expands the accumulator.
 fn writeOptionCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
     if (node.options.len > 0) {
         try writer.print("            \"{s}\")\n", .{try joinPath(arena, node.path)});
-        try writer.writeAll("                opts=\"$opts ");
-        try writeOptionNames(writer, node.options);
-        try writer.writeAll("\"\n");
+        try writer.writeAll("                opts=\"$opts \"'");
+        try writeOptionNames(arena, writer, node.options);
+        try writer.writeAll("'\n");
         try writer.writeAll("                ;;\n");
     }
     for (node.children) |child| try writeOptionCases(arena, writer, child);
 }
 
 /// Emit a `"path")` case for every parent node, listing its child command names
-/// and their aliases as the completion set for that path.
+/// and their aliases as the completion set for that path. Names/aliases are
+/// escape.bash'd inside a single-quoted literal.
 fn writeCommandCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
     if (node.children.len > 0) {
         try writer.print("        \"{s}\")\n", .{try joinPath(arena, node.path)});
-        try writer.writeAll("            completions=\"");
+        try writer.writeAll("            completions='");
         for (node.children) |child| {
-            try writer.print("{s} ", .{child.name});
-            for (child.aliases) |alias| try writer.print("{s} ", .{alias});
+            try writer.print("{s} ", .{try escape.bash(arena, child.name)});
+            for (child.aliases) |alias| try writer.print("{s} ", .{try escape.bash(arena, alias)});
         }
-        try writer.writeAll("\"\n");
+        try writer.writeAll("'\n");
         try writer.writeAll("            ;;\n");
     }
     for (node.children) |child| try writeCommandCases(arena, writer, child);
@@ -181,13 +186,15 @@ fn staticCompgenArgs(arena: std.mem.Allocator, enum_values: ?[]const []const u8,
         }
     }
     if (enum_values) |values| {
+        // Single-quoted word list so escape.bash (which is single-quote-safe)
+        // applies uniformly — an exotic `@"…"` enum name can't break the quote.
         var out = std.ArrayList(u8).empty;
-        try out.appendSlice(arena, "-W \"");
+        try out.appendSlice(arena, "-W '");
         for (values, 0..) |v, idx| {
             if (idx > 0) try out.append(arena, ' ');
-            try out.appendSlice(arena, v);
+            try out.appendSlice(arena, try escape.bash(arena, v));
         }
-        try out.append(arena, '"');
+        try out.append(arena, '\'');
         return out.items;
     }
     return null;
