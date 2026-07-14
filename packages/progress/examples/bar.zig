@@ -13,6 +13,9 @@ const std = @import("std");
 const Progress = @import("progress");
 const common = @import("common.zig");
 
+// Indicators hide the cursor, so a panic must restore the terminal.
+pub const panic = Progress.panic;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var out: common.Io = .{};

@@ -177,6 +177,11 @@ pub const App = struct {
     placed: ?CursorPos = null,
     /// Guard for idempotent deinit (finish paths may close the App early).
     deinited: bool = false,
+    /// Whether this App armed the process-global restore guard (in `init` when
+    /// it took the caller's raw mode, in `start`/`enterFullScreen` on takeover).
+    /// Gates the `deinit` disarm — armed can precede `started`, so `started`
+    /// alone would leak the guard on a construct-then-error path.
+    guard_armed: bool = false,
     /// Session-owned raw mode, in full-screen only (the App reads input via
     /// `nextEvent`). `null` in hybrid, where input ownership stays external.
     raw: ?terminal.RawMode = null,
@@ -192,7 +197,8 @@ pub const App = struct {
     /// live region pinned above it. Shares the screen, stays in cooked mode,
     /// input ownership is the caller's.
     pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
-        return .{
+        comptime assertPanicInstalled();
+        var self: App = .{
             .writer = writer,
             .gpa = gpa,
             .options = options,
@@ -201,20 +207,30 @@ pub const App = struct {
             .front = try Surface.init(gpa, 0, 0),
             .back = try Surface.init(gpa, 0, 0),
         };
+        // Arm the restore guard the moment we hold the caller's raw mode: in
+        // hybrid the caller enables raw mode *before* constructing the App (a
+        // prompt owns its input), so a signal in the gap before the first frame
+        // would otherwise strand the terminal raw (issue #322). Only on a real
+        // terminal (`term_size` null); `start` re-arms with the cursor-show blob
+        // once it hides the cursor. The blob is empty here — nothing on screen to
+        // undo yet, only the termios carried in `hybrid_raw`.
+        if (options.term_size == null and options.hybrid_raw != null) {
+            terminal.guard.arm(std.Io.File.stdout().handle, "", options.hybrid_raw);
+            self.guard_armed = true;
+        }
+        return self;
     }
 
     /// A full-screen App (ADR-0015): takes the screen over via the
     /// alternate-screen buffer, owns raw mode for the session, and reads input
     /// through `nextEvent`. Pass a stdin reader in `options.stdin`.
     ///
-    /// A distinct constructor, not a `mode` option, for one reason: full-screen
-    /// hands the terminal to the alt-screen in raw mode, so a panic (which does
-    /// not run `defer app.deinit()`) would strand it — the app MUST install the
-    /// restore panic hook. Because `mode` is comptime-known here (unlike a
-    /// runtime flag), `assertPanicInstalled` can turn a forgotten hook into a
-    /// build error instead of a wedged terminal, and only for full-screen apps.
+    /// A distinct constructor, not a `mode` option, because full-screen hands the
+    /// terminal to the alt-screen in raw mode and drives input itself. The panic
+    /// hook a panic needs to un-strand the terminal is required for every App and
+    /// enforced in `init` (see `assertPanicInstalled`); full-screen just raises
+    /// the stakes — a wedged alt-screen needs `reset`, not merely a lost cursor.
     pub fn initFullScreen(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
-        comptime assertPanicInstalled();
         var self = try init(gpa, writer, options);
         self.mode = .full_screen;
         errdefer {
@@ -226,19 +242,22 @@ pub const App = struct {
         return self;
     }
 
-    /// Compile-time guard on `initFullScreen`: full-screen needs a panic handler
-    /// (see the constructor). Zig resolves the handler as `@import("root").panic`
-    /// — a root-module decl an imported module can't provide — so this checks the
-    /// root source file for it. Hybrid carries no such requirement (cooked mode,
-    /// cursor-only), which is why the check lives here and not in `init`.
+    /// Compile-time guard on App construction (`init`, so both modes): an App
+    /// takes over process-global terminal state a panic must undo — the
+    /// alt-screen + raw mode in full-screen, raw mode + a hidden cursor in hybrid
+    /// (the caller hands its raw mode in via `options.hybrid_raw`). A panic runs
+    /// no `defer`, so only `ui.panic` restores it. Zig resolves the handler as
+    /// `@import("root").panic` — a root-module decl an imported module can't
+    /// provide — so this checks the root source file for it.
     fn assertPanicInstalled() void {
-        // `zig test` roots at the test runner (no panic hook) and constructs
-        // full-screen Apps only headlessly (fixed `term_size`, no real terminal
-        // to strand), so the requirement doesn't apply there.
+        // `zig test` roots at the test runner (no panic hook) and builds Apps
+        // only headlessly (fixed `term_size`, no real terminal to strand), so
+        // the requirement doesn't apply there.
         if (@import("builtin").is_test) return;
         if (!@hasDecl(@import("root"), "panic")) @compileError(
-            "full-screen ui.App requires a panic handler, so a panic can't strand the " ++
-                "terminal in the alt-screen. Add to your root source file (main.zig):\n\n" ++
+            "ui.App requires a panic handler, so a panic can't strand the terminal " ++
+                "(the alt-screen in full-screen; raw mode with a hidden cursor in hybrid — " ++
+                "every prompt and progress indicator). Add to your root source file (main.zig):\n\n" ++
                 "    pub const panic = zcli.ui.panic;\n\n" ++
                 "(standalone ui users: `pub const panic = ui.panic;`)",
         );
@@ -247,9 +266,10 @@ pub const App = struct {
     /// Panic handler that restores the terminal (replays the `terminal.guard`
     /// blob) *before* the default handler prints — so the stack trace lands on
     /// the shell's real screen, not the discarded alt-screen. Install in your
-    /// root source file: `pub const panic = zcli.ui.panic;`. Required for
-    /// full-screen (enforced by `initFullScreen`); optional but recommended for
-    /// hybrid, where it re-shows the hidden cursor.
+    /// root source file: `pub const panic = zcli.ui.panic;`. Required for every
+    /// `ui.App` (enforced at construction by `assertPanicInstalled`): full-screen
+    /// leaves the alt-screen; hybrid re-shows the hidden cursor and restores the
+    /// caller's raw mode.
     pub const panic = std.debug.FullPanic(struct {
         fn call(msg: []const u8, first_trace_addr: ?usize) noreturn {
             terminal.guard.restore();
@@ -289,6 +309,7 @@ pub const App = struct {
             // alt-screen we haven't entered yet is a harmless no-op.
             var blob: [64]u8 = undefined;
             terminal.guard.arm(std.Io.File.stdout().handle, self.restoreBlob(&blob), self.raw);
+            self.guard_armed = true;
         }
         self.started = true; // cursor hidden, terminal owned
         try self.writer.writeAll("\x1b[?1049h\x1b[?25l");
@@ -346,7 +367,7 @@ pub const App = struct {
         // Clean teardown owns the restore from here — disarm so a racing signal
         // doesn't also replay, and to put the old signal dispositions back.
         // Idempotent: a no-op on the headless path that never armed.
-        if (self.started) terminal.guard.disarm();
+        if (self.guard_armed) terminal.guard.disarm();
         if (self.mode == .full_screen) {
             // Restore in strict reverse of enter (ADR-0015 choice 5): disable
             // input modes → show cursor → leave alt-screen (restores the shell's
@@ -846,8 +867,10 @@ pub const App = struct {
         if (self.started) return;
         self.started = true;
         try self.writer.writeAll("\x1b[?25l");
-        if (self.options.term_size == null)
+        if (self.options.term_size == null) {
             terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h", self.options.hybrid_raw);
+            self.guard_armed = true;
+        }
     }
 
     fn termSize(self: *App) Size {

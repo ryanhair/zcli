@@ -989,13 +989,17 @@ previous frame, so only changed cells reach the terminal. Four node kinds
 `fill`) cover the vocabulary; the region re-measures against the terminal each
 frame, so it re-lays-out on resize and clamps to the viewport. This is the
 CLI/TUI hybrid — the shape of modern agent-style CLIs — exposed directly as
-`zcli.ui` / `context.ui(.{})`.
+`zcli.ui` / `context.ui(.{})`. Even a hybrid `App` hides the cursor and (for a
+prompt) rides the caller's raw mode, so every `App` requires a `pub const panic =
+zcli.ui.panic` hook in the root source file — enforced at compile time in
+`App.init` so a panic can't strand the terminal past a skipped `deinit`.
 
 **Full-screen mode (ADR-0015).** When an app wants the whole terminal instead of
 sharing it — a `top`-style dashboard, an interactive form — the same node tree,
 layout, and diff run on the alternate screen: `context.uiFullScreen(.{})` (or
-`App.initFullScreen` standalone, which requires a `pub const panic =
-zcli.ui.panic` hook, enforced at compile time). `App.run` owns the
+`App.initFullScreen` standalone). The same panic hook every `App` requires
+matters most here — a wedged alt-screen needs `reset`, not merely a lost cursor.
+`App.run` owns the
 `frame → nextEvent → update` loop — `view(arena, state)` builds the tree,
 `update(state, event)` mutates state for a key/resize/mouse/focus/paste event or
 a deadline-scheduled `null` tick and returns `keep`/`quit`, and an optional

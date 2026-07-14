@@ -215,6 +215,13 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// (idempotent) restores the terminal and persists the final frame.
         ///
         /// For an opt-in alt-screen TUI, use `uiFullScreen` instead.
+        /// A hybrid (shared-screen) `ui.App` pre-wired to this command's
+        /// environment — the substrate every prompt and progress indicator runs
+        /// on. It hides the cursor and rides the caller's raw mode, so a panic
+        /// mid-frame must be able to restore the terminal. Requires a panic
+        /// handler in your root source file — enforced at compile time:
+        ///
+        ///     pub const panic = zcli.ui.panic;
         pub fn ui(self: *Self, options: zcli.ui.App.SessionOptions) !zcli.ui.App {
             return zcli.ui.App.init(self.allocator, self.stdout(), .{
                 .capability = self.theme.capability(),

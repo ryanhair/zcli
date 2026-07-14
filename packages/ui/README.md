@@ -33,6 +33,8 @@ fn statusLine(a: std.mem.Allocator, s: *const State) !ui.Node {
     });
 }
 
+pub const panic = ui.panic; // in your root source file — see below
+
 var app = try ui.App.init(gpa, writer, .{});
 defer app.deinit(); // cursor restored, final frame left in scrollback
 
@@ -56,6 +58,14 @@ wrapper paints and measures, so layout and rendering always agree.
 Note: the default `.wrap` mode word-wraps and drops break spaces. Labels with
 significant whitespace (padded numbers, aligned columns) want `.clip` or
 `.truncate` via `ui.textOpts`.
+
+Every `App` — hybrid included — hides the cursor and, for a prompt, rides the
+caller's raw mode. A panic runs no `defer`, so `app.deinit()` never fires and
+the terminal is left stranded. Install the restore panic hook in your root
+source file: `pub const panic = zcli.ui.panic;` (standalone: `= ui.panic;`).
+It is **required** and compile-time-enforced at `App.init` — a forgotten hook
+is a build error, not a wedged terminal. zcli's `prompts` and `progress`
+re-export it (`Prompts.panic` / `Progress.panic`) for standalone use.
 
 ## Widgets
 
@@ -83,9 +93,10 @@ engine ([ADR-0015](../../docs/adr/0015-full-screen-tui-mode.md)). `context.uiFul
 (or `ui.App.initFullScreen`) enters the alternate screen and raw mode, grants
 the frame the whole viewport, and drives a `view → nextEvent → update` loop
 (`app.run` owns it for you, with an optional tick clock). `emit` is an error —
-there's no scrollback to flow into — and a panic hook is required and
-compile-time-enforced (`pub const panic = zcli.ui.panic;`). On exit the shell
-comes back exactly as it was; the final frame does not persist.
+there's no scrollback to flow into. The panic hook (required for every `App`,
+above) matters most here: a wedged alt-screen needs `reset`, not merely a lost
+cursor. On exit the shell comes back exactly as it was; the final frame does
+not persist.
 
 Interactive widgets for full-screen forms and menus live in `ui.widgets`
 alongside the progress ones ([ADR-0018](../../docs/adr/0018-focusable-widgets.md)):
