@@ -60,3 +60,27 @@ pub const InputWait = impl.InputWait;
 /// Result of `ResizeWatcher.waitTimeout`: input ready, a resize, or the
 /// caller's deadline elapsed with neither.
 pub const WaitResult = impl.WaitResult;
+
+test {
+    // Pull in the active platform backend's unit tests (the impl is imported
+    // via a comptime branch, so nothing else references its file for tests).
+    _ = impl;
+}
+
+test "re-exported surface resolves on this platform" {
+    // Referencing each re-export forces the (lazily analyzed) platform impl
+    // to provide the full surface with the expected shape.
+    try std.testing.expect(@hasDecl(RawMode, "disable"));
+    try std.testing.expect(@typeInfo(@TypeOf(enableRawMode)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(setEcho)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(getWindowSize)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(isTty)) == .@"fn");
+    try std.testing.expect(@typeInfo(@TypeOf(waitReadable)) == .@"fn");
+    try std.testing.expect(@hasDecl(ResizeWatcher, "init"));
+    try std.testing.expect(@hasDecl(ResizeWatcher, "deinit"));
+    try std.testing.expect(@hasDecl(ResizeWatcher, "wait"));
+    try std.testing.expect(@hasDecl(ResizeWatcher, "waitTimeout"));
+    // Both watcher result enums cover the same cases on every platform.
+    try std.testing.expect(@hasField(InputWait, "input") and @hasField(InputWait, "resize"));
+    try std.testing.expect(@hasField(WaitResult, "input") and @hasField(WaitResult, "resize") and @hasField(WaitResult, "timeout"));
+}

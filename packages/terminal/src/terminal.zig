@@ -196,4 +196,7 @@ test "symbols provide correct fallbacks" {
 
 test {
     std.testing.refAllDecls(@This());
+    // `backend` is a private import, so refAllDecls doesn't reach it; reference
+    // it explicitly so the backend (and its platform impl's) tests run.
+    _ = backend;
 }

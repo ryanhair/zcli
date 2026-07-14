@@ -21,11 +21,11 @@ pub const RawMode = struct {
     }
 };
 
-pub fn enableRawMode(fd: Handle) TerminalError!RawMode {
-    const original = posix.tcgetattr(fd) catch return error.NotATerminal;
-
-    // cfmakeraw() equivalent: clear the flags that cook input/output so bytes
-    // arrive unmodified, one at a time, with no echo or signal handling.
+/// cfmakeraw() equivalent: given the terminal's current mode, compute the
+/// termios to install for raw mode — clears the flags that cook input/output
+/// so bytes arrive unmodified, one at a time, with no echo or signal handling.
+/// Pure (no syscalls), so it's testable without a TTY.
+fn rawTermios(original: posix.termios) posix.termios {
     var raw = original;
     raw.iflag.BRKINT = false;
     raw.iflag.ICRNL = false;
@@ -41,15 +41,28 @@ pub fn enableRawMode(fd: Handle) TerminalError!RawMode {
     raw.cflag.CSIZE = .CS8;
     raw.cc[@intFromEnum(posix.V.MIN)] = 1;
     raw.cc[@intFromEnum(posix.V.TIME)] = 0;
+    return raw;
+}
 
+/// Given the terminal's current mode, compute the termios with echo set to
+/// `enabled` and everything else untouched. Pure — testable without a TTY.
+fn echoTermios(termios: posix.termios, enabled: bool) posix.termios {
+    var t = termios;
+    t.lflag.ECHO = enabled;
+    return t;
+}
+
+pub fn enableRawMode(fd: Handle) TerminalError!RawMode {
+    const original = posix.tcgetattr(fd) catch return error.NotATerminal;
+    const raw = rawTermios(original);
     posix.tcsetattr(fd, .FLUSH, raw) catch return error.TerminalSettingsError;
     return .{ .fd = fd, .original = original };
 }
 
 pub fn setEcho(fd: Handle, enabled: bool) TerminalError!void {
-    var termios = posix.tcgetattr(fd) catch return error.NotATerminal;
-    termios.lflag.ECHO = enabled;
-    posix.tcsetattr(fd, .FLUSH, termios) catch return error.TerminalSettingsError;
+    const termios = posix.tcgetattr(fd) catch return error.NotATerminal;
+    const updated = echoTermios(termios, enabled);
+    posix.tcsetattr(fd, .FLUSH, updated) catch return error.TerminalSettingsError;
 }
 
 pub fn getWindowSize(fd: Handle) !Winsize {
@@ -167,3 +180,57 @@ pub const ResizeWatcher = struct {
         }
     }
 };
+
+test "rawTermios clears cooked-mode flags and sets CS8 + VMIN/VTIME" {
+    var original = std.mem.zeroes(posix.termios);
+    original.iflag.BRKINT = true;
+    original.iflag.ICRNL = true;
+    original.iflag.INPCK = true;
+    original.iflag.ISTRIP = true;
+    original.iflag.IXON = true;
+    original.oflag.OPOST = true;
+    original.lflag.ECHO = true;
+    original.lflag.ICANON = true;
+    original.lflag.IEXTEN = true;
+    original.lflag.ISIG = true;
+    original.cflag.PARENB = true;
+
+    const raw = rawTermios(original);
+
+    try std.testing.expect(!raw.iflag.BRKINT);
+    try std.testing.expect(!raw.iflag.ICRNL);
+    try std.testing.expect(!raw.iflag.INPCK);
+    try std.testing.expect(!raw.iflag.ISTRIP);
+    try std.testing.expect(!raw.iflag.IXON);
+    try std.testing.expect(!raw.oflag.OPOST);
+    try std.testing.expect(!raw.lflag.ECHO);
+    try std.testing.expect(!raw.lflag.ICANON);
+    try std.testing.expect(!raw.lflag.IEXTEN);
+    try std.testing.expect(!raw.lflag.ISIG);
+    try std.testing.expect(!raw.cflag.PARENB);
+    try std.testing.expectEqual(posix.CSIZE.CS8, raw.cflag.CSIZE);
+    try std.testing.expectEqual(@as(posix.cc_t, 1), raw.cc[@intFromEnum(posix.V.MIN)]);
+    try std.testing.expectEqual(@as(posix.cc_t, 0), raw.cc[@intFromEnum(posix.V.TIME)]);
+}
+
+test "rawTermios leaves untouched flags alone" {
+    var original = std.mem.zeroes(posix.termios);
+    original.iflag.IXOFF = true; // not part of the raw-mode transform
+
+    const raw = rawTermios(original);
+
+    try std.testing.expect(raw.iflag.IXOFF);
+}
+
+test "echoTermios toggles ECHO without touching other flags" {
+    var termios = std.mem.zeroes(posix.termios);
+    termios.lflag.ICANON = true;
+
+    const disabled = echoTermios(termios, false);
+    try std.testing.expect(!disabled.lflag.ECHO);
+    try std.testing.expect(disabled.lflag.ICANON);
+
+    const enabled = echoTermios(termios, true);
+    try std.testing.expect(enabled.lflag.ECHO);
+    try std.testing.expect(enabled.lflag.ICANON);
+}
