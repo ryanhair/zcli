@@ -169,9 +169,16 @@ jobs:
       # own unit tests on all three OSes. Windows is a first-class leg now that
       # the interactive `testing` harness compiles there (ConPTY backend); the
       # terminal stack is libc-free, so this guards portability across the board.
+      # Every GitHub-hosted runner image (ubuntu, macos, windows) ships pwsh,
+      # so the completion suite's real-pwsh syntax check must actually run on
+      # all three legs — ZCLI_REQUIRE_PWSH=1 turns a missing/unfound binary
+      # into a hard failure rather than a silent skip (the same
+      # guard-against-never-validated as fish above, without needing an
+      # install step).
       - name: Run tests
         env:
           ZCLI_REQUIRE_FISH: ${{ runner.os == 'Linux' && '1' || '' }}
+          ZCLI_REQUIRE_PWSH: "1"
         run: zig build test
 
   windows-release-build:

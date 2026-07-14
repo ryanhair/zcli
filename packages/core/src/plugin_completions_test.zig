@@ -10,6 +10,7 @@
 //!      the root AND at depth 2.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zcli = @import("zcli");
 
 const bash = @import("plugins/zcli_completions/bash.zig");
@@ -635,24 +636,45 @@ fn runExit(a: std.mem.Allocator, argv: []const []const u8) u8 {
     };
 }
 
-/// Whether the environment demands that the fish branch actually run (i.e. fish
-/// MUST be present). Set by the CI job that installs fish so a missing binary
-/// there turns from a silent skip into a hard failure — the fish generator has
-/// never once been validated against real fish otherwise (no runner ships it).
+/// True when the environment flag `flag` is set to `1`.
 ///
 /// The test root module has no direct env access under the 0.16 explicit-IO
 /// model (env arrives via `std.process.Init`, which unit tests don't get), so
 /// we read the flag the same way we reach every other shell here: by spawning
-/// one. A spawned child inherits our environment by default, so `bash -c` echoes
-/// the value back. bash is guaranteed present on the (Linux) job that sets the
-/// flag; anywhere without bash this returns false, which only relaxes the
-/// requirement — it can never spuriously demand fish.
-fn ciRequiresFish(a: std.mem.Allocator) bool {
-    const bash_sh = findShell("bash") orelse return false;
-    const result = std.process.run(a, io, .{
-        .argv = &.{ bash_sh, "-c", "printf %s \"$ZCLI_REQUIRE_FISH\"" },
-    }) catch return false;
+/// one. A spawned child inherits our environment by default, so the shell
+/// echoes the value back. POSIX uses bash (guaranteed present on the CI legs
+/// that set these flags); Windows — where the POSIX probe paths don't exist —
+/// uses cmd.exe (always present, resolved via PATH). Anywhere the probe shell
+/// is missing this returns false, which only relaxes a requirement — it can
+/// never spuriously demand a shell.
+fn ciEnvFlagSet(a: std.mem.Allocator, comptime flag: []const u8) bool {
+    const result = if (builtin.os.tag == .windows)
+        std.process.run(a, io, .{
+            .argv = &.{ "cmd.exe", "/d", "/c", "echo %" ++ flag ++ "%" },
+        }) catch return false
+    else blk: {
+        const bash_sh = findShell("bash") orelse return false;
+        break :blk std.process.run(a, io, .{
+            .argv = &.{ bash_sh, "-c", "printf %s \"$" ++ flag ++ "\"" },
+        }) catch return false;
+    };
     return std.mem.eql(u8, std.mem.trim(u8, result.stdout, " \t\r\n"), "1");
+}
+
+/// Whether the environment demands that the fish branch actually run (i.e. fish
+/// MUST be present). Set by the CI job that installs fish so a missing binary
+/// there turns from a silent skip into a hard failure — the fish generator has
+/// never once been validated against real fish otherwise (no runner ships it).
+fn ciRequiresFish(a: std.mem.Allocator) bool {
+    return ciEnvFlagSet(a, "ZCLI_REQUIRE_FISH");
+}
+
+/// Whether the environment demands that the pwsh syntax check actually run.
+/// Every GitHub-hosted runner image ships pwsh, so CI sets this on all legs —
+/// a lookup regression there must be a hard failure, not a silent skip (the
+/// same never-validated guard as fish).
+fn ciRequiresPwsh(a: std.mem.Allocator) bool {
+    return ciEnvFlagSet(a, "ZCLI_REQUIRE_PWSH");
 }
 
 test "shell syntax - bash -n / zsh -n / fish --no-execute accept generated scripts" {
@@ -699,24 +721,40 @@ test "shell syntax - bash -n / zsh -n / fish --no-execute accept generated scrip
     }
 }
 
-/// Find the PowerShell (`pwsh`) binary in common locations, or null. Kept separate
-/// from `findShell` (which keys off the first letter) because pwsh's parse-check is
-/// invoked differently from the POSIX shells' `-n`.
-fn findPwsh() ?[]const u8 {
+/// Find the PowerShell (`pwsh`) binary: common fixed locations first (a cheap
+/// access check), then a bare-name PATH probe — on the GitHub runners (all
+/// three OSes ship pwsh) it lives on PATH, notably `pwsh.exe` on Windows where
+/// no fixed POSIX path could ever match. `std.process.spawn` resolves a bare
+/// argv[0] via PATH on POSIX and Windows alike, so a trivial `exit 0` run
+/// doubles as the existence check. Kept separate from `findShell` (which keys
+/// off the first letter) because pwsh's parse-check is invoked differently from
+/// the POSIX shells' `-n`.
+fn findPwsh(a: std.mem.Allocator) ?[]const u8 {
     const candidates: []const []const u8 = &.{ "/usr/bin/pwsh", "/usr/local/bin/pwsh", "/opt/homebrew/bin/pwsh", "/snap/bin/pwsh" };
     for (candidates) |path| {
         std.Io.Dir.cwd().access(io, path, .{}) catch continue;
         return path;
     }
+    if (runExit(a, &.{ "pwsh", "-NoProfile", "-NonInteractive", "-Command", "exit 0" }) == 0) return "pwsh";
     return null;
 }
 
 test "shell syntax - pwsh accepts the generated PowerShell script" {
-    const pwsh = findPwsh() orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const pwsh = findPwsh(a) orelse {
+        // Mirror the fish guard: the CI legs set ZCLI_REQUIRE_PWSH=1 (every
+        // GitHub runner image ships pwsh), so a missing binary there is a hard
+        // failure — otherwise the PowerShell generator regresses to
+        // never-validated. Anywhere the flag is unset pwsh stays optional.
+        if (ciRequiresPwsh(a)) {
+            std.debug.print("ZCLI_REQUIRE_PWSH=1 but no pwsh binary found (fixed paths + PATH probe)\n", .{});
+            return error.PwshRequiredButMissing;
+        }
+        return error.SkipZigTest;
+    };
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
