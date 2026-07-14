@@ -69,6 +69,7 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     }
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
+        .hybrid_raw = raw,
     });
     defer app.deinit();
 

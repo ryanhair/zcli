@@ -176,3 +176,48 @@ const impl = if (builtin.os.tag == .windows) struct {
         };
     }
 };
+
+// A handle the tests can `arm` against without writing to a real terminal —
+// `arm` only stores, it never writes, and every test disarms before returning.
+const test_handle: Handle = if (builtin.os.tag == .windows) undefined else 0;
+
+test "arm registers the blob and raw mode; disarm clears the armed flag" {
+    defer disarm();
+    try std.testing.expect(!armed.load(.acquire));
+
+    const raw = std.mem.zeroes(RawMode);
+    arm(test_handle, "\x1b[?25h", raw);
+    try std.testing.expect(armed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 6), g.blob_len);
+    try std.testing.expectEqualStrings("\x1b[?25h", g.blob[0..g.blob_len]);
+    // The caller's raw mode is registered so a signal restores termios, not
+    // just the cursor — the hybrid-prompt fix.
+    try std.testing.expect(g.raw != null);
+
+    disarm();
+    try std.testing.expect(!armed.load(.acquire));
+}
+
+test "arm with a null raw registers cursor-only restore" {
+    defer disarm();
+    arm(test_handle, "\x1b[?25h", null);
+    try std.testing.expect(armed.load(.acquire));
+    try std.testing.expect(g.raw == null);
+}
+
+test "disarm is idempotent when never armed" {
+    // No prior arm — disarm must be a safe no-op (the headless/never-armed path).
+    disarm();
+    try std.testing.expect(!armed.load(.acquire));
+    disarm();
+    try std.testing.expect(!armed.load(.acquire));
+}
+
+test "restore is a no-op after disarm" {
+    arm(test_handle, "\x1b[?25h", std.mem.zeroes(RawMode));
+    disarm();
+    // Armed is false, so restore returns before touching the handle or raw
+    // mode — safe to call on the test handle.
+    restore();
+    try std.testing.expect(!armed.load(.acquire));
+}

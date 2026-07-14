@@ -55,6 +55,7 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     }
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
+        .hybrid_raw = raw,
     });
     defer app.deinit();
 

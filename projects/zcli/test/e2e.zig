@@ -1748,6 +1748,62 @@ test "interactive: add command drives the wizard and echoes typed input" {
     try testing.expect(fileExists(tmp.dir, "src/commands/deploy.zig"));
 }
 
+test "interactive: a SIGTERM mid-prompt restores the terminal from raw mode" {
+    // The regression this locks: a prompt enables raw mode, and an external
+    // signal (kill -TERM from another shell) skips the prompt's `defer
+    // raw.disable()`. The async-signal-safe restore guard must catch the signal
+    // and put termios back — otherwise the user's shell is stuck in raw mode
+    // (no echo, no line editing) and needs a `reset`. Prompts register their
+    // raw mode with the guard (via App.init's hybrid_raw); this proves it fires.
+    //
+    // POSIX-only: the assertion reads the PTY's line-discipline termios, which
+    // has no ConPTY analogue. On Windows the harness leaves final_termios null
+    // and rawModeRestored() returns null, so we'd skip anyway.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProjectDirs(tmp.dir);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpDirAbs(arena.allocator(), tmp);
+
+    // Drive the wizard to its first prompt (a raw-mode `text` prompt), let raw
+    // mode engage (the same settle rationale as the wizard test above), then
+    // kill it with SIGTERM instead of answering.
+    var script = harness.InteractiveScript.init(testing.allocator);
+    defer script.deinit();
+    _ = script
+        .expect("Command path:").delay(500)
+        .sendSignal(.SIGTERM);
+
+    var result = harness.runInteractive(
+        testing.allocator,
+        io,
+        &.{ zcli_exe, "add", "command" },
+        script,
+        .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
+    ) catch |err| switch (err) {
+        error.PtyAllocationFailed => {
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
+    };
+    defer result.deinit();
+
+    // The run completed (no PtyAllocationFailed), so a PTY was allocated and its
+    // termios was sampled after the child died — a null here would be a harness
+    // regression, not a legitimate skip. The guard's SIGTERM handler must have
+    // restored termios: cooked (ICANON + ECHO), not the raw mode the prompt set.
+    const restored = result.rawModeRestored() orelse {
+        std.debug.print("expected a termios sample after a PTY run; got none\n", .{});
+        return error.TestExpectedTermiosSample;
+    };
+    try testing.expect(restored);
+}
+
 test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
     // ConPTY delivers console input through the child's input code page. zcli
     // now switches that to UTF-8 at startup (see console_utf8.zig / the run
