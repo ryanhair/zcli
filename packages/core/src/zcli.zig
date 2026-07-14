@@ -207,6 +207,11 @@ pub const FieldInfo = struct {
     /// `(requires --dep)`. Raw field names (dash-converted at render), static
     /// lifetime. Always null for positional args.
     requires: ?[]const []const u8 = null,
+    /// A dynamic/native completion source declared via the field's
+    /// `meta.<args|options>.<field>.complete` (ADR-0026), else `null`. This is
+    /// the single per-field completion projection; `OptionInfo`/`ArgInfo` for
+    /// completions are derived from `FieldInfo`, carrying this through.
+    complete: ?completion.Spec = null,
 };
 
 /// Information about command module structure for plugin introspection
