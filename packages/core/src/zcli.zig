@@ -70,6 +70,11 @@ pub const http = @import("http.zig");
 /// tree without building it (e.g. the `zcli tree` command).
 pub const command_discovery = @import("build_utils/command_discovery.zig");
 
+/// Shared usage/synopsis conventions (arg-token classification + the clap-style
+/// bracket convention) used by the help renderer and the doc generator, so a
+/// command's synopsis reads identically across help, markdown, man, and HTML.
+pub const usage = @import("usage.zig");
+
 /// Custom parse-type helpers (ADR-0025): detection and construction for fields
 /// whose type declares `pub fn parse`. Exposed so the config plugin — which may
 /// import only "zcli" — can build such a field from a config string the same way

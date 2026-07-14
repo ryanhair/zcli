@@ -604,11 +604,11 @@ SUBCOMMANDS:
 Search for users by name
 
 USAGE:
-    myapp users search <query> [files...] [OPTIONS]
+    myapp users search [OPTIONS] <QUERY> [FILES]...
 
 ARGS:
-    <query>       Search query
-    [files...]    Optional files to search in
+    <QUERY>       Search query
+    [FILES]...    Optional files to search in
 
 OPTIONS:
     --limit N     Maximum results to return (default: 10)
@@ -665,7 +665,7 @@ Run 'myapp --help' to see all available commands.
 Error: 'myapp users delete' expects at least 1 argument
 
 USAGE:
-    myapp users delete <user-id> [OPTIONS]
+    myapp users delete [OPTIONS] <USER-ID>
 
 Run 'myapp users delete --help' for more information.
 ```

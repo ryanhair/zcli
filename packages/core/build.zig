@@ -72,6 +72,7 @@ pub fn build(b: *std.Build) void {
         "src/zcli.zig", // Main entry point - imports args, options, errors, execution, etc.
         "src/build_utils.zig", // Standalone utility (has its own tests)
         "src/doc_escape.zig", // Doc-generator escaping rules (std-only, unit-tested here)
+        "src/usage.zig", // Shared usage/synopsis conventions (std-only, unit-tested here)
     };
 
     // Real-socket http.Client tests live in their own binary, built ReleaseSafe.
@@ -148,7 +149,6 @@ pub fn build(b: *std.Build) void {
         "src/plugin_pipeline_test.zig",
         "src/plugins/zcli_help/plugin.zig",
         "src/plugins/zcli_config/plugin.zig",
-        "src/plugins/zcli_help/plugin.zig",
         "src/plugin_config_integration_test.zig",
     };
     const plugin_test_imports = [_]TestDep{.{ .name = "zcli", .module = zcli_module }} ++ dep_imports;
