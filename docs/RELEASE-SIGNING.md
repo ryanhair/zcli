@@ -78,9 +78,11 @@ cat ~/.minisign/zcli.pub
    (the signing script self-verifies against it, and it is the file users verify
    with).
 2. **`install.sh`** — set `MINISIGN_PUBKEY="RWR..."` (the base64 blob) near the top.
-3. **`projects/zcli/build.zig`** — uncomment and set
-   `.public_key = "RWR..."` in the `github_upgrade` builtin, so `zcli upgrade`
-   enforces the signature natively.
+3. **`projects/zcli/build.zig`** — set
+   `.verification = .{ .minisign = "RWR..." }` in the `github_upgrade` builtin,
+   so `zcli upgrade` enforces the signature natively. (`verification` has no
+   default — every consuming app must pick `.minisign` or the explicit
+   `.checksum_only` opt-out.)
 
 Commit these together. Signature enforcement is now live for the **next** release.
 
