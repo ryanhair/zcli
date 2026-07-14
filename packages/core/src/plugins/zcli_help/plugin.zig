@@ -219,8 +219,11 @@ fn showHelp(context: anytype, help_type: HelpType, to_stdout: bool) !void {
                 // Root command can be invoked directly
                 try fmt.write("    <command>{s}</command> [OPTIONS]", .{app_name});
                 if (context.command_module_info) |module_info| {
-                    if (module_info.has_args) {
-                        try writer.writeAll(" [ARGS...]");
+                    // Only render the positionals the root's Args actually
+                    // declares; an empty `Args = struct {}` yields no pattern.
+                    if (generateArgsPattern(module_info, context) catch null) |pattern| {
+                        defer context.allocator.free(pattern);
+                        try writer.print(" {s}", .{pattern});
                     }
                 }
                 try writer.writeAll("\n");
@@ -635,15 +638,15 @@ fn generateUsage(context: anytype) ![]const u8 {
         }
 
         if (has_args) {
+            // An empty `Args = struct {}` still sets has_args (the decl exists),
+            // but has no fields — generateArgsPattern returns null for it, so no
+            // placeholder is rendered. A non-empty Args always yields a pattern of
+            // its real, named positionals; there is no generic `[ARGS...]` case.
             if (context.command_module_info) |module_info| {
                 if (generateArgsPattern(module_info, context) catch null) |pattern| {
                     defer context.allocator.free(pattern);
                     try buf_writer.print(" {s}", .{pattern});
-                } else {
-                    try buf_writer.writeAll(" [ARGS...]");
                 }
-            } else {
-                try buf_writer.writeAll(" [ARGS...]");
             }
         }
     }
@@ -1386,6 +1389,62 @@ test "generateUsage: a command with subcommands shows COMMAND, not its options" 
 
     try std.testing.expect(std.mem.indexOf(u8, usage, "remote") != null);
     try std.testing.expect(std.mem.indexOf(u8, usage, "COMMAND") != null);
+}
+
+test "generateUsage: an empty Args struct renders no [ARGS...] placeholder" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+    // Strip color so the usage line is plain text we can match exactly.
+    ctx.theme.caps = .{ .capability = .no_color, .is_tty = false, .color_enabled = false };
+
+    ctx.app_name = "tasks";
+    ctx.command_path = &.{"list"};
+    // `Args = struct {}` sets has_args (the decl exists) with zero fields — the
+    // regression: this used to fall through to a bogus `[ARGS...]`.
+    ctx.command_module_info = .{ .has_args = true, .has_options = false };
+
+    const usage = try generateUsage(&ctx);
+    defer allocator.free(usage);
+
+    // Exact line: no positionals, no [ARGS...] tail.
+    try std.testing.expectEqualStrings("tasks list", usage);
+}
+
+test "generateUsage: a command with real args renders their names, not [ARGS...]" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+    ctx.theme.caps = .{ .capability = .no_color, .is_tty = false, .color_enabled = false };
+
+    ctx.app_name = "tasks";
+    ctx.command_path = &.{"add"};
+    // A required positional plus an optional varargs tail — both spellings.
+    ctx.command_module_info = .{
+        .has_args = true,
+        .args_fields = &.{
+            .{ .name = "title", .is_optional = false, .is_array = false, .type_name = "[]const u8" },
+            .{ .name = "tags", .is_optional = true, .is_array = true, .type_name = "[][]const u8" },
+        },
+        .has_options = false,
+    };
+
+    const usage = try generateUsage(&ctx);
+    defer allocator.free(usage);
+
+    // Exact line: real, uppercased arg names with their optionality — never
+    // the generic [ARGS...] fallback.
+    try std.testing.expectEqualStrings("tasks add TITLE [TAGS...]", usage);
 }
 
 // Note: Integration tests for handleGlobalOption and help command execution
