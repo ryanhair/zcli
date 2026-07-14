@@ -1,0 +1,5 @@
+# Snapshot goldens are compared byte-for-byte against subprocess stdout, so
+# they must survive checkout unmodified on every OS. Without this, the default
+# core.autocrlf=true on Windows runners rewrites them to CRLF at checkout and
+# the LF output of the binary no longer matches (an invisible diff).
+tests/snapshots/** -text
