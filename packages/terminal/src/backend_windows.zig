@@ -73,6 +73,30 @@ pub const RawMode = struct {
     }
 };
 
+/// Given the input console's current mode, compute the raw-mode input flags
+/// to install: line buffering/echo/processed-input off, VT input on so
+/// `key.zig`'s escape-sequence parsing sees the same bytes as a POSIX tty.
+/// Pure (no syscalls) — testable without a console.
+fn rawInputMode(in_mode: DWORD) DWORD {
+    var raw_in = in_mode;
+    raw_in &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+    raw_in |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+    return raw_in;
+}
+
+/// Given the output console's current mode, compute the mode with VT
+/// processing enabled so the package's ANSI (cursor, color) sequences render.
+/// Pure.
+fn vtOutputMode(out_mode: DWORD) DWORD {
+    return out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT;
+}
+
+/// Given the console's current mode, compute the mode with echo set to
+/// `enabled` and everything else untouched. Pure.
+fn echoMode(mode: DWORD, enabled: bool) DWORD {
+    return if (enabled) mode | ENABLE_ECHO_INPUT else mode & ~ENABLE_ECHO_INPUT;
+}
+
 pub fn enableRawMode(in: Handle) TerminalError!RawMode {
     var in_mode: DWORD = 0;
     if (GetConsoleMode(in, &in_mode) == 0) return error.NotATerminal;
@@ -83,13 +107,10 @@ pub fn enableRawMode(in: Handle) TerminalError!RawMode {
     var out_mode: DWORD = 0;
     const out_is_console = GetConsoleMode(out, &out_mode) != 0;
 
-    var raw_in = in_mode;
-    raw_in &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
-    raw_in |= ENABLE_VIRTUAL_TERMINAL_INPUT;
-    if (SetConsoleMode(in, raw_in) == 0) return error.TerminalSettingsError;
+    if (SetConsoleMode(in, rawInputMode(in_mode)) == 0) return error.TerminalSettingsError;
 
     if (out_is_console) {
-        _ = SetConsoleMode(out, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT);
+        _ = SetConsoleMode(out, vtOutputMode(out_mode));
     }
 
     return .{
@@ -104,12 +125,7 @@ pub fn enableRawMode(in: Handle) TerminalError!RawMode {
 pub fn setEcho(handle: Handle, enabled: bool) TerminalError!void {
     var mode: DWORD = 0;
     if (GetConsoleMode(handle, &mode) == 0) return error.NotATerminal;
-    if (enabled) {
-        mode |= ENABLE_ECHO_INPUT;
-    } else {
-        mode &= ~ENABLE_ECHO_INPUT;
-    }
-    if (SetConsoleMode(handle, mode) == 0) return error.TerminalSettingsError;
+    if (SetConsoleMode(handle, echoMode(mode, enabled)) == 0) return error.TerminalSettingsError;
 }
 
 pub fn getWindowSize(handle: Handle) !Winsize {
@@ -196,3 +212,37 @@ pub const ResizeWatcher = struct {
         }
     }
 };
+
+test "rawInputMode clears line/echo/processed-input and sets VT input" {
+    const cooked: DWORD = ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
+    const raw = rawInputMode(cooked);
+
+    try std.testing.expect(raw & ENABLE_LINE_INPUT == 0);
+    try std.testing.expect(raw & ENABLE_ECHO_INPUT == 0);
+    try std.testing.expect(raw & ENABLE_PROCESSED_INPUT == 0);
+    try std.testing.expect(raw & ENABLE_VIRTUAL_TERMINAL_INPUT != 0);
+}
+
+test "rawInputMode preserves bits it doesn't touch" {
+    const extra_bit: DWORD = 0x0100;
+    const raw = rawInputMode(extra_bit);
+    try std.testing.expect(raw & extra_bit != 0);
+}
+
+test "vtOutputMode sets VT processing and processed output" {
+    const mode = vtOutputMode(0);
+    try std.testing.expect(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0);
+    try std.testing.expect(mode & ENABLE_PROCESSED_OUTPUT != 0);
+}
+
+test "echoMode toggles ENABLE_ECHO_INPUT without touching other bits" {
+    const base: DWORD = ENABLE_LINE_INPUT;
+
+    const disabled = echoMode(base | ENABLE_ECHO_INPUT, false);
+    try std.testing.expect(disabled & ENABLE_ECHO_INPUT == 0);
+    try std.testing.expect(disabled & ENABLE_LINE_INPUT != 0);
+
+    const enabled = echoMode(base, true);
+    try std.testing.expect(enabled & ENABLE_ECHO_INPUT != 0);
+    try std.testing.expect(enabled & ENABLE_LINE_INPUT != 0);
+}
