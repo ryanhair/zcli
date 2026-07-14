@@ -819,7 +819,7 @@ test "parseCliName - quoted string format" {
     const io = std.testing.io;
 
     // Create a temporary build.zig.zon file
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -834,15 +834,10 @@ test "parseCliName - quoted string format" {
     try file.writeStreamingAll(io, zon_content);
 
     // Change to temp directory
-    const cwd = std.Io.Dir.cwd();
-    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
-    defer allocator.free(original_cwd_path);
-
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(temp_path);
-
-    try std.posix.chdir(temp_path);
-    defer std.posix.chdir(original_cwd_path) catch {};
+    var original_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer original_dir.close(io);
+    try std.process.setCurrentDir(io, temp_dir.dir);
+    defer std.process.setCurrentDir(io, original_dir) catch {};
 
     const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
@@ -854,7 +849,7 @@ test "parseCliName - identifier format" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -868,15 +863,10 @@ test "parseCliName - identifier format" {
     defer file.close(io);
     try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.Io.Dir.cwd();
-    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
-    defer allocator.free(original_cwd_path);
-
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(temp_path);
-
-    try std.posix.chdir(temp_path);
-    defer std.posix.chdir(original_cwd_path) catch {};
+    var original_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer original_dir.close(io);
+    try std.process.setCurrentDir(io, temp_dir.dir);
+    defer std.process.setCurrentDir(io, original_dir) catch {};
 
     const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
@@ -888,7 +878,7 @@ test "parseCliName - identifier with trailing comma" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -902,15 +892,10 @@ test "parseCliName - identifier with trailing comma" {
     defer file.close(io);
     try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.Io.Dir.cwd();
-    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
-    defer allocator.free(original_cwd_path);
-
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(temp_path);
-
-    try std.posix.chdir(temp_path);
-    defer std.posix.chdir(original_cwd_path) catch {};
+    var original_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer original_dir.close(io);
+    try std.process.setCurrentDir(io, temp_dir.dir);
+    defer std.process.setCurrentDir(io, original_dir) catch {};
 
     const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
@@ -922,7 +907,7 @@ test "parseCliName - missing name field" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -935,15 +920,10 @@ test "parseCliName - missing name field" {
     defer file.close(io);
     try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.Io.Dir.cwd();
-    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
-    defer allocator.free(original_cwd_path);
-
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(temp_path);
-
-    try std.posix.chdir(temp_path);
-    defer std.posix.chdir(original_cwd_path) catch {};
+    var original_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer original_dir.close(io);
+    try std.process.setCurrentDir(io, temp_dir.dir);
+    defer std.process.setCurrentDir(io, original_dir) catch {};
 
     try testing.expectError(error.NameNotFound, parseCliName(allocator, io));
 }
@@ -1043,7 +1023,7 @@ test "parseCliName - whitespace handling" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     // Test with extra whitespace
@@ -1058,15 +1038,10 @@ test "parseCliName - whitespace handling" {
     defer file.close(io);
     try file.writeStreamingAll(io, zon_content);
 
-    const cwd = std.Io.Dir.cwd();
-    const original_cwd_path = try cwd.realpathAlloc(allocator, ".");
-    defer allocator.free(original_cwd_path);
-
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(temp_path);
-
-    try std.posix.chdir(temp_path);
-    defer std.posix.chdir(original_cwd_path) catch {};
+    var original_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer original_dir.close(io);
+    try std.process.setCurrentDir(io, temp_dir.dir);
+    defer std.process.setCurrentDir(io, original_dir) catch {};
 
     const cli_name = try parseCliName(allocator, io);
     defer allocator.free(cli_name);
