@@ -57,7 +57,7 @@ The field's type says how the flag behaves:
 | `format: enum { json, text }` | valued, only listed variants accepted |
 | `tag: []const []const u8` | **multi-value** — repeat or comma-separate |
 
-Per-field metadata lives in `meta.options`: `.short` for a one-letter flag, `.description` for help, `.name` to override the long flag spelling, `.env` to bind an environment variable, plus [`.validate` and `.requires`]($link.page('docs/validation')).
+Per-field metadata lives in `meta.options`: `.short` for a one-letter flag, `.description` for help, `.name` to override the long flag spelling, `.env` to bind an environment variable, plus [`.validate` and `.requires`]($link.page('docs/validation')) and a [dynamic `.complete` hook]($link.page('docs/completions')) for shell completions.
 
 ### Boolean negation
 
@@ -125,4 +125,5 @@ Help marks these `(required)`. This is the type system doing the work — there'
 ## Next
 
 - [Validation & constraints]($link.page('docs/validation')) — value rules, custom parse types, mutually-exclusive sets
+- [Completion authoring]($link.page('docs/completions')) — dynamic `.complete` hooks and the `.file`/`.dir` builtins
 - [Config files]($link.page('docs/config')) — the file half of the cascade

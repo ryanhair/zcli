@@ -411,10 +411,12 @@ testing.e2e.InteractiveConfig{
 testing.e2e.InteractiveResult{
     .exit_code: u8,
     .output: []const u8,        // Captured output
+    .input: []const u8,         // Input sent during interaction (for debugging)
     .success: bool,             // All script steps matched
     .steps_executed: usize,     // How many steps ran
     .duration_ms: u64,          // Total time
     .transcript: ?[]const u8,   // Full log (if save_transcript=true)
+    .final_termios: ?posix.termios, // PTY termios after exit (POSIX+PTY only; null on pipes/Windows)
 }
 ```
 
@@ -429,6 +431,7 @@ test "output works in both modes" {
 
     const results = try testing.e2e.runInteractiveDualMode(
         allocator,
+        std.testing.io,
         &.{"./zig-out/bin/myapp", "list"},
         script,
         .{},
