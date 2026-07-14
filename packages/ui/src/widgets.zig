@@ -173,16 +173,16 @@ pub fn multiBar(a: std.mem.Allocator, opts: MultiBarOpts, items: []const MultiBa
 // Focusable input widgets (ADR-0018)
 // ============================================================================
 
-// These live in `input.zig` (interactive widgets, a distinct concern from the
-// progress widgets above) but re-export here so the whole catalog is one
-// namespace: `ui.widgets.TextInput`, `ui.widgets.Checkbox`, `ui.widgets.focusNext`.
-pub const TextInput = @import("input.zig").TextInput;
-pub const TextArea = @import("input.zig").TextArea;
-pub const Checkbox = @import("input.zig").Checkbox;
-pub const Select = @import("input.zig").Select;
-pub const Table = @import("input.zig").Table;
-pub const Button = @import("input.zig").Button;
-pub const Tabs = @import("input.zig").Tabs;
-pub const focusNext = @import("input.zig").focusNext;
-pub const focusPrev = @import("input.zig").focusPrev;
-pub const FocusRing = @import("input.zig").FocusRing;
+// Focusable input widgets (ADR-0018) — each lives in its own file, a distinct
+// concern from the progress widgets above. Re-exported here so the whole catalog
+// is one namespace: `ui.widgets.TextInput`, `ui.widgets.Checkbox`, etc.
+pub const TextInput = @import("text_input.zig").TextInput;
+pub const TextArea = @import("text_area.zig").TextArea;
+pub const Checkbox = @import("checkbox.zig").Checkbox;
+pub const Select = @import("select.zig").Select;
+pub const Table = @import("table.zig").Table;
+pub const Button = @import("button.zig").Button;
+pub const Tabs = @import("tabs.zig").Tabs;
+pub const focusNext = @import("focus_ring.zig").focusNext;
+pub const focusPrev = @import("focus_ring.zig").focusPrev;
+pub const FocusRing = @import("focus_ring.zig").FocusRing;
