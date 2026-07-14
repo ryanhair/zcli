@@ -12,6 +12,28 @@ mechanics below take an afternoon; the custody discipline is the actual work.
 
 ---
 
+## Cross-target smoke test coverage (accepted gap)
+
+`release.yml`'s `build` job runs `--version`/`--help` against the binary it just
+produced before it's ever published — but only where the runner can actually
+execute the artifact:
+
+- `x86_64-linux-musl` and `aarch64-macos` run natively.
+- `x86_64-macos` runs under Rosetta 2 (installed as a build step on the
+  `macos-latest` arm64 runner).
+- `aarch64-linux` and both Windows targets (`x86_64-windows`,
+  `aarch64-windows`) are **not** smoke-tested — only linked. Doing so would
+  need `qemu-user-static` (Linux) and Wine (Windows, with no story at all for
+  emulating an aarch64 Windows target), which is disproportionate machinery
+  for a P3 gap given the native unit + e2e suite already runs on all three
+  OSes ahead of the release build. See issue #334.
+
+Accepted, not fixed: a linked-but-never-started binary for these four targets
+is the residual risk. If this ever bites, qemu/wine legs can be added to the
+`build` matrix following the pattern of the existing `smoke` steps.
+
+---
+
 ## Trust model in one paragraph
 
 `checksums.txt` ships in the same release as the binaries, so a compromised
