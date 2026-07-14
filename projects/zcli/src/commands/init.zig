@@ -247,6 +247,11 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    const target = b.standardTargetOptions(.{{}});
         \\    const optimize = b.standardOptimizeOption(.{{}});
         \\
+        \\    // Debug info dominates binary size (roughly 10x on a static build).
+        \\    // Release builds pass -Dstrip=true (the generated release workflow
+        \\    // does); local builds keep debug info for stack traces.
+        \\    const strip = b.option(bool, "strip", "Omit debug info from the binary") orelse false;
+        \\
         \\    // Get zcli dependency
         \\    const zcli_dep = b.dependency("zcli", .{{
         \\        .target = target,
@@ -261,6 +266,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\            .root_source_file = b.path("src/main.zig"),
         \\            .target = target,
         \\            .optimize = optimize,
+        \\            .strip = strip,
         \\        }}),
         \\    }});
         \\

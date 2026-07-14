@@ -84,7 +84,12 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         \\          version: 0.16.0
         \\
         \\      - name: Build binary
-        \\        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+        \\        # ReleaseSafe keeps runtime safety checks (bounds/overflow) in a
+        \\        # binary that parses untrusted input; -Dstrip=true drops debug info,
+        \\        # which dominates size. If your build.zig predates the `strip`
+        \\        # option, add: b.option(bool, "strip", "...") and `.strip = strip`
+        \\        # on the exe module.
+        \\        run: zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=${{ matrix.zig_target }}
         \\
         \\      - name: Get app name from build.zig.zon
         \\        id: appname
