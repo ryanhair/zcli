@@ -34,33 +34,6 @@ pub const Theme = theme.Theme;
 /// package (ADR-0020) so ui/prompts/progress defaults derive from it too.
 pub const appTheme = theme.appTheme;
 
-/// Config-file parsing shims for the zcli_config plugin. Plugin modules import
-/// only "zcli", so the plugin cannot depend on serde directly; this is the
-/// entire surface it needs. serde itself is an internal dependency —
-/// re-exporting its whole API here would make a third-party crate part of
-/// zcli's public contract.
-///
-/// These parse into serde's *dynamic* trees rather than a target struct, so the
-/// plugin can walk a command path (nested tables/mappings) before applying
-/// values — matching how the JSON path uses `std.json.Value`.
-pub const config_parse = struct {
-    const serde = @import("serde");
-
-    /// Dynamic (untyped) TOML tree — a `StringArrayHashMap` of `TomlValue`.
-    pub const TomlTable = serde.toml.Table;
-    pub const TomlValue = serde.toml.Value;
-    /// Dynamic (untyped) YAML value; a document root is the `.mapping` variant.
-    pub const YamlValue = serde.yaml.Value;
-
-    pub fn parseToml(allocator: std.mem.Allocator, content: []const u8) !TomlTable {
-        return serde.toml.parse(allocator, content);
-    }
-
-    pub fn parseYaml(allocator: std.mem.Allocator, content: []const u8) !YamlValue {
-        return serde.yaml.parseValue(allocator, content);
-    }
-};
-
 /// HTTP client with safe defaults (TLS verification on, bounded response body)
 /// over `std.http.Client`. See http.zig.
 pub const http = @import("http.zig");
@@ -70,48 +43,86 @@ pub const http = @import("http.zig");
 /// tree without building it (e.g. the `zcli tree` command).
 pub const command_discovery = @import("build_utils/command_discovery.zig");
 
-/// Shared usage/synopsis conventions (arg-token classification + the clap-style
-/// bracket convention) used by the help renderer and the doc generator, so a
-/// command's synopsis reads identically across help, markdown, man, and HTML.
-pub const usage = @import("usage.zig");
-
-/// Custom parse-type helpers (ADR-0025): detection and construction for fields
-/// whose type declares `pub fn parse`. Exposed so the config plugin — which may
-/// import only "zcli" — can build such a field from a config string the same way
-/// the CLI parser does.
-pub const custom_type = @import("custom_type.zig");
-
 /// Dynamic shell-completion contract (ADR-0026): the `Request`/`Candidate`/
-/// `Result`/`Directive` types a `meta.<field>.complete` function hook uses, and
-/// the `Spec` union the introspection stores. The `zcli_completions` plugin's
-/// `__complete` command runs a field's hook at `<TAB>`.
+/// `Result`/`Directive` types a command author's `meta.<field>.complete` hook
+/// uses, and the `Spec` union the introspection stores. Genuine consumer API —
+/// you annotate your completion hook with `zcli.completion.Request`/`Result`.
+/// The `zcli_completions` plugin's `__complete` command runs a field's hook at
+/// `<TAB>`.
 pub const completion = @import("completion.zig");
 
-/// Is this `-`-prefixed token actually a negative number (`-5`, `-.5`, `-1e9`,
-/// `-inf`, `-nan`) rather than an option flag? The single source of truth shared
-/// with the argument parser — the `zcli_completions` cursor walk must count
-/// positional slots exactly as the parser does, so both read this one predicate
-/// instead of keeping divergent copies (grade6 #300).
-pub const isNegativeNumber = option_utils.isNegativeNumber;
+/// Plugin ABI: re-exports that exist ONLY so the bundled plugins — which import
+/// nothing but "zcli" — can reach framework internals they depend on. This is
+/// not consumer API; an app building a CLI never needs `plugin_abi`. Grouping
+/// these here keeps the top-level surface reading as genuine consumer API
+/// (`parseCommandLine`, `Context`, `option`, …) instead of plugin plumbing.
+pub const plugin_abi = struct {
+    /// Is this `-`-prefixed token actually a negative number (`-5`, `-.5`, `-1e9`,
+    /// `-inf`, `-nan`) rather than an option flag? The single source of truth
+    /// shared with the argument parser — the `zcli_completions` cursor walk must
+    /// count positional slots exactly as the parser does, so both read this one
+    /// predicate instead of keeping divergent copies (grade6 #300).
+    pub const isNegativeNumber = option_utils.isNegativeNumber;
 
-/// Option value-coercion surface for the zcli_config plugin. A config file
-/// stores scalars in a format-native shape (JSON/TOML/YAML); the plugin
-/// stringifies them and routes through *the same* parser the CLI and env use,
-/// so every option type coerces identically from every source (single source of
-/// truth — no per-type ladder in the plugin). Plugin modules import only "zcli",
-/// so this is the entire coercion surface they need.
-pub const config_coerce = struct {
-    /// Parse a string into an option field type `T` exactly as a CLI/env value
-    /// would be: ints (all widths, checked), floats, enums, `[]const u8`,
-    /// optionals, and custom `parse` types. Errors (bad format, out of range,
-    /// unknown enum variant) surface as `error.InvalidOptionValue` so config can
-    /// stay lenient (skip + warn) per DESIGN.md.
-    pub const parseOptionValue = option_utils.parseOptionValue;
-    /// True for accumulating array fields (`[]T` where `T != u8`) — a multi-value
-    /// option. `[]const u8` is a string, not an array.
-    pub const isArrayType = option_utils.isArrayType;
-    /// True for `bool`/`?bool` flags, which coerce from a config boolean directly.
-    pub const isBooleanFlag = option_utils.isBooleanFlag;
+    /// Config-file parsing shims for the zcli_config plugin. Plugin modules
+    /// import only "zcli", so the plugin cannot depend on serde directly; this
+    /// is the entire surface it needs. serde itself is an internal dependency —
+    /// re-exporting its whole API here would make a third-party crate part of
+    /// zcli's public contract.
+    ///
+    /// These parse into serde's *dynamic* trees rather than a target struct, so
+    /// the plugin can walk a command path (nested tables/mappings) before
+    /// applying values — matching how the JSON path uses `std.json.Value`.
+    pub const config_parse = struct {
+        const serde = @import("serde");
+
+        /// Dynamic (untyped) TOML tree — a `StringArrayHashMap` of `TomlValue`.
+        pub const TomlTable = serde.toml.Table;
+        pub const TomlValue = serde.toml.Value;
+        /// Dynamic (untyped) YAML value; a document root is the `.mapping` variant.
+        pub const YamlValue = serde.yaml.Value;
+
+        pub fn parseToml(allocator: std.mem.Allocator, content: []const u8) !TomlTable {
+            return serde.toml.parse(allocator, content);
+        }
+
+        pub fn parseYaml(allocator: std.mem.Allocator, content: []const u8) !YamlValue {
+            return serde.yaml.parseValue(allocator, content);
+        }
+    };
+
+    /// Shared usage/synopsis conventions (arg-token classification + the
+    /// clap-style bracket convention) used by the help renderer and the doc
+    /// generator, so a command's synopsis reads identically across help,
+    /// markdown, man, and HTML.
+    pub const usage = @import("usage.zig");
+
+    /// Custom parse-type helpers (ADR-0025): detection and construction for
+    /// fields whose type declares `pub fn parse`. Exposed so the config plugin —
+    /// which may import only "zcli" — can build such a field from a config
+    /// string the same way the CLI parser does.
+    pub const custom_type = @import("custom_type.zig");
+
+    /// Option value-coercion surface for the zcli_config plugin. A config file
+    /// stores scalars in a format-native shape (JSON/TOML/YAML); the plugin
+    /// stringifies them and routes through *the same* parser the CLI and env
+    /// use, so every option type coerces identically from every source (single
+    /// source of truth — no per-type ladder in the plugin). Plugin modules
+    /// import only "zcli", so this is the entire coercion surface they need.
+    pub const config_coerce = struct {
+        /// Parse a string into an option field type `T` exactly as a CLI/env
+        /// value would be: ints (all widths, checked), floats, enums,
+        /// `[]const u8`, optionals, and custom `parse` types. Errors (bad
+        /// format, out of range, unknown enum variant) surface as
+        /// `error.InvalidOptionValue` so config can stay lenient (skip + warn)
+        /// per DESIGN.md.
+        pub const parseOptionValue = option_utils.parseOptionValue;
+        /// True for accumulating array fields (`[]T` where `T != u8`) — a
+        /// multi-value option. `[]const u8` is a string, not an array.
+        pub const isArrayType = option_utils.isArrayType;
+        /// True for `bool`/`?bool` flags, which coerce from a config boolean directly.
+        pub const isBooleanFlag = option_utils.isBooleanFlag;
+    };
 };
 
 const testing = std.testing;
@@ -930,410 +941,6 @@ test "TestContext without plugins" {
 // Include tests from all imported modules
 test {
     testing.refAllDecls(@This());
-}
-
-// Test that global options can be registered and work with different types.
-// Plugin captures received values via static vars so we can assert typed delivery.
-test "global options with different types" {
-    const GlobalTypesPlugin = struct {
-        var verbose_seen: ?bool = null;
-        var count_seen: ?u32 = null;
-        var output_seen: ?[]const u8 = null;
-
-        pub const global_options = [_]GlobalOption{
-            option("verbose", bool, .{ .short = 'v', .default = false, .description = "Enable verbose output" }),
-            option("count", u32, .{ .short = 'c', .default = 1, .description = "Count value" }),
-            option("output", []const u8, .{ .short = 'o', .default = "stdout", .description = "Output destination" }),
-        };
-
-        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
-            if (std.mem.eql(u8, name, "verbose")) {
-                if (@TypeOf(value) == bool) verbose_seen = value;
-            } else if (std.mem.eql(u8, name, "count")) {
-                if (@TypeOf(value) == u32) count_seen = value;
-            } else if (std.mem.eql(u8, name, "output")) {
-                if (@TypeOf(value) == []const u8) output_seen = value;
-            }
-        }
-    };
-
-    const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
-        pub fn execute(_: Args, _: Options, _: anytype) !void {}
-    };
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(GlobalTypesPlugin)
-        .register("global-test", TestCommand)
-        .build();
-
-    GlobalTypesPlugin.verbose_seen = null;
-    GlobalTypesPlugin.count_seen = null;
-    GlobalTypesPlugin.output_seen = null;
-
-    var app = TestRegistry.init();
-    var stdio: Stdio = undefined;
-    stdio.init(std.testing.io);
-    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer out_aw.deinit();
-    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer err_aw.deinit();
-    stdio.stdout_override = &out_aw.writer;
-    stdio.stderr_override = &err_aw.writer;
-    const args = [_][]const u8{ "--verbose", "--count", "42", "--output", "file.txt", "global-test" };
-    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
-
-    try testing.expectEqual(@as(?bool, true), GlobalTypesPlugin.verbose_seen);
-    try testing.expectEqual(@as(?u32, 42), GlobalTypesPlugin.count_seen);
-    try testing.expect(GlobalTypesPlugin.output_seen != null);
-    try testing.expectEqualStrings("file.txt", GlobalTypesPlugin.output_seen.?);
-}
-
-// Test short option flags are dispatched with the correct names.
-test "global options short flags" {
-    const GlobalShortPlugin = struct {
-        var verbose_seen: ?bool = null;
-        var quiet_seen: ?bool = null;
-
-        pub const global_options = [_]GlobalOption{
-            option("verbose", bool, .{ .short = 'v', .default = false, .description = "Verbose output" }),
-            option("quiet", bool, .{ .short = 'q', .default = false, .description = "Quiet output" }),
-        };
-
-        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
-            if (std.mem.eql(u8, name, "verbose")) {
-                if (@TypeOf(value) == bool) verbose_seen = value;
-            } else if (std.mem.eql(u8, name, "quiet")) {
-                if (@TypeOf(value) == bool) quiet_seen = value;
-            }
-        }
-    };
-
-    const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
-        pub fn execute(_: Args, _: Options, _: anytype) !void {}
-    };
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(GlobalShortPlugin)
-        .register("global-test", TestCommand)
-        .build();
-
-    GlobalShortPlugin.verbose_seen = null;
-    GlobalShortPlugin.quiet_seen = null;
-
-    var app = TestRegistry.init();
-    var stdio: Stdio = undefined;
-    stdio.init(std.testing.io);
-    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer out_aw.deinit();
-    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer err_aw.deinit();
-    stdio.stdout_override = &out_aw.writer;
-    stdio.stderr_override = &err_aw.writer;
-    const args = [_][]const u8{ "-v", "-q", "global-test" };
-    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
-
-    // Short flags -v and -q must arrive as true booleans on the long-name keys.
-    try testing.expectEqual(@as(?bool, true), GlobalShortPlugin.verbose_seen);
-    try testing.expectEqual(@as(?bool, true), GlobalShortPlugin.quiet_seen);
-}
-
-// Test that global options coexist with local command options:
-// the plugin sees its globals and the command sees its own options, all from
-// the same argv without conflicts.
-test "commands inherit global options" {
-    const GlobalInheritPlugin = struct {
-        var config_seen: ?[]const u8 = null;
-        var debug_seen: ?bool = null;
-
-        pub const global_options = [_]GlobalOption{
-            option("config", []const u8, .{ .short = 'c', .default = "~/.config", .description = "Config file path" }),
-            option("debug", bool, .{ .short = 'd', .default = false, .description = "Enable debug mode" }),
-        };
-
-        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
-            if (std.mem.eql(u8, name, "config")) {
-                if (@TypeOf(value) == []const u8) config_seen = value;
-            } else if (std.mem.eql(u8, name, "debug")) {
-                if (@TypeOf(value) == bool) debug_seen = value;
-            }
-        }
-    };
-
-    const LocalCmd = struct {
-        var local_seen: bool = false;
-
-        pub const Args = struct {};
-        pub const Options = struct { local: bool = false };
-
-        pub fn execute(_: Args, options: Options, _: anytype) !void {
-            local_seen = options.local;
-        }
-    };
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(GlobalInheritPlugin)
-        .register("global-test", LocalCmd)
-        .build();
-
-    GlobalInheritPlugin.config_seen = null;
-    GlobalInheritPlugin.debug_seen = null;
-    LocalCmd.local_seen = false;
-
-    var app = TestRegistry.init();
-    var stdio: Stdio = undefined;
-    stdio.init(std.testing.io);
-    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer out_aw.deinit();
-    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer err_aw.deinit();
-    stdio.stdout_override = &out_aw.writer;
-    stdio.stderr_override = &err_aw.writer;
-    const args = [_][]const u8{ "--config", "/custom/path", "--debug", "global-test", "--local" };
-    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
-
-    // Global plugin saw its two options from the shared argv.
-    try testing.expect(GlobalInheritPlugin.config_seen != null);
-    try testing.expectEqualStrings("/custom/path", GlobalInheritPlugin.config_seen.?);
-    try testing.expectEqual(@as(?bool, true), GlobalInheritPlugin.debug_seen);
-    // The local --local flag reached the command and was not eaten by the plugin.
-    try testing.expect(LocalCmd.local_seen);
-}
-
-// Test global option defaults: when options are omitted the pipeline accepts
-// them silently (defaults are not errors), and the handler is not invoked for
-// absent options — only explicitly supplied values flow through the handler.
-test "global option defaults" {
-    const GlobalDefaultsPlugin = struct {
-        // Counts how many times the handler is called — should be zero when
-        // no options are supplied, and non-zero when they are.
-        var call_count: usize = 0;
-        var port_seen: ?u16 = null;
-        var host_seen: ?[]const u8 = null;
-
-        pub const global_options = [_]GlobalOption{
-            option("port", u16, .{ .short = 'p', .default = 8080, .description = "Port number" }),
-            option("host", []const u8, .{ .default = "localhost", .description = "Host address" }),
-        };
-
-        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
-            call_count += 1;
-            if (std.mem.eql(u8, name, "port")) {
-                if (@TypeOf(value) == u16) port_seen = value;
-            } else if (std.mem.eql(u8, name, "host")) {
-                if (@TypeOf(value) == []const u8) host_seen = value;
-            }
-        }
-    };
-
-    const TestCommand = struct {
-        var ran: bool = false;
-        pub const Args = struct {};
-        pub const Options = struct {};
-        pub fn execute(_: Args, _: Options, _: anytype) !void {
-            ran = true;
-        }
-    };
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(GlobalDefaultsPlugin)
-        .register("global-test", TestCommand)
-        .build();
-
-    // --- pass 1: no options supplied → handler not called, command still runs.
-    GlobalDefaultsPlugin.call_count = 0;
-    GlobalDefaultsPlugin.port_seen = null;
-    GlobalDefaultsPlugin.host_seen = null;
-    TestCommand.ran = false;
-
-    var app = TestRegistry.init();
-    var stdio: Stdio = undefined;
-    stdio.init(std.testing.io);
-    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer out_aw.deinit();
-    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer err_aw.deinit();
-    stdio.stdout_override = &out_aw.writer;
-    stdio.stderr_override = &err_aw.writer;
-    const no_opts = [_][]const u8{"global-test"};
-    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &no_opts, &stdio);
-
-    try testing.expect(TestCommand.ran);
-    // Omitted global options do not trigger the handler.
-    try testing.expectEqual(@as(usize, 0), GlobalDefaultsPlugin.call_count);
-
-    // --- pass 2: explicit values → handler called with the supplied values.
-    GlobalDefaultsPlugin.call_count = 0;
-    GlobalDefaultsPlugin.port_seen = null;
-    GlobalDefaultsPlugin.host_seen = null;
-    TestCommand.ran = false;
-
-    var app2 = TestRegistry.init();
-    var stdio2: Stdio = undefined;
-    stdio2.init(std.testing.io);
-    var out_aw2 = std.Io.Writer.Allocating.init(testing.allocator);
-    defer out_aw2.deinit();
-    var err_aw2 = std.Io.Writer.Allocating.init(testing.allocator);
-    defer err_aw2.deinit();
-    stdio2.stdout_override = &out_aw2.writer;
-    stdio2.stderr_override = &err_aw2.writer;
-    const with_opts = [_][]const u8{ "--port", "9090", "--host", "example.com", "global-test" };
-    try app2.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &with_opts, &stdio2);
-
-    try testing.expect(TestCommand.ran);
-    try testing.expectEqual(@as(usize, 2), GlobalDefaultsPlugin.call_count);
-    try testing.expectEqual(@as(?u16, 9090), GlobalDefaultsPlugin.port_seen);
-    try testing.expect(GlobalDefaultsPlugin.host_seen != null);
-    try testing.expectEqualStrings("example.com", GlobalDefaultsPlugin.host_seen.?);
-}
-
-// Test multiple plugins each contribute their own global options and each
-// handler fires independently.
-test "multiple plugins with global options" {
-    const GlobalMultiPlugin1 = struct {
-        var seen: ?bool = null;
-
-        pub const global_options = [_]GlobalOption{
-            option("plugin1-opt", bool, .{ .default = false, .description = "Plugin 1 option" }),
-        };
-
-        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
-            if (std.mem.eql(u8, name, "plugin1-opt")) {
-                if (@TypeOf(value) == bool) seen = value;
-            }
-        }
-    };
-
-    const GlobalMultiPlugin2 = struct {
-        var seen: ?bool = null;
-
-        pub const global_options = [_]GlobalOption{
-            option("plugin2-opt", bool, .{ .default = false, .description = "Plugin 2 option" }),
-        };
-
-        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
-            if (std.mem.eql(u8, name, "plugin2-opt")) {
-                if (@TypeOf(value) == bool) seen = value;
-            }
-        }
-    };
-
-    const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {};
-        pub fn execute(_: Args, _: Options, _: anytype) !void {}
-    };
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(GlobalMultiPlugin1)
-        .registerPlugin(GlobalMultiPlugin2)
-        .register("global-test", TestCommand)
-        .build();
-
-    GlobalMultiPlugin1.seen = null;
-    GlobalMultiPlugin2.seen = null;
-
-    var app = TestRegistry.init();
-    var stdio: Stdio = undefined;
-    stdio.init(std.testing.io);
-    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer out_aw.deinit();
-    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer err_aw.deinit();
-    stdio.stdout_override = &out_aw.writer;
-    stdio.stderr_override = &err_aw.writer;
-    const args = [_][]const u8{ "--plugin1-opt", "--plugin2-opt", "global-test" };
-    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
-
-    // Each plugin's handler must receive its own option.
-    try testing.expectEqual(@as(?bool, true), GlobalMultiPlugin1.seen);
-    try testing.expectEqual(@as(?bool, true), GlobalMultiPlugin2.seen);
-}
-
-// Test that global options are consumed before the command sees its positional
-// args and local flags: if they were leaked through, the command parser would
-// reject them as unknown.
-test "global options consumed before command" {
-    const GlobalConsumePlugin = struct {
-        var global_seen: ?bool = null;
-
-        pub const global_options = [_]GlobalOption{
-            option("global", bool, .{ .short = 'g', .default = false, .description = "Global option" }),
-        };
-
-        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
-            if (std.mem.eql(u8, name, "global")) {
-                if (@TypeOf(value) == bool) global_seen = value;
-            }
-        }
-    };
-
-    const ConsumeCmd = struct {
-        var arg1_seen: []const u8 = "";
-        var local_seen: bool = false;
-
-        pub const Args = struct { arg1: []const u8 };
-        pub const Options = struct { local: bool = false };
-
-        pub fn execute(args: Args, options: Options, _: anytype) !void {
-            arg1_seen = args.arg1;
-            local_seen = options.local;
-        }
-    };
-
-    const TestRegistry = registry.Registry.init(.{
-        .app_name = "test-app",
-        .app_version = "1.0.0",
-        .app_description = "Test application",
-    })
-        .registerPlugin(GlobalConsumePlugin)
-        .register("global-test", ConsumeCmd)
-        .build();
-
-    GlobalConsumePlugin.global_seen = null;
-    ConsumeCmd.arg1_seen = "";
-    ConsumeCmd.local_seen = false;
-
-    var app = TestRegistry.init();
-    var stdio: Stdio = undefined;
-    stdio.init(std.testing.io);
-    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer out_aw.deinit();
-    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
-    defer err_aw.deinit();
-    stdio.stdout_override = &out_aw.writer;
-    stdio.stderr_override = &err_aw.writer;
-    const args = [_][]const u8{ "--global", "global-test", "myarg", "--local" };
-    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
-
-    // The global option was consumed by the plugin.
-    try testing.expectEqual(@as(?bool, true), GlobalConsumePlugin.global_seen);
-    // The command received its positional arg and local flag without --global leaking.
-    try testing.expectEqualStrings("myarg", ConsumeCmd.arg1_seen);
-    try testing.expect(ConsumeCmd.local_seen);
 }
 
 test "Stdio.init wires streams to the struct's own buffers, in place" {

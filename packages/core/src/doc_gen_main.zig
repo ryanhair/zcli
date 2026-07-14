@@ -158,14 +158,14 @@ fn writeCommandMarkdown(allocator: std.mem.Allocator, io: std.Io, output_dir: []
 
     // Usage (fenced as an indented code block — literal, no escaping needed).
     // Synopsis order `app cmd [OPTIONS] <ARGS>` and the `<NAME>`/`[NAME]`/
-    // `[NAME]...` bracket convention come from the shared `zcli.usage` module,
+    // `[NAME]...` bracket convention come from the shared `zcli.plugin_abi.usage` module,
     // so this matches help/man/html verbatim.
     try w.print("## Usage\n\n    {s} {s}", .{ registry.app_name, cmd_name });
     if (cmd.options.len > 0) try w.writeAll(" [OPTIONS]");
     for (cmd.args) |arg| {
         var name_buf: [64]u8 = undefined;
-        const name = zcli.usage.upperInto(&name_buf, arg.name);
-        const d = zcli.usage.delims(zcli.usage.classify(arg.is_optional, arg.is_variadic));
+        const name = zcli.plugin_abi.usage.upperInto(&name_buf, arg.name);
+        const d = zcli.plugin_abi.usage.delims(zcli.plugin_abi.usage.classify(arg.is_optional, arg.is_variadic));
         try w.print(" {s}{s}{s}", .{ d.open, name, d.close });
     }
     try w.writeAll("\n\n");
@@ -260,14 +260,14 @@ fn writeCommandManPage(allocator: std.mem.Allocator, io: std.Io, output_dir: []c
     try w.writeAll("\n");
 
     // Synopsis. The `[OPTIONS]`-before-args order and the bracket convention
-    // are the shared ones (`zcli.usage`); only the roff font macros around the
+    // are the shared ones (`zcli.plugin_abi.usage`); only the roff font macros around the
     // name (`\fI…\fR`) are man-local. `<`/`>` are literal characters in roff.
     try w.print(".SH SYNOPSIS\n.B {s} {s}\n", .{ registry.app_name, cmd_name });
     if (cmd.options.len > 0) try w.writeAll("[\\fIOPTIONS\\fR]\n");
     for (cmd.args) |arg| {
         var name_buf: [64]u8 = undefined;
-        const name = zcli.usage.upperInto(&name_buf, arg.name);
-        const d = zcli.usage.delims(zcli.usage.classify(arg.is_optional, arg.is_variadic));
+        const name = zcli.plugin_abi.usage.upperInto(&name_buf, arg.name);
+        const d = zcli.plugin_abi.usage.delims(zcli.plugin_abi.usage.classify(arg.is_optional, arg.is_variadic));
         try w.print("{s}\\fI{s}\\fR{s}\n", .{ d.open, name, d.close });
     }
 
@@ -572,7 +572,7 @@ fn writeCommandHtml(allocator: std.mem.Allocator, io: std.Io, output_dir: []cons
     }
 
     // Usage. Synopsis order and bracket convention are the shared ones
-    // (`zcli.usage`); the delimiters and name are routed through `esc.html`, so
+    // (`zcli.plugin_abi.usage`); the delimiters and name are routed through `esc.html`, so
     // the required `<`/`>` become `&lt;`/`&gt;` while `[`, `]`, `]...` pass
     // through unchanged.
     try w.writeAll("<h2>Usage</h2>\n<pre><code>");
@@ -582,8 +582,8 @@ fn writeCommandHtml(allocator: std.mem.Allocator, io: std.Io, output_dir: []cons
     if (cmd.options.len > 0) try w.writeAll(" [OPTIONS]");
     for (cmd.args) |arg| {
         var name_buf: [64]u8 = undefined;
-        const name = zcli.usage.upperInto(&name_buf, arg.name);
-        const d = zcli.usage.delims(zcli.usage.classify(arg.is_optional, arg.is_variadic));
+        const name = zcli.plugin_abi.usage.upperInto(&name_buf, arg.name);
+        const d = zcli.plugin_abi.usage.delims(zcli.plugin_abi.usage.classify(arg.is_optional, arg.is_variadic));
         try w.writeByte(' ');
         try esc.html(w, d.open);
         try esc.html(w, name);
