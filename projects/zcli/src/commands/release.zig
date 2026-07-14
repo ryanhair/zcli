@@ -816,7 +816,7 @@ test "parseCliName - quoted string format" {
     const io = std.testing.io;
 
     // Create a temporary build.zig.zon file
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -851,7 +851,7 @@ test "parseCliName - identifier format" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -885,7 +885,7 @@ test "parseCliName - identifier with trailing comma" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -919,7 +919,7 @@ test "parseCliName - missing name field" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     const zon_content =
@@ -1040,7 +1040,7 @@ test "parseCliName - whitespace handling" {
     const allocator = testing.allocator;
     const io = std.testing.io;
 
-    const temp_dir = testing.tmpDir(.{});
+    var temp_dir = testing.tmpDir(.{});
     defer temp_dir.cleanup();
 
     // Test with extra whitespace
