@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const conpty = @import("conpty.zig");
+const vterm = @import("vterm");
+const snapshot = @import("snapshot.zig");
 
 /// Interactive testing support for CLIs that require user input.
 ///
@@ -513,6 +515,27 @@ pub const InteractionStep = struct {
     action: ?*const fn (context: ?*anyopaque) void = null,
     /// Opaque context passed to `action` (a pointer to test-owned state).
     action_context: ?*anyopaque = null,
+    /// A frame (rendered-screen) assertion to evaluate at this point. Set by the
+    /// `expectFrame*` builders; asserted against the VTerm the driver feeds the
+    /// child's output through — i.e. against the SCREEN as a terminal would draw
+    /// it, not the raw byte stream. `null` when the step is not a frame step.
+    frame: ?FrameAssertion = null,
+};
+
+/// A rendered-screen assertion. Unlike `expect`, which greps the raw byte soup
+/// (so a cursor-movement regression that leaves the text *somewhere* in the
+/// stream still passes), these assert on the VTerm screen after the bytes are
+/// rendered — the text must actually be visible at the right place.
+pub const FrameAssertion = union(enum) {
+    /// The text must appear contiguously on one row at its rendered position
+    /// (VTerm.containsText — wraps at the row edge, unlike a stream substring).
+    contains: []const u8,
+    /// A specific row must render exactly `expected` (trailing spaces trimmed).
+    row: struct { index: u16, expected: []const u8 },
+    /// The whole rendered screen must match a golden snapshot. Integrates with
+    /// snapshot.zig (masking + `-Dupdate-snapshots`); `name` is the snapshot
+    /// file stem under `tests/snapshots/<test-file>/`.
+    snapshot: []const u8,
 };
 
 /// Builder for creating interactive test scripts
@@ -615,6 +638,40 @@ pub const InteractiveScript = struct {
         return self;
     }
 
+    /// Assert `text` is visible on the RENDERED screen at this point — on one
+    /// row at its drawn position, not merely somewhere in the byte stream. The
+    /// driver polls (feeding new output into the VTerm) until the frame matches
+    /// or the step timeout elapses, so it composes with expect/send sequencing
+    /// after the terminal has settled.
+    pub fn expectFrameContains(self: *InteractiveScript, text: []const u8) *InteractiveScript {
+        self.steps.append(self.allocator, .{
+            .frame = .{ .contains = text },
+        }) catch @panic("OOM");
+        return self;
+    }
+
+    /// Assert that rendered row `index` equals `expected` (trailing spaces
+    /// trimmed), polling until it matches or the step times out. Catches
+    /// off-by-one row regressions a stream substring can't see.
+    pub fn expectRow(self: *InteractiveScript, index: u16, expected: []const u8) *InteractiveScript {
+        self.steps.append(self.allocator, .{
+            .frame = .{ .row = .{ .index = index, .expected = expected } },
+        }) catch @panic("OOM");
+        return self;
+    }
+
+    /// Assert the whole rendered screen matches the golden snapshot `name`
+    /// (stem under `tests/snapshots/<test-file>/`). Requires `snapshot_root` in
+    /// the config; honors `.update_snapshots` (wire it to `-Dupdate-snapshots`).
+    /// The frame is settled first (poll until output goes idle) so the snapshot
+    /// captures a stable screen.
+    pub fn expectFrame(self: *InteractiveScript, name: []const u8) *InteractiveScript {
+        self.steps.append(self.allocator, .{
+            .frame = .{ .snapshot = name },
+        }) catch @panic("OOM");
+        return self;
+    }
+
     /// Add a delay (for testing timing-sensitive interactions)
     pub fn delay(self: *InteractiveScript, ms: u32) *InteractiveScript {
         self.steps.append(self.allocator, .{
@@ -672,6 +729,16 @@ pub const InteractiveConfig = struct {
     forward_signals: bool = false,
     /// Which signals to forward (null means all common signals)
     signals_to_forward: ?[]const Signal = null,
+
+    // Frame assertions (rendered-screen expects)
+    /// Root directory `expectFrame` snapshots resolve against (the same
+    /// `tests/snapshots/<test-file>/` layout snapshot.zig uses). Required only
+    /// if the script uses `expectFrame`; pass `std.Io.Dir.cwd()` in a normal
+    /// suite. `expectFrameContains`/`expectRow` don't need it.
+    snapshot_root: ?std.Io.Dir = null,
+    /// When true, `expectFrame` writes (or overwrites) the snapshot instead of
+    /// comparing. Thread this from a `-Dupdate-snapshots` build option.
+    update_snapshots: bool = false,
 };
 
 /// Terminal modes for PTY configuration
@@ -780,8 +847,27 @@ pub const InteractiveError = error{
     NoSavedSettings,
 } || std.mem.Allocator.Error;
 
+/// Why a script step stopped the run — carried out of `driveScriptSteps` so the
+/// driver can print a single loud diagnostic (which step, what kind, and the
+/// rendered screen) instead of letting the failure surface only as a nonzero
+/// child exit code. `.none` means every step passed.
+const StepFailure = union(enum) {
+    none,
+    expect: []const u8,
+    frame: FrameAssertion,
+    send: []const u8,
+    total_timeout,
+};
+
 /// Outcome of running the script's steps, before teardown.
-const ScriptOutcome = struct { success: bool, steps_executed: usize };
+const ScriptOutcome = struct {
+    success: bool,
+    steps_executed: usize,
+    /// Which step (0-based) broke the run, when `!success`.
+    failed_step: usize = 0,
+    /// Why it broke, for the diagnostic dump.
+    failure: StepFailure = .none,
+};
 
 /// POSIX session the step driver talks to: the PTY/pipe fds plus the child pid,
 /// behind the same pollRead/writeAll/sendSignal surface the Windows session
@@ -850,9 +936,15 @@ fn driveScriptSteps(
     output_buffer: *std.ArrayList(u8),
     input_buffer: *std.ArrayList(u8),
     transcript_buffer: ?*std.ArrayList(u8),
+    /// The virtual terminal every read is fed through, sized to the session's
+    /// winsize. `null` when the harness could not allocate one (no VTerm ⇒ any
+    /// frame step is a loud, explicit failure rather than a false pass).
+    screen: ?*vterm.VTerm,
 ) InteractiveError!ScriptOutcome {
     var steps_executed: usize = 0;
     var script_success = true;
+    var failed_step: usize = 0;
+    var failure: StepFailure = .none;
 
     for (script.steps.items, 0..) |step, step_index| {
         if (transcript_buffer) |tb| {
@@ -869,10 +961,13 @@ fn driveScriptSteps(
                 step.exact_match,
                 output_buffer,
                 transcript_buffer,
+                screen,
             );
 
             if (!found and !step.optional) {
                 script_success = false;
+                failed_step = step_index;
+                failure = .{ .expect = expected };
                 break;
             }
 
@@ -898,6 +993,8 @@ fn driveScriptSteps(
 
             if (!ok) {
                 script_success = false;
+                failed_step = step_index;
+                failure = .{ .send = input };
                 break;
             }
         }
@@ -917,9 +1014,36 @@ fn driveScriptSteps(
             }
         }
 
+        if (step.frame) |assertion| {
+            const term = screen orelse {
+                // No VTerm to render into: refuse to silently pass. Frame
+                // assertions exist precisely to close the gap a raw substring
+                // leaves, so a missing terminal is a hard failure, not a skip.
+                std.log.err("frame assertion requested but no VTerm is available (allocate_pty must be true)", .{});
+                return InteractiveError.NoPty;
+            };
+            const ok = try waitForFrame(
+                allocator,
+                io,
+                session,
+                assertion,
+                step.timeout_ms,
+                config,
+                output_buffer,
+                transcript_buffer,
+                term,
+            );
+            if (!ok and !step.optional) {
+                script_success = false;
+                failed_step = step_index;
+                failure = .{ .frame = assertion };
+                break;
+            }
+        }
+
         // Pure delay steps (an action step carries the default timeout_ms but is
         // not a delay — don't sleep on it).
-        if (step.expect == null and step.send == null and step.signal == null and step.action == null and step.timeout_ms > 0) {
+        if (step.expect == null and step.send == null and step.signal == null and step.action == null and step.frame == null and step.timeout_ms > 0) {
             sleepMs(io, step.timeout_ms);
         }
 
@@ -928,11 +1052,41 @@ fn driveScriptSteps(
         const elapsed = nowMs(io) - start_time;
         if (elapsed > config.total_timeout_ms) {
             script_success = false;
+            failed_step = step_index;
+            failure = .total_timeout;
             break;
         }
     }
 
-    return .{ .success = script_success, .steps_executed = steps_executed };
+    return .{
+        .success = script_success,
+        .steps_executed = steps_executed,
+        .failed_step = failed_step,
+        .failure = failure,
+    };
+}
+
+/// Determine the VTerm geometry for a PTY run and allocate the terminal. Prefer
+/// the PTY's actual winsize (what the child sees via TIOCGWINSZ), falling back
+/// to the configured size, then a 24x80 default. Returns null on allocation
+/// failure so the caller degrades to "no frame assertions" rather than crashing.
+fn vtermForPty(allocator: std.mem.Allocator, pty_manager: ?PtyManager, config: InteractiveConfig) ?vterm.VTerm {
+    var rows: u16 = 24;
+    var cols: u16 = 80;
+    if (config.terminal_size) |s| {
+        rows = s.rows;
+        cols = s.cols;
+    }
+    if (pty_manager) |pty| {
+        var mgr = pty;
+        if (mgr.getWindowSize()) |ws| {
+            if (ws.row != 0 and ws.col != 0) {
+                rows = ws.row;
+                cols = ws.col;
+            }
+        } else |_| {}
+    }
+    return vterm.VTerm.init(allocator, cols, rows) catch null;
 }
 
 /// Run an interactive test script against a command.
@@ -1041,6 +1195,14 @@ fn runInteractivePosix(
     const read_fd: posix.fd_t = if (pty_manager) |*pty| pty.master_fd else child.stdout.?.handle;
     const write_fd: posix.fd_t = if (pty_manager) |*pty| pty.master_fd else child.stdin.?.handle;
 
+    // A virtual terminal mirroring the child's output, sized to the PTY winsize
+    // so a frame assertion sees the screen exactly as the child rendered it.
+    // Only allocated for a PTY run — frame assertions need a real terminal. If
+    // allocation fails, `screen` stays null and any frame step fails loudly.
+    var screen_storage: ?vterm.VTerm = if (using_pty) vtermForPty(allocator, pty_manager, config) else null;
+    defer if (screen_storage) |*s| s.deinit();
+    const screen: ?*vterm.VTerm = if (screen_storage) |*s| s else null;
+
     var session = PosixSession{ .read_fd = read_fd, .write_fd = write_fd, .child_id = child.id };
     const outcome = try driveScriptSteps(
         allocator,
@@ -1052,6 +1214,7 @@ fn runInteractivePosix(
         &output_buffer,
         &input_buffer,
         if (transcript_buffer) |*tb| tb else null,
+        screen,
     );
     var script_success = outcome.success;
     const steps_executed = outcome.steps_executed;
@@ -1111,6 +1274,12 @@ fn runInteractivePosix(
         .exited => |code| code,
         else => 1,
     };
+
+    // A step that broke the run left the child blocked mid-prompt (we killed it
+    // above), so the only visible symptom in the test would be a nonzero exit
+    // code. Print the full diagnostic now — which step, the rendered screen, the
+    // raw tail — so CI shows exactly what the child drew.
+    if (!outcome.success) dumpScriptFailure(allocator, outcome, screen, output_buffer.items);
 
     const duration_ms: u64 = @intCast(nowMs(io) - start_time);
 
@@ -1179,6 +1348,13 @@ fn runInteractiveWindows(
     };
     defer cp.deinit(allocator);
 
+    // VTerm sized to the ConPTY window, fed the same VT byte stream frame
+    // assertions render against. ConPTY emits standard VT sequences, so the
+    // same parser drives both backends. Null on OOM ⇒ frame steps fail loudly.
+    var screen_storage: ?vterm.VTerm = vterm.VTerm.init(allocator, cols, rows) catch null;
+    defer if (screen_storage) |*s| s.deinit();
+    const screen: ?*vterm.VTerm = if (screen_storage) |*s| s else null;
+
     var session = WindowsSession{ .inner = &cp };
     const outcome = try driveScriptSteps(
         allocator,
@@ -1190,6 +1366,7 @@ fn runInteractiveWindows(
         &output_buffer,
         &input_buffer,
         if (transcript_buffer) |*tb| tb else null,
+        screen,
     );
     var script_success = outcome.success;
     const steps_executed = outcome.steps_executed;
@@ -1224,6 +1401,8 @@ fn runInteractiveWindows(
             break;
         }
     }
+
+    if (!outcome.success) dumpScriptFailure(allocator, outcome, screen, output_buffer.items);
 
     const duration_ms: u64 = @intCast(nowMs(io) - start_time);
 
@@ -1265,7 +1444,10 @@ fn pollFd(fd: posix.fd_t, buf: []u8, timeout_ms: i32) usize {
     };
 }
 
-/// Wait for specific output to appear, with timeout.
+/// Wait for specific output to appear, with timeout. Every byte read is also
+/// fed into `screen` (when present) so the VTerm stays a faithful mirror of the
+/// stream for any following frame assertion — the terminal is rendered
+/// continuously, not re-parsed from scratch at each frame step.
 fn waitForOutput(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -1275,6 +1457,7 @@ fn waitForOutput(
     exact_match: bool,
     output_buffer: *std.ArrayList(u8),
     transcript_buffer: ?*std.ArrayList(u8),
+    screen: ?*vterm.VTerm,
 ) InteractiveError!bool {
     const start_time = nowMs(io);
     var temp_buffer: [4096]u8 = undefined;
@@ -1288,6 +1471,7 @@ fn waitForOutput(
         if (bytes_read == 0) continue;
 
         try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
+        if (screen) |term| term.write(temp_buffer[0..bytes_read]);
 
         if (transcript_buffer) |tb| {
             try transcriptPrint(tb, allocator, "Received: \"{s}\"\n", .{temp_buffer[0..bytes_read]});
@@ -1298,6 +1482,297 @@ fn waitForOutput(
         } else {
             if (std.mem.indexOf(u8, output_buffer.items, expected) != null) return true;
         }
+    }
+}
+
+/// True once the rendered `screen` satisfies `assertion` (contains/row checks).
+/// Snapshot assertions are settled-then-compared by the caller, so they always
+/// report "not yet matched" here and fall through to the settle path.
+fn frameSatisfied(allocator: std.mem.Allocator, screen: *vterm.VTerm, assertion: FrameAssertion) bool {
+    switch (assertion) {
+        .contains => |text| return screen.containsText(text),
+        .row => |r| {
+            const line = screen.getLine(allocator, r.index) catch return false;
+            defer allocator.free(line);
+            return std.mem.eql(u8, line, r.expected);
+        },
+        .snapshot => return false,
+    }
+}
+
+/// Poll — feeding new output into `screen` — until the rendered frame satisfies
+/// `assertion` or `timeout_ms` elapses. This is the settle strategy for frame
+/// steps: no fixed sleep, just "read → render → re-check" like `waitForOutput`,
+/// so a slow paint is tolerated and a fast one returns immediately.
+///
+/// A `snapshot` assertion instead waits for the stream to go idle (a few empty
+/// poll windows) — a whole-screen golden needs a stable frame, not a single
+/// substring — then compares (or updates) via the shared snapshot machinery.
+fn waitForFrame(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    session: anytype,
+    assertion: FrameAssertion,
+    timeout_ms: u32,
+    config: InteractiveConfig,
+    output_buffer: *std.ArrayList(u8),
+    transcript_buffer: ?*std.ArrayList(u8),
+    screen: *vterm.VTerm,
+) InteractiveError!bool {
+    const start_time = nowMs(io);
+    var temp_buffer: [4096]u8 = undefined;
+
+    // Fast path: already satisfied from output rendered by prior steps.
+    if (frameSatisfied(allocator, screen, assertion)) {
+        try reportFrame(allocator, transcript_buffer, assertion, true);
+        return true;
+    }
+
+    var idle_polls: u8 = 0;
+    while (true) {
+        const elapsed = nowMs(io) - start_time;
+        if (elapsed > timeout_ms) break;
+
+        const remaining: i32 = @intCast(@max(@as(i64, 0), @as(i64, timeout_ms) - elapsed));
+        const bytes_read = session.pollRead(&temp_buffer, @min(remaining, 50));
+        if (bytes_read == 0) {
+            // For a snapshot, treat a run of idle windows as "settled" and
+            // compare the stable screen. For contains/row we keep polling until
+            // the deadline (they may still be painting).
+            if (assertion == .snapshot) {
+                idle_polls += 1;
+                if (idle_polls >= 3) break;
+            }
+            continue;
+        }
+        idle_polls = 0;
+
+        try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
+        screen.write(temp_buffer[0..bytes_read]);
+
+        if (assertion != .snapshot and frameSatisfied(allocator, screen, assertion)) {
+            try reportFrame(allocator, transcript_buffer, assertion, true);
+            return true;
+        }
+    }
+
+    // Deadline (or settle) reached. Snapshot compares the settled frame; the
+    // others print a readable rendered-screen diagnostic and fail.
+    switch (assertion) {
+        .snapshot => |name| {
+            try assertFrameSnapshot(allocator, io, screen, config, name);
+            try reportFrame(allocator, transcript_buffer, assertion, true);
+            return true;
+        },
+        .contains, .row => {
+            printFrameMismatch(allocator, screen, assertion);
+            try reportFrame(allocator, transcript_buffer, assertion, false);
+            return false;
+        },
+    }
+}
+
+fn reportFrame(allocator: std.mem.Allocator, transcript_buffer: ?*std.ArrayList(u8), assertion: FrameAssertion, ok: bool) !void {
+    const tb = transcript_buffer orelse return;
+    const mark: []const u8 = if (ok) "\u{2713}" else "\u{2717}";
+    switch (assertion) {
+        .contains => |t| try transcriptPrint(tb, allocator, "{s} Frame contains: \"{s}\"\n", .{ mark, t }),
+        .row => |r| try transcriptPrint(tb, allocator, "{s} Frame row {d} == \"{s}\"\n", .{ mark, r.index, r.expected }),
+        .snapshot => |n| try transcriptPrint(tb, allocator, "{s} Frame snapshot: {s}\n", .{ mark, n }),
+    }
+}
+
+/// Render the whole screen and compare/update it against a golden snapshot,
+/// reusing snapshot.zig's masking + update flow. The path is
+/// `<snapshot_root>/tests/snapshots/e2e/<name>.txt` — the same layout the
+/// in-process tier uses, but resolved at runtime (the builder can't carry a
+/// comptime `@src()`), so `name` is the file stem the caller chooses.
+fn assertFrameSnapshot(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    screen: *vterm.VTerm,
+    config: InteractiveConfig,
+    name: []const u8,
+) InteractiveError!void {
+    const root = config.snapshot_root orelse {
+        std.log.err("expectFrame(\"{s}\") needs config.snapshot_root set", .{name});
+        return InteractiveError.InvalidScript;
+    };
+
+    // Full rendered screen, rows joined by newlines, trailing blank rows kept so
+    // the golden captures the exact frame geometry.
+    const actual = try screen.getAllText(allocator);
+    defer allocator.free(actual);
+    const framed = try reflowToRows(allocator, actual, screen.width, screen.height);
+    defer allocator.free(framed);
+
+    const masked = try snapshot.maskDynamicContent(allocator, framed);
+    defer allocator.free(masked);
+
+    const dir = "tests/snapshots/e2e";
+    const file = try std.fmt.allocPrint(allocator, "{s}/{s}.txt", .{ dir, name });
+    defer allocator.free(file);
+
+    if (config.update_snapshots) {
+        root.createDirPath(io, dir) catch |err| {
+            std.log.err("failed to create snapshot dir {s}: {any}", .{ dir, err });
+            return InteractiveError.InvalidScript;
+        };
+        root.writeFile(io, .{ .sub_path = file, .data = masked }) catch |err| {
+            std.log.err("failed to write snapshot {s}: {any}", .{ file, err });
+            return InteractiveError.InvalidScript;
+        };
+        std.debug.print("\u{2705} Updated frame snapshot: {s}\n", .{file});
+        return;
+    }
+
+    const expected = root.readFileAlloc(io, file, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("\n\u{250c}\u{2500} FRAME SNAPSHOT MISSING: {s}\n", .{file});
+            std.debug.print("\u{2502} Re-run with .update_snapshots = true to create. Rendered screen:\n", .{});
+            printBoxedScreen(masked);
+            return InteractiveError.ExpectationNotMet;
+        },
+        else => return InteractiveError.InputSendFailed,
+    };
+    defer allocator.free(expected);
+
+    if (!std.mem.eql(u8, expected, masked)) {
+        std.debug.print("\n\u{250c}\u{2500} FRAME SNAPSHOT MISMATCH: {s}\n", .{file});
+        std.debug.print("\u{2502} expected (golden) vs actual (rendered screen):\n", .{});
+        printScreenDiff(expected, masked);
+        std.debug.print("\u{2502} Re-run with .update_snapshots = true to update.\n", .{});
+        return InteractiveError.ExpectationNotMet;
+    }
+}
+
+/// getAllText emits width*height chars with no row breaks; split it back into
+/// `height` rows of `width`, trimming each row's trailing spaces.
+fn reflowToRows(allocator: std.mem.Allocator, flat: []const u8, width: u16, height: u16) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    // getAllText UTF-8-encodes wide chars, so byte length can exceed width*height;
+    // fall back to a plain copy if the geometry doesn't line up (ASCII TUIs, the
+    // common case here, always line up).
+    if (flat.len != @as(usize, width) * @as(usize, height)) {
+        return allocator.dupe(u8, flat);
+    }
+    var row: u16 = 0;
+    while (row < height) : (row += 1) {
+        if (row > 0) try out.append(allocator, '\n');
+        const start = @as(usize, row) * width;
+        var end = start + width;
+        while (end > start and flat[end - 1] == ' ') end -= 1;
+        try out.appendSlice(allocator, flat[start..end]);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Print a readable rendered-screen diagnostic for a failed contains/row frame
+/// assertion — the whole screen boxed, so the reader sees exactly what WAS
+/// drawn versus what was asserted.
+fn printFrameMismatch(allocator: std.mem.Allocator, screen: *vterm.VTerm, assertion: FrameAssertion) void {
+    std.debug.print("\n\u{250c}\u{2500} FRAME ASSERTION FAILED \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
+    switch (assertion) {
+        .contains => |t| std.debug.print("\u{2502} expectFrameContains(\"{s}\") — text is not visible on screen\n", .{t}),
+        .row => |r| {
+            const line = screen.getLine(allocator, r.index) catch "";
+            defer if (line.len > 0) allocator.free(line);
+            std.debug.print("\u{2502} expectRow({d}, \"{s}\")\n", .{ r.index, r.expected });
+            std.debug.print("\u{2502}   actual row {d}: \"{s}\"\n", .{ r.index, line });
+        },
+        .snapshot => {},
+    }
+    std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ screen.width, screen.height });
+    const flat = screen.getAllText(allocator) catch return;
+    defer allocator.free(flat);
+    const framed = reflowToRows(allocator, flat, screen.width, screen.height) catch return;
+    defer allocator.free(framed);
+    printBoxedScreen(framed);
+    std.debug.print("\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
+}
+
+/// Loud, one-shot diagnostic for a script that did not run to completion. Prints
+/// which step broke, why, the vterm geometry + rendered screen (so a frame or
+/// prompt mismatch is legible), and the tail of the raw byte stream. Without
+/// this, a step failure only surfaces as a nonzero child exit code — the harness
+/// kills the still-blocked child, and the test's `expect(exit_code == 0)` fails
+/// with no clue what the child actually drew. This is the keeper: a failed frame
+/// (or expect) step must fail loudly with the screen, not cryptically.
+fn dumpScriptFailure(
+    allocator: std.mem.Allocator,
+    outcome: ScriptOutcome,
+    screen: ?*vterm.VTerm,
+    output: []const u8,
+) void {
+    if (outcome.failure == .none) return;
+    std.debug.print("\n\u{250c}\u{2500} INTERACTIVE SCRIPT FAILED at step {d} \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{outcome.failed_step + 1});
+    switch (outcome.failure) {
+        .none => {},
+        .expect => |e| std.debug.print("\u{2502} step kind: expect(\"{s}\") — text never appeared in the stream\n", .{e}),
+        .send => |s| std.debug.print("\u{2502} step kind: send(\"{s}\") — write to child failed\n", .{s}),
+        .total_timeout => std.debug.print("\u{2502} step kind: total interaction timeout exceeded\n", .{}),
+        .frame => |a| switch (a) {
+            .contains => |t| std.debug.print("\u{2502} step kind: expectFrameContains(\"{s}\") — not visible on the rendered screen\n", .{t}),
+            .row => |r| std.debug.print("\u{2502} step kind: expectRow({d}, \"{s}\")\n", .{ r.index, r.expected }),
+            .snapshot => |n| std.debug.print("\u{2502} step kind: expectFrame(\"{s}\")\n", .{n}),
+        },
+    }
+    if (screen) |term| {
+        std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ term.width, term.height });
+        if (term.getAllText(allocator)) |flat| {
+            defer allocator.free(flat);
+            if (reflowToRows(allocator, flat, term.width, term.height)) |framed| {
+                defer allocator.free(framed);
+                printBoxedScreen(framed);
+            } else |_| {}
+        } else |_| {}
+    } else {
+        std.debug.print("\u{2502} (no VTerm allocated — cannot render screen)\n", .{});
+    }
+    // Tail of the raw stream, escaped, so control/cursor bytes are legible.
+    const tail_len = @min(output.len, 512);
+    const tail = output[output.len - tail_len ..];
+    std.debug.print("\u{2502} raw byte-stream tail ({d} of {d} bytes), escaped:\n\u{2502}   ", .{ tail_len, output.len });
+    for (tail) |b| {
+        if (b == '\n') {
+            std.debug.print("\\n", .{});
+        } else if (b == '\r') {
+            std.debug.print("\\r", .{});
+        } else if (b == 0x1b) {
+            std.debug.print("\\e", .{});
+        } else if (b >= 0x20 and b < 0x7f) {
+            std.debug.print("{c}", .{b});
+        } else {
+            std.debug.print("\\x{x:0>2}", .{b});
+        }
+    }
+    std.debug.print("\n\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
+}
+
+fn printBoxedScreen(screen_text: []const u8) void {
+    var lines = std.mem.splitScalar(u8, screen_text, '\n');
+    while (lines.next()) |line| {
+        std.debug.print("\u{2502} \u{2502}{s}\n", .{line});
+    }
+}
+
+fn printScreenDiff(expected: []const u8, actual: []const u8) void {
+    var exp_lines = std.mem.splitScalar(u8, expected, '\n');
+    var act_lines = std.mem.splitScalar(u8, actual, '\n');
+    var row: usize = 0;
+    while (true) {
+        const e = exp_lines.next();
+        const a = act_lines.next();
+        if (e == null and a == null) break;
+        const el = e orelse "";
+        const al = a orelse "";
+        if (!std.mem.eql(u8, el, al)) {
+            std.debug.print("\u{2502} row {d}:\n", .{row});
+            std.debug.print("\u{2502}   -\"{s}\"\n", .{el});
+            std.debug.print("\u{2502}   +\"{s}\"\n", .{al});
+        }
+        row += 1;
     }
 }
 
@@ -1523,6 +1998,90 @@ test "runInteractive drives a command over pipes" {
     defer result.deinit();
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "zcli-e2e-ping") != null);
+}
+
+test "expectFrame* builders record frame assertions" {
+    const allocator = std.testing.allocator;
+
+    var script = InteractiveScript.init(allocator);
+    defer script.deinit();
+
+    _ = script
+        .expectFrameContains("hello")
+        .expectRow(3, "world")
+        .expectFrame("golden");
+
+    try std.testing.expect(script.steps.items.len == 3);
+    try std.testing.expectEqualStrings("hello", script.steps.items[0].frame.?.contains);
+    try std.testing.expect(script.steps.items[1].frame.?.row.index == 3);
+    try std.testing.expectEqualStrings("world", script.steps.items[1].frame.?.row.expected);
+    try std.testing.expectEqualStrings("golden", script.steps.items[2].frame.?.snapshot);
+}
+
+test "frameSatisfied matches rendered cells, not the raw stream" {
+    const allocator = std.testing.allocator;
+    var term = try vterm.VTerm.init(allocator, 20, 5);
+    defer term.deinit();
+
+    // Draw "OK" at row 2 via absolute cursor positioning — the literal "OK"
+    // arrives after a CUP sequence, exactly the case where a stream grep would
+    // pass on unrelated bytes but the SCREEN must actually show it in place.
+    term.write("\x1b[3;1HOK done");
+
+    try std.testing.expect(frameSatisfied(allocator, &term, .{ .contains = "OK done" }));
+    try std.testing.expect(frameSatisfied(allocator, &term, .{ .row = .{ .index = 2, .expected = "OK done" } }));
+    // Wrong row must NOT satisfy — the strength a stream substring lacks.
+    try std.testing.expect(!frameSatisfied(allocator, &term, .{ .row = .{ .index = 0, .expected = "OK done" } }));
+    try std.testing.expect(!frameSatisfied(allocator, &term, .{ .contains = "absent" }));
+}
+
+test "reflowToRows splits a flat screen into trimmed rows" {
+    const allocator = std.testing.allocator;
+    // 4 wide, 2 tall: "ab  " + "c   " → "ab\nc" (trailing spaces trimmed).
+    const flat = "ab  c   ";
+    const out = try reflowToRows(allocator, flat, 4, 2);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("ab\nc", out);
+}
+
+test "runInteractive frame assertions catch a mispositioned row over a PTY" {
+    if (builtin.os.tag == .windows) return;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // A tiny script that homes the cursor and paints "READY" on row 3 (1-based)
+    // using absolute positioning, then holds so the frame is stable. `sh` reads
+    // one line of stdin before exiting so the harness can end the session.
+    const program =
+        "printf '\\033[2J\\033[3;1HREADY\\033[10;1H'; read _dummy";
+
+    var script = InteractiveScript.init(allocator);
+    defer script.deinit();
+    _ = script
+        // Rendered-frame assertions: "READY" is visible, and specifically on
+        // row 2 (0-based) where it was positioned — not merely in the stream.
+        .expectFrameContains("READY").withTimeout(4000)
+        .expectRow(2, "READY").withTimeout(4000)
+        // End the session (the `read` returns, `sh` exits).
+        .send("go");
+
+    var result = runInteractive(allocator, io, &.{ "/bin/sh", "-c", program }, script, .{
+        .allocate_pty = true,
+        .terminal_size = .{ .rows = 24, .cols = 40 },
+        .total_timeout_ms = 8000,
+    }) catch |err| switch (err) {
+        // PTY allocation can be denied in sandboxes; skip loudly (mirrors the
+        // "runInteractive unavailable" guard CI greps for elsewhere).
+        error.PtyAllocationFailed => {
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
+    };
+    defer result.deinit();
+
+    try std.testing.expect(result.steps_executed >= 2);
 }
 
 test "InteractiveScript builder API" {

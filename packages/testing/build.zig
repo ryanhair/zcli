@@ -11,14 +11,17 @@ pub fn build(b: *std.Build) void {
     const zcli_dep = b.dependency("zcli_core", .{ .target = target, .optimize = optimize });
     const vterm_dep = b.dependency("vterm", .{ .target = target, .optimize = optimize });
 
-    // The subprocess/snapshot testing tier (main.zig): std-only, so importing it
-    // does NOT drag zcli/vterm/serde into a consumer's test build. The root
-    // package re-exports this as `zcli_testing`.
+    // The subprocess/snapshot testing tier (main.zig): std-only except that its
+    // re-exported PTY tier (e2e.zig) now renders child output through vterm for
+    // frame assertions, so vterm is wired in. zcli/serde are still NOT dragged
+    // in — only vterm, and only the PTY tier uses it. The root package
+    // re-exports this as `zcli_testing`.
     const testing_mod = b.addModule("testing", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    testing_mod.addImport("vterm", vterm_dep.module("vterm"));
 
     // The in-process unit-testing tier (unit.zig): `runCommand` executes a
     // command's execute() without a subprocess, so it needs zcli (Stdio,
@@ -35,14 +38,16 @@ pub fn build(b: *std.Build) void {
     unit_mod.addImport("vterm", vterm_dep.module("vterm"));
 
     // Expose the PTY-based interactive harness (e2e.zig) as its own module.
-    // It is std-only — no zcli/vterm — so CLI projects can drive a real TTY in
-    // their e2e tests without pulling in the rest of the testing tier. The
-    // root package re-exports this as `testing_e2e`.
+    // It pulls in vterm (to render child output for frame assertions) but not
+    // zcli/serde, so CLI projects can drive a real TTY in their e2e tests
+    // without the rest of the testing tier. The root package re-exports this as
+    // `testing_e2e`.
     const e2e_mod = b.addModule("e2e", .{
         .root_source_file = b.path("src/e2e.zig"),
         .target = target,
         .optimize = optimize,
     });
+    e2e_mod.addImport("vterm", vterm_dep.module("vterm"));
 
     const test_step = b.step("test", "Run all tests");
 
@@ -52,6 +57,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    testing_test_mod.addImport("vterm", vterm_dep.module("vterm"));
     const testing_tests = b.addTest(.{ .root_module = testing_test_mod });
     test_step.dependOn(&b.addRunArtifact(testing_tests).step);
 

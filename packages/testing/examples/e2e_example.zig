@@ -2,8 +2,9 @@
 //!
 //! This tier drives a binary through a real pseudo-terminal (or, optionally, a
 //! plain pipe) so you can test genuinely interactive behavior: prompts, hidden
-//! password input, control keys, signals, and TTY-dependent formatting. It is
-//! std-only and ships as its own module, `testing_e2e`.
+//! password input, control keys, signals, and TTY-dependent formatting. It ships
+//! as its own module, `testing_e2e`, and feeds the terminal output through a
+//! `vterm` so you can assert on the RENDERED screen, not just the raw stream.
 //!
 //! `zig build examples` runs the `test` blocks below. To stay hermetic they
 //! drive `cat` — a stock tool that echoes stdin to stdout — instead of a project
@@ -111,4 +112,45 @@ test "runInteractive over a real PTY (skips gracefully without a TTY)" {
     defer result.deinit();
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "tty-hello") != null);
+}
+
+// ---------------------------------------------------------------------------
+// 4. Asserting on the RENDERED screen — frame assertions.
+// ---------------------------------------------------------------------------
+
+test "runInteractive frame assertions check the rendered screen" {
+    if (builtin.os.tag == .windows) return;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // A shell one-liner that clears the screen, then positions the cursor and
+    // paints "READY" on row 3 (1-based) via an absolute CUP escape, and finally
+    // waits for a line of input so the harness can end the session. The literal
+    // "READY" is preceded by cursor-movement bytes — exactly the case where a
+    // raw-stream `.expect("READY")` would pass without proving WHERE it landed.
+    const program = "printf '\\033[2J\\033[3;1HREADY'; read _dummy";
+
+    var script = e2e.InteractiveScript.init(allocator);
+    defer script.deinit();
+    _ = script
+        // `.expectFrameContains` walks the rendered cells: it only matches if
+        // "READY" is visible on screen. `.expectRow` is stricter still — it
+        // pins the exact row (0-based) the text was drawn on. Both poll until
+        // the frame matches or the step times out (no fixed sleeps).
+        .expectFrameContains("READY").withTimeout(4000)
+        .expectRow(2, "READY").withTimeout(4000)
+        .send("go"); // let `read` return so `sh` exits
+
+    var result = e2e.runInteractive(allocator, io, &.{ "/bin/sh", "-c", program }, script, .{
+        .allocate_pty = true, // a real terminal is required for frame assertions
+        .terminal_size = .{ .rows = 24, .cols = 40 },
+        .total_timeout_ms = 8000,
+    }) catch |err| {
+        std.log.warn("runInteractive (frame) skipped — no working TTY: {any}", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    try std.testing.expect(result.steps_executed >= 2);
 }

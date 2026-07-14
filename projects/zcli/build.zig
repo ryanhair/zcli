@@ -185,7 +185,11 @@ pub fn build(b: *std.Build) !void {
     // PTY harness for interactive (TTY) regression tests.
     e2e_mod.addImport("testing_e2e", zcli_dep.module("testing_e2e"));
 
-    const e2e_tests = b.addTest(.{ .root_module = e2e_mod });
+    const e2e_filter = b.option([]const u8, "e2e-filter", "Only run e2e tests whose name contains this substring");
+    const e2e_tests = b.addTest(.{
+        .root_module = e2e_mod,
+        .filters = if (e2e_filter) |f| &.{f} else &.{},
+    });
     const run_e2e = b.addRunArtifact(e2e_tests);
     run_e2e.has_side_effects = true; // touches fs/git; always re-run
     run_e2e.step.dependOn(b.getInstallStep()); // binary must exist before tests run
