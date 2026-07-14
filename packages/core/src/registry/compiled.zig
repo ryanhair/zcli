@@ -84,6 +84,35 @@ fn isReportedCliError(err: anyerror) bool {
     };
 }
 
+/// Conventional exit status for a process terminated by SIGPIPE (128 + 13).
+/// A zcli CLI whose stdout/stderr pipe is closed by a downstream reader (the
+/// classic `yourcli cmd | head` case) mimics that status so shell pipelines
+/// and `set -o pipefail` see the same result they would from `grep | head`.
+const broken_pipe_status: u8 = 141;
+
+/// Did a `WriteFailed` originate from a broken pipe (EPIPE / closed read end)?
+///
+/// Zig's start code ignores SIGPIPE, so a write to a pipe whose reader has
+/// closed returns EPIPE, which the buffered `std.Io.Writer` surfaces to us as
+/// the opaque `error.WriteFailed`. The concrete cause is recorded on the
+/// underlying `std.Io.File.Writer.err` field, so we recover it there. This is
+/// the same mechanism on Windows, where there is no SIGPIPE at all and a
+/// broken pipe only ever appears as a write error — so this one check handles
+/// both platforms with no signal handling required.
+///
+/// Only the framework-owned file writers can carry this state; a test-provided
+/// `stdout_override`/`stderr_override` (an in-memory writer) never breaks a
+/// pipe, so those are simply not inspected.
+fn wroteToBrokenPipe(stdio: *zcli.Stdio) bool {
+    if (stdio.stdout_override == null and isBrokenPipe(stdio.stdout_writer.err)) return true;
+    if (stdio.stderr_override == null and isBrokenPipe(stdio.stderr_writer.err)) return true;
+    return false;
+}
+
+fn isBrokenPipe(err: ?std.Io.File.Writer.Error) bool {
+    return if (err) |e| e == error.BrokenPipe else false;
+}
+
 test "isReportedCliError: context.fail's error exits cleanly, unexpected errors don't" {
     try std.testing.expect(isReportedCliError(error.CommandFailed));
     try std.testing.expect(isReportedCliError(error.ArgumentMissingRequired));
@@ -94,6 +123,34 @@ test "isReportedCliError: context.fail's error exits cleanly, unexpected errors 
     try std.testing.expect(isReportedCliError(error.ArgumentValidationFailed));
     // An unexpected failure keeps its name + trace (propagated, not swallowed).
     try std.testing.expect(!isReportedCliError(error.OutOfMemory));
+}
+
+test "isBrokenPipe: only BrokenPipe counts as a broken pipe" {
+    try std.testing.expect(isBrokenPipe(error.BrokenPipe));
+    // A different write error (e.g. a full disk) is a genuine failure and must
+    // keep its trace, not be silently swallowed as a broken pipe.
+    try std.testing.expect(!isBrokenPipe(error.NoSpaceLeft));
+    // No recorded error means the write never failed.
+    try std.testing.expect(!isBrokenPipe(null));
+}
+
+test "wroteToBrokenPipe: test overrides are never mistaken for a broken pipe" {
+    var stdio: zcli.Stdio = .{ .io = std.testing.io };
+    // A test provides its own in-memory writers via the overrides; those cannot
+    // break a pipe, so the (undefined) file-writer state must not be inspected.
+    var buf: [16]u8 = undefined;
+    var out_aw = std.Io.Writer.fixed(&buf);
+    var err_aw = std.Io.Writer.fixed(&buf);
+    stdio.stdout_override = &out_aw;
+    stdio.stderr_override = &err_aw;
+    try std.testing.expect(!wroteToBrokenPipe(&stdio));
+
+    // Simulate the framework's own file writer recording EPIPE.
+    stdio.stdout_override = null;
+    stdio.stdout_writer.err = error.BrokenPipe;
+    stdio.stderr_override = null;
+    stdio.stderr_writer.err = null;
+    try std.testing.expect(wroteToBrokenPipe(&stdio));
 }
 
 /// Compiled registry with all command and plugin information
@@ -655,7 +712,26 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // so the reported-error path below restores explicitly.
             const console = console_utf8.enable();
             defer console.restore();
-            self.execute(allocator, io, environ, if (args.len > 0) args[1..] else args) catch |err| {
+
+            // Own the Stdio here (rather than letting execute() create it) so
+            // that after a failure we can inspect the writer state to tell a
+            // broken pipe apart from any other write error.
+            var stdio: zcli.Stdio = undefined;
+            stdio.init(io);
+
+            self.executeWithStdio(allocator, io, environ, if (args.len > 0) args[1..] else args, &stdio) catch |err| {
+                // A write to a closed downstream pipe (`yourcli cmd | head`)
+                // surfaces as WriteFailed. Behave like a well-mannered unix
+                // program: no trace, no diagnostic, just the conventional
+                // SIGPIPE exit status. Checked before the reported-error path
+                // because WriteFailed is not itself a "reported" error — the
+                // pipe closing is a normal end to a pipeline, not a user error.
+                // Windows has no SIGPIPE, but the broken pipe still lands here
+                // as a write error, so this covers it too.
+                if (err == error.WriteFailed and wroteToBrokenPipe(&stdio)) {
+                    console.restore();
+                    std.process.exit(broken_pipe_status);
+                }
                 // CLI-entry semantics: some failures already showed the user a
                 // message — parse/routing diagnostics, a plugin, the framework
                 // fallback, or a command's own context.fail(). Exit(1) without

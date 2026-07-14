@@ -119,6 +119,38 @@ fn runTwiceIntoSharedFileViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, log_nam
     _ = try child.wait(io);
 }
 
+/// Run `bin flood | head -n1` through a shell, so a downstream reader closes
+/// the CLI's stdout pipe after one line while the CLI keeps writing. That is
+/// the classic broken-pipe scenario (`yourcli cmd | head`). The CLI's *own*
+/// stderr is redirected to `err_name` (before the `| head`, so it isn't head's
+/// stderr) and returned, so the caller can assert it stays clean — no
+/// `WriteFailed`, no return trace. Requires the flood output to exceed the pipe
+/// buffer, so the CLI is still writing when the reader is already gone.
+///
+/// Driven by a shell (not `std.process.spawn`) because the pipe + early-closing
+/// reader is exactly what a shell pipeline sets up, on both POSIX and Windows.
+fn runIntoHeadViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, bin: []const u8, cmd: []const u8, err_name: []const u8) ![]u8 {
+    const argv: []const []const u8 = if (builtin.os.tag == .windows) blk: {
+        const trimmed = if (std.mem.startsWith(u8, bin, "./")) bin[2..] else bin;
+        const win_bin = try a.dupe(u8, trimmed);
+        std.mem.replaceScalar(u8, win_bin, '/', '\\');
+        // `more +2` reads a couple lines then can be closed; but the simplest
+        // early-closing reader available in cmd.exe is a nested `powershell`
+        // Select-Object -First 1. Redirect the CLI's stderr to a file first.
+        break :blk &.{ "cmd", "/c", try std.fmt.allocPrint(a, "{s} {s} 2> {s} | powershell -NoProfile -Command \"$input | Select-Object -First 1\" > NUL", .{ win_bin, cmd, err_name }) };
+    } else &.{ "sh", "-c", try std.fmt.allocPrint(a, "'{s}' {s} 2> {s} | head -n1 > /dev/null", .{ bin, cmd, err_name }) };
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .dir = cwd },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    _ = try child.wait(io);
+    return readFile(cwd, a, err_name);
+}
+
 fn fileExists(dir: std.Io.Dir, path: []const u8) bool {
     // Windows rejects these characters in a path at the syscall layer with
     // OBJECT_NAME_INVALID, which Zig surfaces as an unrecoverable panic rather
@@ -716,6 +748,27 @@ test "scaffolded project builds, runs, and round-trips add command" {
     const proj_abs = try tmpSubdirAbs(arena.allocator(), tmp, "demo");
     try pointDependencyAtLocalTree(proj, proj_abs);
 
+    // A command that streams far more than one pipe buffer (~200 KB), so a
+    // downstream `| head -n1` closes the read end while the CLI is still
+    // writing — the broken-pipe regression below relies on it.
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/flood.zig",
+        .data =
+        \\const Context = @import("command_registry").Context;
+        \\pub const meta = .{ .description = "Print many lines" };
+        \\pub const Args = struct {};
+        \\pub const Options = struct {};
+        \\pub fn execute(_: Args, _: Options, context: *Context) !void {
+        \\    const out = context.stdout();
+        \\    var i: usize = 0;
+        \\    while (i < 20000) : (i += 1) {
+        \\        try out.print("line {d} padding padding padding padding\n", .{i});
+        \\    }
+        \\}
+        \\
+        ,
+    });
+
     // Build the generated project against the local zcli.
     {
         var r = try run(proj, &.{ "zig", "build" });
@@ -754,6 +807,22 @@ test "scaffolded project builds, runs, and round-trips add command" {
         };
         // Order preserved: the second append lands after the first, not over it.
         try testing.expect(second > first);
+    }
+
+    // Regression (broken pipe): `demo flood | head -n1` closes the stdout pipe
+    // after one line while the command is still writing. Zig's start code
+    // ignores SIGPIPE, so the write returns EPIPE (surfaced as WriteFailed) —
+    // the framework must treat that as a normal end of a pipeline and exit
+    // quietly, NOT dump `error: WriteFailed` and a return trace like every
+    // unhandled error. A good unix citizen (`grep | head`) prints nothing here.
+    {
+        const cli_stderr = try runIntoHeadViaShell(arena.allocator(), proj, demo_bin, "flood", "flood.err");
+        if (std.mem.indexOf(u8, cli_stderr, "WriteFailed") != null or
+            std.mem.indexOf(u8, cli_stderr, "error: ") != null)
+        {
+            std.debug.print("broken-pipe leaked a trace to stderr:\n----\n{s}\n----\n", .{cli_stderr});
+            return error.BrokenPipeLeakedTrace;
+        }
     }
 
     // Help lists the discovered command. Explicitly-requested help goes to
