@@ -135,7 +135,6 @@ pub const CommandMeta = struct {
     examples: ?[]const []const u8 = null,
 };
 
-/// Command information available to plugins for introspection
 /// Option information for shell completions and introspection
 pub const OptionInfo = struct {
     name: []const u8,
@@ -254,7 +253,6 @@ pub const TestContext = ContextFor;
 /// live at a stable address and be passed to a Context by pointer. Command and
 /// plugin code never reaches into this directly — it reads the `std.Io` instance
 /// via `context.io` and does I/O via `context.stdout()`/`stderr()`/`stdin()`.
-/// Standard-stream holder backing `context.stdout()`/`stderr()`/`stdin()`.
 ///
 /// PINNED TYPE: the buffered writers/reader point into buffers inside the
 /// struct itself, so a Stdio must stay at one address for its whole life —
@@ -463,6 +461,35 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
     }
 }
 
+/// Shared comptime helper: verify that a `validate` hook on a meta field has
+/// the required signature `fn(Base) ?[]const u8`, where `Base` is `FieldT`
+/// with one optional level stripped. `kind` is "option" or "arg" (used only
+/// in the compile-error text, which must match what callers assert in tests).
+fn checkValidateHook(
+    comptime loc: []const u8,
+    comptime kind: []const u8,
+    comptime field_name: []const u8,
+    comptime FieldT: type,
+    comptime validate_fn: anytype,
+) void {
+    const Base = switch (@typeInfo(FieldT)) {
+        .optional => |o| o.child,
+        else => FieldT,
+    };
+    const v_info = @typeInfo(@TypeOf(validate_fn));
+    const sig_ok = comptime blk: {
+        if (v_info != .@"fn") break :blk false;
+        const f = v_info.@"fn";
+        if (f.params.len != 1) break :blk false;
+        const param_ok = if (f.params[0].type) |pt| pt == Base else false;
+        const ret_ok = if (f.return_type) |rt| rt == ?[]const u8 else false;
+        break :blk param_ok and ret_ok;
+    };
+    if (!sig_ok) {
+        @compileError(loc ++ kind ++ " '" ++ field_name ++ "' `validate` must have signature `fn(" ++ @typeName(Base) ++ ") ?[]const u8`");
+    }
+}
+
 /// Validate command metadata at compile time to catch typos and invalid fields.
 /// This function checks:
 /// - Top-level meta fields (description, examples, args, options, hidden)
@@ -501,7 +528,7 @@ pub fn validateMeta(
             break :blk false;
         };
         if (!is_valid) {
-            @compileError(loc ++ "unknown meta field '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden, aliases");
+            @compileError(loc ++ "unknown meta field '" ++ field.name ++ "'. Valid fields are: description, examples, args, options, hidden, aliases, exclusive");
         }
     }
 
@@ -564,22 +591,7 @@ pub fn validateMeta(
                         }
                         unreachable;
                     };
-                    const Base = switch (@typeInfo(FieldT)) {
-                        .optional => |o| o.child,
-                        else => FieldT,
-                    };
-                    const v_info = @typeInfo(@TypeOf(option_meta.validate));
-                    const sig_ok = comptime blk: {
-                        if (v_info != .@"fn") break :blk false;
-                        const f = v_info.@"fn";
-                        if (f.params.len != 1) break :blk false;
-                        const param_ok = if (f.params[0].type) |pt| pt == Base else false;
-                        const ret_ok = if (f.return_type) |rt| rt == ?[]const u8 else false;
-                        break :blk param_ok and ret_ok;
-                    };
-                    if (!sig_ok) {
-                        @compileError(loc ++ "option '" ++ field.name ++ "' `validate` must have signature `fn(" ++ @typeName(Base) ++ ") ?[]const u8`");
-                    }
+                    checkValidateHook(loc, "option", field.name, FieldT, option_meta.validate);
                 }
 
                 // `requires`: every named dependency must be an Options field,
@@ -694,22 +706,7 @@ pub fn validateMeta(
                         }
                         unreachable;
                     };
-                    const Base = switch (@typeInfo(FieldT)) {
-                        .optional => |o| o.child,
-                        else => FieldT,
-                    };
-                    const v_info = @typeInfo(@TypeOf(arg_meta.validate));
-                    const sig_ok = comptime blk: {
-                        if (v_info != .@"fn") break :blk false;
-                        const f = v_info.@"fn";
-                        if (f.params.len != 1) break :blk false;
-                        const param_ok = if (f.params[0].type) |pt| pt == Base else false;
-                        const ret_ok = if (f.return_type) |rt| rt == ?[]const u8 else false;
-                        break :blk param_ok and ret_ok;
-                    };
-                    if (!sig_ok) {
-                        @compileError(loc ++ "arg '" ++ field.name ++ "' `validate` must have signature `fn(" ++ @typeName(Base) ++ ") ?[]const u8`");
-                    }
+                    checkValidateHook(loc, "arg", field.name, FieldT, arg_meta.validate);
                 }
             } else {
                 // Bare string form: a string literal (*const [N:0]u8) or a
@@ -917,32 +914,35 @@ test {
     testing.refAllDecls(@This());
 }
 
-// Test that global options can be registered and work with different types
+// Test that global options can be registered and work with different types.
+// Plugin captures received values via static vars so we can assert typed delivery.
 test "global options with different types" {
     const GlobalTypesPlugin = struct {
+        var verbose_seen: ?bool = null;
+        var count_seen: ?u32 = null;
+        var output_seen: ?[]const u8 = null;
+
         pub const global_options = [_]GlobalOption{
             option("verbose", bool, .{ .short = 'v', .default = false, .description = "Enable verbose output" }),
             option("count", u32, .{ .short = 'c', .default = 1, .description = "Count value" }),
             option("output", []const u8, .{ .short = 'o', .default = "stdout", .description = "Output destination" }),
         };
 
-        pub fn handleGlobalOption(
-            _: anytype,
-            _: []const u8,
-            _: anytype,
-        ) !void {}
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            if (std.mem.eql(u8, name, "verbose")) {
+                if (@TypeOf(value) == bool) verbose_seen = value;
+            } else if (std.mem.eql(u8, name, "count")) {
+                if (@TypeOf(value) == u32) count_seen = value;
+            } else if (std.mem.eql(u8, name, "output")) {
+                if (@TypeOf(value) == []const u8) output_seen = value;
+            }
+        }
     };
 
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
-
-        pub fn execute(args: Args, options: Options, context: anytype) !void {
-            _ = args;
-            _ = options;
-            _ = context;
-            // Command execution
-        }
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
     };
 
     const TestRegistry = registry.Registry.init(.{
@@ -954,40 +954,52 @@ test "global options with different types" {
         .register("global-test", TestCommand)
         .build();
 
+    GlobalTypesPlugin.verbose_seen = null;
+    GlobalTypesPlugin.count_seen = null;
+    GlobalTypesPlugin.output_seen = null;
+
     var app = TestRegistry.init();
-
-    // Test parsing and handling of different option types
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
     const args = [_][]const u8{ "--verbose", "--count", "42", "--output", "file.txt", "global-test" };
-    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
+    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
 
-    // Note: Since execute() creates its own context, we can't easily verify the option values.
-    // The test passes if it completes without hanging, confirming static state conflicts are resolved.
+    try testing.expectEqual(@as(?bool, true), GlobalTypesPlugin.verbose_seen);
+    try testing.expectEqual(@as(?u32, 42), GlobalTypesPlugin.count_seen);
+    try testing.expect(GlobalTypesPlugin.output_seen != null);
+    try testing.expectEqualStrings("file.txt", GlobalTypesPlugin.output_seen.?);
 }
 
-// Test short option flags
+// Test short option flags are dispatched with the correct names.
 test "global options short flags" {
     const GlobalShortPlugin = struct {
+        var verbose_seen: ?bool = null;
+        var quiet_seen: ?bool = null;
+
         pub const global_options = [_]GlobalOption{
             option("verbose", bool, .{ .short = 'v', .default = false, .description = "Verbose output" }),
             option("quiet", bool, .{ .short = 'q', .default = false, .description = "Quiet output" }),
         };
 
-        pub fn handleGlobalOption(
-            _: anytype,
-            _: []const u8,
-            _: anytype,
-        ) !void {}
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            if (std.mem.eql(u8, name, "verbose")) {
+                if (@TypeOf(value) == bool) verbose_seen = value;
+            } else if (std.mem.eql(u8, name, "quiet")) {
+                if (@TypeOf(value) == bool) quiet_seen = value;
+            }
+        }
     };
 
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
-
-        pub fn execute(args: Args, options: Options, context: anytype) !void {
-            _ = args;
-            _ = options;
-            _ = context;
-        }
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
     };
 
     const TestRegistry = registry.Registry.init(.{
@@ -999,44 +1011,56 @@ test "global options short flags" {
         .register("global-test", TestCommand)
         .build();
 
+    GlobalShortPlugin.verbose_seen = null;
+    GlobalShortPlugin.quiet_seen = null;
+
     var app = TestRegistry.init();
-
-    // Test short flags
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
     const args = [_][]const u8{ "-v", "-q", "global-test" };
-    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
+    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
 
-    // Note: Since execute() creates its own context, we can't verify the option values.
-    // The test passes if it completes without hanging.
+    // Short flags -v and -q must arrive as true booleans on the long-name keys.
+    try testing.expectEqual(@as(?bool, true), GlobalShortPlugin.verbose_seen);
+    try testing.expectEqual(@as(?bool, true), GlobalShortPlugin.quiet_seen);
 }
 
-// Test that global options from plugins are available to all commands
+// Test that global options coexist with local command options:
+// the plugin sees its globals and the command sees its own options, all from
+// the same argv without conflicts.
 test "commands inherit global options" {
-    _ = testing.allocator;
-
     const GlobalInheritPlugin = struct {
+        var config_seen: ?[]const u8 = null;
+        var debug_seen: ?bool = null;
+
         pub const global_options = [_]GlobalOption{
             option("config", []const u8, .{ .short = 'c', .default = "~/.config", .description = "Config file path" }),
             option("debug", bool, .{ .short = 'd', .default = false, .description = "Enable debug mode" }),
         };
 
-        pub fn handleGlobalOption(
-            _: anytype,
-            _: []const u8,
-            _: anytype,
-        ) !void {}
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            if (std.mem.eql(u8, name, "config")) {
+                if (@TypeOf(value) == []const u8) config_seen = value;
+            } else if (std.mem.eql(u8, name, "debug")) {
+                if (@TypeOf(value) == bool) debug_seen = value;
+            }
+        }
     };
 
-    const TestCommand = struct {
-        pub const Args = struct {};
-        pub const Options = struct {
-            local: bool = false,
-        };
+    const LocalCmd = struct {
+        var local_seen: bool = false;
 
-        pub fn execute(args: Args, options: Options, context: anytype) !void {
-            _ = args;
-            _ = options;
-            _ = context;
-            // Command execution - global options would be available via context
+        pub const Args = struct {};
+        pub const Options = struct { local: bool = false };
+
+        pub fn execute(_: Args, options: Options, _: anytype) !void {
+            local_seen = options.local;
         }
     };
 
@@ -1046,51 +1070,64 @@ test "commands inherit global options" {
         .app_description = "Test application",
     })
         .registerPlugin(GlobalInheritPlugin)
-        .register("global-test", TestCommand)
+        .register("global-test", LocalCmd)
         .build();
 
+    GlobalInheritPlugin.config_seen = null;
+    GlobalInheritPlugin.debug_seen = null;
+    LocalCmd.local_seen = false;
+
     var app = TestRegistry.init();
-
-    // Test that command sees global options
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
     const args = [_][]const u8{ "--config", "/custom/path", "--debug", "global-test", "--local" };
-    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
+    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
 
-    // Note: Since execute() creates its own context, we can't verify the global option values.
-    // The test passes if it completes without hanging.
+    // Global plugin saw its two options from the shared argv.
+    try testing.expect(GlobalInheritPlugin.config_seen != null);
+    try testing.expectEqualStrings("/custom/path", GlobalInheritPlugin.config_seen.?);
+    try testing.expectEqual(@as(?bool, true), GlobalInheritPlugin.debug_seen);
+    // The local --local flag reached the command and was not eaten by the plugin.
+    try testing.expect(LocalCmd.local_seen);
 }
 
-// Test global option validation and defaults
+// Test global option defaults: when options are omitted the pipeline accepts
+// them silently (defaults are not errors), and the handler is not invoked for
+// absent options — only explicitly supplied values flow through the handler.
 test "global option defaults" {
-    _ = testing.allocator;
-
     const GlobalDefaultsPlugin = struct {
+        // Counts how many times the handler is called — should be zero when
+        // no options are supplied, and non-zero when they are.
+        var call_count: usize = 0;
+        var port_seen: ?u16 = null;
+        var host_seen: ?[]const u8 = null;
+
         pub const global_options = [_]GlobalOption{
             option("port", u16, .{ .short = 'p', .default = 8080, .description = "Port number" }),
             option("host", []const u8, .{ .default = "localhost", .description = "Host address" }),
         };
 
-        pub fn handleGlobalOption(
-            context: anytype,
-            option_name: []const u8,
-            value: anytype,
-        ) !void {
-            _ = context;
-            _ = option_name;
-            _ = value;
-            // In a real implementation, we'd store these values in context
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            call_count += 1;
+            if (std.mem.eql(u8, name, "port")) {
+                if (@TypeOf(value) == u16) port_seen = value;
+            } else if (std.mem.eql(u8, name, "host")) {
+                if (@TypeOf(value) == []const u8) host_seen = value;
+            }
         }
     };
 
     const TestCommand = struct {
+        var ran: bool = false;
         pub const Args = struct {};
         pub const Options = struct {};
-
-        pub fn execute(args: Args, options: Options, context: anytype) !void {
-            _ = args;
-            _ = options;
-            _ = context;
-            // Command would use the default values if not overridden
-        }
+        pub fn execute(_: Args, _: Options, _: anytype) !void { ran = true; }
     };
 
     const TestRegistry = registry.Registry.init(.{
@@ -1102,52 +1139,88 @@ test "global option defaults" {
         .register("global-test", TestCommand)
         .build();
 
+    // --- pass 1: no options supplied → handler not called, command still runs.
+    GlobalDefaultsPlugin.call_count = 0;
+    GlobalDefaultsPlugin.port_seen = null;
+    GlobalDefaultsPlugin.host_seen = null;
+    TestCommand.ran = false;
+
     var app = TestRegistry.init();
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
+    const no_opts = [_][]const u8{"global-test"};
+    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &no_opts, &stdio);
 
-    // Execute without providing the options (should use defaults)
-    const args = [_][]const u8{"global-test"};
-    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
+    try testing.expect(TestCommand.ran);
+    // Omitted global options do not trigger the handler.
+    try testing.expectEqual(@as(usize, 0), GlobalDefaultsPlugin.call_count);
 
-    // Note: Test passes if it completes without hanging (defaults would be handled internally).
+    // --- pass 2: explicit values → handler called with the supplied values.
+    GlobalDefaultsPlugin.call_count = 0;
+    GlobalDefaultsPlugin.port_seen = null;
+    GlobalDefaultsPlugin.host_seen = null;
+    TestCommand.ran = false;
+
+    var app2 = TestRegistry.init();
+    var stdio2: Stdio = undefined;
+    stdio2.init(std.testing.io);
+    var out_aw2 = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw2.deinit();
+    var err_aw2 = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw2.deinit();
+    stdio2.stdout_override = &out_aw2.writer;
+    stdio2.stderr_override = &err_aw2.writer;
+    const with_opts = [_][]const u8{ "--port", "9090", "--host", "example.com", "global-test" };
+    try app2.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &with_opts, &stdio2);
+
+    try testing.expect(TestCommand.ran);
+    try testing.expectEqual(@as(usize, 2), GlobalDefaultsPlugin.call_count);
+    try testing.expectEqual(@as(?u16, 9090), GlobalDefaultsPlugin.port_seen);
+    try testing.expect(GlobalDefaultsPlugin.host_seen != null);
+    try testing.expectEqualStrings("example.com", GlobalDefaultsPlugin.host_seen.?);
 }
 
-// Test multiple plugins with global options
+// Test multiple plugins each contribute their own global options and each
+// handler fires independently.
 test "multiple plugins with global options" {
-    _ = testing.allocator;
-
     const GlobalMultiPlugin1 = struct {
+        var seen: ?bool = null;
+
         pub const global_options = [_]GlobalOption{
             option("plugin1-opt", bool, .{ .default = false, .description = "Plugin 1 option" }),
         };
 
-        pub fn handleGlobalOption(
-            _: anytype,
-            _: []const u8,
-            _: anytype,
-        ) !void {}
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            if (std.mem.eql(u8, name, "plugin1-opt")) {
+                if (@TypeOf(value) == bool) seen = value;
+            }
+        }
     };
 
     const GlobalMultiPlugin2 = struct {
+        var seen: ?bool = null;
+
         pub const global_options = [_]GlobalOption{
             option("plugin2-opt", bool, .{ .default = false, .description = "Plugin 2 option" }),
         };
 
-        pub fn handleGlobalOption(
-            _: anytype,
-            _: []const u8,
-            _: anytype,
-        ) !void {}
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            if (std.mem.eql(u8, name, "plugin2-opt")) {
+                if (@TypeOf(value) == bool) seen = value;
+            }
+        }
     };
 
     const TestCommand = struct {
         pub const Args = struct {};
         pub const Options = struct {};
-
-        pub fn execute(args: Args, options: Options, context: anytype) !void {
-            _ = args;
-            _ = options;
-            _ = context;
-        }
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
     };
 
     const TestRegistry = registry.Registry.init(.{
@@ -1160,49 +1233,54 @@ test "multiple plugins with global options" {
         .register("global-test", TestCommand)
         .build();
 
+    GlobalMultiPlugin1.seen = null;
+    GlobalMultiPlugin2.seen = null;
+
     var app = TestRegistry.init();
-
-    // Test that both plugins' options work
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
     const args = [_][]const u8{ "--plugin1-opt", "--plugin2-opt", "global-test" };
-    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
+    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
 
-    // Note: Since execute() creates its own context, we can't verify the called states.
-    // The test passes if it completes without hanging.
+    // Each plugin's handler must receive its own option.
+    try testing.expectEqual(@as(?bool, true), GlobalMultiPlugin1.seen);
+    try testing.expectEqual(@as(?bool, true), GlobalMultiPlugin2.seen);
 }
 
-// Test that plugin global options are removed from args before command execution
+// Test that global options are consumed before the command sees its positional
+// args and local flags: if they were leaked through, the command parser would
+// reject them as unknown.
 test "global options consumed before command" {
-    _ = testing.allocator;
-
     const GlobalConsumePlugin = struct {
+        var global_seen: ?bool = null;
+
         pub const global_options = [_]GlobalOption{
             option("global", bool, .{ .short = 'g', .default = false, .description = "Global option" }),
         };
 
-        pub fn handleGlobalOption(
-            context: anytype,
-            option_name: []const u8,
-            value: anytype,
-        ) !void {
-            _ = context;
-            _ = option_name;
-            _ = value;
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            if (std.mem.eql(u8, name, "global")) {
+                if (@TypeOf(value) == bool) global_seen = value;
+            }
         }
     };
 
-    const TestCommand = struct {
-        pub const Args = struct {
-            arg1: []const u8,
-        };
-        pub const Options = struct {
-            local: bool = false,
-        };
+    const ConsumeCmd = struct {
+        var arg1_seen: []const u8 = "";
+        var local_seen: bool = false;
 
-        pub fn execute(args: Args, options: Options, context: anytype) !void {
-            _ = context;
-            _ = args.arg1;
-            _ = options.local;
-            // Would process the arguments and options as needed
+        pub const Args = struct { arg1: []const u8 };
+        pub const Options = struct { local: bool = false };
+
+        pub fn execute(args: Args, options: Options, _: anytype) !void {
+            arg1_seen = args.arg1;
+            local_seen = options.local;
         }
     };
 
@@ -1212,17 +1290,30 @@ test "global options consumed before command" {
         .app_description = "Test application",
     })
         .registerPlugin(GlobalConsumePlugin)
-        .register("global-test", TestCommand)
+        .register("global-test", ConsumeCmd)
         .build();
 
+    GlobalConsumePlugin.global_seen = null;
+    ConsumeCmd.arg1_seen = "";
+    ConsumeCmd.local_seen = false;
+
     var app = TestRegistry.init();
-
-    // Global options should be consumed and not passed to command
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
     const args = [_][]const u8{ "--global", "global-test", "myarg", "--local" };
-    try app.execute(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args);
+    try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
 
-    // Note: Since execute() creates its own context, we can't verify the argument processing.
-    // The test passes if it completes without hanging, confirming global options are handled.
+    // The global option was consumed by the plugin.
+    try testing.expectEqual(@as(?bool, true), GlobalConsumePlugin.global_seen);
+    // The command received its positional arg and local flag without --global leaking.
+    try testing.expectEqualStrings("myarg", ConsumeCmd.arg1_seen);
+    try testing.expect(ConsumeCmd.local_seen);
 }
 
 test "Stdio.init wires streams to the struct's own buffers, in place" {

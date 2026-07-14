@@ -1,17 +1,17 @@
-// markdown: Unified API for terminal formatting
-//
-// ONE function handles markdown, semantic colors, and runtime interpolation:
-//   try mdfmt.write(stdout, "<error>**{s}**</error> at <path>{s}</path>", .{test, file});
-//
-// Features:
-//   - Markdown: **bold**, *italic*, ~dim~
-//   - Semantic: <success>, <error>, <warning>, <info>, <command>, <path>, etc.
-//   - Runtime: {s}, {d}, {d:.1}, and all std.fmt specifiers
-//   - Zero runtime overhead: all parsing at comptime
-//   - Terminal capability-aware: adapts to no_color, 16, 256, or true color
-//
-// Example:
-//   try mdfmt.write(stdout, "<success>**{d}** tests passed</success>", .{count});
+//! markdown: Unified API for terminal formatting
+//!
+//! ONE function handles markdown, semantic colors, and runtime interpolation:
+//!   try markdown.write(stdout, "<error>**{s}**</error> at <path>{s}</path>", .{test, file});
+//!
+//! Features:
+//!   - Markdown: **bold**, *italic*, ~dim~
+//!   - Semantic: <success>, <error>, <warning>, <info>, <command>, <path>, etc.
+//!   - Runtime: {s}, {d}, {d:.1}, and all std.fmt specifiers
+//!   - Zero runtime overhead: all parsing at comptime
+//!   - Terminal capability-aware: adapts to no_color, 16, 256, or true color
+//!
+//! Example:
+//!   try markdown.write(stdout, "<success>**{d}** tests passed</success>", .{count});
 
 const std = @import("std");
 
