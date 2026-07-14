@@ -798,7 +798,12 @@ fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u
         if (!wrote_detail) {
             try buf_fmt.write("{s}", .{field_info.name});
         }
-        try buf_fmt.write("\n", .{});
+        // Terminate the row on the raw writer, not through the markdown
+        // formatter: a standalone "\n" has no semantic tags and isn't simple
+        // inline, so it routes through the block parser, which drops a leading
+        // blank line — swallowing the newline and collapsing all rows onto one
+        // line. A newline is not markdown, so write it directly.
+        try buf_writer.writeAll("\n");
     }
 
     var al = aw.toArrayList();
@@ -901,7 +906,12 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
             }
             try buf_fmt.write(")", .{});
         }
-        try buf_fmt.write("\n", .{});
+        // Terminate the row on the raw writer, not through the markdown
+        // formatter: a standalone "\n" has no semantic tags and isn't simple
+        // inline, so it routes through the block parser, which drops a leading
+        // blank line — swallowing the newline and collapsing all rows onto one
+        // line. A newline is not markdown, so write it directly.
+        try buf_writer.writeAll("\n");
     }
 
     // Mutually-exclusive sets, listed once each under the option lines.
@@ -911,7 +921,7 @@ fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?
             if (mi > 0) try buf_fmt.write(", ", .{});
             try writeDashedFlag(&buf_fmt, member);
         }
-        try buf_fmt.write("\n", .{});
+        try buf_writer.writeAll("\n");
     }
 
     var al = aw.toArrayList();
@@ -1008,6 +1018,106 @@ test "help renders requires markers and mutually-exclusive sets" {
     try std.testing.expect(std.mem.indexOf(u8, help, "Mutually exclusive:") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "--json") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "--yaml") != null);
+}
+
+test "help renders each argument row on its own line" {
+    // Same standalone-"\n" regression as the options block: two arg rows must
+    // each land on their own line, and the block must end with a newline so the
+    // ARGUMENTS/OPTIONS separator renders as a real blank line.
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    const module_info = zcli.CommandModuleInfo{
+        .has_args = true,
+        .args_fields = &.{
+            .{ .name = "source", .is_optional = false, .is_array = false, .type_name = "[]const u8", .description = "Source path" },
+            .{ .name = "dest", .is_optional = false, .is_array = false, .type_name = "[]const u8", .description = "Destination path" },
+        },
+    };
+
+    const help = (try generateArgsHelp(module_info, &ctx)).?;
+    defer allocator.free(help);
+
+    try std.testing.expect(std.mem.endsWith(u8, help, "\n"));
+
+    var line_count: usize = 0;
+    var it = std.mem.splitScalar(u8, help, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        line_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), line_count);
+
+    // The two arg rows are on separate lines.
+    const source_at = std.mem.indexOf(u8, help, "source").?;
+    const dest_at = std.mem.indexOf(u8, help, "dest").?;
+    try std.testing.expect(std.mem.indexOfScalar(u8, help[source_at..dest_at], '\n') != null);
+}
+
+test "help renders each option row on its own line" {
+    // Regression guard: option rows were terminated with a standalone markdown
+    // write of "\n", which the markdown block parser dropped (leading blank
+    // line), collapsing every option onto a single line. The row newline must
+    // survive so each option gets its own line and a trailing newline lets the
+    // caller add the ARGUMENTS/OPTIONS blank-line separator.
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    const module_info = zcli.CommandModuleInfo{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "status", .is_optional = true, .is_array = false, .type_name = "?[]const u8", .short = 's', .description = "Filter by status" },
+            .{ .name = "all", .is_optional = false, .is_array = false, .type_name = "bool", .default_value = "false", .short = 'a', .description = "Show all" },
+        },
+    };
+
+    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    defer allocator.free(help);
+
+    // Two options → two rows, each ending in its own newline. The block ends
+    // with a newline (so the callsite's separator produces a real blank line),
+    // and there are no interior double newlines gluing rows together.
+    try std.testing.expect(std.mem.endsWith(u8, help, "\n"));
+
+    // Split into lines and assert every non-empty line is exactly one option
+    // row (starts with the four-space indent + a flag), i.e. rows did not get
+    // concatenated onto a shared line.
+    var line_count: usize = 0;
+    var it = std.mem.splitScalar(u8, help, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        line_count += 1;
+        // Each option row begins with the 4-space indent then "--" (past any
+        // leading ANSI styling, which no_color capability omits here).
+        try std.testing.expect(std.mem.indexOf(u8, line, "--") != null);
+        // A row must not contain a second "--<name>" flag — that would mean two
+        // rows were glued together (the original bug).
+        const first = std.mem.indexOf(u8, line, "--").?;
+        try std.testing.expect(std.mem.indexOfPos(u8, line, first + 2, "--") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 2), line_count);
+
+    // Spelled out: the exact two rows are present, each terminated.
+    try std.testing.expect(std.mem.indexOf(u8, help, "--status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--all") != null);
+    // The --status row's newline separates it from the --all row (they are not
+    // on the same physical line).
+    const status_at = std.mem.indexOf(u8, help, "--status").?;
+    const all_at = std.mem.indexOf(u8, help, "--all").?;
+    const between = help[status_at..all_at];
+    try std.testing.expect(std.mem.indexOfScalar(u8, between, '\n') != null);
 }
 
 test "help marks array options as repeatable but not scalars" {
@@ -1211,7 +1321,7 @@ test "showHelp .command renders a clean OPTIONS block for an options-less comman
     // header + one entry).
     const opts_at = std.mem.indexOf(u8, out, "OPTIONS:\n").?;
     const after = out[opts_at + "OPTIONS:\n".len ..];
-    try std.testing.expect(std.mem.startsWith(u8, std.mem.trimLeft(u8, after, " "), "--help"));
+    try std.testing.expect(std.mem.startsWith(u8, std.mem.trimStart(u8, after, " "), "--help"));
     // With no declared options and no subcommands, --help is the only OPTIONS
     // entry and no COMMANDS section renders.
     try std.testing.expect(std.mem.indexOf(u8, out, "--help") != null);
