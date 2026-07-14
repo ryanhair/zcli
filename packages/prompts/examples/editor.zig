@@ -32,6 +32,7 @@ pub fn main(init: std.process.Init) !void {
         .extension = ".md",
         .editor_cmd = editor_cmd,
         .io = init.io,
+        .environ = init.environ_map,
     }) catch |err| {
         try t.w().print("\n({s})\n", .{@errorName(err)});
         return;

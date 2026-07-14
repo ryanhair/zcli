@@ -32,6 +32,19 @@ const zcli = @import("zcli");
 /// arrays/multi-value (from a config list). Config stays lenient: a value that
 /// won't parse (bad format, out of range, unknown enum variant) is skipped with
 /// a warning, never injected — see docs/DESIGN.md.
+///
+/// Consumer note — cwd-controlled defaults: case 2 above means anyone who can
+/// get a victim to run the CLI inside a directory they control (a cloned repo,
+/// an extracted archive, a shared build dir) can set the *default* for any
+/// Option this plugin covers, for that one invocation. This is bounded — every
+/// value still flows through the normal typed parser (no code execution),
+/// content is capped at 1 MB, and a CLI flag or env var always overrides it —
+/// but it is still an attacker-influenced default. Consequently: do not model
+/// security-sensitive behavior (e.g. "skip verification", "disable a safety
+/// check", a trusted path/URL/repo) as a plain config-overridable Option field.
+/// Either keep it out of Options entirely (comptime/build-time config, as the
+/// upgrade plugin does for its repo and signing key), or gate it so config
+/// alone cannot flip it.
 pub const plugin_id = "zcli_config";
 
 pub const Format = enum { json, toml, yaml };
