@@ -799,6 +799,13 @@ pub const InteractiveResult = struct {
     duration_ms: u64,
     /// Transcript of the interaction (if enabled)
     transcript: ?[]const u8 = null,
+    /// The PTY's line-discipline termios sampled after the child exited, just
+    /// before the master was closed (POSIX + PTY runs only; `null` on pipes or
+    /// Windows). A prompt's raw mode is applied to this shared termios, so this
+    /// captures whether the child left the terminal cooked (its restore ran) or
+    /// raw (it died mid-prompt without restoring). Lets a test assert the
+    /// signal/panic restore guard actually fired.
+    final_termios: ?posix.termios = null,
 
     allocator: std.mem.Allocator,
 
@@ -808,6 +815,15 @@ pub const InteractiveResult = struct {
         if (self.transcript) |transcript| {
             self.allocator.free(transcript);
         }
+    }
+
+    /// True when `final_termios` shows a cooked terminal (canonical mode and
+    /// echo on) — i.e. the child restored the terminal it put in raw mode.
+    /// Returns `null` when no termios was captured (pipes / Windows), so a test
+    /// can skip rather than assert on a platform that can't observe it.
+    pub fn rawModeRestored(self: InteractiveResult) ?bool {
+        const t = self.final_termios orelse return null;
+        return t.lflag.ICANON and t.lflag.ECHO;
     }
 };
 
@@ -1260,9 +1276,15 @@ fn runInteractivePosix(
     // For a PTY, close the master after draining so a child that reads until
     // end-of-input gets EOF/SIGHUP and exits — otherwise `child.wait` could block
     // on it. (The pipe path already closed stdin above for the same reason.)
+    // Sample the shared line-discipline termios first: the drain above ran until
+    // the child's slave closed (it exited), so any restore the child made — the
+    // signal/panic guard's `tcsetattr` included — has already landed on this
+    // fd. This is the only window it's observable (the master is about to go).
+    var final_termios: ?posix.termios = null;
     if (using_pty) {
         if (pty_manager) |*pty| {
             if (pty.master_fd != -1) {
+                final_termios = posix.tcgetattr(pty.master_fd) catch null;
                 closeFd(pty.master_fd);
                 pty.master_fd = -1;
             }
@@ -1303,6 +1325,7 @@ fn runInteractivePosix(
         .steps_executed = steps_executed,
         .duration_ms = duration_ms,
         .transcript = if (transcript_buffer) |*tb| try tb.toOwnedSlice(allocator) else null,
+        .final_termios = final_termios,
         .allocator = allocator,
     };
 }

@@ -44,6 +44,7 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     }
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
+        .hybrid_raw = raw,
     });
     defer app.deinit();
 

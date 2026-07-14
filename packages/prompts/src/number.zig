@@ -75,6 +75,7 @@ fn numberTty(p: Prompts, config: NumberConfig) !i64 {
     }
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
+        .hybrid_raw = raw,
     });
     defer app.deinit();
 

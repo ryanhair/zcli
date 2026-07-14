@@ -99,6 +99,13 @@ pub const App = struct {
         /// App owns raw mode and drives `nextEvent`). Unused in hybrid, where
         /// input ownership stays with the caller (e.g. `prompts`).
         stdin: ?*std.Io.Reader = null,
+        /// The caller's raw mode, in hybrid only. Hybrid input ownership stays
+        /// with the caller (e.g. a prompt enables raw mode itself), but the
+        /// restore guard is armed here — the single arm/disarm site — so the
+        /// caller hands its `RawMode` in and the guard replays `disable()` on a
+        /// signal/panic that skips `deinit`. `null` leaves the guard's raw
+        /// restore empty (the historical hybrid behaviour: cursor only).
+        hybrid_raw: ?terminal.RawMode = null,
         /// Report mouse press/release/drag as `Event.mouse` (full-screen only).
         /// Off by default — mouse reporting overrides the terminal's own text
         /// selection, so it's opt-in.
@@ -827,17 +834,20 @@ pub const App = struct {
         return @intCast(@min(rows, std.math.maxInt(u16)));
     }
 
-    /// Hybrid takeover: hide the cursor (the only process-global state hybrid
-    /// touches). Arm the guard to re-show it on a signal/panic that skips
-    /// deinit — the mode-agnostic restore, minus the alt-screen and termios
-    /// full-screen also registers. Only on a real terminal (`term_size` null);
-    /// the headless harness must not grab process signals.
+    /// Hybrid takeover: hide the cursor (the only *display* state hybrid owns).
+    /// Arm the guard to re-show it — and, when the caller handed its `RawMode`
+    /// in via `options.hybrid_raw`, to also restore termios — on a signal/panic
+    /// that skips deinit. Input ownership stays with the caller (it enables and
+    /// `disable()`s raw mode itself), but the guard is armed here, the single
+    /// arm/disarm site, so the registered raw restore never diverges from the
+    /// cursor blob. Only on a real terminal (`term_size` null); the headless
+    /// harness must not grab process signals.
     fn start(self: *App) !void {
         if (self.started) return;
         self.started = true;
         try self.writer.writeAll("\x1b[?25l");
         if (self.options.term_size == null)
-            terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h", null);
+            terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h", self.options.hybrid_raw);
     }
 
     fn termSize(self: *App) Size {
