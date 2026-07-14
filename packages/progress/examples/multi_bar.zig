@@ -14,6 +14,9 @@ const std = @import("std");
 const Progress = @import("progress");
 const common = @import("common.zig");
 
+// Indicators hide the cursor, so a panic must restore the terminal.
+pub const panic = Progress.panic;
+
 const Job = struct {
     mb: *Progress.MultiBar,
     io: std.Io,

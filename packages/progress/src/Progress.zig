@@ -59,6 +59,12 @@ const ui = @import("ui");
 
 const Progress = @This();
 
+/// The terminal-restore panic handler. Every indicator hides the cursor via a
+/// hybrid `ui.App`, so a panic mid-animation must restore the terminal — the App
+/// enforces this at compile time. Install it in your root source file:
+/// `pub const panic = Progress.panic;` (zcli apps use `zcli.ui.panic`).
+pub const panic = ui.panic;
+
 /// Theming re-export, so standalone users can build a custom style context
 /// without depending on the `theme` package directly (it's transitive here).
 pub const ThemeContext = theme_pkg.ThemeContext;

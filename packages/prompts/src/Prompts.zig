@@ -40,8 +40,16 @@ pub const editor = editor_prompt.editor;
 const std = @import("std");
 const theme_pkg = @import("theme");
 pub const terminal = @import("terminal");
+const ui = @import("ui");
 
 const Prompts = @This();
+
+/// The terminal-restore panic handler. Every prompt hides the cursor and rides
+/// raw mode via a hybrid `ui.App`, so a panic mid-prompt must restore the
+/// terminal — the App enforces this at compile time. Install it in your root
+/// source file: `pub const panic = Prompts.panic;` (zcli apps use
+/// `zcli.ui.panic`).
+pub const panic = ui.panic;
 
 /// Theming re-exports, so standalone users can build a custom style context
 /// without depending on the `theme` package directly (it's transitive here).

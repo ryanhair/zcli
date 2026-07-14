@@ -99,6 +99,9 @@ fn buildFrame(a: std.mem.Allocator, frame: u32, width: u16) !ui.Node {
     }, rows.items);
 }
 
+// Even a hybrid App hides the cursor, so a panic must be able to restore it.
+pub const panic = ui.panic;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const gpa = init.gpa;

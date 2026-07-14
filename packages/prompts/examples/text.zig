@@ -13,6 +13,9 @@ const std = @import("std");
 const Prompts = @import("prompts");
 const common = @import("common.zig");
 
+// Prompts hide the cursor and drive raw mode, so a panic must restore the terminal.
+pub const panic = Prompts.panic;
+
 /// A `preview` is a context pointer plus a render callback. The callback gets a
 /// frame arena (do not free what you allocate from it) and the current input,
 /// and returns one line of plain text — or null for no preview line.

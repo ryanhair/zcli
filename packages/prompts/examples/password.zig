@@ -11,6 +11,9 @@ const std = @import("std");
 const Prompts = @import("prompts");
 const common = @import("common.zig");
 
+// Prompts hide the cursor and drive raw mode, so a panic must restore the terminal.
+pub const panic = Prompts.panic;
+
 const min_len = 8;
 
 pub fn main(init: std.process.Init) !void {
