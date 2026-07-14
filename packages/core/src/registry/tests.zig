@@ -37,14 +37,14 @@ fn createTestCommands(allocator: std.mem.Allocator) !types.DiscoveredCommands {
     var commands = types.DiscoveredCommands.init(allocator);
 
     // Create a pure command group (no index.zig)
-    var network_subcommands = std.StringHashMap(types.CommandInfo).init(allocator);
+    var network_subcommands = std.StringHashMap(types.DiscoveredCommand).init(allocator);
 
     // Create path array properly
     var network_ls_path = try allocator.alloc([]const u8, 2);
     network_ls_path[0] = try allocator.dupe(u8, "network");
     network_ls_path[1] = try allocator.dupe(u8, "ls");
 
-    const network_ls = types.CommandInfo{
+    const network_ls = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "ls"),
         .path = network_ls_path,
         .file_path = try allocator.dupe(u8, "network/ls.zig"),
@@ -56,7 +56,7 @@ fn createTestCommands(allocator: std.mem.Allocator) !types.DiscoveredCommands {
     var network_path = try allocator.alloc([]const u8, 1);
     network_path[0] = try allocator.dupe(u8, "network");
 
-    const network_group = types.CommandInfo{
+    const network_group = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "network"),
         .path = network_path,
         .file_path = try allocator.dupe(u8, "network"), // No index.zig
@@ -66,12 +66,12 @@ fn createTestCommands(allocator: std.mem.Allocator) !types.DiscoveredCommands {
     try commands.root.put(try allocator.dupe(u8, "network"), network_group);
 
     // Create an optional command group (with index.zig)
-    var container_subcommands = std.StringHashMap(types.CommandInfo).init(allocator);
+    var container_subcommands = std.StringHashMap(types.DiscoveredCommand).init(allocator);
     var container_run_path = try allocator.alloc([]const u8, 2);
     container_run_path[0] = try allocator.dupe(u8, "container");
     container_run_path[1] = try allocator.dupe(u8, "run");
 
-    const container_run = types.CommandInfo{
+    const container_run = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "run"),
         .path = container_run_path,
         .file_path = try allocator.dupe(u8, "container/run.zig"),
@@ -83,7 +83,7 @@ fn createTestCommands(allocator: std.mem.Allocator) !types.DiscoveredCommands {
     var container_path = try allocator.alloc([]const u8, 1);
     container_path[0] = try allocator.dupe(u8, "container");
 
-    const container_group = types.CommandInfo{
+    const container_group = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "container"),
         .path = container_path,
         .file_path = try allocator.dupe(u8, "container/index.zig"),
@@ -96,7 +96,7 @@ fn createTestCommands(allocator: std.mem.Allocator) !types.DiscoveredCommands {
     var version_path = try allocator.alloc([]const u8, 1);
     version_path[0] = try allocator.dupe(u8, "version");
 
-    const version_cmd = types.CommandInfo{
+    const version_cmd = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "version"),
         .path = version_path,
         .file_path = try allocator.dupe(u8, "version.zig"),
@@ -210,14 +210,14 @@ test "nested pure command groups" {
     defer commands.deinit();
 
     // Create nested structure: docker -> compose (pure) -> up (leaf)
-    var compose_subcommands = std.StringHashMap(types.CommandInfo).init(allocator);
+    var compose_subcommands = std.StringHashMap(types.DiscoveredCommand).init(allocator);
 
     var compose_up_path = try allocator.alloc([]const u8, 3);
     compose_up_path[0] = try allocator.dupe(u8, "docker");
     compose_up_path[1] = try allocator.dupe(u8, "compose");
     compose_up_path[2] = try allocator.dupe(u8, "up");
 
-    const compose_up = types.CommandInfo{
+    const compose_up = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "up"),
         .path = compose_up_path,
         .file_path = try allocator.dupe(u8, "docker/compose/up.zig"),
@@ -231,7 +231,7 @@ test "nested pure command groups" {
     compose_path[0] = try allocator.dupe(u8, "docker");
     compose_path[1] = try allocator.dupe(u8, "compose");
 
-    const compose_group = types.CommandInfo{
+    const compose_group = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "compose"),
         .path = compose_path,
         .file_path = try allocator.dupe(u8, "docker/compose"),
@@ -240,13 +240,13 @@ test "nested pure command groups" {
     };
 
     // Docker is an optional group
-    var docker_subcommands = std.StringHashMap(types.CommandInfo).init(allocator);
+    var docker_subcommands = std.StringHashMap(types.DiscoveredCommand).init(allocator);
     try docker_subcommands.put(try allocator.dupe(u8, "compose"), compose_group);
 
     var docker_path = try allocator.alloc([]const u8, 1);
     docker_path[0] = try allocator.dupe(u8, "docker");
 
-    const docker_group = types.CommandInfo{
+    const docker_group = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "docker"),
         .path = docker_path,
         .file_path = try allocator.dupe(u8, "docker/index.zig"),
@@ -364,16 +364,16 @@ test "mixed command types in same parent" {
     defer commands.deinit();
 
     // Create a structure with both pure and optional groups at same level
-    var app_subcommands = std.StringHashMap(types.CommandInfo).init(allocator);
+    var app_subcommands = std.StringHashMap(types.DiscoveredCommand).init(allocator);
 
     // Pure group
-    var pure_subcommands = std.StringHashMap(types.CommandInfo).init(allocator);
+    var pure_subcommands = std.StringHashMap(types.DiscoveredCommand).init(allocator);
 
     var pure_cmd_path = try allocator.alloc([]const u8, 2);
     pure_cmd_path[0] = try allocator.dupe(u8, "pure");
     pure_cmd_path[1] = try allocator.dupe(u8, "list");
 
-    const pure_cmd = types.CommandInfo{
+    const pure_cmd = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "list"),
         .path = pure_cmd_path,
         .file_path = try allocator.dupe(u8, "pure/list.zig"),
@@ -385,7 +385,7 @@ test "mixed command types in same parent" {
     var pure_path = try allocator.alloc([]const u8, 1);
     pure_path[0] = try allocator.dupe(u8, "pure");
 
-    const pure_group = types.CommandInfo{
+    const pure_group = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "pure"),
         .path = pure_path,
         .file_path = try allocator.dupe(u8, "pure"),
@@ -395,13 +395,13 @@ test "mixed command types in same parent" {
     try app_subcommands.put(try allocator.dupe(u8, "pure"), pure_group);
 
     // Optional group
-    var optional_subcommands = std.StringHashMap(types.CommandInfo).init(allocator);
+    var optional_subcommands = std.StringHashMap(types.DiscoveredCommand).init(allocator);
 
     var optional_cmd_path = try allocator.alloc([]const u8, 2);
     optional_cmd_path[0] = try allocator.dupe(u8, "optional");
     optional_cmd_path[1] = try allocator.dupe(u8, "exec");
 
-    const optional_cmd = types.CommandInfo{
+    const optional_cmd = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "exec"),
         .path = optional_cmd_path,
         .file_path = try allocator.dupe(u8, "optional/exec.zig"),
@@ -413,7 +413,7 @@ test "mixed command types in same parent" {
     var optional_path = try allocator.alloc([]const u8, 1);
     optional_path[0] = try allocator.dupe(u8, "optional");
 
-    const optional_group = types.CommandInfo{
+    const optional_group = types.DiscoveredCommand{
         .name = try allocator.dupe(u8, "optional"),
         .path = optional_path,
         .file_path = try allocator.dupe(u8, "optional/index.zig"),

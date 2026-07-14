@@ -1,6 +1,6 @@
 # Multi-value options: comma-separated, not greedy space-separated
 
-Status: proposed
+Status: accepted (implemented)
 
 An array-typed option (`tags: [][]const u8`, `nums: []u32`, …) collects several
 values. Until now the only spelling was **repetition** — `--tag a --tag b`. Users

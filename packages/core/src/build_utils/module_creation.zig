@@ -5,7 +5,7 @@ const command_config_lookup = @import("command_config_lookup.zig");
 
 const PluginInfo = types.PluginInfo;
 const DiscoveredCommands = types.DiscoveredCommands;
-const CommandInfo = types.CommandInfo;
+const DiscoveredCommand = types.DiscoveredCommand;
 
 // ============================================================================
 // MODULE CREATION - Build-time module creation and linking
@@ -107,7 +107,7 @@ fn createGroupModules(
     registry_module: *std.Build.Module,
     zcli_module: *std.Build.Module,
     _: []const u8,
-    group_info: *const CommandInfo,
+    group_info: *const DiscoveredCommand,
     commands_dir: []const u8,
     shared_modules: []const types.SharedModule,
     command_configs: []const types.CommandConfig,

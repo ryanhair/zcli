@@ -9,7 +9,7 @@ const ThemeContext = zcli.theme.ThemeContext;
 // build actually wires up, with no rules duplicated here.
 const command_discovery = zcli.command_discovery;
 const CommandType = command_discovery.CommandType;
-const CommandInfo = command_discovery.CommandInfo;
+const DiscoveredCommand = command_discovery.DiscoveredCommand;
 
 pub const meta = .{
     .description = "Show the command tree discovered from src/commands",
@@ -121,7 +121,7 @@ fn nodesFromMap(
     arena: std.mem.Allocator,
     io: std.Io,
     dir: std.Io.Dir,
-    map: *const std.StringHashMap(CommandInfo),
+    map: *const std.StringHashMap(DiscoveredCommand),
 ) ![]const Node {
     var nodes = std.ArrayList(Node).empty;
 
@@ -726,7 +726,7 @@ test "nodesFromMap sorts, maps kinds, and enriches with metadata" {
     try tmp.dir.writeFile(io, .{ .sub_path = "users/list.zig", .data = "pub const meta = .{};" });
 
     // A discovery result as produced by the framework's discoverInDir.
-    var users_sub = std.StringHashMap(CommandInfo).init(arena);
+    var users_sub = std.StringHashMap(DiscoveredCommand).init(arena);
     try users_sub.put("list", .{
         .name = "list",
         .path = &.{ "users", "list" },
@@ -734,7 +734,7 @@ test "nodesFromMap sorts, maps kinds, and enriches with metadata" {
         .command_type = .leaf,
         .subcommands = null,
     });
-    var root = std.StringHashMap(CommandInfo).init(arena);
+    var root = std.StringHashMap(DiscoveredCommand).init(arena);
     try root.put("users", .{
         .name = "users",
         .path = &.{"users"},

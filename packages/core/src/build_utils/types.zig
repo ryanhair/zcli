@@ -4,13 +4,13 @@ const std = @import("std");
 // BUILD-TIME TYPES - Used across build utility modules
 //
 // Everything here may reference std.Build. The runtime-safe discovery types
-// (CommandType/CommandInfo/DiscoveredCommands) live in discovery_types.zig and
-// are re-exported below for build-time convenience — runtime code imports
+// (CommandType/DiscoveredCommand/DiscoveredCommands) live in discovery_types.zig
+// and are re-exported below for build-time convenience — runtime code imports
 // discovery_types.zig (via command_discovery) and never this file.
 // ============================================================================
 
 pub const CommandType = @import("discovery_types.zig").CommandType;
-pub const CommandInfo = @import("discovery_types.zig").CommandInfo;
+pub const DiscoveredCommand = @import("discovery_types.zig").DiscoveredCommand;
 pub const DiscoveredCommands = @import("discovery_types.zig").DiscoveredCommands;
 pub const sortedByName = @import("discovery_types.zig").sortedByName;
 

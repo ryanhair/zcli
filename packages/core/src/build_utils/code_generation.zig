@@ -5,7 +5,7 @@ const module_names = @import("module_names.zig");
 
 const PluginInfo = types.PluginInfo;
 const DiscoveredCommands = types.DiscoveredCommands;
-const CommandInfo = types.CommandInfo;
+const DiscoveredCommand = types.DiscoveredCommand;
 const CommandType = types.CommandType;
 const BuildConfig = types.BuildConfig;
 
@@ -75,7 +75,7 @@ fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
 }
 
 /// Generate group command imports recursively
-fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const CommandInfo) !void {
+fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const DiscoveredCommand) !void {
     if (group_info.subcommands) |subcommands| {
         const sorted = try types.sortedByName(subcommands.allocator, &subcommands);
         defer subcommands.allocator.free(sorted);
@@ -195,7 +195,7 @@ fn generatePureCommandGroups(writer: anytype, commands: DiscoveredCommands, allo
 }
 
 /// Recursively generate pure command group entries
-fn generatePureGroupsFromMap(writer: anytype, command_map: *const std.StringHashMap(CommandInfo), allocator: std.mem.Allocator) !void {
+fn generatePureGroupsFromMap(writer: anytype, command_map: *const std.StringHashMap(DiscoveredCommand), allocator: std.mem.Allocator) !void {
     const sorted = try types.sortedByName(allocator, command_map);
     defer allocator.free(sorted);
     for (sorted) |cmd_info| {
@@ -246,7 +246,7 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
             const module_name = try module_names.leafModuleName(allocator, cmd_name);
             defer allocator.free(module_name);
 
-            // Use the actual command path from CommandInfo (it's now an array)
+            // Use the actual command path from DiscoveredCommand (it's now an array)
             const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
             defer allocator.free(command_path_str);
             const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
@@ -258,7 +258,7 @@ fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, a
 }
 
 /// Generate group command registrations recursively
-fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const CommandInfo, allocator: std.mem.Allocator) !void {
+fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const DiscoveredCommand, allocator: std.mem.Allocator) !void {
     if (group_info.subcommands) |subcommands| {
         const sorted = try types.sortedByName(allocator, &subcommands);
         defer allocator.free(sorted);
@@ -288,7 +288,7 @@ fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const
                 const module_name = try module_names.pathModuleName(allocator, subcmd_info.path);
                 defer allocator.free(module_name);
 
-                // Use the actual command path from the CommandInfo (it's now an array)
+                // Use the actual command path from the DiscoveredCommand (it's now an array)
                 const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
                 defer allocator.free(command_path_str);
                 const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
@@ -366,7 +366,7 @@ test "app metadata is escaped into valid string literals" {
 
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 
@@ -399,7 +399,7 @@ test "plugin registry generation with imports" {
     // Create mock discovered commands
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 
@@ -446,7 +446,7 @@ test "plugin name sanitization for imports" {
 
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 
@@ -482,7 +482,7 @@ test "Context extension generation" {
 
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 
@@ -525,7 +525,7 @@ test "pipeline composition ordering" {
 
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 
@@ -566,7 +566,7 @@ test "Commands struct with plugin commands" {
 
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 
@@ -574,7 +574,7 @@ test "Commands struct with plugin commands" {
     var hello_path = try allocator.alloc([]const u8, 1);
     hello_path[0] = try allocator.dupe(u8, "hello");
 
-    const hello_cmd = CommandInfo{
+    const hello_cmd = DiscoveredCommand{
         .name = try allocator.dupe(u8, "hello"),
         .path = hello_path,
         .file_path = try allocator.dupe(u8, "src/commands/hello.zig"),
@@ -619,7 +619,7 @@ test "empty plugin list handling" {
 
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 
@@ -667,7 +667,7 @@ test "generated code structure validation" {
     // Create empty commands for simplicity
     var commands = DiscoveredCommands{
         .allocator = allocator,
-        .root = std.StringHashMap(CommandInfo).init(allocator),
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
     };
     defer commands.deinit();
 

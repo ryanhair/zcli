@@ -1,6 +1,6 @@
 # Option constraints: mutually-exclusive sets and dependencies
 
-Status: proposed
+Status: accepted (implemented)
 
 zcli derives a command's options from its `Options` struct: field type drives
 parsing, and a field is *required* when it has no default and can't be absent

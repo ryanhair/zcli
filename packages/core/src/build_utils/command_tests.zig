@@ -12,7 +12,7 @@ const command_discovery = @import("command_discovery.zig");
 const plugin_system = @import("plugin_system.zig");
 
 const DiscoveredCommands = types.DiscoveredCommands;
-const CommandInfo = types.CommandInfo;
+const DiscoveredCommand = types.DiscoveredCommand;
 const SharedModule = types.SharedModule;
 const PluginInfo = types.PluginInfo;
 
@@ -126,7 +126,7 @@ const Ctx = struct {
     testing_module: *std.Build.Module,
     shared_modules: []const SharedModule,
 
-    fn addMapTests(self: Ctx, map: *std.StringHashMap(CommandInfo)) void {
+    fn addMapTests(self: Ctx, map: *std.StringHashMap(DiscoveredCommand)) void {
         var it = map.iterator();
         while (it.next()) |entry| {
             const info = entry.value_ptr;
@@ -137,7 +137,7 @@ const Ctx = struct {
         }
     }
 
-    fn addOne(self: Ctx, info: *const CommandInfo) void {
+    fn addOne(self: Ctx, info: *const DiscoveredCommand) void {
         const b = self.b;
         const full_path = b.fmt("{s}/{s}", .{ self.commands_dir, info.file_path });
 
