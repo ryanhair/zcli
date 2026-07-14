@@ -20,6 +20,12 @@ const zcli = @import("zcli");
 ///   3. {user config dir}/{app_name}/config.json / .toml / .yaml / .yml
 ///      ($XDG_CONFIG_HOME or ~/.config on POSIX; %APPDATA% on Windows)
 ///
+/// Case 2 is discovered from the process's cwd, which an attacker can control
+/// (e.g. a cloned repo containing a `.myapp.config.toml`) — so, unlike cases 1
+/// and 3, applying it prints a one-line `note:` to stderr naming the file.
+/// CLI/env still always win (see above), so this is a visibility fix, not a
+/// trust boundary change.
+///
 /// Coercion: a config scalar is stringified and run through the *same* value
 /// parser the CLI and env use, so every option type works from config — bools,
 /// all int widths, floats, enums (incl. optionals), custom `parse` types, and
@@ -73,7 +79,8 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
     const stderr = context.stderr();
 
     var path_allocated = false;
-    const path = findConfigFile(allocator, context.io, context.environ, context.app_name, data.custom_path, stderr, &path_allocated) orelse return args;
+    var is_project_local = false;
+    const path = findConfigFile(allocator, context.io, context.environ, context.app_name, data.custom_path, stderr, &path_allocated, &is_project_local) orelse return args;
 
     const format = detectFormat(path) orelse {
         // Unrecognized extension — warn and skip
@@ -92,6 +99,15 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
     data.loaded_path = path;
     data.path_allocated = path_allocated;
     data.format = format;
+
+    // Project-local config is discovered silently by cwd — the cwd is often
+    // outside the user's control (e.g. a freshly cloned repo), so surface that
+    // it's in effect. Global/user-level config lives in a path the user set up
+    // themselves and stays silent, as does an explicit --config (already visible
+    // on the command line). One line, once per invocation — not per option.
+    if (is_project_local) {
+        try stderr.print("note: applied config from ./{s}\n", .{path});
+    }
 
     return args;
 }
@@ -488,8 +504,9 @@ fn userConfigDir(allocator: std.mem.Allocator, environ: *const std.process.Envir
     return dir;
 }
 
-fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, app_name: []const u8, custom_path: ?[]const u8, stderr: *std.Io.Writer, allocated: *bool) ?[]const u8 {
+fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, app_name: []const u8, custom_path: ?[]const u8, stderr: *std.Io.Writer, allocated: *bool, is_project_local: *bool) ?[]const u8 {
     allocated.* = false;
+    is_project_local.* = false;
     const cwd = std.Io.Dir.cwd();
 
     if (custom_path) |p| {
@@ -502,7 +519,10 @@ fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.
     const extensions = [_][]const u8{ ".json", ".toml", ".yaml", ".yml" };
 
     // Project-local: ./.{app_name}.config.{ext}
-    if (firstExisting(allocator, io, cwd, stderr, "", app_name, &extensions, allocated)) |p| return p;
+    if (firstExisting(allocator, io, cwd, stderr, "", app_name, &extensions, allocated)) |p| {
+        is_project_local.* = true;
+        return p;
+    }
 
     // User-level: {config dir}/{app_name}/config.{ext}
     var base_allocated = false;
@@ -615,7 +635,8 @@ test "findConfigFile: returns null when no config exists" {
     var environ = std.process.Environ.Map.init(testing.allocator);
     defer environ.deinit();
     var allocated = false;
-    const result = findConfigFile(testing.allocator, testing.io, &environ, "nonexistent_xyz", null, nullWriter(), &allocated);
+    var is_project_local = false;
+    const result = findConfigFile(testing.allocator, testing.io, &environ, "nonexistent_xyz", null, nullWriter(), &allocated, &is_project_local);
     try testing.expect(result == null);
 }
 
@@ -623,7 +644,8 @@ test "findConfigFile: custom path returns null for missing file" {
     var environ = std.process.Environ.Map.init(testing.allocator);
     defer environ.deinit();
     var allocated = false;
-    const result = findConfigFile(testing.allocator, testing.io, &environ, "test", "/nonexistent/path.json", nullWriter(), &allocated);
+    var is_project_local = false;
+    const result = findConfigFile(testing.allocator, testing.io, &environ, "test", "/nonexistent/path.json", nullWriter(), &allocated, &is_project_local);
     try testing.expect(result == null);
 }
 
