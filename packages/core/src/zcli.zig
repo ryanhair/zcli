@@ -87,6 +87,13 @@ pub const custom_type = @import("custom_type.zig");
 /// `__complete` command runs a field's hook at `<TAB>`.
 pub const completion = @import("completion.zig");
 
+/// Is this `-`-prefixed token actually a negative number (`-5`, `-.5`, `-1e9`,
+/// `-inf`, `-nan`) rather than an option flag? The single source of truth shared
+/// with the argument parser — the `zcli_completions` cursor walk must count
+/// positional slots exactly as the parser does, so both read this one predicate
+/// instead of keeping divergent copies (grade6 #300).
+pub const isNegativeNumber = option_utils.isNegativeNumber;
+
 /// Option value-coercion surface for the zcli_config plugin. A config file
 /// stores scalars in a format-native shape (JSON/TOML/YAML); the plugin
 /// stringifies them and routes through *the same* parser the CLI and env use,
