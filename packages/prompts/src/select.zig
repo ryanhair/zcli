@@ -45,9 +45,11 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
         return 0;
     }
 
-    // TTY: interactive selection
+    // TTY: interactive selection. A raw-mode failure must not fabricate a
+    // choice (returning 0 would "select" the first item the user never saw) —
+    // surface it instead.
     Prompts.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
+    const raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
     var watcher = terminal.ResizeWatcher.init();
     defer {
         watcher.deinit();
@@ -57,10 +59,12 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
     // The App owns the cursor (hidden on first frame, restored by deinit)
     // and the live region. Runs before the raw/watcher cleanup above (LIFO),
     // so its restore bytes still go out under raw mode — which is why the
-    // App terminates lines with CRLF.
+    // App terminates lines with CRLF. The App is also the single guard
+    // arm/disarm site, so it registers our raw mode for the signal/panic path.
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
         .unicode = config.unicode,
+        .hybrid_raw = raw,
     });
     defer app.deinit();
 

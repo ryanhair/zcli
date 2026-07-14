@@ -69,6 +69,7 @@ pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
         .unicode = config.unicode,
+        .hybrid_raw = raw,
     });
     defer app.deinit();
 

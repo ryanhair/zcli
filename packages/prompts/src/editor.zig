@@ -51,6 +51,7 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     };
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
+        .hybrid_raw = raw,
     });
     defer app.deinit();
     try renderFrame(&app, p.theme, config);

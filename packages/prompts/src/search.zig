@@ -40,9 +40,11 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
         return 0;
     }
 
-    // TTY: interactive search
+    // TTY: interactive search. A raw-mode failure must not fabricate a choice
+    // (returning 0 would "select" the first item the user never saw) — surface
+    // it instead.
     Prompts.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return 0;
+    const raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
     var watcher = terminal.ResizeWatcher.init();
     defer {
         watcher.deinit();
@@ -52,6 +54,7 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
         .unicode = config.unicode,
+        .hybrid_raw = raw,
     });
     defer app.deinit();
 
