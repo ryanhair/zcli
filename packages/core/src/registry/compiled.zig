@@ -158,7 +158,6 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
     // Validate plugin conflicts at compile time
     comptime {
         // Use arrays to check for conflicts since ComptimeStringMap may not be available
-        var global_option_names: []const []const u8 = &.{};
         var command_paths: []const []const []const u8 = &.{};
 
         // Check for command path conflicts among regular commands
@@ -264,20 +263,9 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 }
             }
         }
-
-        // Check for global option conflicts
-        for (new_plugins) |Plugin| {
-            if (plugin_types.hasGlobalOptions(Plugin)) {
-                for (Plugin.global_options) |opt| {
-                    for (global_option_names) |existing_name| {
-                        if (std.mem.eql(u8, existing_name, opt.name)) {
-                            @compileError("Duplicate global option: " ++ opt.name);
-                        }
-                    }
-                    global_option_names = global_option_names ++ .{opt.name};
-                }
-            }
-        }
+        // Global-option conflicts (both names and short flags) are validated once
+        // over the flattened `global_options` list below (see the `comptime` block
+        // after it) — no separate names-only pass here.
     }
 
     return struct {
@@ -521,61 +509,17 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     if (@hasField(@TypeOf(meta), "aliases")) aliases = meta.aliases;
                 }
 
-                // Introspect Options
-                var options: []const zcli.OptionInfo = &.{};
-                if (@hasDecl(cmd.module, "Options")) {
-                    const OptionsType = cmd.module.Options;
-                    const options_type_info = @typeInfo(OptionsType);
-                    if (options_type_info == .@"struct") {
-                        for (options_type_info.@"struct".fields) |field| {
-                            const base_type = if (@typeInfo(field.type) == .optional) @typeInfo(field.type).optional.child else field.type;
-                            var opt_desc: ?[]const u8 = null;
-                            var opt_short: ?u8 = null;
-                            var opt_complete: ?zcli.completion.Spec = null;
-                            if (@hasDecl(cmd.module, "meta")) {
-                                const meta = cmd.module.meta;
-                                if (@hasField(@TypeOf(meta), "options")) {
-                                    if (@hasField(@TypeOf(meta.options), field.name)) {
-                                        const opt_meta = @field(meta.options, field.name);
-                                        if (@hasField(@TypeOf(opt_meta), "description")) opt_desc = opt_meta.description;
-                                        if (@hasField(@TypeOf(opt_meta), "short")) opt_short = opt_meta.short;
-                                        opt_complete = completeSpecOf(opt_meta);
-                                    }
-                                }
-                            }
-                            options = options ++ .{zcli.OptionInfo{ .name = field.name, .short = opt_short, .description = opt_desc, .takes_value = base_type != bool, .enum_values = enumValuesOf(field.type), .complete = opt_complete }};
-                        }
-                    }
-                }
+                // Options and args both project from the single per-field
+                // `FieldInfo` extraction (moduleFieldInfo). The completion-facing
+                // `OptionInfo`/`ArgInfo` are thin views of it, so a new per-field
+                // meta attribute only has to be threaded through FieldInfo once.
+                const mi = moduleInfoOf(cmd.module);
 
-                // Introspect Args
+                var options: []const zcli.OptionInfo = &.{};
+                for (mi.options_fields) |f| options = options ++ .{optionInfoFrom(f)};
+
                 var arg_infos: []const zcli.ArgInfo = &.{};
-                if (@hasDecl(cmd.module, "Args")) {
-                    const ArgsType = cmd.module.Args;
-                    const args_type_info = @typeInfo(ArgsType);
-                    if (args_type_info == .@"struct") {
-                        for (args_type_info.@"struct".fields) |field| {
-                            var arg_desc: ?[]const u8 = null;
-                            var arg_complete: ?zcli.completion.Spec = null;
-                            if (@hasDecl(cmd.module, "meta")) {
-                                const meta = cmd.module.meta;
-                                if (@hasField(@TypeOf(meta), "args")) {
-                                    if (@hasField(@TypeOf(meta.args), field.name)) {
-                                        const arg_meta = @field(meta.args, field.name);
-                                        arg_desc = argDescriptionOf(arg_meta);
-                                        arg_complete = completeSpecOf(arg_meta);
-                                    }
-                                }
-                            }
-                            const is_opt = @typeInfo(field.type) == .optional or field.default_value_ptr != null;
-                            const is_variadic = vblk: {
-                                const ft = @typeInfo(field.type);
-                                break :vblk ft == .pointer and ft.pointer.size == .slice and ft.pointer.child != u8;
-                            };
-                            arg_infos = arg_infos ++ .{zcli.ArgInfo{ .name = field.name, .description = arg_desc, .is_optional = is_opt, .is_variadic = is_variadic, .enum_values = enumValuesOf(field.type), .complete = arg_complete }};
-                        }
-                    }
-                }
+                for (mi.args_fields) |f| arg_infos = arg_infos ++ .{argInfoFrom(f)};
 
                 cmd_info_list = cmd_info_list ++ .{zcli.CommandInfo{
                     .path = cmd.path,
@@ -588,6 +532,36 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 }};
             }
             return cmd_info_list;
+        }
+
+        /// Project a `FieldInfo` to the completion/doc-facing `OptionInfo`.
+        /// `takes_value` is the non-bool test the old extractor did directly:
+        /// FieldInfo.type_name is `@typeName(field.type)`, so a bool option is
+        /// exactly `"bool"` or `"?bool"`.
+        fn optionInfoFrom(comptime f: zcli.FieldInfo) zcli.OptionInfo {
+            const takes_value = !(std.mem.eql(u8, f.type_name, "bool") or std.mem.eql(u8, f.type_name, "?bool"));
+            return .{
+                .name = f.name,
+                .short = f.short,
+                .description = f.description,
+                .takes_value = takes_value,
+                .enum_values = f.enum_values,
+                .complete = f.complete,
+            };
+        }
+
+        /// Project a `FieldInfo` to the completion/doc-facing `ArgInfo`. A
+        /// positional's `is_variadic` is exactly FieldInfo's `is_array` (a
+        /// non-u8 slice), computed once in the shared extractor.
+        fn argInfoFrom(comptime f: zcli.FieldInfo) zcli.ArgInfo {
+            return .{
+                .name = f.name,
+                .description = f.description,
+                .is_optional = f.is_optional,
+                .is_variadic = f.is_array,
+                .enum_values = f.enum_values,
+                .complete = f.complete,
+            };
         }
 
         pub fn init() Self {
@@ -959,40 +933,49 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             context.command_path = copy;
         }
 
-        /// Convert a command struct's fields to runtime FieldInfo for plugin
-        /// introspection. `field_meta` is the per-field metadata map — an
-        /// options map (`meta.options`, structs carrying short/description) when
-        /// `is_option`, an args map (`meta.args`, plain string descriptions)
-        /// otherwise, or null. `is_option` also gates required-option marking:
-        /// a defaultless positional is required by position, not by this flag.
-        fn buildFieldInfoList(comptime T: type, comptime field_meta_map: anytype, comptime is_option: bool, allocator: std.mem.Allocator) ![]const zcli.FieldInfo {
+        /// Convert a command struct's fields to `FieldInfo` — the single per-field
+        /// metadata projection, built once at comptime. `field_meta_map` is the
+        /// per-field metadata map — an options map (`meta.options`, structs
+        /// carrying short/description/complete/requires) when `is_option`, an args
+        /// map (`meta.args`, plain string descriptions or structs) otherwise, or
+        /// `null`. `is_option` also gates required-option marking: a defaultless
+        /// positional is required by position, not by this flag.
+        ///
+        /// Both the completion/doc `CommandInfo` view (via `optionInfoFrom`/
+        /// `argInfoFrom`) and the help `CommandModuleInfo` view read from this, so
+        /// a new per-field attribute is threaded here once. Being comptime, the
+        /// result is static data — `setCommandInfo` references it with no
+        /// per-dispatch allocation.
+        fn buildFieldInfoList(comptime T: type, comptime field_meta_map: anytype, comptime is_option: bool) []const zcli.FieldInfo {
             const type_info = @typeInfo(T);
             if (type_info != .@"struct") return &.{};
-            var field_list = std.ArrayList(zcli.FieldInfo).empty;
-            inline for (type_info.@"struct".fields) |field| {
+            var field_list: []const zcli.FieldInfo = &.{};
+            for (type_info.@"struct".fields) |field| {
                 const field_type_info = @typeInfo(field.type);
                 var short: ?u8 = null;
                 var description: ?[]const u8 = null;
-                if (comptime @TypeOf(field_meta_map) != @TypeOf(null)) {
+                var complete: ?zcli.completion.Spec = null;
+                if (@TypeOf(field_meta_map) != @TypeOf(null)) {
                     if (@hasField(@TypeOf(field_meta_map), field.name)) {
                         const fm = @field(field_meta_map, field.name);
-                        if (comptime isStringLike(@TypeOf(fm))) {
-                            // Args metadata is a bare string description.
-                            description = fm;
-                        } else {
-                            if (@hasField(@TypeOf(fm), "short")) short = fm.short;
-                            if (@hasField(@TypeOf(fm), "description")) description = fm.description;
-                        }
+                        // Args metadata may be a bare string description; both
+                        // shapes go through the shared extractors used by the
+                        // CommandInfo projection (argDescriptionOf handles the
+                        // string-vs-struct split; shorts/complete only exist on the
+                        // struct form).
+                        description = argDescriptionOf(fm);
+                        short = shortOf(fm);
+                        complete = completeSpecOf(fm);
                     }
                 }
-                const requires: ?[]const []const u8 = comptime blk: {
+                const requires: ?[]const []const u8 = blk: {
                     if (@TypeOf(field_meta_map) == @TypeOf(null)) break :blk null;
                     if (!@hasField(@TypeOf(field_meta_map), field.name)) break :blk null;
                     const fm = @field(field_meta_map, field.name);
                     if (isStringLike(@TypeOf(fm)) or !@hasField(@TypeOf(fm), "requires")) break :blk null;
                     break :blk option_utils.tupleToStrings(fm.requires);
                 };
-                const default_value: ?[]const u8 = comptime blk: {
+                const default_value: ?[]const u8 = blk: {
                     const dp = field.default_value_ptr orelse break :blk null;
                     const dv = @as(*const field.type, @ptrCast(@alignCast(dp))).*;
                     break :blk switch (field_type_info) {
@@ -1003,22 +986,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         else => null, // optionals default to null; arrays have no scalar default
                     };
                 };
-                const enum_values: ?[]const []const u8 = comptime blk: {
-                    const Bare = switch (field_type_info) {
-                        .optional => |o| o.child,
-                        else => field.type,
-                    };
-                    switch (@typeInfo(Bare)) {
-                        .@"enum" => |e| {
-                            var names: [e.fields.len][]const u8 = undefined;
-                            for (e.fields, 0..) |f, i| names[i] = f.name;
-                            const frozen = names;
-                            break :blk &frozen;
-                        },
-                        else => break :blk null,
-                    }
-                };
-                try field_list.append(allocator, zcli.FieldInfo{
+                field_list = field_list ++ .{zcli.FieldInfo{
                     .name = field.name,
                     .is_optional = field_type_info == .optional or field.default_value_ptr != null,
                     .is_array = field_type_info == .pointer and field_type_info.pointer.size == .slice and field_type_info.pointer.child != u8,
@@ -1026,12 +994,21 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .description = description,
                     .type_name = @typeName(field.type),
                     .default_value = default_value,
-                    .is_required = is_option and comptime option_utils.isRequiredOption(field),
-                    .enum_values = enum_values,
+                    .is_required = is_option and option_utils.isRequiredOption(field),
+                    .enum_values = enumValuesOf(field.type),
                     .requires = requires,
-                });
+                    .complete = complete,
+                }};
             }
-            return field_list.toOwnedSlice(allocator);
+            return field_list;
+        }
+
+        /// A field's short flag from its (struct-form) option meta, else `null`.
+        /// Args metadata (a bare string) has no short.
+        fn shortOf(comptime field_meta: anytype) ?u8 {
+            const T = @TypeOf(field_meta);
+            if (@typeInfo(T) != .@"struct") return null;
+            return if (@hasField(T, "short")) field_meta.short else null;
         }
 
         /// Whether `T` is a string description: `[]const u8` or a string literal
@@ -1048,6 +1025,29 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             return false;
         }
 
+        /// The command module's full introspection info, built once at comptime.
+        /// The single source of truth for a command's per-field metadata: both
+        /// `setCommandInfo` (help) and `buildCommandInfoFromEntries` (completions/
+        /// docs) read from it.
+        fn moduleInfoOf(comptime Module: type) zcli.CommandModuleInfo {
+            const options_meta = comptime blk: {
+                if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "options")) break :blk Module.meta.options;
+                break :blk null;
+            };
+            const args_meta = comptime blk: {
+                if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "args")) break :blk Module.meta.args;
+                break :blk null;
+            };
+            return .{
+                .has_args = @hasDecl(Module, "Args"),
+                .has_options = @hasDecl(Module, "Options"),
+                .raw_meta_ptr = if (@hasDecl(Module, "meta")) &Module.meta else null,
+                .args_fields = if (@hasDecl(Module, "Args")) buildFieldInfoList(Module.Args, args_meta, false) else &.{},
+                .options_fields = if (@hasDecl(Module, "Options")) buildFieldInfoList(Module.Options, options_meta, true) else &.{},
+                .exclusive = option_utils.exclusiveSets(if (@hasDecl(Module, "meta")) Module.meta else null),
+            };
+        }
+
         /// Record the resolved command's metadata and introspection info on
         /// the context (the help plugin renders from these).
         fn setCommandInfo(comptime Module: type, context: *Context) !void {
@@ -1058,23 +1058,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     .examples = if (@hasField(@TypeOf(meta), "examples")) meta.examples else null,
                 };
             }
-
-            const options_meta = comptime blk: {
-                if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "options")) break :blk Module.meta.options;
-                break :blk null;
-            };
-            const args_meta = comptime blk: {
-                if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "args")) break :blk Module.meta.args;
-                break :blk null;
-            };
-            context.command_module_info = zcli.CommandModuleInfo{
-                .has_args = @hasDecl(Module, "Args"),
-                .has_options = @hasDecl(Module, "Options"),
-                .raw_meta_ptr = if (@hasDecl(Module, "meta")) &Module.meta else null,
-                .args_fields = if (@hasDecl(Module, "Args")) try buildFieldInfoList(Module.Args, args_meta, false, context.allocator) else &.{},
-                .options_fields = if (@hasDecl(Module, "Options")) try buildFieldInfoList(Module.Options, options_meta, true, context.allocator) else &.{},
-                .exclusive = comptime option_utils.exclusiveSets(if (@hasDecl(Module, "meta")) Module.meta else null),
-            };
+            context.command_module_info = comptime moduleInfoOf(Module);
         }
 
         /// Everything that happens after routing has resolved a command
