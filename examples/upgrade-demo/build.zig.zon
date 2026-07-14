@@ -1,0 +1,18 @@
+.{
+    .name = .@"upgrade-demo",
+    .version = "0.1.0",
+    .fingerprint = 0x9120c4b3536f022c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Local path because this example lives in-repo (so CI compiles it
+        // against unreleased changes as a drift-detector). Your own project
+        // doesn't hand-write this — `zcli init` fetches a released zcli:
+        //   .zcli = .{ .url = "git+https://github.com/ryanhair/zcli#<tag>", .hash = "..." },
+        .zcli = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
