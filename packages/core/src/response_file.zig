@@ -46,14 +46,22 @@ pub const Diagnostic = struct {
     path: []const u8,
 };
 
-/// Expand `@file` response-file tokens in `argv`, returning a freshly allocated
-/// argument list. When `argv` contains no expandable tokens the result is a
-/// straight (owned) copy, so the caller frees the returned slice (and its
-/// elements) uniformly. `dir` is the directory `@PATH` is resolved against
-/// (normally `std.Io.Dir.cwd()`); `io` threads file I/O.
+/// Expand `@file` response-file tokens in `argv`.
 ///
-/// On a missing/unreadable file, sets `diag` and returns
-/// `error.ResponseFileUnreadable`.
+/// When `argv` contains no expandable token this returns `argv` itself — no
+/// allocation, and every argument keeps its original (caller-owned) lifetime.
+/// This matters: plugins and diagnostics may hold argv slices beyond the parse,
+/// so pass-through tokens must never be moved into shorter-lived memory.
+///
+/// When expansion does occur, the returned outer slice and the file-derived
+/// argument strings are allocated from `allocator`; pass-through tokens are
+/// still borrowed from `argv` unchanged. The mixed ownership is intended for
+/// an arena (the registry's per-command arena) — free by discarding the arena,
+/// not element-by-element.
+///
+/// `dir` is the directory `@PATH` is resolved against (normally
+/// `std.Io.Dir.cwd()`); `io` threads file I/O. On a missing/unreadable file,
+/// sets `diag` and returns `error.ResponseFileUnreadable`.
 pub fn expandArgs(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -61,44 +69,59 @@ pub fn expandArgs(
     argv: []const []const u8,
     diag: *?Diagnostic,
 ) ![]const []const u8 {
+    // Fast path: leave argv untouched when there is nothing to expand.
+    if (!hasExpandableToken(argv)) return argv;
+
     var out: std.ArrayList([]const u8) = .empty;
     errdefer out.deinit(allocator);
 
     var passthrough = false;
     for (argv) |arg| {
-        // Everything from `--` onward is literal — including a `@value` a
-        // command legitimately wants to receive.
-        if (passthrough) {
-            try out.append(allocator, try allocator.dupe(u8, arg));
-            continue;
+        if (!passthrough) {
+            // Everything from `--` onward is literal — including a `@value`
+            // a command legitimately wants to receive.
+            if (std.mem.eql(u8, arg, "--")) {
+                passthrough = true;
+            } else if (isResponseToken(arg)) {
+                const path = arg[1..];
+                const content = dir.readFileAlloc(io, path, allocator, .limited(max_file_bytes)) catch {
+                    diag.* = .{ .path = path };
+                    return Error.ResponseFileUnreadable;
+                };
+                // Not freed: the file-derived argument slices point into it
+                // (arena-owned, reclaimed with everything else).
+                try appendFileArgs(allocator, &out, content);
+                continue;
+            }
         }
-        if (std.mem.eql(u8, arg, "--")) {
-            passthrough = true;
-            try out.append(allocator, try allocator.dupe(u8, arg));
-            continue;
-        }
-
-        if (arg.len > 1 and arg[0] == '@') {
-            const path = arg[1..];
-            const content = dir.readFileAlloc(io, path, allocator, .limited(max_file_bytes)) catch {
-                diag.* = .{ .path = path };
-                return Error.ResponseFileUnreadable;
-            };
-            defer allocator.free(content);
-            try appendFileArgs(allocator, &out, content);
-            continue;
-        }
-
-        // A plain argument, or a bare `@`: passed through verbatim.
-        try out.append(allocator, try allocator.dupe(u8, arg));
+        // A plain argument (or a bare `@`, or anything after `--`): borrowed
+        // from argv verbatim, keeping its original lifetime.
+        try out.append(allocator, arg);
     }
 
     return out.toOwnedSlice(allocator);
 }
 
+/// Whether `arg` is a `@PATH` response-file reference (leading `@`, non-empty
+/// path). A bare `@` is a literal argument.
+fn isResponseToken(arg: []const u8) bool {
+    return arg.len > 1 and arg[0] == '@';
+}
+
+/// Whether any token before a `--` terminator is a `@PATH` reference — i.e.
+/// whether `expandArgs` has any work to do.
+fn hasExpandableToken(argv: []const []const u8) bool {
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isResponseToken(arg)) return true;
+    }
+    return false;
+}
+
 /// Parse one response file's `content` into arguments and append them to `out`.
 /// One argument per line; blank lines and `#` comment lines skipped; each line
-/// trimmed. Lines are taken verbatim (never rescanned for `@file`).
+/// trimmed. Lines are taken verbatim (never rescanned for `@file`) and the
+/// appended slices point into `content`.
 fn appendFileArgs(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), content: []const u8) !void {
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
@@ -110,38 +133,32 @@ fn appendFileArgs(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8),
         const line = std.mem.trim(u8, unterminated, " \t");
         if (line.len == 0) continue; // blank line
         if (line[0] == '#') continue; // comment
-        try out.append(allocator, try allocator.dupe(u8, line));
+        try out.append(allocator, line);
     }
 }
 
 // ---------------------------------------------------------------------------
 // Tests
+//
+// expandArgs allocates arena-style (mixed borrowed/owned elements), so each
+// test that can expand wraps testing.allocator in an ArenaAllocator.
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
-/// Free a slice returned by `expandArgs` (each element plus the slice itself).
-fn freeExpanded(allocator: std.mem.Allocator, args: []const []const u8) void {
-    for (args) |a| allocator.free(a);
-    allocator.free(args);
-}
-
-test "expandArgs: no @file tokens returns an owned copy unchanged" {
-    const allocator = testing.allocator;
+test "expandArgs: no @file tokens returns argv itself, untouched" {
     var diag: ?Diagnostic = null;
     const argv = [_][]const u8{ "users", "list", "--json" };
-    const out = try expandArgs(allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag);
-    defer freeExpanded(allocator, out);
-
-    try testing.expectEqual(@as(usize, 3), out.len);
-    try testing.expectEqualStrings("users", out[0]);
-    try testing.expectEqualStrings("list", out[1]);
-    try testing.expectEqualStrings("--json", out[2]);
+    const out = try expandArgs(testing.allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag);
+    // The fast path: the very same slice, no allocation, original lifetimes.
+    try testing.expectEqual(@as([]const []const u8, &argv), out);
     try testing.expect(diag == null);
 }
 
 test "expandArgs: reads args from a file (one per line, comments and blanks skipped)" {
-    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "args.txt", .data =
@@ -156,8 +173,7 @@ test "expandArgs: reads args from a file (one per line, comments and blanks skip
 
     var diag: ?Diagnostic = null;
     const argv = [_][]const u8{ "create", "@args.txt", "trailing" };
-    const out = try expandArgs(allocator, testing.io, tmp.dir, &argv, &diag);
-    defer freeExpanded(allocator, out);
+    const out = try expandArgs(arena.allocator(), testing.io, tmp.dir, &argv, &diag);
 
     // "create", then the four file args, then "trailing".
     try testing.expectEqual(@as(usize, 6), out.len);
@@ -168,25 +184,44 @@ test "expandArgs: reads args from a file (one per line, comments and blanks skip
     try testing.expectEqualStrings("--count", out[3]);
     try testing.expectEqualStrings("3", out[4]);
     try testing.expectEqualStrings("trailing", out[5]);
+    // Pass-through tokens are borrowed from argv (original lifetime kept).
+    try testing.expectEqual(argv[0].ptr, out[0].ptr);
+    try testing.expectEqual(argv[2].ptr, out[5].ptr);
 }
 
 test "expandArgs: -- stops expansion and passes a literal @value through" {
-    const allocator = testing.allocator;
     var diag: ?Diagnostic = null;
     const argv = [_][]const u8{ "run", "--", "@notafile", "plain" };
-    const out = try expandArgs(allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag);
-    defer freeExpanded(allocator, out);
+    const out = try expandArgs(testing.allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag);
 
-    try testing.expectEqual(@as(usize, 4), out.len);
-    try testing.expectEqualStrings("run", out[0]);
-    try testing.expectEqualStrings("--", out[1]);
-    try testing.expectEqualStrings("@notafile", out[2]);
-    try testing.expectEqualStrings("plain", out[3]);
+    // Nothing expandable before `--` → argv itself, verbatim.
+    try testing.expectEqual(@as([]const []const u8, &argv), out);
     try testing.expect(diag == null);
 }
 
+test "expandArgs: -- stops expansion even when a @file was expanded before it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "pre.txt", .data = "--verbose\n" });
+
+    var diag: ?Diagnostic = null;
+    const argv = [_][]const u8{ "run", "@pre.txt", "--", "@notafile" };
+    const out = try expandArgs(arena.allocator(), testing.io, tmp.dir, &argv, &diag);
+
+    try testing.expectEqual(@as(usize, 4), out.len);
+    try testing.expectEqualStrings("run", out[0]);
+    try testing.expectEqualStrings("--verbose", out[1]);
+    try testing.expectEqualStrings("--", out[2]);
+    try testing.expectEqualStrings("@notafile", out[3]);
+}
+
 test "expandArgs: expansion is single-level (a @ line in a file is literal, not recursed)" {
-    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     // The referenced file names another file — which must NOT be expanded.
@@ -195,8 +230,7 @@ test "expandArgs: expansion is single-level (a @ line in a file is literal, not 
 
     var diag: ?Diagnostic = null;
     const argv = [_][]const u8{"@outer.txt"};
-    const out = try expandArgs(allocator, testing.io, tmp.dir, &argv, &diag);
-    defer freeExpanded(allocator, out);
+    const out = try expandArgs(arena.allocator(), testing.io, tmp.dir, &argv, &diag);
 
     try testing.expectEqual(@as(usize, 2), out.len);
     // Both @-prefixed lines are literal arguments, never treated as @file refs.
@@ -206,28 +240,26 @@ test "expandArgs: expansion is single-level (a @ line in a file is literal, not 
 }
 
 test "expandArgs: a bare @ is a literal argument" {
-    const allocator = testing.allocator;
     var diag: ?Diagnostic = null;
     const argv = [_][]const u8{ "cmd", "@" };
-    const out = try expandArgs(allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag);
-    defer freeExpanded(allocator, out);
-
-    try testing.expectEqual(@as(usize, 2), out.len);
-    try testing.expectEqualStrings("@", out[1]);
+    const out = try expandArgs(testing.allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag);
+    // Not expandable → the fast path returns argv itself.
+    try testing.expectEqual(@as([]const []const u8, &argv), out);
 }
 
 test "expandArgs: a missing response file is a reported error naming the path" {
-    const allocator = testing.allocator;
     var diag: ?Diagnostic = null;
     const argv = [_][]const u8{ "cmd", "@does-not-exist.txt" };
-    try testing.expectError(Error.ResponseFileUnreadable, expandArgs(allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag));
+    try testing.expectError(Error.ResponseFileUnreadable, expandArgs(testing.allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag));
     try testing.expect(diag != null);
     try testing.expectEqualStrings("does-not-exist.txt", diag.?.path);
 }
 
 test "expandArgs into parseCommandLine: file-supplied options and positionals parse" {
     const command_parser = @import("command_parser.zig");
-    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -242,7 +274,6 @@ test "expandArgs into parseCommandLine: file-supplied options and positionals pa
     var diag: ?Diagnostic = null;
     const argv = [_][]const u8{"@run.txt"};
     const expanded = try expandArgs(allocator, testing.io, tmp.dir, &argv, &diag);
-    defer freeExpanded(allocator, expanded);
 
     const Args = struct { file: []const u8 };
     const Options = struct { verbose: bool = false, count: u32 = 1 };

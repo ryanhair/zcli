@@ -672,7 +672,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // parsing — before global options, transforms, and command routing
             // — so a @file may contribute the command name, options, and
             // positionals alike. See response_file.zig for the full semantics
-            // (single-level, `--` stops it). Allocations land in the arena.
+            // (single-level, `--` stops it). With no @file present this is the
+            // caller's argv untouched — pass-through arguments always keep
+            // their original lifetime (plugins and diagnostics may hold argv
+            // slices past this call); only file-derived arguments and the
+            // rebuilt outer slice land in the arena.
             var rf_diag: ?response_file.Diagnostic = null;
             const expanded_args = response_file.expandArgs(context.allocator, io, std.Io.Dir.cwd(), args, &rf_diag) catch |err| {
                 // A missing/unreadable response file is reported CLI misuse:
