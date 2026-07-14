@@ -1,0 +1,21 @@
+.{
+    .name = .ext_plugin,
+    .version = "0.1.0",
+    .fingerprint = 0x3a14468c3dc8c9b6,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Local path because this example lives in-repo (so CI compiles it
+        // against unreleased changes as a drift-detector). Your own project
+        // fetches a released zcli — see the other examples.
+        .zcli = .{ .path = "../.." },
+        // A third-party plugin shipped as its OWN Zig package. Here it's a local
+        // path (it lives in this example's own tree); in the real world it would
+        // be `.url = "git+https://.../greet-plugin#<tag>"` with a hash.
+        .greet_plugin = .{ .path = "greet-plugin" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

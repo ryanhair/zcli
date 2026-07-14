@@ -125,11 +125,11 @@ pub fn combinePlugins(b: *std.Build, local_plugins: []const PluginInfo, external
     }
 
     const total_len = local_plugins.len + external_plugins.len;
-    const combined = b.allocator.alloc(PluginInfo, total_len) catch {
-        logging.buildError("Plugin System", "memory allocation", "Failed to allocate memory for combined plugin array", "Reduce number of plugins or increase available memory");
-        std.debug.print("Attempted to allocate {} plugin entries.\n", .{total_len});
-        return &.{}; // Return empty slice on failure
-    };
+    // OOM here must never quietly drop every plugin and build a plugin-less
+    // binary — that is exactly the silent failure the discovery paths guard
+    // against. Panic, matching the std.Build-wide `@panic("OOM")` convention
+    // (allocation failure is loud and not user-actionable).
+    const combined = b.allocator.alloc(PluginInfo, total_len) catch @panic("OOM");
 
     // Copy local plugins first
     @memcpy(combined[0..local_plugins.len], local_plugins);

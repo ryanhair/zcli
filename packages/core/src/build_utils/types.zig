@@ -99,10 +99,70 @@ pub const BuildConfig = struct {
     build_date: []const u8 = "",
 };
 
-/// Plugin configuration for external plugins
+/// The native libraries a plugin's backend needs, expressed as a hook the
+/// build applies to a module for a given `target`. See `linkSecretsBackend`
+/// for the shape a plugin fills in, and `PluginConfig.link` for how it's wired.
+pub const PluginLinkFn = *const fn (module: *std.Build.Module, target: std.Target) void;
+
+/// Link the native libraries the `zcli_secrets` plugin's backend needs for
+/// `target`. macOS: Security + CoreFoundation frameworks. Windows: advapi32.
+/// Linux links **nothing**: its backend reaches the Secret Service (via
+/// `secret-tool`) or `pass` by shelling out at runtime, not by linking, so a
+/// Linux build stays static and works on musl too (ADR-0010). Any other OS has
+/// no secure backend — registering the plugin there is a compile error in the
+/// plugin source. Exposed so the plugin's own test targets can link exactly the
+/// same way a registered app does.
+///
+/// This is a `PluginLinkFn`: `builtin(.secrets, ...)` wires it onto the plugin
+/// config's `.link` field, so `generate()` applies it via the general
+/// plugin-declared mechanism rather than a name special-case.
+pub fn linkSecretsBackend(module: *std.Build.Module, target: std.Target) void {
+    switch (target.os.tag) {
+        .macos => {
+            module.linkFramework("Security", .{});
+            module.linkFramework("CoreFoundation", .{});
+        },
+        // Linux shells out (secret-tool / pass) — no library to link, and no
+        // musl incompatibility.
+        .linux => {},
+        .windows => {
+            module.linkSystemLibrary("advapi32", .{});
+        },
+        else => {},
+    }
+}
+
+/// Plugin configuration. A plugin is registered one of two ways, mutually
+/// exclusive:
+///
+///   - **built-in** (`path` set): a plugin that ships inside the zcli package.
+///     Use `builtin()` — it fills in `name`/`path`/`link` for you.
+///   - **external package** (`dependency` set): a third-party plugin shipped
+///     as its own Zig package. The consumer does `b.dependency("my_plugin",
+///     .{...})` in build.zig and passes the result here; the package must
+///     expose a module named `plugin` (its entry point). `generate()` injects
+///     the consumer's `zcli` import into it, so the plugin package needs no
+///     zcli dependency of its own.
+///
+/// (A *project-local* plugin — one living in the consuming project's own
+/// source tree — is not registered here at all; it's auto-discovered via
+/// `GenerateConfig.plugins_dir`.)
 pub const PluginConfig = struct {
     name: []const u8,
-    path: []const u8,
+    /// Source path of a built-in plugin *within the zcli package* (e.g.
+    /// "packages/core/src/plugins/zcli_help"). Set by `builtin()`. Mutually
+    /// exclusive with `dependency`; exactly one must be set.
+    path: ?[]const u8 = null,
+    /// A third-party plugin shipped as its own Zig package: the consumer's
+    /// `b.dependency("my_plugin", .{...})`. Mutually exclusive with `path`.
+    dependency: ?*std.Build.Dependency = null,
+    /// Optional native-link hook. When a plugin's backend needs system
+    /// libraries or frameworks, it declares them here; `generate()` applies the
+    /// hook to the executable's root module exactly when the plugin is
+    /// registered — so a CLI that doesn't opt in stays a static single binary.
+    /// `builtin(.secrets, ...)` sets this to `linkSecretsBackend`; an external
+    /// plugin package can export its own `PluginLinkFn` and pass it here.
+    link: ?PluginLinkFn = null,
     /// Optional initialization code to call on the plugin
     /// Example: ".init(.{ .repo = \"user/repo\", .command_name = \"upgrade\" })"
     /// Will generate: const plugin = @import("name")<init_code>;
@@ -129,6 +189,16 @@ pub const Builtin = enum {
     pub fn pluginPath(comptime self: Builtin) []const u8 {
         return "packages/core/src/plugins/zcli_" ++ @tagName(self);
     }
+
+    /// The native-link hook a built-in needs, or null if it links nothing.
+    /// Only `secrets` reaches an OS keychain, so only it declares a hook;
+    /// `builtin()` copies this onto the plugin config's `.link` field.
+    pub fn linkHook(comptime self: Builtin) ?PluginLinkFn {
+        return switch (self) {
+            .secrets => &linkSecretsBackend,
+            else => null,
+        };
+    }
 };
 
 /// Register a built-in plugin in a `generate()` plugins list. Pass `.{}` as the
@@ -138,8 +208,11 @@ pub const Builtin = enum {
 /// .plugins = &.{
 ///     zcli.builtin(.help, .{}),
 ///     zcli.builtin(.github_upgrade, .{ .repo = "user/repo", .command_name = "upgrade" }),
-///     .{ .name = "my_plugin", .path = "src/plugins/my_plugin" }, // handrolled
+///     // A third-party plugin shipped as its own Zig package (see PluginConfig):
+///     .{ .name = "my_plugin", .dependency = b.dependency("my_plugin", .{ .target = target, .optimize = optimize }) },
 /// },
+/// // A plugin living in the consuming project's own tree is NOT listed here —
+/// // it's auto-discovered by dropping it under `.plugins_dir` (ADR-0006).
 /// ```
 ///
 /// The config struct is rendered to the plugin's `.init(.{ ... })` call at
@@ -149,6 +222,7 @@ pub fn builtin(comptime tag: Builtin, comptime config: anytype) PluginConfig {
     return .{
         .name = tag.pluginName(),
         .path = tag.pluginPath(),
+        .link = tag.linkHook(),
         .init = comptime initString(config),
     };
 }
@@ -224,3 +298,52 @@ pub const CommandTestsConfig = struct {
     /// includes the project's local plugins.
     plugins_dir: ?[]const u8 = null,
 };
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "builtin(): produces a path-based PluginConfig, no dependency" {
+    const cfg = builtin(.help, .{});
+    try testing.expectEqualStrings("zcli_help", cfg.name);
+    try testing.expectEqualStrings("packages/core/src/plugins/zcli_help", cfg.path.?);
+    try testing.expectEqual(@as(?*std.Build.Dependency, null), cfg.dependency);
+    // help links nothing native.
+    try testing.expectEqual(@as(?PluginLinkFn, null), cfg.link);
+}
+
+test "builtin(.secrets): wires linkSecretsBackend onto .link" {
+    const cfg = builtin(.secrets, .{});
+    try testing.expectEqualStrings("zcli_secrets", cfg.name);
+    // The native-link needs are declared by the plugin's config, not by a
+    // name special-case in generate(). Only secrets declares a hook.
+    try testing.expect(cfg.link != null);
+    try testing.expectEqual(@as(PluginLinkFn, &linkSecretsBackend), cfg.link.?);
+}
+
+test "Builtin.linkHook: only secrets declares a native-link hook" {
+    inline for (@typeInfo(Builtin).@"enum".fields) |field| {
+        const tag = @field(Builtin, field.name);
+        const hook = comptime tag.linkHook();
+        if (tag == .secrets) {
+            try testing.expect(hook != null);
+        } else {
+            try testing.expectEqual(@as(?PluginLinkFn, null), hook);
+        }
+    }
+}
+
+test "PluginConfig: an external-package plugin sets .dependency, not .path" {
+    // The value a consumer writes for a third-party plugin shipped as a Zig
+    // package: name + dependency, no path. (A real *std.Build.Dependency can't
+    // be built in a unit test, so this exercises the field shape/defaults that
+    // generate() dispatches on; the end-to-end wiring is covered by the
+    // ext-plugin example under build-examples.)
+    const cfg = PluginConfig{ .name = "greet", .path = null };
+    try testing.expectEqualStrings("greet", cfg.name);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.path);
+    try testing.expectEqual(@as(?*std.Build.Dependency, null), cfg.dependency);
+    try testing.expectEqual(@as(?PluginLinkFn, null), cfg.link);
+}

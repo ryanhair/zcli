@@ -108,6 +108,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ghauth", .path = "examples/ghauth" },
         .{ .name = "oauth-device", .path = "examples/oauth-device" },
         .{ .name = "notes", .path = "examples/notes" },
+        .{ .name = "ext-plugin", .path = "examples/ext-plugin" },
     };
 
     // Add tests for each project that has them
@@ -149,6 +150,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ghauth", .path = "examples/ghauth" },
         .{ .name = "oauth-device", .path = "examples/oauth-device" },
         .{ .name = "notes", .path = "examples/notes" },
+        .{ .name = "ext-plugin", .path = "examples/ext-plugin" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 
