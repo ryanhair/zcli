@@ -289,6 +289,104 @@ _ = zcli.addCommandTests(b, zcli_dep, .{
 See `examples/tasks` for a full, compiling example (the `store` module shared
 across its commands).
 
+## Command Unit Tests (`addCommandTests`)
+
+`zcli.addCommandTests` (`packages/core/src/build_utils/command_tests.zig`) is
+the build-time entry point behind the `zig build test` step that a scaffolded
+project ships with. It discovers every command file under `commands_dir` and
+compiles each as its own in-process test binary, so a command's `test` blocks
+(typically using `zcli-testing`'s `runCommand`) actually run — without pulling
+in the whole generated app.
+
+```zig
+pub fn addCommandTests(
+    b: *std.Build,
+    zcli_dep: *std.Build.Dependency,
+    config: zcli.CommandTestsConfig,
+) *std.Build.Step
+```
+
+`CommandTestsConfig`:
+
+```zig
+pub const CommandTestsConfig = struct {
+    commands_dir: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    // Same list passed to `generate()`, so command imports resolve identically
+    // under test.
+    shared_modules: []const SharedModule = &.{},
+    // Same `plugins_dir` passed to `generate()`, so the stub Context includes
+    // the project's local plugins.
+    plugins_dir: ?[]const u8 = null,
+};
+```
+
+Each discovered command compiles against a *stub* `command_registry` module
+(`Context = zcli.TestContext(&.{...})`, built from the project's local plugins
+plus an in-memory `zcli_secrets` stand-in) rather than the real generated
+registry — a command's tests must not require the whole app to compile.
+
+```zig
+// build.zig
+_ = zcli.addCommandTests(b, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .target = target,
+    .optimize = optimize,
+    .plugins_dir = "src/plugins",
+    .shared_modules = &shared_modules,
+});
+```
+
+Returns the created `test` step (registered as `zig build test`) so the caller
+can attach more tests to it. `zcli init` wires this automatically in every
+scaffolded project; see `projects/zcli/src/commands/init.zig` for the generated
+`build.zig` template. For the testing API itself (`runCommand`, VTerm
+assertions, integration/E2E tiers), see [TESTING.md](TESTING.md).
+
+## Documentation Generation (`generateDocs`)
+
+`zcli.generateDocs` (`packages/core/src/build_utils/main.zig`) wires a `zig
+build docs` step that renders command help (from the same `meta`/`Args`/
+`Options` data the registry uses) to files on disk. It is opt-in and kept off
+the default `install`/`test` steps, so an ordinary `zig build` produces no doc
+output.
+
+```zig
+pub fn generateDocs(
+    b: *std.Build,
+    registry_module: *std.Build.Module,
+    zcli_dep: *std.Build.Dependency,
+    config: zcli.DocsConfig,
+) void
+```
+
+`DocsConfig`:
+
+```zig
+pub const DocsConfig = struct {
+    // Formats to generate; each gets its own subdirectory under output_dir.
+    formats: []const []const u8 = &.{"markdown"},
+    output_dir: []const u8 = "docs",
+};
+```
+
+```zig
+// build.zig — after cmd_registry is created by generate()
+// Single format (default: markdown)
+zcli.generateDocs(b, cmd_registry, zcli_dep, .{});
+
+// Multiple formats — each gets its own subdirectory
+zcli.generateDocs(b, cmd_registry, zcli_dep, .{
+    .formats = &.{ "markdown", "man" },
+    .output_dir = "docs",
+});
+```
+
+Run it with `zig build docs`. Under the hood this builds and runs a small
+host-target `zcli-doc-gen` executable (`packages/core/src/doc_gen_main.zig`)
+against your `cmd_registry` module.
+
 ## Registry Generation Process
 
 ### 1. Plugin Registry Integration
@@ -354,8 +452,8 @@ inline for (plugins) |Plugin| {
 
 Each plugin's `ContextData` becomes a typed field on the generated `Context`,
 nested under `plugins` and named by the plugin's `plugin_id`. The field type and
-name are computed at compile time (see `ComputedContextType` in
-`packages/core/src/registry.zig`) — there is no `StringHashMap` or runtime key
+name are computed at compile time (see `ContextFor` in
+`packages/core/src/context.zig`) — there is no `StringHashMap` or runtime key
 lookup, so access is fully typed:
 
 ```zig
