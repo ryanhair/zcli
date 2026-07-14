@@ -277,17 +277,17 @@ test "bash gen - dynamic branch, .file positional + option compgen" {
     const script = try bash.generate(std.testing.allocator, "advapp", &i2_commands, &global_options);
     defer std.testing.allocator.free(script);
     try std.testing.expect(contains(script, "__complete")); // dynamic branch for the hook option
-    try std.testing.expect(contains(script, "\"deploy\")")); // .file positional static case
+    try std.testing.expect(contains(script, "'deploy')")); // .file positional static case
     try std.testing.expect(contains(script, "compgen -f")); // .file → files
-    try std.testing.expect(contains(script, "--out)")); // .file option $prev case
+    try std.testing.expect(contains(script, "'--out')")); // .file option $prev case
 }
 
 test "fish gen - option hook + .file option + .file positional" {
     const script = try fish.generate(std.testing.allocator, "advapp", &i2_commands, &global_options);
     defer std.testing.allocator.free(script);
     try std.testing.expect(contains(script, "function __advapp_zcli_complete"));
-    try std.testing.expect(contains(script, "-l host -x -a '(__advapp_zcli_complete)'")); // dynamic option
-    try std.testing.expect(contains(script, "-l out -rF")); // .file option forces files
+    try std.testing.expect(contains(script, "-l 'host' -x -a '(__advapp_zcli_complete)'")); // dynamic option
+    try std.testing.expect(contains(script, "-l 'out' -rF")); // .file option forces files
     // .file positional: force-files at the command's own path, no `-f` suppression.
     try std.testing.expect(contains(script, "complete -c advapp -F -n '__fish_advapp_using_command deploy'"));
 }
