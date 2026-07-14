@@ -259,6 +259,48 @@ test "a redirect loop fails with TooManyRedirects" {
     try testing.expectError(Error.TooManyRedirects, client.get(url));
 }
 
+/// Accept one connection and reply with a redirect to `location`, then close.
+fn serveOneRedirect(io: std.Io, server: *std.Io.net.Server, location: []const u8) void {
+    var stream = server.accept(io) catch return;
+    defer stream.close(io);
+
+    var read_buf: [4096]u8 = undefined;
+    var write_buf: [4096]u8 = undefined;
+    var stream_reader = stream.reader(io, &read_buf);
+    var stream_writer = stream.writer(io, &write_buf);
+
+    var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+    var request = http_server.receiveHead() catch return;
+    request.respond("", .{
+        .status = .found,
+        .keep_alive = false,
+        .extra_headers = &.{.{ .name = "location", .value = location }},
+    }) catch return;
+}
+
+test "a redirect to a non-https remote host fails with InsecureRedirect" {
+    const io = testing.io;
+
+    var addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    // The redirect target is a plain-http URL for a non-loopback host. The client
+    // must refuse this downgrade before opening any connection to the target.
+    const http_remote = "http://cdn.example.com/file";
+    var future = try io.concurrent(serveOneRedirect, .{ io, &server, @as([]const u8, http_remote) });
+    defer future.await(io);
+
+    var client = Client.init(testing.allocator, io, .{});
+    defer client.deinit();
+
+    const url = try loopbackUrl(port);
+    defer testing.allocator.free(url);
+
+    try testing.expectError(Error.InsecureRedirect, client.get(url));
+}
+
 test "a request that outlives its timeout fails with error.Timeout" {
     const io = testing.io;
 

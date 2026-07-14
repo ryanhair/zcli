@@ -94,6 +94,12 @@ pub const Error = error{
     /// loopback. Refused fail-closed so a bearer token / cookie is never put on
     /// the wire in cleartext to a remote host.
     InsecureCredentialTransport,
+    /// A redirect pointed to a non-`https` URL. This client is HTTPS-only at
+    /// request time, and redirects must stay on HTTPS. Loopback is the sole
+    /// carve-out (used by the loopback integration tests). Refused fail-closed
+    /// so a server-controlled redirect cannot silently downgrade a connection
+    /// from encrypted to cleartext.
+    InsecureRedirect,
 };
 
 /// Request headers that carry credentials. These are stripped from a request
@@ -437,6 +443,14 @@ pub const Client = struct {
                     // `uri` still references the previous URL string — settle
                     // the origin question before releasing it.
                     const next_uri = try std.Uri.parse(next_url);
+
+                    // This client is HTTPS-only. Refuse any redirect that would
+                    // downgrade from HTTPS to cleartext HTTP on a non-loopback
+                    // host. Integrity is already protected by minisign + checksum,
+                    // but belt-and-suspenders: a server-controlled redirect must
+                    // never silently move a connection off TLS.
+                    if (!credentialTransportOk(next_uri)) return Error.InsecureRedirect;
+
                     if (!sameOrigin(uri, next_uri)) send_credentials = false;
                     // A 303 means "GET the result of what you sent".
                     if (status == .see_other) current_method = .GET;
@@ -592,6 +606,21 @@ test "redirectTarget follows only real redirect statuses" {
     try testing.expect(redirectTarget(.not_modified, "/next") == null);
     try testing.expect(redirectTarget(.multiple_choice, "/next") == null);
     try testing.expect(redirectTarget(.found, null) == null);
+}
+
+test "a credentialed request with an https-to-http redirect to a remote host is refused" {
+    // credentialTransportOk is already unit-tested above; this test proves the
+    // same guard fires on redirect targets that are not HTTPS and not loopback,
+    // without opening a real connection.
+    const parse = std.Uri.parse;
+    // HTTPS is allowed.
+    try testing.expect(credentialTransportOk(try parse("https://cdn.example.com/file")));
+    // HTTP on loopback is the test carve-out.
+    try testing.expect(credentialTransportOk(try parse("http://127.0.0.1:8080/file")));
+    try testing.expect(credentialTransportOk(try parse("http://localhost/file")));
+    // HTTP to a remote host is the downgrade we block.
+    try testing.expect(!credentialTransportOk(try parse("http://cdn.example.com/file")));
+    try testing.expect(!credentialTransportOk(try parse("http://192.168.1.1/file")));
 }
 
 test "an invalid URL fails before any network work" {
