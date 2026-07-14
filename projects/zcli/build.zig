@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Debug info dominates binary size (~13 MB unstripped vs ~2 MB stripped
+    // for a static musl ReleaseSafe build). Release artifacts pass
+    // -Dstrip=true; local builds keep debug info for stack traces.
+    const strip = b.option(bool, "strip", "Omit debug info from the binary (release artifacts)") orelse false;
+
     // Get zcli dependency
     const zcli_dep = b.dependency("zcli", .{
         .target = target,
@@ -60,6 +65,7 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
         }),
     });
 

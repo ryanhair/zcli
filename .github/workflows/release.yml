@@ -193,7 +193,7 @@ jobs:
       - name: Build zcli
         run: |
           cd projects/zcli
-          zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
+          zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=${{ matrix.zig_target }}
 
       - name: Package binary
         shell: bash

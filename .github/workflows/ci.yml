@@ -195,14 +195,14 @@ jobs:
       # smoke step here would be redundant.
       - name: Build zcli (native Windows, ReleaseSafe)
         working-directory: projects/zcli
-        run: zig build -Doptimize=ReleaseSafe
+        run: zig build -Doptimize=ReleaseSafe -Dstrip=true
 
   # The release cross-compiles the static-musl Linux binaries (release.yml's
   # build job, only on tag push), so PR CI never once built musl — and a
   # musl-only build-graph panic in the secrets backend (fixed in 1931528)
   # blocked the 0.19.0 release with a break PR CI could not have caught. This
   # job closes that gap: it mirrors release.yml's build invocation EXACTLY
-  # (same `cd projects/zcli` + `zig build -Doptimize=ReleaseSafe -Dtarget=…`
+  # (same `cd projects/zcli` + `zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=…`
   # per musl target) so the two can't drift and reopen the hole. x86_64 is a
   # static binary the x64 runner can execute, so smoke-test it (mirrors the
   # release's Smoke test step); aarch64 is build-only (can't run here).
@@ -230,7 +230,7 @@ jobs:
       # only guards that the release-mode musl cross-compile links and starts.
       - name: Build zcli (static musl, ReleaseSafe)
         working-directory: projects/zcli
-        run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
+        run: zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=${{ matrix.zig_target }}
 
       # Prove the artifact the release would publish actually starts, on the
       # target the runner can execute natively. Mirrors release.yml's smoke test.
