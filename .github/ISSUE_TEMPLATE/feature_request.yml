@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a new capability or improvement for zcli
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to do that zcli doesn't support well today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >
+        What would the API/CLI/build-time config look like? A short code sketch
+        (a `meta`/`Args`/`Options` block, a `build.zig` snippet, a plugin hook)
+        is more useful than prose.
+      render: zig
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, workarounds, or how other CLI frameworks handle this.
+    validations:
+      required: false
