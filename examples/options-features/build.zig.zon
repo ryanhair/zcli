@@ -1,7 +1,7 @@
 .{
-    .name = .@"options-features",
+    .name = .options_features,
     .version = "0.1.0",
-    .fingerprint = 0x29c583816e9d7c3b,
+    .fingerprint = 0x15fa6aadeb2cb013,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Local path because this example lives in-repo (so CI compiles it

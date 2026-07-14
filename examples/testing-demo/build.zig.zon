@@ -1,7 +1,7 @@
 .{
-    .name = .@"testing-demo",
+    .name = .testing_demo,
     .version = "0.1.0",
-    .fingerprint = 0xd1169655a19aaf07,
+    .fingerprint = 0x81b201b0704e6d4e,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Local path because this example lives in-repo (so CI compiles it

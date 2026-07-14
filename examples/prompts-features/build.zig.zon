@@ -1,7 +1,7 @@
 .{
-    .name = .@"prompts-features",
+    .name = .prompts_features,
     .version = "0.1.0",
-    .fingerprint = 0xeb870eebef93db43,
+    .fingerprint = 0x0e57014d30c1bd8b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Local path because this example lives in-repo (so CI compiles it
