@@ -125,8 +125,18 @@ pub const commands = struct {
     };
 };
 
+// Optional setup hook for ContextData, called once per invocation before any
+// lifecycle hook. Capture references off `context` (allocator, io, app_name,
+// environ, streams) so `context.plugins.<plugin_id>` methods can serve calls
+// without re-threading `context`. Pairs with deinitContextData below.
+pub fn initContextData(data: *ContextData, context: anytype) !void {
+    _ = data;
+    _ = context;
+}
+
 // Optional cleanup hook for ContextData, called from Context.deinit().
 // Only needed when ContextData owns resources (allocations, handles, etc.).
+// Runs whether or not initContextData ran, so it must be safe on default data.
 pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
     _ = data;
     _ = allocator;

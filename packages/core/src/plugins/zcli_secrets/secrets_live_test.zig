@@ -7,9 +7,10 @@
 //! on each platform after preparing the environment (see `.github/workflows`).
 //!
 //! It deliberately drives the plugin's **public API** (`ContextData` +
-//! `context.plugins.zcli_secrets.<op>(context, ...)`) through a mock context,
-//! not the backend module directly — so this is the one place the generic API
-//! surface is actually instantiated and compiled, on every platform in CI.
+//! `context.plugins.zcli_secrets.<op>(...)`) through a mock context —
+//! `initContextData` captures references off it once, exactly as the framework
+//! does — not the backend module directly, so this is the one place the generic
+//! API surface is actually instantiated and compiled, on every platform in CI.
 //!
 //! Run locally with, from `packages/core`: `zig build test-secrets-live`.
 
@@ -104,23 +105,24 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
     var discard: std.Io.Writer.Discarding = .init(&.{});
     var ctx = MockContext{ .allocator = a, .io = std.testing.io, .environ = &env, .app_name = service, .err_writer = &discard.writer };
     var data: plugin.ContextData = .{};
+    try plugin.initContextData(&data, &ctx);
 
     // Start from a clean slate even if a prior aborted run left an entry.
-    try data.delete(&ctx, name);
-    try std.testing.expect((try data.get(&ctx, name)) == null);
+    try data.delete(name);
+    try std.testing.expect((try data.get(name)) == null);
 
     // Store and read back.
-    try data.set(&ctx, name, "first-value");
+    try data.set(name, "first-value");
     {
-        const v = (try data.get(&ctx, name)).?;
+        const v = (try data.get(name)).?;
         defer a.free(v);
         try std.testing.expectEqualStrings("first-value", v);
     }
 
     // Overwrite an existing entry.
-    try data.set(&ctx, name, "second-value");
+    try data.set(name, "second-value");
     {
-        const v = (try data.get(&ctx, name)).?;
+        const v = (try data.get(name)).?;
         defer a.free(v);
         try std.testing.expectEqualStrings("second-value", v);
     }
@@ -128,17 +130,17 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
     // A value with an embedded NUL and a high byte — the reason the shell-out
     // backends base64-wrap values; must round-trip byte-for-byte everywhere.
     const binary = [_]u8{ 'a', 0x00, 'b', 0xff, 0x0a };
-    try data.set(&ctx, name, &binary);
+    try data.set(name, &binary);
     {
-        const v = (try data.get(&ctx, name)).?;
+        const v = (try data.get(name)).?;
         defer a.free(v);
         try std.testing.expectEqualSlices(u8, &binary, v);
     }
 
     // An empty value must round-trip (a distinct edge from "key absent" → null).
-    try data.set(&ctx, name, "");
+    try data.set(name, "");
     {
-        const v = (try data.get(&ctx, name)).?;
+        const v = (try data.get(name)).?;
         defer a.free(v);
         try std.testing.expectEqualStrings("", v);
     }
@@ -161,37 +163,37 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
         for (big, 0..) |*b, i| b.* = @intCast('A' + (i % 26));
 
         if (builtin.os.tag == .windows) {
-            try std.testing.expectError(plugin.Error.SecretTooLarge, data.set(&ctx, name, big));
+            try std.testing.expectError(plugin.Error.SecretTooLarge, data.set(name, big));
         } else if (isSecretServiceBackend(&env)) {
             // 200 KiB is far past the ~6 KiB cap → must fail cleanly, never store
             // a truncated secret.
-            try std.testing.expectError(plugin.Error.SecretTooLarge, data.set(&ctx, name, big));
+            try std.testing.expectError(plugin.Error.SecretTooLarge, data.set(name, big));
 
             // A value comfortably under the cap (4 KiB raw → ~5.5 KiB base64,
             // within the 8192 stdin buffer) must round-trip exactly.
             const under = try a.alloc(u8, 4 * 1024);
             defer a.free(under);
             for (under, 0..) |*b, i| b.* = @intCast('A' + (i % 26));
-            try data.set(&ctx, name, under);
-            const v = (try data.get(&ctx, name)).?;
+            try data.set(name, under);
+            const v = (try data.get(name)).?;
             defer a.free(v);
             try std.testing.expectEqualSlices(u8, under, v);
         } else {
             // macOS Keychain / Linux `pass`: no cap, round-trips the large value.
-            try data.set(&ctx, name, big);
-            const v = (try data.get(&ctx, name)).?;
+            try data.set(name, big);
+            const v = (try data.get(name)).?;
             defer a.free(v);
             try std.testing.expectEqualSlices(u8, big, v);
         }
     }
 
     // Delete, confirm gone, and confirm a second delete is a no-op.
-    try data.delete(&ctx, name);
-    try std.testing.expect((try data.get(&ctx, name)) == null);
-    try data.delete(&ctx, name);
+    try data.delete(name);
+    try std.testing.expect((try data.get(name)) == null);
+    try data.delete(name);
 
     // A NUL in the *name* is rejected before any backend call.
-    try std.testing.expectError(plugin.Error.InvalidSecretName, data.get(&ctx, "bad\x00name"));
+    try std.testing.expectError(plugin.Error.InvalidSecretName, data.get("bad\x00name"));
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +290,7 @@ fn runRaceChild(role: []const u8) u8 {
         .err_writer = &child_stderr.interface,
     };
     var data: plugin.ContextData = .{};
+    plugin.initContextData(&data, &ctx) catch return 2;
 
     const is_setter = std.mem.eql(u8, role, "set");
     var buf: [32]u8 = undefined;
@@ -298,14 +301,14 @@ fn runRaceChild(role: []const u8) u8 {
             // Only success is acceptable: even when a concurrent `delete` removes
             // the item mid-`set`, the retry must re-Add (or Modify) and succeed —
             // never surface a backend failure.
-            data.set(&ctx, race_name, value) catch |e| {
+            data.set(race_name, value) catch |e| {
                 childFail(&child_stderr.interface, role, i, e);
                 return 1;
             };
         } else {
             // A delete of an absent key is a documented no-op (success), so every
             // iteration must succeed regardless of what the setter is doing.
-            data.delete(&ctx, race_name) catch |e| {
+            data.delete(race_name) catch |e| {
                 childFail(&child_stderr.interface, role, i, e);
                 return 1;
             };
@@ -358,9 +361,10 @@ test "concurrent set / delete race is benign and leaves the store usable" {
     var discard: std.Io.Writer.Discarding = .init(&.{});
     var ctx = MockContext{ .allocator = a, .io = io, .environ = &env, .app_name = service, .err_writer = &discard.writer };
     var data: plugin.ContextData = .{};
+    try plugin.initContextData(&data, &ctx);
 
     // Start from a clean slate even if a prior aborted run left an entry.
-    try data.delete(&ctx, race_name);
+    try data.delete(race_name);
 
     // This test binary's own path — what we re-exec as the racing children.
     var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -436,20 +440,20 @@ test "concurrent set / delete race is benign and leaves the store usable" {
     // The final state must be one of the two acceptable outcomes: the key is
     // present and readable, or absent. Reading it back (whatever it is) must not
     // fail — anything else means the store is wedged.
-    if (try data.get(&ctx, race_name)) |v| a.free(v);
+    if (try data.get(race_name)) |v| a.free(v);
 
     // Deterministic cleanup, then a full round-trip proving the store still works
     // (not wedged/locked by the racing): set a sentinel, read it back, delete it,
     // confirm gone.
-    try data.delete(&ctx, race_name);
-    try std.testing.expect((try data.get(&ctx, race_name)) == null);
+    try data.delete(race_name);
+    try std.testing.expect((try data.get(race_name)) == null);
 
-    try data.set(&ctx, race_name, "post-race-sentinel");
+    try data.set(race_name, "post-race-sentinel");
     {
-        const v = (try data.get(&ctx, race_name)).?;
+        const v = (try data.get(race_name)).?;
         defer a.free(v);
         try std.testing.expectEqualStrings("post-race-sentinel", v);
     }
-    try data.delete(&ctx, race_name);
-    try std.testing.expect((try data.get(&ctx, race_name)) == null);
+    try data.delete(race_name);
+    try std.testing.expect((try data.get(race_name)) == null);
 }

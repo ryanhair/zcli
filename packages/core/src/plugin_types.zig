@@ -269,12 +269,25 @@ const hook_names = [_][]const u8{
 };
 
 /// Non-hook decl names that are part of the plugin contract (never flagged).
+///
+/// The two ContextData pairings run outside the lifecycle-hook pipeline and take
+/// `context: anytype` for the same reason (plugins compile independently):
+///
+///   initContextData(data: *ContextData, context: anytype) !void
+///     Runs once per invocation after the framework fills the core context
+///     fields and before any lifecycle hook, so `data` can capture borrowed
+///     references (allocator, io, app_name, environ, …) that stay valid for the
+///     whole invocation. Optional; requires ContextData.
+///   deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void
+///     Runs from Context.deinit at end of invocation. Optional; requires
+///     ContextData, and must be safe on partially-initialized data.
 const contract_names = hook_names ++ [_][]const u8{
     "global_options",
     "commands",
     "priority",
     "plugin_id",
     "ContextData",
+    "initContextData",
     "deinitContextData",
     "init",
 };
@@ -323,6 +336,13 @@ pub fn validatePlugin(comptime Plugin: type) void {
             @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares deinitContextData but no ContextData. " ++
                 "deinitContextData is the cleanup hook for a plugin's ContextData and would never be called as written. " ++
                 "Add a ContextData, or remove deinitContextData.");
+        }
+        // initContextData is the setup hook for ContextData — same silently-dead
+        // shape as deinitContextData without one.
+        if (@hasDecl(Plugin, "initContextData") and !@hasDecl(Plugin, "ContextData")) {
+            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares initContextData but no ContextData. " ++
+                "initContextData is the setup hook for a plugin's ContextData and would never be called as written. " ++
+                "Add a ContextData, or remove initContextData.");
         }
         // plugin_id becomes the `context.plugins.<id>` field name verbatim, so
         // it must already be a valid Zig identifier (checked whenever declared).

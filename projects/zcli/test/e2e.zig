@@ -1715,7 +1715,7 @@ test "a command that uses zcli_secrets is runCommand-testable without the keycha
         \\pub const Args = struct { name: []const u8 };
         \\pub const Options = struct {};
         \\pub fn execute(args: Args, _: Options, context: *Context) !void {
-        \\    const secret = (try context.plugins.zcli_secrets.get(context, args.name)) orelse
+        \\    const secret = (try context.plugins.zcli_secrets.get(args.name)) orelse
         \\        return context.fail("no secret named '{s}'", .{args.name});
         \\    try context.stdout().print("{s}\n", .{secret});
         \\}

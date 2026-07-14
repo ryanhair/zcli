@@ -83,7 +83,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     // 4. The flow produced an opaque credential; `zcli_secrets` stashes it in
     //    the OS keychain — never a plaintext file. From here it's identical to
     //    the token `ghauth` pastes: the plugin doesn't care how it was minted.
-    try context.plugins.zcli_secrets.set(context, "token", token);
+    try context.plugins.zcli_secrets.set("token", token);
 
     try stdout.print("\nAuthorized. Try `oauth-device whoami`.\n", .{});
 }

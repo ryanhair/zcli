@@ -884,11 +884,23 @@ naming the plugin and the fix; there is no silent rewriting:
 pub const plugin_id = "my_plugin";
 
 pub const ContextData = struct {
+    allocator: ?std.mem.Allocator = null,
     database: ?*Database = null,
     verbose: bool = false,
 };
 
-// Optional cleanup hook, called from Context.deinit():
+// Optional setup hook, called once per invocation after the framework fills the
+// core context fields (allocator, io, app_name, environ, streams) and before any
+// lifecycle hook. Capture borrowed references off `context` here so the methods
+// on `context.plugins.<plugin_id>` can serve calls without the command
+// re-threading `context`. Requires ContextData; may fail (aborts the command):
+pub fn initContextData(data: *ContextData, context: anytype) !void {
+    data.allocator = context.allocator;
+}
+
+// Optional cleanup hook, called from Context.deinit(). Runs for every plugin
+// that declares one, whether or not its initContextData ran or succeeded, so it
+// must be safe on default-valued data:
 pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
     if (data.database) |db| db.close(allocator);
 }
@@ -902,8 +914,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 ```
 
 `ContextData` structs must be default-constructible; the generated `Context`
-initializes each plugin's field to `.{}`. See `ComputedContextType` in
-`packages/core/src/registry.zig`.
+initializes each plugin's field to `.{}`, then — for plugins that declare
+`initContextData` — the dispatcher calls that hook once per invocation (via
+`context.initPluginData()`) before any lifecycle hook. See `ComputedContextType`
+in `packages/core/src/registry.zig`.
 
 **Typing the `context` parameter:**
 

@@ -118,6 +118,31 @@ pub fn ContextFor(comptime plugins: []const type) type {
             };
         }
 
+        /// Run each plugin's `initContextData` hook, in registration order, so a
+        /// plugin can capture borrowed references off this context (allocator,
+        /// io, app_name, environ, …) into its ContextData once per invocation —
+        /// letting its `context.plugins.<id>` methods serve calls without the
+        /// command re-threading `context`. Runs before any lifecycle hook.
+        ///
+        /// The dispatcher and test harness build the full Context struct first,
+        /// then call this — `Context.init` alone lacks app metadata, so init
+        /// hooks that capture it must not run there.
+        ///
+        /// Cleanup on failure is the caller's `defer context.deinit()`, which
+        /// every call site registers before calling this: the deferred
+        /// `deinit` runs all `deinitContextData` hooks, so they must already be
+        /// safe on data whose `initContextData` never ran (fields sit at their
+        /// defaults). Not doing rollback here is what keeps a succeeded plugin's
+        /// `deinitContextData` from running twice.
+        pub fn initPluginData(self: *Self) !void {
+            inline for (plugins) |Plugin| {
+                if (@hasDecl(Plugin, "ContextData") and @hasDecl(Plugin, "initContextData")) {
+                    const field_name = comptime pluginFieldName(Plugin);
+                    try Plugin.initContextData(&@field(self.plugins, field_name), self);
+                }
+            }
+        }
+
         /// Clean up context resources
         pub fn deinit(self: *Self) void {
             // No per-field frees here: everything the framework attaches to the
@@ -126,7 +151,9 @@ pub fn ContextFor(comptime plugins: []const type) type {
             // wholesale by arena.deinit() (ADR-0001). environ is owned by the
             // caller.
 
-            // Call plugin deinit hooks if they exist
+            // Call plugin deinit hooks if they exist. Runs for every plugin that
+            // declares one regardless of whether its initContextData ran (or
+            // succeeded), so deinit hooks must be safe on default-valued data.
             inline for (plugins) |Plugin| {
                 if (@hasDecl(Plugin, "ContextData") and @hasDecl(Plugin, "deinitContextData")) {
                     const field_name = comptime pluginFieldName(Plugin);
@@ -278,4 +305,77 @@ test "context accessors type-check" {
     // signature (e.g. a stale bundle field) at build time rather than only when
     // an example happens to use it.
     std.testing.refAllDecls(ContextFor(&.{}));
+}
+
+test "initPluginData runs declared init hook and mutates ContextData" {
+    const Plugin = struct {
+        pub const plugin_id = "cap";
+        pub const ContextData = struct {
+            app_name: ?[]const u8 = null,
+        };
+        pub fn initContextData(data: *ContextData, context: anytype) !void {
+            data.app_name = context.app_name;
+        }
+    };
+
+    const Ctx = ContextFor(&.{Plugin});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const env = std.process.Environ.Map.init(std.testing.allocator);
+    var ctx = Ctx{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .stdio = &stdio,
+        .environ = &env,
+        .app_name = "myapp",
+    };
+    defer ctx.deinit();
+
+    try std.testing.expect(ctx.plugins.cap.app_name == null);
+    try ctx.initPluginData();
+    try std.testing.expectEqualStrings("myapp", ctx.plugins.cap.app_name.?);
+}
+
+test "init failure propagates and the deferred deinit still cleans up once" {
+    // A's init succeeds; B's fails. initPluginData surfaces the error and does
+    // NOT itself run cleanup — the caller's deinit does, exactly once, and must
+    // be safe on B's data whose init never completed.
+    const state = struct {
+        var a_deinit_count: usize = 0;
+    };
+    state.a_deinit_count = 0;
+
+    const PluginA = struct {
+        pub const plugin_id = "a";
+        pub const ContextData = struct { inited: bool = false };
+        pub fn initContextData(data: *ContextData, _: anytype) !void {
+            data.inited = true;
+        }
+        pub fn deinitContextData(_: *ContextData, _: std.mem.Allocator) void {
+            state.a_deinit_count += 1;
+        }
+    };
+    const PluginB = struct {
+        pub const plugin_id = "b";
+        pub const ContextData = struct {};
+        pub fn initContextData(_: *ContextData, _: anytype) !void {
+            return error.InitFailed;
+        }
+    };
+
+    const Ctx = ContextFor(&.{ PluginA, PluginB });
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const env = std.process.Environ.Map.init(std.testing.allocator);
+    var ctx = Ctx{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .stdio = &stdio,
+        .environ = &env,
+    };
+
+    try std.testing.expectError(error.InitFailed, ctx.initPluginData());
+    try std.testing.expectEqual(@as(usize, 0), state.a_deinit_count); // no in-helper rollback
+    ctx.deinit();
+    try std.testing.expectEqual(@as(usize, 1), state.a_deinit_count); // caller cleans up once
 }

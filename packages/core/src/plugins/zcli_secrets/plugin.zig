@@ -93,10 +93,10 @@
 //!
 //! ```zig
 //! // In a `login` command, after obtaining `token` however you like:
-//! try context.plugins.zcli_secrets.set(context, "token", token);
+//! try context.plugins.zcli_secrets.set("token", token);
 //!
 //! // In a later command:
-//! if (try context.plugins.zcli_secrets.get(context, "token")) |token| {
+//! if (try context.plugins.zcli_secrets.get("token")) |token| {
 //!     defer context.allocator.free(token);
 //!     // ... use token ...
 //! }
@@ -196,12 +196,12 @@ fn validateName(name: []const u8) Error!void {
 /// (e.g. Linux: which secret store to install, how to force one). Rather than
 /// emit that from a side-channel `std.log` — which both breaks the stream
 /// contract (output must flow through context streams) and fails Zig's test
-/// runner on error-path unit tests — the backend renders the line here and it is
-/// written to `context.stderr()`. A backend that exposes no `diagnostic` (macOS,
-/// Windows) simply skips this and maps as before.
-fn reportAndMap(context: anytype, e: anyerror) Error {
+/// runner on error-path unit tests — the backend renders the line to the
+/// context's stderr writer, captured in `ContextData` at init. A backend that
+/// exposes no `diagnostic` (macOS, Windows) simply skips this and maps as before.
+fn reportAndMap(data: *ContextData, e: anyerror) Error {
     if (@hasDecl(native, "diagnostic")) {
-        _ = native.diagnostic(context.stderr(), e, context.environ) catch {};
+        _ = native.diagnostic(data.stderr.?, e, data.environ.?) catch {};
     }
     return mapBackendError(e);
 }
@@ -231,34 +231,56 @@ fn mapBackendError(e: anyerror) Error {
     };
 }
 
-/// Per-context data. Holds no state today, but exists so the plugin's storage
-/// API is reachable as `context.plugins.zcli_secrets.<op>(...)` without the
-/// command having to import this module.
+/// Per-context data. Captures the borrowed references its storage methods need
+/// (allocator, io, environ, app_name, stderr) from the context once via
+/// `initContextData`, so the API is reachable as
+/// `context.plugins.zcli_secrets.<op>(...)` — no `context` re-threaded, no import.
+///
+/// The fields are optionals defaulting to null rather than `undefined`: the
+/// framework always runs `initContextData` before a command, but if a context
+/// is built without `initPluginData` the `.?` unwraps fail loudly in a safe
+/// build instead of reading garbage.
 pub const ContextData = struct {
+    allocator: ?std.mem.Allocator = null,
+    io: ?std.Io = null,
+    environ: ?*const std.process.Environ.Map = null,
+    app_name: ?[]const u8 = null,
+    stderr: ?*std.Io.Writer = null,
+
     /// Retrieve a secret by name. Returns `null` if it was never stored. The
     /// returned bytes are owned by `context.allocator` (the per-command arena),
     /// so they are freed when the command returns; free earlier if desired.
-    pub fn get(_: *ContextData, context: anytype, name: []const u8) Error!?[]const u8 {
+    pub fn get(self: *ContextData, name: []const u8) Error!?[]const u8 {
         try validateName(name);
-        return native.get(context.allocator, context.io, context.environ, context.app_name, name) catch |e|
-            return reportAndMap(context, e);
+        return native.get(self.allocator.?, self.io.?, self.environ.?, self.app_name.?, name) catch |e|
+            return reportAndMap(self, e);
     }
 
     /// Store (or overwrite) a secret. The value is copied; the caller retains
     /// ownership of the passed slice.
-    pub fn set(_: *ContextData, context: anytype, name: []const u8, value: []const u8) Error!void {
+    pub fn set(self: *ContextData, name: []const u8, value: []const u8) Error!void {
         try validateName(name);
-        return native.set(context.allocator, context.io, context.environ, context.app_name, name, value) catch |e|
-            return reportAndMap(context, e);
+        return native.set(self.allocator.?, self.io.?, self.environ.?, self.app_name.?, name, value) catch |e|
+            return reportAndMap(self, e);
     }
 
     /// Remove a secret. A no-op (success) if it does not exist.
-    pub fn delete(_: *ContextData, context: anytype, name: []const u8) Error!void {
+    pub fn delete(self: *ContextData, name: []const u8) Error!void {
         try validateName(name);
-        return native.delete(context.allocator, context.io, context.environ, context.app_name, name) catch |e|
-            return reportAndMap(context, e);
+        return native.delete(self.allocator.?, self.io.?, self.environ.?, self.app_name.?, name) catch |e|
+            return reportAndMap(self, e);
     }
 };
+
+/// Capture the context references the storage methods need, once per invocation,
+/// before any lifecycle hook. See `ContextData`.
+pub fn initContextData(data: *ContextData, context: anytype) !void {
+    data.allocator = context.allocator;
+    data.io = context.io;
+    data.environ = context.environ;
+    data.app_name = context.app_name;
+    data.stderr = context.stderr();
+}
 
 // ============================================================================
 // Tests

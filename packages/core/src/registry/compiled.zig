@@ -627,6 +627,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             };
             defer context.deinit();
 
+            // 0. Let plugins capture references off the context into their
+            // ContextData before any hook runs. A failure here aborts before
+            // execution and runs any deinit hooks already owed.
+            try context.initPluginData();
+
             // 1. Run preParse hooks
             var current_args = args;
             inline for (sorted_plugins) |Plugin| {

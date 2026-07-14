@@ -22,7 +22,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const stderr = context.stderr();
 
     // The stored bytes are owned by the arena, so no free is needed.
-    const token = (try context.plugins.zcli_secrets.get(context, "token")) orelse {
+    const token = (try context.plugins.zcli_secrets.get("token")) orelse {
         try stderr.print("Not logged in. Run `ghauth login` first.\n", .{});
         return error.NotLoggedIn;
     };
