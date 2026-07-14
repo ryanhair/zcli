@@ -4,6 +4,7 @@ const zcli = @import("zcli");
 const bash = @import("bash.zig");
 const zsh = @import("zsh.zig");
 const fish = @import("fish.zig");
+const powershell = @import("powershell.zig");
 const resolve = @import("resolve.zig");
 const wire = @import("wire.zig");
 
@@ -70,7 +71,7 @@ pub const commands = struct {
 
     pub const completions = struct {
         pub const meta = .{
-            .description = "Manage shell completions for bash, zsh, and fish",
+            .description = "Manage shell completions for bash, zsh, fish, and PowerShell",
         };
 
         // This is a metadata-only group (no execute, no Args, no Options)
@@ -85,6 +86,7 @@ pub const commands = struct {
                     "completions generate bash > completions.bash",
                     "completions generate zsh > _myapp",
                     "completions generate fish > myapp.fish",
+                    "completions generate powershell > _myapp.ps1",
                 },
             };
 
@@ -103,13 +105,13 @@ pub const commands = struct {
                 const shell_type = if (args.shell) |shell_arg|
                     getShellType(shell_arg) orelse {
                         try stderr.print("Error: unsupported shell '{s}'\n", .{shell_arg});
-                        try stderr.print("Supported shells: bash, zsh, fish\n", .{});
+                        try stderr.print("Supported shells: bash, zsh, fish, powershell\n", .{});
                         return error.UnsupportedShell;
                     }
                 else
                     detectShell(allocator, context.environ) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
-                        try stderr.print("Please specify shell explicitly: completions generate <bash|zsh|fish>\n", .{});
+                        try stderr.print("Please specify shell explicitly: completions generate <bash|zsh|fish|powershell>\n", .{});
                         return error.ShellNotDetected;
                     };
 
@@ -122,6 +124,7 @@ pub const commands = struct {
                     .bash => try bash.generate(allocator, context.app_name, commands_info, global_options),
                     .zsh => try zsh.generate(allocator, context.app_name, commands_info, global_options),
                     .fish => try fish.generate(allocator, context.app_name, commands_info, global_options),
+                    .powershell => try powershell.generate(allocator, context.app_name, commands_info, global_options),
                 };
                 defer allocator.free(script);
 
@@ -137,6 +140,7 @@ pub const commands = struct {
                     "completions install bash",
                     "completions install zsh",
                     "completions install fish",
+                    "completions install powershell",
                 },
             };
 
@@ -155,13 +159,13 @@ pub const commands = struct {
                 const shell_type = if (args.shell) |shell_arg|
                     getShellType(shell_arg) orelse {
                         try stderr.print("Error: unsupported shell '{s}'\n", .{shell_arg});
-                        try stderr.print("Supported shells: bash, zsh, fish\n", .{});
+                        try stderr.print("Supported shells: bash, zsh, fish, powershell\n", .{});
                         return error.UnsupportedShell;
                     }
                 else
                     detectShell(allocator, context.environ) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
-                        try stderr.print("Please specify shell explicitly: completions install <bash|zsh|fish>\n", .{});
+                        try stderr.print("Please specify shell explicitly: completions install <bash|zsh|fish|powershell>\n", .{});
                         return error.ShellNotDetected;
                     };
 
@@ -174,6 +178,7 @@ pub const commands = struct {
                     .bash => try bash.generate(allocator, context.app_name, commands_info, global_options),
                     .zsh => try zsh.generate(allocator, context.app_name, commands_info, global_options),
                     .fish => try fish.generate(allocator, context.app_name, commands_info, global_options),
+                    .powershell => try powershell.generate(allocator, context.app_name, commands_info, global_options),
                 };
                 defer allocator.free(script);
 
@@ -205,6 +210,7 @@ pub const commands = struct {
                     .bash => "bash",
                     .zsh => "zsh",
                     .fish => "fish",
+                    .powershell => "powershell",
                 };
 
                 try stdout.print("✓ Installed {s} completions to {s}\n\n", .{ shell_name, install_path });
@@ -222,6 +228,7 @@ pub const commands = struct {
                     "completions uninstall bash",
                     "completions uninstall zsh",
                     "completions uninstall fish",
+                    "completions uninstall powershell",
                 },
             };
 
@@ -240,13 +247,13 @@ pub const commands = struct {
                 const shell_type = if (args.shell) |shell_arg|
                     getShellType(shell_arg) orelse {
                         try stderr.print("Error: unsupported shell '{s}'\n", .{shell_arg});
-                        try stderr.print("Supported shells: bash, zsh, fish\n", .{});
+                        try stderr.print("Supported shells: bash, zsh, fish, powershell\n", .{});
                         return error.UnsupportedShell;
                     }
                 else
                     detectShell(allocator, context.environ) orelse {
                         try stderr.print("Error: could not detect shell from $SHELL environment variable\n", .{});
-                        try stderr.print("Please specify shell explicitly: completions uninstall <bash|zsh|fish>\n", .{});
+                        try stderr.print("Please specify shell explicitly: completions uninstall <bash|zsh|fish|powershell>\n", .{});
                         return error.ShellNotDetected;
                     };
 
@@ -269,6 +276,7 @@ pub const commands = struct {
                     .bash => "bash",
                     .zsh => "zsh",
                     .fish => "fish",
+                    .powershell => "powershell",
                 };
 
                 try stdout.print("✓ Uninstalled {s} completions from {s}\n\n", .{ shell_name, install_path });
@@ -282,12 +290,18 @@ const ShellType = enum {
     bash,
     zsh,
     fish,
+    powershell,
 };
 
 fn getShellType(shell: []const u8) ?ShellType {
     if (std.mem.eql(u8, shell, "bash")) return .bash;
     if (std.mem.eql(u8, shell, "zsh")) return .zsh;
     if (std.mem.eql(u8, shell, "fish")) return .fish;
+    // Accept the several names PowerShell is invoked under.
+    if (std.mem.eql(u8, shell, "powershell")) return .powershell;
+    if (std.mem.eql(u8, shell, "pwsh")) return .powershell;
+    if (std.mem.eql(u8, shell, "powershell.exe")) return .powershell;
+    if (std.mem.eql(u8, shell, "pwsh.exe")) return .powershell;
     return null;
 }
 
@@ -317,6 +331,14 @@ fn getInstallPath(allocator: std.mem.Allocator, environ: *const std.process.Envi
         .fish => try std.fmt.allocPrint(
             allocator,
             "{s}/.config/fish/completions/{s}.fish",
+            .{ home, app_name },
+        ),
+        // PowerShell (pwsh) has no auto-loaded completions directory, so the script
+        // is dropped in the standard cross-platform config dir and dot-sourced from
+        // the user's $PROFILE (see printEnableInstructions).
+        .powershell => try std.fmt.allocPrint(
+            allocator,
+            "{s}/.config/powershell/completions/{s}.ps1",
             .{ home, app_name },
         ),
     };
@@ -356,6 +378,16 @@ fn printEnableInstructions(shell_type: ShellType, context: anytype) !void {
             try stdout.writeAll("No additional configuration needed! Just start a new shell:\n");
             try stdout.writeAll("  exec fish\n");
         },
+        .powershell => {
+            try stdout.writeAll("PowerShell has no auto-loaded completions directory, so dot-source the\n");
+            try stdout.writeAll("script from your profile. Add the following to your $PROFILE:\n\n");
+            try stdout.writeAll("  . ~/.config/powershell/completions/");
+            try stdout.print("{s}", .{context.app_name});
+            try stdout.writeAll(".ps1\n\n");
+            try stdout.writeAll("(Run `echo $PROFILE` to find its path; create the file if it doesn't exist.)\n");
+            try stdout.writeAll("Then reload your shell:\n");
+            try stdout.writeAll("  . $PROFILE\n");
+        },
     }
 }
 
@@ -380,6 +412,14 @@ fn printDisableInstructions(shell_type: ShellType, context: anytype) !void {
             try stdout.writeAll("Or remove just this completion directory if others exist.\n\n");
             try stdout.writeAll("Then reload your shell:\n");
             try stdout.writeAll("  exec zsh\n");
+        },
+        .powershell => {
+            try stdout.writeAll("To complete removal, remove this line from your $PROFILE:\n\n");
+            try stdout.writeAll("  . ~/.config/powershell/completions/");
+            try stdout.print("{s}", .{context.app_name});
+            try stdout.writeAll(".ps1\n\n");
+            try stdout.writeAll("Then reload your shell:\n");
+            try stdout.writeAll("  . $PROFILE\n");
         },
         .fish => {
             try stdout.writeAll("Completions fully removed. No configuration cleanup needed.\n");

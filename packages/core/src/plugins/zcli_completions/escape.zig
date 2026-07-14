@@ -46,6 +46,25 @@ pub fn fish(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     return out.toOwnedSlice(allocator);
 }
 
+/// Escape for placement inside a PowerShell single-quoted string `'…'`.
+/// PowerShell single-quoted strings are fully literal except for the single quote
+/// itself, which is escaped by DOUBLING it (`''`) — the same rule for every
+/// interpolated identifier the generator emits (command/option/enum names,
+/// descriptions), so a pathological `@"a'b"` Zig identifier can never break out of
+/// its quote.
+pub fn powershell(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (s) |c| {
+        if (c == '\'') {
+            try out.appendSlice(allocator, "''");
+        } else {
+            try out.append(allocator, c);
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 /// Escape for placement inside a zsh `'…'` completion spec. Beyond the `'\''`
 /// single-quote dance, zsh completion specs use `[`, `]`, `(`, `)`, and `:` as
 /// structural metacharacters (description brackets, action groups, spec field
