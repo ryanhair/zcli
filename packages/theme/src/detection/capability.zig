@@ -15,9 +15,11 @@ pub const TerminalCapability = enum {
 
     /// Detect terminal capabilities from environment variables and platform-specific context
     pub fn detect(env: *const std.process.Environ.Map) TerminalCapability {
-        // Check NO_COLOR environment variable first (universal standard)
-        if (env.contains("NO_COLOR")) {
-            return .no_color;
+        // Check NO_COLOR environment variable first (universal standard).
+        // Per the spec (no-color.org), the variable must be present AND
+        // non-empty to disable color; `NO_COLOR=` should not.
+        if (env.get("NO_COLOR")) |v| {
+            if (v.len > 0) return .no_color;
         }
 
         // Platform-specific detection
@@ -166,6 +168,30 @@ pub const Capabilities = struct {
 /// Detect if output is to a TTY (terminal)
 fn detectTTY(io: std.Io) bool {
     return std.Io.File.stdout().isTty(io) catch false;
+}
+
+test "NO_COLOR: empty string does not disable color" {
+    const testing = std.testing;
+
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("NO_COLOR", "");
+    try env.put("TERM", "xterm-256color");
+
+    // Empty NO_COLOR must not force no_color; detection should fall through
+    // to the generic TERM-based path.
+    try testing.expect(TerminalCapability.detect(&env) != .no_color);
+}
+
+test "NO_COLOR: non-empty value disables color" {
+    const testing = std.testing;
+
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("NO_COLOR", "1");
+    try env.put("TERM", "xterm-256color");
+
+    try testing.expect(TerminalCapability.detect(&env) == .no_color);
 }
 
 test "capability detection basics" {
