@@ -1095,9 +1095,15 @@ test "parse errors run onError with context.diagnostic populated" {
 // supported category (also exercising declaration-time type validation),
 // records what handleGlobalOption receives, and captures parse failures.
 const TypedGlobalsPlugin = struct {
+    // An enum-typed global exercises the single-source-of-truth parser: it is
+    // coerced by the same `parseOptionValue` a command option/env/config value
+    // is, so enums Just Work with no per-type ladder in the global pipeline.
+    const Mode = enum { fast, slow };
+
     var level: i64 = -1;
     var ratio: f64 = 0;
     var label: []const u8 = "";
+    var mode: ?Mode = null;
     var verbose: bool = false;
     var debug: bool = false;
     var captured_err: ?anyerror = null;
@@ -1108,6 +1114,7 @@ const TypedGlobalsPlugin = struct {
         level = -1;
         ratio = 0;
         label = "";
+        mode = null;
         verbose = false;
         debug = false;
         captured_err = null;
@@ -1119,6 +1126,7 @@ const TypedGlobalsPlugin = struct {
         zcli.option("level", i64, .{ .short = 'l', .description = "level" }),
         zcli.option("ratio", f64, .{ .description = "ratio" }),
         zcli.option("label", []const u8, .{ .description = "label" }),
+        zcli.option("mode", Mode, .{ .short = 'm', .default = .slow, .description = "mode" }),
         zcli.option("verbose", bool, .{ .short = 'v', .description = "verbose" }),
         zcli.option("debug", bool, .{ .short = 'd', .description = "debug" }),
     };
@@ -1132,6 +1140,8 @@ const TypedGlobalsPlugin = struct {
             ratio = value;
         } else if (comptime T == []const u8) {
             label = value;
+        } else if (comptime T == Mode) {
+            mode = value;
         } else if (comptime T == bool) {
             if (std.mem.eql(u8, name, "verbose")) verbose = value;
             if (std.mem.eql(u8, name, "debug")) debug = value;
@@ -1242,6 +1252,55 @@ test "global options: missing and invalid values produce diagnostics" {
     try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), TypedGlobalsPlugin.captured_err);
     try testing.expectEqualStrings("abc", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.provided_value);
     try testing.expectEqualStrings("i64", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.expected_type);
+}
+
+// An enum-typed global option now flows through the same parser command
+// options/env/config use — the capability the old bool/int/float/string
+// converter lacked. A good variant name coerces to the enum; a bad one produces
+// the standard OptionInvalidValue diagnostic; the declared default is retained
+// typed (no stringly round-trip).
+test "global options: enum-typed global parses, rejects, and defaults" {
+    const TestApp = typedGlobalsApp();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    // A valid variant name coerces to the enum value.
+    TypedGlobalsPlugin.reset();
+    try runQuiet(&app, &test_environ, &.{ "--mode", "fast", "ping" });
+    try testing.expectEqual(@as(?TypedGlobalsPlugin.Mode, .fast), TypedGlobalsPlugin.mode);
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+
+    // The short form reaches the same parser.
+    TypedGlobalsPlugin.reset();
+    try runQuiet(&app, &test_environ, &.{ "-m", "slow", "ping" });
+    try testing.expectEqual(@as(?TypedGlobalsPlugin.Mode, .slow), TypedGlobalsPlugin.mode);
+
+    // An unknown variant is the standard invalid-value diagnostic, not a
+    // silent miss — exactly as a command option would report it.
+    TypedGlobalsPlugin.reset();
+    try runQuiet(&app, &test_environ, &.{ "--mode", "sideways", "ping" });
+    try testing.expectEqual(@as(?anyerror, error.OptionInvalidValue), TypedGlobalsPlugin.captured_err);
+    try testing.expectEqualStrings("sideways", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.provided_value);
+    try testing.expectEqualStrings("mode", TypedGlobalsPlugin.captured_diag.?.OptionInvalidValue.option_name);
+}
+
+// The typed default is stored as a comptime value of the option's type (no
+// stringly DefaultValue round-trip) and recovered with `defaultValue`.
+test "global options: defaultValue recovers the typed comptime default" {
+    const opts = TypedGlobalsPlugin.global_options;
+    // `mode` was declared `.default = .slow`.
+    inline for (opts) |opt| {
+        if (comptime std.mem.eql(u8, opt.name, "mode")) {
+            try testing.expectEqual(TypedGlobalsPlugin.Mode.slow, opt.defaultValue(opt.type));
+        }
+        // A global declared without a default gets a synthesized typed zero.
+        if (comptime std.mem.eql(u8, opt.name, "level")) {
+            try testing.expectEqual(@as(i64, 0), opt.defaultValue(opt.type));
+        }
+        if (comptime std.mem.eql(u8, opt.name, "label")) {
+            try testing.expectEqualStrings("", opt.defaultValue(opt.type));
+        }
+    }
 }
 
 // ============================================================================

@@ -1,137 +1,97 @@
 const std = @import("std");
 const zcli = @import("zcli.zig");
 const identifier = @import("identifier.zig");
+const option_utils = @import("options/utils.zig");
+const custom_type = @import("custom_type.zig");
 const testing = std.testing;
 
 // ============================================================================
 // Core Plugin Types
 // ============================================================================
 
-/// Global option that can be registered by plugins
+/// Global option that can be registered by plugins.
+///
+/// A global option is parsed by the *same* pipeline command options, env, and
+/// config use (`option_utils.parseOptionValue`) — the single source of truth —
+/// so it supports the full type set: bool flags, integers, floats, enums,
+/// `[]const u8`, custom `parse` types, and optionals of those. There is no
+/// second, weaker parser.
 pub const GlobalOption = struct {
     name: []const u8,
     short: ?u8 = null,
     type: type,
-    default: DefaultValue,
+    /// The declared (or synthesized) default, type-erased so every GlobalOption
+    /// is one concrete struct type storable in a `[]const GlobalOption`. It
+    /// points at a comptime value of `type`; recover it with `defaultValue`. A
+    /// GlobalOption carries a `type` field, so it only ever exists at comptime.
+    default: *const anyopaque,
     description: []const u8,
     category: ?[]const u8 = null,
 
-    pub fn validate(self: @This(), value: anytype) !void {
-        // Default validation - can be overridden
-        _ = self;
-        _ = value;
-    }
-
-    pub fn getDefaultAsString(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
-        return self.default.toString(allocator);
+    /// The stored default typed as `T` (which must be `self.type`).
+    pub fn defaultValue(comptime self: @This(), comptime T: type) T {
+        return @as(*const T, @ptrCast(@alignCast(self.default))).*;
     }
 };
 
-/// Union to store default values of different types
-pub const DefaultValue = union(enum) {
-    string: []const u8,
-    boolean: bool,
-    integer: i64,
-    unsigned: u64,
-    float: f64,
-    none,
-
-    pub fn toString(self: DefaultValue, allocator: std.mem.Allocator) ![]const u8 {
-        return switch (self) {
-            .string => |s| s,
-            .boolean => |b| if (b) "true" else "false",
-            .integer => |i| try std.fmt.allocPrint(allocator, "{d}", .{i}),
-            .unsigned => |u| try std.fmt.allocPrint(allocator, "{d}", .{u}),
-            .float => |f| try std.fmt.allocPrint(allocator, "{d}", .{f}),
-            .none => "",
-        };
-    }
-};
-
-/// Unified helper function for creating GlobalOptions with better ergonomics
-/// The types a global option may declare: bool, integers, floats, strings,
-/// and optionals of those — exactly what the registry's converter handles.
-fn validateGlobalOptionType(comptime name: []const u8, comptime T: type) void {
-    // Labeled switch: optionals re-dispatch on their child instead of
-    // duplicating the base-type arms — mirroring convertGlobalValue's
-    // recursion, so validator and converter agree on nested optionals.
-    const ok = blk: switch (@typeInfo(T)) {
-        .bool, .int, .float => true,
-        .pointer => |ptr| ptr.size == .slice and ptr.child == u8 and ptr.is_const,
-        .optional => |opt| continue :blk @typeInfo(opt.child),
+/// Whether `option_utils.parseOptionValue` can coerce a string into `T` — the
+/// single source of truth the CLI, env, and config already use. Mirrors that
+/// function's type switch exactly, so the declaration-time validator and the
+/// runtime converter never disagree. (`bool` is handled separately as a
+/// presence flag, so it is intentionally absent here.)
+fn parseableByOptionValue(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .int, .float, .@"enum" => true,
+        .pointer => |ptr| ptr.size == .slice and ptr.child == u8,
+        .optional => |opt| parseableByOptionValue(opt.child),
+        .@"struct", .@"union" => custom_type.isCustomParsed(T),
         else => false,
     };
-    if (!ok) {
-        @compileError("global option '" ++ name ++ "' has unsupported type `" ++ @typeName(T) ++
-            "`. Supported: bool, integers, floats, []const u8, and optionals of those.");
-    }
 }
 
+/// The types a global option may declare: a `bool` presence flag, or anything
+/// the shared option parser handles. Rejected at the point of declaration — not
+/// at some later use site with a baffling error.
+fn validateGlobalOptionType(comptime name: []const u8, comptime T: type) void {
+    if (T == bool or parseableByOptionValue(T)) return;
+    @compileError("global option '" ++ name ++ "' has unsupported type `" ++ @typeName(T) ++
+        "`. Supported: bool, integers, floats, enums, []const u8, custom `parse` types, and optionals of those.");
+}
+
+/// A synthesized default for a global option declared without one. Only read by
+/// introspection (`GlobalOption.defaultValue`); an absent global never fires its
+/// handler, so this value is never delivered to a plugin.
+fn zeroDefault(comptime T: type) T {
+    return switch (@typeInfo(T)) {
+        .optional => null,
+        .@"enum" => |e| @field(T, e.fields[0].name),
+        .pointer => "", // []const u8
+        else => std.mem.zeroes(T),
+    };
+}
+
+/// Unified helper for declaring a GlobalOption. The default is stored typed
+/// (as a comptime value of `T`), so there is no stringly default round-trip —
+/// `parseOptionValue` is the only value coercion the pipeline performs.
 pub fn option(comptime name: []const u8, comptime T: type, comptime config: anytype) GlobalOption {
-    // Reject types the global-option pipeline cannot convert, at the point
-    // of declaration — not at some later use site with a baffling error.
     comptime validateGlobalOptionType(name, T);
 
-    // Extract fields from config, providing defaults if not present
     const short = if (@hasField(@TypeOf(config), "short")) config.short else null;
     const description = if (@hasField(@TypeOf(config), "description")) config.description else "";
     const category = if (@hasField(@TypeOf(config), "category")) config.category else null;
-    const has_default = @hasField(@TypeOf(config), "default");
-    const default_value = if (!has_default) blk: {
-        // No default provided, create appropriate "zero" value
-        break :blk switch (@typeInfo(T)) {
-            .bool => DefaultValue{ .boolean = false },
-            .int => |int_info| if (int_info.signedness == .signed)
-                DefaultValue{ .integer = 0 }
-            else
-                DefaultValue{ .unsigned = 0 },
-            .float => DefaultValue{ .float = 0.0 },
-            .pointer => |ptr_info| if (ptr_info.size == .slice and ptr_info.child == u8)
-                DefaultValue{ .string = "" }
-            else
-                DefaultValue{ .none = {} },
-            .optional => DefaultValue{ .none = {} },
-            else => DefaultValue{ .none = {} },
-        };
-    } else blk: {
-        // Convert provided default to DefaultValue
-        const default_val = config.default;
-        break :blk switch (@TypeOf(default_val)) {
-            bool => DefaultValue{ .boolean = default_val },
-            comptime_int, u8, u16, u32, u64, usize => DefaultValue{ .unsigned = @as(u64, default_val) },
-            i8, i16, i32, i64, isize => DefaultValue{ .integer = @as(i64, default_val) },
-            f32, f64, comptime_float => DefaultValue{ .float = @as(f64, default_val) },
-            []const u8 => DefaultValue{ .string = default_val },
-            else => blk_inner: {
-                // Handle string literals and other pointer types
-                const type_info = @typeInfo(@TypeOf(default_val));
-                if (type_info == .pointer) {
-                    const ptr_info = type_info.pointer;
-                    // Handle both string slices and string literals
-                    if (ptr_info.child == u8 or @typeInfo(ptr_info.child) == .array) {
-                        const array_info = @typeInfo(ptr_info.child);
-                        if (array_info == .array and array_info.array.child == u8) {
-                            break :blk_inner DefaultValue{ .string = default_val };
-                        } else if (ptr_info.child == u8) {
-                            break :blk_inner DefaultValue{ .string = default_val };
-                        } else {
-                            @compileError("Unsupported pointer type: " ++ @typeName(@TypeOf(default_val)));
-                        }
-                    } else {
-                        @compileError("Unsupported pointer type: " ++ @typeName(@TypeOf(default_val)));
-                    }
-                } else {
-                    @compileError("Unsupported default value type: " ++ @typeName(@TypeOf(default_val)));
-                }
-            },
-        };
-    };
+    // Coerce the declared default (or a synthesized zero) to the field type once,
+    // at comptime, and hand back a pointer to that comptime value. Being
+    // comptime-known, the value has static lifetime.
+    const default_value: T = if (@hasField(@TypeOf(config), "default")) config.default else zeroDefault(T);
 
     return GlobalOption{
         .name = name,
         .short = short,
         .type = T,
-        .default = default_value,
+        // @ptrCast: a pointer to a slice-typed default (`*const []const u8`) is a
+        // double pointer that won't implicitly coerce to anyopaque; the cast is
+        // exact and `defaultValue` casts straight back to `*const T`.
+        .default = @ptrCast(&default_value),
         .description = description,
         .category = category,
     };
