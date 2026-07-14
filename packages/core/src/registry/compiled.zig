@@ -5,6 +5,7 @@ const plugin_types = @import("../plugin_types.zig");
 const zcli = @import("../zcli.zig");
 
 const console_utf8 = @import("../console_utf8.zig");
+const response_file = @import("../response_file.zig");
 const paths = @import("paths.zig");
 const builder = @import("builder.zig");
 const comptimeJoinPath = paths.comptimeJoinPath;
@@ -78,6 +79,9 @@ fn isReportedCliError(err: anyerror) bool {
         // A command that failed via context.fail() already printed its own
         // user-facing message; exit non-zero without the name/trace.
         error.CommandFailed,
+        // A `@file` response file that couldn't be read is CLI misuse: the
+        // message (naming the file) was already printed at the parse front.
+        error.ResponseFileUnreadable,
         => true,
         else => false,
     };
@@ -664,8 +668,29 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // execution and runs any deinit hooks already owed.
             try context.initPluginData();
 
+            // 0.5 Response-file (@file) expansion, once, at the very front of
+            // parsing — before global options, transforms, and command routing
+            // — so a @file may contribute the command name, options, and
+            // positionals alike. See response_file.zig for the full semantics
+            // (single-level, `--` stops it). Allocations land in the arena.
+            var rf_diag: ?response_file.Diagnostic = null;
+            const expanded_args = response_file.expandArgs(context.allocator, io, std.Io.Dir.cwd(), args, &rf_diag) catch |err| {
+                // A missing/unreadable response file is reported CLI misuse:
+                // print the offending path (sanitized — it comes from argv) and
+                // a usage pointer, then let run() map it to exit code 2.
+                if (rf_diag) |d| {
+                    var stderr = context.stderr();
+                    try stderr.print("Error: cannot read response file '", .{});
+                    try zcli.writeSanitized(stderr, d.path);
+                    try stderr.print("'\n", .{});
+                    try stderr.print("Run '{s} --help' for usage.\n", .{context.app_name});
+                    try stderr.flush();
+                }
+                return err;
+            };
+
             // 1. Run preParse hooks
-            var current_args = args;
+            var current_args = expanded_args;
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "preParse")) {
                     current_args = try Plugin.preParse(&context, current_args);

@@ -139,6 +139,10 @@ pub const writeSanitized = diagnostic_errors.writeSanitized;
 /// suggestions), so both draw "did you mean" hints from one implementation.
 pub const levenshtein = @import("levenshtein.zig");
 
+/// `@file` response-file argument expansion, applied once at the registry's
+/// parse front (see registry/compiled.zig).
+pub const response_file = @import("response_file.zig");
+
 // Re-export plugin types for user convenience
 
 // Re-export new plugin system types
