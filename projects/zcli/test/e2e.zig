@@ -1335,11 +1335,11 @@ test "root zcli_theme declaration themes help output" {
 
     // Declare a custom theme in the app root — the std_options-style hook.
     // Command names in help should render in this color (tomato, 255;99;71).
+    // The scaffolded main.zig already imports zcli (for the panic hook).
     try replaceInFile(proj, a, "src/main.zig",
         \\const registry = @import("command_registry");
     ,
         \\const registry = @import("command_registry");
-        \\const zcli = @import("zcli");
         \\
         \\pub const zcli_theme: zcli.Theme = .{
         \\    .palette = .{ .command = .{ .foreground = .{ .rgb = .{ .r = 255, .g = 99, .b = 71 } } } },
