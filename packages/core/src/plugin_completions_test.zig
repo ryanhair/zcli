@@ -460,10 +460,11 @@ test "bash.generate - emits a root case and single-word case subjects" {
     try std.testing.expect(!contains(script, "case \"$path_len\""));
     try std.testing.expect(!contains(script, "${cmd_path[@]}"));
 
-    // Root case: empty key offers the top-level commands.
-    try std.testing.expect(contains(script, "\"\")\n"));
+    // Root case: empty key offers the top-level commands. Patterns are
+    // single-quoted so a name can never be command-substituted at TAB.
+    try std.testing.expect(contains(script, "'')\n"));
     // Nested case: single-word subject "sprint".
-    try std.testing.expect(contains(script, "\"sprint\")"));
+    try std.testing.expect(contains(script, "'sprint')"));
 
     // Aliases surface alongside command names.
     try std.testing.expect(contains(script, "add a "));
@@ -472,7 +473,7 @@ test "bash.generate - emits a root case and single-word case subjects" {
     try std.testing.expect(contains(script, "low medium high"));
 
     // A leaf's enum positional is offered at its command path...
-    try std.testing.expect(contains(script, "\"list\")"));
+    try std.testing.expect(contains(script, "'list')"));
     try std.testing.expect(contains(script, "open done"));
     // ...and the blanket file fallback is gone (no more CWD dump for positionals).
     try std.testing.expect(!contains(script, "compgen -f"));
@@ -492,8 +493,8 @@ test "zsh.generate - compdef header, describe, and enum action" {
     try std.testing.expect(contains(script, "case $line[2] in"));
     // Enum option renders a value action group.
     try std.testing.expect(contains(script, ":priority:(low medium high)"));
-    // Alias appears as an alternation in the case pattern.
-    try std.testing.expect(contains(script, "add|a)"));
+    // Alias appears as an alternation in the case pattern (single-quoted).
+    try std.testing.expect(contains(script, "'add'|'a')"));
 
     // A plain positional force-displays its description as a hint via _message -r
     // (an empty action would render nothing without a `format` zstyle set).
@@ -1171,4 +1172,144 @@ test "functional fish - also_dirs directive offers directories" {
     const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
     try std.testing.expect(advContains(result.stdout, "<zzcand>")); // dynamic candidate
     try std.testing.expect(advContains(result.stdout, "<zzdir/>")); // directory (fish appends /)
+}
+
+// ============================================================================
+// Layer 4: adversarial command/option/alias NAMES (issue #290)
+//
+// Names — unlike descriptions — flow into `case` patterns (bash/zsh) and spec
+// operands (zsh `_arguments`, fish `-a`/`-l`). Bash expands `case` patterns
+// (command substitution included) before matching, so a name like `$(cmd)`
+// runs `cmd` on every TAB. These fixtures embed both a quote (breaks a quoted
+// context → parse error if unescaped) and a `$(touch …)` command substitution
+// (executes at TAB if unescaped) in every name-bearing position.
+// ============================================================================
+
+const pwn_file_spec: zcli.completion.Spec = .file;
+
+// A `.file` option so it emits a `$prev` value case (`'--<name>'|'-o')`) without
+// dragging an enum's `compgen -W` re-expansion (a separate, out-of-scope vector)
+// into the command-substitution assertion.
+const adv_name_opts = [_]zcli.OptionInfo{
+    .{ .name = "o'p$(touch PWNED_opt)", .short = 'o', .description = "danger opt", .takes_value = true, .complete = pwn_file_spec },
+};
+
+// A group (`g'p…`) whose case pattern carries the name, with a leaf child
+// (`l'f…`) plus an adversarial alias — the leaf name + alias land in the command
+// list and in zsh's `case $line[N]` alternation.
+const adv_name_commands = [_]zcli.CommandInfo{
+    .{
+        .path = &.{ "g'p$(touch PWNED_grp)", "l'f$(touch PWNED_leaf)" },
+        .description = "danger",
+        .options = &adv_name_opts,
+        .aliases = &.{"a'x$(touch PWNED_alias)"},
+    },
+};
+
+test "gen - adversarial NAMES are escaped, never emitted raw in a case/spec" {
+    // Every generator must escape the embedded quote (the `'\''` bash/zsh dance,
+    // fish's `\'`) so no name survives as a raw `'`-terminated token — the marker
+    // that a name reached a pattern/spec unescaped.
+    const b = try bash.generate(std.testing.allocator, "advapp", &adv_name_commands, &global_options);
+    defer std.testing.allocator.free(b);
+    const z = try zsh.generate(std.testing.allocator, "advapp", &adv_name_commands, &global_options);
+    defer std.testing.allocator.free(z);
+    const f = try fish.generate(std.testing.allocator, "advapp", &adv_name_commands, &global_options);
+    defer std.testing.allocator.free(f);
+
+    // bash/zsh single-quote dance turns `g'p` into `g'\''p`; a raw `case`/spec
+    // interpolation would instead show the unescaped `'g'p` prefix.
+    try std.testing.expect(contains(b, "g'\\''p"));
+    try std.testing.expect(contains(z, "g'\\''p"));
+    // fish escapes the quote as `\'` (so `l'f` → `l\'f`).
+    try std.testing.expect(contains(f, "l\\'f"));
+
+    // The option name reached its spec/case escaped too (bash `$prev` case; zsh
+    // `_arguments` spec).
+    try std.testing.expect(contains(b, "o'\\''p"));
+    try std.testing.expect(contains(z, "o'\\''p"));
+    try std.testing.expect(contains(f, "o\\'p"));
+}
+
+test "shell syntax - generators accept adversarial NAMES (bash -n / zsh -n / fish)" {
+    const bash_sh = findShell("bash");
+    const zsh_sh = findShell("zsh");
+    const fish_sh = findShell("fish");
+    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    if (fish_sh == null and ciRequiresFish(a)) return error.FishRequiredButMissing;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // The embedded quote breaks an unescaped quoted context → the parse fails.
+    if (bash_sh) |sh| {
+        const s = try bash.generate(a, "advapp", &adv_name_commands, &global_options);
+        const path = try writeTemp(a, tmp.dir, "adv_names.bash", s);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", path }));
+    }
+    if (zsh_sh) |sh| {
+        const s = try zsh.generate(a, "advapp", &adv_name_commands, &global_options);
+        const path = try writeTemp(a, tmp.dir, "adv_names.zsh", s);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", path }));
+    }
+    if (fish_sh) |sh| {
+        const s = try fish.generate(a, "advapp", &adv_name_commands, &global_options);
+        const path = try writeTemp(a, tmp.dir, "adv_names.fish", s);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "--no-execute", path }));
+    }
+}
+
+test "functional bash - adversarial command/option NAMES do NOT execute at TAB" {
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try bash.generate(a, "advapp", &adv_name_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "advapp_names.bash", script);
+    // Resolve the temp dir (via a throwaway file) so the harness can `cd` into it;
+    // any `$(touch PWNED_*)` that fires would drop its marker right here.
+    const anchor = try writeTemp(a, tmp.dir, "anchor", "");
+    const dir_path = std.fs.path.dirname(anchor).?;
+
+    // Drive the completion function at the two cursor positions that reach the
+    // `case` blocks carrying the adversarial names: a bare word (command +
+    // `$prev` value cases) and an option prefix (option-name case). Bash expands
+    // every pattern in a reached `case` regardless of whether it matches, so an
+    // unescaped name's `$(touch …)` would run now. (We never type the adversarial
+    // name — doing so would run its substitution in the harness itself.)
+    const harness = try std.fmt.allocPrint(a,
+        \\source "{s}"
+        \\cd "{s}"
+        \\drive() {{
+        \\    COMP_WORDS=("$@")
+        \\    COMP_CWORD=$(( ${{#COMP_WORDS[@]}} - 1 ))
+        \\    COMPREPLY=()
+        \\    _advapp_completions
+        \\}}
+        \\drive advapp ''
+        \\drive advapp -
+        \\echo DONE
+        \\
+    , .{ script_path, dir_path });
+    const harness_path = try writeTemp(a, tmp.dir, "advapp_names_harness.bash", harness);
+
+    const result = try std.process.run(a, io, .{ .argv = &.{ sh, harness_path } });
+    try std.testing.expect(advContains(result.stdout, "DONE"));
+
+    // Not a single marker may exist: every name stayed a literal single-quoted
+    // pattern, so no command substitution fired.
+    for ([_][]const u8{ "PWNED_grp", "PWNED_leaf", "PWNED_alias", "PWNED_opt" }) |marker| {
+        const present = if (tmp.dir.access(io, marker, .{})) |_| true else |_| false;
+        try std.testing.expect(!present);
+    }
 }

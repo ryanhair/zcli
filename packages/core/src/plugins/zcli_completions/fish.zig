@@ -98,8 +98,9 @@ fn writeNode(
         try writeCondition(arena, writer, app_name, node.path);
         // A subcommand takes no value itself. Fish uses only the last `-a`, so
         // offer the name and any aliases as one space-separated argument list.
-        try writer.print(" -a '{s}", .{child.name});
-        for (child.aliases) |alias| try writer.print(" {s}", .{alias});
+        // escape.fish each so a name can't break out of the single-quoted list.
+        try writer.print(" -a '{s}", .{try escape.fish(arena, child.name)});
+        for (child.aliases) |alias| try writer.print(" {s}", .{try escape.fish(arena, alias)});
         try writer.writeAll("'");
         if (child.description) |d| {
             const esc = try escape.fish(arena, d);
@@ -205,7 +206,9 @@ fn writeOption(
     if (path) |p| try writeCondition(arena, writer, app_name, p);
 
     if (opt.short) |short| try writer.print(" -s {c}", .{short});
-    try writer.print(" -l {s}", .{opt.name});
+    // Single-quote + escape.fish the long name so an exotic identifier stays one
+    // literal token rather than shell syntax.
+    try writer.print(" -l '{s}'", .{try escape.fish(arena, opt.name)});
 
     if (opt.description) |desc| {
         const esc = try escape.fish(arena, desc);

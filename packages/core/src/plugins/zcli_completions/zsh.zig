@@ -92,9 +92,10 @@ fn writeArgsDispatch(
     try writer.print("{s}case $line[{d}] in\n", .{ indent, depth });
 
     for (node.children) |child| {
-        // Match the child by name or any alias.
-        try writer.print("{s}    {s}", .{ indent, child.name });
-        for (child.aliases) |alias| try writer.print("|{s}", .{alias});
+        // Match the child by name or any alias. Single-quoted so a name with a
+        // glob/command-substitution metacharacter is a literal pattern, not code.
+        try writer.print("{s}    '{s}'", .{ indent, try danceSingleQuotes(arena, child.name) });
+        for (child.aliases) |alias| try writer.print("|'{s}'", .{try danceSingleQuotes(arena, alias)});
         try writer.writeAll(")\n");
 
         if (child.children.len > 0) {
@@ -171,8 +172,10 @@ fn writeLeafArguments(
     // Nothing declared → nothing to complete for this command.
     if (specs.items.len == 0) return;
 
-    // Namespace the context so option state doesn't leak between commands.
-    const ctx = try std.mem.join(arena, "-", node.path);
+    // Namespace the context so option state doesn't leak between commands. The
+    // path sits in a double-quoted string, so dq-escape it (a `$(…)`/backtick in
+    // a name must not run).
+    const ctx = try dquoteEscape(arena, try std.mem.join(arena, "-", node.path));
     try writer.print("{s}        curcontext=\"${{curcontext%:*:*}}:{s}:\"\n", .{ indent, ctx });
     try writer.print("{s}        _arguments -S \\\n", .{indent});
     const spec_indent = try std.mem.concat(arena, u8, &.{ indent, "            " });
@@ -206,6 +209,7 @@ fn appendOptionSpecs(
 ) !void {
     for (options) |opt| {
         const esc_desc = if (opt.description) |d| try escape.zsh(arena, d) else null;
+        const esc_name = try escape.zsh(arena, opt.name);
         const action = try optionAction(arena, app_name, opt);
 
         if (opt.short) |short| {
@@ -216,9 +220,9 @@ fn appendOptionSpecs(
             try specs.append(arena, spec);
         }
         const spec = if (esc_desc) |d|
-            try std.fmt.allocPrint(arena, "--{s}[{s}]{s}", .{ opt.name, d, action })
+            try std.fmt.allocPrint(arena, "--{s}[{s}]{s}", .{ esc_name, d, action })
         else
-            try std.fmt.allocPrint(arena, "--{s}{s}", .{ opt.name, action });
+            try std.fmt.allocPrint(arena, "--{s}{s}", .{ esc_name, action });
         try specs.append(arena, spec);
     }
 }
@@ -305,19 +309,22 @@ fn danceSingleQuotes(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
 ///   ":name:_<app>_zcli_complete"  → dynamic hook (calls `__complete`)
 ///   ":name:_files"/":name:_files -/" → the `.file`/`.dir` builtin
 fn optionAction(arena: std.mem.Allocator, app_name: []const u8, opt: zcli.OptionInfo) ![]const u8 {
+    // The option name is the action's message; it lands inside the single-quoted
+    // spec the caller wraps, so escape.zsh it (single-quote dance + spec metachars).
+    const esc_name = try escape.zsh(arena, opt.name);
     if (opt.complete) |c| {
         switch (c) {
-            .hook => return std.fmt.allocPrint(arena, ":{s}:_{s}_zcli_complete", .{ opt.name, app_name }),
-            .file => return std.mem.concat(arena, u8, &.{ ":", opt.name, ":_files" }),
-            .dir => return std.mem.concat(arena, u8, &.{ ":", opt.name, ":_files -/" }),
+            .hook => return std.fmt.allocPrint(arena, ":{s}:_{s}_zcli_complete", .{ esc_name, app_name }),
+            .file => return std.mem.concat(arena, u8, &.{ ":", esc_name, ":_files" }),
+            .dir => return std.mem.concat(arena, u8, &.{ ":", esc_name, ":_files -/" }),
         }
     }
     if (opt.enum_values) |values| {
         const group = try enumActionGroup(arena, values);
-        return std.mem.concat(arena, u8, &.{ ":", opt.name, ":", group });
+        return std.mem.concat(arena, u8, &.{ ":", esc_name, ":", group });
     }
     if (opt.takes_value) {
-        return std.mem.concat(arena, u8, &.{ ":", opt.name, ":" });
+        return std.mem.concat(arena, u8, &.{ ":", esc_name, ":" });
     }
     return "";
 }
@@ -359,7 +366,9 @@ fn writeDescribeEntry(
     name: []const u8,
     description: ?[]const u8,
 ) !void {
-    try writer.print("{s}'{s}", .{ indent, name });
+    // The name heads a single-quoted `_describe` entry (`'name:desc'`), so
+    // escape.zsh it: the single-quote dance plus the `:` separator it splits on.
+    try writer.print("{s}'{s}", .{ indent, try escape.zsh(arena, name) });
     if (description) |d| {
         const esc = try escape.zsh(arena, d);
         try writer.print(":{s}", .{esc});
