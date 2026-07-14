@@ -200,8 +200,9 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     try stdout.print("  Creating build.zig.zon...\n", .{});
     // Pin the generated project to the same zcli release as this CLI.
     // `context.app_version` is read from build.zig.zon at build time, so it
-    // tracks releases automatically (the framework and this CLI are tagged in
-    // lockstep as `zcli-v<version>`).
+    // tracks releases automatically. Releases are dual-tagged: `zcli-v<version>`
+    // for the CLI binary, `v<version>` for the library — build.zig.zon deps must
+    // reference the library tag (see README's dual-tag contract).
     const zcli_version = context.app_version;
     // Package fingerprint: high 32 bits are a checksum of the package name, low
     // 32 bits a random id. Zig rejects a zero fingerprint at build time.
@@ -332,15 +333,17 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     try stdout.print("  Creating src/main.zig...\n", .{});
     const main_content =
         \\const std = @import("std");
+        \\const zcli = @import("zcli");
         \\const registry = @import("command_registry");
+        \\
+        \\/// Prompts (`add`, `init`) and progress bars hide the cursor and drive raw
+        \\/// mode, so a panic mid-prompt must restore the terminal.
+        \\pub const panic = zcli.ui.panic;
         \\
         \\pub fn main(init: std.process.Init) !void {
         \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
         \\    var app = registry.init();
-        \\    app.run(init.gpa, init.io, init.environ_map, args) catch |err| switch (err) {
-        \\        error.CommandNotFound => std.process.exit(1),
-        \\        else => return err,
-        \\    };
+        \\    try app.run(init.gpa, init.io, init.environ_map, args);
         \\}
         \\
     ;
@@ -411,37 +414,50 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     // Fetch the zcli dependency. `zig fetch --save` computes the real hash and
     // writes the dependency into build.zig.zon; without it the generated project
-    // won't build, so warn with the exact command if it doesn't run.
-    {
-        try stdout.print("  Fetching dependencies (this may take a moment)...\n", .{});
-        const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/zcli-v{s}.tar.gz", .{zcli_version});
-        defer allocator.free(zcli_url);
+    // won't build, so warn with the exact command if it doesn't run, and reflect
+    // the failure in the final success/next-steps messaging below.
+    const zcli_url = try std.fmt.allocPrint(allocator, "https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz", .{zcli_version});
+    defer allocator.free(zcli_url);
 
-        const ok = ok: {
-            var fetch_child = std.process.spawn(io, .{
-                .argv = &.{ "zig", "fetch", "--save", zcli_url },
-                .cwd = .{ .dir = project_dir },
-                .stdout = .ignore,
-                .stderr = .inherit,
-            }) catch break :ok false;
-            const term = fetch_child.wait(io) catch break :ok false;
-            break :ok term == .exited and term.exited == 0;
-        };
-        if (!ok) {
-            try stderr.print("  Warning: could not add the zcli dependency automatically.\n", .{});
-            try stderr.print("  Run this inside the project to finish setup:\n    zig fetch --save {s}\n", .{zcli_url});
+    try stdout.print("  Fetching dependencies (this may take a moment)...\n", .{});
+    const fetch_ok = ok: {
+        var fetch_child = std.process.spawn(io, .{
+            .argv = &.{ "zig", "fetch", "--save", zcli_url },
+            .cwd = .{ .dir = project_dir },
+            .stdout = .ignore,
+            .stderr = .inherit,
+        }) catch break :ok false;
+        const term = fetch_child.wait(io) catch break :ok false;
+        break :ok term == .exited and term.exited == 0;
+    };
+    if (!fetch_ok) {
+        try stderr.print("  Warning: could not add the zcli dependency automatically.\n", .{});
+        try stderr.print("  Run this inside the project to finish setup:\n    zig fetch --save {s}\n", .{zcli_url});
+    }
+
+    // Success message. When the fetch failed, `zig build` would only fail with
+    // a missing-dependency error the user never asked for — don't claim success
+    // or suggest a next step that can't work yet.
+    if (fetch_ok) {
+        try stdout.print("\n✓ Project '{s}' created successfully!\n\n", .{project_name});
+        try stdout.print("Next steps:\n", .{});
+        if (!use_current_dir) {
+            try stdout.print("  cd {s}\n", .{args.name});
         }
+        try stdout.print("  zig build\n", .{});
+        try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
+        try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
+    } else {
+        try stdout.print("\n⚠ Project '{s}' created, but the zcli dependency was not fetched.\n\n", .{project_name});
+        try stdout.print("Next steps:\n", .{});
+        if (!use_current_dir) {
+            try stdout.print("  cd {s}\n", .{args.name});
+        }
+        try stdout.print("  zig fetch --save {s}\n", .{zcli_url});
+        try stdout.print("  zig build\n", .{});
+        try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
+        try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
     }
-
-    // Success message
-    try stdout.print("\n✓ Project '{s}' created successfully!\n\n", .{project_name});
-    try stdout.print("Next steps:\n", .{});
-    if (!use_current_dir) {
-        try stdout.print("  cd {s}\n", .{args.name});
-    }
-    try stdout.print("  zig build\n", .{});
-    try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
-    try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
 }
 
 // ---------------------------------------------------------------------------
