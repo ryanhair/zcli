@@ -14,7 +14,6 @@ pub const Options = struct {};
 
 pub fn execute(_: Args, _: Options, context: anytype) !void {
     var stdout = context.stdout();
-    var stderr = context.stderr();
 
     // Verify we're in a zcli project
     const cwd = std.Io.Dir.cwd();
@@ -35,13 +34,12 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
     };
 
     // Check if workflow already exists
-    cwd.access(io, ".github/workflows/release.yml", .{}) catch |err| switch (err) {
-        error.FileNotFound => {}, // Good
-        else => {
-            try stderr.print("Error: .github/workflows/release.yml already exists\n", .{});
-            return err;
-        },
-    };
+    if (cwd.access(io, ".github/workflows/release.yml", .{})) {
+        return context.fail("Error: .github/workflows/release.yml already exists\nRemove it first if you want to regenerate it", .{});
+    } else |err| switch (err) {
+        error.FileNotFound => {}, // Good, safe to create
+        else => return err,
+    }
 
     try stdout.print("Creating GitHub Actions release workflow...\n", .{});
 
