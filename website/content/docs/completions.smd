@@ -1,0 +1,75 @@
+---
+.title = "zcli — Completion authoring",
+.description = "Dynamic shell-completion hooks (ADR-0026): per-field .complete, the .file/.dir builtins, and the zcli.completion Request/Result contract used by the completions plugin's hidden __complete command.",
+.date = @date("2026-07-14"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Completion authoring
+
+The [`completions` plugin]($link.page('docs/shipping')) generates bash, zsh, fish, and PowerShell scripts straight from your registry — commands, subcommands, aliases, flags, and enum option values complete for free, no extra code. This guide is about the layer above that: **dynamic** completion, where a field's valid values only exist at runtime — a task ID, a hostname from your inventory, a branch name from the local repo.
+
+## The `.complete` hook
+
+Add `.complete` to a field's `meta` entry, on any arg or option, pointing at a function:
+
+```zig
+pub const Args = struct {
+    id: []const u8,
+};
+
+pub const meta = .{
+    .args = .{ .id = .{ .description = "Task ID", .complete = completeTaskId } },
+};
+
+fn completeTaskId(req: *zcli.completion.Request) !zcli.completion.Result {
+    const tasks = try loadTaskIds(req.allocator);
+    var candidates: std.ArrayList(zcli.completion.Candidate) = .empty;
+    for (tasks) |t| {
+        if (std.mem.startsWith(u8, t, req.partial)) {
+            try candidates.append(req.allocator, .{ .value = t });
+        }
+    }
+    return .{ .candidates = candidates.items };
+}
+```
+
+Write the function directly — `.complete = completeTaskId`, not wrapped in any tag. The same field metadata block validation applies here as elsewhere: `.complete` is a recognized key alongside `description`, `validate`, and friends (see [Args & options]($link.page('docs/args-options'))).
+
+## `.file` and `.dir`: native builtins
+
+When a field's values are just "a path on disk," skip the hook entirely — declare the builtin and let the shell's own file/directory completion handle it, resolved once at script-generation time rather than round-tripping through your binary on every `<TAB>`:
+
+```zig
+pub const Options = struct {
+    out: []const u8 = "",
+};
+
+pub const meta = .{
+    .options = .{ .out = .{ .complete = .file } },
+};
+```
+
+`.dir` works the same way for directory-only fields. Because these resolve at generation time, they never reach `__complete` at runtime — there's no hook to write, and no per-keystroke process spawn.
+
+## The `zcli.completion` types
+
+A hook's signature is `fn (req: *zcli.completion.Request) anyerror!zcli.completion.Result` (aliased as `zcli.completion.Hook`). All four public types live in `zcli.completion`:
+
+- **`Request`** — the state of the command line at `<TAB>`: `allocator` (an arena, freed after the callback returns), `io`, `environ`, `partial` (the word being completed, possibly empty — offer only values with this prefix), and `args` (positional tokens already entered, options stripped, in order, excluding `partial`). It is deliberately **not** the full command `Context` — a hook reads inputs and returns candidates, and must not be able to write to stdout, because stdout is the byte stream the completion protocol travels on. Writing to it would corrupt what the shell parses back.
+- **`Candidate`** — one completion value: `value: []const u8` plus an optional `description: ?[]const u8` shown by zsh/fish beside the value (bash ignores it).
+- **`Result`** — a hook's return value: `candidates: []const Candidate` and a `directive: Directive`.
+- **`Directive`** — what the shell should do *in addition* to the returned candidates: `.default` (just the candidates), `.also_files` (also offer native file completion), `.also_dirs` (also offer native directory completion).
+
+## How it runs: the hidden `__complete` command
+
+Enabling the `completions` plugin adds a hidden `__complete` command alongside your real ones. The generated shell scripts call `app __complete <cword> -- <COMP_WORDS…>` at `<TAB>`; it resolves which command and field the cursor is on and, if that field declared a hook, runs it — printing a NUL-delimited stream the shell script parses back into candidates. `.file`/`.dir` builtins never reach this path, since the generators already wired native completion for them.
+
+A hook's errors never break the shell: a failing hook yields zero candidates rather than a broken completion. Set `ZCLI_COMPLETE_DEBUG=1` in your environment to surface hook errors on stderr while you're developing one.
+
+## Next
+
+- [Ship & distribute]($link.page('docs/shipping')) — enabling the `completions` plugin and installing the generated scripts
+- [Args & options]($link.page('docs/args-options')) — the rest of `meta.options`/`meta.args`
+- [Validation & constraints]($link.page('docs/validation')) — the other per-field hooks (`validate`, custom `parse` types)
