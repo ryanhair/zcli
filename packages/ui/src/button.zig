@@ -11,13 +11,18 @@ const Style = surface_mod.Style;
 const Key = terminal.Key;
 const Theme = theme_mod.Theme;
 
-/// A stateless action control: `[ Label ]`, activated by Enter or Space. It
-/// holds no state (a terminal has no key-up, so there is no "pressed" phase),
-/// so `handle` returns whether the key *activated* it — the same routing role
-/// as the editors' `consumed` (`true` = "this key is mine, not navigation"), but
-/// for an action widget "mine" means "fired." The caller runs the action on a
-/// `true` return in its focus arm; unconsumed keys (Tab/arrows) bubble on.
+/// An action control: `[ Label ]`, activated by Enter or Space. A terminal has
+/// no key-up, so there is no "pressed" phase — the only state is `activated`,
+/// which reports whether the *last* key handled fired the button. `handle`
+/// returns *consumed*, the uniform widget contract (`true` = "this key is mine,
+/// not navigation"): a Button consumes exactly the keys that activate it, so the
+/// caller reads `activated` (not the return) to run the action, then acts on it
+/// in its focus arm; unconsumed keys (Tab/arrows) bubble on and clear `activated`.
 pub const Button = struct {
+    /// Whether the most recent `handle` call fired the button (Enter/Space).
+    /// Momentary: each `handle` refreshes it, so a navigation key clears it.
+    activated: bool = false,
+
     pub const ViewOpts = struct {
         focused: bool = false,
         label: []const u8 = "",
@@ -25,12 +30,12 @@ pub const Button = struct {
     };
 
     pub fn handle(self: *Button, key: Key) bool {
-        _ = self;
-        return switch (key) {
+        self.activated = switch (key) {
             .enter => true,
             .char => |c| c == ' ',
             else => false,
         };
+        return self.activated;
     }
 
     pub fn view(self: *const Button, a: std.mem.Allocator, opts: ViewOpts) !Node {

@@ -397,76 +397,80 @@ test "Table rowAt maps a click through the header offset and scroll window" {
 
 test "Button activates on Enter and Space, ignores other keys" {
     var b = Button{};
+    // `handle` returns *consumed* (the uniform contract); a Button consumes
+    // exactly the keys that fire it, and exposes firing as `activated` state.
     try testing.expect(b.handle(.enter));
+    try testing.expect(b.activated);
     try testing.expect(b.handle(.{ .char = ' ' }));
-    // A non-activating key bubbles (so Tab still navigates off the button).
+    try testing.expect(b.activated);
+    // A non-activating key bubbles (so Tab still navigates off the button) and
+    // clears `activated` — it is momentary, refreshed by each `handle`.
     try testing.expect(!b.handle(.tab));
+    try testing.expect(!b.activated);
     try testing.expect(!b.handle(.{ .char = 'x' }));
+    try testing.expect(!b.activated);
     try testing.expect(!b.handle(.left));
+    try testing.expect(!b.activated);
 }
 
 // ---- handle: Tabs ----------------------------------------------------------
 
 test "Tabs arrows move the active tab, wrapping at both ends" {
     var tabs = Tabs{};
-    var active: usize = 0;
     const n = 3;
-    try testing.expect(tabs.handle(.right, &active, n));
-    try testing.expectEqual(@as(usize, 1), active);
-    _ = tabs.handle(.right, &active, n);
-    try testing.expectEqual(@as(usize, 2), active);
-    _ = tabs.handle(.right, &active, n); // wrap forward: 2 -> 0
-    try testing.expectEqual(@as(usize, 0), active);
-    _ = tabs.handle(.left, &active, n); // wrap backward: 0 -> 2
-    try testing.expectEqual(@as(usize, 2), active);
-    _ = tabs.handle(.left, &active, n);
-    try testing.expectEqual(@as(usize, 1), active);
+    try testing.expect(tabs.handle(.right, n));
+    try testing.expectEqual(@as(usize, 1), tabs.active);
+    _ = tabs.handle(.right, n);
+    try testing.expectEqual(@as(usize, 2), tabs.active);
+    _ = tabs.handle(.right, n); // wrap forward: 2 -> 0
+    try testing.expectEqual(@as(usize, 0), tabs.active);
+    _ = tabs.handle(.left, n); // wrap backward: 0 -> 2
+    try testing.expectEqual(@as(usize, 2), tabs.active);
+    _ = tabs.handle(.left, n);
+    try testing.expectEqual(@as(usize, 1), tabs.active);
 }
 
 test "Tabs number keys jump directly, ignoring out-of-range digits" {
     var tabs = Tabs{};
-    var active: usize = 0;
     const n = 3;
-    try testing.expect(tabs.handle(.{ .char = '3' }, &active, n)); // -> index 2
-    try testing.expectEqual(@as(usize, 2), active);
-    try testing.expect(tabs.handle(.{ .char = '1' }, &active, n)); // -> index 0
-    try testing.expectEqual(@as(usize, 0), active);
+    try testing.expect(tabs.handle(.{ .char = '3' }, n)); // -> index 2
+    try testing.expectEqual(@as(usize, 2), tabs.active);
+    try testing.expect(tabs.handle(.{ .char = '1' }, n)); // -> index 0
+    try testing.expectEqual(@as(usize, 0), tabs.active);
     // '4' has no tab (only 3), so it bubbles and leaves the active index alone.
-    try testing.expect(!tabs.handle(.{ .char = '4' }, &active, n));
-    try testing.expectEqual(@as(usize, 0), active);
+    try testing.expect(!tabs.handle(.{ .char = '4' }, n));
+    try testing.expectEqual(@as(usize, 0), tabs.active);
     // '0' is not a tab shortcut (tabs are 1-indexed on the keyboard).
-    try testing.expect(!tabs.handle(.{ .char = '0' }, &active, n));
-    try testing.expectEqual(@as(usize, 0), active);
+    try testing.expect(!tabs.handle(.{ .char = '0' }, n));
+    try testing.expectEqual(@as(usize, 0), tabs.active);
 }
 
 test "Tabs never consumes Tab and bubbles other keys" {
-    var tabs = Tabs{};
-    var active: usize = 1;
+    var tabs = Tabs{ .active = 1 };
     const n = 3;
     // Tab stays reserved for the focus ring — the bar never eats it.
-    try testing.expect(!tabs.handle(.tab, &active, n));
-    try testing.expect(!tabs.handle(.back_tab, &active, n));
-    try testing.expect(!tabs.handle(.enter, &active, n));
-    try testing.expect(!tabs.handle(.{ .char = 'x' }, &active, n));
-    try testing.expectEqual(@as(usize, 1), active); // none of them moved it
+    try testing.expect(!tabs.handle(.tab, n));
+    try testing.expect(!tabs.handle(.back_tab, n));
+    try testing.expect(!tabs.handle(.enter, n));
+    try testing.expect(!tabs.handle(.{ .char = 'x' }, n));
+    try testing.expectEqual(@as(usize, 1), tabs.active); // none of them moved it
 }
 
 test "Tabs handles the count==0 and count==1 edge cases" {
     var tabs = Tabs{};
-    var active: usize = 0;
     // No tabs: every key bubbles and nothing moves.
-    try testing.expect(!tabs.handle(.right, &active, 0));
-    try testing.expect(!tabs.handle(.left, &active, 0));
-    try testing.expect(!tabs.handle(.{ .char = '1' }, &active, 0));
-    try testing.expectEqual(@as(usize, 0), active);
+    try testing.expect(!tabs.handle(.right, 0));
+    try testing.expect(!tabs.handle(.left, 0));
+    try testing.expect(!tabs.handle(.{ .char = '1' }, 0));
+    try testing.expectEqual(@as(usize, 0), tabs.active);
     // One tab: arrows are consumed but wrap back to the only tab; '1' selects it.
-    try testing.expect(tabs.handle(.right, &active, 1));
-    try testing.expectEqual(@as(usize, 0), active);
-    try testing.expect(tabs.handle(.left, &active, 1));
-    try testing.expectEqual(@as(usize, 0), active);
-    try testing.expect(tabs.handle(.{ .char = '1' }, &active, 1));
-    try testing.expectEqual(@as(usize, 0), active);
-    try testing.expect(!tabs.handle(.{ .char = '2' }, &active, 1));
+    try testing.expect(tabs.handle(.right, 1));
+    try testing.expectEqual(@as(usize, 0), tabs.active);
+    try testing.expect(tabs.handle(.left, 1));
+    try testing.expectEqual(@as(usize, 0), tabs.active);
+    try testing.expect(tabs.handle(.{ .char = '1' }, 1));
+    try testing.expectEqual(@as(usize, 0), tabs.active);
+    try testing.expect(!tabs.handle(.{ .char = '2' }, 1));
 }
 
 // ---- focus helpers ---------------------------------------------------------
@@ -550,10 +554,12 @@ test "FocusRing.dispatch returns the handle's bool" {
     try testing.expect(st.remember.checked);
     try testing.expect(!Ring.dispatch(&st, .remember, .tab, ring_extras));
 
-    // Button arm: Enter "activates" (handle returns true → the caller's submit),
-    // Tab bubbles (false → navigation). dispatch faithfully returns that bool.
+    // Button arm: Enter is consumed and sets `activated` (the caller reads that
+    // to submit), Tab bubbles (false → navigation). dispatch returns *consumed*.
     try testing.expect(Ring.dispatch(&st, .submit, .enter, ring_extras));
+    try testing.expect(st.submit.activated);
     try testing.expect(!Ring.dispatch(&st, .submit, .tab, ring_extras));
+    try testing.expect(!st.submit.activated);
 }
 
 // ---- view: rendering onto a surface ---------------------------------------
@@ -1118,10 +1124,10 @@ test "Tabs renders labels with the active one styled apart from the rest" {
     const a = arena.allocator();
 
     const labels = [_][]const u8{ "One", "Two", "Three" };
-    var tabs = Tabs{};
+    var tabs = Tabs{ .active = 1 };
     var s = try ui.Surface.init(testing.allocator, 20, 1);
     defer s.deinit();
-    try renderNode(a, try tabs.view(a, .{ .labels = &labels, .active = 1 }), &s);
+    try renderNode(a, try tabs.view(a, .{ .labels = &labels }), &s);
 
     // Labels sit in a row with a single-space gap between them.
     try testing.expectEqualStrings("One Two Three       ", try rowString(a, &s, 0));

@@ -197,10 +197,11 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
     // the multi-arg widgets' extra args (here just the Select's count/visible).
     // An unconsumed key falls through to navigation below.
     if (Ring.dispatch(state, focus, key, .{ .role = .{ roles.len, role_rows } })) {
-        // The Button *is* the submit: a consumed key on it fires sign-in
-        // (ADR-0018 — `Button.handle`'s `true` means *activated*); every other
-        // widget consuming a key is an edit that stales a prior submit.
-        if (focus == .submit) {
+        // The Button *is* the submit: `handle` now returns *consumed* like every
+        // widget, and exposes firing as `submit.activated` state (ADR-0018). A
+        // consumed key that activated the button signs in; every other widget
+        // consuming a key is an edit that stales a prior submit.
+        if (focus == .submit and state.submit.activated) {
             state.submitted = true;
             return .keep;
         }

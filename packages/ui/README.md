@@ -108,12 +108,14 @@ cursor via `cursor_out` — [ADR-0021](../../docs/adr/0021-widget-catalog-comple
 optional `scrollbar`), `Table` (a read-only data grid with `Dim`-sized columns,
 selection, a scroll window, PgUp/PgDn paging, truncation, and an optional
 `scrollbar`
-— [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), `Tabs` (a stateless
-tab-bar row with ←/→ and number-key selection over a caller-owned active index —
-[ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button`.
-Each is a plain struct you embed in your state with a `view(a, opts) !Node` +
-`handle(key) bool` contract; focus is caller-owned (an enum), and an unconsumed key is form-level
-navigation. For routing, `focusNext`/`focusPrev` wrap over a hand-written focus
+— [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), `Tabs` (a
+tab-bar row with ←/→ and number-key selection that owns its `active` index —
+[ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)), and `Button` (an
+action control that exposes firing as `activated` state). Each is a plain struct
+you embed in your state with a `view(a, opts) !Node` + `handle(key) bool`
+contract; `handle` always returns *consumed* (`true` = "this key is mine, not
+navigation"), focus is caller-owned (an enum), and an unconsumed key is
+form-level navigation. For routing, `focusNext`/`focusPrev` wrap over a hand-written focus
 enum, or `FocusRing(State)` derives the whole ring from `State`'s widget fields
 (any field whose type has a `handle` method) — a reified `Focus` enum,
 `next`/`prev`, and a `dispatch(state, focus, key, extras)` that routes to the

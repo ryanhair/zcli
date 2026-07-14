@@ -63,15 +63,14 @@ const proc_columns = [_]ui.widgets.Table.Column{
 
 const Proc = struct { pid: u16, name: []const u8, cpu: f32, mem: f32 };
 
-/// The tab-bar labels. The active index (`State.active_tab`) is caller-owned;
-/// `Tabs` only advances it — the content pane below the bar is switched here.
+/// The tab-bar labels. `Tabs` owns the active index (`state.tabs.active`); the
+/// content pane below the bar is switched here on it.
 const tab_labels = [_][]const u8{ "1 Processes", "2 About" };
 
 const State = struct {
     tick: u32 = 0,
-    /// The `Tabs` bar's active index — caller-owned, advanced by `Tabs.handle`.
+    /// The `Tabs` bar; `tabs.active` is the selected tab, advanced by `Tabs.handle`.
     tabs: ui.widgets.Tabs = .{},
-    active_tab: usize = 0,
     /// The process grid: `table.highlighted` is the selected row and `table.scroll`
     /// its window top — both maintained by `Table.handle`, so `update` no longer
     /// tracks the selection or slides a scroll offset by hand.
@@ -133,11 +132,10 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
 
     // The `Tabs` bar (ADR-0021 incr2): a strip of styled labels with the active
     // one highlighted. It owns no content — the caller (below) switches which
-    // pane it renders on `state.active_tab`.
+    // pane it renders on `state.tabs.active`.
     try rows.append(a, try state.tabs.view(a, .{
         .focused = true,
         .labels = &tab_labels,
-        .active = state.active_tab,
     }));
     try rows.append(a, ui.text(.{}, ""));
 
@@ -154,7 +152,7 @@ fn view(a: std.mem.Allocator, state: *State) !ui.Node {
 
     // Tab 0 is the live process grid; tab 1 is a static About pane. The tab bar
     // is chrome; this switch is what "owns the content" means in the ADR.
-    if (state.active_tab == 0) {
+    if (state.tabs.active == 0) {
         // The process grid is a real `Table` (ADR-0021): PID/CPU%/MEM%/COMMAND
         // columns whose widths the layout engine sizes (`.len`/`.fill`), the
         // selected row highlighted, and a proportional scrollbar in the gutter
@@ -263,8 +261,8 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             // active tab; the Table consumes selection/paging keys (↑/↓/Home/End/
             // PgUp/PgDn) on the process tab. Only unconsumed keys fall through to
             // form-level navigation (q, ?, Ctrl-C) below.
-            if (state.tabs.handle(k, &state.active_tab, tab_labels.len)) return .keep;
-            if (state.active_tab == 0 and
+            if (state.tabs.handle(k, tab_labels.len)) return .keep;
+            if (state.tabs.active == 0 and
                 state.table.handle(k, state.procs.len, @intCast(state.visible_rows))) return .keep;
             switch (k) {
                 .char => |c| switch (c) {
@@ -283,7 +281,7 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             // subtracts the header row itself, so there are no layout magic numbers
             // here. Mouse reports are 1-based; `probe` rects are 0-based, so pass
             // `m.y - 1`. `rowAt` rejects the header; we clamp against the row count.
-            if (state.active_tab == 0 and m.button == .left and m.action == .press) {
+            if (state.tabs.active == 0 and m.button == .left and m.action == .press) {
                 if (state.table.rowAt(state.table_rect, m.y - 1)) |row| {
                     if (row < state.procs.len) state.table.highlighted = row;
                 }
