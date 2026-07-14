@@ -29,7 +29,7 @@ pub fn get(
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
 
-    var out = subprocess.run(allocator, io, environ, &.{ "pass", "show", path }, null) catch |e|
+    var out = subprocess.run(allocator, io, environ, &showArgv(path), null) catch |e|
         return mapError(e);
     defer out.deinit();
 
@@ -84,9 +84,7 @@ pub fn set(
     const store_attempts = 8;
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        var out = subprocess.run(allocator, io, environ, &.{
-            "pass", "insert", "--multiline", "--force", path,
-        }, encoded) catch |e| return mapError(e);
+        var out = subprocess.run(allocator, io, environ, &insertArgv(path), encoded) catch |e| return mapError(e);
         defer out.deinit();
 
         if (out.ok()) return;
@@ -107,7 +105,7 @@ pub fn delete(
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
 
-    var out = subprocess.run(allocator, io, environ, &.{ "pass", "rm", "--force", path }, null) catch |e|
+    var out = subprocess.run(allocator, io, environ, &rmArgv(path), null) catch |e|
         return mapError(e);
     defer out.deinit();
 
@@ -120,6 +118,22 @@ pub fn delete(
 /// The `pass` entry path for a secret: `zcli/<app>/<name>`.
 fn entryPath(allocator: std.mem.Allocator, service: []const u8, name: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "zcli/{s}/{s}", .{ service, name });
+}
+
+// argv builders. `--` terminates `pass`'s option parsing so the entry path is
+// always taken as a positional, never as a flag — belt-and-suspenders alongside
+// the plugin boundary already rejecting a leading-dash name, and the path being
+// prefixed `zcli/`. `pass` is a bash script that passes its args through
+// `getopt`, which honours `--`. Isolating the argv here keeps the terminator's
+// placement (immediately before `path`) unit-testable without spawning `pass`.
+fn showArgv(path: []const u8) [4][]const u8 {
+    return .{ "pass", "show", "--", path };
+}
+fn insertArgv(path: []const u8) [6][]const u8 {
+    return .{ "pass", "insert", "--multiline", "--force", "--", path };
+}
+fn rmArgv(path: []const u8) [5][]const u8 {
+    return .{ "pass", "rm", "--force", "--", path };
 }
 
 /// `pass` reports a missing entry as "Error: <path> is not in the password
@@ -154,6 +168,22 @@ test "entry path is namespaced under zcli/" {
     const p = try entryPath(a, "myapp", "token");
     defer a.free(p);
     try std.testing.expectEqualStrings("zcli/myapp/token", p);
+}
+
+test "pass argv places `--` immediately before the entry path" {
+    const path = "zcli/app/token";
+    // Each `pass` subcommand must terminate options with `--` right before the
+    // path, so a path is never re-interpreted as a flag.
+    inline for (.{ showArgv(path), insertArgv(path), rmArgv(path) }) |argv| {
+        const last = argv.len - 1;
+        try std.testing.expectEqualStrings("--", argv[last - 1]);
+        try std.testing.expectEqualStrings(path, argv[last]);
+        try std.testing.expectEqualStrings("pass", argv[0]);
+    }
+    // Full spellings, so an accidental flag reorder is caught.
+    try std.testing.expectEqualSlices([]const u8, &.{ "pass", "show", "--", path }, &showArgv(path));
+    try std.testing.expectEqualSlices([]const u8, &.{ "pass", "insert", "--multiline", "--force", "--", path }, &insertArgv(path));
+    try std.testing.expectEqualSlices([]const u8, &.{ "pass", "rm", "--force", "--", path }, &rmArgv(path));
 }
 
 test "isNotFound matches pass's missing-entry message" {

@@ -65,6 +65,12 @@
 //! - It must not contain a NUL byte — the macOS/Linux backends key on C strings,
 //!   where an embedded NUL silently truncates the key. (A NUL is also invalid
 //!   UTF-16 target material.)
+//! - It must not contain a `/` or a `..`, and must not begin with `-`. The
+//!   `pass` backend maps a name into a filesystem path (`zcli/<app>/<name>`), so
+//!   a slash or `..` would let a name escape its per-app namespace; and the
+//!   Linux backends pass the name as a subprocess argument, where a leading dash
+//!   could be misread as an option flag. These are rejected on every OS so the
+//!   contract stays uniform, not just where the concern bites.
 //!
 //! Beyond the name, backends differ on how large a value they accept, and each
 //! that has a cap fails with `SecretTooLarge` above it:
@@ -144,8 +150,8 @@ comptime {
 /// The single, backend-agnostic error set every `get`/`set`/`delete` maps into.
 /// Command code catches these on every OS — see the module doc.
 pub const Error = error{
-    /// A secret name is not valid UTF-8, or contains a NUL byte. Rejected up
-    /// front, before any backend call.
+    /// A secret name is unsafe: not valid UTF-8, or it contains a NUL, a `/`,
+    /// a `..`, or begins with `-`. Rejected up front, before any backend call.
     InvalidSecretName,
     /// The value exceeds what the active backend can store.
     SecretTooLarge,
@@ -158,9 +164,29 @@ pub const Error = error{
     OutOfMemory,
 };
 
+/// Validate a secret `name` at the plugin boundary — once, for every backend —
+/// so a name either works on every OS or is rejected on every OS, and so no
+/// backend ever receives a name that could escape its intended key space or its
+/// subprocess argv.
+///
+/// Rejected:
+///   - an embedded NUL — the macOS/Linux backends key on C strings, where a NUL
+///     silently truncates the key (and it is invalid UTF-16 target material);
+///   - invalid UTF-8 — Windows stores the name as UTF-16, so a name that
+///     "works" on macOS/Linux would fail only there;
+///   - a `/` — the `pass` backend builds a filesystem path `zcli/<app>/<name>`,
+///     so a slash would let a name write outside its per-app namespace;
+///   - `..` anywhere — same path-traversal concern for the `pass` backend, and
+///     meaningless to the keychain backends;
+///   - a leading `-` — the Linux backends pass the name as a subprocess
+///     argument, where a leading dash could be parsed as an option flag by
+///     `pass`/`secret-tool` (defense in depth alongside the `--` terminator).
 fn validateName(name: []const u8) Error!void {
     if (std.mem.indexOfScalar(u8, name, 0) != null) return Error.InvalidSecretName;
     if (!std.unicode.utf8ValidateSlice(name)) return Error.InvalidSecretName;
+    if (std.mem.indexOfScalar(u8, name, '/') != null) return Error.InvalidSecretName;
+    if (std.mem.indexOf(u8, name, "..") != null) return Error.InvalidSecretName;
+    if (name.len > 0 and name[0] == '-') return Error.InvalidSecretName;
 }
 
 /// Surface a native backend's raised error to the user, then collapse it into
@@ -252,12 +278,28 @@ test "plugin exposes the storage surface" {
 test "validateName rejects an embedded NUL and invalid UTF-8" {
     try validateName("token"); // ok
     try validateName(""); // ok (empty is a valid, if odd, key)
-    try validateName("café/ключ/名前"); // multibyte UTF-8 is fine
+    try validateName("café-ключ-名前"); // multibyte UTF-8 is fine
+    try validateName("my.token"); // a single dot is fine
+    try validateName("has-dash"); // an interior/trailing dash is fine
     try testing.expectError(Error.InvalidSecretName, validateName("to\x00ken"));
     // A lone continuation byte is not valid UTF-8 — rejected on every OS rather
     // than working on macOS/Linux and failing only on Windows's UTF-16 store.
     try testing.expectError(Error.InvalidSecretName, validateName("bad\xffname"));
     try testing.expectError(Error.InvalidSecretName, validateName(&[_]u8{0x80}));
+}
+
+test "validateName rejects path-escape and option-flag names" {
+    // A `/` — would let a name escape its per-app namespace in the `pass`
+    // backend's `zcli/<app>/<name>` filesystem path.
+    try testing.expectError(Error.InvalidSecretName, validateName("a/b"));
+    try testing.expectError(Error.InvalidSecretName, validateName("/etc/passwd"));
+    // `..` anywhere — path traversal for the `pass` backend.
+    try testing.expectError(Error.InvalidSecretName, validateName(".."));
+    try testing.expectError(Error.InvalidSecretName, validateName("a..b"));
+    // A leading `-` — could be parsed as an option flag by the subprocess
+    // backends (`pass`/`secret-tool`).
+    try testing.expectError(Error.InvalidSecretName, validateName("-rf"));
+    try testing.expectError(Error.InvalidSecretName, validateName("--force"));
 }
 
 test "mapBackendError collapses every backend taxonomy into the shared set" {

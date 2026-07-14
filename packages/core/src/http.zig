@@ -28,6 +28,13 @@
 //!   are kept across all redirects. (This is why the wrapper follows redirects
 //!   itself: as of 0.16, `std.http.Client`'s auto-follow re-sends every extra
 //!   header to the redirect target regardless of origin.)
+//! - **Credential headers never ride cleartext to a remote host.** A request
+//!   that carries one of those credential headers over a non-`https` scheme
+//!   fails with `error.InsecureCredentialTransport` — checked on every hop, so a
+//!   same-origin `http`→`http` redirect cannot smuggle a token onto the wire
+//!   either. The sole carve-out is loopback (`127.0.0.0/8`, `::1`, `localhost`),
+//!   which is a secure transport in practice (nothing on the wire) and is what
+//!   the loopback integration tests exercise; every real caller uses `https`.
 //! - **Each request has an overall timeout** (default `default_timeout`) so a
 //!   hung or dead server cannot make a command hang forever. See "Timeouts".
 //!
@@ -82,6 +89,11 @@ pub const Error = error{
     Timeout,
     /// A redirect chain exceeded `max_redirects`.
     TooManyRedirects,
+    /// A request carrying a credential header (`authorization`, `cookie`, or
+    /// `proxy-authorization`) targeted a non-`https` origin that is not
+    /// loopback. Refused fail-closed so a bearer token / cookie is never put on
+    /// the wire in cleartext to a remote host.
+    InsecureCredentialTransport,
 };
 
 /// Request headers that carry credentials. These are stripped from a request
@@ -117,6 +129,32 @@ fn sameOrigin(a: std.Uri, b: std.Uri) bool {
     const b_host = (b.host orelse return false).toRaw(&b_buf) catch return false;
     if (!std.ascii.eqlIgnoreCase(a_host, b_host)) return false;
     return (a.port orelse defaultPort(a.scheme)) == (b.port orelse defaultPort(b.scheme));
+}
+
+/// True when `host` is a loopback address — the one carve-out where a credential
+/// header may travel over cleartext `http`, because nothing leaves the machine.
+/// Covers the IPv4 loopback block `127.0.0.0/8`, the IPv6 loopback `::1` (with or
+/// without brackets), and the literal name `localhost`.
+fn isLoopbackHost(host: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(host, "localhost")) return true;
+    // IPv6 literal, possibly bracketed in a URI authority.
+    const h = std.mem.trim(u8, host, "[]");
+    if (std.Io.net.IpAddress.parse(h, 0)) |addr| {
+        return switch (addr) {
+            .ip4 => |v4| v4.bytes[0] == 127, // 127.0.0.0/8
+            .ip6 => |v6| std.mem.eql(u8, &v6.bytes, &([_]u8{0} ** 15 ++ [_]u8{1})), // ::1
+        };
+    } else |_| return false;
+}
+
+/// A credential-bearing request may go out only over `https`, or to a loopback
+/// host over any scheme. Returns false for anything else (cleartext to a remote
+/// host), which the request loop turns into `error.InsecureCredentialTransport`.
+fn credentialTransportOk(uri: std.Uri) bool {
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) return true;
+    var host_buf: [256]u8 = undefined;
+    const host = (uri.host orelse return false).toRaw(&host_buf) catch return false;
+    return isLoopbackHost(host);
 }
 
 /// The Location to follow for a redirect response, or null when the status is
@@ -333,6 +371,9 @@ pub const Client = struct {
         for (options.headers) |header| {
             if (isPrivilegedHeaderName(header.name)) headers.appendAssumeCapacity(header);
         }
+        // Whether any credential header is present at all — the guard below only
+        // needs to fire when a hop would actually put one on the wire.
+        const has_credentials = headers.items.len > safe_header_count;
 
         var current_method = method;
         var current_url: []const u8 = url;
@@ -343,6 +384,16 @@ pub const Client = struct {
 
         while (true) {
             const uri = try std.Uri.parse(current_url);
+
+            // Fail closed before opening the connection: a credential header must
+            // never travel in cleartext to a remote host. This covers the initial
+            // request and every same-origin `http`→`http` redirect hop (a hop that
+            // leaves the origin has already cleared `send_credentials`). `https`
+            // and loopback are the only origins allowed to carry credentials.
+            if (send_credentials and has_credentials and !credentialTransportOk(uri)) {
+                return Error.InsecureCredentialTransport;
+            }
+
             const hop_headers = headers.items[0..if (send_credentials)
                 headers.items.len
             else
@@ -485,6 +536,53 @@ test "sameOrigin requires scheme, host, and effective port to match" {
     try testing.expect(!sameOrigin(try parse("https://api.example.com/"), try parse("https://example.com/")));
     try testing.expect(!sameOrigin(try parse("https://api.example.com/"), try parse("https://api.example.com:8443/")));
     try testing.expect(!sameOrigin(try parse("http://127.0.0.1:8080/"), try parse("http://127.0.0.1:9090/")));
+}
+
+test "isLoopbackHost recognizes loopback names and addresses only" {
+    try testing.expect(isLoopbackHost("localhost"));
+    try testing.expect(isLoopbackHost("LocalHost"));
+    try testing.expect(isLoopbackHost("127.0.0.1"));
+    try testing.expect(isLoopbackHost("127.1.2.3")); // whole 127.0.0.0/8 block
+    try testing.expect(isLoopbackHost("::1"));
+    try testing.expect(isLoopbackHost("[::1]")); // bracketed IPv6 authority
+    try testing.expect(!isLoopbackHost("example.com"));
+    try testing.expect(!isLoopbackHost("10.0.0.1"));
+    try testing.expect(!isLoopbackHost("128.0.0.1"));
+    try testing.expect(!isLoopbackHost("localhost.evil.com"));
+    try testing.expect(!isLoopbackHost("::2"));
+}
+
+test "credentialTransportOk allows https and loopback, refuses cleartext to a remote host" {
+    const parse = std.Uri.parse;
+    // https anywhere is fine.
+    try testing.expect(credentialTransportOk(try parse("https://api.example.com/")));
+    try testing.expect(credentialTransportOk(try parse("https://127.0.0.1:8443/")));
+    // http only on loopback.
+    try testing.expect(credentialTransportOk(try parse("http://127.0.0.1:8080/")));
+    try testing.expect(credentialTransportOk(try parse("http://localhost:8080/")));
+    try testing.expect(credentialTransportOk(try parse("http://[::1]:8080/")));
+    // http to a remote host is refused — this is the leak the guard closes.
+    try testing.expect(!credentialTransportOk(try parse("http://api.example.com/")));
+    try testing.expect(!credentialTransportOk(try parse("http://10.0.0.5/")));
+}
+
+test "a credentialed request over cleartext to a remote host is refused before connecting" {
+    var client = Client.init(testing.allocator, testing.io, .{});
+    defer client.deinit();
+
+    // An authorization header over plain http to a non-loopback host must fail
+    // closed with InsecureCredentialTransport, without any network work.
+    const creds = [_]Header{.{ .name = "authorization", .value = "Bearer secret-token" }};
+    try testing.expectError(
+        Error.InsecureCredentialTransport,
+        client.request(.GET, "http://api.example.com/", .{ .headers = &creds }),
+    );
+    // A cookie header is guarded the same way.
+    const cookie = [_]Header{.{ .name = "cookie", .value = "session=abc" }};
+    try testing.expectError(
+        Error.InsecureCredentialTransport,
+        client.request(.GET, "http://api.example.com/", .{ .headers = &cookie }),
+    );
 }
 
 test "redirectTarget follows only real redirect statuses" {

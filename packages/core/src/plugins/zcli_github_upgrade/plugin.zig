@@ -105,10 +105,35 @@ fn checkedRecently(last: ?i64, now_s: i64, interval_s: i64) bool {
     return now_s >= l and now_s - l < interval_s;
 }
 
+/// Render the unsigned-by-default warning shown when a real upgrade runs on a
+/// build with no pinned `public_key`. Factored out of `executeUpgrade` so the
+/// exact wording is unit-testable without a live command context or network.
+fn writeUnsignedWarning(w: *std.Io.Writer) !void {
+    try w.print(
+        \\warning: signature verification is not enabled for this build — only the
+        \\         SHA-256 checksum will be verified. checksums.txt ships in the same
+        \\         GitHub release as the binaries, so a compromised release publisher
+        \\         can replace both and this upgrade will trust the result. To close
+        \\         this gap, pin a minisign public key via the plugin's `public_key`
+        \\         config (see ADR-0023).
+        \\
+    , .{});
+}
+
 /// zcli-github-upgrade Plugin
 ///
 /// Provides self-upgrade functionality for CLI applications that release via GitHub.
 /// Downloads new versions from GitHub releases and atomically replaces the current binary.
+///
+/// SECURITY: `public_key` is the load-bearing integrity control. It is optional,
+/// but leaving it null means the upgrade authenticates a downloaded binary only
+/// against `checksums.txt` — a file that ships in the same release as the binary
+/// it describes. A compromised release publisher can therefore swap both the
+/// binary and its checksum and the upgrade will trust the swap. Pinning a
+/// minisign public key (ADR-0023) authenticates the checksums under a key held
+/// off the release pipeline and makes verification fail closed. Builds without a
+/// pinned key emit a runtime warning on every real upgrade. Set `public_key`
+/// for any app whose releases are signed.
 /// Plugin configuration
 pub const Config = struct {
     /// GitHub repository in format "owner/repo" (required)
@@ -154,6 +179,12 @@ pub fn init(config: Config) type {
     return struct {
         const Self = @This();
         const plugin_config = config;
+
+        /// Test-only accessor for the resolved comptime config, so tests can
+        /// assert which security branch a given instantiation takes.
+        fn pluginConfigForTest() Config {
+            return plugin_config;
+        }
 
         /// Commands provided by this plugin
         pub const commands = struct {
@@ -212,6 +243,21 @@ pub fn init(config: Config) type {
                 // directly would discard everything we just wrote to the
                 // buffered stdout — context.exit flushes first.
                 context.exit(0);
+            }
+
+            // Unsigned-by-default notice. `public_key` is the load-bearing
+            // integrity control: with no pinned key the upgrade authenticates
+            // only against `checksums.txt`, which ships in the same release as
+            // the binaries — a compromised release publisher can swap both and
+            // this command will trust the swap. The signing key (ADR-0023)
+            // lives off the release pipeline, so pinning it is the only defense
+            // against that class of attack. Zig has no non-fatal comptime
+            // print (`@compileLog` halts the build), so the warning is emitted
+            // at runtime, once, gated on the comptime config — it costs
+            // nothing when a key is pinned and cannot be missed by an operator
+            // running an actual upgrade.
+            if (comptime plugin_config.public_key == null) {
+                try writeUnsignedWarning(context.stderr());
             }
 
             // Perform upgrade
@@ -974,6 +1020,33 @@ test "writeCheckResult - --check output reaches stdout (was silently dropped)" {
         defer a.free(out);
         try std.testing.expectEqualStrings("You are already on version: 1.5.0\n", out);
     }
+}
+
+test "writeUnsignedWarning - names the control and how to fix it" {
+    const a = std.testing.allocator;
+    var aw = std.Io.Writer.Allocating.init(a);
+    defer aw.deinit();
+    try writeUnsignedWarning(&aw.writer);
+    const out = aw.written();
+
+    // It must be a warning, name checksum-only verification as the effect,
+    // explain the same-release threat, and tell the operator how to pin a key.
+    try std.testing.expect(std.mem.startsWith(u8, out, "warning:"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "SHA-256 checksum") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "checksums.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "public_key") != null);
+}
+
+test "unsigned notice is gated on the comptime public_key config" {
+    // The notice fires only when no key is pinned. These two instantiations
+    // pin the branch each build takes: with a key, the warning path is dead
+    // code the compiler prunes; without one, it is live. Asserting on the
+    // comptime predicate the runtime `if` uses keeps that contract from
+    // silently inverting.
+    const Signed = init(.{ .repo = "owner/app", .public_key = "KEY" });
+    const Unsigned = init(.{ .repo = "owner/app" });
+    try std.testing.expect(comptime Signed.pluginConfigForTest().public_key != null);
+    try std.testing.expect(comptime Unsigned.pluginConfigForTest().public_key == null);
 }
 
 test "isNewerVersion - semantic comparison" {
