@@ -1390,9 +1390,16 @@ test "root zcli_theme declaration themes help output" {
             .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
         ) catch |err| switch (err) {
             // PTY allocation can be denied in some sandboxes; skip rather than
-            // fail (CI greps the log for this line and fails if the tier
-            // silently skipped).
+            // fail here, unless ZCLI_REQUIRE_INTERACTIVE=1 demands this tier
+            // actually run.
             error.PtyAllocationFailed => {
+                // ZCLI_REQUIRE_INTERACTIVE=1 (set by CI) turns a PTY-unavailable
+                // sandbox from a silent skip into a hard failure, so the interactive
+                // tier can never regress to never-running without the build going red.
+                if (harness.interactiveRequired()) {
+                    std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                    return err;
+                }
                 std.debug.print("runInteractive unavailable: {any}\n", .{err});
                 return;
             },
@@ -1424,6 +1431,13 @@ test "root zcli_theme declaration themes help output" {
             .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000, .env = env },
         ) catch |err| switch (err) {
             error.PtyAllocationFailed => {
+                // ZCLI_REQUIRE_INTERACTIVE=1 (set by CI) turns a PTY-unavailable
+                // sandbox from a silent skip into a hard failure, so the interactive
+                // tier can never regress to never-running without the build going red.
+                if (harness.interactiveRequired()) {
+                    std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                    return err;
+                }
                 std.debug.print("runInteractive unavailable: {any}\n", .{err});
                 return;
             },
@@ -1796,10 +1810,17 @@ test "interactive: add command drives the wizard and echoes typed input" {
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
     ) catch |err| switch (err) {
         // PTY allocation can be denied in some sandboxes; skip rather than fail
-        // (CI greps the log for this line and fails if the tier silently
-        // skipped). Every other error is a real harness/test failure — a
-        // catch-all here made harness bugs read as skips.
+        // here, unless ZCLI_REQUIRE_INTERACTIVE=1 demands this tier actually
+        // run. Every other error is a real harness/test failure — a catch-all
+        // here made harness bugs read as skips.
         error.PtyAllocationFailed => {
+            // ZCLI_REQUIRE_INTERACTIVE=1 (set by CI) turns a PTY-unavailable
+            // sandbox from a silent skip into a hard failure, so the interactive
+            // tier can never regress to never-running without the build going red.
+            if (harness.interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
             std.debug.print("runInteractive unavailable: {any}\n", .{err});
             return;
         },
@@ -1855,6 +1876,13 @@ test "interactive: a SIGTERM mid-prompt restores the terminal from raw mode" {
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
     ) catch |err| switch (err) {
         error.PtyAllocationFailed => {
+            // ZCLI_REQUIRE_INTERACTIVE=1 (set by CI) turns a PTY-unavailable
+            // sandbox from a silent skip into a hard failure, so the interactive
+            // tier can never regress to never-running without the build going red.
+            if (harness.interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
             std.debug.print("runInteractive unavailable: {any}\n", .{err});
             return;
         },
@@ -1927,10 +1955,17 @@ test "interactive: text prompt handles multibyte UTF-8 typing and backspace" {
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
     ) catch |err| switch (err) {
         // PTY allocation can be denied in some sandboxes; skip rather than fail
-        // (CI greps the log for this line and fails if the tier silently
-        // skipped). Every other error is a real harness/test failure — a
-        // catch-all here made harness bugs read as skips.
+        // here, unless ZCLI_REQUIRE_INTERACTIVE=1 demands this tier actually
+        // run. Every other error is a real harness/test failure — a catch-all
+        // here made harness bugs read as skips.
         error.PtyAllocationFailed => {
+            // ZCLI_REQUIRE_INTERACTIVE=1 (set by CI) turns a PTY-unavailable
+            // sandbox from a silent skip into a hard failure, so the interactive
+            // tier can never regress to never-running without the build going red.
+            if (harness.interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
             std.debug.print("runInteractive unavailable: {any}\n", .{err});
             return;
         },
@@ -1982,10 +2017,17 @@ test "interactive: init's plugin multi-select toggles an opt-in plugin" {
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 30000 },
     ) catch |err| switch (err) {
         // PTY allocation can be denied in some sandboxes; skip rather than fail
-        // (CI greps the log for this line and fails if the tier silently
-        // skipped). Every other error is a real harness/test failure — a
-        // catch-all here made harness bugs read as skips.
+        // here, unless ZCLI_REQUIRE_INTERACTIVE=1 demands this tier actually
+        // run. Every other error is a real harness/test failure — a catch-all
+        // here made harness bugs read as skips.
         error.PtyAllocationFailed => {
+            // ZCLI_REQUIRE_INTERACTIVE=1 (set by CI) turns a PTY-unavailable
+            // sandbox from a silent skip into a hard failure, so the interactive
+            // tier can never regress to never-running without the build going red.
+            if (harness.interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
             std.debug.print("runInteractive unavailable: {any}\n", .{err});
             return;
         },
@@ -2114,8 +2156,16 @@ test "dev builds, runs the app, restarts on change, survives a failed build, and
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 600000 },
     ) catch |err| switch (err) {
         // PTY allocation can be denied in some sandboxes; skip rather than fail
-        // (CI greps the log for this line). Every other error is a real failure.
+        // here, unless ZCLI_REQUIRE_INTERACTIVE=1 demands this tier actually
+        // run. Every other error is a real failure.
         error.PtyAllocationFailed => {
+            // ZCLI_REQUIRE_INTERACTIVE=1 (set by CI) turns a PTY-unavailable
+            // sandbox from a silent skip into a hard failure, so the interactive
+            // tier can never regress to never-running without the build going red.
+            if (harness.interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
             std.debug.print("runInteractive unavailable: {any}\n", .{err});
             return;
         },

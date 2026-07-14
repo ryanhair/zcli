@@ -188,6 +188,21 @@ pub fn build(b: *std.Build) void {
         build_cli_step.dependOn(&cli_build_run.step);
     }
 
+    // projects/zcli's end-to-end suite (builds scaffolded projects against the
+    // built zcli binary; slow — required after prompt/render/help changes) has
+    // no step at the root, so contributors running `zig build test` here never
+    // see it. It can't be forwarded with `top_level_steps.get` the way core's
+    // specialized steps are above: projects/zcli depends on this root package
+    // (`.zcli = .{ .path = "../.." }`), so b.dependency'ing it back here would
+    // be a package cycle — the same reason the test/build loops above run it
+    // as a subprocess instead. Forward it the same way: a subprocess `zig
+    // build e2e` from projects/zcli.
+    const e2e_step = b.step("e2e", "Run zcli's end-to-end tests (builds scaffolded projects; slow — run after prompt/render/help changes)");
+    const e2e_run = b.addSystemCommand(&.{b.graph.zig_exe});
+    e2e_run.addArgs(&.{ "build", "e2e" });
+    e2e_run.setCwd(b.path("projects/zcli"));
+    e2e_step.dependOn(&e2e_run.step);
+
     // Create a comprehensive build step that builds and tests everything
     const build_all_step = b.step("build-all", "Build and test all subprojects");
     build_all_step.dependOn(test_step);

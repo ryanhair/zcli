@@ -141,18 +141,14 @@ jobs:
 
       # Mirror ci.yml's e2e gate, guard included: the interactive tier degrades
       # to a skip (not a failure) where a pseudo-terminal can't be allocated, so
-      # grep the log to prove it actually ran — a release must not ship with that
-      # coverage silently dropped on any OS.
+      # ZCLI_REQUIRE_INTERACTIVE=1 makes the harness hard-fail instead — a
+      # release must not ship with that coverage silently dropped on any OS.
       - name: Run e2e tests
         working-directory: projects/zcli
         shell: bash
-        run: |
-          set -eo pipefail
-          zig build e2e 2>&1 | tee e2e.log
-          if grep -q "runInteractive unavailable" e2e.log; then
-            echo "ERROR: interactive terminal tests were skipped (pseudo-terminal unavailable)"
-            exit 1
-          fi
+        env:
+          ZCLI_REQUIRE_INTERACTIVE: "1"
+        run: zig build e2e
 
   build:
     name: Build ${{ matrix.target }}
@@ -197,7 +193,7 @@ jobs:
       - name: Build zcli
         run: |
           cd projects/zcli
-          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+          zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
 
       - name: Package binary
         shell: bash
