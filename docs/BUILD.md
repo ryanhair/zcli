@@ -146,18 +146,34 @@ Plugins can implement any of these lifecycle hooks:
 
 ### Plugin Integration
 
-Plugins are integrated in `build.zig`:
+Plugins are registered in `build.zig` one of three ways:
+
+- **Built-ins** that ship with zcli — use `zcli.builtin(<tag>, .{...})`.
+- **Third-party plugins shipped as their own Zig package** — depend on the
+  package with `b.dependency(...)` and pass it as `.dependency`. The package
+  must expose a module named `plugin`; see `examples/ext-plugin` for a complete
+  package + consumer pair.
+- **Project-local plugins** living in your own source tree — drop them under
+  `.plugins_dir` and they're auto-discovered (they are *not* listed in
+  `.plugins`). See ADR-0006.
 
 ```zig
-const zcli_build = @import("zcli");
+const zcli = @import("zcli");
+
+// A third-party plugin shipped as its own Zig package.
+const greet_plugin_dep = b.dependency("greet_plugin", .{ .target = target, .optimize = optimize });
 
 const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
     .commands_dir = "src/commands",
-    .plugins = &[_]zcli_build.PluginConfig{
-        .{ .name = "zcli_help", .path = "packages/core/src/plugins/zcli_help" },
-        .{ .name = "zcli_version", .path = "packages/core/src/plugins/zcli_version" },
-        .{ .name = "zcli_not_found", .path = "packages/core/src/plugins/zcli_not_found" },
+    .plugins = &.{
+        zcli.builtin(.help, .{}),
+        zcli.builtin(.version, .{}),
+        zcli.builtin(.not_found, .{}),
+        // External-package plugin: pass the dependency, not a path.
+        .{ .name = "greet", .dependency = greet_plugin_dep },
     },
+    // Project-local plugins under this directory are auto-discovered.
+    .plugins_dir = "src/plugins",
     .app_name = "myapp",
     .app_description = "My CLI application",
     // Note: Version is automatically read from build.zig.zon

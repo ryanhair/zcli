@@ -1,0 +1,11 @@
+.{
+    .name = .greet_plugin,
+    .version = "0.1.0",
+    .fingerprint = 0x05402306f619ef87,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "plugin.zig",
+    },
+}

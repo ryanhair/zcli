@@ -828,10 +828,14 @@ Plugins are registered in build.zig:
 ```zig
 const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
     .plugins = &.{
-        zcli.builtin(.help, .{}),
+        zcli.builtin(.help, .{}),                                 // ships with zcli
         zcli.builtin(.not_found, .{}),
-        .{ .name = "my_plugin", .path = "src/plugins/my_plugin" }, // handrolled
+        // third-party plugin shipped as its own Zig package:
+        .{ .name = "my_plugin", .dependency = b.dependency("my_plugin", .{ .target = target, .optimize = optimize }) },
     },
+    // A plugin in your OWN source tree is auto-discovered instead — drop it
+    // under `.plugins_dir` (not listed here). See ADR-0006 and examples/ext-plugin.
+    .plugins_dir = "src/plugins",
     // ... other config
 });
 ```

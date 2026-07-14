@@ -14,32 +14,22 @@ const DocsConfig = types.DocsConfig;
 
 /// `generate()` failed because of a problem in the consuming project's
 /// configuration. A human-readable explanation has already been printed;
-/// propagate this out of `build()` to stop the build.
-pub const GenerateError = error{CommandDiscoveryFailed};
+/// propagate this out of `build()` to stop the build. Every failure path here
+/// returns one of these rather than exiting/panicking — a library must not kill
+/// the build process itself, and a config mistake must stop the build loudly
+/// instead of silently producing (say) a plugin-less binary.
+pub const GenerateError = error{
+    CommandDiscoveryFailed,
+    PluginDiscoveryFailed,
+    /// A `PluginConfig` set neither `path` nor `dependency` (or set both).
+    PluginConfigInvalid,
+};
 
-/// Link the native libraries the `zcli_secrets` plugin's backend needs for
-/// `target`. macOS: Security + CoreFoundation frameworks. Windows: advapi32.
-/// Linux links **nothing**: its backend reaches the Secret Service (via
-/// `secret-tool`) or `pass` by shelling out at runtime, not by linking, so a
-/// Linux build stays static and works on musl too (ADR-0010). Any other OS has
-/// no secure backend — registering the plugin there is a compile error in the
-/// plugin source. Exposed so the plugin's own test targets can link exactly the
-/// same way a registered app does.
-pub fn linkSecretsBackend(module: *std.Build.Module, target: std.Target) void {
-    switch (target.os.tag) {
-        .macos => {
-            module.linkFramework("Security", .{});
-            module.linkFramework("CoreFoundation", .{});
-        },
-        // Linux shells out (secret-tool / pass) — no library to link, and no
-        // musl incompatibility.
-        .linux => {},
-        .windows => {
-            module.linkSystemLibrary("advapi32", .{});
-        },
-        else => {},
-    }
-}
+/// Re-exported so the zcli_secrets plugin's own test targets (in
+/// packages/core/build.zig) link exactly the same way a registered app does.
+/// The definition lives in types.zig alongside `PluginConfig.link`, which is
+/// the mechanism `generate()` uses to apply it.
+pub const linkSecretsBackend = types.linkSecretsBackend;
 
 // ============================================================================
 // VERSION MANAGEMENT - Read version from build.zig.zon
@@ -119,24 +109,26 @@ fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.
 
     // 1. Discover local plugins. A missing plugins_dir is optional (scan
     //    returns null → no local plugins). Any real failure is surfaced loudly
-    //    with the offending path so a broken plugins_dir can't silently build
-    //    an app with zero plugins (mirrors the command-discovery reporting
-    //    below). We hard-fail via @panic because scanLocalPlugins returns an
-    //    error set (not GenerateError) and there is no recoverable state.
+    //    with the offending path, then propagated out of build() as a
+    //    GenerateError — a broken plugins_dir must stop the build, never
+    //    silently produce an app with zero plugins (mirrors the
+    //    command-discovery reporting below). OOM keeps the std.Build-wide
+    //    `@panic("OOM")` convention: not user-actionable, and loud already.
     const local_plugins: []const types.PluginInfo = if (config.plugins_dir) |dir|
         (plugin_system.scanLocalPlugins(b, dir) catch |err| switch (err) {
             error.InvalidPath => {
                 logging.buildError("Plugin Discovery Error", dir, "Invalid plugins directory path.\nPath contains '..' which is not allowed for security reasons", "Please use a relative path without '..' or an absolute path");
-                std.debug.panic("Plugin discovery failed for '{s}': {s}", .{ dir, @errorName(err) });
+                return error.PluginDiscoveryFailed;
             },
             error.AccessDenied => {
                 logging.buildError("Plugin Discovery Error", dir, "Access denied to plugins directory", "Please check file permissions for the directory");
-                std.debug.panic("Plugin discovery failed for '{s}': {s}", .{ dir, @errorName(err) });
+                return error.PluginDiscoveryFailed;
             },
             error.OutOfMemory => @panic("OOM"),
             else => {
                 logging.buildError("Plugin Discovery Error", dir, "Failed to discover plugins", "Check the plugins directory structure and file permissions");
-                std.debug.panic("Plugin discovery failed for '{s}': {s}", .{ dir, @errorName(err) });
+                std.debug.print("Error details: {any}\n", .{err});
+                return error.PluginDiscoveryFailed;
             },
         }) orelse &.{}
     else
@@ -235,34 +227,61 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
     const app_version = readVersionFromZon(b);
     const build_date = computeBuildDate(b);
 
-    // Convert plugin configs to PluginInfo array
+    // Convert plugin configs to PluginInfo array. Each explicit plugin is
+    // registered one of two ways (see PluginConfig): a built-in whose source
+    // lives inside the zcli package (`.path` set), or a third-party plugin
+    // shipped as its own Zig package (`.dependency` set). Exactly one must be
+    // set; getting it wrong stops the build loudly.
     var plugins = std.ArrayList(types.PluginInfo).empty;
     defer plugins.deinit(b.allocator);
 
     for (config.plugins) |plugin_config| {
-        plugins.append(b.allocator, .{
-            .name = plugin_config.name,
-            // Plugin path is relative to the zcli package, e.g.
+        if (plugin_config.dependency) |dep| {
+            if (plugin_config.path != null) {
+                logging.buildError("Plugin Config Error", plugin_config.name, "A plugin sets both '.path' and '.dependency'", "Use '.path' (via zcli.builtin) for a built-in, or '.dependency' for an external package — not both");
+                return error.PluginConfigInvalid;
+            }
+            // External package plugin: its module is resolved from the
+            // dependency in module_creation.addPluginModulesToRegistry via
+            // `dep.module("plugin")`; the registry imports it under the
+            // plugin's registration name.
+            plugins.append(b.allocator, .{
+                .name = plugin_config.name,
+                .import_name = plugin_config.name,
+                .is_local = false,
+                .dependency = dep,
+                .init = plugin_config.init,
+            }) catch @panic("OOM");
+        } else if (plugin_config.path) |path| {
+            // Built-in: path is relative to the zcli package, e.g.
             // "packages/core/src/plugins/zcli_help"; appending "/plugin" gives
-            // the import path.
-            .import_name = b.fmt("{s}/plugin", .{plugin_config.path}),
-            .is_local = true, // Plugins are local paths within the zcli package
-            .dependency = null, // No separate dependency needed
-            .init = plugin_config.init,
-        }) catch @panic("OOM");
+            // the import path resolved against the zcli dependency.
+            plugins.append(b.allocator, .{
+                .name = plugin_config.name,
+                .import_name = b.fmt("{s}/plugin", .{path}),
+                .is_local = true,
+                .dependency = null,
+                .init = plugin_config.init,
+            }) catch @panic("OOM");
+        } else {
+            logging.buildError("Plugin Config Error", plugin_config.name, "A plugin sets neither '.path' nor '.dependency'", "Register a built-in with zcli.builtin(), or an external package with '.dependency = b.dependency(...)'");
+            return error.PluginConfigInvalid;
+        }
     }
 
-    // Opt-in native linking. The secrets plugin's native backends call into an
-    // OS keychain, which requires dynamic linking. We add each platform's
-    // libraries to the executable ONLY when the secrets plugin is registered —
-    // so a CLI that does not opt in stays a static, libc-free single binary.
-    // This is the build half of ADR-0003's opt-in guarantee (the source half is
-    // the compile-time backend selection in the plugin). Registering the plugin
-    // for an unsupported OS is a compile error in the plugin source — there is
-    // no insecure file fallback — so `linkSecretsBackend` links nothing there.
+    // Opt-in native linking, driven by each plugin's own `.link` declaration —
+    // no plugin is special-cased by name here. A plugin whose backend calls into
+    // system libraries (the secrets plugin's OS keychain, or an external
+    // plugin's own native deps) sets `PluginConfig.link`; we apply it to the
+    // executable ONLY when that plugin is registered, so a CLI that does not opt
+    // in stays a static, libc-free single binary. This is the build half of
+    // ADR-0003's opt-in guarantee (the source half is the compile-time backend
+    // selection in the plugin). For the secrets plugin on an unsupported OS,
+    // registering it is a compile error in the plugin source (no insecure file
+    // fallback), and its `linkSecretsBackend` hook links nothing there.
     for (config.plugins) |plugin_config| {
-        if (std.mem.eql(u8, plugin_config.name, "zcli_secrets")) {
-            linkSecretsBackend(exe.root_module, exe.rootModuleTarget());
+        if (plugin_config.link) |linkFn| {
+            linkFn(exe.root_module, exe.rootModuleTarget());
         }
     }
 

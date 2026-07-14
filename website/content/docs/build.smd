@@ -40,8 +40,8 @@ The config:
 | `commands_dir` | required | directory scanned for command files |
 | `app_name` | required | your binary's name, used in help and errors |
 | `app_description` | required | one-liner shown at the top of `--help` |
-| `plugins` | `&.{}` | explicit plugin list — `zcli.builtin(...)` tags and `.{ .name, .path }` entries |
-| `plugins_dir` | `null` | a folder of your own plugins, auto-discovered |
+| `plugins` | `&.{}` | explicit plugin list — `zcli.builtin(...)` for shipped plugins, or `.{ .name, .dependency = b.dependency(...) }` for a third-party plugin shipped as its own Zig package |
+| `plugins_dir` | `null` | a folder of your own project-local plugins, auto-discovered |
 | `shared_modules` | `null` | modules importable from every command |
 
 **There is no version field.** The app version is read from `build.zig.zon`'s `.version` at build time — one source of truth, surfaced as `context.app_version` and `--version`.
