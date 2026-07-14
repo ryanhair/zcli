@@ -28,7 +28,7 @@ From the repo root:
 - `zig build test` — the whole battery: every package's suite plus the meta-CLI's and every example's tests
 - `zig build test-<name>` — one subproject (`test-core`, `test-terminal`, `test-prompts`, `test-tasks`, …)
 - `zig build build-examples` / `build-cli` — compile the examples / the zcli binary
-- `cd projects/zcli && zig build e2e` — the meta-CLI's end-to-end suite (scaffolds real projects in temp dirs and drives the binary through a PTY; slow, not part of `test`)
+- `zig build e2e` — the meta-CLI's end-to-end suite (scaffolds real projects in temp dirs and drives the binary through a PTY; slow, not part of `test`; run it after prompt/render/help changes). Forwards to `projects/zcli`'s own `e2e` step; `cd projects/zcli && zig build e2e -De2e-filter=<substring>` to narrow it while iterating.
 - `zig build test-secrets` — compile+link the host's native secrets backend (forwarded from `packages/core`, like `benchmark`/`regression`; not part of `test`)
 
 `-Dtarget=` and `-Doptimize=` at the root propagate into the package test builds.

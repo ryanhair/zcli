@@ -863,6 +863,20 @@ pub const InteractiveError = error{
     NoSavedSettings,
 } || std.mem.Allocator.Error;
 
+/// Whether the environment demands that the interactive (PTY) tier actually
+/// run — set by CI so a sandbox that can't allocate a PTY turns from a silent
+/// skip into a hard build failure. Replaces grepping the job log for
+/// `runInteractive unavailable`, which only proved the wording was still
+/// there, not that the harness could have caught a real regression in it.
+///
+/// Read via the threaded environ (`std.testing.environ`, populated by the
+/// 0.16 test runner from `std.process.Init`) rather than libc getenv — this
+/// runs inside `zig build test`/`zig build e2e` test binaries, which have no
+/// ambient ENV access of their own.
+pub fn interactiveRequired() bool {
+    return std.process.Environ.containsUnemptyConstant(std.testing.environ, "ZCLI_REQUIRE_INTERACTIVE");
+}
+
 /// Why a script step stopped the run — carried out of `driveScriptSteps` so the
 /// driver can print a single loud diagnostic (which step, what kind, and the
 /// rendered screen) instead of letting the failure surface only as a nonzero
@@ -2094,9 +2108,13 @@ test "runInteractive frame assertions catch a mispositioned row over a PTY" {
         .terminal_size = .{ .rows = 24, .cols = 40 },
         .total_timeout_ms = 8000,
     }) catch |err| switch (err) {
-        // PTY allocation can be denied in sandboxes; skip loudly (mirrors the
-        // "runInteractive unavailable" guard CI greps for elsewhere).
+        // PTY allocation can be denied in sandboxes; skip loudly, unless
+        // ZCLI_REQUIRE_INTERACTIVE=1 demands this tier actually run.
         error.PtyAllocationFailed => {
+            if (interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
             std.debug.print("runInteractive unavailable: {any}\n", .{err});
             return;
         },

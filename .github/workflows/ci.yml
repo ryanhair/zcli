@@ -186,23 +186,23 @@ jobs:
         with:
           version: 0.16.0
 
-      # Build the CLI natively in ReleaseFast — a real Windows toolchain catches
+      # Build the CLI natively in ReleaseSafe — a real Windows toolchain catches
       # native linking/ABI + optimize-mode issues that the release's
-      # cross-compile from Linux would not. This is the only ReleaseFast Windows
+      # cross-compile from Linux would not. This is the only ReleaseSafe Windows
       # coverage on PRs (release.yml cross-compiles and is tag-triggered). The
       # `test` job now runs the unit suites natively on Windows, and the `e2e`
       # job builds the binary (Debug) and exercises it end to end, so a separate
       # smoke step here would be redundant.
-      - name: Build zcli (native Windows, ReleaseFast)
+      - name: Build zcli (native Windows, ReleaseSafe)
         working-directory: projects/zcli
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Doptimize=ReleaseSafe -Dstrip=true
 
   # The release cross-compiles the static-musl Linux binaries (release.yml's
   # build job, only on tag push), so PR CI never once built musl — and a
   # musl-only build-graph panic in the secrets backend (fixed in 1931528)
   # blocked the 0.19.0 release with a break PR CI could not have caught. This
   # job closes that gap: it mirrors release.yml's build invocation EXACTLY
-  # (same `cd projects/zcli` + `zig build -Doptimize=ReleaseFast -Dtarget=…`
+  # (same `cd projects/zcli` + `zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=…`
   # per musl target) so the two can't drift and reopen the hole. x86_64 is a
   # static binary the x64 runner can execute, so smoke-test it (mirrors the
   # release's Smoke test step); aarch64 is build-only (can't run here).
@@ -228,9 +228,9 @@ jobs:
       # Byte-for-byte the release build command (release.yml → build job → Build
       # zcli). No test suite re-run — the `test` job already covers that; this
       # only guards that the release-mode musl cross-compile links and starts.
-      - name: Build zcli (static musl, ReleaseFast)
+      - name: Build zcli (static musl, ReleaseSafe)
         working-directory: projects/zcli
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+        run: zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=${{ matrix.zig_target }}
 
       # Prove the artifact the release would publish actually starts, on the
       # target the runner can execute natively. Mirrors release.yml's smoke test.
@@ -385,14 +385,11 @@ jobs:
       #
       # The interactive tests degrade to a skip — not a failure — where the
       # pseudo-terminal can't be allocated, so a green run could silently lose
-      # that coverage; grep the log to prove the tier actually ran on every OS.
+      # that coverage. ZCLI_REQUIRE_INTERACTIVE=1 makes the harness hard-fail
+      # instead of skip in that case, proving the tier actually ran on every OS.
       - name: Run e2e tests
         working-directory: projects/zcli
         shell: bash
-        run: |
-          set -eo pipefail
-          zig build e2e 2>&1 | tee e2e.log
-          if grep -q "runInteractive unavailable" e2e.log; then
-            echo "ERROR: interactive terminal tests were skipped (pseudo-terminal unavailable)"
-            exit 1
-          fi
+        env:
+          ZCLI_REQUIRE_INTERACTIVE: "1"
+        run: zig build e2e
