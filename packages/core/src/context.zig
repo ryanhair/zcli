@@ -18,11 +18,9 @@ const zcli = @import("zcli.zig");
 /// here. Plugins with ContextData MUST declare `pub const plugin_id = "unique_name";`
 pub fn pluginFieldName(comptime Plugin: type) [:0]const u8 {
     comptime {
-        if (!@hasDecl(Plugin, "plugin_id")) {
-            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares ContextData but no plugin_id. " ++
-                "ContextData is exposed as a typed field on context.plugins named by plugin_id. Add:\n" ++
-                "    pub const plugin_id = \"my_plugin\";");
-        }
+        // Backstop for direct ContextFor/TestContext use that bypasses plugin
+        // registration (see plugin_types.requirePluginId for the message).
+        zcli.plugin_types.requirePluginId(Plugin);
 
         const id: []const u8 = Plugin.plugin_id;
         var result: [id.len + 1]u8 = undefined;

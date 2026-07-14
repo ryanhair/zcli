@@ -9,16 +9,19 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
 
     // For very long strings, use a practical limit to avoid excessive computation
     const max_practical_len = 256;
-    const a_len = @min(a.len, max_practical_len);
-    const b_len = @min(b.len, max_practical_len);
+    // Explicit usize annotations keep the loop bounds usize when the function
+    // runs at comptime (comptime-known @min/@max results otherwise narrow to
+    // tiny integer types, overflowing the `for (1..len + 1)` ranges below).
+    const a_len: usize = @min(a.len, max_practical_len);
+    const b_len: usize = @min(b.len, max_practical_len);
 
     // Use a more memory-efficient approach with two arrays instead of a full matrix
     // This reduces memory usage from O(n*m) to O(min(n,m))
 
     // Use two arrays instead of full matrix - more memory efficient
     // We'll work with the shorter string as columns to minimize memory usage
-    const shorter_len = @min(a_len, b_len);
-    const longer_len = @max(a_len, b_len);
+    const shorter_len: usize = @min(a_len, b_len);
+    const longer_len: usize = @max(a_len, b_len);
 
     const shorter_str = if (a_len <= b_len) a[0..a_len] else b[0..b_len];
     const longer_str = if (a_len <= b_len) b[0..b_len] else a[0..a_len];
@@ -67,6 +70,17 @@ test "editDistance basic" {
     try std.testing.expectEqual(@as(usize, 1), editDistance("hello", "helloo"));
     try std.testing.expectEqual(@as(usize, 2), editDistance("hello", "bell"));
     try std.testing.expectEqual(@as(usize, 4), editDistance("hello", "world"));
+}
+
+test "editDistance works at comptime" {
+    // plugin_types.validatePlugin runs this at comptime for the hook
+    // typo-guard, so comptime evaluation must keep working.
+    comptime {
+        std.debug.assert(editDistance("preExeucte", "preExecute") == 2);
+        std.debug.assert(editDistance("postExecute", "preExecute") == 3);
+        std.debug.assert(editDistance("preExecute", "preExecute") == 0);
+        std.debug.assert(editDistance("onErorr", "onError") == 2);
+    }
 }
 
 test "editDistance edge cases" {

@@ -3,6 +3,7 @@ const zcli = @import("zcli.zig");
 const identifier = @import("identifier.zig");
 const option_utils = @import("options/utils.zig");
 const custom_type = @import("custom_type.zig");
+const levenshtein = @import("levenshtein.zig");
 const testing = std.testing;
 
 // ============================================================================
@@ -252,6 +253,20 @@ const contract_names = hook_names ++ [_][]const u8{
     "init",
 };
 
+/// The single source of the "ContextData without plugin_id" error, shared by
+/// `validatePlugin` (fires at plugin registration) and `context.pluginFieldName`
+/// (a backstop for direct `ContextFor`/`TestContext` use that bypasses
+/// registration, e.g. in tests).
+pub fn requirePluginId(comptime Plugin: type) void {
+    comptime {
+        if (@hasDecl(Plugin, "ContextData") and !@hasDecl(Plugin, "plugin_id")) {
+            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares ContextData but no plugin_id. " ++
+                "ContextData is exposed as a typed field on context.plugins named by plugin_id. Add:\n" ++
+                "    pub const plugin_id = \"my_plugin\";");
+        }
+    }
+}
+
 /// Comptime backstop against silently-dead hooks. Hooks are detected by exact
 /// name (`@hasDecl`), so a typo'd hook — `preExeucte` — compiles fine and
 /// simply never fires. Called by Registry.registerPlugin: any *function* decl
@@ -272,7 +287,7 @@ pub fn validatePlugin(comptime Plugin: type) void {
                 // Cheap length gate before the DP — comptime branch quota.
                 const len_diff = if (decl.name.len > hook.len) decl.name.len - hook.len else hook.len - decl.name.len;
                 if (len_diff > 2) continue;
-                if (editDistance(decl.name, hook) <= 2) {
+                if (levenshtein.editDistance(decl.name, hook) <= 2) {
                     @compileError("plugin function '" ++ decl.name ++ "' looks like a misspelling of the lifecycle hook '" ++ hook ++
                         "' and would never be called — hooks are detected by exact name. Fix the spelling, or rename the function away from the hook.");
                 }
@@ -284,11 +299,7 @@ pub fn validatePlugin(comptime Plugin: type) void {
         // whole contract here at the declaration — a helpful comptime error —
         // instead of letting it fail obscurely at the `context.plugins.<id>`
         // use-site (or silently getting no slot).
-        if (@hasDecl(Plugin, "ContextData") and !@hasDecl(Plugin, "plugin_id")) {
-            @compileError("plugin '" ++ @typeName(Plugin) ++ "' declares ContextData but no plugin_id. " ++
-                "ContextData is exposed as a typed field on context.plugins named by plugin_id. Add:\n" ++
-                "    pub const plugin_id = \"my_plugin\";");
-        }
+        requirePluginId(Plugin);
         // deinitContextData is the cleanup hook for ContextData and only runs
         // when ContextData exists — without it the function is silently dead,
         // the same failure shape as a misspelled lifecycle hook above.
@@ -358,33 +369,6 @@ fn isContractName(comptime name: []const u8) bool {
     return false;
 }
 
-/// Comptime Levenshtein distance (names here are short; the DP is tiny).
-fn editDistance(comptime a: []const u8, comptime b: []const u8) usize {
-    comptime {
-        var prev: [b.len + 1]usize = undefined;
-        for (0..b.len + 1) |j| prev[j] = j;
-        for (a, 0..) |ca, i| {
-            var curr: [b.len + 1]usize = undefined;
-            curr[0] = i + 1;
-            for (b, 0..) |cb, j| {
-                const cost: usize = if (ca == cb) 0 else 1;
-                curr[j + 1] = @min(@min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
-            }
-            prev = curr;
-        }
-        return prev[b.len];
-    }
-}
-
-test "editDistance catches the classic transposition typo" {
-    comptime {
-        std.debug.assert(editDistance("preExeucte", "preExecute") == 2);
-        std.debug.assert(editDistance("postExecute", "preExecute") == 3);
-        std.debug.assert(editDistance("preExecute", "preExecute") == 0);
-        std.debug.assert(editDistance("onErorr", "onError") == 2);
-    }
-}
-
 test "validatePlugin accepts a well-formed plugin with helpers" {
     const Plugin = struct {
         pub const plugin_id = "valid_plugin";
@@ -406,9 +390,9 @@ test "editDistance flags an applyConfigDefaults typo" {
     comptime {
         // The transposition the typo-guard exists to catch: this misspelling
         // compiles fine but would never be dispatched (hooks match by exact name).
-        std.debug.assert(editDistance("applyConfigDefualts", "applyConfigDefaults") == 2);
+        std.debug.assert(levenshtein.editDistance("applyConfigDefualts", "applyConfigDefaults") == 2);
         // A far-off helper in the same plugin must stay clear of the guard.
-        std.debug.assert(editDistance("applyFromJsonScoped", "applyConfigDefaults") > 2);
+        std.debug.assert(levenshtein.editDistance("applyFromJsonScoped", "applyConfigDefaults") > 2);
     }
 }
 
