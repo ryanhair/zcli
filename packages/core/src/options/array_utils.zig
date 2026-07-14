@@ -101,6 +101,13 @@ pub fn appendToArrayListUnionShort(comptime ElementType: type, allocator: std.me
 /// An empty segment (`a,,b`, `,a`, `a,`) is rejected as an invalid value.
 /// Delegates to `appendToArrayListUnion` per segment, reusing its per-element
 /// parsing and diagnostics unchanged.
+///
+/// KNOWN LIMITATION (grade6 #316): the comma is an unconditional separator —
+/// there is no escape, so a single string-array element cannot contain a literal
+/// comma. `--label a,b` is always two elements (`a`, `b`), never the one element
+/// `a,b`. If an element must carry a comma, the CSV shorthand cannot express it;
+/// this is an accepted tradeoff of the `--opt a,b` sugar (ADR-0024). Repeated
+/// flags (`--label a --label b`) remain available and are unaffected.
 pub fn appendCsvToArrayListUnion(comptime ElementType: type, allocator: std.mem.Allocator, list_union: *ArrayListUnion, value: []const u8, option_name: []const u8) !void {
     var it = std.mem.splitScalar(u8, value, ',');
     while (it.next()) |segment| {

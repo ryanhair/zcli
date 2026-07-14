@@ -214,14 +214,10 @@ pub fn parseOptionsWithMeta(
             break;
         }
 
-        // Not an option, skip to next argument (GNU-style parsing)
-        if (!std.mem.startsWith(u8, arg, "-")) {
-            arg_index += 1;
-            continue;
-        }
-
-        // Check if this is a negative number - if so, skip it (GNU-style parsing)
-        if (utils.isNegativeNumber(arg)) {
+        // Not an option — a bare word, a negative number (`-5`, `-.5`, `-inf`),
+        // or the bare `-` stdin/stdout sentinel: skip it (GNU-style parsing
+        // leaves positionals in place). `isOption` is the single source of truth.
+        if (!utils.isOption(arg)) {
             arg_index += 1;
             continue;
         }
@@ -549,7 +545,7 @@ fn parseLongOptions(
             const value = blk: {
                 if (option_value) |val| {
                     break :blk val;
-                } else if (arg_index + 1 < args.len and (!std.mem.startsWith(u8, args[arg_index + 1], "-") or utils.isNegativeNumber(args[arg_index + 1]))) {
+                } else if (arg_index + 1 < args.len and utils.isValueToken(args[arg_index + 1])) {
                     break :blk args[arg_index + 1];
                 } else {
                     if (diag) |d| d.* = .{ .OptionMissingValue = .{
@@ -709,8 +705,11 @@ fn parseShortOptionsWithMeta(
                         // Value attached: -ovalue
                         value = options_part[1..];
                     } else {
-                        // Value in next argument
-                        if (arg_index + 1 >= args.len) {
+                        // Value in the next argument — but only if that token is
+                        // a value, not another option (#299). A following flag
+                        // (`-t --verbose`) is a missing value, mirroring the long
+                        // path; the bare `-` and negative numbers count as values.
+                        if (arg_index + 1 >= args.len or !utils.isValueToken(args[arg_index + 1])) {
                             if (diag) |d| d.* = .{ .OptionMissingValue = .{
                                 .option_name = options_part[0..1],
                                 .is_short = true,
@@ -1468,8 +1467,8 @@ pub fn parseOptionsAndArgs(
     while (i < args.len) {
         const arg = args[i];
 
-        // Check if this is an option
-        if (std.mem.startsWith(u8, arg, "-") and !utils.isNegativeNumber(arg)) {
+        // Check if this is an option (not a negative number or bare `-`).
+        if (utils.isOption(arg)) {
             option_args.append(allocator, arg) catch {
                 return ZcliError.SystemOutOfMemory;
             };
@@ -1499,7 +1498,7 @@ pub fn parseOptionsAndArgs(
             // If option expects a value and next arg exists and isn't an option, consume it
             if (expects_value and i + 1 < args.len) {
                 const next_arg = args[i + 1];
-                if (!std.mem.startsWith(u8, next_arg, "-") or utils.isNegativeNumber(next_arg)) {
+                if (utils.isValueToken(next_arg)) {
                     option_args.append(allocator, next_arg) catch {
                         return ZcliError.SystemOutOfMemory;
                     };

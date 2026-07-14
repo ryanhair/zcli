@@ -160,7 +160,7 @@ fn optionSpecFor(
 fn isOption(tok: []const u8) bool {
     if (tok.len < 2) return false;
     if (tok[0] != '-') return false;
-    if (isNegativeNumber(tok)) return false;
+    if (zcli.isNegativeNumber(tok)) return false;
     return true;
 }
 
@@ -252,11 +252,3 @@ fn argForSlot(args: []const zcli.ArgInfo, slot: usize) ?zcli.ArgInfo {
     return if (last.is_variadic) last else null;
 }
 
-/// A leading-`-` token that is actually a negative number, so not an option.
-fn isNegativeNumber(arg: []const u8) bool {
-    if (arg.len < 2 or arg[0] != '-') return false;
-    for (arg[1..]) |c| {
-        if (!std.ascii.isDigit(c) and c != '.') return false;
-    }
-    return true;
-}

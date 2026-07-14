@@ -78,8 +78,10 @@ pub fn parseCommandLine(
             break;
         }
 
-        // Handle options (start with -, but not negative numbers)
-        if (std.mem.startsWith(u8, arg, "-") and !isNegativeNumber(arg)) {
+        // Handle options. `isOption` (options/utils.zig — the single source of
+        // truth) excludes negative numbers (`-.5`, `-inf`) and the bare `-`
+        // stdin/stdout sentinel, which are positionals, not flags.
+        if (option_utils.isOption(arg)) {
             option_args.append(allocator, arg) catch return ZcliError.SystemOutOfMemory;
 
             // Check if this option expects a value
@@ -96,9 +98,7 @@ pub fn parseCommandLine(
                     // another flag" condition, so split and parse agree.
                     const option_name = arg[2..]; // Remove "--"
                     const takes_value = option_utils.longOptionTakesValue(OptionsType, meta, option_name) orelse false;
-                    if (takes_value and i + 1 < args.len and
-                        (!std.mem.startsWith(u8, args[i + 1], "-") or isNegativeNumber(args[i + 1])))
-                    {
+                    if (takes_value and i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
                         i += 1;
                         option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
                     }
@@ -110,7 +110,9 @@ pub fn parseCommandLine(
                     // Single short option, might need value
                     const option_char = option_chars[0];
                     const takes_value = option_utils.shortOptionTakesValue(OptionsType, meta, option_char) orelse false;
-                    if (takes_value and i + 1 < args.len) {
+                    // A following flag is not this short option's value — same
+                    // "next token is a value" rule the long path uses (#299).
+                    if (takes_value and i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
                         i += 1;
                         option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
                     }
@@ -157,14 +159,6 @@ pub fn parseCommandLine(
             break :blk null;
         },
     };
-}
-
-/// Check if a string represents a negative number
-fn isNegativeNumber(arg: []const u8) bool {
-    if (arg.len < 2 or arg[0] != '-') return false;
-
-    // Check if the character after '-' is a digit
-    return std.ascii.isDigit(arg[1]);
 }
 
 /// Parse options from a list of option arguments, returning the parsed values
@@ -1059,6 +1053,103 @@ test "negative numbers classify as values and positionals, not flags" {
     defer result.deinit();
     try std.testing.expectEqual(@as(i32, -5), result.options.offset);
     try std.testing.expectEqual(@as(i32, -10), result.args.delta);
+}
+
+// #287 — the pre-split classifier used a local `-<digit>`-only isNegativeNumber
+// that diverged from the shared one, so `-.5`/`-inf` positionals were silently
+// routed to options and dropped. These parseCommandLine-level tests are the
+// layer the prior gap slipped through (lower-layer tests all passed).
+test "#287 non-integer negative positional reaches the args, not option_args" {
+    const allocator = std.testing.allocator;
+    const Args = struct { v: []const u8 };
+    const Options = struct { verbose: bool = false };
+
+    // Previously ArgumentMissingRequired: `-.5` vanished between split and parse.
+    for ([_][]const u8{ "-.5", "-inf", "-nan", "-1e5", "-1.5e-3" }) |tok| {
+        const result = try parseCommandLine(Args, Options, null, allocator, null, &.{tok}, null);
+        defer result.deinit();
+        try std.testing.expectEqualStrings(tok, result.args.v);
+    }
+}
+
+test "#287 varargs of non-integer negatives are all captured" {
+    const allocator = std.testing.allocator;
+    const Args = struct { values: [][]const u8 };
+    const Options = struct {};
+
+    // Previously received zero values.
+    const result = try parseCommandLine(Args, Options, null, allocator, null, &.{ "-.5", "-.25", "-inf" }, null);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.args.values.len);
+    try std.testing.expectEqualStrings("-.5", result.args.values[0]);
+    try std.testing.expectEqualStrings("-.25", result.args.values[1]);
+    try std.testing.expectEqualStrings("-inf", result.args.values[2]);
+}
+
+test "#287 non-integer negative as an option value (both positions agree)" {
+    const allocator = std.testing.allocator;
+    const Options = struct { min: f64 = 0 };
+
+    const result = try parseCommandLine(struct {}, Options, null, allocator, null, &.{ "--min", "-.5" }, null);
+    defer result.deinit();
+    try std.testing.expectApproxEqAbs(@as(f64, -0.5), result.options.min, 0.0001);
+}
+
+test "#298 a bare '-' is a positional, not an unknown option" {
+    const allocator = std.testing.allocator;
+    const Args = struct { file: []const u8 };
+    const Options = struct { verbose: bool = false };
+
+    // Previously OptionUnknown; `-` is the stdin/stdout sentinel (`cat -`).
+    const result = try parseCommandLine(Args, Options, null, allocator, null, &.{"-"}, null);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("-", result.args.file);
+    try std.testing.expect(!result.options.verbose);
+}
+
+test "#298 bare '-' among other args and after a flag" {
+    const allocator = std.testing.allocator;
+    const Args = struct { a: []const u8, b: []const u8 };
+    const Options = struct { verbose: bool = false };
+
+    const result = try parseCommandLine(Args, Options, null, allocator, null, &.{ "--verbose", "-", "out" }, null);
+    defer result.deinit();
+    try std.testing.expect(result.options.verbose);
+    try std.testing.expectEqualStrings("-", result.args.a);
+    try std.testing.expectEqualStrings("out", result.args.b);
+}
+
+test "#299 a short value-option does not swallow a following flag" {
+    const allocator = std.testing.allocator;
+    const Options = struct {
+        tag: ?[]const u8 = null,
+        verbose: bool = false,
+        pub const meta = .{ .options = .{ .tag = .{ .short = 't' } } };
+    };
+
+    // Previously tag="--verbose", verbose=false, no error. Must mirror the long
+    // path (`--tag --verbose` → OptionMissingValue).
+    var diag: ?ZcliDiagnostic = null;
+    const result = parseCommandLine(struct {}, Options, Options.meta, allocator, null, &.{ "-t", "--verbose" }, &diag);
+    try std.testing.expectError(ZcliError.OptionMissingValue, result);
+}
+
+test "#315 '-' is consistently an option value across --opt -, --opt=-, -o -" {
+    const allocator = std.testing.allocator;
+    const Options = struct {
+        out: ?[]const u8 = null,
+        pub const meta = .{ .options = .{ .out = .{ .short = 'o' } } };
+    };
+
+    inline for (.{
+        &.{ "--out", "-" },
+        &.{"--out=-"},
+        &.{ "-o", "-" },
+    }) |argv| {
+        const result = try parseCommandLine(struct {}, Options, Options.meta, allocator, null, argv, null);
+        defer result.deinit();
+        try std.testing.expectEqualStrings("-", result.options.out.?);
+    }
 }
 
 test "firstMissingRequiredOption: satisfied by CLI, env, or config; else reported" {

@@ -773,9 +773,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                             if (global_opt.type != bool) {
                                 // Same next-token-is-a-value rule the command
                                 // parsers share (options/utils.zig).
-                                if (i + 1 < args.len and
-                                    (!std.mem.startsWith(u8, args[i + 1], "-") or option_utils.isNegativeNumber(args[i + 1])))
-                                {
+                                if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
                                     i += 1;
                                     value = args[i];
                                     try consumed.append(context.allocator, i);
@@ -805,9 +803,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
 
                             var value: []const u8 = "true";
                             if (global_opt.type != bool) {
-                                if (i + 1 < args.len and
-                                    (!std.mem.startsWith(u8, args[i + 1], "-") or option_utils.isNegativeNumber(args[i + 1])))
-                                {
+                                if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
                                     i += 1;
                                     value = args[i];
                                     try consumed.append(context.allocator, i);

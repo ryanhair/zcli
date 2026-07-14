@@ -172,6 +172,27 @@ fn isValidInteger(s: []const u8) bool {
     return true;
 }
 
+/// Is `tok` a value token rather than a new option? A token that follows a
+/// value-taking option is that option's value unless the token is itself another
+/// option. A token is NOT a new option — so it serves as a value/positional —
+/// when it does not start with `-`, when it is a negative number (`-5`, `-.5`,
+/// `-inf`, `-1e9`), or when it is the bare `-` stdin/stdout sentinel
+/// (`cat -`, `sort -`). This is the single predicate every value lookahead and
+/// positional classifier shares, so the pre-split and the parser always agree.
+pub fn isValueToken(tok: []const u8) bool {
+    if (!std.mem.startsWith(u8, tok, "-")) return true;
+    if (std.mem.eql(u8, tok, "-")) return true;
+    return isNegativeNumber(tok);
+}
+
+/// Is `arg` an option flag (a `--long`, `-x`, or bundled `-xyz`)? The inverse of
+/// `isValueToken` for `-`-prefixed tokens: a leading `-` is an option unless the
+/// token is a negative number or the bare `-` sentinel. (`--` end-of-options is
+/// handled by callers before this.)
+pub fn isOption(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-") and !isValueToken(arg);
+}
+
 /// Check if a type is boolean
 pub fn isBooleanType(comptime T: type) bool {
     return T == bool;
@@ -365,6 +386,37 @@ test "isNegativeNumber function - decimal edge cases" {
     try std.testing.expect(!isNegativeNumber("-.")); // Just dash-dot
     try std.testing.expect(!isNegativeNumber("-..5")); // Multiple dots
     try std.testing.expect(!isNegativeNumber("-1.2.3")); // Multiple dots
+}
+
+test "isValueToken: bare word, negative number, and bare '-' are values; flags are not" {
+    // Plain positionals / values.
+    try std.testing.expect(isValueToken("input.txt"));
+    try std.testing.expect(isValueToken(""));
+    // Negative numbers in every spelling the shared classifier accepts.
+    try std.testing.expect(isValueToken("-5"));
+    try std.testing.expect(isValueToken("-.5"));
+    try std.testing.expect(isValueToken("-1e9"));
+    try std.testing.expect(isValueToken("-inf"));
+    try std.testing.expect(isValueToken("-nan"));
+    // The bare '-' stdin/stdout sentinel is a value, never a flag.
+    try std.testing.expect(isValueToken("-"));
+    // Real options are not value tokens.
+    try std.testing.expect(!isValueToken("-t"));
+    try std.testing.expect(!isValueToken("--verbose"));
+    try std.testing.expect(!isValueToken("-xyz"));
+}
+
+test "isOption is the inverse of isValueToken for '-'-prefixed tokens" {
+    try std.testing.expect(isOption("--verbose"));
+    try std.testing.expect(isOption("-t"));
+    try std.testing.expect(isOption("-xyz"));
+    // Bare '-', negative numbers, and plain words are not options.
+    try std.testing.expect(!isOption("-"));
+    try std.testing.expect(!isOption("-5"));
+    try std.testing.expect(!isOption("-.5"));
+    try std.testing.expect(!isOption("-inf"));
+    try std.testing.expect(!isOption("input.txt"));
+    try std.testing.expect(!isOption(""));
 }
 
 test "parseFloat function - special values" {
