@@ -181,12 +181,21 @@ const impl = if (builtin.os.tag == .windows) struct {
 // `arm` only stores, it never writes, and every test disarms before returning.
 const test_handle: Handle = if (builtin.os.tag == .windows) undefined else 0;
 
+// std.mem.zeroes refuses the Windows RawMode (its Handles are non-nullable
+// pointers), so build the dummy explicitly per platform.
+const test_raw: RawMode = if (builtin.os.tag == .windows) .{
+    .in = test_handle,
+    .in_mode = 0,
+    .out = test_handle,
+    .out_mode = 0,
+    .out_changed = false,
+} else std.mem.zeroes(RawMode);
+
 test "arm registers the blob and raw mode; disarm clears the armed flag" {
     defer disarm();
     try std.testing.expect(!armed.load(.acquire));
 
-    const raw = std.mem.zeroes(RawMode);
-    arm(test_handle, "\x1b[?25h", raw);
+    arm(test_handle, "\x1b[?25h", test_raw);
     try std.testing.expect(armed.load(.acquire));
     try std.testing.expectEqual(@as(usize, 6), g.blob_len);
     try std.testing.expectEqualStrings("\x1b[?25h", g.blob[0..g.blob_len]);
@@ -214,7 +223,7 @@ test "disarm is idempotent when never armed" {
 }
 
 test "restore is a no-op after disarm" {
-    arm(test_handle, "\x1b[?25h", std.mem.zeroes(RawMode));
+    arm(test_handle, "\x1b[?25h", test_raw);
     disarm();
     // Armed is false, so restore returns before touching the handle or raw
     // mode — safe to call on the test handle.
