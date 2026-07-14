@@ -224,6 +224,61 @@ Each discovered command is validated for:
 - **Structure**: Must be a valid Zig source file
 - **Depth**: Must not exceed maximum nesting depth
 
+## Sharing Code Between Commands
+
+Each discovered command file is compiled as its **own module rooted at that
+file**. A relative import of a sibling therefore reaches outside the module and
+fails to compile:
+
+```zig
+// in src/commands/tags.zig
+const registry = @import("../registry.zig");
+// error: import of file outside module path
+```
+
+Instead, declare the shared code as a module once and register it via
+`shared_modules`; every command can then import it by name:
+
+```zig
+// build.zig
+const store_module = b.createModule(.{
+    .root_source_file = b.path("src/store.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .shared_modules = &[_]zcli.SharedModule{
+        .{ .name = "store", .module = store_module },
+    },
+    // ...
+});
+```
+
+```zig
+// in any command:
+const store = @import("store");
+```
+
+Pass the **same** `shared_modules` list to `addCommandTests` as well. The
+command-test stub only wires the shared modules you hand it, so a command that
+imports one won't compile under `zig build test` otherwise:
+
+```zig
+_ = zcli.addCommandTests(b, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .target = target,
+    .optimize = optimize,
+    .shared_modules = &[_]zcli.SharedModule{
+        .{ .name = "store", .module = store_module },
+    },
+});
+```
+
+See `examples/tasks` for a full, compiling example (the `store` module shared
+across its commands).
+
 ## Registry Generation Process
 
 ### 1. Plugin Registry Integration

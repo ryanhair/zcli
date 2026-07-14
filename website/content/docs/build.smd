@@ -58,7 +58,15 @@ Discovery and validation run at build time, so a malformed command is a compile 
 
 ## Shared modules
 
-Commands often share code — a storage layer, an API client. Declare it once and every command can import it by name:
+Each command file is compiled as its **own module rooted at that file**, so a relative import of a sibling reaches outside the module and fails to compile:
+
+```zig
+// in src/commands/tags.zig
+const registry = @import("../registry.zig");
+// error: import of file outside module path
+```
+
+Commands often share code — a storage layer, an API client. Declare it once as a module and every command can import it by name:
 
 ```zig
 const store_module = b.createModule(.{
@@ -97,6 +105,8 @@ _ = zcli.addCommandTests(b, zcli_dep, .{
 ```
 
 Then `zig build test` runs a test binary per command — a `test "creates a task"` block sitting right next to the `execute` it verifies.
+
+Pass `shared_modules` here too, matching what you gave `generate` — the command-test stub only wires the shared modules you hand it, so a command that imports one won't compile under `zig build test` otherwise.
 
 ## Docs generation
 
