@@ -137,6 +137,15 @@ jobs:
           fi
           echo "No raw.githubusercontent.com install URLs — all install commands use the branded zcli.sh host"
 
+  # Coverage instrumentation (kcov / llvm-cov) was considered here (#335) and
+  # deliberately deferred rather than wired in: Zig 0.16 has no stable,
+  # first-party coverage story, and every third-party route (kcov's DWARF
+  # unwinding against Zig's codegen, llvm-cov needing a matching profile
+  # runtime bundled with this Zig's LLVM) is fragile enough on a moving Zig
+  # release to be its own maintenance burden — exactly what this repo's CI
+  # philosophy (concrete assertions over qualitative feel, see the
+  # output-contract check above) tries to avoid shipping half-working.
+  # Revisit if Zig grows a built-in `-fcoverage`-equivalent.
   test:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -227,10 +236,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      # mlugg/setup-zig already caches the global Zig cache dir (~/.cache/zig
+      # on Linux; local caches are redirected into it) between runs by
+      # default — no separate actions/cache step is needed here or on any
+      # other job in this file. Its cache key includes the runner OS
+      # automatically, but NOT matrix variables, and this is the one job in
+      # this workflow whose matrix axis (zig_target) doesn't vary by OS: both
+      # legs run on ubuntu-latest but cross-compile genuinely different
+      # targets (x86_64 vs aarch64 musl). Without an explicit cache-key the
+      # two legs would thrash a single shared cache entry. (test/secrets/e2e
+      # matrix only on `os`, which is already disambiguated for free.)
       - name: Setup Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+          cache-key: ${{ matrix.zig_target }}
 
       # Byte-for-byte the release build command (release.yml → build job → Build
       # zcli). No test suite re-run — the `test` job already covers that; this
@@ -361,6 +381,15 @@ jobs:
       # (ADR-0004): compiling them here means a framework change that breaks the
       # documented idioms fails CI, rather than silently rotting the examples
       # (and the AI context sourced from them).
+      #
+      # This job only compiles (install-target) the examples — it deliberately
+      # does NOT run their `zig build test` (#345's premise). That's not a gap:
+      # the root `test_projects` loop in build.zig already runs `zig build
+      # test` as a subprocess in every example directory (exercising each
+      # command's `addCommandTests` blocks), and that loop feeds the root
+      # `test` step, which is exactly what the `test` job below runs via
+      # `zig build test` on all three OSes. Adding a second `zig build test`
+      # here would just re-run the same work a second time on a fourth OS.
       - name: Build all example CLIs
         run: zig build build-examples
 
