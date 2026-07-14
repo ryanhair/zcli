@@ -3,11 +3,18 @@ const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
 
 /// A built-in plugin the user can opt into during `init`. `tag` is the enum
-/// tag passed to `zcli.builtin(.<tag>, .{})` in the generated build.zig.
+/// tag passed to `zcli.builtin(.<tag>, <config>)` in the generated build.zig;
+/// `config` is the config snippet rendered verbatim into that call. Plugins
+/// with required config fields (github_upgrade) must supply a snippet that
+/// COMPILES — an empty `.{}` would make the very first `zig build` of a fresh
+/// scaffold fail with a missing-field error the user never asked for. TODO
+/// placeholders inside the snippet mark what to edit, matching the scaffold's
+/// existing placeholder idiom.
 const BuiltinChoice = struct {
     tag: []const u8,
     label: []const u8,
     default: bool,
+    config: []const u8 = ".{}",
 };
 
 const builtin_choices = [_]BuiltinChoice{
@@ -16,7 +23,21 @@ const builtin_choices = [_]BuiltinChoice{
     .{ .tag = "not_found", .label = "zcli_not_found — \"did you mean?\" suggestions for mistyped commands", .default = true },
     .{ .tag = "completions", .label = "zcli_completions — shell completion scripts (bash/zsh/fish)", .default = false },
     .{ .tag = "config", .label = "zcli_config — load option defaults from a config file", .default = false },
-    .{ .tag = "github_upgrade", .label = "zcli_github_upgrade — self-update from GitHub releases", .default = false },
+    .{
+        .tag = "github_upgrade",
+        .label = "zcli_github_upgrade — self-update from GitHub releases",
+        .default = false,
+        // Both fields are required (no defaults): `repo` names where releases
+        // live, and `verification` is the plugin's integrity control — the
+        // checksum_only placeholder is the explicit opt-out that compiles out
+        // of the box, with the TODO pointing at the fail-closed upgrade path.
+        // Indentation matches the generated build.zig: the builtin() call
+        // sits at 12 spaces, so fields land at 16 and the closer at 12.
+        .config = ".{\n" ++
+            "                .repo = \"OWNER/REPO\", // TODO: your GitHub repo\n" ++
+            "                .verification = .checksum_only, // TODO: pin a minisign key for fail-closed signature verification (see zcli's docs/RELEASE-SIGNING.md)\n" ++
+            "            }",
+    },
 };
 
 pub const meta = .{
@@ -162,12 +183,8 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer allocator.free(selected);
 
     // Build the `zcli.builtin(...)` registration lines for build.zig.
-    var plugins_aw = std.Io.Writer.Allocating.init(allocator);
-    defer plugins_aw.deinit();
-    for (selected) |idx| {
-        try plugins_aw.writer.print("            zcli.builtin(.{s}, .{{}}),\n", .{builtin_choices[idx].tag});
-    }
-    const plugins_block = plugins_aw.written();
+    const plugins_block = try renderPluginsBlock(allocator, selected);
+    defer allocator.free(plugins_block);
 
     // Now that the destination is validated and plugins are chosen, create and
     // open the project directory.
@@ -500,6 +517,53 @@ test "collectDefaultPlugins returns only the preselected indices" {
     const selected = try collectDefaultPlugins(allocator, &.{ true, false, true, false });
     defer allocator.free(selected);
     try std.testing.expectEqualSlices(usize, &.{ 0, 2 }, selected);
+}
+
+/// Render the `zcli.builtin(...)` registration lines the generated build.zig
+/// splices into its `.plugins = &.{ ... }` list, one line per selected picker
+/// index, each with that choice's config snippet. Owned slice.
+fn renderPluginsBlock(allocator: std.mem.Allocator, selected: []const usize) ![]u8 {
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    for (selected) |idx| {
+        try aw.writer.print("            zcli.builtin(.{s}, {s}),\n", .{ builtin_choices[idx].tag, builtin_choices[idx].config });
+    }
+    var al = aw.toArrayList();
+    return al.toOwnedSlice(allocator);
+}
+
+test "renderPluginsBlock renders configless plugins as .{}" {
+    const allocator = std.testing.allocator;
+    // help (0) and version (1) take no config.
+    const block = try renderPluginsBlock(allocator, &.{ 0, 1 });
+    defer allocator.free(block);
+    try std.testing.expectEqualStrings(
+        "            zcli.builtin(.help, .{}),\n" ++
+            "            zcli.builtin(.version, .{}),\n",
+        block,
+    );
+}
+
+test "renderPluginsBlock scaffolds a compiling github_upgrade config, not an empty .{}" {
+    const allocator = std.testing.allocator;
+    // github_upgrade's Config has two required fields (`repo`,
+    // `verification`), so `zcli.builtin(.github_upgrade, .{})` is a
+    // missing-field compile error in the fresh scaffold — the picker must emit
+    // a compiling placeholder instead. Locate the choice by tag rather than
+    // hardcoding its index so reordering the picker can't silently break this.
+    const idx = for (builtin_choices, 0..) |choice, i| {
+        if (std.mem.eql(u8, choice.tag, "github_upgrade")) break i;
+    } else return error.TestUnexpectedResult;
+
+    const block = try renderPluginsBlock(allocator, &.{idx});
+    defer allocator.free(block);
+    try std.testing.expectEqualStrings(
+        "            zcli.builtin(.github_upgrade, .{\n" ++
+            "                .repo = \"OWNER/REPO\", // TODO: your GitHub repo\n" ++
+            "                .verification = .checksum_only, // TODO: pin a minisign key for fail-closed signature verification (see zcli's docs/RELEASE-SIGNING.md)\n" ++
+            "            }),\n",
+        block,
+    );
 }
 
 fn escapeStringLiteral(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
