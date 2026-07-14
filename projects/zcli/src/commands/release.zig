@@ -84,6 +84,9 @@ const Version = struct {
     }
 };
 
+// Convention: this command takes `context: anytype` (not `*Context`) so tests
+// can pass a lightweight stub instead of a full app registry; commands that
+// don't need that testability use `*Context` for the compile-time contract.
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     const allocator = context.allocator;
     var stdout = context.stdout();
