@@ -45,6 +45,23 @@ fn buildDownloadUrl(allocator: std.mem.Allocator, base: []const u8, repo: []cons
     return std.fmt.allocPrint(allocator, "{s}/{s}/releases/download/{s}-v{s}/{s}", .{ base, repo, cli_name, version, asset_name });
 }
 
+/// True when `v` is safe to interpolate as the version segment of a release
+/// download URL: nonempty and every byte is `[A-Za-z0-9._-]`. This is the
+/// character set every real version tag (semver, or otherwise) actually
+/// needs; anything else — most importantly `/`, which lets a value like
+/// `../../owner/repo/releases/download/other-vX/asset` path-traverse within
+/// github.com to a different release or repo — is rejected outright rather
+/// than escaped, since the value is user-supplied (`upgrade <version>`) and
+/// there is no legitimate reason for a version tag to need it.
+fn isValidVersionArg(v: []const u8) bool {
+    if (v.len == 0) return false;
+    for (v) |c| {
+        const allowed = std.ascii.isAlphanumeric(c) or c == '.' or c == '_' or c == '-';
+        if (!allowed) return false;
+    }
+    return true;
+}
+
 /// Platform-standard per-user cache file recording the last passive update
 /// check (unix seconds, decimal). Resolved from the threaded environ — no
 /// ambient getenv:
@@ -105,17 +122,18 @@ fn checkedRecently(last: ?i64, now_s: i64, interval_s: i64) bool {
     return now_s >= l and now_s - l < interval_s;
 }
 
-/// Render the unsigned-by-default warning shown when a real upgrade runs on a
-/// build with no pinned `public_key`. Factored out of `executeUpgrade` so the
-/// exact wording is unit-testable without a live command context or network.
+/// Render the unsigned warning shown when a real upgrade runs on a build that
+/// explicitly opted out of signatures (`.verification = .checksum_only`).
+/// Factored out of `executeUpgrade` so the exact wording is unit-testable
+/// without a live command context or network.
 fn writeUnsignedWarning(w: *std.Io.Writer) !void {
     try w.print(
-        \\warning: signature verification is not enabled for this build — only the
-        \\         SHA-256 checksum will be verified. checksums.txt ships in the same
-        \\         GitHub release as the binaries, so a compromised release publisher
-        \\         can replace both and this upgrade will trust the result. To close
-        \\         this gap, pin a minisign public key via the plugin's `public_key`
-        \\         config (see ADR-0023).
+        \\warning: signature verification is disabled for this build (checksum_only) —
+        \\         only the SHA-256 checksum will be verified. checksums.txt ships in
+        \\         the same GitHub release as the binaries, so a compromised release
+        \\         publisher can replace both and this upgrade will trust the result.
+        \\         To close this gap, pin a minisign public key via the plugin's
+        \\         `verification = .{{ .minisign = "..." }}` config (see ADR-0023).
         \\
     , .{});
 }
@@ -125,15 +143,15 @@ fn writeUnsignedWarning(w: *std.Io.Writer) !void {
 /// Provides self-upgrade functionality for CLI applications that release via GitHub.
 /// Downloads new versions from GitHub releases and atomically replaces the current binary.
 ///
-/// SECURITY: `public_key` is the load-bearing integrity control. It is optional,
-/// but leaving it null means the upgrade authenticates a downloaded binary only
-/// against `checksums.txt` — a file that ships in the same release as the binary
-/// it describes. A compromised release publisher can therefore swap both the
-/// binary and its checksum and the upgrade will trust the swap. Pinning a
-/// minisign public key (ADR-0023) authenticates the checksums under a key held
-/// off the release pipeline and makes verification fail closed. Builds without a
-/// pinned key emit a runtime warning on every real upgrade. Set `public_key`
-/// for any app whose releases are signed.
+/// SECURITY: `verification` is the load-bearing integrity control, and it has no
+/// default — every consuming app must pick one explicitly. `.checksum_only`
+/// authenticates a downloaded binary only against `checksums.txt`, a file that
+/// ships in the same release as the binary it describes: a compromised release
+/// publisher can swap both the binary and its checksum and the upgrade will
+/// trust the swap. `.minisign = "<pinned key>"` (ADR-0023) authenticates the
+/// checksums under a key held off the release pipeline and makes verification
+/// fail closed. `.checksum_only` builds emit a runtime warning on every real
+/// upgrade so the gap can never be silently in effect.
 /// Plugin configuration
 pub const Config = struct {
     /// GitHub repository in format "owner/repo" (required)
@@ -158,20 +176,37 @@ pub const Config = struct {
     /// Use {current} and {latest} as placeholders
     out_of_date_message: []const u8 = "A new version of {app} is available: {latest} (current: {current})\nRun '{app} upgrade' to update.",
 
-    /// minisign public key (the base64 blob — the second line of a `.pub` file,
-    /// or the argument to `minisign -P`) used to verify release integrity.
+    /// How `upgrade` authenticates a downloaded release. Required — there is
+    /// deliberately no default, because a silent default here is exactly the
+    /// bug this type replaces: an app that never thought about signing used to
+    /// get checksum-only trust for free. Now the consuming app's build.zig must
+    /// name its choice:
     ///
-    /// When set, `upgrade` fetches `checksums.txt.minisig` alongside
-    /// `checksums.txt` and verifies the signature under this pinned key **before**
-    /// trusting any checksum — and fails closed if the signature is missing,
-    /// malformed, or invalid. This closes the gap that `checksums.txt` alone
-    /// cannot: it ships in the same release as the binaries, so a compromised
-    /// publisher can swap both, whereas the signing key lives off the release
-    /// pipeline entirely (see ADR-0023).
+    ///   .verification = .{ .minisign = "<base64 public key>" }
+    ///   .verification = .checksum_only
     ///
-    /// When null (the default), the upgrade verifies only the SHA-256 checksum —
-    /// appropriate for apps that do not sign their releases.
-    public_key: ?[]const u8 = null,
+    /// `.minisign` takes the base64 blob — the second line of a `.pub` file, or
+    /// the argument to `minisign -P`. When set, `upgrade` fetches
+    /// `checksums.txt.minisig` alongside `checksums.txt` and verifies the
+    /// signature under this pinned key **before** trusting any checksum — and
+    /// fails closed if the signature is missing, malformed, or invalid. This
+    /// closes the gap that `checksums.txt` alone cannot: it ships in the same
+    /// release as the binaries, so a compromised publisher can swap both,
+    /// whereas the signing key lives off the release pipeline entirely (see
+    /// ADR-0023).
+    ///
+    /// `.checksum_only` is an explicit opt-out: the upgrade verifies only the
+    /// SHA-256 checksum, appropriate for apps that do not sign their releases.
+    /// It still emits a loud runtime warning on every real upgrade.
+    verification: Verification,
+};
+
+/// See `Config.verification`.
+pub const Verification = union(enum) {
+    /// Pinned minisign public key (base64 blob) — signatures verified, fail closed.
+    minisign: []const u8,
+    /// Explicit opt-out of signature verification: checksum-only trust.
+    checksum_only,
 };
 
 /// Initialize the plugin with configuration
@@ -179,6 +214,17 @@ pub fn init(config: Config) type {
     return struct {
         const Self = @This();
         const plugin_config = config;
+
+        /// The pinned minisign key, or null under `.checksum_only`. The rest of
+        /// this plugin's implementation (downloadAndVerify and below) predates
+        /// `Verification` and still speaks `?[]const u8`, which is also the
+        /// natural shape for "is a key pinned" checks — so the union is
+        /// unwrapped once, here, rather than threading `Verification` through
+        /// every internal helper.
+        const pinned_public_key: ?[]const u8 = switch (plugin_config.verification) {
+            .minisign => |key| key,
+            .checksum_only => null,
+        };
 
         /// Test-only accessor for the resolved comptime config, so tests can
         /// assert which security branch a given instantiation takes.
@@ -221,20 +267,32 @@ pub fn init(config: Config) type {
 
             // Determine target version (explicit or latest)
             const current_version = context.app_version;
-            const target_version = if (args.version) |v|
-                try allocator.dupe(u8, v)
-            else
-                fetchLatestVersion(allocator, context.io, stdout, plugin_config.repo, context.app_name, api_timeout) catch |err| switch (err) {
-                    // Render the two "GitHub answered, but unusably" cases here,
-                    // where we have a context — selectVersion is a pure helper
-                    // and must not print (its old debug-print bypassed stream
-                    // overrides and violated invariant #3).
-                    error.NoMatchingRelease => return context.fail("Error: No releases found with tag prefix '{s}-v'\nExpected tag format: {s}-v<version> (e.g., {s}-v1.0.0)", .{ context.app_name, context.app_name, context.app_name }),
-                    error.UnexpectedResponse => return context.fail("Error: Unexpected response from the GitHub releases API (expected a JSON array of releases)", .{}),
-                    error.RateLimitExceeded => return context.fail("Error: GitHub API rate limit exceeded. Try again later.", .{}),
-                    error.FailedToFetchVersion => return context.fail("Error: Could not fetch the latest version from GitHub (repo '{s}').", .{plugin_config.repo}),
-                    else => return err,
-                };
+            const target_version = if (args.version) |v| blk: {
+                // `v` is interpolated verbatim into the release-download URL
+                // (buildDownloadUrl: ".../releases/download/{cli}-v{version}/...")
+                // — an unsanitized value containing "/" or ".." path-traverses
+                // within github.com to a different release, or a different repo
+                // entirely. Reject anything outside the character set every real
+                // version tag actually uses before it ever reaches URL
+                // construction.
+                if (!isValidVersionArg(v)) {
+                    return context.fail(
+                        "Error: invalid version '{s}' — versions may contain only letters, digits, '.', '_', and '-'\n",
+                        .{v},
+                    );
+                }
+                break :blk try allocator.dupe(u8, v);
+            } else fetchLatestVersion(allocator, context.io, stdout, plugin_config.repo, context.app_name, api_timeout) catch |err| switch (err) {
+                // Render the two "GitHub answered, but unusably" cases here,
+                // where we have a context — selectVersion is a pure helper
+                // and must not print (its old debug-print bypassed stream
+                // overrides and violated invariant #3).
+                error.NoMatchingRelease => return context.fail("Error: No releases found with tag prefix '{s}-v'\nExpected tag format: {s}-v<version> (e.g., {s}-v1.0.0)", .{ context.app_name, context.app_name, context.app_name }),
+                error.UnexpectedResponse => return context.fail("Error: Unexpected response from the GitHub releases API (expected a JSON array of releases)", .{}),
+                error.RateLimitExceeded => return context.fail("Error: GitHub API rate limit exceeded. Try again later.", .{}),
+                error.FailedToFetchVersion => return context.fail("Error: Could not fetch the latest version from GitHub (repo '{s}').", .{plugin_config.repo}),
+                else => return err,
+            };
             defer allocator.free(target_version);
 
             if (options.check) {
@@ -245,18 +303,18 @@ pub fn init(config: Config) type {
                 context.exit(0);
             }
 
-            // Unsigned-by-default notice. `public_key` is the load-bearing
-            // integrity control: with no pinned key the upgrade authenticates
-            // only against `checksums.txt`, which ships in the same release as
-            // the binaries — a compromised release publisher can swap both and
-            // this command will trust the swap. The signing key (ADR-0023)
-            // lives off the release pipeline, so pinning it is the only defense
-            // against that class of attack. Zig has no non-fatal comptime
-            // print (`@compileLog` halts the build), so the warning is emitted
-            // at runtime, once, gated on the comptime config — it costs
-            // nothing when a key is pinned and cannot be missed by an operator
-            // running an actual upgrade.
-            if (comptime plugin_config.public_key == null) {
+            // Unsigned notice, only under the explicit `.checksum_only` opt-out.
+            // With no pinned key the upgrade authenticates only against
+            // `checksums.txt`, which ships in the same release as the binaries
+            // — a compromised release publisher can swap both and this command
+            // will trust the swap. The signing key (ADR-0023) lives off the
+            // release pipeline, so pinning it is the only defense against that
+            // class of attack. Zig has no non-fatal comptime print
+            // (`@compileLog` halts the build), so the warning is emitted at
+            // runtime, once, gated on the comptime config — it costs nothing
+            // when a key is pinned and cannot be missed by an operator running
+            // an actual upgrade.
+            if (comptime plugin_config.verification == .checksum_only) {
                 try writeUnsignedWarning(context.stderr());
             }
 
@@ -326,7 +384,7 @@ pub fn init(config: Config) type {
 
             // Download binary
             try stdout.print("Downloading {s}...\n", .{binary_name});
-            if (plugin_config.public_key != null) {
+            if (pinned_public_key != null) {
                 try stdout.print("Verifying signature...\n", .{});
             } else {
                 try stdout.print("Verifying checksum...\n", .{});
@@ -334,7 +392,7 @@ pub fn init(config: Config) type {
             // Fetch the asset, then verify its integrity into scratch_dir. When a
             // signing key is pinned, checksums.txt is authenticated under it
             // (fail closed) before any digest is trusted.
-            try downloadAndVerify(allocator, context.io, context.stderr(), github_download_base, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name, plugin_config.public_key);
+            try downloadAndVerify(allocator, context.io, context.stderr(), github_download_base, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name, pinned_public_key);
 
             // Make binary executable before testing (Unix only - Windows uses .exe extension)
             if (builtin.os.tag != .windows) {
@@ -1034,19 +1092,36 @@ test "writeUnsignedWarning - names the control and how to fix it" {
     try std.testing.expect(std.mem.startsWith(u8, out, "warning:"));
     try std.testing.expect(std.mem.indexOf(u8, out, "SHA-256 checksum") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "checksums.txt") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "public_key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "minisign") != null);
 }
 
-test "unsigned notice is gated on the comptime public_key config" {
-    // The notice fires only when no key is pinned. These two instantiations
-    // pin the branch each build takes: with a key, the warning path is dead
-    // code the compiler prunes; without one, it is live. Asserting on the
-    // comptime predicate the runtime `if` uses keeps that contract from
-    // silently inverting.
-    const Signed = init(.{ .repo = "owner/app", .public_key = "KEY" });
-    const Unsigned = init(.{ .repo = "owner/app" });
-    try std.testing.expect(comptime Signed.pluginConfigForTest().public_key != null);
-    try std.testing.expect(comptime Unsigned.pluginConfigForTest().public_key == null);
+test "unsigned notice is gated on the comptime verification config" {
+    // The notice fires only under the explicit checksum_only opt-out. These
+    // two instantiations pin the branch each build takes: with a key pinned,
+    // the warning path is dead code the compiler prunes; under checksum_only,
+    // it is live. Asserting on the comptime predicate the runtime `if` uses
+    // keeps that contract from silently inverting.
+    const Signed = init(.{ .repo = "owner/app", .verification = .{ .minisign = "KEY" } });
+    const Unsigned = init(.{ .repo = "owner/app", .verification = .checksum_only });
+    try std.testing.expect(comptime Signed.pluginConfigForTest().verification != .checksum_only);
+    try std.testing.expect(comptime Unsigned.pluginConfigForTest().verification == .checksum_only);
+}
+
+test "Config.verification has no default — omitting it is a compile error" {
+    // This is a documentation test, not an executable assertion: Zig has no
+    // "expect a compile error" facility in a normal test. Config.verification
+    // is a required field (no `= ...` default), so `init(.{ .repo = "x" })`
+    // fails to compile with Zig's native "missing field" diagnostic — which is
+    // the point. Every real instantiation in this file supplies `.verification`
+    // explicitly; that absence of a bare `init(.{ .repo = ... })` anywhere in
+    // this test suite is the actual coverage for this contract.
+}
+
+test "pinned_public_key derivation matches the verification variant" {
+    const Signed = init(.{ .repo = "owner/app", .verification = .{ .minisign = "KEY" } });
+    const Unsigned = init(.{ .repo = "owner/app", .verification = .checksum_only });
+    try std.testing.expectEqualStrings("KEY", Signed.pinned_public_key.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), Unsigned.pinned_public_key);
 }
 
 test "isNewerVersion - semantic comparison" {
@@ -1367,6 +1442,39 @@ test "buildDownloadUrl - binary and checksums asset URLs use the {cli}-v{ver} ta
         "https://github.com/owner/repo/releases/download/myapp-v1.2.3/checksums.txt",
         sums,
     );
+}
+
+test "isValidVersionArg - accepts real version tags" {
+    try std.testing.expect(isValidVersionArg("1.2.3"));
+    try std.testing.expect(isValidVersionArg("v1.2.3"));
+    try std.testing.expect(isValidVersionArg("1.2.3-rc1"));
+    try std.testing.expect(isValidVersionArg("nightly_2026-07-14"));
+}
+
+test "isValidVersionArg - rejects SemVer build metadata ('+' is outside the allowlist)" {
+    // `+build.9` is valid SemVer but not a character zcli's own release tags (or
+    // any observed real-world tag) use; excluding it keeps the allowlist to
+    // exactly what's needed rather than growing it to match SemVer's full grammar.
+    try std.testing.expect(!isValidVersionArg("1.2.3+build.9"));
+}
+
+test "isValidVersionArg - rejects the empty string" {
+    try std.testing.expect(!isValidVersionArg(""));
+}
+
+test "isValidVersionArg - rejects anything that could escape the URL path segment" {
+    // The value this guards is interpolated straight into
+    // ".../releases/download/{cli}-v{version}/..." (buildDownloadUrl) — a
+    // path-traversal payload here reaches a different release, or repo,
+    // entirely within github.com.
+    try std.testing.expect(!isValidVersionArg("../../owner/repo/releases/download/other-v9.9.9/asset"));
+    try std.testing.expect(!isValidVersionArg("1.2.3/../../evil"));
+    try std.testing.expect(!isValidVersionArg("1.2.3/evil"));
+    try std.testing.expect(!isValidVersionArg("1.2.3?query=1"));
+    try std.testing.expect(!isValidVersionArg("1.2.3#frag"));
+    try std.testing.expect(!isValidVersionArg("1.2.3 "));
+    try std.testing.expect(!isValidVersionArg("1.2.3\n"));
+    try std.testing.expect(!isValidVersionArg("1.2.3\\evil"));
 }
 
 // ----------------------------------------------------------------------------

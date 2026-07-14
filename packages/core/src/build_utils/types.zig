@@ -241,24 +241,95 @@ fn initString(comptime config: anytype) ?[]const u8 {
     comptime var out: []const u8 = ".init(.{";
     inline for (fields, 0..) |field, i| {
         if (i > 0) out = out ++ ", ";
-        out = out ++ "." ++ field.name ++ " = ";
-        const value = @field(config, field.name);
-        out = out ++ switch (@typeInfo(field.type)) {
-            .pointer => |ptr_info| blk: {
-                const is_string = switch (@typeInfo(ptr_info.child)) {
-                    .int => |int_info| int_info.bits == 8 and int_info.signedness == .unsigned,
-                    .array => |arr_info| arr_info.child == u8,
-                    else => false,
-                };
-                if (!is_string) @compileError("Unsupported pointer type in plugin config: " ++ @typeName(field.type));
-                break :blk std.fmt.comptimePrint("\"{s}\"", .{value});
-            },
-            .bool => std.fmt.comptimePrint("{}", .{value}),
-            .int, .comptime_int => std.fmt.comptimePrint("{d}", .{value}),
-            else => @compileError("Unsupported type in plugin config: " ++ @typeName(field.type)),
-        };
+        out = out ++ "." ++ field.name ++ " = " ++ renderConfigValue(@field(config, field.name));
     }
     return out ++ "})";
+}
+
+/// Comptime-render a single plugin config value as Zig source text.
+///
+/// Plugin config structs are handed to `builtin()` as `anytype`, so a field
+/// whose value is a union-typed setting (e.g. `github_upgrade`'s
+/// `verification: union(enum) { minisign: []const u8, checksum_only }`) never
+/// gets its destination type: the caller writes `.verification = .{ .minisign
+/// = "KEY" }` or `.verification = .checksum_only`, and without a known result
+/// type Zig infers those as, respectively, an anonymous one-field struct and a
+/// bare enum literal — not the union they'll eventually coerce to. This
+/// function reproduces the caller's literal source text rather than the
+/// union's shape, so it recurses into nested struct literals and renders
+/// enum literals as bare `.tag`. The coercion to the real union type happens
+/// later, when the generated code calls the plugin's `init(config: Config)`
+/// with a known destination type.
+fn renderConfigValue(comptime value: anytype) []const u8 {
+    const T = @TypeOf(value);
+    return switch (@typeInfo(T)) {
+        .pointer => |ptr_info| blk: {
+            const is_string = switch (@typeInfo(ptr_info.child)) {
+                .int => |int_info| int_info.bits == 8 and int_info.signedness == .unsigned,
+                .array => |arr_info| arr_info.child == u8,
+                else => false,
+            };
+            if (!is_string) @compileError("Unsupported pointer type in plugin config: " ++ @typeName(T));
+            break :blk std.fmt.comptimePrint("\"{s}\"", .{value});
+        },
+        .bool => std.fmt.comptimePrint("{}", .{value}),
+        .int, .comptime_int => std.fmt.comptimePrint("{d}", .{value}),
+        // A tag with no payload, e.g. `.verification = .checksum_only`.
+        .enum_literal => "." ++ @tagName(value),
+        // A tag with a payload, e.g. `.verification = .{ .minisign = "KEY" }`
+        // — inferred (with no destination type) as an anonymous struct with
+        // one field named after the active union tag.
+        .@"struct" => |s| blk: {
+            comptime var out: []const u8 = ".{";
+            inline for (s.fields, 0..) |field, i| {
+                if (i > 0) out = out ++ ", ";
+                out = out ++ "." ++ field.name ++ " = " ++ renderConfigValue(@field(value, field.name));
+            }
+            break :blk out ++ "}";
+        },
+        else => @compileError("Unsupported type in plugin config: " ++ @typeName(T)),
+    };
+}
+
+test "builtin() renders scalar config fields" {
+    const cfg = builtin(.github_upgrade, .{ .repo = "owner/app", .command_name = "up", .inform_out_of_date = true });
+    try std.testing.expect(cfg.init != null);
+    try std.testing.expectEqualStrings(
+        ".init(.{.repo = \"owner/app\", .command_name = \"up\", .inform_out_of_date = true})",
+        cfg.init.?,
+    );
+}
+
+test "builtin() renders no init call for an empty config" {
+    const cfg = builtin(.help, .{});
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.init);
+}
+
+test "builtin() renders a union-payload config field (e.g. github_upgrade's verification: .{ .minisign = ... })" {
+    // The config passed to builtin() is `anytype`, so `.{ .minisign = "KEY" }`
+    // has no destination type and is inferred as a one-field anonymous struct,
+    // not the union it will later coerce to. renderConfigValue must reproduce
+    // that literal text verbatim so the generated `init(.{ ... })` call, which
+    // DOES have the union's Config type available, coerces it correctly.
+    const cfg = builtin(.github_upgrade, .{
+        .repo = "owner/app",
+        .verification = .{ .minisign = "KEY" },
+    });
+    try std.testing.expectEqualStrings(
+        ".init(.{.repo = \"owner/app\", .verification = .{.minisign = \"KEY\"}})",
+        cfg.init.?,
+    );
+}
+
+test "builtin() renders a bare enum-literal config field (e.g. .checksum_only)" {
+    const cfg = builtin(.github_upgrade, .{
+        .repo = "owner/app",
+        .verification = .checksum_only,
+    });
+    try std.testing.expectEqualStrings(
+        ".init(.{.repo = \"owner/app\", .verification = .checksum_only})",
+        cfg.init.?,
+    );
 }
 
 /// Configuration for `generate()` — the project-facing build entry point.

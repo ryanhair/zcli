@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) !void {
                 // checksums.txt.minisig under this pinned key (fail closed)
                 // before installing. Key id 1638B69B8EF680FD; full key at
                 // docs/zcli-minisign.pub. Rotation: docs/RELEASE-SIGNING.md.
-                .public_key = "RWT9gPaOm7Y4Fm5WFqqlWRpI4FgPTIjD5UhUsaZsdKHrWYuWa9jt8ESC",
+                .verification = .{ .minisign = "RWT9gPaOm7Y4Fm5WFqqlWRpI4FgPTIjD5UhUsaZsdKHrWYuWa9jt8ESC" },
             }),
             zcli.builtin(.completions, .{}),
         },

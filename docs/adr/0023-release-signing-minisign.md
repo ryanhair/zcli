@@ -39,7 +39,7 @@ but cannot forge a signature under a key that never enters the release pipeline.
   `std.crypto.sign.Ed25519` call (`packages/core/src/plugins/zcli_github_upgrade/minisign.zig`),
   with `std.crypto.blake2.Blake2b512` for minisign's prehashed mode. **No external
   tool, no C library** — the libc-free static release build is untouched. When a
-  consuming app pins `github_upgrade`'s `public_key`, the upgrade fetches
+  consuming app pins `github_upgrade`'s `verification = .{ .minisign = ... }`, the upgrade fetches
   `checksums.txt.minisig`, verifies it *before* trusting any checksum, and aborts
   on a missing, malformed, or invalid signature. Both minisign algorithms (`ED`
   prehashed, `Ed` legacy) are accepted so verification never depends on the
@@ -54,8 +54,12 @@ but cannot forge a signature under a key that never enters the release pipeline.
   path as strong as the `upgrade` path, at the cost of one prerequisite.
 
 The signing public key is **per-app config**, not hardcoded: `github_upgrade`'s
-`public_key` defaults to null (checksum-only, for apps that do not sign) and zcli's
-own build pins zcli's key.
+`verification` field has no default — every consuming app must choose
+`.{ .minisign = "..." }` or the explicit `.checksum_only` opt-out (for apps that
+do not sign) — and zcli's own build pins zcli's key. (An earlier revision of this
+plugin let `public_key` default to null, i.e. silent checksum-only; that default
+was removed as a security fix — see the `fix/upgrade-explicit-verification`
+follow-up.)
 
 ## Considered options
 
