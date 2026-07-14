@@ -62,6 +62,7 @@ const Drainer = struct {
 /// the stdin write.
 fn drain(d: Drainer) void {
     var buf: [4096]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buf);
     var reader = d.file.reader(d.io, &buf);
     if (reader.interface.allocRemaining(d.allocator, .limited(1 << 20))) |bytes| {
         d.out.* = bytes;
@@ -116,6 +117,7 @@ pub fn run(
 
     if (stdin_bytes) |bytes| {
         var in_buf: [4096]u8 = undefined;
+        defer std.crypto.secureZero(u8, &in_buf);
         var in = child.stdin.?.writer(io, &in_buf);
         // A write failure here just means the child closed stdin early; the exit
         // status read below is the authoritative signal, so it is ignored.
@@ -134,8 +136,18 @@ pub fn run(
     const drain_err: ?anyerror = out_err orelse err_err;
     if (drain_err) |e| {
         child.kill(io);
-        if (out_bytes) |b| allocator.free(b);
-        if (err_bytes) |b| allocator.free(b);
+        // stdout may hold a decrypted secret (a `pass show` / `secret-tool
+        // lookup` reads the stored value back on stdout) even when the
+        // *other* stream is what failed to drain, so wipe both before
+        // freeing — mirrors `Output.deinit`.
+        if (out_bytes) |b| {
+            std.crypto.secureZero(u8, b);
+            allocator.free(b);
+        }
+        if (err_bytes) |b| {
+            std.crypto.secureZero(u8, b);
+            allocator.free(b);
+        }
         return e;
     }
 

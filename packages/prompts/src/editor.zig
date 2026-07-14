@@ -17,6 +17,10 @@ pub const EditorConfig = struct {
     prefix: []const u8 = "? ",
     editor_cmd: []const u8 = "vi",
     io: std.Io,
+    /// Threaded environ, used to honor `$TMPDIR` when placing the scratch
+    /// file. Falls back to `/tmp` when unset (or when `environ` itself is
+    /// null, e.g. in tests that don't exercise the temp-file path).
+    environ: ?*const std.process.Environ.Map = null,
 };
 
 /// Launch the user's editor for multiline input. Returns owned string, or
@@ -81,16 +85,27 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     raw.disable();
     Prompts.flushWriter(writer);
 
-    // Create temp file and write default content
-    const tmp_name = try std.fmt.allocPrint(allocator, "/tmp/prompts_edit{s}", .{config.extension});
+    // Create temp file and write default content. The name is randomized (a
+    // local attacker who knows a fixed name could pre-plant a symlink at it,
+    // CWE-59) and created with `.exclusive = true` (refuses to follow an
+    // existing path) and mode 0600 (the content — potentially a secret being
+    // edited — isn't left world-readable while the editor is open).
+    const tmp_dir = if (config.environ) |e| (e.get("TMPDIR") orelse "/tmp") else "/tmp";
+    var name_buf: [scratch_name_len]u8 = undefined;
+    const scratch_name = randomScratchName(config.io, &name_buf);
+    const tmp_name = try std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ tmp_dir, scratch_name, config.extension });
     defer allocator.free(tmp_name);
 
     const cwd = std.Io.Dir.cwd();
-    var tmp_file = try cwd.createFile(config.io, tmp_name, .{});
+    var tmp_file = try cwd.createFile(config.io, tmp_name, .{
+        .exclusive = true,
+        .permissions = @enumFromInt(0o600),
+    });
     if (config.default) |def| {
         try tmp_file.writeStreamingAll(config.io, def);
     }
     tmp_file.close(config.io);
+    defer cwd.deleteFile(config.io, tmp_name) catch {};
 
     // Spawn editor
     var child = try std.process.spawn(config.io, .{
@@ -153,6 +168,29 @@ test "non-TTY: reads piped multiline input" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("line one\nline two", result);
+}
+
+/// Length of a scratch file name: the ".prompts_edit-" prefix plus 16 hex chars.
+const scratch_name_len = ".prompts_edit-".len + 16;
+
+/// A random, unpredictable name for the scratch file, so a local attacker
+/// cannot pre-plant anything (e.g. a symlink) at the edit path.
+fn randomScratchName(io: std.Io, buf: *[scratch_name_len]u8) []const u8 {
+    var random_bytes: [8]u8 = undefined;
+    io.random(&random_bytes);
+    const hex = std.fmt.bytesToHex(&random_bytes, .lower);
+    return std.fmt.bufPrint(buf, ".prompts_edit-{s}", .{hex}) catch unreachable;
+}
+
+test "randomScratchName - hidden, fixed-length, unpredictable" {
+    var buf_a: [scratch_name_len]u8 = undefined;
+    var buf_b: [scratch_name_len]u8 = undefined;
+    const a = randomScratchName(std.testing.io, &buf_a);
+    const b = randomScratchName(std.testing.io, &buf_b);
+
+    try std.testing.expect(std.mem.startsWith(u8, a, ".prompts_edit-"));
+    try std.testing.expectEqual(scratch_name_len, a.len);
+    try std.testing.expect(!std.mem.eql(u8, a, b));
 }
 
 fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: EditorConfig) !void {

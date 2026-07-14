@@ -66,6 +66,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
             .io = context.io,
             .default = initial,
             .extension = ".md",
+            .environ = context.environ,
         }) catch |err| switch (err) {
             error.EndOfStream => return context.fail("edit requires an interactive terminal (stdin closed).", .{}),
             else => return err,
