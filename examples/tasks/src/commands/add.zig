@@ -13,29 +13,17 @@ pub const meta = .{
     },
     .args = .{ .title = "Task title (omit for interactive mode)" },
     .options = .{
-        .priority = .{ .short = 'p', .description = "Priority: low, medium, high, critical", .complete = completePriority },
+        .priority = .{ .short = 'p', .description = "Task priority" },
         .points = .{ .description = "Story points" },
     },
 };
-
-/// Dynamic completion for `--priority` (ADR-0026). The field is a plain string,
-/// not an enum, so its choices can't be baked in statically — a hook offers them.
-fn completePriority(req: *zcli.completion.Request) !zcli.completion.Result {
-    const choices = [_][]const u8{ "low", "medium", "high", "critical" };
-    var out: std.ArrayList(zcli.completion.Candidate) = .empty;
-    for (choices) |ch| {
-        if (!std.mem.startsWith(u8, ch, req.partial)) continue;
-        try out.append(req.allocator, .{ .value = ch });
-    }
-    return .{ .candidates = try out.toOwnedSlice(req.allocator) };
-}
 
 pub const Args = struct {
     title: ?[]const u8 = null,
 };
 
 pub const Options = struct {
-    priority: []const u8 = "medium",
+    priority: store.Priority = .medium,
     points: ?u32 = null,
 };
 
@@ -48,26 +36,31 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     var title: []const u8 = undefined;
     var title_owned: ?[]u8 = null;
     defer if (title_owned) |t| allocator.free(t);
-    var priority: store.Priority = .medium;
+    var priority: store.Priority = options.priority;
     var points: ?u32 = options.points;
 
     if (args.title) |t| {
         // Flag mode
         title = t;
-        priority = store.priorityFromString(options.priority) orelse .medium;
     } else {
         // Interactive mode
         const p = context.prompts();
 
-        title_owned = try p.text(.{
+        title_owned = p.text(.{
             .message = "Task title:",
-        });
+        }) catch |err| switch (err) {
+            error.EndOfStream => return context.fail("add requires an interactive terminal (stdin closed).", .{}),
+            else => return err,
+        };
         title = title_owned.?;
 
-        const priority_idx = try p.select(.{
+        const priority_idx = p.select(.{
             .message = "Priority:",
             .choices = &.{ "low", "medium", "high", "critical" },
-        });
+        }) catch |err| switch (err) {
+            error.EndOfStream => return context.fail("add requires an interactive terminal (stdin closed).", .{}),
+            else => return err,
+        };
         priority = switch (priority_idx) {
             0 => .low,
             1 => .medium,
@@ -76,12 +69,15 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             else => .medium,
         };
 
-        const pts = try p.number(.{
+        const pts = p.number(.{
             .message = "Story points:",
             .default = 1,
             .min = 0,
             .max = 100,
-        });
+        }) catch |err| switch (err) {
+            error.EndOfStream => return context.fail("add requires an interactive terminal (stdin closed).", .{}),
+            else => return err,
+        };
         points = @intCast(pts);
     }
 

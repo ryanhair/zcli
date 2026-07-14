@@ -28,27 +28,39 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
 
     const p = context.prompts();
 
-    const name = try p.text(.{
+    const name = p.text(.{
         .message = "Project name:",
         .default = "my-project",
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("init requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
     defer allocator.free(name);
 
-    const description = try p.text(.{
+    const description = p.text(.{
         .message = "Description:",
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("init requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
     defer allocator.free(description);
 
-    const method_idx = try p.select(.{
+    const method_idx = p.select(.{
         .message = "Methodology:",
         .choices = &.{ "Kanban", "Scrum", "None" },
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("init requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
     _ = method_idx;
 
-    const create_samples = try p.confirm(.{
+    const create_samples = p.confirm(.{
         .message = "Create sample tasks?",
         .default = true,
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("init requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
 
     var data = store.ProjectData{
         .name = name,
