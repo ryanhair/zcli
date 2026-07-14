@@ -1,12 +1,24 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zcli = @import("zcli");
 const nightwatch = @import("nightwatch");
 
 const themed = zcli.theme.styled;
 const ThemeContext = zcli.theme.ThemeContext;
 
+/// Whether build.zig/build.zig.zon are watched alongside src/. Windows can't:
+/// nightwatch's backend (ReadDirectoryChangesW) only watches directories, and
+/// the only directory containing the build files is the project root — which
+/// the backend rescans recursively on every create/rename, racing zig's own
+/// package extraction under zig-pkg/ and corrupting builds. So Windows watches
+/// src/ only; build-file edits there need a dev restart.
+const watch_build_files = builtin.os.tag != .windows;
+
 pub const meta = .{
-    .description = "Watch src/ and rebuild on change (optionally run a command)",
+    .description = if (watch_build_files)
+        "Watch src/, build.zig, and build.zig.zon; rebuild on change (optionally run a command)"
+    else
+        "Watch src/ and rebuild on change (optionally run a command)",
     .examples = &.{
         "dev",
         "dev -- users create alice@example.com",
@@ -27,6 +39,9 @@ pub const Options = struct {};
 /// writes into a single rebuild.
 const debounce_ms = 80;
 
+// Convention: this command takes `context: anytype` (not `*Context`) so tests
+// can pass a lightweight stub instead of a full app registry; commands that
+// don't need that testability use `*Context` for the compile-time contract.
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     _ = options;
 
@@ -51,37 +66,70 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     // calls std.Io.Dir.cwd().realPath, which is broken on 0.16.0. currentPath works.
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_len = try std.process.currentPath(io, &cwd_buf);
-    const src_abs = try std.fmt.allocPrint(gpa, "{s}{c}src", .{ cwd_buf[0..cwd_len], std.fs.path.sep });
-    defer gpa.free(src_abs);
+    const cwd = cwd_buf[0..cwd_len];
 
     var state = WatchState{ .io = io };
     var watcher = try nightwatch.Default.init(io, gpa, &state.handler);
     defer watcher.deinit();
-    try watcher.watch(src_abs);
+
+    // Watch src/ (the command tree) plus — where the platform allows it, see
+    // watch_build_files — the build description itself: editing build.zig or
+    // build.zig.zon (e.g. adding a shared module or dependency) needs a
+    // rebuild just as much as editing a command file does.
+    var watched = std.ArrayList([]const u8).empty;
+    defer {
+        for (watched.items) |p| gpa.free(p);
+        watched.deinit(gpa);
+    }
+    try watchPath(&watcher, io, gpa, cwd, "src", &watched);
+    if (watch_build_files) {
+        try watchPath(&watcher, io, gpa, cwd, "build.zig", &watched);
+        try watchPath(&watcher, io, gpa, cwd, "build.zig.zon", &watched);
+    }
 
     try paint(status, theme, "zcli dev", .header);
-    try status.writeAll(" — watching src/ (Ctrl-C to stop)\n");
+    try status.writeAll(if (watch_build_files)
+        " — watching src/, build.zig, build.zig.zon (Ctrl-C to stop)\n"
+    else
+        " — watching src/; build.zig changes need a restart (Ctrl-C to stop)\n");
     try status.flush();
 
     var cycle_arena = std.heap.ArenaAllocator.init(gpa);
     defer cycle_arena.deinit();
 
     // The app started by `-- <command>`, if any. Killed and restarted each cycle.
+    // The loop below never returns normally — Ctrl-C kills the whole process
+    // group (including this child) — so there's nothing to clean up here.
     var app_child: ?std.process.Child = null;
-    // The loop below only exits via error (Ctrl-C kills the whole process
-    // group) — don't leave the spawned app running past dev itself.
-    defer if (app_child) |*c| c.kill(io);
 
     // Build once up front, then rebuild on every change.
-    runCycle(io, &cycle_arena, status, theme, args.command, &app_child);
+    runCycle(io, &cycle_arena, status, theme, context.app_name, args.command, &app_child);
     while (true) {
         state.waitDirty();
         nap(io, debounce_ms); // let the burst settle
         state.clear(); // coalesce events that arrived during the settle window
         try paint(status, theme, "\n• change detected", .dim);
         try status.writeByte('\n');
-        runCycle(io, &cycle_arena, status, theme, args.command, &app_child);
+        runCycle(io, &cycle_arena, status, theme, context.app_name, args.command, &app_child);
     }
+}
+
+/// Watch `name` (relative to `cwd`) if it exists, recording the allocated
+/// absolute path in `watched` so it can be freed later. Missing files (e.g. a
+/// project without a build.zig.zon) are silently skipped.
+fn watchPath(
+    watcher: *nightwatch.Default,
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    cwd: []const u8,
+    name: []const u8,
+    watched: *std.ArrayList([]const u8),
+) !void {
+    std.Io.Dir.cwd().access(io, name, .{}) catch return;
+    const abs = try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{ cwd, std.fs.path.sep, name });
+    errdefer gpa.free(abs);
+    try watcher.watch(abs);
+    try watched.append(gpa, abs);
 }
 
 // ============================================================================
@@ -158,11 +206,12 @@ fn runCycle(
     cycle_arena: *std.heap.ArenaAllocator,
     status: *std.Io.Writer,
     theme: *const ThemeContext,
+    app_name: []const u8,
     command: []const []const u8,
     app_child: *?std.process.Child,
 ) void {
     _ = cycle_arena.reset(.retain_capacity);
-    doCycle(io, cycle_arena.allocator(), status, theme, command, app_child) catch |err| {
+    doCycle(io, cycle_arena.allocator(), status, theme, app_name, command, app_child) catch |err| {
         // Never let a transient failure tear down the watcher.
         status.print("dev: {s}\n", .{@errorName(err)}) catch {};
         status.flush() catch {};
@@ -174,6 +223,7 @@ fn doCycle(
     arena: std.mem.Allocator,
     status: *std.Io.Writer,
     theme: *const ThemeContext,
+    app_name: []const u8,
     command: []const []const u8,
     app_child: *?std.process.Child,
 ) !void {
@@ -191,7 +241,7 @@ fn doCycle(
     if (!try build(io, status, theme)) return; // build failed → don't run
 
     if (command.len > 0) {
-        app_child.* = try startApp(io, arena, status, theme, command);
+        app_child.* = try startApp(io, arena, status, theme, app_name, command);
     }
 }
 
@@ -226,9 +276,10 @@ fn startApp(
     arena: std.mem.Allocator,
     status: *std.Io.Writer,
     theme: *const ThemeContext,
+    app_name: []const u8,
     command: []const []const u8,
 ) !?std.process.Child {
-    const binary = (try findBinary(io, arena)) orelse {
+    const binary = (try findBinary(io, arena, status, theme, app_name)) orelse {
         try paint(status, theme, "  (no executable in zig-out/bin to run)", .dim);
         try status.writeByte('\n');
         try status.flush();
@@ -248,17 +299,45 @@ fn startApp(
     });
 }
 
-/// The first executable in zig-out/bin (a project produces one), or null.
-fn findBinary(io: std.Io, arena: std.mem.Allocator) !?[]const u8 {
+/// Picks the executable in zig-out/bin to run. A scaffolded project produces
+/// exactly one, so the common case is unambiguous; if a project's build
+/// produces several (multiple `b.addExecutable` calls), prefer the one whose
+/// name matches the app (`app_name`, e.g. from `.app_name` in `generate()`),
+/// falling back to the first entry (sorted for determinism) with a warning so
+/// the choice is visible rather than silent.
+fn findBinary(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    status: *std.Io.Writer,
+    theme: *const ThemeContext,
+    app_name: []const u8,
+) !?[]const u8 {
     var dir = std.Io.Dir.cwd().openDir(io, "zig-out/bin", .{ .iterate = true }) catch return null;
     defer dir.close(io);
+
+    var names = std.ArrayList([]const u8).empty;
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        if (entry.kind == .file) {
+        if (entry.kind != .file) continue;
+        if (std.mem.eql(u8, std.fs.path.stem(entry.name), app_name)) {
             return try std.fmt.allocPrint(arena, "zig-out{c}bin{c}{s}", .{ std.fs.path.sep, std.fs.path.sep, entry.name });
         }
+        try names.append(arena, try arena.dupe(u8, entry.name));
     }
-    return null;
+    if (names.items.len == 0) return null;
+
+    std.mem.sort([]const u8, names.items, {}, lessThanStr);
+    if (names.items.len > 1) {
+        try paint(status, theme, "  (multiple executables in zig-out/bin; running ", .dim);
+        try status.writeAll(names.items[0]);
+        try status.writeAll(" — pass a distinct app_name or clean zig-out/bin to disambiguate)\n");
+        try status.flush();
+    }
+    return try std.fmt.allocPrint(arena, "zig-out{c}bin{c}{s}", .{ std.fs.path.sep, std.fs.path.sep, names.items[0] });
+}
+
+fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
 }
 
 /// `<binary> <command...>`.

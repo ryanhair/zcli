@@ -12,6 +12,9 @@ pub const Args = struct {};
 
 pub const Options = struct {};
 
+// Convention: this command takes `context: anytype` (not `*Context`) so tests
+// can pass a lightweight stub instead of a full app registry; commands that
+// don't need that testability use `*Context` for the compile-time contract.
 pub fn execute(_: Args, _: Options, context: anytype) !void {
     var stdout = context.stdout();
     var stderr = context.stderr();

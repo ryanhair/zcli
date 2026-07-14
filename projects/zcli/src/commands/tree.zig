@@ -31,6 +31,9 @@ pub const Options = struct {
 /// Maximum bytes read from any single command source file.
 const max_source_bytes = 1024 * 1024;
 
+// Convention: this command takes `context: anytype` (not `*Context`) so tests
+// can pass a lightweight stub instead of a full app registry; commands that
+// don't need that testability use `*Context` for the compile-time contract.
 pub fn execute(args: Args, options: Options, context: anytype) !void {
     _ = args;
 
