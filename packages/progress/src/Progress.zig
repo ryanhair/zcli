@@ -38,7 +38,9 @@
 //! ```
 //!
 //! In a zcli command, `context.progress()` returns an instance pre-wired to the
-//! command's stdout, `io`, arena allocator, and theme.
+//! command's stderr, `io`, arena allocator, and theme. Progress goes to stderr
+//! by convention so it survives stdout redirection (`myapp | tee`) while keeping
+//! piped stdout clean; interactivity keys on whether stderr is a TTY.
 
 writer: *std.Io.Writer,
 /// The framework's `std.Io` — powers each indicator's `ui.App` (animation
@@ -175,7 +177,7 @@ pub const Spinner = struct {
             .app = try ui.App.init(allocator, writer, .{
                 .capability = theme.capability(),
                 .unicode = config.unicode,
-                .interactive = terminal.isStdoutTty(),
+                .interactive = terminal.isStderrTty(),
             }),
         };
     }
@@ -368,7 +370,7 @@ pub const ProgressBar = struct {
             .app = try ui.App.init(allocator, writer, .{
                 .capability = theme.capability(),
                 .unicode = config.unicode,
-                .interactive = terminal.isStdoutTty(),
+                .interactive = terminal.isStderrTty(),
             }),
             .start_time = nowMsIo(io),
         };
@@ -544,7 +546,7 @@ pub const MultiBar = struct {
             .app = try ui.App.init(allocator, writer, .{
                 .capability = theme.capability(),
                 .unicode = config.unicode,
-                .interactive = terminal.isStdoutTty(),
+                .interactive = terminal.isStderrTty(),
             }),
         };
     }

@@ -186,12 +186,14 @@ pub fn ContextFor(comptime plugins: []const type) type {
         }
 
         /// A `Progress` instance pre-wired to this command's environment:
-        /// stdout, the framework `io`, the arena-per-command allocator, and the
-        /// app theme. Call `.spinner(...)`, `.progressBar(...)`, or
+        /// stderr, the framework `io`, the arena-per-command allocator, and the
+        /// app theme. Progress renders to stderr (not stdout) by convention, so
+        /// it survives `myapp | tee` / stdout redirection while keeping piped
+        /// stdout clean. Call `.spinner(...)`, `.progressBar(...)`, or
         /// `.multiBar(...)` on the result.
         pub fn progress(self: *Self) zcli.Progress {
             return .{
-                .writer = self.stdout(),
+                .writer = self.stderr(),
                 .io = self.io,
                 .allocator = self.allocator,
                 .theme = self.theme,

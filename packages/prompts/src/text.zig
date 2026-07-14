@@ -39,7 +39,7 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
-    const is_tty = terminal.isStdinTty();
+    const is_tty = terminal.isInteractiveTty();
 
     if (!is_tty) {
         // Non-TTY: prompt inline, read a line byte by byte

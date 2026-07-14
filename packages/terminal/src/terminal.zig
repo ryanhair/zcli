@@ -76,6 +76,18 @@ pub fn isStdoutTty() bool {
     return isTty(std.Io.File.stdout().handle);
 }
 
+pub fn isStderrTty() bool {
+    return isTty(std.Io.File.stderr().handle);
+}
+
+/// Whether the process can drive an interactive full-frame prompt: it needs
+/// stdin as a TTY to read keystrokes in raw mode *and* stdout as a TTY so the
+/// rendered frame escapes land on the terminal rather than a redirected file.
+/// If either end is redirected, callers must fall back to the plain line path.
+pub fn isInteractiveTty() bool {
+    return isStdinTty() and isStdoutTty();
+}
+
 // ============================================================================
 // Unicode detection
 // ============================================================================
