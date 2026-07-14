@@ -47,10 +47,12 @@ jobs:
       - name: Plan
         id: plan
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -eo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+            VERSION="$INPUT_VERSION"
             if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
               echo "::error::version must be semver like 0.20.0 (got '$VERSION')"
               exit 1
@@ -110,12 +112,14 @@ jobs:
 
   # Nothing enforces that a tag points at a commit that passed CI, so the
   # release gates on the same unit + e2e coverage CI runs. A bad tag must
-  # fail here, not ship.
+  # fail here, not ship. The gate runs for BOTH CLI and library paths: a
+  # bare `git push origin v*` (library-only tag) must also pass tests before
+  # the library release publishes.
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: setup
-    if: needs.setup.outputs.do_cli == 'true'
+    if: needs.setup.outputs.do_cli == 'true' || needs.setup.outputs.do_lib == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -288,7 +292,7 @@ jobs:
 
   library-release:
     name: Create Library Release
-    needs: setup
+    needs: [setup, test]
     if: needs.setup.outputs.do_lib == 'true'
     runs-on: ubuntu-latest
     permissions:

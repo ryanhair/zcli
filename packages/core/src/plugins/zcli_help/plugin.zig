@@ -724,7 +724,12 @@ fn showSubcommands(context: anytype, fmt: anytype) !bool {
     }
 
     if (has_commands) {
-        try fmt.write("\n", .{});
+        // Terminate on the raw writer, not through the markdown formatter:
+        // a standalone "\n" has no semantic tags and isn't simple inline, so
+        // it routes through the block parser, which drops a leading blank line
+        // — swallowing the newline and losing the blank after the COMMANDS
+        // list. A newline is not markdown, so write it directly.
+        try fmt.writer.writeAll("\n");
     }
     return has_commands;
 }
@@ -1290,6 +1295,56 @@ test "showHelp .command orders sections ARGUMENTS -> OPTIONS -> COMMANDS for an 
     try std.testing.expect(std.mem.indexOf(u8, out, "status") != null);
     const i_hint = std.mem.indexOf(u8, out, "for more information on a subcommand").?;
     try std.testing.expect(i_hint > i_cmds);
+}
+
+test "showHelp .command has a blank line after COMMANDS for an exec+group command" {
+    // Regression: showSubcommands terminated the COMMANDS block with
+    // `fmt.write("\n", .{})` through the markdown formatter.  A standalone
+    // "\n" has no semantic tags, so the block parser (prev_was_blank = true)
+    // swallowed it — the blank line between COMMANDS and the follow-up hint
+    // was dropped.  Fix: write the newline directly to the raw writer.
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // `deploy` is both executable (has options) AND a group (`deploy prod`
+    // exists) — exactly the case where the blank line was dropped.
+    ctx.app_name = "myapp";
+    ctx.command_path = &.{"deploy"};
+    ctx.command_module_info = .{
+        .has_options = true,
+        .options_fields = &.{
+            .{ .name = "dry-run", .is_optional = false, .is_array = false, .type_name = "bool", .default_value = "false", .description = "Dry run" },
+        },
+    };
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"deploy"}, .description = "Deploy the app" },
+        .{ .path = &.{ "deploy", "prod" }, .description = "Deploy to prod" },
+    };
+
+    const out = try renderCommandHelp(&ctx, &aw);
+
+    // The COMMANDS block must be present.
+    const i_cmds = std.mem.indexOf(u8, out, "COMMANDS:").?;
+    try std.testing.expect(std.mem.indexOf(u8, out, "prod") != null);
+
+    // The follow-up hint comes after COMMANDS.
+    const i_hint = std.mem.indexOf(u8, out, "for more information on a subcommand").?;
+    try std.testing.expect(i_hint > i_cmds);
+
+    // A blank line (two consecutive newlines) must separate the last COMMANDS
+    // entry from the follow-up hint — that's what the missing "\n" provides.
+    const between = out[i_cmds..i_hint];
+    try std.testing.expect(std.mem.indexOf(u8, between, "\n\n") != null);
 }
 
 test "showHelp .command renders a clean OPTIONS block for an options-less command" {
