@@ -6,8 +6,10 @@ on:
       - "*-v*"  # CLI releases (e.g., zcli-v0.9.0)
       - "v*"    # Library releases (e.g., v0.9.0)
   # One-button release: pick a version, CI bumps both build.zig.zon files,
-  # commits to main, tags v<version> + zcli-v<version>, and publishes — all in
-  # this same run. Manual tag pushes above still work as a fallback.
+  # stages the bump on a scratch branch, runs the full test + build gate
+  # against it, and only THEN commits to main and tags v<version> +
+  # zcli-v<version> (see the `finalize` job). Manual tag pushes above still
+  # work as a fallback and skip the bump/finalize dance entirely.
   workflow_dispatch:
     inputs:
       version:
@@ -19,12 +21,21 @@ on:
 permissions:
   contents: read
 
+# Release runs must not interleave: a second dispatch (or a manual tag push
+# racing a dispatch) could otherwise race the main-branch push, tag creation,
+# or draft/publish steps below. One queue for the whole workflow, not just
+# same-ref runs, since a dispatch and a manual tag push never share a ref.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # Resolves what this run should do — for a tag push, read the tag; for a
-  # manual dispatch, perform the version bump + tag push here so the build and
-  # publish jobs below run against a real tag in this same run. (A tag pushed by
-  # GITHUB_TOKEN would NOT trigger a second workflow run, which is exactly why
-  # the bump lives inside the release run instead of a separate cutter.)
+  # manual dispatch, compute the version bump and stage it on a disposable
+  # branch (NOT main) so the test/build gate below runs against real code
+  # without touching main or creating tags yet. The `finalize` job promotes
+  # the staged commit to main and cuts the real tags only after tests (and,
+  # for CLI releases, the cross-target build) succeed — see #301.
   setup:
     name: Resolve release plan
     runs-on: ubuntu-latest
@@ -36,12 +47,13 @@ jobs:
       ref: ${{ steps.plan.outputs.ref }}
       cli_tag: ${{ steps.plan.outputs.cli_tag }}
       lib_version: ${{ steps.plan.outputs.lib_version }}
+      staging_branch: ${{ steps.plan.outputs.staging_branch }}
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          # Full history + tags so the dispatch path can commit to main and
-          # detect an already-used version.
+          # Full history + tags so the dispatch path can detect an
+          # already-used version and diff against main.
           fetch-depth: 0
 
       - name: Plan
@@ -79,16 +91,22 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -am "Bump version to $VERSION"
-            git push origin HEAD:main
-            git tag "v$VERSION"
-            git tag "zcli-v$VERSION"
-            git push origin "v$VERSION" "zcli-v$VERSION"
+
+            # Stage the bump on a disposable branch instead of main. Nothing
+            # lands on main and no tag exists until `finalize` promotes this
+            # exact commit after tests (and the cross-target build) pass —
+            # a failed run leaves main and the tag namespace untouched, so a
+            # re-dispatch of the same version just works. Force-push in case
+            # a previous failed attempt left a stale staging branch behind.
+            STAGING_BRANCH="_release-staging/$VERSION"
+            git push --force origin "HEAD:refs/heads/$STAGING_BRANCH"
 
             echo "do_cli=true" >> "$GITHUB_OUTPUT"
             echo "do_lib=true" >> "$GITHUB_OUTPUT"
-            echo "ref=zcli-v$VERSION" >> "$GITHUB_OUTPUT"
+            echo "ref=$STAGING_BRANCH" >> "$GITHUB_OUTPUT"
             echo "cli_tag=zcli-v$VERSION" >> "$GITHUB_OUTPUT"
             echo "lib_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "staging_branch=$STAGING_BRANCH" >> "$GITHUB_OUTPUT"
           else
             TAG="${GITHUB_REF#refs/tags/}"
             echo "ref=$TAG" >> "$GITHUB_OUTPUT"
@@ -111,10 +129,10 @@ jobs:
           fi
 
   # Nothing enforces that a tag points at a commit that passed CI, so the
-  # release gates on the same unit + e2e coverage CI runs. A bad tag must
-  # fail here, not ship. The gate runs for BOTH CLI and library paths: a
-  # bare `git push origin v*` (library-only tag) must also pass tests before
-  # the library release publishes.
+  # release gates on the same unit + e2e coverage CI runs. A bad tag/staged
+  # bump must fail here, not ship. The gate runs for BOTH CLI and library
+  # paths: a bare `git push origin v*` (library-only tag) must also pass
+  # tests before the library release publishes.
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -165,9 +183,14 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-linux
             zig_target: aarch64-linux-musl
+            # Not smoke-tested: emulating aarch64 on the x64 runner needs
+            # qemu-user-static. See #334 — accepted gap, documented in
+            # docs/RELEASE-SIGNING.md.
           - os: macos-latest
             target: x86_64-macos
             zig_target: x86_64-macos
+            smoke: true # macos-latest runners are arm64; run via Rosetta 2
+            rosetta: true
           - os: macos-latest
             target: aarch64-macos
             zig_target: aarch64-macos
@@ -175,9 +198,13 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-windows
             zig_target: x86_64-windows
+            # Not smoke-tested: would need Wine on the Linux runner. See
+            # #334 — accepted gap, documented in docs/RELEASE-SIGNING.md.
           - os: ubuntu-latest
             target: aarch64-windows
             zig_target: aarch64-windows
+            # Not smoke-tested: same as x86_64-windows, plus Wine has no
+            # aarch64 Windows emulation story. See #334.
 
     steps:
       - name: Checkout code
@@ -207,9 +234,17 @@ jobs:
             chmod +x dist/zcli-${{ matrix.target }}
           fi
 
+      # aarch64-macos runs natively on the macos-latest (arm64) runner;
+      # x86_64-macos needs Rosetta 2 installed first to run under emulation.
+      - name: Install Rosetta 2
+        if: matrix.rosetta
+        run: softwareupdate --install-rosetta --agree-to-license
+
       # Prove the artifact we're about to publish actually starts, on the
-      # targets the runner can execute natively. Mirrors ci.yml's Windows
-      # smoke test.
+      # targets the runner can execute (natively or via Rosetta). Mirrors
+      # ci.yml's Windows smoke test. The remaining cross-compiled targets
+      # (aarch64-linux, both Windows targets) are validated for linking only
+      # — see #334 for the accepted-gap rationale.
       - name: Smoke test the binary
         if: matrix.smoke
         working-directory: projects/zcli
@@ -233,11 +268,59 @@ jobs:
           name: zcli-${{ matrix.target }}
           path: projects/zcli/dist/zcli-${{ matrix.target }}*
 
+  # Promotes the staged version-bump commit to main and cuts the real tags —
+  # but only for the workflow_dispatch path, and only once tests (and the
+  # full cross-target build, transitively via `needs: build`) have passed.
+  # A manual tag push skips this entirely: the tag already exists on a real
+  # commit before the workflow even starts. See #301.
+  #
+  # Gated behind the `release` GitHub Environment (#292): a required
+  # reviewer must approve before this job (or `release` / `library-release`
+  # below, which share the same environment) is allowed to run. This YAML is
+  # inert until that Environment is created in repo settings — see the PR
+  # description.
+  finalize:
+    name: Promote staged release to main
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    if: github.event_name == 'workflow_dispatch'
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout staged commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Push to main and cut tags
+        shell: bash
+        env:
+          LIB_VERSION: ${{ needs.setup.outputs.lib_version }}
+          STAGING_BRANCH: ${{ needs.setup.outputs.staging_branch }}
+        run: |
+          set -eo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git push origin HEAD:main
+          git tag "v$LIB_VERSION"
+          git tag "zcli-v$LIB_VERSION"
+          git push origin "v$LIB_VERSION" "zcli-v$LIB_VERSION"
+          # Clean up the scratch branch now that main + the real tags carry
+          # this commit. Best-effort: a failure here shouldn't fail the run.
+          git push origin --delete "$STAGING_BRANCH" || true
+
   release:
     name: Create Release
-    needs: [setup, build]
-    if: needs.setup.outputs.do_cli == 'true'
+    needs: [setup, build, finalize]
+    if: |
+      always() &&
+      needs.setup.outputs.do_cli == 'true' &&
+      needs.build.result == 'success' &&
+      (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
 
@@ -245,7 +328,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: ${{ needs.setup.outputs.ref }}
+          ref: ${{ needs.setup.outputs.cli_tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -288,9 +371,14 @@ jobs:
 
   library-release:
     name: Create Library Release
-    needs: [setup, test]
-    if: needs.setup.outputs.do_lib == 'true'
+    needs: [setup, test, finalize]
+    if: |
+      always() &&
+      needs.setup.outputs.do_lib == 'true' &&
+      needs.test.result == 'success' &&
+      (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
 
@@ -298,7 +386,30 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: ${{ needs.setup.outputs.ref }}
+          ref: v${{ needs.setup.outputs.lib_version }}
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      # `zig fetch <url>` (no --save) fetches the tarball, computes its
+      # package hash, and prints exactly that hash to stdout — the same
+      # value a consumer would get pasting the URL into their own
+      # build.zig.zon. Substituted into the release notes below instead of
+      # a "go run zig fetch yourself" placeholder. See #336.
+      - name: Compute package hash
+        id: hash
+        shell: bash
+        run: |
+          set -eo pipefail
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/v${{ needs.setup.outputs.lib_version }}.tar.gz"
+          HASH="$(zig fetch "$URL" | tail -n1 | tr -d '[:space:]')"
+          if [ -z "$HASH" ]; then
+            echo "::error::zig fetch produced no hash for $URL"
+            exit 1
+          fi
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
         id: notes
@@ -311,8 +422,8 @@ jobs:
           ```zig
           .dependencies = .{
               .zcli = .{
-                  .url = "https://github.com/ryanhair/zcli/archive/refs/tags/v${{ needs.setup.outputs.lib_version }}.tar.gz",
-                  .hash = "<hash-will-be-shown-by-zig-fetch>",
+                  .url = "https://github.com/${{ github.repository }}/archive/refs/tags/v${{ needs.setup.outputs.lib_version }}.tar.gz",
+                  .hash = "${{ steps.hash.outputs.hash }}",
               },
           },
           ```
