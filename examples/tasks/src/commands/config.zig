@@ -55,22 +55,31 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     try themed("Settings").bold().render(writer, &context.theme);
     try writer.writeAll("\r\n\r\n");
 
-    const priority_idx = try p.select(.{
+    const priority_idx = p.select(.{
         .message = "Default priority for new tasks:",
         .choices = &priorities,
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("config requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
 
-    const points = try p.number(.{
+    const points = p.number(.{
         .message = "Default story points:",
         .default = current.add.points,
         .min = 0,
         .max = 100,
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("config requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
 
-    const show_done = try p.confirm(.{
+    const show_done = p.confirm(.{
         .message = "Show completed tasks in 'list' by default?",
         .default = current.list.all,
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("config requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
 
     const new_config = Config{
         .add = .{ .priority = priorities[priority_idx], .points = @intCast(points) },

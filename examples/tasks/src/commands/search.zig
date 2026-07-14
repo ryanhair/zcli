@@ -34,10 +34,13 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
 
     const p = context.prompts();
 
-    const idx = try p.search(.{
+    const idx = p.search(.{
         .message = "Search tasks:",
         .choices = titles.items,
-    });
+    }) catch |err| switch (err) {
+        error.EndOfStream => return context.fail("search requires an interactive terminal (stdin closed).", .{}),
+        else => return err,
+    };
 
     const task = data.tasks[idx];
     const w = context.stdout();

@@ -61,12 +61,15 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         const msg = try std.fmt.allocPrint(allocator, "Edit task #{d}:", .{task.id});
         defer allocator.free(msg);
 
-        const content = try p.editor(.{
+        const content = p.editor(.{
             .message = msg,
             .io = context.io,
             .default = initial,
             .extension = ".md",
-        });
+        }) catch |err| switch (err) {
+            error.EndOfStream => return context.fail("edit requires an interactive terminal (stdin closed).", .{}),
+            else => return err,
+        };
         defer allocator.free(content);
 
         const parsed_edit = parseEdit(content);

@@ -8,7 +8,7 @@ pub const meta = .{
     .description = "List all tasks",
     .examples = &.{ "list", "list --status todo", "ls" },
     .options = .{
-        .status = .{ .short = 's', .description = "Filter by status: todo, in_progress, done" },
+        .status = .{ .short = 's', .description = "Filter by status" },
         .all = .{ .short = 'a', .description = "Show all tasks including done" },
     },
     .aliases = &.{"ls"},
@@ -17,7 +17,7 @@ pub const meta = .{
 pub const Args = struct {};
 
 pub const Options = struct {
-    status: ?[]const u8 = null,
+    status: ?store.Status = null,
     all: bool = false,
 };
 
@@ -32,7 +32,7 @@ pub fn execute(_: Args, options: Options, context: *Context) !void {
         return;
     }
 
-    const status_filter: ?store.Status = if (options.status) |s| store.statusFromString(s) else null;
+    const status_filter: ?store.Status = options.status;
 
     const w = context.stdout();
     const theme = &context.theme;
