@@ -7,6 +7,7 @@ on:
       - "website/**"
       - "CHANGELOG.md"
       - "install.sh"
+      - "install.ps1"
       - "build.zig.zon"
   workflow_dispatch:
 
@@ -43,8 +44,10 @@ jobs:
         working-directory: website
         run: ./zine release
 
-      - name: Publish install.sh at site root
-        run: cp install.sh website/public/install.sh
+      - name: Publish install scripts at site root
+        run: |
+          cp install.sh website/public/install.sh
+          cp install.ps1 website/public/install.ps1
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
