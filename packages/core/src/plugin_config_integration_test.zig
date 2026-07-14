@@ -237,6 +237,139 @@ test "integration: env-provided value beats config" {
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }
 
+// --- Project-local config notice (security-audit finding: silent CWD load) ---
+//
+// Discovering `.{app}.config.{ext}` from the process cwd means an attacker-
+// controlled directory (e.g. a cloned repo) can silently supply defaults.
+// preExecute must print a one-line stderr notice naming the file whenever a
+// project-local config is actually loaded — but stay silent for an explicit
+// --config path and for the user-level (home/XDG) config, since those aren't
+// cwd-controlled by whatever directory the CLI happens to run in.
+
+test "integration: notice printed when a project-local (cwd) config is applied" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = ".myapp.config.toml", .data = "count = 42\n" });
+
+    var orig_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig_dir.close(io);
+    try std.process.setCurrentDir(io, tmp.dir);
+    defer std.process.setCurrentDir(io, orig_dir) catch {};
+
+    var aw = std.Io.Writer.Allocating.init(alloc);
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
+
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    const written = aw.written();
+    try testing.expect(std.mem.indexOf(u8, written, "note:") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "./.myapp.config.toml") != null);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: no notice when no cwd config exists" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var orig_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig_dir.close(io);
+    try std.process.setCurrentDir(io, tmp.dir);
+    defer std.process.setCurrentDir(io, orig_dir) catch {};
+
+    var aw = std.Io.Writer.Allocating.init(alloc);
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
+
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "note:") == null);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: no notice for an explicit --config path" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "myapp.json", .data = "{\"count\": 10}" });
+    const abs = try tmp.dir.realPathFileAlloc(io, "myapp.json", alloc);
+
+    var aw = std.Io.Writer.Allocating.init(alloc);
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "note:") == null);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: no notice for a user-level (XDG) config" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // XDG_CONFIG_HOME is POSIX-only
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // No cwd config here — force discovery down to the user-level path.
+    try tmp.dir.createDir(io, "myapp", .default_dir);
+    var app_dir = try tmp.dir.openDir(io, "myapp", .{});
+    defer app_dir.close(io);
+    try app_dir.writeFile(io, .{ .sub_path = "config.json", .data = "{\"count\": 10}" });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const xdg_base_len = try tmp.dir.realPath(io, &path_buf);
+    const xdg_base = try alloc.dupe(u8, path_buf[0..xdg_base_len]);
+
+    var orig_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer orig_dir.close(io);
+    // Run from a directory with no `.myapp.config.*` of its own, so discovery
+    // must fall through to the user-level (XDG) branch.
+    var empty_tmp = testing.tmpDir(.{});
+    defer empty_tmp.cleanup();
+    try std.process.setCurrentDir(io, empty_tmp.dir);
+    defer std.process.setCurrentDir(io, orig_dir) catch {};
+
+    var aw = std.Io.Writer.Allocating.init(alloc);
+    var environ = std.process.Environ.Map.init(alloc);
+    try environ.put("XDG_CONFIG_HOME", xdg_base);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
+
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+    try testing.expect(ctx.plugins.zcli_config.format != null); // sanity: config was found
+
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "note:") == null);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
 test "integration: multiple config files warn about ambiguity" {
     var a = arena();
     defer a.deinit();
