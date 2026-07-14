@@ -64,6 +64,8 @@ const ParserState = enum {
     ground, // Normal text input
     escape, // After ESC (0x1B)
     csi, // After ESC[ - collecting parameters
+    osc, // After ESC] - consuming an OSC payload until BEL or ST (ESC \)
+    osc_escape, // Inside an OSC payload, just saw ESC (maybe ST)
 };
 
 // Scrollback position info
@@ -484,6 +486,14 @@ pub const VTerm = struct {
                     self.handleCSI(byte);
                     i += 1;
                 },
+                .osc => {
+                    self.handleOsc(byte);
+                    i += 1;
+                },
+                .osc_escape => {
+                    self.handleOscEscape(byte);
+                    i += 1;
+                },
             }
         }
     }
@@ -530,9 +540,40 @@ pub const VTerm = struct {
                 self.param_count = 0;
                 self.private_sequence = false;
             },
+            ']' => {
+                // Start OSC (Operating System Command) sequence: consume and
+                // discard the payload rather than leaking it as printed text.
+                self.parser_state = .osc;
+            },
             else => {
                 // Invalid character, abort sequence
                 self.parser_state = .ground;
+            },
+        }
+    }
+
+    // OSC payloads are terminated by BEL (0x07) or ST (ESC \). Both are
+    // consumed and discarded — vterm has no use for window-title / clipboard
+    // / hyperlink OSC content, but it must not fall through to `handleGround`
+    // and print the raw bytes as literal cells.
+    fn handleOsc(self: *VTerm, byte: u8) void {
+        switch (byte) {
+            0x07 => self.parser_state = .ground, // BEL terminator
+            0x1B => self.parser_state = .osc_escape, // Maybe start of ST (ESC \)
+            else => {}, // Discard payload byte
+        }
+    }
+
+    fn handleOscEscape(self: *VTerm, byte: u8) void {
+        switch (byte) {
+            '\\' => self.parser_state = .ground, // ST terminator (ESC \)
+            else => {
+                // Not a valid ST; the ESC could start a new escape sequence,
+                // or just be more payload garbage. Re-enter escape handling
+                // for this byte so a genuine `ESC ]`/`ESC [` inside a
+                // malformed OSC still gets parsed rather than silently eaten.
+                self.parser_state = .osc;
+                self.handleOsc(byte);
             },
         }
     }

@@ -369,6 +369,25 @@ try fmt.write(
 - Use **pure string slicing** (no allocators needed at comptime)
 - Support **all common markdown features** out of the box
 
+## Known Scope Limits
+
+This package is **comptime-template-only by design** (ADR-0012, zero-cost
+styling): `write()`/`print()`/`formatter().write()` all take
+`comptime markdown: []const u8`. That means:
+
+- **No runtime/user-supplied markdown.** The markdown text itself must be a
+  compile-time known string; only the `{s}`/`{d}`/... format-specifier
+  *arguments* are runtime values. If you need to render markdown that comes
+  from a file, network response, or other runtime source, this package is
+  the wrong tool — reach for a runtime markdown renderer instead.
+- **No terminal-width wrapping.** Rendered output relies on the terminal's
+  own soft-wrap; there's no hang-indent or reflow for long paragraphs,
+  styled lists, or nested content at a given column width.
+
+These are intentional trade-offs that make the zero-runtime-cost styling
+model possible — not bugs. Literal, developer-authored help text and status
+messages (the intended use case) are unaffected.
+
 ## Examples
 
 Six focused, heavily-commented examples live in [`examples/`](examples/) — see

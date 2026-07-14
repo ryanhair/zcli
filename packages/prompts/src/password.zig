@@ -49,7 +49,13 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     defer app.deinit();
 
     var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
+    defer {
+        // Defense-in-depth: wipe the cleartext password from the whole
+        // backing allocation (not just `.items`, since capacity can exceed
+        // length after a backspace) before it's freed.
+        std.crypto.secureZero(u8, buf.allocatedSlice());
+        buf.deinit(allocator);
+    }
 
     try renderFrame(&app, config, buf.items);
 

@@ -310,3 +310,37 @@ test "DECAWM off clamps at the last column instead of wrapping" {
     term.write("\x1b[?7h\x1b[H\x1b[2Jabcde");
     try testing.expectEqual(@as(u21, 'e'), term.getCell(0, 1).char);
 }
+
+test "OSC sequences are consumed and discarded, not printed" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // BEL-terminated OSC (e.g. window-title): payload must not appear on screen.
+    term.write("\x1b]0;my title\x07hello");
+    try testing.expect(!term.containsText("my title"));
+    try testing.expect(!term.containsText(";"));
+    try testing.expect(term.containsText("hello"));
+}
+
+test "OSC sequences terminated by ST (ESC \\\\) are also consumed" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // ST-terminated OSC.
+    term.write("\x1b]0;my title\x1b\\hello");
+    try testing.expect(!term.containsText("my title"));
+    try testing.expect(term.containsText("hello"));
+}
+
+test "a bare ESC after OSC-escape that isn't ST re-enters escape handling" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // ESC inside the OSC payload not followed by '\\' should not terminate
+    // the OSC as ST and also should not itself get printed; the parser
+    // resumes discarding as OSC payload.
+    term.write("\x1b]0;abc\x1bZhello\x07world");
+    try testing.expect(!term.containsText("abc"));
+    try testing.expect(!term.containsText("hello"));
+    try testing.expect(term.containsText("world"));
+}
