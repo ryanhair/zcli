@@ -147,7 +147,7 @@ fn writeOptionNames(arena: std.mem.Allocator, writer: anytype, options: []const 
 /// names are single-quoted (escape.bash'd) while `"$opts "` expands the accumulator.
 fn writeOptionCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
     if (node.options.len > 0) {
-        try writer.print("            \"{s}\")\n", .{try joinPath(arena, node.path)});
+        try writer.print("            '{s}')\n", .{try escape.bash(arena, try joinPath(arena, node.path))});
         try writer.writeAll("                opts=\"$opts \"'");
         try writeOptionNames(arena, writer, node.options);
         try writer.writeAll("'\n");
@@ -161,7 +161,7 @@ fn writeOptionCases(arena: std.mem.Allocator, writer: anytype, node: *const tree
 /// escape.bash'd inside a single-quoted literal.
 fn writeCommandCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
     if (node.children.len > 0) {
-        try writer.print("        \"{s}\")\n", .{try joinPath(arena, node.path)});
+        try writer.print("        '{s}')\n", .{try escape.bash(arena, try joinPath(arena, node.path))});
         try writer.writeAll("            completions='");
         for (node.children) |child| {
             try writer.print("{s} ", .{try escape.bash(arena, child.name)});
@@ -207,7 +207,7 @@ fn staticCompgenArgs(arena: std.mem.Allocator, enum_values: ?[]const []const u8,
 fn writePositionalCases(arena: std.mem.Allocator, writer: anytype, node: *const tree.CommandNode) !void {
     if (node.isLeaf() and node.args.len > 0) {
         if (try staticCompgenArgs(arena, node.args[0].enum_values, node.args[0].complete)) |gen| {
-            try writer.print("            \"{s}\")\n", .{try joinPath(arena, node.path)});
+            try writer.print("            '{s}')\n", .{try escape.bash(arena, try joinPath(arena, node.path))});
             try writer.print("                COMPREPLY=($(compgen {s} -- \"$cur\"))\n", .{gen});
             try writer.writeAll("                ;;\n");
         }
@@ -261,8 +261,8 @@ fn writeStaticOptionValueCasesRec(arena: std.mem.Allocator, writer: anytype, nod
 fn writeStaticOptionValueCasesFor(arena: std.mem.Allocator, writer: anytype, options: []const zcli.OptionInfo) !void {
     for (options) |opt| {
         const gen = (try staticCompgenArgs(arena, opt.enum_values, opt.complete)) orelse continue;
-        try writer.print("        --{s}", .{opt.name});
-        if (opt.short) |short| try writer.print("|-{c}", .{short});
+        try writer.print("        '--{s}'", .{try escape.bash(arena, opt.name)});
+        if (opt.short) |short| try writer.print("|'-{c}'", .{short});
         try writer.writeAll(")\n");
         try writer.print("            COMPREPLY=($(compgen {s} -- \"$cur\"))\n", .{gen});
         try writer.writeAll("            return 0\n");
