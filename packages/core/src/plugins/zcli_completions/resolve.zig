@@ -251,4 +251,3 @@ fn argForSlot(args: []const zcli.ArgInfo, slot: usize) ?zcli.ArgInfo {
     const last = args[args.len - 1];
     return if (last.is_variadic) last else null;
 }
-
