@@ -55,10 +55,14 @@ Variadic args, option types, typed `context`, aliases, and command groups: [zcli
 ## Quick start
 
 ```bash
-curl -fsSL https://zcli.sh/install.sh | sh    # install the zcli CLI
+curl -fsSL https://zcli.sh/install.sh | sh    # install the zcli CLI (macOS/Linux)
 zcli init myapp && cd myapp
 zig build
 ./zig-out/bin/myapp hello World --loud
+```
+
+```powershell
+irm https://zcli.sh/install.ps1 | iex         # install the zcli CLI (Windows)
 ```
 
 ```

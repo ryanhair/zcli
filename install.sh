@@ -83,9 +83,9 @@ sha256_digest() {
 # checksum-only, so a compromised publisher (who can rewrite the same-origin
 # checksums) is defended against on every install path, not just `zcli upgrade`.
 verify_signature() {
-    local checksums="$1"
-    local checksum_url="$2"
-    local tmp_dir="$3"
+    checksums="$1"
+    checksum_url="$2"
+    tmp_dir="$3"
 
     # Signing not yet enabled for this project — nothing to verify.
     if [ -z "${MINISIGN_PUBKEY}" ]; then
@@ -102,8 +102,8 @@ verify_signature() {
         return 1
     fi
 
-    local sig="${checksums}.minisig"
-    if ! curl -fsSL "${checksum_url}.minisig" -o "${sig}"; then
+    sig="${checksums}.minisig"
+    if ! curl -fsSL --proto '=https' --tlsv1.2 "${checksum_url}.minisig" -o "${sig}"; then
         print_error "Signature file could not be downloaded (${checksum_url}.minisig)"
         print_error "This release is unsigned or incomplete; refusing to install."
         return 1
@@ -122,7 +122,7 @@ verify_signature() {
 # Get latest release version from GitHub
 get_latest_version() {
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | \
+        curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/${REPO}/releases/latest" | \
             grep '"tag_name":' | \
             sed -E 's/.*"tag_name": "zcli-v([^"]+)".*/\1/'
     else
@@ -133,18 +133,18 @@ get_latest_version() {
 
 # Download binary
 download_binary() {
-    local version="$1"
-    local os="$2"
-    local arch="$3"
-    local target="${arch}-${os}"
-    local url="https://github.com/${REPO}/releases/download/zcli-v${version}/zcli-${target}"
-    local checksum_url="https://github.com/${REPO}/releases/download/zcli-v${version}/checksums.txt"
-    local tmp_dir=$(mktemp -d)
-    local binary_path="${tmp_dir}/zcli"
+    version="$1"
+    os="$2"
+    arch="$3"
+    target="${arch}-${os}"
+    url="https://github.com/${REPO}/releases/download/zcli-v${version}/zcli-${target}"
+    checksum_url="https://github.com/${REPO}/releases/download/zcli-v${version}/checksums.txt"
+    tmp_dir=$(mktemp -d)
+    binary_path="${tmp_dir}/zcli"
 
     print_info "Downloading zcli ${version} for ${target}..."
 
-    if ! curl -fsSL "${url}" -o "${binary_path}"; then
+    if ! curl -fsSL --proto '=https' --tlsv1.2 "${url}" -o "${binary_path}"; then
         print_error "Failed to download binary from ${url}"
         rm -rf "${tmp_dir}"
         exit 1
@@ -154,8 +154,8 @@ download_binary() {
     # be fetched or no SHA-256 tool exists, abort rather than install an
     # unverified binary.
     print_info "Verifying checksum..."
-    local checksums="${tmp_dir}/checksums.txt"
-    if ! curl -fsSL "${checksum_url}" -o "${checksums}"; then
+    checksums="${tmp_dir}/checksums.txt"
+    if ! curl -fsSL --proto '=https' --tlsv1.2 "${checksum_url}" -o "${checksums}"; then
         print_error "Failed to download checksums from ${checksum_url}"
         rm -rf "${tmp_dir}"
         exit 1
@@ -171,14 +171,14 @@ download_binary() {
 
     # Exact filename-field match so e.g. a "zcli-${target}-debug" entry can
     # never shadow the real one.
-    local expected_checksum=$(awk -v file="zcli-${target}" '$2 == file {print $1}' "${checksums}")
+    expected_checksum=$(awk -v file="zcli-${target}" '$2 == file {print $1}' "${checksums}")
     if [ -z "${expected_checksum}" ]; then
         print_error "No checksum entry for zcli-${target} in checksums.txt"
         rm -rf "${tmp_dir}"
         exit 1
     fi
 
-    local actual_checksum=$(sha256_digest "${binary_path}")
+    actual_checksum=$(sha256_digest "${binary_path}")
     if [ -z "${actual_checksum}" ]; then
         print_error "Cannot verify download: neither sha256sum nor shasum is available"
         rm -rf "${tmp_dir}"
@@ -197,7 +197,7 @@ download_binary() {
 
 # Install binary to ~/.local/bin
 install_binary() {
-    local binary_path="$1"
+    binary_path="$1"
 
     print_info "Installing to ${INSTALL_DIR}..."
 
@@ -216,7 +216,7 @@ install_binary() {
 
 # Check if directory is in PATH
 is_in_path() {
-    local dir="$1"
+    dir="$1"
     case ":${PATH}:" in
         *:"${dir}":*) return 0 ;;
         *) return 1 ;;
@@ -248,7 +248,7 @@ detect_shell() {
 
 # Get shell config file(s)
 get_shell_config() {
-    local shell_type="$1"
+    shell_type="$1"
 
     case "${shell_type}" in
         zsh)
@@ -291,7 +291,7 @@ get_shell_config() {
 
 # Check if PATH export already exists in config file
 path_already_configured() {
-    local config_file="$1"
+    config_file="$1"
 
     if [ ! -f "${config_file}" ]; then
         return 1
@@ -309,8 +309,8 @@ path_already_configured() {
 
 # Add PATH to shell config
 add_to_path() {
-    local shell_type="$1"
-    local config_file=$(get_shell_config "${shell_type}")
+    shell_type="$1"
+    config_file=$(get_shell_config "${shell_type}")
 
     # Check if already configured
     if path_already_configured "${config_file}"; then
@@ -321,7 +321,7 @@ add_to_path() {
     print_info "Adding ${INSTALL_DIR} to PATH in ${config_file}..."
 
     # Create config file directory if it doesn't exist (for fish)
-    local config_dir=$(dirname "${config_file}")
+    config_dir=$(dirname "${config_file}")
     if [ ! -d "${config_dir}" ]; then
         mkdir -p "${config_dir}"
     fi
@@ -356,8 +356,8 @@ main() {
     echo "" >&2
 
     # Detect platform
-    local os=$(detect_os)
-    local arch=$(detect_arch)
+    os=$(detect_os)
+    arch=$(detect_arch)
 
     if [ "${os}" = "unknown" ] || [ "${arch}" = "unknown" ]; then
         print_error "Unsupported platform: $(uname -s) $(uname -m)"
@@ -367,14 +367,14 @@ main() {
     print_info "Detected platform: ${arch}-${os}"
 
     # Get latest version
-    local version=$(get_latest_version)
+    version=$(get_latest_version)
     if [ -z "${version}" ]; then
         print_error "Failed to get latest version"
         exit 1
     fi
 
     # Download binary
-    local binary_path=$(download_binary "${version}" "${os}" "${arch}")
+    binary_path=$(download_binary "${version}" "${os}" "${arch}")
 
     # Install binary
     install_binary "${binary_path}"
@@ -393,10 +393,10 @@ main() {
     else
         print_warning "${INSTALL_DIR} is not in your PATH"
 
-        local shell_type=$(detect_shell)
+        shell_type=$(detect_shell)
         print_info "Detected shell: ${shell_type}"
 
-        local config_file=$(add_to_path "${shell_type}")
+        config_file=$(add_to_path "${shell_type}")
 
         echo "" >&2
         print_info "To use zcli immediately, run:"
