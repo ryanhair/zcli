@@ -98,6 +98,131 @@ test "version plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "isVersionRequested"));
 }
 
-// Note: behavioral coverage (—version prints and skips execution, -V, and the
-// onError path for --version on a bogus command) lives in
-// plugin_pipeline_test.zig, which registers this plugin in a real registry.
+// Note: end-to-end coverage (—version prints and skips execution, -V, and the
+// onError path for --version on a bogus command, running through a real
+// registry) lives in plugin_pipeline_test.zig. These tests instead exercise
+// this file's functions directly, driving `context` by hand.
+
+fn newTestCtx(allocator: std.mem.Allocator, stdio: *zcli.Stdio, environ: *const std.process.Environ.Map) zcli.TestContext(&.{@This()}) {
+    const Ctx = zcli.TestContext(&.{@This()});
+    var ctx = Ctx.init(allocator, std.testing.io, stdio, environ);
+    ctx.app_name = "myapp";
+    ctx.app_version = "2.3.4";
+    return ctx;
+}
+
+test "showVersion prints '<name> v<version>' to stdout" {
+    const allocator = std.testing.allocator;
+
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = newTestCtx(allocator, &stdio, &environ);
+    defer ctx.deinit();
+
+    try showVersion(&ctx);
+    try ctx.stdout().flush();
+
+    try std.testing.expectEqualStrings("myapp v2.3.4\n", aw.written());
+}
+
+test "handleGlobalOption sets version_requested only for a true 'version' value" {
+    const allocator = std.testing.allocator;
+
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = newTestCtx(allocator, &stdio, &environ);
+    defer ctx.deinit();
+
+    // An unrelated global option is ignored.
+    try handleGlobalOption(&ctx, "color", true);
+    try std.testing.expect(!ctx.plugins.zcli_version.version_requested);
+
+    // `version` with a false value (shouldn't normally happen, but the
+    // handler only acts on `true`) leaves the flag unset.
+    try handleGlobalOption(&ctx, "version", false);
+    try std.testing.expect(!ctx.plugins.zcli_version.version_requested);
+
+    // `version` with true sets it.
+    try handleGlobalOption(&ctx, "version", true);
+    try std.testing.expect(ctx.plugins.zcli_version.version_requested);
+    try std.testing.expect(isVersionRequested(&ctx));
+}
+
+test "preExecute prints the version and stops execution when requested" {
+    const allocator = std.testing.allocator;
+
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = newTestCtx(allocator, &stdio, &environ);
+    defer ctx.deinit();
+
+    ctx.plugins.zcli_version.version_requested = true;
+    const args = zcli.ParsedArgs{ .positional = &.{} };
+    const result = try preExecute(&ctx, args);
+    try ctx.stdout().flush();
+
+    // null tells the registry to stop — the command never runs.
+    try std.testing.expect(result == null);
+    try std.testing.expectEqualStrings("myapp v2.3.4\n", aw.written());
+}
+
+test "preExecute passes args through unchanged when version wasn't requested" {
+    const allocator = std.testing.allocator;
+
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = newTestCtx(allocator, &stdio, &environ);
+    defer ctx.deinit();
+
+    const args = zcli.ParsedArgs{ .positional = &.{"greet"} };
+    const result = try preExecute(&ctx, args);
+    try ctx.stdout().flush();
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 1), result.?.positional.len);
+    try std.testing.expectEqualStrings("", aw.written()); // nothing printed
+}
+
+test "onError prints the version and reports handled only when version was requested" {
+    const allocator = std.testing.allocator;
+
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = newTestCtx(allocator, &stdio, &environ);
+    defer ctx.deinit();
+
+    // Not requested: CommandNotFound passes through untouched.
+    try std.testing.expect(!(try onError(&ctx, error.CommandNotFound)));
+    try std.testing.expectEqualStrings("", aw.written());
+
+    // A different error, even when requested, is not this plugin's to handle.
+    ctx.plugins.zcli_version.version_requested = true;
+    try std.testing.expect(!(try onError(&ctx, error.ArgumentInvalidValue)));
+    try std.testing.expectEqualStrings("", aw.written());
+
+    // Requested + CommandNotFound: prints the version and reports handled.
+    try std.testing.expect(try onError(&ctx, error.CommandNotFound));
+    try ctx.stdout().flush();
+    try std.testing.expectEqualStrings("myapp v2.3.4\n", aw.written());
+}

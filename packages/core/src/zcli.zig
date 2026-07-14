@@ -114,6 +114,7 @@ pub const ZcliError = diagnostic_errors.ZcliError;
 pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 pub const formatDiagnostic = diagnostic_errors.formatDiagnostic;
 pub const expectedTypeName = diagnostic_errors.expectedTypeName;
+pub const writeSanitized = diagnostic_errors.writeSanitized;
 
 /// Levenshtein edit-distance + nearest-match helpers, shared by the options
 /// parser (unknown-option suggestions) and the not-found plugin (unknown-command

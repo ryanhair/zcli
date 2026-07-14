@@ -131,8 +131,13 @@ fn generateCommandNotFoundHelp(
 ) !void {
     var writer = context.stderr();
 
-    // Error header
-    try writer.print("Error: Unknown command '{s}'\n\n", .{attempted_command});
+    // Error header. `attempted_command` is the raw, mistyped argv joined back
+    // together — sanitize it so a crafted argument carrying an ANSI/OSC
+    // escape sequence (e.g. a title-bar set or clipboard write) can't reach
+    // the terminal raw.
+    try writer.print("Error: Unknown command '", .{});
+    try zcli.writeSanitized(writer, attempted_command);
+    try writer.print("'\n\n", .{});
 
     // Safety check for available_commands
     if (available_commands.len == 0) {
@@ -326,4 +331,234 @@ test "isCommandGroup detects prefixes but not leaves or unknowns" {
 fn freeSuggestions(allocator: std.mem.Allocator, suggestions: [][]const u8) void {
     for (suggestions) |s| allocator.free(s);
     allocator.free(suggestions);
+}
+
+// ===========================================================================
+// onError: the plugin's 3-case contract (see the module doc comment above)
+// ===========================================================================
+
+test "onError case 1: a close typo gets a 'did you mean' suggestion" {
+    // `onError` allocates (joins, suggestion dupes) and, like the production
+    // registry, relies on an arena being torn down wholesale rather than
+    // freeing each piece — so context.allocator is arena-backed here too,
+    // not the leak-checking testing.allocator directly.
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    ctx.command_path = &.{"serach"}; // typo of "search"
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"search"}, .description = "Search things" },
+        .{ .path = &.{"status"}, .description = "Show status" },
+    };
+
+    const handled = try onError(&ctx, error.CommandNotFound);
+    try ctx.stderr().flush();
+
+    // Case 1 is never "handled" — the error must keep propagating so the
+    // process exits non-zero (see the module doc comment).
+    try std.testing.expect(!handled);
+
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unknown command 'serach'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Did you mean 'search'?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Available commands:") != null);
+}
+
+test "onError case 1: a distant input gets no suggestion, just the command list" {
+    // `onError` allocates (joins, suggestion dupes) and, like the production
+    // registry, relies on an arena being torn down wholesale rather than
+    // freeing each piece — so context.allocator is arena-backed here too,
+    // not the leak-checking testing.allocator directly.
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    ctx.command_path = &.{"xyzzyplugh"}; // unrelated to any known command
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"search"}, .description = "Search things" },
+        .{ .path = &.{"status"}, .description = "Show status" },
+    };
+
+    const handled = try onError(&ctx, error.CommandNotFound);
+    try ctx.stderr().flush();
+
+    try std.testing.expect(!handled);
+
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unknown command 'xyzzyplugh'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Did you mean") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Available commands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "search") != null);
+}
+
+test "onError case 2: a bare known group renders its subcommands and is handled" {
+    // `onError` allocates (joins, suggestion dupes) and, like the production
+    // registry, relies on an arena being torn down wholesale rather than
+    // freeing each piece — so context.allocator is arena-backed here too,
+    // not the leak-checking testing.allocator directly.
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // "remote" is a strict prefix of two commands — a group, not a typo.
+    ctx.command_path = &.{"remote"};
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{ "remote", "add" }, .description = "Add a remote" },
+        .{ .path = &.{ "remote", "remove" }, .description = "Remove a remote" },
+        .{ .path = &.{"status"}, .description = "Show status" },
+    };
+
+    const handled = try onError(&ctx, error.CommandNotFound);
+    try ctx.stderr().flush();
+
+    // Case 2 is handled — the registry must not also print its own group line.
+    try std.testing.expect(handled);
+
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "'remote' is a command group.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Subcommands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "remove") != null);
+    // Not a typo, so no "did you mean" noise.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Did you mean") == null);
+}
+
+test "onError case 3: no command at all renders the top-level list and is handled" {
+    // `onError` allocates (joins, suggestion dupes) and, like the production
+    // registry, relies on an arena being torn down wholesale rather than
+    // freeing each piece — so context.allocator is arena-backed here too,
+    // not the leak-checking testing.allocator directly.
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    ctx.command_path = &.{}; // nothing named at all
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"search"}, .description = "Search things" },
+        .{ .path = &.{"status"}, .description = "Show status" },
+    };
+
+    const handled = try onError(&ctx, error.CommandNotFound);
+    try ctx.stderr().flush();
+
+    // Case 3 is handled — the registry's bare "No command specified" line is
+    // suppressed since this plugin already rendered the richer version.
+    try std.testing.expect(handled);
+
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "No command specified.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Available commands:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "search") != null);
+}
+
+test "onError ignores errors other than CommandNotFound" {
+    // `onError` allocates (joins, suggestion dupes) and, like the production
+    // registry, relies on an arena being torn down wholesale rather than
+    // freeing each piece — so context.allocator is arena-backed here too,
+    // not the leak-checking testing.allocator directly.
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    const handled = try onError(&ctx, error.OptionUnknown);
+    try ctx.stderr().flush();
+
+    try std.testing.expect(!handled);
+    try std.testing.expectEqualStrings("", aw.written());
+}
+
+test "onError sanitizes a terminal-escape-laced attempted command" {
+    // `onError` allocates (joins, suggestion dupes) and, like the production
+    // registry, relies on an arena being torn down wholesale rather than
+    // freeing each piece — so context.allocator is arena-backed here too,
+    // not the leak-checking testing.allocator directly.
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // A crafted argv carrying an OSC title-set sequence (ESC ] 0 ; ... BEL).
+    ctx.command_path = &.{"\x1b]0;pwned\x07"};
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"search"}, .description = "Search things" },
+    };
+
+    _ = try onError(&ctx, error.CommandNotFound);
+    try ctx.stderr().flush();
+
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "]0;pwned") != null); // text survives, minus the escape
 }

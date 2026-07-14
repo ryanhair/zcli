@@ -1091,6 +1091,47 @@ test "parse errors run onError with context.diagnostic populated" {
     try testing.expectEqualStrings("count", DiagnosticCapturePlugin.captured.?.OptionInvalidValue.option_name);
 }
 
+// Fixture for the default (no onError plugin) rendering path: a command with
+// a typed option, so a bad value falls all the way through to
+// `reportParseError`'s own stderr message instead of being intercepted.
+const EscValueCommand = struct {
+    pub const meta = .{ .description = "command with a typed option, for escape-sanitization coverage" };
+    pub const Args = struct {};
+    pub const Options = struct { count: u32 = 1 };
+    pub fn execute(_: Args, _: Options, _: *zcli.Context) !void {}
+};
+
+test "reportParseError sanitizes a terminal-escape-laced option value" {
+    const TestApp = Registry.init(.{
+        .app_name = "diag-test",
+        .app_version = "1.0.0",
+        .app_description = "diagnostic pipeline test",
+    })
+        .register("ping", EscValueCommand)
+        .build();
+
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer err_aw.deinit();
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &err_aw.writer;
+
+    // A crafted option value carrying an OSC 52 clipboard-write sequence.
+    // No onError plugin is registered, so this reaches reportParseError's
+    // default "Error: ..." rendering.
+    try testing.expectError(error.OptionInvalidValue, app.executeWithStdio(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "--count", "\x1b]52;c;cHduZWQ=\x07" }, &stdio));
+
+    const err_text = err_aw.written();
+    try testing.expect(std.mem.indexOf(u8, err_text, "\x1b") == null);
+    try testing.expect(std.mem.indexOf(u8, err_text, "Invalid value") != null);
+}
+
 // Fixture for the typed-global-options pipeline: declares one global of each
 // supported category (also exercising declaration-time type validation),
 // records what handleGlobalOption receives, and captures parse failures.
