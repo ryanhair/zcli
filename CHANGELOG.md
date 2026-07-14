@@ -23,6 +23,7 @@ The terminal-native layout engine (ADR-0013), the migration of the interactive p
 - **Theme-derived style defaults** — every styling default derives from the root `zcli_theme` at compile time: a new `surface` token group (`border`, `panel`) styles full-screen chrome, `ui.panel` and bordered boxes need no call-site `Style`, and `ui.role(r)` resolves a palette role in one word. (ADR-0020)
 - **`progress.MultiBar`** — stacked labeled bars for parallel work with thread-safe updates.
 - vterm supports DECAWM (private mode 7).
+- `zcli.FieldInfo` gained a `complete` field carrying a field's `.complete` completion source, unifying the framework's per-field metadata behind a single comptime projection that both help and completions render from.
 
 ### Changed (breaking)
 - **Options contract**: a non-`bool`, non-optional, non-array `Options` field with no default used to be a *compile error* ("required values belong in `Args`"). It now compiles and means **required option** (see Added). Pre-1.0 this only affects code that was relying on that shape being rejected — no runnable app could have shipped one. `Args` positionals are still the right home for a value that must appear on the command line in a fixed position.
