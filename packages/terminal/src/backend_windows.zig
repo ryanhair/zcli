@@ -36,6 +36,17 @@ const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
 const WAIT_OBJECT_0: DWORD = 0x00000000;
 const INFINITE: DWORD = 0xFFFFFFFF;
 
+// Console input-record plumbing, used only to drain non-key records that keep
+// the stdin handle signaled without providing VT bytes (#394). The union body
+// is opaque — only `EventType` is inspected; KEY_EVENT_RECORD (16 bytes) is
+// the largest member, so the record is 20 bytes like the Win32 original.
+const KEY_EVENT_TYPE: u16 = 0x0001;
+const INPUT_RECORD = extern struct {
+    EventType: u16,
+    _pad: u16 = 0,
+    Event: [16]u8,
+};
+
 const SMALL_RECT = extern struct {
     Left: SHORT,
     Top: SHORT,
@@ -55,6 +66,8 @@ extern "kernel32" fn GetConsoleMode(hConsoleHandle: HANDLE, lpMode: *DWORD) call
 extern "kernel32" fn SetConsoleMode(hConsoleHandle: HANDLE, dwMode: DWORD) callconv(.winapi) c_int;
 extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(.winapi) c_int;
 extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
+extern "kernel32" fn PeekConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpNumberOfEventsRead: *DWORD) callconv(.winapi) c_int;
+extern "kernel32" fn ReadConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpNumberOfEventsRead: *DWORD) callconv(.winapi) c_int;
 
 /// Saved console state for restoring after raw mode. Raw mode touches both the
 /// input handle (to stop line buffering/echo and turn on VT input) and the
@@ -207,11 +220,39 @@ pub const ResizeWatcher = struct {
                 self.last = sz;
                 return .resize;
             }
-            if (ready) return .input;
+            if (ready and drainedToRealInput(handle)) return .input;
             if (remaining) |*r| r.* -|= wait_ms;
         }
     }
 };
+
+/// A signaled console input handle does not guarantee `ReadFile` will yield
+/// bytes: non-key records — the WINDOW_BUFFER_SIZE_EVENT a resize queues (we
+/// detect resizes by polling the *output* size and never consume the record),
+/// focus and menu events — keep the handle signaled while producing no VT
+/// input. Returning `.input` on those sends the caller into a blocking
+/// `ReadFile` with nothing to read, starving ticks until a real key arrives
+/// (#394). Peek the queue: leading non-key records are consumed (via
+/// `ReadConsoleInputW`, which never touches key records here, so the VT byte
+/// path is unaffected); report ready only when a KEY_EVENT is queued or the
+/// handle is not a console at all (a pipe — readiness there means bytes).
+fn drainedToRealInput(handle: Handle) bool {
+    var records: [16]INPUT_RECORD = undefined;
+    var n: DWORD = 0;
+    if (PeekConsoleInputW(handle, &records, records.len, &n) == 0) return true; // not a console
+    if (n == 0) return false; // spurious wake — nothing queued
+    var leading_non_key: DWORD = 0;
+    for (records[0..n]) |rec| {
+        if (rec.EventType == KEY_EVENT_TYPE) break;
+        leading_non_key += 1;
+    }
+    if (leading_non_key == 0) return true; // a key is first in the queue
+    var discarded: DWORD = 0;
+    _ = ReadConsoleInputW(handle, &records, leading_non_key, &discarded);
+    // A key behind the drained records means the handle is still genuinely
+    // ready; an all-non-key queue means keep waiting.
+    return leading_non_key < n;
+}
 
 test "rawInputMode clears line/echo/processed-input and sets VT input" {
     const cooked: DWORD = ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
