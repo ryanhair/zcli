@@ -986,6 +986,23 @@ test "not_found: nothing close offers no suggestions but still lists commands" {
     try testing.expect(contains(cap.stderr, "search"));
 }
 
+test "not_found: mistyped subcommand of a no-Args command renders suggestions (#384)" {
+    const App = zcli.Registry.init(test_config)
+        .register("init", Init)
+        .registerPlugin(NotFound)
+        .build();
+
+    // "init" declares no positionals, so a stray non-option token is a
+    // mistyped subcommand. It must route through onError (rendering the
+    // not-found block with the stray token in the attempted path), not
+    // silently exit with no output.
+    const cap = try runCapture(App, &.{ "init", "foo" });
+    defer cap.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(?anyerror, error.CommandNotFound), cap.err);
+    try testing.expect(contains(cap.stderr, "Unknown command 'init foo'"));
+}
+
 test "not_found (self-contained): a bare command group lists its subcommands, no double output" {
     const App = zcli.Registry.init(test_config)
         .registerPlugin(NotFound)
