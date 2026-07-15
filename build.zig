@@ -109,6 +109,11 @@ pub fn build(b: *std.Build) void {
         .{ .name = "oauth-device", .path = "examples/oauth-device" },
         .{ .name = "notes", .path = "examples/notes" },
         .{ .name = "ext-plugin", .path = "examples/ext-plugin" },
+        .{ .name = "vault", .path = "examples/vault" },
+        .{ .name = "options-features", .path = "examples/options-features" },
+        .{ .name = "prompts-features", .path = "examples/prompts-features" },
+        .{ .name = "testing-demo", .path = "examples/testing-demo" },
+        .{ .name = "upgrade-demo", .path = "examples/upgrade-demo" },
     };
 
     // Add tests for each project that has them
@@ -151,6 +156,11 @@ pub fn build(b: *std.Build) void {
         .{ .name = "oauth-device", .path = "examples/oauth-device" },
         .{ .name = "notes", .path = "examples/notes" },
         .{ .name = "ext-plugin", .path = "examples/ext-plugin" },
+        .{ .name = "vault", .path = "examples/vault" },
+        .{ .name = "options-features", .path = "examples/options-features" },
+        .{ .name = "prompts-features", .path = "examples/prompts-features" },
+        .{ .name = "testing-demo", .path = "examples/testing-demo" },
+        .{ .name = "upgrade-demo", .path = "examples/upgrade-demo" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 
