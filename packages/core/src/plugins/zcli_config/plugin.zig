@@ -442,7 +442,10 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
                 dest.* = out;
                 return true;
             },
-            .unsupported => return false,
+            .unsupported => {
+                warnShape(ctx, field_name);
+                return false;
+            },
         }
     }
 
@@ -462,7 +465,10 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
                 warnValue(ctx, field_name, s);
                 return false;
             },
-            .list, .unsupported => return false,
+            .list, .unsupported => {
+                warnShape(ctx, field_name);
+                return false;
+            },
         }
     }
 
@@ -475,7 +481,13 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
             };
             return true;
         },
-        .list, .unsupported => return false, // a list for a scalar option is ignored
+        // A list/container for a scalar option (or any shape the adapters
+        // couldn't render) is skipped — with the warning the module contract
+        // promises for every skipped value (#392).
+        .list, .unsupported => {
+            warnShape(ctx, field_name);
+            return false;
+        },
     }
 }
 
@@ -483,6 +495,13 @@ fn warnValue(ctx: ApplyCtx, field_name: []const u8, value: []const u8) void {
     ctx.stderr.print(
         "Warning: config '{s}' has an invalid value '{s}' for '{s}' — ignoring\n",
         .{ ctx.path, value, field_name },
+    ) catch {};
+}
+
+fn warnShape(ctx: ApplyCtx, field_name: []const u8) void {
+    ctx.stderr.print(
+        "Warning: config '{s}' has an unsupported value shape for '{s}' — ignoring\n",
+        .{ ctx.path, field_name },
     ) catch {};
 }
 
@@ -925,6 +944,28 @@ test "number coerced to string option outlives the apply pass" {
         try testing.expectEqualStrings("1.5", opts.ratio);
         try testing.expectEqualStrings("2", opts.labels[1]);
     }
+}
+
+// The module contract promises a warning whenever a config value is skipped —
+// including wrong-shape values, not just unparseable scalars (#392).
+test "unsupported-shape config value warns instead of silently skipping" {
+    const O = struct { count: u32 = 1 };
+    const provided = [_]bool{false} ** 1;
+    const cmd_path = [_][]const u8{};
+    const allocator = testing.allocator;
+
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = O{};
+
+    var err_aw = std.Io.Writer.Allocating.init(allocator);
+    defer err_aw.deinit();
+    const ctx: ApplyCtx = .{ .allocator = allocator, .stderr = &err_aw.writer, .path = "test.cfg" };
+
+    applyJson(O, &opts, "{ \"count\": { \"typo\": 5 } }", ctx, &data, &cmd_path, &provided);
+
+    try testing.expectEqual(@as(u32, 1), opts.count); // still the default
+    try testing.expect(std.mem.indexOf(u8, err_aw.written(), "unsupported value shape for 'count'") != null);
 }
 
 // --- Custom parse type from config ---
