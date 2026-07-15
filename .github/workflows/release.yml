@@ -75,10 +75,12 @@ jobs:
               exit 1
             fi
 
-            # Bump the top-level .version field in both manifests. The anchored
-            # 4-space indent avoids the commented ".version" mention in the root
-            # manifest's dependency notes.
-            for f in build.zig.zon projects/zcli/build.zig.zon; do
+            # Bump the top-level .version field in every umbrella-versioned
+            # manifest (packages/core tracks the umbrella; the other packages
+            # free-float at 0.1.0 by design). The anchored 4-space indent avoids
+            # the commented ".version" mention in the root manifest's
+            # dependency notes.
+            for f in build.zig.zon projects/zcli/build.zig.zon packages/core/build.zig.zon; do
               sed -i -E "s/^([[:space:]]*)\.version = \"[0-9]+\.[0-9]+\.[0-9]+\"/\1.version = \"$VERSION\"/" "$f"
               grep -q "\.version = \"$VERSION\"" "$f" || { echo "::error::failed to bump $f"; exit 1; }
             done
