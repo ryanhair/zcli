@@ -109,10 +109,7 @@ fn generateIndex(arena: std.mem.Allocator, parts: []const []const u8, descriptio
             \\
             \\pub const Options = struct {};
             \\
-            \\pub fn execute(args: Args, options: Options, context: *Context) !void {
-            \\    _ = args;
-            \\    _ = options;
-            \\
+            \\pub fn execute(_: Args, _: Options, context: *Context) !void {
             \\    const stdout = context.stdout();
             \\    try stdout.print("TODO: Implement
         );
@@ -181,7 +178,7 @@ test "generateIndex: with-landing adds an empty-Args execute" {
 
     const src = try generateIndex(a, &.{ "gh", "pr" }, "Pull requests", true);
     try testing.expect(std.mem.indexOf(u8, src, "pub const Args = struct {};") != null); // no positionals
-    try testing.expect(std.mem.indexOf(u8, src, "pub fn execute(args: Args, options: Options") != null);
+    try testing.expect(std.mem.indexOf(u8, src, "pub fn execute(_: Args, _: Options") != null);
     try testing.expect(std.mem.indexOf(u8, src, "TODO: Implement gh pr") != null);
     try expectParses(a, src);
 }
