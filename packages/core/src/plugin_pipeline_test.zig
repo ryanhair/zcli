@@ -427,9 +427,13 @@ test "pipeline: onError returning true suppresses a command-execution error" {
 
 const PassThroughErrPlugin = struct {
     var seen: ?anyerror = null;
+    var post_success: ?bool = null;
     pub fn onError(_: anytype, err: anyerror) !bool {
         seen = err;
         return false; // observe only -> error still propagates
+    }
+    pub fn postExecute(_: anytype, success: bool) !void {
+        post_success = success;
     }
 };
 
@@ -440,8 +444,12 @@ test "pipeline: onError returning false lets a command error propagate" {
         .build();
 
     PassThroughErrPlugin.seen = null;
+    PassThroughErrPlugin.post_success = null;
     try testing.expectError(error.Boom, run(App, &.{"fail"}));
     try testing.expectEqual(@as(?anyerror, error.Boom), PassThroughErrPlugin.seen);
+    // postExecute still runs on the unhandled-error path (#389) — plugin
+    // teardown must not depend on the command succeeding.
+    try testing.expectEqual(@as(?bool, false), PassThroughErrPlugin.post_success);
 }
 
 // ---------------------------------------------------------------------------

@@ -1297,13 +1297,23 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
 
             // Execute. A handled error (onError returns true) is suppressed
-            // and falls through to postExecute with success = false.
+            // and falls through to postExecute with success = false. An
+            // unhandled error still runs postExecute (plugin teardown must
+            // not depend on the command succeeding, #389) before propagating.
             var success = true;
             Module.execute(args_instance, options_instance, context) catch |err| {
                 success = false;
-                if (!try runOnErrorHooks(context, err)) return err;
+                if (!try runOnErrorHooks(context, err)) {
+                    try runPostExecuteHooks(context, false);
+                    return err;
+                }
             };
 
+            try runPostExecuteHooks(context, success);
+        }
+
+        /// Run every plugin's postExecute hook with the command's outcome.
+        fn runPostExecuteHooks(context: *Context, success: bool) !void {
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "postExecute")) {
                     try Plugin.postExecute(context, success);
