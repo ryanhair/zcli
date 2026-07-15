@@ -53,6 +53,8 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
         try writer.print("{s}{s}\n", .{ config.prefix, config.message });
         return try allocator.dupe(u8, config.default orelse "");
     };
+    var raw_active = true;
+    errdefer if (raw_active) raw.disable();
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
         .hybrid_raw = raw,
@@ -70,6 +72,7 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
                     try app.emit("{s}{s}", .{ config.prefix, config.message });
                     app.deinit();
                     raw.disable();
+                    raw_active = false;
                     Prompts.flushWriter(writer);
                     return error.UserAborted;
                 }
@@ -83,6 +86,7 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     try app.emit("{s}{s}", .{ config.prefix, config.message });
     app.deinit();
     raw.disable();
+    raw_active = false;
     Prompts.flushWriter(writer);
 
     // Create temp file and write default content. The name is randomized (a
