@@ -85,7 +85,6 @@ pub const VTerm = struct {
     height: u16, // Viewport height (visible lines, e.g., 24)
 
     // Circular buffer management
-    buffer_start: u16, // First line in circular buffer (wraps around)
     total_lines_written: u32, // Total lines ever written (for history tracking)
     virtual_cursor_y: u32, // Cursor Y that continues beyond height (for line tracking)
 
@@ -120,10 +119,13 @@ pub const VTerm = struct {
     cursor_visible: bool,
     autowrap: bool, // DECAWM (CSI ?7 h/l); off = clamp at the last column
 
-    // Circular buffer coordinate translation
+    // Circular buffer coordinate translation. Logical lines are ABSOLUTE
+    // line numbers (line 0 = first line ever written); the ring holds the
+    // most recent `scrollback_lines` of them at row `line % scrollback_lines`.
+    // Writes and reads share this one mapping, so the viewport stays in sync
+    // no matter how many times the ring laps (#393).
     pub fn bufferLineIndex(self: *VTerm, logical_line: u32) u16 {
-        // Map logical line to circular buffer position
-        return @intCast((self.buffer_start + logical_line) % self.scrollback_lines);
+        return @intCast(logical_line % self.scrollback_lines);
     }
 
     pub fn viewportToBuffer(self: *VTerm, viewport_y: u16) ?u16 {
@@ -147,14 +149,20 @@ pub const VTerm = struct {
         if (logical_line_signed < 0) return null;
         const logical_line = @as(u32, @intCast(logical_line_signed));
         if (logical_line >= self.total_lines_written) return null;
+        // Lines older than the ring's capacity have been overwritten by newer
+        // content — reading them through the mod mapping would return the
+        // overwriting line's cells.
+        if (self.total_lines_written > self.scrollback_lines and
+            logical_line < self.total_lines_written - self.scrollback_lines) return null;
 
         return self.bufferLineIndex(logical_line);
     }
 
     pub fn getBottomLine(self: *VTerm) u32 {
-        // Get the logical line number at the bottom of viewport
+        // The absolute logical line number at the bottom of the viewport —
+        // always the newest line written, however many times the ring lapped.
         if (self.total_lines_written == 0) return 0;
-        return @min(self.total_lines_written - 1, self.scrollback_lines - 1);
+        return self.total_lines_written - 1;
     }
 
     // Bounds checking
@@ -188,7 +196,6 @@ pub const VTerm = struct {
             .scrollback_lines = options.scrollback_lines,
             .width = width,
             .height = height,
-            .buffer_start = 0,
             .total_lines_written = 0,
             .virtual_cursor_y = 0,
             .viewport_offset = 0,
@@ -232,9 +239,12 @@ pub const VTerm = struct {
     }
 
     pub fn scrollViewportUp(self: *VTerm, lines: u16) void {
-        // Scroll viewport up in history (user scrollback)
-        const max_scroll_lines = if (self.total_lines_written > self.height)
-            self.total_lines_written - self.height
+        // Scroll viewport up in history (user scrollback). Only the most
+        // recent `scrollback_lines` are retained — older lines have been
+        // overwritten by the ring and can't be scrolled to.
+        const retained = @min(self.total_lines_written, @as(u32, self.scrollback_lines));
+        const max_scroll_lines = if (retained > self.height)
+            retained - self.height
         else
             0;
         const max_scroll = @as(i32, @intCast(max_scroll_lines));
@@ -274,6 +284,18 @@ pub const VTerm = struct {
         self.cells[idx] = cell;
     }
 
+    /// Extend the written-line count to cover `line`, clearing each
+    /// newly-entered ring row first — a lapped row still holds the cells of
+    /// the line it carried `scrollback_lines` ago, which must not show
+    /// through on the fresh line (#393). No-op for already-open lines.
+    fn openLine(self: *VTerm, line: u32) void {
+        while (self.total_lines_written < line + 1) {
+            const row = @as(usize, self.bufferLineIndex(self.total_lines_written)) * self.width;
+            @memset(self.cells[row .. row + self.width], Cell.empty());
+            self.total_lines_written += 1;
+        }
+    }
+
     // Direct buffer writing for content (not viewport-relative)
     fn setCellDirect(self: *VTerm, x: u16, logical_line: u32, cell: Cell) void {
         if (x >= self.width) return;
@@ -309,12 +331,9 @@ pub const VTerm = struct {
             }
         }
 
-        // Track that we've written to at least one line
-        if (self.total_lines_written == 0) {
-            self.total_lines_written = 1;
-        }
-        // Update total_lines_written if we've moved to a new line
-        self.total_lines_written = @max(self.total_lines_written, self.virtual_cursor_y + 1);
+        // Track the line being written to, clearing it if it re-enters a
+        // lapped ring row.
+        self.openLine(self.virtual_cursor_y);
 
         // Write character at current position
         const cell = Cell.withAttributes(char, self.current_fg, self.current_bg, self.current_bold, self.current_italic, self.current_underline);
@@ -354,7 +373,7 @@ pub const VTerm = struct {
                 self.cursor.x = 0;
                 self.virtual_cursor_y += 1;
                 self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
-                self.total_lines_written = @max(self.total_lines_written, self.virtual_cursor_y + 1);
+                self.openLine(self.virtual_cursor_y);
             }
         } else {
             // Update cursor.y to match virtual_cursor_y when not wrapping
@@ -391,23 +410,23 @@ pub const VTerm = struct {
         const new_cells = try self.allocator.alloc(Cell, new_total);
         @memset(new_cells, Cell.empty());
 
-        // Copy every written logical line (not just the viewport),
-        // translating from the old circular order to a rebased buffer.
+        // Copy every retained logical line (not just the viewport). Each line
+        // keeps its ring row (`line % scrollback_lines`), so the absolute
+        // line→row mapping survives the resize unchanged.
         const copy_width = @min(self.width, new_width);
-        const lines_to_copy: u32 = @min(self.total_lines_written, self.scrollback_lines);
-        var logical: u32 = 0;
-        while (logical < lines_to_copy) : (logical += 1) {
-            const old_start = @as(usize, self.bufferLineIndex(logical)) * self.width;
-            const new_start = @as(usize, logical) * new_width;
+        const retained: u32 = @min(self.total_lines_written, self.scrollback_lines);
+        var logical: u32 = self.total_lines_written - retained;
+        while (logical < self.total_lines_written) : (logical += 1) {
+            const row = @as(usize, self.bufferLineIndex(logical));
+            const old_start = row * self.width;
+            const new_start = row * new_width;
             @memcpy(new_cells[new_start .. new_start + copy_width], self.cells[old_start .. old_start + copy_width]);
         }
 
-        // Replace buffer (rebased, so the circular window starts at 0 again)
         self.allocator.free(self.cells);
         self.cells = new_cells;
         self.width = new_width;
         self.height = new_height;
-        self.buffer_start = 0;
 
         // Clamp cursor to new bounds
         self.cursor.x = @min(self.cursor.x, new_width - 1);
@@ -508,7 +527,7 @@ pub const VTerm = struct {
                 self.cursor.y = @min(self.virtual_cursor_y, self.height - 1);
                 // Each newline moves us to a new line
                 // total_lines_written tracks how many lines we have content for
-                self.total_lines_written = @max(self.total_lines_written, self.virtual_cursor_y + 1);
+                self.openLine(self.virtual_cursor_y);
             },
             '\t' => { // Tab (move to next 8-column boundary)
                 const next_tab = ((self.cursor.x / 8) + 1) * 8;
