@@ -5,4 +5,5 @@
 test {
     _ = @import("Progress.zig");
     _ = @import("vterm_test.zig");
+    _ = @import("flush_test.zig");
 }

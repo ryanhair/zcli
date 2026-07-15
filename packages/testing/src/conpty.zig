@@ -332,7 +332,57 @@ fn buildEnvBlockW(alloc: std.mem.Allocator, env: *const std.process.Environ.Map)
     return block;
 }
 
-test "command-line quoting round-trips argv" {
-    // Compile-guard: this module is Windows-only.
+test "command-line quoting follows the CommandLineToArgvW rules" {
+    // appendQuotedArg is pure (no Windows API), so this runs on every host.
+    const alloc = std.testing.allocator;
+    const cases = [_]struct { arg: []const u8, expected: []const u8 }{
+        .{ .arg = "plain", .expected = "plain" },
+        .{ .arg = "", .expected = "\"\"" },
+        .{ .arg = "has space", .expected = "\"has space\"" },
+        .{ .arg = "tab\there", .expected = "\"tab\there\"" },
+        // A quote is escaped; backslashes are only special before a quote.
+        .{ .arg = "say \"hi\"", .expected = "\"say \\\"hi\\\"\"" },
+        .{ .arg = "C:\\Program Files\\x", .expected = "\"C:\\Program Files\\x\"" },
+        // Trailing backslashes before the closing quote double.
+        .{ .arg = "trail\\ ", .expected = "\"trail\\ \"" },
+        .{ .arg = "end\\\"", .expected = "\"end\\\\\\\"\"" },
+    };
+    for (cases) |case| {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(alloc);
+        try appendQuotedArg(alloc, &out, case.arg);
+        try std.testing.expectEqualStrings(case.expected, out.items);
+    }
+}
+
+test "buildCommandLineW joins argv with spaces and NUL-terminates" {
+    const alloc = std.testing.allocator;
+    const cmdline = try buildCommandLineW(alloc, &.{ "cmd.exe", "/c", "echo hi" });
+    defer alloc.free(cmdline);
+    const expected = try std.unicode.utf8ToUtf16LeAlloc(alloc, "cmd.exe /c \"echo hi\"");
+    defer alloc.free(expected);
+    try std.testing.expectEqualSlices(u16, expected, cmdline[0..cmdline.len]);
+    try std.testing.expectEqual(@as(u16, 0), cmdline[cmdline.len]);
+}
+
+test "ConPTY smoke: spawn, read output, clean exit (#404)" {
+    // The only coverage ConPTY gets outside the full interactive e2e tier —
+    // bugs here previously surfaced only in CI, never on a dev box.
     if (builtin.os.tag != .windows) return;
+    const alloc = std.testing.allocator;
+
+    var session = try ConPtySession.spawn(alloc, &.{ "cmd.exe", "/c", "echo conpty-smoke" }, null, null, 24, 80);
+    defer session.deinit(alloc);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var buf: [1024]u8 = undefined;
+    var attempts: usize = 0;
+    while (attempts < 100) : (attempts += 1) {
+        const n = session.pollRead(&buf, 100);
+        if (n > 0) try out.appendSlice(alloc, buf[0..n]);
+        if (std.mem.indexOf(u8, out.items, "conpty-smoke") != null) break;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "conpty-smoke") != null);
+    try std.testing.expectEqual(@as(?u8, 0), session.waitExit(5000));
 }
