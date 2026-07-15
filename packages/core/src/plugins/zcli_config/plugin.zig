@@ -308,8 +308,9 @@ fn warnParse(ctx: ApplyCtx, err: anyerror) void {
 /// A config field's value, normalized across formats: a scalar rendered to its
 /// string form (the shape the value parser consumes), a homogeneous list of such
 /// strings (for array/multi-value options), or a container/unsupported value the
-/// apply pass ignores. `buf` backs scalar renderings that aren't already strings
-/// (numbers, bools); `list` slots are arena-allocated.
+/// apply pass ignores. Every scalar rendering outlives the apply pass: source
+/// strings and number renderings are arena-backed, bools are static literals —
+/// string-typed option fields store these slices verbatim (#383).
 const FieldVal = union(enum) {
     scalar: []const u8,
     list: []const []const u8,
@@ -320,16 +321,16 @@ const FieldVal = union(enum) {
 const JsonMap = struct {
     obj: std.json.ObjectMap,
 
-    fn get(self: JsonMap, name: []const u8, allocator: std.mem.Allocator, buf: []u8) ?FieldVal {
+    fn get(self: JsonMap, name: []const u8, allocator: std.mem.Allocator) ?FieldVal {
         const v = self.obj.get(name) orelse return null;
-        return jsonValueToField(v, allocator, buf);
+        return jsonValueToField(v, allocator);
     }
 
-    fn jsonValueToField(v: std.json.Value, allocator: std.mem.Allocator, buf: []u8) FieldVal {
+    fn jsonValueToField(v: std.json.Value, allocator: std.mem.Allocator) FieldVal {
         return switch (v) {
             .bool => |b| .{ .scalar = if (b) "true" else "false" },
-            .integer => |i| .{ .scalar = std.fmt.bufPrint(buf, "{d}", .{i}) catch return .unsupported },
-            .float => |f| .{ .scalar = std.fmt.bufPrint(buf, "{d}", .{f}) catch return .unsupported },
+            .integer => |i| .{ .scalar = std.fmt.allocPrint(allocator, "{d}", .{i}) catch return .unsupported },
+            .float => |f| .{ .scalar = std.fmt.allocPrint(allocator, "{d}", .{f}) catch return .unsupported },
             .number_string => |s| .{ .scalar = s },
             .string => |s| .{ .scalar = s },
             .array => |arr| listFromScalars(std.json.Value, arr.items, allocator),
@@ -345,22 +346,22 @@ fn DynMap(comptime MapType: type) type {
         const Self = @This();
         map: MapType,
 
-        fn get(self: Self, name: []const u8, allocator: std.mem.Allocator, buf: []u8) ?FieldVal {
+        fn get(self: Self, name: []const u8, allocator: std.mem.Allocator) ?FieldVal {
             const v = self.map.get(name) orelse return null;
-            return dynValueToField(@TypeOf(v), v, allocator, buf);
+            return dynValueToField(@TypeOf(v), v, allocator);
         }
     };
 }
 
-fn dynValueToField(comptime ValueType: type, v: ValueType, allocator: std.mem.Allocator, buf: []u8) FieldVal {
+fn dynValueToField(comptime ValueType: type, v: ValueType, allocator: std.mem.Allocator) FieldVal {
     // TOML names its list tag `.array`, YAML names it `.sequence`; each union
     // has exactly one, so pick it at comptime (referencing both in one switch
     // is a compile error against either union).
     const list_tag = if (@hasField(ValueType, "array")) "array" else "sequence";
     return switch (v) {
         .boolean => |b| .{ .scalar = if (b) "true" else "false" },
-        .integer => |i| .{ .scalar = std.fmt.bufPrint(buf, "{d}", .{i}) catch return .unsupported },
-        .float => |f| .{ .scalar = std.fmt.bufPrint(buf, "{d}", .{f}) catch return .unsupported },
+        .integer => |i| .{ .scalar = std.fmt.allocPrint(allocator, "{d}", .{i}) catch return .unsupported },
+        .float => |f| .{ .scalar = std.fmt.allocPrint(allocator, "{d}", .{f}) catch return .unsupported },
         .string => |s| .{ .scalar = s },
         inline else => |payload, tag| if (comptime std.mem.eql(u8, @tagName(tag), list_tag))
             listFromScalars(ValueType, payload, allocator)
@@ -371,17 +372,17 @@ fn dynValueToField(comptime ValueType: type, v: ValueType, allocator: std.mem.Al
 
 /// Render an array/sequence of *scalar* values to a list of strings for
 /// multi-value coercion. A non-scalar element (nested list/table) makes the
-/// whole list unsupported. Each string is arena-allocated so it outlives `buf`.
+/// whole list unsupported. Scalar renderings are already arena-backed or
+/// static, so elements are stored as-is.
 fn listFromScalars(comptime ValueType: type, items: anytype, allocator: std.mem.Allocator) FieldVal {
     const out = allocator.alloc([]const u8, items.len) catch return .unsupported;
     for (items, 0..) |item, idx| {
-        var elem_buf: [64]u8 = undefined;
         const fv = if (ValueType == std.json.Value)
-            JsonMap.jsonValueToField(item, allocator, &elem_buf)
+            JsonMap.jsonValueToField(item, allocator)
         else
-            dynValueToField(ValueType, item, allocator, &elem_buf);
+            dynValueToField(ValueType, item, allocator);
         switch (fv) {
-            .scalar => |s| out[idx] = allocator.dupe(u8, s) catch return .unsupported,
+            .scalar => |s| out[idx] = s,
             else => return .unsupported,
         }
     }
@@ -402,8 +403,7 @@ fn applyMap(comptime OptionsType: type, options: *OptionsType, map: anytype, ctx
         // `provided`/`applied` are keyed by field-declaration order (same as the
         // parser's bitset), so index i is this field.
         if (!provided[field_index] and !applied[field_index]) {
-            var buf: [64]u8 = undefined;
-            if (map.get(field.name, ctx.allocator, &buf)) |fv| {
+            if (map.get(field.name, ctx.allocator)) |fv| {
                 if (applyField(field.type, &@field(options, field.name), field.name, fv, ctx)) {
                     applied[field_index] = true;
                 }
@@ -874,6 +874,56 @@ test "YAML: full coercion matrix" {
     try testing.expectEqual(@as(u16, 300), opts.small);
     try testing.expectEqual(@as(usize, 2), opts.tags.len);
     try testing.expectEqual(@as(u16, 443), opts.ports[1]);
+}
+
+// Numbers coerced into string-typed options must not reference a dead stack
+// frame (#383): the stored slice is read after the apply pass returns, so the
+// rendering has to be arena-backed. Asserting the bytes here fails under a
+// stack-buffer rendering once the frame is reused.
+test "number coerced to string option outlives the apply pass" {
+    const O = struct {
+        label: []const u8 = "",
+        ratio: []const u8 = "",
+        labels: []const []const u8 = &.{},
+    };
+    const provided = [_]bool{false} ** @typeInfo(O).@"struct".fields.len;
+    const cmd_path = [_][]const u8{};
+    const allocator = testing.allocator;
+
+    // JSON
+    {
+        var data = ContextData{};
+        defer deinitContextData(&data, allocator);
+        var opts = O{};
+        applyJson(O, &opts, "{ \"label\": 2024, \"ratio\": 1.5, \"labels\": [1, 2] }", testCtx(allocator), &data, &cmd_path, &provided);
+        try testing.expectEqualStrings("2024", opts.label);
+        try testing.expectEqualStrings("1.5", opts.ratio);
+        try testing.expectEqual(@as(usize, 2), opts.labels.len);
+        try testing.expectEqualStrings("1", opts.labels[0]);
+        try testing.expectEqualStrings("2", opts.labels[1]);
+    }
+
+    // TOML
+    {
+        var data = ContextData{};
+        defer deinitContextData(&data, allocator);
+        var opts = O{};
+        applyToml(O, &opts, "label = 2024\nratio = 1.5\nlabels = [1, 2]\n", testCtx(allocator), &data, &cmd_path, &provided);
+        try testing.expectEqualStrings("2024", opts.label);
+        try testing.expectEqualStrings("1.5", opts.ratio);
+        try testing.expectEqualStrings("2", opts.labels[1]);
+    }
+
+    // YAML
+    {
+        var data = ContextData{};
+        defer deinitContextData(&data, allocator);
+        var opts = O{};
+        applyYaml(O, &opts, "label: 2024\nratio: 1.5\nlabels:\n  - 1\n  - 2\n", testCtx(allocator), &data, &cmd_path, &provided);
+        try testing.expectEqualStrings("2024", opts.label);
+        try testing.expectEqualStrings("1.5", opts.ratio);
+        try testing.expectEqualStrings("2", opts.labels[1]);
+    }
 }
 
 // --- Custom parse type from config ---
