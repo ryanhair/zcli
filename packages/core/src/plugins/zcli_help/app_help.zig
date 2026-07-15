@@ -1,14 +1,14 @@
 //! App-level help rendering for the zcli_help plugin.
 //!
-//! Covers the three "navigate to a command" scenarios:
+//! Covers the two "navigate to a command" scenarios:
 //!   - `showApp`   — general application help (`myapp --help`, bare `help`),
 //!   - `showRoot`  — root-command help (app help plus the root command's own
-//!                   args/options/examples),
-//!   - `showGroup` — command-group help (a bare group; its subcommand list).
+//!                   args/options/examples).
 //!
-//! Command-*specific* help (a single leaf command's synopsis) lives in
-//! `command_help.zig`. The per-field tables and the ARGUMENTS/EXAMPLES/GLOBAL
-//! OPTIONS sections these share with command help come from `format.zig`.
+//! Command-group help (a bare group or `myapp group --help`) shares the single
+//! command renderer in `command_help.zig` — a group is just a command that has
+//! subcommands. The per-field tables and the ARGUMENTS/EXAMPLES/GLOBAL OPTIONS
+//! sections these share with command help come from `format.zig`.
 
 const std = @import("std");
 const zcli = @import("zcli");
@@ -41,7 +41,7 @@ pub fn showApp(context: anytype, to_stdout: bool) !void {
     try fmt.write("    <command>{s}</command> [GLOBAL OPTIONS] <COMMAND> [ARGS]\n\n", .{app_name});
 
     // Commands (navigation to children)
-    try showCommandList(context, &fmt, .top_level);
+    try showCommandList(context, &fmt);
 
     // Global options
     try format.writeGlobalOptionsSection(writer, &fmt, context);
@@ -94,7 +94,7 @@ pub fn showRoot(context: anytype, to_stdout: bool) !void {
     }
 
     // Commands (navigation to children)
-    try showCommandList(context, &fmt, .top_level);
+    try showCommandList(context, &fmt);
 
     // Global options
     try format.writeGlobalOptionsSection(writer, &fmt, context);
@@ -107,44 +107,14 @@ pub fn showRoot(context: anytype, to_stdout: bool) !void {
     try fmt.write("Run '<command>{s}</command> <command><COMMAND></command> <flag>--help</flag>' for more information on a command.\n", .{app_name});
 }
 
-/// Show help for a command group: its subcommand list. Reached both explicitly
-/// (`myapp group --help`) and as an error reaction (a bare group), so the caller
-/// selects the stream via `to_stdout`.
-pub fn showGroup(context: anytype, group_name: []const u8, to_stdout: bool) !void {
-    var writer = if (to_stdout) context.stdout() else context.stderr();
-    var fmt = md.formatterWithPalette(writer, context.theme.capability(), app_palette);
-    const app_name = context.app_name;
-
-    // Header
-    try fmt.write("'<command>{s}</command>' is a command group. Available subcommands:\n\n", .{group_name});
-
-    // Usage
-    try fmt.write("<header>USAGE:</header>\n", .{});
-    try fmt.write("    <command>{s}</command> <command>{s}</command> <subcommand>\n\n", .{ app_name, group_name });
-
-    // Subcommand list
-    try showCommandList(context, &fmt, .{ .subcommands_of = group_name });
-
-    // Footer
-    try writer.writeAll("\n");
-    try fmt.write("Run '<command>{s}</command> <command>{s}</command> <subcommand> <flag>--help</flag>' for more information on a specific subcommand.\n", .{ app_name, group_name });
-    try fmt.write("Run '<command>{s}</command> <flag>--help</flag>' for general help.\n", .{app_name});
-}
-
 // ============================================================================
-// Command-list rendering (top-level commands + a group's subcommands)
+// Command-list rendering (top-level commands)
 // ============================================================================
 
 /// Helper struct for command display info with aliases
 const CommandDisplayInfo = struct {
     description: ?[]const u8,
     aliases: []const []const u8,
-};
-
-/// List type for showCommandList
-const CommandListType = union(enum) {
-    top_level, // Show top-level commands
-    subcommands_of: []const u8, // Show subcommands of a specific command
 };
 
 /// Sort comparator: order command names alphabetically for display.
@@ -160,13 +130,11 @@ pub fn isAlias(name: []const u8, aliases: []const []const u8) bool {
     return false;
 }
 
-/// Show a list of commands (used by app, root, and group help)
-fn showCommandList(context: anytype, fmt: anytype, list_type: CommandListType) !void {
-    if (list_type == .top_level) {
-        try fmt.write("<header>COMMANDS:</header>\n", .{});
-    } else {
-        try fmt.write("<header>SUBCOMMANDS:</header>\n", .{});
-    }
+/// Show the top-level command list (used by app and root help). A command
+/// group's subcommand list is rendered by the command renderer in
+/// `command_help.zig` instead.
+fn showCommandList(context: anytype, fmt: anytype) !void {
+    try fmt.write("<header>COMMANDS:</header>\n", .{});
 
     const command_infos = context.getAvailableCommandInfo();
     var displayed_names: std.ArrayList([]const u8) = .empty;
@@ -181,55 +149,13 @@ fn showCommandList(context: anytype, fmt: anytype, list_type: CommandListType) !
         // Skip hidden commands
         if (cmd_info.hidden) continue;
 
-        var should_process = false;
-        var display_name: []const u8 = undefined;
-        var is_exact_match = false;
+        if (cmd_info.path.len < 1) continue;
+        const display_name = cmd_info.path[0];
+        // Exact match if this is a top-level command (path.len == 1); a nested
+        // command contributes its top-level name but no description.
+        const is_exact_match = (cmd_info.path.len == 1);
 
-        switch (list_type) {
-            .top_level => {
-                if (cmd_info.path.len >= 1) {
-                    should_process = true;
-                    display_name = cmd_info.path[0];
-                    // Exact match if this is a top-level command (path.len == 1)
-                    is_exact_match = (cmd_info.path.len == 1);
-                }
-            },
-            .subcommands_of => |parent| {
-                // Split parent by spaces to get the full parent path
-                var parent_parts: std.ArrayList([]const u8) = .empty;
-                defer parent_parts.deinit(context.allocator);
-
-                var iter = std.mem.splitScalar(u8, parent, ' ');
-                while (iter.next()) |part| {
-                    if (part.len > 0) {
-                        try parent_parts.append(context.allocator, part);
-                    }
-                }
-
-                const parent_depth = parent_parts.items.len;
-
-                // Check if this command is a subcommand of the parent
-                if (cmd_info.path.len > parent_depth) {
-                    // Check if all parent parts match
-                    var matches = true;
-                    for (parent_parts.items, 0..) |part, i| {
-                        if (!std.mem.eql(u8, cmd_info.path[i], part)) {
-                            matches = false;
-                            break;
-                        }
-                    }
-
-                    if (matches) {
-                        should_process = true;
-                        display_name = cmd_info.path[parent_depth];
-                        // Exact match if the path length is exactly parent_depth + 1
-                        is_exact_match = (cmd_info.path.len == parent_depth + 1);
-                    }
-                }
-            },
-        }
-
-        if (should_process) {
+        {
             // Skip alias entries - the display_name is in the aliases list
             // This means this entry is an alias, not the primary command
             if (isAlias(display_name, cmd_info.aliases)) continue;
@@ -270,8 +196,8 @@ fn showCommandList(context: anytype, fmt: anytype, list_type: CommandListType) !
     var it = command_map.iterator();
     while (it.next()) |entry| {
         const display_name = entry.key_ptr.*;
-        // Skip help command for top-level (we'll add it manually)
-        if (list_type == .top_level and std.mem.eql(u8, display_name, "help")) continue;
+        // Skip the help command (we append it manually last).
+        if (std.mem.eql(u8, display_name, "help")) continue;
         try displayed_names.append(context.allocator, display_name);
     }
     std.mem.sort([]const u8, displayed_names.items, {}, lessByNameStr);
@@ -297,10 +223,8 @@ fn showCommandList(context: anytype, fmt: anytype, list_type: CommandListType) !
         }
     }
 
-    // Always show help command last for top-level
-    if (list_type == .top_level) {
-        try fmt.write("    <command>{s:<16}</command> Show help for commands\n\n", .{"help"});
-    }
+    // Always show the help command last.
+    try fmt.write("    <command>{s:<16}</command> Show help for commands\n\n", .{"help"});
 }
 
 // ============================================================================
@@ -346,40 +270,6 @@ test "showApp renders header, usage, the command list, and the command hint foot
     try std.testing.expect(std.mem.endsWith(u8, out, "for more information on a command.\n"));
 }
 
-test "showGroup renders the group header, subcommand list, and group footer" {
-    const allocator = std.testing.allocator;
-
-    const Ctx = zcli.TestContext(&.{});
-    var stdio: zcli.Stdio = undefined;
-    stdio.init(std.testing.io);
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-    stdio.stdout_override = &aw.writer;
-
-    const environ = std.process.Environ.Map.init(allocator);
-    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
-    defer ctx.deinit();
-    ctx.theme.caps = .{ .capability = .no_color, .is_tty = false, .color_enabled = false };
-
-    ctx.app_name = "myapp";
-    // `remote add` / `remote remove` under the `remote` group.
-    ctx.plugin_command_info = &.{
-        .{ .path = &.{ "remote", "add" }, .description = "Add a remote" },
-        .{ .path = &.{ "remote", "remove" }, .description = "Remove a remote" },
-    };
-
-    try showGroup(&ctx, "remote", true);
-    try ctx.stdout().flush();
-    const out = aw.written();
-
-    try std.testing.expect(std.mem.indexOf(u8, out, "'remote' is a command group") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "USAGE:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "SUBCOMMANDS:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "add") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "remove") != null);
-    try std.testing.expect(std.mem.endsWith(u8, out, "for general help.\n"));
-}
-
 test "showCommandList: dedups, sorts alphabetically, and renders aliases" {
     const allocator = std.testing.allocator;
 
@@ -406,7 +296,7 @@ test "showCommandList: dedups, sorts alphabetically, and renders aliases" {
     };
 
     var fmt = md.formatterWithPalette(ctx.stdout(), ctx.theme.capability(), app_palette);
-    try showCommandList(&ctx, &fmt, .top_level);
+    try showCommandList(&ctx, &fmt);
     try ctx.stdout().flush();
 
     const out = aw.written();

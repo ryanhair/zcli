@@ -159,11 +159,16 @@ pub fn onError(
                 }
 
                 // If we found subcommands at this depth, show help for this group
+                // using the same renderer as `<group> --help` (command_help). A
+                // pure group is unregistered, so its CommandNotFound carries the
+                // full unmatched argv (e.g. `app foo baz`); narrow command_path to
+                // the matched group prefix so the command renderer describes the
+                // group, not the phantom deeper command. The prefix is a subslice
+                // of the already-owned command_path, so no allocation is needed.
                 if (has_subcommands) {
-                    const group_name = try std.mem.join(context.allocator, " ", prefix);
-                    defer context.allocator.free(group_name);
+                    context.command_path = prefix;
                     // Reached from an error (a bare command group) → stderr.
-                    try app_help.showGroup(context, group_name, false);
+                    try command_help.showCommand(context, false);
                     return true; // Error handled, don't let it propagate
                 }
             }

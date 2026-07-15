@@ -1103,15 +1103,15 @@ test "scaffolded project builds, runs, and round-trips add command" {
     }
     {
         // Bare group invocation. A pure group's CommandNotFound is handled by the
-        // help plugin (shows help, doesn't propagate), so the process exits 0 —
-        // but the rendered group help (header + USAGE + subcommand list) is
-        // error-triggered, so it goes to STDERR (#236 convention), keeping a
-        // piped stdout clean.
+        // help plugin, which renders the group with the same command help renderer
+        // as `cfg --help` (USAGE + COMMANDS list). It doesn't propagate, so the
+        // process exits 0 — but the help is error-triggered, so it goes to STDERR
+        // (#236 convention), keeping a piped stdout clean.
         var r = try run(proj, &.{ demo_bin, "cfg" });
         defer r.deinit();
         try expectOk(r);
-        try expectContains(r.stderr, "is a command group");
-        try expectContains(r.stderr, "SUBCOMMANDS:");
+        try expectContains(r.stderr, "USAGE:");
+        try expectContains(r.stderr, "COMMANDS:");
         try expectContains(r.stderr, "show"); // the subcommand under cfg
         // Group help is an error reaction → stderr only. stdout stays empty.
         try testing.expect(r.stdout.len == 0);
