@@ -8,11 +8,10 @@ versions" before 1.0. This page gives that policy a destination — what freezes
 1.0, what stays deliberately open, and what has to land first — so you can decide
 whether to adopt today or wait.
 
-It is a statement of *intent*, not a delivery contract. Dates and the exact
-freeze list are the maintainer's calls; where this doc guesses ahead of a
-decision it says so inline.
-
-<!-- DECIDE: The whole document is a draft for the maintainer to ratify. Search for "DECIDE:" to find every open decision. -->
+It is a statement of *intent*, not a delivery contract. **There is no 1.0 date.**
+The freeze list below is the ratified plan for what 1.0 will promise when it
+happens; the next concrete milestone is 0.20 (§3), and 1.0 ships when the
+maintainer judges the frozen surfaces have settled — not before.
 
 ## 1. Where zcli is today
 
@@ -51,10 +50,7 @@ keeps compiling against every 1.x after it, with breaking changes reserved for
 2.0. It is **not** a claim that the framework is "finished" — the UI catalog and
 the plugin set will keep growing under 1.x, additively.
 
-The line below is what we're proposing to draw. The specific membership is a
-maintainer decision.
-
-<!-- DECIDE: Confirm the two lists below — every surface here is a promise you'll owe under semver once 1.0 ships. Anything you're unsure about should move to "stays unstable" rather than be over-promised. -->
+The two lists below are ratified: this is the line 1.0 will draw.
 
 ### Freezes at 1.0 (breaking changes ⇒ 2.0)
 
@@ -65,7 +61,13 @@ maintainer decision.
 - **The `context` surface used inside `execute`.** The documented accessors —
   `context.stdout()` / `stderr()`, `context.io`, `context.prompts()`,
   `context.progress()`, `context.ui()`, `context.theme`, `context.plugins.<id>`,
-  `context.fail()`, and the arena allocator. <!-- DECIDE: `context.io` is `std.Io`, whose stability is coupled to Zig's std — see the Zig-coupling note in §4. Decide whether to freeze the *accessor names* only, and explicitly exclude the shape of Zig std types they return. -->
+  `context.fail()`, and the arena allocator. The promise covers the accessors'
+  *names and existence*; the shape of Zig std types they return (`context.io` is
+  `std.Io`) is explicitly excluded and bounded by Zig's own stability — see the
+  Zig-coupling rule in §4.
+- **Process exit codes.** `0` success, `1` command failure (`context.fail`),
+  `2` CLI misuse, `3` command not found, `141` broken pipe — scripts may depend
+  on these.
 - **The `build.zig` integration API.** The `zcli.generate()`, `generateDocs()`,
   and `addCommandTests()` signatures and their typed config structs;
   `zcli.builtin(...)`; `zcli.option(...)`.
@@ -78,6 +80,10 @@ maintainer decision.
   rename churn (0.18: `zinput→prompts`, `zprogress→progress`, `ztheme→theme`,
   `markdown_fmt→markdown`) happened *before* 1.0 deliberately, so these names
   are the ones that freeze.
+- **The `ui` node/layout primitives.** The immediate-mode node API
+  (`ui.box`/`ui.text`/`ui.spacer`/`ui.column` and friends, the `fit`/`len`/`fill`
+  sizing model) and the `App.emit()`/`App.frame()` loop. The *widget catalog*
+  built on top of these stays open — see below.
 - **The dual-tag release scheme.** `vX.Y.Z` (library) + `zcli-vX.Y.Z` (CLI
   binaries) in lockstep.
 
@@ -89,53 +95,66 @@ these are final.
 
 - **The `ui` widget catalog.** New widgets, new options on existing widgets, and
   layout-engine internals. The Select/TextInput/Button/etc. catalog is declared
-  "capability-complete" for common forms (ADR-0018), but the surface is expected
-  to keep gaining leaves and knobs. <!-- DECIDE: If you want any UI primitive frozen at 1.0 (e.g. the `ui.box`/`ui.text`/`ui.column` node API vs. the widget catalog), split it out into the frozen list above. Recommendation: freeze the *node/layout primitives*, keep the *widget catalog* open. -->
+  "capability-complete" for common forms (ADR-0018) and the `handle()`/state
+  contract was recently unified across all widgets, but the surface is expected
+  to keep gaining leaves and knobs. (The node/layout *primitives* the widgets are
+  built on freeze at 1.0 — see the list above.)
 - **New plugins and new options on existing plugins.** Adding a plugin, or adding
   a field to a plugin's `ContextData`/config, is additive.
 - **Theme tokens.** New semantic roles and component tokens (ADR-0012/0020).
   Existing role *names* are part of the frozen theme API; the set grows.
 - **The meta-CLI's own commands and their flags.** `zcli add/mv/rm/dev/guide/…`
   are developer tooling, versioned with `zcli-vX.Y.Z`; their UX can change more
-  freely than the library API an app compiles against. <!-- DECIDE: Confirm the meta-CLI is intentionally held to a looser bar than the library. It's the defensible split, but say so out loud. -->
+  freely than the library API an app compiles against. This looser bar is
+  intentional: the semver promise protects code that *compiles* against zcli,
+  not muscle memory in the dev tool.
 - **Generated doc-site HTML/CSS.** Cosmetic output, not an API.
 
 ## 3. What must land before 1.0
 
-Derived from [TODOS.md](TODOS.md) and the CHANGELOG. This is deliberately short:
 1.0 is a *stability* declaration, not a feature gate, so the bar for an item here
 is "shipping this after 1.0 would be a breaking change or an integrity gap we'd
-regret freezing around."
+regret freezing around." **1.0 is deliberately not scheduled.** The next
+milestone is 0.20; the freeze happens some releases after that, once the
+surfaces in §2 have stopped moving on their own.
 
-<!-- DECIDE: This is the highest-value section to edit. Move items between "blocks 1.0" and "explicitly deferred past 1.0" per your judgment. Everything here is sourced from TODOS.md + CHANGELOG; none of it is invented scope. -->
+**Blockers (in order):**
 
-**Recommended blockers (do before 1.0):**
-
-- **Land the current `Unreleased` breaking changes and let them settle.** The
+- **0.20: release the current `Unreleased` block and let it settle.** The
   progress/prompts instance-API rebuild (ADR-0014) and the `zcli.ui` engine are
-  in `Unreleased`. These are the last *known* breaking changes to the surfaces
-  §2 proposes to freeze — 1.0 should ship *after* they've had at least one
-  released minor to shake out. <!-- DECIDE: cut a 0.20 (or 0.19.x) that releases the Unreleased block, adopt it in the examples + meta-CLI, then freeze. -->
+  the last *known* breaking changes to the surfaces §2 freezes. They ship as
+  0.20, get adopted by the examples and the meta-CLI, and get at least one
+  released minor of real use before any freeze.
 - **A final API sweep of the freeze list in §2.** One pass to rename/remove
   anything awkward *while it's still free* — the project's stated preference is
   "never prioritize backwards compatibility pre-1.0; make the cleanest choice."
-  1.0 is the deadline for that preference.
-- **Release integrity: sign `checksums.txt`** (TODOS "Sign releases",
-  ADR-0009). The trigger the ADR names — "a third-party install base emerges" —
-  *is* 1.0. Freezing the install/upgrade path without publisher-level integrity
-  is the one security gap worth closing before inviting adoption. <!-- DECIDE: Blocker or fast-follow? Recommendation: blocker, because 1.0 is the adoption invitation and this defends the invitees. Effort is M per TODOS. -->
+  1.0 is the deadline for that preference. (A first pass already landed: the
+  widget `handle()` contract was unified, the plugin-ABI re-exports moved under
+  `zcli.plugin_abi`, and standard exit codes shipped.)
 
-**Recommended NON-blockers (fine to defer past 1.0 — all additive or internal):**
+**Already landed (was on this list):**
+
+- **Release integrity.** `checksums.txt` is signed with an offline-custody
+  [minisign](https://jedisct1.github.io/minisign/) key ([ADR-0023](docs/adr/0023-release-signing-minisign.md));
+  `install.sh` and `zcli upgrade` verify fail-closed. The install/upgrade path
+  freezes with publisher-level integrity already in place.
+
+**NON-blockers (fine to defer past 1.0 — all additive or internal):**
 
 - **Split the unit-testing tier out of `testing`** (TODOS). Internal dependency
   hygiene; a module split can happen in any 1.x without breaking the public
   `zcli-testing` API.
-- **Un-bundle the TUI libraries from the public surface** (TODOS "Deferred").
-  Explicitly parked pending adoption signal — and un-bundling is exactly the kind
-  of surface change that 1.0 is meant to *prevent* doing casually, so it should
-  either happen before the freeze or wait for 2.0. <!-- DECIDE: This one genuinely can't be a quiet 1.x change. Either do it pre-1.0 or accept it's a 2.0 item. Recommendation: keep bundled (it's the differentiator per the CEO review), revisit only with adoption. -->
 - **Re-pressure-test config formats / HTML doc-gen** (TODOS). Scope-boundary
   review, not a compatibility issue.
+
+**Decided against:**
+
+- **Un-bundling the TUI libraries from the public surface.** The batteries-included
+  terminal stack is the differentiator; it stays bundled, and the `ui` split in §2
+  (frozen primitives, open catalog) is how it coexists with a stability promise.
+  Un-bundling can't be a quiet 1.x change, so this decision holds until at least
+  2.0. (The compile-time plugin stance is likewise settled — see
+  [ADR-0027](docs/adr/0027-plugins-are-compile-time.md).)
 
 ## 4. Cadence & compatibility promises
 
@@ -163,8 +182,14 @@ reach through a "stable" zcli, so it gets an explicit rule:
   **zcli's source-compatibility promise is bounded by Zig's own.** A 1.x that
   moves to a new stable Zig may require the *same* mechanical edits Zig's release
   required — zcli won't paper over a std API change, but it will (a) never make
-  you chase nightly, and (b) document the delta. <!-- DECIDE: State the support window — e.g. "each zcli minor supports exactly one stable Zig; the prior Zig is supported on the prior zcli minor for N months." Pick N (or "no back-support" — the CI only ever builds one Zig). -->
-- <!-- DECIDE: Will 1.0 ship on Zig 0.16, or wait for the next stable Zig? If Zig 1.0 is on the horizon, note whether zcli 1.0 intends to track it. -->
+  you chase nightly, and (b) document the delta.
+- **Each zcli release targets exactly one stable Zig; there is no back-support.**
+  CI only ever builds one Zig, and that's the honest promise: staying on an older
+  Zig means pinning the last zcli release that targeted it, which receives no
+  further changes once the next minor ships.
+- **1.0 will not wait on a Zig release.** It ships on whichever stable Zig is
+  current when the freeze list has settled (today that's 0.16.0), and zcli 1.0
+  does not track or wait for Zig 1.0.
 
 ## 5. How to bet on zcli today
 
@@ -184,9 +209,9 @@ the remaining churn is scoped (§3). To insulate yourself pre-1.0:
 - **Expected migration effort per minor, pre-1.0:** small and mechanical. The
   recent breaks are representative — a package rename (search-and-replace), an
   instance-API shift (`context.progress()` instead of a free function), a renamed
-  method (`setText` → `setMessage`). None have been architectural rewrites of
-  your command files; the `meta`/`Args`/`Options`/`execute` shape has held
-  throughout. <!-- DECIDE: This characterization is drawn from the 0.18/0.19 CHANGELOG. If you expect the Unreleased block or the pre-1.0 API sweep (§3) to be heavier, temper this. -->
+  method (`setText` → `setMessage`). The pending 0.20 block (§3) is the same
+  character. None have been architectural rewrites of your command files; the
+  `meta`/`Args`/`Options`/`execute` shape has held throughout.
 - **The meta-CLI helps you migrate.** `zcli guide` is version-matched to your
   pinned release, and `zcli dev`/`tree` surface breakage fast on upgrade.
 
