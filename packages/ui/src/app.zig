@@ -118,6 +118,12 @@ pub const App = struct {
         /// Cap on a single paste's buffered bytes — a pathological multi-MB
         /// paste is truncated to this, not an OOM. Only meaningful with `paste`.
         paste_max: usize = 5 << 20, // 5 MiB
+        /// The file handle `writer` targets — used to arm the restore guard
+        /// (the signal/panic replay must hit the same tty the escapes went to)
+        /// and to poll the terminal size. `null` means stdout. Callers whose
+        /// writer is stderr (progress indicators) must pass stderr's handle,
+        /// or a redirected stdout swallows the cursor restore (#385).
+        out_handle: ?std.Io.File.Handle = null,
     };
 
     /// The caller-facing subset of `Options` for `context.ui()` /
@@ -215,7 +221,7 @@ pub const App = struct {
         // once it hides the cursor. The blob is empty here — nothing on screen to
         // undo yet, only the termios carried in `hybrid_raw`.
         if (options.term_size == null and options.hybrid_raw != null) {
-            terminal.guard.arm(std.Io.File.stdout().handle, "", options.hybrid_raw);
+            terminal.guard.arm(self.outHandle(), "", options.hybrid_raw);
             self.guard_armed = true;
         }
         return self;
@@ -308,7 +314,7 @@ pub const App = struct {
             // signal in the gap still restores; disabling modes / leaving an
             // alt-screen we haven't entered yet is a harmless no-op.
             var blob: [64]u8 = undefined;
-            terminal.guard.arm(std.Io.File.stdout().handle, self.restoreBlob(&blob), self.raw);
+            terminal.guard.arm(self.outHandle(), self.restoreBlob(&blob), self.raw);
             self.guard_armed = true;
         }
         self.started = true; // cursor hidden, terminal owned
@@ -868,15 +874,44 @@ pub const App = struct {
         self.started = true;
         try self.writer.writeAll("\x1b[?25l");
         if (self.options.term_size == null) {
-            terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h", self.options.hybrid_raw);
+            terminal.guard.arm(self.outHandle(), "\x1b[?25h", self.options.hybrid_raw);
             self.guard_armed = true;
         }
     }
 
     fn termSize(self: *App) Size {
         if (self.options.term_size) |s| return s;
-        const ws = terminal.getWindowSize(std.Io.File.stdout().handle) catch
+        const ws = terminal.getWindowSize(self.outHandle()) catch
             return .{ .w = 80, .h = 24 };
         return .{ .w = ws.col, .h = ws.row };
     }
+
+    /// The handle output escapes actually reach — `options.out_handle` when the
+    /// caller's writer targets something other than stdout (e.g. progress on
+    /// stderr), stdout otherwise.
+    fn outHandle(self: *const App) std.Io.File.Handle {
+        return self.options.out_handle orelse std.Io.File.stdout().handle;
+    }
 };
+
+// The restore guard and size polling must target the fd the writer actually
+// goes to — progress renders on stderr, and arming the guard with stdout sent
+// the cursor-show escape into a redirected file while the stderr tty stayed
+// cursorless (#385). Headless (fixed term_size), so no guard is armed here.
+test "outHandle: caller-supplied handle overrides the stdout default" {
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+
+    var app = try App.init(std.testing.allocator, &aw.writer, .{
+        .term_size = .{ .w = 20, .h = 5 },
+        .out_handle = std.Io.File.stderr().handle,
+    });
+    defer app.deinit();
+    try std.testing.expectEqual(std.Io.File.stderr().handle, app.outHandle());
+
+    var default_app = try App.init(std.testing.allocator, &aw.writer, .{
+        .term_size = .{ .w = 20, .h = 5 },
+    });
+    defer default_app.deinit();
+    try std.testing.expectEqual(std.Io.File.stdout().handle, default_app.outHandle());
+}
