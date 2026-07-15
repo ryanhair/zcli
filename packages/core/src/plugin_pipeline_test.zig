@@ -319,6 +319,62 @@ test "pipeline: preExecute returning null cancels the command" {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. onStartup fires once, before the command executes (#428)
+// ---------------------------------------------------------------------------
+
+// A command that records into the trace so we can assert onStartup ran first.
+const TracingGreet = struct {
+    pub const meta = .{ .description = "greet" };
+    pub const Args = struct {};
+    pub const Options = struct {};
+    pub fn execute(_: Args, _: Options, _: anytype) !void {
+        Trace.record("execute");
+    }
+};
+
+const StartupPlugin = struct {
+    pub fn onStartup(_: anytype) !void {
+        Trace.record("onStartup");
+    }
+};
+
+test "pipeline: onStartup fires before the command executes (#428)" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", TracingGreet)
+        .registerPlugin(StartupPlugin)
+        .build();
+
+    Trace.reset();
+    try run(App, &.{"greet"});
+
+    // onStartup must run, and it must run before the command body.
+    try Trace.expectOrder(&.{ "onStartup", "execute" });
+}
+
+// An onStartup that fails aborts the invocation before routing — matching how
+// the other pre-command hooks (preParse/transformArgs) propagate errors with a
+// bare `try`. The command must never run.
+const StartupFailPlugin = struct {
+    pub fn onStartup(_: anytype) !void {
+        return error.StartupBoom;
+    }
+};
+
+test "pipeline: an error from onStartup propagates and skips the command (#428)" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(StartupFailPlugin)
+        .build();
+
+    Greet.executed = false;
+    const result = runCapture(App, &.{"greet"}) catch unreachable;
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(?anyerror, error.StartupBoom), result.err);
+    try testing.expect(!Greet.executed);
+}
+
+// ---------------------------------------------------------------------------
 // 6. Global options are parsed and dispatched with the right typed value
 // ---------------------------------------------------------------------------
 

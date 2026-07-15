@@ -668,6 +668,18 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // execution and runs any deinit hooks already owed.
             try context.initPluginData();
 
+            // 0.25 Run onStartup hooks once per invocation, after plugin data
+            // is captured but before any argument parsing or routing. A startup
+            // hook does one-time work (e.g. a rate-limited "new version
+            // available" probe); an error here propagates like any other
+            // pre-command hook (preParse/transformArgs use a bare `try`),
+            // aborting before the command runs.
+            inline for (sorted_plugins) |Plugin| {
+                if (@hasDecl(Plugin, "onStartup")) {
+                    try Plugin.onStartup(&context);
+                }
+            }
+
             // 0.5 Response-file (@file) expansion, once, at the very front of
             // parsing — before global options, transforms, and command routing
             // — so a @file may contribute the command name, options, and

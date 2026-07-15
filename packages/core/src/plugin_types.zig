@@ -169,6 +169,12 @@ pub fn hasOnError(comptime T: type) bool {
     return @hasDecl(T, "onError");
 }
 
+/// Check if a type has an onStartup hook. Runs once per invocation after plugin
+/// data is captured and before argument parsing/routing.
+pub fn hasOnStartup(comptime T: type) bool {
+    return @hasDecl(T, "onStartup");
+}
+
 /// Check if a type has an applyConfigDefaults hook. See `hook_names` below for
 /// the full contract.
 pub fn hasApplyConfigDefaults(comptime T: type) bool {
@@ -231,6 +237,7 @@ const hook_names = [_][]const u8{
     "preExecute",
     "postExecute",
     "onError",
+    "onStartup",
     "applyConfigDefaults",
 };
 

@@ -147,12 +147,13 @@ pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void 
 
 Plugins can implement any of these lifecycle hooks:
 
-1. **`preParse`** - Called before argument parsing
-2. **`postParse`** - Called after parsing, before command execution  
-3. **`preExecute`** - Called right before command execution (can cancel)
-4. **`postExecute`** - Called after command execution
-5. **`onError`** - Called when an error occurs
-6. **`handleGlobalOption`** - Called when global options are processed
+1. **`onStartup`** - Called once per invocation, after plugin data is captured but before argument parsing/routing (for one-time work like update checks)
+2. **`preParse`** - Called before argument parsing
+3. **`postParse`** - Called after parsing, before command execution  
+4. **`preExecute`** - Called right before command execution (can cancel)
+5. **`postExecute`** - Called after command execution
+6. **`onError`** - Called when an error occurs
+7. **`handleGlobalOption`** - Called when global options are processed
 
 ### Plugin Integration
 
