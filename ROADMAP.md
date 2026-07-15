@@ -10,8 +10,8 @@ whether to adopt today or wait.
 
 It is a statement of *intent*, not a delivery contract. **There is no 1.0 date.**
 The freeze list below is the ratified plan for what 1.0 will promise when it
-happens; 0.20 (the last known breaking block) shipped 2026-07-15, and 1.0 ships
-when the maintainer judges the frozen surfaces have settled — not before.
+happens; 0.20 — the last *known* breaking block — has shipped (§3), and 1.0
+ships when the maintainer judges the frozen surfaces have settled — not before.
 
 ## 1. Where zcli is today
 
@@ -114,18 +114,17 @@ these are final.
 
 1.0 is a *stability* declaration, not a feature gate, so the bar for an item here
 is "shipping this after 1.0 would be a breaking change or an integrity gap we'd
-regret freezing around." **1.0 is deliberately not scheduled.** 0.20 — the
-release that carried the last known breaking block — shipped 2026-07-15; the
-freeze happens some releases after it, once the surfaces in §2 have stopped
-moving on their own.
+regret freezing around." **1.0 is deliberately not scheduled.** 0.20 shipped
+2026-07-15; the freeze happens some releases after that, once the surfaces in
+§2 have stopped moving on their own.
 
 **Blockers (in order):**
 
-- **Let 0.20 settle.** ~~Release the `Unreleased` block~~ — done: 0.20.0 shipped
-  2026-07-15 with the progress/prompts instance-API rebuild (ADR-0014) and the
-  `zcli.ui` engine, the last *known* breaking changes to the surfaces §2
-  freezes. What remains is the settling: at least one released minor of real
-  use before any freeze.
+- **Let 0.20 settle.** The progress/prompts instance-API rebuild (ADR-0014) and
+  the `zcli.ui` engine were the last *known* breaking changes to the surfaces
+  §2 freezes. They shipped as v0.20.0 (2026-07-15) and are adopted by the
+  examples and the meta-CLI; they still need at least one released minor of
+  real use before any freeze.
 - **A final API sweep of the freeze list in §2.** One pass to rename/remove
   anything awkward *while it's still free* — the project's stated preference is
   "never prioritize backwards compatibility pre-1.0; make the cleanest choice."
@@ -210,8 +209,8 @@ the remaining churn is scoped (§3). To insulate yourself pre-1.0:
 - **Expected migration effort per minor, pre-1.0:** small and mechanical. The
   recent breaks are representative — a package rename (search-and-replace), an
   instance-API shift (`context.progress()` instead of a free function), a renamed
-  method (`setText` → `setMessage`). The 0.20 breaks were the same character.
-  None have been architectural rewrites of your command files; the
+  method (`setText` → `setMessage`). The 0.20 block (§3) was the same
+  character. None have been architectural rewrites of your command files; the
   `meta`/`Args`/`Options`/`execute` shape has held throughout.
 - **The meta-CLI helps you migrate.** `zcli guide` is version-matched to your
   pinned release, and `zcli dev`/`tree` surface breakage fast on upgrade.

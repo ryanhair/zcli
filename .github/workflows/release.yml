@@ -90,6 +90,23 @@ jobs:
             sed -i -E "s|(/zcli/archive/refs/tags/v)[0-9]+\.[0-9]+\.[0-9]+(\.tar\.gz)|\1$VERSION\2|" README.md
             grep -q "refs/tags/v$VERSION.tar.gz" README.md || { echo "::error::failed to bump README.md"; exit 1; }
 
+            # Prose sweep (#386): a version bump must also update the sentences
+            # ABOUT the version, not just version strings. Promote the
+            # CHANGELOG's Unreleased section (no-op if already promoted), stamp
+            # the ROADMAP's current-release line and fetch URL, and fail the
+            # release if "unreleased" prose survives where it shouldn't.
+            DATE="$(date -u +%Y-%m-%d)"
+            sed -i -E "s/^## Unreleased$/## v$VERSION — $DATE/" CHANGELOG.md
+            sed -i -E "s|(/zcli/archive/refs/tags/v)[0-9]+\.[0-9]+\.[0-9]+(\.tar\.gz)|\1$VERSION\2|" ROADMAP.md
+            sed -i -E "s/^(Current release: \*\*v)[0-9]+\.[0-9]+\.[0-9]+(\*\*)/\1$VERSION\2/" ROADMAP.md
+            grep -q "^## v$VERSION" CHANGELOG.md || { echo "::error::CHANGELOG.md has no v$VERSION section — add one (or an Unreleased section to promote)"; exit 1; }
+            if grep -qi "unreleased" README.md; then
+              echo "::error::README.md still says 'unreleased' — sweep the prose before releasing"
+              exit 1
+            fi
+            # (The website changelog page is generated from CHANGELOG.md by
+            # sync-site-data.sh at docs-deploy time, so it needs no sweep here.)
+
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -am "Bump version to $VERSION"
