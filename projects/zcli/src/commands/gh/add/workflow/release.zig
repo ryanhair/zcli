@@ -50,6 +50,10 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
     const workflow_content =
         \\name: Release
         \\
+        \\# Actions are pinned to full commit SHAs (with the version as a comment)
+        \\# so a moved or compromised tag can't change what runs in this workflow.
+        \\# When upgrading an action, update the SHA and the comment together.
+        \\
         \\on:
         \\  push:
         \\    tags:
@@ -77,10 +81,10 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         \\
         \\    steps:
         \\      - name: Checkout code
-        \\        uses: actions/checkout@v4
+        \\        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         \\
         \\      - name: Setup Zig
-        \\        uses: mlugg/setup-zig@v2
+        \\        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         \\        with:
         \\          version: 0.16.0
         \\
@@ -119,7 +123,7 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         \\          shasum -a 256 ${{ steps.appname.outputs.name }}-${{ matrix.target }} > ${{ steps.appname.outputs.name }}-${{ matrix.target }}.sha256
         \\
         \\      - name: Upload artifact
-        \\        uses: actions/upload-artifact@v4
+        \\        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         \\        with:
         \\          name: ${{ steps.appname.outputs.name }}-${{ matrix.target }}
         \\          path: |
@@ -135,10 +139,10 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         \\
         \\    steps:
         \\      - name: Checkout code
-        \\        uses: actions/checkout@v4
+        \\        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         \\
         \\      - name: Download all artifacts
-        \\        uses: actions/download-artifact@v4
+        \\        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         \\        with:
         \\          path: dist
         \\
@@ -155,7 +159,7 @@ pub fn execute(_: Args, _: Options, context: anytype) !void {
         \\          rm *.sha256
         \\
         \\      - name: Create Release
-        \\        uses: softprops/action-gh-release@v1
+        \\        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         \\        with:
         \\          files: release/*
         \\          generate_release_notes: true
