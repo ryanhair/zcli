@@ -288,6 +288,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Environment gating is a repo-settings fact this YAML cannot see: if
+      # the `release` environment loses its required-reviewers rule, the
+      # gate is silently inert (the 0.20.0 release proved it, #397). This
+      # runs first in every environment-gated job — an unprotected
+      # environment starts the job immediately, and this step then refuses
+      # to proceed. Fail-closed: an unreadable environment also fails.
+      - name: Assert the release environment is protected
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/release" --jq '[.protection_rules[].type]') || {
+            echo "::error::cannot read the 'release' environment — it must exist with a required-reviewers rule (Settings → Environments)"; exit 1; }
+          echo "protection rules: $rules"
+          echo "$rules" | grep -q required_reviewers || {
+            echo "::error::the 'release' environment has NO required-reviewers rule — the approval gate is inert (#397); refusing to publish"; exit 1; }
+
       - name: Checkout staged commit
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -325,6 +342,19 @@ jobs:
       contents: write
 
     steps:
+      # See the identical step in `finalize` — the tag-push path skips
+      # finalize, so every environment-gated job carries the check (#397).
+      - name: Assert the release environment is protected
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/release" --jq '[.protection_rules[].type]') || {
+            echo "::error::cannot read the 'release' environment — it must exist with a required-reviewers rule (Settings → Environments)"; exit 1; }
+          echo "protection rules: $rules"
+          echo "$rules" | grep -q required_reviewers || {
+            echo "::error::the 'release' environment has NO required-reviewers rule — the approval gate is inert (#397); refusing to publish"; exit 1; }
+
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -383,6 +413,19 @@ jobs:
       contents: write
 
     steps:
+      # See the identical step in `finalize` — the tag-push path skips
+      # finalize, so every environment-gated job carries the check (#397).
+      - name: Assert the release environment is protected
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/release" --jq '[.protection_rules[].type]') || {
+            echo "::error::cannot read the 'release' environment — it must exist with a required-reviewers rule (Settings → Environments)"; exit 1; }
+          echo "protection rules: $rules"
+          echo "$rules" | grep -q required_reviewers || {
+            echo "::error::the 'release' environment has NO required-reviewers rule — the approval gate is inert (#397); refusing to publish"; exit 1; }
+
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

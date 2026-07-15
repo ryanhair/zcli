@@ -27,6 +27,21 @@ jobs:
     # repo settings; create it with at least one required reviewer.
     environment: docs-deploy
     steps:
+      # Environment gating is a repo-settings fact this YAML cannot see: if
+      # the environment loses its required-reviewers rule, the gate is
+      # silently inert (#397). An unprotected environment starts this job
+      # immediately — and this step then refuses to deploy. Fail-closed.
+      - name: Assert the docs-deploy environment is protected
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/docs-deploy" --jq '[.protection_rules[].type]') || {
+            echo "::error::cannot read the 'docs-deploy' environment — it must exist with a required-reviewers rule (Settings → Environments)"; exit 1; }
+          echo "protection rules: $rules"
+          echo "$rules" | grep -q required_reviewers || {
+            echo "::error::the 'docs-deploy' environment has NO required-reviewers rule — the approval gate is inert (#397); refusing to deploy"; exit 1; }
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
