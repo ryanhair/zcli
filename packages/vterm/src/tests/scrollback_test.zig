@@ -76,17 +76,45 @@ test "bufferLineIndex handles circular wrapping" {
     });
     defer term.deinit();
 
-    // Test wrapping calculation
-    // With buffer_start = 0
+    // Absolute logical line → ring row (`line % scrollback_lines`), the one
+    // mapping both writes and viewport reads share (#393).
     try testing.expectEqual(@as(u16, 0), term.bufferLineIndex(0));
     try testing.expectEqual(@as(u16, 5), term.bufferLineIndex(5));
     try testing.expectEqual(@as(u16, 0), term.bufferLineIndex(10)); // Wraps
+    try testing.expectEqual(@as(u16, 3), term.bufferLineIndex(23)); // Second lap
+}
 
-    // Simulate buffer_start = 3 (after some scrolling)
-    term.buffer_start = 3;
-    try testing.expectEqual(@as(u16, 3), term.bufferLineIndex(0));
-    try testing.expectEqual(@as(u16, 8), term.bufferLineIndex(5));
-    try testing.expectEqual(@as(u16, 3), term.bufferLineIndex(10)); // Wraps
+// #393: the viewport must keep tracking the newest lines after the ring laps —
+// the old capped getBottomLine desynced reads from writes once total lines
+// passed a second multiple of scrollback_lines.
+test "viewport stays on the newest lines after the ring laps repeatedly" {
+    var term = try VTerm.initWithScrollback(testing.allocator, 20, 3, .{
+        .scrollback_lines = 5,
+    });
+    defer term.deinit();
+
+    // Write 10 lines (L0..L9): ring lapped once.
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        var buf: [8]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "L{d}\n", .{i}) catch unreachable;
+        term.write(line);
+    }
+    // Total is 11 logical lines (the trailing \n opens an empty L10), so the
+    // 3-row viewport shows L8, L9, and the empty line.
+    try testing.expect(term.containsText("L8"));
+    try testing.expect(term.containsText("L9"));
+    try testing.expect(!term.containsText("L4"));
+
+    // Continue to 23 lines (L10..L22): well into the second lap.
+    while (i < 23) : (i += 1) {
+        var buf: [8]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "L{d}\n", .{i}) catch unreachable;
+        term.write(line);
+    }
+    try testing.expect(term.containsText("L21"));
+    try testing.expect(term.containsText("L22"));
+    try testing.expect(!term.containsText("L18")); // scrolled out of the viewport
 }
 
 test "viewportToBuffer converts viewport coords correctly" {
