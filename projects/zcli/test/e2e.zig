@@ -443,7 +443,7 @@ test "add group scaffolds meta-only and landing index files" {
     }
     const landing = try readFile(tmp.dir, a, "src/commands/gh/pr/index.zig");
     try expectContains(landing, "pub const Args = struct {};"); // no positionals
-    try expectContains(landing, "pub fn execute(args: Args, options: Options");
+    try expectContains(landing, "pub fn execute(_: Args, _: Options");
     try expectContains(landing, "TODO: Implement gh pr");
 }
 

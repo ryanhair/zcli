@@ -95,14 +95,12 @@ pub fn generateSource(
         try w.writeAll("};\n\n");
     }
 
-    // execute. `args`/`options` are discarded until the user implements the
-    // body (Zig rejects unused parameters); the hint comment names the fields.
-    try w.writeAll("pub fn execute(args: Args, options: Options, context: *Context) !void {\n");
-    try w.writeAll("    _ = args;\n    _ = options;\n");
-    if (args_list.len == 0 and opts_list.len == 0) {
-        try w.writeAll("\n");
-    } else {
-        try w.writeAll("    // TODO: implement. Available:");
+    // execute. Unused parameters are `_` in the signature (the project style —
+    // Zig rejects unused named parameters); the hint comment tells the user to
+    // rename them as the body starts using the fields.
+    try w.writeAll("pub fn execute(_: Args, _: Options, context: *Context) !void {\n");
+    if (args_list.len != 0 or opts_list.len != 0) {
+        try w.writeAll("    // TODO: implement. Rename `_: Args`/`_: Options` to `args`/`options` to use:");
         var first = true;
         for (args_list) |a| {
             try w.writeAll(if (first) " " else ", ");
@@ -238,7 +236,8 @@ test "generateSource: empty command is the minimal skeleton" {
 
     try expectContains(src, "pub const Args = struct {};");
     try expectContains(src, "pub const Options = struct {};");
-    try expectContains(src, "_ = args;");
+    // Unused params live in the signature per the project style (#399).
+    try expectContains(src, "pub fn execute(_: Args, _: Options, context: *Context) !void {");
     try expectContains(src, "\"ping\"");
     try expectContains(src, "TODO: Implement ping");
     try testing.expect(std.mem.indexOf(u8, src, ".args = .{") == null);
