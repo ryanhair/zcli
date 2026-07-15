@@ -1158,9 +1158,19 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // A regular command that declares no positionals but got a
             // non-option argument was almost certainly invoked with a
             // mistyped subcommand — CommandNotFound, not a parse error.
+            // Record the attempted path (base command + stray token) and
+            // dispatch onError like every other not-found site, so the
+            // not-found plugin renders suggestions instead of a silent
+            // exit (#384).
             if (kind == .regular and std.meta.fields(ArgsType).len == 0 and
                 remaining_args.len > 0 and !std.mem.startsWith(u8, remaining_args[0], "-"))
             {
+                const attempted = try context.allocator.alloc([]const u8, command_parts.len + 1);
+                defer context.allocator.free(attempted);
+                @memcpy(attempted[0..command_parts.len], command_parts);
+                attempted[command_parts.len] = remaining_args[0];
+                try setCommandPath(context, attempted);
+                if (try runOnErrorHooks(context, error.CommandNotFound)) return;
                 return error.CommandNotFound;
             }
 
