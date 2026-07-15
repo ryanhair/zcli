@@ -21,6 +21,11 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Every deploy republishes install.sh/install.ps1 — the curl|sh trust root —
+    # so the job is gated behind a protected environment with required reviewers
+    # (grade6 #293). Inert until the "docs-deploy" environment is created in
+    # repo settings; create it with at least one required reviewer.
+    environment: docs-deploy
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
