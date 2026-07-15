@@ -165,6 +165,9 @@ fn generateCommandNotFoundHelp(
         3, // max edit distance
     );
 
+    // With a concrete suggestion in hand, the full command dump underneath is
+    // redundant noise — point at --help instead. The list renders only when
+    // there is nothing better to offer (#402).
     if (suggestions.len > 0) {
         if (suggestions.len == 1) {
             try writer.print("Did you mean '{s}'?\n\n", .{suggestions[0]});
@@ -175,6 +178,8 @@ fn generateCommandNotFoundHelp(
             }
             try writer.print("\n", .{});
         }
+        try writer.print("Run '{s} --help' to see all available commands.\n", .{context.app_name});
+        return;
     }
 
     try printAvailableCommands(context, writer, available_commands);
@@ -231,7 +236,12 @@ fn findBestSuggestions(
         if (cmd.len == 0) continue;
 
         const distance = levenshtein.editDistance(input, cmd);
-        if (distance <= max_distance and distance < input.len) {
+        // Beyond `max_distance` and the strictly-less-than-input-length guard,
+        // require the edit distance to be strictly better than half the input
+        // (rounded up): a candidate needing more than half the input rewritten
+        // is Levenshtein-close but semantically irrelevant — `tre` suggests
+        // `tree` (1 edit), not also `rm` (2 edits on a 3-char input) (#402).
+        if (distance <= max_distance and distance < input.len and distance * 2 < input.len + 1) {
             scored[valid_count] = .{ .command = cmd, .distance = distance };
             valid_count += 1;
         }
@@ -256,6 +266,24 @@ fn findBestSuggestions(
 }
 
 // Tests
+test "findBestSuggestions: drops candidates needing more than half the input rewritten (#402)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `tre` → `tree` is 1 edit; `rm` is 2 edits on a 3-char input — noise.
+    const commands = [_][]const u8{ "tree", "rm", "init" };
+    const suggestions = try findBestSuggestions("tre", &commands, a, 3, 3);
+    try std.testing.expectEqual(@as(usize, 1), suggestions.len);
+    try std.testing.expectEqualStrings("tree", suggestions[0]);
+
+    // Genuine ambiguity survives: `stat` → `start` (1) and `status` (2) both
+    // clear the half-input bar on a 4-char input.
+    const commands2 = [_][]const u8{ "start", "status" };
+    const suggestions2 = try findBestSuggestions("stat", &commands2, a, 3, 3);
+    try std.testing.expectEqual(@as(usize, 2), suggestions2.len);
+}
+
 test "not-found plugin structure" {
     try std.testing.expect(@hasDecl(@This(), "onError"));
 }
@@ -374,7 +402,10 @@ test "onError case 1: a close typo gets a 'did you mean' suggestion" {
     const out = aw.written();
     try std.testing.expect(std.mem.indexOf(u8, out, "Unknown command 'serach'") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Did you mean 'search'?") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "Available commands:") != null);
+    // A concrete suggestion replaces the full command dump (#402); the
+    // closing --help pointer still shows the way to the complete list.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Available commands:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "--help' to see all available commands") != null);
 }
 
 test "onError case 1: a distant input gets no suggestion, just the command list" {
