@@ -18,7 +18,7 @@ What it demonstrates:
 
 - **14 commands** in `src/commands/` — args, options, aliases (`ls`, `rm`),
   and a nested `sprint` group with its own `index.zig`.
-- **Six prompts prompt types** — text, confirm, select, number, search, and
+- **Six prompt types** — text, confirm, select, number, search, and
   editor (`init`, `add`, `edit`, `search`), each falling back to line input
   when piped.
 - **progress** — spinners and progress bars in `sync` and `import`.
