@@ -4,9 +4,9 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
-## Unreleased
+## v0.20.0 — 2026-07-15
 
-The terminal-native layout engine (ADR-0013), the migration of the interactive packages onto it, and its growth into a full-screen TUI toolkit (ADRs 0015–0020).
+The terminal-native layout engine (ADR-0013), the migration of the interactive packages onto it, and its growth into a full-screen TUI toolkit (ADRs 0015–0020). Requires Zig 0.16.0.
 
 ### Added
 - **Required options** — a non-`bool`, non-optional, non-array `Options` field with no default (e.g. `region: []const u8`) is now a **required option**: the type says a value must be provided. "Required" means absent after *every* source — the CLI flag, a declared `.env` variable, and `zcli_config`'s config file all satisfy it; only if none did does the command fail with `Missing required option '--region'.` plus a usage hint. Help marks these `(required)`, shows them in the usage line (`app cmd --region <value> [OPTIONS]`), and lists enum choices for both options and positional args (`one of: dev, staging, prod`). (This shape was previously a compile error — see the breaking note below.) The `zcli add option <cmd> <name> --type T` scaffolder (and the interactive wizard) create a required option when no `--default`/`--nullable` is given.
