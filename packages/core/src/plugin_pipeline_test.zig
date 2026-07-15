@@ -914,6 +914,27 @@ test "version: --version on a bogus command shows the version via onError (regre
     try testing.expect(!contains(cap.stderr, "Unknown command"));
 }
 
+test "version: --version on a known command group beats group help (#403)" {
+    const Help = @import("plugins/zcli_help/plugin.zig");
+    // A PURE group ("users" has subcommands but no module of its own) routes
+    // through the raw not-found path, where help's onError renders group help
+    // at priority 100 — `--version users` used to lose that race and be
+    // silently ignored. Help now defers to the pending version request.
+    const App = zcli.Registry.init(test_config)
+        .register("users list", Greet)
+        .register("users create", Checkout)
+        .registerPlugin(Help)
+        .registerPlugin(Version)
+        .build();
+
+    const cap = try runCapture(App, &.{ "--version", "users" });
+    defer cap.deinit(testing.allocator);
+
+    try testing.expect(cap.err == null);
+    try testing.expect(contains(cap.stdout, "test v1.0.0"));
+    try testing.expect(!contains(cap.stderr, "list")); // no group help rendered
+}
+
 test "version: declares priority 90 so a higher-priority plugin's preExecute wins" {
     // The priority mechanism orders EVERY dispatched hook highest-first (see the
     // "descending priority order" test above). Version sits at 90 so that when

@@ -111,6 +111,14 @@ pub fn onError(
     err: anyerror,
 ) !bool {
     if (err == error.CommandNotFound) {
+        // A pending --version belongs to the version plugin, which runs at a
+        // lower priority and would otherwise lose this CommandNotFound to the
+        // group-help rendering below — `myapp --version <group>` must print
+        // the version, exactly like `myapp --version <unknown>` does (#403).
+        // Comptime-guarded: apps without the version plugin skip this.
+        if (comptime @hasField(@TypeOf(context.plugins), "zcli_version")) {
+            if (context.plugins.zcli_version.version_requested) return false;
+        }
         // If no command was provided at all, show app help. This is an error
         // reaction (CommandNotFound), so it goes to stderr.
         if (context.command_path.len == 0) {
