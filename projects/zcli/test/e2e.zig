@@ -228,8 +228,19 @@ test "init scaffolds a project with the expected files and wiring" {
 
     const zon = try readFile(proj, a, "build.zig.zon");
     try expectContains(zon, ".name = .myapp");
-    try expectContains(zon, ".zcli = .{");
-    try expectContains(zon, "github.com/ryanhair/zcli");
+
+    // The zcli dependency comes from a real `zig fetch` of the release tag
+    // pinned to this build's version. During a release run that tag does not
+    // exist yet — tests gate the tag creation (#301), so the staged version's
+    // `zig fetch` fails by design and init reports it (#328). Assert whichever
+    // outcome init declared; both verify the v* tag wiring (#352).
+    if (std.mem.indexOf(u8, r.stdout, "was not fetched") == null) {
+        try expectContains(zon, ".zcli = .{");
+        try expectContains(zon, "github.com/ryanhair/zcli");
+    } else {
+        try testing.expect(std.mem.indexOf(u8, zon, ".zcli = .{") == null);
+        try expectContains(r.stdout, "zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v");
+    }
 
     const build_zig = try readFile(proj, a, "build.zig");
     try expectContains(build_zig, "zcli.generate(");
