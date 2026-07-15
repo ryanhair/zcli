@@ -1176,18 +1176,17 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             const args_instance = parse_result.args;
             var options_instance = parse_result.options;
 
-            // Snapshot the post-parse options (a value copy) so the required
-            // check below can see which fields the config pass filled in.
-            const before_config = options_instance;
-
             // Config defaults fill only options no higher source set. The
             // provided bitset (CLI + env, keyed by Options field order) is the
             // single mechanism enforcing CLI > env > config: config skips any
-            // field whose flag is true. Passed by value copy — the plugin reads,
-            // never mutates it.
+            // field whose flag is true. The plugin marks every field it fills
+            // in `config_applied` — an explicit report, not a value diff, so a
+            // config value equal to a field's placeholder still counts as
+            // supplied (#388).
+            var config_applied = [_]bool{false} ** command_parser.optionFieldCount(OptionsType);
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "applyConfigDefaults")) {
-                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance, &parse_result.options_provided);
+                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance, &parse_result.options_provided, &config_applied);
                 }
             }
 
@@ -1195,7 +1194,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // Options field must be supplied by SOME source — CLI, env, or config.
             // Checked here, after every source has been applied, and reported like
             // any other parse error (humane message + usage hint).
-            if (command_parser.firstMissingRequiredOption(OptionsType, cmd_meta, before_config, options_instance, parse_result.options_provided)) |missing| {
+            if (command_parser.firstMissingRequiredOption(OptionsType, cmd_meta, parse_result.options_provided, config_applied)) |missing| {
                 const diag: zcli.ZcliDiagnostic = .{ .OptionMissingRequired = .{
                     .option_name = missing.name,
                     .expected_type = missing.expected_type,
@@ -1207,9 +1206,9 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
 
             // Cross-field constraints (ADR-0022), checked over the same
-            // provided-set + config snapshot. Order per ADR: requires, then
+            // provided + config_applied bitsets. Order per ADR: requires, then
             // exclusive (missing-required above ran first).
-            if (command_parser.firstMissingDependency(OptionsType, cmd_meta, before_config, options_instance, parse_result.options_provided)) |dep| {
+            if (command_parser.firstMissingDependency(OptionsType, cmd_meta, parse_result.options_provided, config_applied)) |dep| {
                 const diag: zcli.ZcliDiagnostic = .{ .OptionMissingDependency = .{
                     .option_name = dep.option_name,
                     .required_name = dep.required_name,
@@ -1220,7 +1219,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 return error.OptionMissingDependency;
             }
 
-            if (command_parser.firstExclusiveViolation(OptionsType, cmd_meta, before_config, options_instance, parse_result.options_provided)) |ex| {
+            if (command_parser.firstExclusiveViolation(OptionsType, cmd_meta, parse_result.options_provided, config_applied)) |ex| {
                 const diag: zcli.ZcliDiagnostic = .{ .OptionMutuallyExclusive = .{
                     .first = ex.first,
                     .second = ex.second,

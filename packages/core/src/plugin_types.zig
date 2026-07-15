@@ -204,15 +204,20 @@ pub fn getPriority(comptime T: type) i32 {
 ///   onError(context, err: anyerror) !bool
 ///
 ///   applyConfigDefaults(context, comptime OptionsType: type,
-///                       options: *OptionsType, provided: []const bool) void
+///                       options: *OptionsType, provided: []const bool,
+///                       applied: []bool) void
 ///     Fills option fields from a lower-precedence source (e.g. a config file)
 ///     after CLI + env parsing but before required/dependency/exclusive
 ///     validation. `provided` has one flag per Options field, in field-
 ///     declaration order, true when the CLI or the field's env fallback already
 ///     set it. The precedence obligation: the hook MUST skip any field whose
 ///     `provided` flag is true — this single check is what makes
-///     CLI > env > hook hold. `options` is mutated in place; `provided` is a
-///     read-only view. The hook does not return an error union — a malformed or
+///     CLI > env > hook hold. `applied` (same keying, caller-zeroed) is the
+///     hook's report back: it MUST mark every field it fills — the registry's
+///     required-option and constraint checks treat `provided[i] or applied[i]`
+///     as "supplied", with no value diffing (#388). `options` is mutated in
+///     place; `provided` is a read-only view. The hook does not return an
+///     error union — a malformed or
 ///     unreadable source is a warning-and-skip, never a hard failure (a config
 ///     typo must not brick every command). Any values it writes into `options`
 ///     (e.g. coerced strings/arrays) must outlive the command's execution;
@@ -399,10 +404,11 @@ test "editDistance flags an applyConfigDefaults typo" {
 test "validatePlugin accepts a well-formed applyConfigDefaults hook" {
     const Plugin = struct {
         pub const plugin_id = "cfg_plugin";
-        pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool) void {
+        pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void {
             _ = context;
             _ = options;
             _ = provided;
+            _ = applied;
         }
     };
     comptime validatePlugin(Plugin);

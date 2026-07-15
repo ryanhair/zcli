@@ -84,7 +84,8 @@ test "integration: --config path drives coercion for every type through the real
     };
     var opts = Opts{};
     const provided = [_]bool{false} ** 6;
-    config.applyConfigDefaults(&ctx, Opts, &opts, &provided);
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &provided, &applied);
 
     try testing.expect(opts.flag);
     try testing.expectEqualStrings("hi", opts.name);
@@ -127,7 +128,8 @@ test "integration: cwd discovery finds .{app}.config.toml (via chdir into tmp)" 
     const Opts = struct { count: u32 = 0 };
     var opts = Opts{};
     const provided = [_]bool{false};
-    config.applyConfigDefaults(&ctx, Opts, &opts, &provided);
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &provided, &applied);
     try testing.expectEqual(@as(u32, 42), opts.count);
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
@@ -160,13 +162,52 @@ test "integration: required option satisfied by config (through parseCommandLine
     try testing.expect(!result.options_provided[0]); // no source yet
 
     var opts = result.options;
-    const before = opts;
-    config.applyConfigDefaults(&ctx, Opts, &opts, &result.options_provided);
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &result.options_provided, &applied);
 
-    // Config filled it — the value differs from the pre-config snapshot, which
-    // is exactly what the registry's required-option check treats as "supplied".
+    // Config filled it and reported so in `applied` — exactly what the
+    // registry's required-option check treats as "supplied".
     try testing.expectEqualStrings("secret123", opts.token);
-    try testing.expect(!std.mem.eql(u8, before.token, opts.token));
+    try testing.expect(applied[0]);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: required option satisfied by a placeholder-equal config value (#388)" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 0 for the u32 and the FIRST enum variant — both equal the required-option
+    // placeholder, the exact values the old value-diff check misread as missing.
+    try tmp.dir.writeFile(io, .{ .sub_path = "myapp.json", .data = "{\"offset\": 0, \"format\": \"json\"}" });
+    const abs = try tmp.dir.realPathFileAlloc(io, "myapp.json", alloc);
+
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    const Opts = struct { offset: u32, format: enum { json, yaml } };
+    const result = try zcli.parseCommandLine(struct {}, Opts, null, alloc, &environ, &.{}, null);
+    defer result.deinit();
+
+    var opts = result.options;
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &result.options_provided, &applied);
+
+    try testing.expectEqual(@as(u32, 0), opts.offset);
+    try testing.expect(opts.format == .json);
+    // The registry's required-option check reads exactly these flags
+    // (firstMissingRequiredOption is bitset-driven — unit-tested in
+    // command_parser.zig), so both fields count as supplied.
+    try testing.expect(applied[0]);
+    try testing.expect(applied[1]);
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }
@@ -197,7 +238,8 @@ test "integration: CLI-provided value beats config (equal-to-default regression)
     try testing.expect(result.options_provided[0]);
 
     var opts = result.options;
-    config.applyConfigDefaults(&ctx, Opts, &opts, &result.options_provided);
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &result.options_provided, &applied);
     try testing.expectEqual(@as(u32, 5), opts.count); // config's 10 did NOT win
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
@@ -231,7 +273,8 @@ test "integration: env-provided value beats config" {
     try testing.expect(result.options_provided[0]); // env supplied it
 
     var opts = result.options;
-    config.applyConfigDefaults(&ctx, Opts, &opts, &result.options_provided);
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &result.options_provided, &applied);
     try testing.expectEqual(@as(u32, 99), opts.count); // env wins over config
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
