@@ -27,6 +27,7 @@ A command is one file: a `meta` block for help text, two structs, and an `execut
 ```zig
 // src/commands/deploy.zig
 const zcli = @import("zcli");
+const Context = @import("command_registry").Context;
 
 pub const meta = .{
     .description = "Deploy your application",
@@ -38,7 +39,7 @@ pub const meta = .{
 pub const Args = struct { service: []const u8 };
 pub const Options = struct { env: []const u8 = "production" };
 
-pub fn execute(args: Args, options: Options, context: anytype) !void {
+pub fn execute(args: Args, options: Options, context: *Context) !void {
     try context.stdout().print("Deploying {s} to {s}\n", .{ args.service, options.env });
 }
 ```
@@ -139,11 +140,13 @@ pub fn main(init: std.process.Init) !void {
 
 ```zig
 // src/commands/hello.zig
+const Context = @import("command_registry").Context;
+
 pub const meta = .{ .description = "Say hello" };
 pub const Args = struct { name: []const u8 };
 pub const Options = struct {};
 
-pub fn execute(args: Args, _: Options, context: anytype) !void {
+pub fn execute(args: Args, _: Options, context: *Context) !void {
     try context.stdout().print("Hello, {s}!\n", .{args.name});
 }
 ```
@@ -228,6 +231,13 @@ Nine spinner styles, plus stacked multi-bars for parallel work; animations auto-
 
 ## The CLI/TUI hybrid
 
+> **Unreleased.** `zcli.ui`, full-screen mode, and the focusable widget catalog
+> described below are on `main` and slated for the upcoming **0.20** release
+> (see [CHANGELOG.md](CHANGELOG.md#unreleased) and
+> [ROADMAP.md](ROADMAP.md)) — they aren't in v0.19.0, the version the manual-setup
+> snippet above pins. Track `main` if you want them today; pin a tagged release
+> once 0.20 ships.
+
 Prompts and progress render on `zcli.ui` — a terminal-native layout engine, and it's yours to use directly. Output splits into a static stream that flows into scrollback and a live region that repaints in place just above it — a full layout, from a single line up to the whole viewport, not a fixed bottom strip. Unlike a full-screen TUI it never takes the terminal over, so your scrollback stays intact. This is the shape of modern agent-style CLIs: a component is just a function returning a node, and frames are diffed, so an animation repaints one cell, not the screen.
 
 ```zig
@@ -285,7 +295,7 @@ Discovery order and formats: [zcli.sh/docs/config](https://zcli.sh/docs/config/)
 
 ## Plugins
 
-Cross-cutting features are plugins, added in one line of `build.zig`: help, version, "did you mean?", shell completions (bash/zsh/fish), config files, OS-keychain secrets, and self-upgrade via GitHub releases all ship in the box. Plugins hook the command lifecycle, register global options, expose typed data as `context.plugins.<id>`, and can ship commands of their own.
+Cross-cutting features are plugins, added in one line of `build.zig`: help, version, "did you mean?", shell completions (bash/zsh/fish/PowerShell), config files, OS-keychain secrets, and self-upgrade via GitHub releases all ship in the box. Plugins hook the command lifecycle, register global options, expose typed data as `context.plugins.<id>`, and can ship commands of their own.
 
 The full list and a guide to writing your own: [zcli.sh/plugins](https://zcli.sh/plugins/) (repo summary in [docs/PLUGINS.md](docs/PLUGINS.md)).
 
@@ -327,7 +337,7 @@ The HTML output is a styled, dark-mode-aware static site with navigation.
 
 ## Example
 
-The [showcase](examples/tasks/) is a fully functional task tracker CLI — the app in the demo GIF above — that exercises every zcli feature: 14 commands with nested groups and aliases, every prompt type, spinners and progress bars, themed output, JSON persistence, config files, completions, and doc generation.
+The [showcase](examples/tasks/) is a fully functional task tracker CLI — the app in the demo GIF above — that exercises most zcli features: 14 commands with nested groups and aliases, six of the eight prompt types, spinners and progress bars, themed output, JSON persistence, config files, completions, and doc generation.
 
 ```bash
 cd examples/tasks && zig build
@@ -344,7 +354,7 @@ What a real zcli app looks like. The meta-CLI you install is one; the rest are t
 | App | What it is |
 |-----|------------|
 | [**zcli**](projects/zcli) — the meta-CLI | Itself a zcli app: `init`, `add`, `mv`, `rm`, `tree`, `dev`, `guide`, and `release` are files in its `commands/` directory, running on the framework's own plugins (help, completions, "did you mean?", GitHub self-upgrade). |
-| [**tasks**](examples/tasks) | A full task tracker — the app in the demo GIF above. 14 commands with nested groups and aliases, every prompt type, spinners and progress bars, themed output, JSON persistence, config files, and completions. |
+| [**tasks**](examples/tasks) | A full task tracker — the app in the demo GIF above. 14 commands with nested groups and aliases, six of the eight prompt types, spinners and progress bars, themed output, JSON persistence, config files, and completions. |
 | [**ghauth**](examples/ghauth) | GitHub device-flow companion: stashes an API token in the OS keychain via `zcli_secrets`, then uses `zcli.http` to call the API as `whoami`. |
 | [**oauth-device**](examples/oauth-device) | Mints a token from scratch by running GitHub's OAuth device flow (RFC 8628), then keychains it — freeform command code, not a framework feature. |
 | [**notes**](examples/notes) | A tiny note keeper: saves and loads a typed struct as a JSON file and shares one `store` module across three commands. |
