@@ -109,20 +109,31 @@ pub fn parseCommandLine(
                     }
                 }
             } else {
-                // Short option -x or -xyz
+                // Short option `-x` or bundle `-xyz`. Walk the chars mirroring
+                // the options parser's mixed-bundle handling
+                // (parseShortOptionsWithMeta): skip leading boolean chars; the
+                // first value-taking char either carries the rest of the token
+                // as its attached value (no next-token lookahead) or — when it
+                // is the last char — consumes the next token as its value under
+                // the shared `isValueToken` rule (#299). Reusing the shared
+                // `shortOptionTakesValue`/`isValueToken` classifiers keeps this
+                // split and the parser in agreement so a bundle like
+                // `-vf out.txt` no longer strands its value (#427).
                 const option_chars = arg[1..];
-                if (option_chars.len == 1) {
-                    // Single short option, might need value
-                    const option_char = option_chars[0];
-                    const takes_value = option_utils.shortOptionTakesValue(OptionsType, meta, option_char) orelse false;
-                    // A following flag is not this short option's value — same
-                    // "next token is a value" rule the long path uses (#299).
-                    if (takes_value and i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
+                var ci: usize = 0;
+                while (ci < option_chars.len) : (ci += 1) {
+                    const takes_value = option_utils.shortOptionTakesValue(OptionsType, meta, option_chars[ci]) orelse false;
+                    // Boolean (or unknown) leading char: keep walking.
+                    if (!takes_value) continue;
+                    // First value-taking char. If it is not the last char, the
+                    // rest of the token is its attached value — no lookahead. If
+                    // it is the last char, the next token may be its value.
+                    if (ci + 1 == option_chars.len and i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
                         i += 1;
                         option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
                     }
+                    break;
                 }
-                // For bundled short options (-xyz), assume they're all boolean
             }
         } else {
             // Positional argument
@@ -1080,6 +1091,75 @@ test "#287 non-integer negative as an option value (both positions agree)" {
     const result = try parseCommandLine(struct {}, Options, null, allocator, null, &.{ "--min", "-.5" }, null);
     defer result.deinit();
     try std.testing.expectApproxEqAbs(@as(f64, -0.5), result.options.min, 0.0001);
+}
+
+// #427 — the pre-split only did value-lookahead for single-char short tokens, so
+// a bundle like `-vf out.txt` (a leading boolean then a value-taker) fell through
+// as "all boolean" and routed the value to the positionals; the parser then saw
+// `-vf` alone and reported a spurious OptionMissingValue. These parseCommandLine
+// -level tests go through the pre-split (the misleading parseOptions-direct test
+// in options/parser.zig bypasses it).
+test "#427 bundled short with value-taker last consumes the separated value" {
+    const allocator = std.testing.allocator;
+    const Options = struct { verbose: bool = false, file: []const u8 = "" };
+    const meta = .{ .options = .{ .file = .{ .short = 'f' } } };
+
+    const result = try parseCommandLine(struct {}, Options, meta, allocator, null, &.{ "-vf", "out.txt" }, null);
+    defer result.deinit();
+    try std.testing.expect(result.options.verbose);
+    try std.testing.expectEqualStrings("out.txt", result.options.file);
+}
+
+test "#427 bundled short with attached value" {
+    const allocator = std.testing.allocator;
+    const Options = struct { verbose: bool = false, file: []const u8 = "" };
+    const meta = .{ .options = .{ .file = .{ .short = 'f' } } };
+
+    const result = try parseCommandLine(struct {}, Options, meta, allocator, null, &.{"-vfout.txt"}, null);
+    defer result.deinit();
+    try std.testing.expect(result.options.verbose);
+    try std.testing.expectEqualStrings("out.txt", result.options.file);
+}
+
+test "#427 unbundled short value-taker still works" {
+    const allocator = std.testing.allocator;
+    const Options = struct { verbose: bool = false, file: []const u8 = "" };
+    const meta = .{ .options = .{ .file = .{ .short = 'f' } } };
+
+    const result = try parseCommandLine(struct {}, Options, meta, allocator, null, &.{ "-v", "-f", "out.txt" }, null);
+    defer result.deinit();
+    try std.testing.expect(result.options.verbose);
+    try std.testing.expectEqualStrings("out.txt", result.options.file);
+}
+
+test "#427 all-boolean bundle keeps a following word as a positional" {
+    const allocator = std.testing.allocator;
+    const Args = struct { path: []const u8 };
+    const Options = struct { verbose: bool = false, debug: bool = false };
+    const meta = .{ .options = .{ .debug = .{ .short = 'd' } } };
+
+    const result = try parseCommandLine(Args, Options, meta, allocator, null, &.{ "-vd", "input.txt" }, null);
+    defer result.deinit();
+    try std.testing.expect(result.options.verbose);
+    try std.testing.expect(result.options.debug);
+    try std.testing.expectEqualStrings("input.txt", result.args.path);
+}
+
+test "#427 value-taker mid-bundle takes the rest as attached value, next word stays positional" {
+    const allocator = std.testing.allocator;
+    const Args = struct { path: []const u8 };
+    const Options = struct { verbose: bool = false, file: []const u8 = "", debug: bool = false };
+    const meta = .{ .options = .{ .file = .{ .short = 'f' }, .debug = .{ .short = 'd' } } };
+
+    // `-vfd`: v is boolean, f is the first value-taker and is not the last char,
+    // so the remaining `d` is f's attached value (NOT a boolean flag). The
+    // following word remains a positional.
+    const result = try parseCommandLine(Args, Options, meta, allocator, null, &.{ "-vfd", "input.txt" }, null);
+    defer result.deinit();
+    try std.testing.expect(result.options.verbose);
+    try std.testing.expectEqualStrings("d", result.options.file);
+    try std.testing.expect(!result.options.debug);
+    try std.testing.expectEqualStrings("input.txt", result.args.path);
 }
 
 test "#298 a bare '-' is a positional, not an unknown option" {
