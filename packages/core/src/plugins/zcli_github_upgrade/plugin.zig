@@ -288,6 +288,7 @@ pub fn init(config: Config) type {
                 // and must not print (its old debug-print bypassed stream
                 // overrides and violated invariant #3).
                 error.NoMatchingRelease => return context.fail("Error: No releases found with tag prefix '{s}-v'\nExpected tag format: {s}-v<version> (e.g., {s}-v1.0.0)", .{ context.app_name, context.app_name, context.app_name }),
+                error.InvalidVersionTag => return context.fail("Error: the latest release tag carries an invalid version (only letters, digits, '.', '_', and '-' are allowed) — refusing to build a download URL from it", .{}),
                 error.UnexpectedResponse => return context.fail("Error: Unexpected response from the GitHub releases API (expected a JSON array of releases)", .{}),
                 error.RateLimitExceeded => return context.fail("Error: GitHub API rate limit exceeded. Try again later.", .{}),
                 error.FailedToFetchVersion => return context.fail("Error: Could not fetch the latest version from GitHub (repo '{s}').", .{plugin_config.repo}),
@@ -559,8 +560,16 @@ fn selectVersion(allocator: std.mem.Allocator, body: []const u8, cli_name: []con
 
     for (parsed.value) |release| {
         if (std.mem.startsWith(u8, release.tag_name, tag_prefix)) {
-            // Strip prefix to get version (e.g., "zcli-v1.0.0" -> "1.0.0")
-            return try allocator.dupe(u8, release.tag_name[tag_prefix.len..]);
+            // Strip prefix to get version (e.g., "zcli-v1.0.0" -> "1.0.0").
+            // The result is interpolated into the download URL exactly like an
+            // explicit `upgrade <version>` argument, so it passes the same
+            // validation — a crafted tag ("zcli-v../../…") must not
+            // path-traverse the URL (#395). Fail closed rather than skipping
+            // to an older release: an invalid tag at the top is an anomaly
+            // worth surfacing.
+            const version = release.tag_name[tag_prefix.len..];
+            if (!isValidVersionArg(version)) return error.InvalidVersionTag;
+            return try allocator.dupe(u8, version);
         }
     }
 
@@ -1442,6 +1451,22 @@ test "buildDownloadUrl - binary and checksums asset URLs use the {cli}-v{ver} ta
         "https://github.com/owner/repo/releases/download/myapp-v1.2.3/checksums.txt",
         sums,
     );
+}
+
+test "selectVersion validates the latest tag like an explicit version (#395)" {
+    const a = std.testing.allocator;
+
+    // A well-formed tag passes.
+    const good = try selectVersion(a, "[{\"tag_name\": \"myapp-v1.2.3\"}]", "myapp");
+    defer a.free(good);
+    try std.testing.expectEqualStrings("1.2.3", good);
+
+    // A crafted tag that would path-traverse the download URL fails closed.
+    try std.testing.expectError(error.InvalidVersionTag, selectVersion(
+        a,
+        "[{\"tag_name\": \"myapp-v../../evil/releases/download/other-v9.9.9\"}]",
+        "myapp",
+    ));
 }
 
 test "isValidVersionArg - accepts real version tags" {
