@@ -231,13 +231,6 @@ Nine spinner styles, plus stacked multi-bars for parallel work; animations auto-
 
 ## The CLI/TUI hybrid
 
-> **Unreleased.** `zcli.ui`, full-screen mode, and the focusable widget catalog
-> described below are on `main` and slated for the upcoming **0.20** release
-> (see [CHANGELOG.md](CHANGELOG.md#unreleased) and
-> [ROADMAP.md](ROADMAP.md)) — they aren't in v0.19.0, the version the manual-setup
-> snippet above pins. Track `main` if you want them today; pin a tagged release
-> once 0.20 ships.
-
 Prompts and progress render on `zcli.ui` — a terminal-native layout engine, and it's yours to use directly. Output splits into a static stream that flows into scrollback and a live region that repaints in place just above it — a full layout, from a single line up to the whole viewport, not a fixed bottom strip. Unlike a full-screen TUI it never takes the terminal over, so your scrollback stays intact. This is the shape of modern agent-style CLIs: a component is just a function returning a node, and frames are diffed, so an animation repaints one cell, not the screen.
 
 ```zig
