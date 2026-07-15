@@ -130,6 +130,15 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
 /// option's env fallback set it; config only fills fields it left false, so
 /// CLI > env > config falls out of a single check.
 ///
+/// `applied` (same keying, caller-zeroed) is the hook's report back: every
+/// field this pass fills is marked, and the registry's required-option and
+/// constraint checks read it directly — an explicit signal, not a value diff,
+/// so a config value equal to a field's placeholder still counts as supplied
+/// (#388). It doubles as config's own two-tier precedence tracker: the
+/// command-scope pass runs first and marks fields it fills; the global pass
+/// then skips them (without this, the second pass would overwrite a more
+/// specific value).
+///
 /// Applies config values scoped to the current command, plus global values,
 /// identically for JSON, TOML, and YAML. Top-level keys are global (apply to
 /// every command); keys nested under the command path are command-scoped and
@@ -138,7 +147,7 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
 ///     "list": { "all": true } }    // scoped — applies only to "list" command
 /// and the equivalent TOML `[list]` table / YAML `list:` mapping.
 /// Precedence: CLI flag > env > command-scoped config > global config > struct default.
-pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool) void {
+pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void {
     const data = &context.plugins.zcli_config;
     const content = data.raw_content orelse return;
     const format = data.format orelse return;
@@ -153,18 +162,10 @@ pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options
     // command-scoped section within the config tree.
     const cmd_path = context.command_path;
 
-    // Config's own two-tier precedence (command-scoped > global) is tracked here:
-    // the command-scope pass runs first and marks fields it fills; the global
-    // pass then skips them. Without this, the second pass would overwrite a more
-    // specific value. Sized per Options field, in declaration order — same
-    // keying as `provided`.
-    const field_count = @typeInfo(OptionsType).@"struct".fields.len;
-    var applied = [_]bool{false} ** field_count;
-
     switch (format) {
-        .json => applyFromJsonScoped(OptionsType, options, content, ctx, data, cmd_path, provided, &applied),
-        .toml => applyFromTomlScoped(OptionsType, options, content, ctx, data, cmd_path, provided, &applied),
-        .yaml => applyFromYamlScoped(OptionsType, options, content, ctx, data, cmd_path, provided, &applied),
+        .json => applyFromJsonScoped(OptionsType, options, content, ctx, data, cmd_path, provided, applied),
+        .toml => applyFromTomlScoped(OptionsType, options, content, ctx, data, cmd_path, provided, applied),
+        .yaml => applyFromYamlScoped(OptionsType, options, content, ctx, data, cmd_path, provided, applied),
     }
 }
 
