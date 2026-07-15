@@ -178,6 +178,7 @@ pub const Spinner = struct {
                 .capability = theme.capability(),
                 .unicode = config.unicode,
                 .interactive = terminal.isStderrTty(),
+                .out_handle = std.Io.File.stderr().handle,
             }),
         };
     }
@@ -371,6 +372,7 @@ pub const ProgressBar = struct {
                 .capability = theme.capability(),
                 .unicode = config.unicode,
                 .interactive = terminal.isStderrTty(),
+                .out_handle = std.Io.File.stderr().handle,
             }),
             .start_time = nowMsIo(io),
         };
@@ -547,6 +549,7 @@ pub const MultiBar = struct {
                 .capability = theme.capability(),
                 .unicode = config.unicode,
                 .interactive = terminal.isStderrTty(),
+                .out_handle = std.Io.File.stderr().handle,
             }),
         };
     }

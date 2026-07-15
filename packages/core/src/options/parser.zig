@@ -675,85 +675,90 @@ fn parseShortOptionsWithMeta(
         }
         return 1;
     } else {
-        // Parse as single option, possibly with value
-        const char = options_part[0];
+        // Mixed bundle (GNU getopt semantics): consume leading boolean flags
+        // one at a time; the first value-taking option gets the rest of the
+        // token as an attached value, or the next argument (`-vf out.txt` ==
+        // `-v -f out.txt`, `-vfout.txt` == `-v -fout.txt`).
+        var ci: usize = 0;
+        while (ci < options_part.len) : (ci += 1) {
+            const char = options_part[ci];
 
-        var char_found = false;
-        inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
-            // Get the expected short option character for this field (comptime)
-            const expected_char = comptime utils.shortCharForField(meta, field.name);
+            var char_found = false;
+            inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
+                // Get the expected short option character for this field (comptime)
+                const expected_char = comptime utils.shortCharForField(meta, field.name);
 
-            const matches = expected_char == char;
+                const matches = expected_char == char;
 
-            if (matches) {
-                char_found = true;
+                if (matches and !char_found) {
+                    char_found = true;
 
-                if (comptime utils.isBooleanFlag(field.type)) {
-                    try markBooleanFlagOnce(diag, option_counts, field.name, options_part[0..1], true);
-                    @field(result, field.name) = true;
-                    return 1;
-                } else {
-                    // Track usage count for duplicate detection
-                    const count = option_counts.get(field.name) orelse 0;
-                    try option_counts.put(field.name, count + 1);
-
-                    // Value-taking option
-                    var value: []const u8 = undefined;
-                    var consumed: usize = 1;
-
-                    if (options_part.len > 1) {
-                        // Value attached: -ovalue
-                        value = options_part[1..];
+                    if (comptime utils.isBooleanFlag(field.type)) {
+                        try markBooleanFlagOnce(diag, option_counts, field.name, options_part[ci .. ci + 1], true);
+                        @field(result, field.name) = true;
                     } else {
-                        // Value in the next argument — but only if that token is
-                        // a value, not another option (#299). A following flag
-                        // (`-t --verbose`) is a missing value, mirroring the long
-                        // path; the bare `-` and negative numbers count as values.
-                        if (arg_index + 1 >= args.len or !utils.isValueToken(args[arg_index + 1])) {
-                            if (diag) |d| d.* = .{ .OptionMissingValue = .{
-                                .option_name = options_part[0..1],
-                                .is_short = true,
-                                .expected_type = diagnostic_errors.expectedTypeName(field.type),
-                            } };
-                            return error.MissingOptionValue;
-                        }
-                        value = args[arg_index + 1];
-                        consumed = 2;
-                    }
+                        // Track usage count for duplicate detection
+                        const count = option_counts.get(field.name) orelse 0;
+                        try option_counts.put(field.name, count + 1);
 
-                    if (comptime utils.isArrayType(field.type)) {
-                        // For array types, accumulate values
-                        if (array_lists.*[i]) |*list_union| {
-                            const element_type = @typeInfo(field.type).pointer.child;
-                            try array_utils.appendCsvToArrayListUnionShort(element_type, allocator, list_union, value, char);
-                        }
-                    } else {
-                        const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
-                            if (diag) |d| d.* = .{ .OptionInvalidValue = .{
-                                .option_name = options_part[0..1],
-                                .is_short = true,
-                                .provided_value = value,
-                                .expected_type = diagnostic_errors.expectedTypeName(field.type),
-                                .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
-                                .reason = custom_type.describeError(field.type, value),
-                            } };
-                            return err;
-                        };
-                        @field(result, field.name) = parsed_value;
-                    }
+                        // Value-taking option
+                        var value: []const u8 = undefined;
+                        var consumed: usize = 1;
 
-                    return consumed;
+                        if (options_part.len > ci + 1) {
+                            // Value attached: -ovalue
+                            value = options_part[ci + 1 ..];
+                        } else {
+                            // Value in the next argument — but only if that token is
+                            // a value, not another option (#299). A following flag
+                            // (`-t --verbose`) is a missing value, mirroring the long
+                            // path; the bare `-` and negative numbers count as values.
+                            if (arg_index + 1 >= args.len or !utils.isValueToken(args[arg_index + 1])) {
+                                if (diag) |d| d.* = .{ .OptionMissingValue = .{
+                                    .option_name = options_part[ci .. ci + 1],
+                                    .is_short = true,
+                                    .expected_type = diagnostic_errors.expectedTypeName(field.type),
+                                } };
+                                return error.MissingOptionValue;
+                            }
+                            value = args[arg_index + 1];
+                            consumed = 2;
+                        }
+
+                        if (comptime utils.isArrayType(field.type)) {
+                            // For array types, accumulate values
+                            if (array_lists.*[i]) |*list_union| {
+                                const element_type = @typeInfo(field.type).pointer.child;
+                                try array_utils.appendCsvToArrayListUnionShort(element_type, allocator, list_union, value, char);
+                            }
+                        } else {
+                            const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
+                                if (diag) |d| d.* = .{ .OptionInvalidValue = .{
+                                    .option_name = options_part[ci .. ci + 1],
+                                    .is_short = true,
+                                    .provided_value = value,
+                                    .expected_type = diagnostic_errors.expectedTypeName(field.type),
+                                    .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
+                                    .reason = custom_type.describeError(field.type, value),
+                                } };
+                                return err;
+                            };
+                            @field(result, field.name) = parsed_value;
+                        }
+
+                        return consumed;
+                    }
                 }
             }
-        }
 
-        if (!char_found) {
-            if (diag) |d| d.* = .{ .OptionUnknown = .{
-                .option_name = options_part[0..1],
-                .is_short = true,
-                .suggestions = &.{},
-            } };
-            return error.UnknownOption;
+            if (!char_found) {
+                if (diag) |d| d.* = .{ .OptionUnknown = .{
+                    .option_name = options_part[ci .. ci + 1],
+                    .is_short = true,
+                    .suggestions = &.{},
+                } };
+                return error.UnknownOption;
+            }
         }
 
         return 1;
@@ -1379,6 +1384,68 @@ test "parseOptions bundled short options" {
         try std.testing.expect(parsed.options.quiet);
         try std.testing.expect(parsed.options.force);
         try std.testing.expect(parsed.options.all);
+    }
+}
+
+test "parseOptions bundled short options with trailing value-taker (GNU getopt)" {
+    const TestOptions = struct {
+        verbose: bool = false,
+        quiet: bool = false,
+        file: []const u8 = "",
+    };
+
+    const allocator = std.testing.allocator;
+
+    // -vf X: boolean then value-taker taking the next argument
+    {
+        const args = [_][]const u8{ "-vf", "out.txt" };
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+
+        try std.testing.expect(parsed.options.verbose);
+        try std.testing.expectEqualStrings("out.txt", parsed.options.file);
+        try std.testing.expectEqual(@as(usize, 2), parsed.result.next_arg_index);
+    }
+
+    // -vvf X: repeated boolean errors as duplicate, not silently dropped
+    {
+        const args = [_][]const u8{ "-vqf", "out.txt" };
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+
+        try std.testing.expect(parsed.options.verbose);
+        try std.testing.expect(parsed.options.quiet);
+        try std.testing.expectEqualStrings("out.txt", parsed.options.file);
+    }
+
+    // -vfout.txt: value attached directly after the value-taker
+    {
+        const args = [_][]const u8{"-vfout.txt"};
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+
+        try std.testing.expect(parsed.options.verbose);
+        try std.testing.expectEqualStrings("out.txt", parsed.options.file);
+    }
+
+    // -fv X: value-taker first consumes the rest of the bundle as its value
+    {
+        const args = [_][]const u8{ "-fv", "ignored" };
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+
+        try std.testing.expect(!parsed.options.verbose);
+        try std.testing.expectEqualStrings("v", parsed.options.file);
+    }
+
+    // -vz: unknown char after a boolean errors
+    {
+        const args = [_][]const u8{"-vz"};
+        const result = parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expectError(error.OptionUnknown, result);
+    }
+
+    // -vf with no value following errors MissingOptionValue
+    {
+        const args = [_][]const u8{"-vf"};
+        const result = parseOptions(TestOptions, allocator, &args, null);
+        try std.testing.expectError(error.OptionMissingValue, result);
     }
 }
 
