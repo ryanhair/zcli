@@ -825,7 +825,12 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 var handled = false;
 
                 if (std.mem.startsWith(u8, arg, "--")) {
-                    const opt_name = arg[2..];
+                    // Split `--name=value` before matching, mirroring the
+                    // command-option long path (#391).
+                    const opt_body = arg[2..];
+                    const eq_idx = std.mem.indexOfScalar(u8, opt_body, '=');
+                    const opt_name = if (eq_idx) |e| opt_body[0..e] else opt_body;
+                    const attached: ?[]const u8 = if (eq_idx) |e| opt_body[e + 1 ..] else null;
                     // Check if this is a global option
                     inline for (global_options) |global_opt| {
                         if (std.mem.eql(u8, opt_name, global_opt.name)) {
@@ -834,9 +839,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
 
                             var value: []const u8 = "true"; // Boolean flags: presence == true
                             if (global_opt.type != bool) {
-                                // Same next-token-is-a-value rule the command
-                                // parsers share (options/utils.zig).
-                                if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
+                                if (attached) |v| {
+                                    value = v;
+                                } else if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
+                                    // Same next-token-is-a-value rule the command
+                                    // parsers share (options/utils.zig).
                                     i += 1;
                                     value = args[i];
                                     try consumed.append(context.allocator, i);
@@ -848,6 +855,15 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                                     } };
                                     return zcli.ZcliError.OptionMissingValue;
                                 }
+                            } else if (attached) |v| {
+                                // `--flag=x` on a boolean global errors like the
+                                // command parser's boolean-with-value path.
+                                context.diagnostic = .{ .OptionBooleanWithValue = .{
+                                    .option_name = global_opt.name,
+                                    .is_short = false,
+                                    .provided_value = v,
+                                } };
+                                return zcli.ZcliError.OptionBooleanWithValue;
                             }
 
                             try dispatchGlobalOption(context, global_opt, value, false);

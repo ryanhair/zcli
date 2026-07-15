@@ -354,6 +354,23 @@ test "pipeline: handleGlobalOption receives correctly typed values" {
     try testing.expectEqualStrings("debug", GlobalOptPlugin.level_seen.?);
 }
 
+test "pipeline: global options accept --name=value like command options (#391)" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(GlobalOptPlugin)
+        .build();
+
+    GlobalOptPlugin.level_seen = null;
+    try run(App, &.{ "--level=debug", "greet" });
+    try testing.expect(GlobalOptPlugin.level_seen != null);
+    try testing.expectEqualStrings("debug", GlobalOptPlugin.level_seen.?);
+
+    // A boolean global with an attached value errors like the command parser.
+    const cap = try runCapture(App, &.{ "--verbose=yes", "greet" });
+    defer cap.deinit(testing.allocator);
+    try testing.expectEqual(@as(?anyerror, error.OptionBooleanWithValue), cap.err);
+}
+
 // ---------------------------------------------------------------------------
 // 7. postParse can replace the parsed args the command sees
 // ---------------------------------------------------------------------------
