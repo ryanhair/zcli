@@ -155,39 +155,37 @@ fn showCommandList(context: anytype, fmt: anytype) !void {
         // command contributes its top-level name but no description.
         const is_exact_match = (cmd_info.path.len == 1);
 
-        {
-            // Skip alias entries - the display_name is in the aliases list
-            // This means this entry is an alias, not the primary command
-            if (isAlias(display_name, cmd_info.aliases)) continue;
+        // Skip alias entries - the display_name is in the aliases list
+        // This means this entry is an alias, not the primary command
+        if (isAlias(display_name, cmd_info.aliases)) continue;
 
-            const existing = command_map.get(display_name);
+        const existing = command_map.get(display_name);
 
-            // Add or update the command in the map
-            // Only use descriptions from exact matches (commands at the correct depth)
-            if (existing == null) {
-                // First time seeing this command
-                // Only add description if it's an exact match
-                if (is_exact_match) {
-                    try command_map.put(display_name, .{
-                        .description = cmd_info.description,
-                        .aliases = cmd_info.aliases,
-                    });
-                } else {
-                    // Not an exact match, add with no description
-                    try command_map.put(display_name, .{
-                        .description = null,
-                        .aliases = &.{},
-                    });
-                }
-            } else if (is_exact_match and cmd_info.description != null) {
-                // We have an exact match with a description, prefer it over previous entries
+        // Add or update the command in the map
+        // Only use descriptions from exact matches (commands at the correct depth)
+        if (existing == null) {
+            // First time seeing this command
+            // Only add description if it's an exact match
+            if (is_exact_match) {
                 try command_map.put(display_name, .{
                     .description = cmd_info.description,
                     .aliases = cmd_info.aliases,
                 });
+            } else {
+                // Not an exact match, add with no description
+                try command_map.put(display_name, .{
+                    .description = null,
+                    .aliases = &.{},
+                });
             }
-            // Otherwise keep existing entry
+        } else if (is_exact_match and cmd_info.description != null) {
+            // We have an exact match with a description, prefer it over previous entries
+            try command_map.put(display_name, .{
+                .description = cmd_info.description,
+                .aliases = cmd_info.aliases,
+            });
         }
+        // Otherwise keep existing entry
     }
 
     // Second pass: display commands in alphabetical order. The dedup map above
