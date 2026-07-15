@@ -950,10 +950,21 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
 
         /// Dispatch `err` to the plugins' onError hooks, first handler wins.
         /// Returns whether a plugin handled (and thereby suppressed) the error.
+        /// A hook that itself errors must not replace the original error (whose
+        /// diagnostic would then never be reported) — the hook's failure is
+        /// noted on stderr and dispatch continues to the next hook (#390).
         fn runOnErrorHooks(context: *Context, err: anyerror) !bool {
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "onError")) {
-                    if (try Plugin.onError(context, err)) return true;
+                    const plugin_name = comptime if (@hasDecl(Plugin, "plugin_id")) Plugin.plugin_id else @typeName(Plugin);
+                    const handled = Plugin.onError(context, err) catch |hook_err| blk: {
+                        context.stderr().print(
+                            "Warning: {s} onError hook failed with {s} while handling {s}\n",
+                            .{ plugin_name, @errorName(hook_err), @errorName(err) },
+                        ) catch {};
+                        break :blk false;
+                    };
+                    if (handled) return true;
                 }
             }
             return false;

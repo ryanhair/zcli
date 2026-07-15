@@ -442,6 +442,44 @@ const NotFoundPlugin = struct {
     }
 };
 
+const ThrowingOnError = struct {
+    pub const priority = 200; // runs before any handler
+    pub fn onError(_: anytype, _: anyerror) !bool {
+        return error.HookBoom;
+    }
+};
+
+test "pipeline: a failing onError hook does not swallow the original error (#390)" {
+    const App = zcli.Registry.init(test_config)
+        .register("fail", Fail)
+        .registerPlugin(ThrowingOnError)
+        .build();
+
+    const cap = try runCapture(App, &.{"fail"});
+    defer cap.deinit(testing.allocator);
+
+    // The command's own error propagates — not the hook's.
+    try testing.expectEqual(@as(?anyerror, error.Boom), cap.err);
+    // The hook's failure is surfaced, not silently dropped.
+    try testing.expect(contains(cap.stderr, "onError hook failed with HookBoom"));
+}
+
+test "pipeline: a failing onError hook falls through to the next handler (#390)" {
+    const App = zcli.Registry.init(test_config)
+        .register("fail", Fail)
+        .registerPlugin(ThrowingOnError)
+        .registerPlugin(SuppressErrPlugin)
+        .build();
+
+    SuppressErrPlugin.seen = null;
+    const cap = try runCapture(App, &.{"fail"});
+    defer cap.deinit(testing.allocator);
+
+    // The lower-priority handler still sees and suppresses the original error.
+    try testing.expectEqual(@as(?anyerror, null), cap.err);
+    try testing.expectEqual(@as(?anyerror, error.Boom), SuppressErrPlugin.seen);
+}
+
 test "pipeline: onError returning true suppresses CommandNotFound" {
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
