@@ -80,7 +80,7 @@ The framework itself is an ordinary Zig dependency — the meta-CLI is optional:
 Pin the release in your `build.zig.zon` with an immutable hash:
 
 ```bash
-zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.19.0.tar.gz
+zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.20.0.tar.gz
 ```
 
 To track the development branch instead, fetch `.../archive/refs/heads/main.tar.gz` — its hash changes with every commit, so re-run the command to update.
