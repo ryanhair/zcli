@@ -55,11 +55,6 @@ pub const CommandEntry = struct {
     module: type,
 };
 
-/// Plugin entry for the registry (legacy support)
-pub const PluginEntry = struct {
-    plugin: type,
-};
-
 /// Registry builder for comptime command registration
 pub const Registry = struct {
     pub fn init(comptime config: Config) RegistryBuilder(config, &.{}, &.{}) {

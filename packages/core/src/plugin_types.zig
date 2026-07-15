@@ -444,32 +444,6 @@ test "identifierSuggestion rewrites to a valid identifier" {
     }
 }
 
-// ============================================================================
-// Plugin Registry Entry
-// ============================================================================
-
-/// Entry in the plugin registry (compile-time)
-pub fn PluginEntry(comptime T: type) type {
-    return struct {
-        const PluginType = T;
-
-        pub const has_global_options = hasGlobalOptions(T);
-        pub const has_transform_args = hasTransformArgs(T);
-        pub const has_handle_global_option = hasHandleGlobalOption(T);
-        pub const has_pre_parse = hasPreParse(T);
-        pub const has_post_parse = hasPostParse(T);
-        pub const has_pre_execute = hasPreExecute(T);
-        pub const has_post_execute = hasPostExecute(T);
-        pub const has_on_error = hasOnError(T);
-        pub const has_apply_config_defaults = hasApplyConfigDefaults(T);
-        pub const has_commands = hasCommands(T);
-        pub const priority = getPriority(T);
-
-        pub const global_options = if (has_global_options) T.global_options else [_]GlobalOption{};
-        pub const commands = if (has_commands) T.commands else struct {};
-    };
-}
-
 // Test basic argument transformation
 test "basic argument transformation" {
     const allocator = testing.allocator;
