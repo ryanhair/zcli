@@ -17,7 +17,7 @@ Curation rule: an invariant belongs here only if it is **(a) high-leverage again
 1. Never call `free`/`deinit` on what you allocate in `execute()` — the allocator is a per-command arena, reclaimed automatically (ADR-0001).
 2. Change structure with `zcli add`/`rm`/`mv`, not by hand; write freeform code only in `execute()` bodies.
 3. Output via `context.stdout()`/`context.stderr()` — never `std.debug.print` or direct stdout.
-4. Don't hand-roll terminal I/O — use `zinput` (input), `zprogress` (progress), `ztheme` (color).
+4. Don't hand-roll terminal I/O — use `prompts` (input), `progress` (progress), `theme` (color). *(Named `zinput`/`zprogress`/`ztheme` when this ADR was written; renamed in PR #158.)*
 5. Verify with `zig build` + tests; run `zcli guide` for version-matched API detail and examples.
 6. File path = command path (`src/commands/foo/bar.zig` → `app foo bar`; `index.zig` = group landing; plugins in `src/plugins/`).
 

@@ -2,7 +2,7 @@
 
 Status: accepted
 
-The AI's "observe" step (read-back) is served by enriching the existing `tree --show-options`, not by adding a separate format or `--json`. The default `tree` stays compact and pretty for humans; `--show-options` becomes the complete, machine-legible read-back (ANSI-free when non-TTY via the existing ztheme `no_color` path). The guiding principle is **read/write symmetry**: the read-back surfaces exactly the spec fields the AI writes via `add option`/`add arg`, so it can reconcile current shape against intent and round-trip.
+The AI's "observe" step (read-back) is served by enriching the existing `tree --show-options`, not by adding a separate format or `--json`. The default `tree` stays compact and pretty for humans; `--show-options` becomes the complete, machine-legible read-back (ANSI-free when non-TTY via the existing theme package's `no_color` path — named `ztheme` when this ADR was written, renamed in PR #158). The guiding principle is **read/write symmetry**: the read-back surfaces exactly the spec fields the AI writes via `add option`/`add arg`, so it can reconcile current shape against intent and round-trip.
 
 To achieve that, args and options share **one notation** where every glyph maps to one spec field:
 
