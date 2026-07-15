@@ -150,7 +150,6 @@ pub const GlobalOption = plugin_types.GlobalOption;
 pub const TransformResult = plugin_types.TransformResult;
 pub const ParsedArgs = plugin_types.ParsedArgs;
 pub const GlobalOptionsResult = plugin_types.GlobalOptionsResult;
-pub const PluginEntry = plugin_types.PluginEntry;
 pub const option = plugin_types.option;
 
 // ============================================================================

@@ -6,7 +6,6 @@ const builder = @import("registry/builder.zig");
 
 pub const Config = builder.Config;
 pub const CommandEntry = builder.CommandEntry;
-pub const PluginEntry = builder.PluginEntry;
 pub const Registry = builder.Registry;
 
 test {
