@@ -234,14 +234,30 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle, paste: ?Pas
                 break :blk keyIn(.escape);
             },
             '2' => blk: {
-                // ESC [ 200 ~ = bracketed-paste start (DECSET 2004). Only that
-                // exact prefix; any other ESC[2… is an unhandled CSI.
-                var m: [3]u8 = undefined;
-                for (&m) |*c| c.* = readByteFn(reader) catch break :blk keyIn(.escape);
-                if (std.mem.eql(u8, &m, "00~")) break :blk readPasteBody(reader, paste);
+                // ESC [ 2 ~ = Insert; ESC [ 200 ~ = bracketed-paste start
+                // (DECSET 2004). Match the "00~" suffix incrementally
+                // (byte-at-a-time) rather than with a fixed 3-byte read, so
+                // Insert's lone '~' terminates the sequence immediately
+                // instead of blocking for two more bytes that will never
+                // arrive (and eating the next two real keystrokes).
+                for ("00~") |want| {
+                    const got = readByteFn(reader) catch break :blk keyIn(.escape);
+                    if (got != want) {
+                        skipCsiTail(reader, got);
+                        break :blk keyIn(.escape);
+                    }
+                }
+                break :blk readPasteBody(reader, paste);
+            },
+            else => blk: {
+                // Unrecognized CSI (e.g. a modified arrow/Home/End such as
+                // `ESC[1;5C`, Ctrl-Right): `code` is the sequence's first
+                // parameter byte, not a final byte. Consume the rest of the
+                // sequence so trailing parameter/intermediate bytes aren't
+                // misparsed as separate keys, then report it as unhandled.
+                skipCsiTail(reader, code);
                 break :blk keyIn(.escape);
             },
-            else => keyIn(.escape),
         };
     } else if (next == 'O') {
         // SS3 sequence: ESC O ...
@@ -254,6 +270,20 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle, paste: ?Pas
     }
 
     return keyIn(.escape);
+}
+
+/// Consume the remainder of an unrecognized CSI sequence so the byte stream
+/// stays in sync. `first` is the byte already read as the CSI's first byte
+/// after `ESC [` (which may itself already be the sequence's final byte).
+/// Per the CSI grammar, parameter bytes are 0x30-0x3F, intermediate bytes are
+/// 0x20-0x2F, and the sequence ends at a single final byte in 0x40-0x7E — so
+/// this reads bytes while they're in the parameter/intermediate range and
+/// stops once a final byte is seen (or the stream ends).
+fn skipCsiTail(reader: anytype, first: u8) void {
+    var b = first;
+    while (b >= 0x20 and b <= 0x3f) {
+        b = readByteFn(reader) catch return;
+    }
 }
 
 /// Parse the tail of an SGR mouse report (`ESC [ <` already consumed):
@@ -602,6 +632,43 @@ test "readInput still parses keys" {
 
 test "malformed mouse sequence degrades to escape, not a desync" {
     try std.testing.expectEqual(Key.escape, (try parseInput("\x1b[<0;xM")).key);
+}
+
+test "modified arrow key does not desync the stream" {
+    // Ctrl-Right = ESC[1;5C. The unrecognized CSI must consume the whole
+    // sequence (not just '1'), leaving the following real key intact.
+    var buf = "\x1b[1;5Ca".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = 'a' }, try readKey(&reader));
+    try std.testing.expectError(error.EndOfStream, readKey(&reader));
+}
+
+test "modified Home/End does not desync the stream" {
+    // Shift-Home = ESC[1;2H, Shift-End = ESC[1;2F.
+    var buf = "\x1b[1;2H\x1b[1;2F".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectError(error.EndOfStream, readKey(&reader));
+}
+
+test "Insert does not swallow subsequent keystrokes" {
+    // ESC[2~ = Insert. The '2' arm must not block hunting for a 3-byte
+    // "00~" bracketed-paste suffix that will never arrive.
+    var buf = "\x1b[2~ab".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = 'a' }, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = 'b' }, try readKey(&reader));
+    try std.testing.expectError(error.EndOfStream, readKey(&reader));
+}
+
+test "bracketed paste still recognized after Insert fix" {
+    const i = try parseInput("\x1b[200~hi\x1b[201~");
+    // No sink provided, so the paste is discarded but the sequence is fully
+    // consumed (not misparsed as an Insert or desynced).
+    try std.testing.expectEqual(Key.escape, i.key);
 }
 
 test "readInput parses bracketed paste content" {
