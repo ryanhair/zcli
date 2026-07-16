@@ -269,19 +269,18 @@ test "security: resource limits - absurd option names are rejected" {
     );
 }
 
-test "security: resource exhaustion - processing time limits" {
+test "security: resource exhaustion - processing bounded regardless of input" {
     const allocator = testing.allocator;
 
-    const io = std.testing.io;
-    const start = std.Io.Timestamp.now(io, .awake);
-
-    // Test that the edit-distance kernel (the core of suggestion matching) has
-    // reasonable performance across many candidates.
+    // Score many candidates against a typo, mirroring the suggestion hot loop,
+    // and assert it completes with a well-defined result. (This deliberately
+    // does NOT assert on wall-clock time: an elapsed-time bound flakes on a
+    // loaded CI runner. The resource-exhaustion guard below is what actually
+    // matters, and it's deterministic.)
     const command_count = 50; // Reasonable test size
     const similar_commands = try generateSimilarStrings(allocator, command_count, "command");
     defer freeSimilarStrings(allocator, similar_commands);
 
-    // Score every candidate against a typo, mirroring the suggestion hot loop.
     var closest: usize = std.math.maxInt(usize);
     for (similar_commands) |candidate| {
         const distance = levenshtein.editDistance("commnd", candidate);
@@ -289,10 +288,37 @@ test "security: resource exhaustion - processing time limits" {
     }
     try testing.expect(closest != std.math.maxInt(usize));
 
-    const elapsed = start.untilNow(io, .awake).nanoseconds;
+    // The real DoS guard: the edit-distance kernel is O(m*n), so attacker-
+    // controlled input length must NOT translate into unbounded work. The
+    // kernel caps each operand to max_practical_len (256) before filling the
+    // matrix, so the matrix it fills is bounded by 256*256 no matter how long
+    // the inputs are. Verify that cap deterministically: the distance computed
+    // over a megabyte-long input must equal the distance over its first 256
+    // bytes — i.e. everything past the cap is ignored, so there is no O(m*n)
+    // blow-up on huge inputs. (No wall clock involved.)
+    const cap = 256;
+    const huge = try allocator.alloc(u8, 1024 * 1024);
+    defer allocator.free(huge);
+    @memset(huge, 'a');
 
-    // Should complete within reasonable time (1 second for testing)
-    try testing.expect(elapsed < 1000 * std.time.ns_per_ms);
+    // A short query against a huge candidate (both operand orderings).
+    try testing.expectEqual(
+        levenshtein.editDistance("commnd", huge[0..cap]),
+        levenshtein.editDistance("commnd", huge),
+    );
+    try testing.expectEqual(
+        levenshtein.editDistance(huge[0..cap], "commnd"),
+        levenshtein.editDistance(huge, "commnd"),
+    );
+
+    // Two huge strings: only the first 256 bytes of each can matter.
+    const huge2 = try allocator.alloc(u8, 1024 * 1024);
+    defer allocator.free(huge2);
+    @memset(huge2, 'b');
+    try testing.expectEqual(
+        levenshtein.editDistance(huge[0..cap], huge2[0..cap]),
+        levenshtein.editDistance(huge, huge2),
+    );
 }
 
 // ============================================================================

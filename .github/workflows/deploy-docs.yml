@@ -21,6 +21,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Every deploy republishes install.sh/install.ps1 — the curl|sh trust root —
     # so the job is gated behind a protected environment with required reviewers
     # (grade6 #293). Inert until the "docs-deploy" environment is created in

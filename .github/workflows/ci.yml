@@ -9,6 +9,7 @@ jobs:
   fmt:
     name: zig fmt check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -72,6 +73,7 @@ jobs:
   version-sync:
     name: version consistency
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -151,6 +153,7 @@ jobs:
   test:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -195,6 +198,7 @@ jobs:
   windows-release-build:
     name: windows release build
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -227,6 +231,7 @@ jobs:
   linux-musl-release-build:
     name: linux musl release build (${{ matrix.zig_target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -273,6 +278,7 @@ jobs:
   secrets:
     name: zcli_secrets backend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -365,6 +371,7 @@ jobs:
   examples:
     name: canonical examples compile
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -398,6 +405,7 @@ jobs:
   e2e:
     name: zcli end-to-end tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
