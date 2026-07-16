@@ -31,7 +31,7 @@ zcli init myapp --description "My awesome CLI"
 zcli init .    # initialize the current directory
 ```
 
-Scaffolds a complete, buildable project — `build.zig.zon`, a `build.zig` wired with [`zcli.generate`]($link.page('docs/build')), `src/main.zig`, an example command — and fetches dependencies so `zig build` works immediately. Options: `-d/--description`, `--version` (initial version, default `0.1.0`).
+Scaffolds a complete, buildable project — `build.zig.zon`, a `build.zig` wired with [`zcli.generate`]($link.page('docs/build')), `src/main.zig`, an example command — and fetches dependencies so `zig build` works immediately. Options: `-d/--description`, `--app-version` (initial version, default `0.1.0`).
 
 On a TTY it asks which built-in plugins to enable (help, version, not-found, and completions are the defaults). It also scaffolds an `AGENTS.md` with a marker-delimited zcli section pointing coding agents at `zcli guide` — re-running `init` refreshes just that section, never clobbering the rest of the file. See [AI agents]($link.page('ai')).
 
