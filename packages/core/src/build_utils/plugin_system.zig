@@ -1,6 +1,7 @@
 const std = @import("std");
 const logging = @import("../logging.zig");
 const types = @import("types.zig");
+const identifier = @import("../identifier.zig");
 
 const PluginInfo = types.PluginInfo;
 
@@ -140,6 +141,65 @@ pub fn combinePlugins(b: *std.Build, local_plugins: []const PluginInfo, external
     return combined;
 }
 
+/// A pair of registered plugins whose names sanitize to the same generated
+/// registry import identifier. `identifier` is owned by the caller; `first`
+/// and `second` borrow from the plugin slice passed to
+/// `findPluginNameCollision`.
+pub const PluginNameCollision = struct {
+    identifier: []u8,
+    first: *const PluginInfo,
+    second: *const PluginInfo,
+};
+
+/// Scan every registered plugin and report the first pair whose names sanitize
+/// to the same generated identifier, or null when all are unique.
+///
+/// Both a local plugin's file/dir name and an external plugin's registration
+/// name feed `identifier.sanitize` (non-alnum → `_`) to form the
+/// `const <id> = @import(...)` decl emitted once per plugin in the generated
+/// registry. Two plugins sharing one identifier (`my-plugin.zig` local +
+/// `.name = "my_plugin"` external, or a local plugin shadowing a built-in)
+/// would emit a duplicate `const` — an opaque compile error inside generated
+/// code. The build calls this first so it can reject the collision with a
+/// message naming both plugins instead (mirrors command_discovery's
+/// `findModuleNameCollision`).
+pub fn findPluginNameCollision(allocator: std.mem.Allocator, plugins: []const PluginInfo) !?PluginNameCollision {
+    var seen = std.StringHashMap(*const PluginInfo).init(allocator);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
+
+    for (plugins) |*plugin| {
+        const id = try identifier.sanitize(allocator, plugin.name);
+        const gop = try seen.getOrPut(id);
+        if (gop.found_existing) {
+            // `id` was not stored (an equal key already owns the slot); hand
+            // the caller its own copy of the colliding identifier.
+            defer allocator.free(id);
+            return PluginNameCollision{
+                .identifier = try allocator.dupe(u8, gop.key_ptr.*),
+                .first = gop.value_ptr.*,
+                .second = plugin,
+            };
+        }
+        // `seen` now owns `id` as its key; record which plugin claimed it.
+        gop.value_ptr.* = plugin;
+    }
+    return null;
+}
+
+/// Human-readable locator for a plugin in a collision diagnostic: the local
+/// source path when known, otherwise a built-in/external-package label. Names
+/// alone can be identical across a collision (a local `my_plugin` shadowing a
+/// built-in `my_plugin`), so this distinguishes the two by origin.
+pub fn pluginLocator(b: *std.Build, plugin: *const PluginInfo) []const u8 {
+    if (plugin.project_path) |pp| return pp;
+    if (plugin.is_local) return b.fmt("built-in '{s}'", .{plugin.name});
+    return b.fmt("external package '{s}'", .{plugin.name});
+}
+
 /// Validate a plugin file/directory name: identifier-style first char,
 /// then alphanumeric/underscore/dash; path separators and traversal
 /// rejected. (Looser than isValidCommandName — no reserved-name list.)
@@ -268,6 +328,88 @@ test "scanInDir: empty directory yields no plugins" {
 // and skip-vs-error behaviour; the outer classification is exercised by real
 // builds (`zig build`, examples, projects/zcli) and documented at the call
 // site. The path-traversal guard is a pure string check, tested next.
+
+test "findPluginNameCollision: flags a local plugin whose sanitized name matches an external one" {
+    const allocator = testing.allocator;
+
+    const plugins = [_]PluginInfo{
+        // Local single-file plugin `my-plugin.zig` → sanitizes to `my_plugin`.
+        .{
+            .name = "my-plugin",
+            .import_name = "plugins/my-plugin",
+            .is_local = true,
+            .dependency = null,
+            .project_path = "src/plugins/my-plugin.zig",
+        },
+        // External plugin registered as `my_plugin` → also `my_plugin`.
+        .{
+            .name = "my_plugin",
+            .import_name = "my_plugin",
+            .is_local = false,
+            .dependency = null,
+        },
+    };
+
+    const collision = (try findPluginNameCollision(allocator, &plugins)).?;
+    defer allocator.free(collision.identifier);
+
+    try testing.expectEqualStrings("my_plugin", collision.identifier);
+    try testing.expectEqualStrings("my-plugin", collision.first.name);
+    try testing.expectEqualStrings("my_plugin", collision.second.name);
+}
+
+test "findPluginNameCollision: flags a local plugin shadowing a built-in" {
+    const allocator = testing.allocator;
+
+    const plugins = [_]PluginInfo{
+        // Built-in (path-based, no project_path).
+        .{
+            .name = "zcli_help",
+            .import_name = "packages/core/src/plugins/zcli_help/plugin",
+            .is_local = true,
+            .dependency = null,
+        },
+        // Local project plugin with the same name.
+        .{
+            .name = "zcli_help",
+            .import_name = "plugins/zcli_help",
+            .is_local = true,
+            .dependency = null,
+            .project_path = "src/plugins/zcli_help.zig",
+        },
+    };
+
+    const collision = (try findPluginNameCollision(allocator, &plugins)).?;
+    defer allocator.free(collision.identifier);
+
+    try testing.expectEqualStrings("zcli_help", collision.identifier);
+}
+
+test "findPluginNameCollision: returns null when all plugin identifiers are unique" {
+    const allocator = testing.allocator;
+
+    const plugins = [_]PluginInfo{
+        .{ .name = "auth", .import_name = "plugins/auth", .is_local = true, .dependency = null },
+        .{ .name = "metrics", .import_name = "plugins/metrics/plugin", .is_local = true, .dependency = null },
+        .{ .name = "zcli_help", .import_name = "zcli_help", .is_local = false, .dependency = null },
+    };
+
+    try testing.expect((try findPluginNameCollision(allocator, &plugins)) == null);
+}
+
+test "pluginLocator: project_path takes precedence and needs no *std.Build" {
+    // The built-in/external branches format via `b.fmt` and are exercised in
+    // real builds; the path branch (the common local-plugin case) needs no
+    // *std.Build, so `undefined` is safe here.
+    const local: PluginInfo = .{
+        .name = "my_plugin",
+        .import_name = "plugins/my_plugin",
+        .is_local = true,
+        .dependency = null,
+        .project_path = "src/plugins/my_plugin.zig",
+    };
+    try testing.expectEqualStrings("src/plugins/my_plugin.zig", pluginLocator(undefined, &local));
+}
 
 test "scanLocalPlugins path guard: rejects traversal in plugins_dir" {
     // The `..` check is a pure prefix of scanLocalPlugins, reachable without a
