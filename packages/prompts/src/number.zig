@@ -23,8 +23,9 @@ pub const NumberConfig = struct {
 };
 
 /// Prompt for numeric input. Returns the entered number, `error.Interrupted`
-/// if the user presses one of `config.interrupt_keys`, or `error.EndOfStream`
-/// if stdin closes with no line to submit.
+/// if the user presses one of `config.interrupt_keys`, `error.UserAborted` if
+/// the user presses Ctrl-C, or `error.EndOfStream` if stdin closes with no line
+/// to submit.
 pub fn number(p: Prompts, config: NumberConfig) !i64 {
     const writer = p.writer;
     const reader = p.reader;
@@ -40,6 +41,9 @@ pub fn number(p: Prompts, config: NumberConfig) !i64 {
         }
         try writer.writeAll(" ");
 
+        // Flush so the prompt is visible before we block reading the reply —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         const value = try readNumberNonTty(reader, config);
 
         // Validate range

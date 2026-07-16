@@ -19,8 +19,9 @@ pub const ConfirmConfig = struct {
 };
 
 /// Prompt for yes/no confirmation. Returns the answer, `error.Interrupted`
-/// if the user presses one of `config.interrupt_keys`, or `error.EndOfStream`
-/// if stdin closes with no answer to submit.
+/// if the user presses one of `config.interrupt_keys`, `error.UserAborted` if
+/// the user presses Ctrl-C, or `error.EndOfStream` if stdin closes with no
+/// answer to submit.
 pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     const writer = p.writer;
     const reader = p.reader;
@@ -30,6 +31,9 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
 
     if (!is_tty) {
         try writer.print("{s}{s} {s} ", .{ config.prefix, config.message, hint });
+        // Flush so the prompt is visible before we block reading the reply —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         // A closed stdin (nothing to read) errors; a submitted blank line
         // (leading '\n') takes the default like an empty text entry.
         const first = terminal.key.readByteFn(reader) catch return error.EndOfStream;

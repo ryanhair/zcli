@@ -17,8 +17,8 @@ pub const SearchConfig = struct {
 };
 
 /// Prompt with search filtering. Returns the index of the selected item in the
-/// original choices array, or `error.EndOfStream` if stdin closes with no line
-/// to submit.
+/// original choices array, `error.UserAborted` if the user presses Ctrl-C, or
+/// `error.EndOfStream` if stdin closes with no line to submit.
 pub fn search(p: Prompts, config: SearchConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
@@ -33,6 +33,9 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
             try writer.print("  {d}) {s}\n", .{ i, choice });
         }
         try writer.writeAll("> ");
+        // Flush so the prompt is visible before we block reading the reply —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         const line = try readLine(reader, allocator);
         defer allocator.free(line);
         const num = std.fmt.parseInt(usize, line, 10) catch return 0;
