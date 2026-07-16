@@ -486,6 +486,33 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
                 }
             }
         }
+
+        // No two options may collide on a spelling: the parser resolves a flag by
+        // the first field that matches, so a duplicate effective long name or a
+        // duplicate *explicitly declared* short (#439) would leave the later field
+        // unreachable via that spelling with no diagnostic. Shorts are
+        // declaration-only, so only declared shorts can collide (an undeclared
+        // first-letter short does not exist). Compared pairwise over the fields.
+        const opt_fields = @typeInfo(OptionsType).@"struct".fields;
+        inline for (opt_fields, 0..) |a, ai| {
+            inline for (opt_fields[0..ai]) |b| {
+                const a_long = option_utils.effectiveLongName(opts_meta, a.name);
+                const b_long = option_utils.effectiveLongName(opts_meta, b.name);
+                if (std.mem.eql(u8, a_long, b_long)) {
+                    @compileError(loc ++ "options '" ++ b.name ++ "' and '" ++ a.name ++
+                        "' both resolve to the long flag `--" ++ a_long ++ "`. Rename one, or give it a " ++
+                        "distinct `meta.options.<field>.name`.");
+                }
+                if (option_utils.shortCharForField(opts_meta, a.name)) |a_short| {
+                    if (option_utils.shortCharForField(opts_meta, b.name)) |b_short| {
+                        if (a_short == b_short) {
+                            @compileError(loc ++ "options '" ++ b.name ++ "' and '" ++ a.name ++
+                                "' both declare the short flag `-" ++ &[_]u8{a_short} ++ "`. Give them distinct shorts.");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (@hasDecl(Module, "meta")) {
@@ -795,6 +822,20 @@ test "validateCommand accepts a well-formed command" {
     };
     comptime validateCommand("group", Group);
 
+    // Distinct shorts and distinct effective long names are fine — the dup-guard
+    // (#439) only fires on a collision. Two fields whose names share a first
+    // letter no longer collide, because shorts are explicit-only.
+    const Distinct = struct {
+        pub const meta = .{ .options = .{
+            .verbose = .{ .short = 'v' },
+            .version = .{ .short = 'V' },
+        } };
+        pub const Args = struct {};
+        pub const Options = struct { verbose: bool = false, version: bool = false };
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
+    };
+    comptime validateCommand("distinct", Distinct);
+
     try testing.expect(true);
 }
 
@@ -829,6 +870,17 @@ test "validateCommand accepts a well-formed command" {
 //
 //   command 'broken': option 'a' lists itself in `requires`
 //     pub const meta = .{ .options = .{ .a = .{ .requires = .{.a} } } };
+//
+//   Option spelling collisions (#439). Shorts are explicit-only, so only a
+//   *declared* short can collide; two names that resolve to the same long form
+//   collide too. Each guard below is verified by hand:
+//
+//   command 'broken': options 'a' and 'b' both declare the short flag `-x`. ...
+//     pub const meta = .{ .options = .{ .a = .{ .short = 'x' }, .b = .{ .short = 'x' } } };
+//     pub const Options = struct { a: bool = false, b: bool = false };
+//
+//   command 'broken': options 'dry_run' and 'dry-run' both resolve to the long flag `--dry-run`. ...
+//     pub const Options = struct { @"dry-run": bool = false, dry_run: bool = false };
 
 test "Context creation" {
     const allocator = testing.allocator;

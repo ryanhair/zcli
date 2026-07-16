@@ -720,17 +720,21 @@ pub fn negatedLongNameMatchesField(
 }
 
 /// The short flag character for a field: `meta.options.<field>.short` when
-/// declared, otherwise the field name's first character.
-pub fn shortCharForField(comptime meta: anytype, comptime field_name: []const u8) u8 {
+/// explicitly declared, otherwise `null`. Shorts are declaration-only — a field
+/// gets NO short from its name (mirroring the global-options model). This is why
+/// help and completions, which read the declared short directly, and the parser,
+/// which reads it through this accessor, all agree that an undeclared short does
+/// not exist (an undeclared first-letter short is `error.UnknownOption`).
+pub fn shortCharForField(comptime meta: anytype, comptime field_name: []const u8) ?u8 {
     if (@TypeOf(meta) != @TypeOf(null) and @hasField(@TypeOf(meta), "options")) {
         if (@hasField(@TypeOf(meta.options), field_name)) {
             const field_meta = @field(meta.options, field_name);
-            if (@TypeOf(field_meta) != []const u8 and @hasField(@TypeOf(field_meta), "short")) {
+            if (@typeInfo(@TypeOf(field_meta)) == .@"struct" and @hasField(@TypeOf(field_meta), "short")) {
                 return field_meta.short;
             }
         }
     }
-    return if (field_name.len > 0) field_name[0] else 0;
+    return null;
 }
 
 // ============================================================================
@@ -833,8 +837,8 @@ pub fn shortOptionTakesValue(
     char: u8,
 ) ?bool {
     inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
-        if (shortCharForField(meta, field.name) == char) {
-            return !isBooleanFlag(field.type);
+        if (shortCharForField(meta, field.name)) |sc| {
+            if (sc == char) return !isBooleanFlag(field.type);
         }
     }
     return null;
@@ -873,6 +877,17 @@ test "negatedLongNameMatchesField matches only the no- form" {
     try std.testing.expect(!negatedLongNameMatchesField(meta, "fast", "no-fast"));
 }
 
+test "shortCharForField is explicit-only (no first-letter fallback) (#439)" {
+    // Declared short resolves; an undeclared field has no short (null), even
+    // though its name starts with a letter that used to auto-derive.
+    const meta = .{ .options = .{ .output = .{ .short = 'o' } } };
+    try std.testing.expectEqual(@as(?u8, 'o'), shortCharForField(meta, "output"));
+    try std.testing.expectEqual(@as(?u8, null), shortCharForField(meta, "verbose"));
+    // No meta at all: nothing has a short.
+    try std.testing.expectEqual(@as(?u8, null), shortCharForField(null, "verbose"));
+    try std.testing.expectEqual(@as(?u8, null), shortCharForField(.{}, "verbose"));
+}
+
 test "takes-value resolution matches parser semantics" {
     const Options = struct {
         verbose: bool = false,
@@ -887,8 +902,10 @@ test "takes-value resolution matches parser semantics" {
     try std.testing.expectEqual(@as(?bool, null), longOptionTakesValue(Options, meta, "output-file")); // custom name shadows
     try std.testing.expectEqual(@as(?bool, null), longOptionTakesValue(Options, meta, "bogus"));
 
-    try std.testing.expectEqual(@as(?bool, false), shortOptionTakesValue(Options, meta, 'v'));
-    try std.testing.expectEqual(@as(?bool, true), shortOptionTakesValue(Options, meta, 'c'));
+    // Shorts are explicit-only: `verbose`/`count` declare none, so their first
+    // letters are NOT shorts (null = unknown). Only the declared `-o` resolves.
+    try std.testing.expectEqual(@as(?bool, null), shortOptionTakesValue(Options, meta, 'v'));
+    try std.testing.expectEqual(@as(?bool, null), shortOptionTakesValue(Options, meta, 'c'));
     try std.testing.expectEqual(@as(?bool, true), shortOptionTakesValue(Options, meta, 'o'));
     try std.testing.expectEqual(@as(?bool, null), shortOptionTakesValue(Options, meta, 'x'));
 }

@@ -497,7 +497,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 **Option Formats:**
 
 - Long options: `--option value` or `--option=value`
-- Short options: `-o value` or `-ovalue` (no space)
+- Short options: `-o value` or `-ovalue` (no space). A short exists **only** when
+  explicitly declared via `meta.options.<field>.short` — a field never derives a
+  short from the first letter of its name. An undeclared short is an unknown
+  option (this mirrors global options, which are also explicit-only).
 - Boolean flags: `--verbose` (presence = true), `--no-verbose` (= false).
   Negation is long-form only; short flags have no negation.
 
@@ -536,7 +539,8 @@ files: [][]const u8
 
 **Option Conflicts:**
 
-- Build-time validation prevents duplicate short flags
+- Build-time validation prevents two options in one command from declaring the
+  same short flag, or resolving to the same long name (`@compileError`)
 - Global vs command options with same name: command wins
 
 ## 7. Key Design Decisions

@@ -638,10 +638,10 @@ fn parseShortOptionsWithMeta(
         var char_field_found = false;
         var char_is_boolean = false;
         inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
-            // Get the expected short option character for this field (comptime)
+            // The field's declared short char, if any (undeclared → no match).
             const expected_char = comptime utils.shortCharForField(meta, field.name);
 
-            const matches = expected_char == char;
+            const matches = if (expected_char) |ec| ec == char else false;
 
             if (matches) {
                 char_field_found = true;
@@ -662,7 +662,7 @@ fn parseShortOptionsWithMeta(
                 _ = i; // Unused for boolean flags
                 const expected_char = comptime utils.shortCharForField(meta, field.name);
 
-                const matches = expected_char == char;
+                const matches = if (expected_char) |ec| ec == char else false;
 
                 if (matches) {
                     if (comptime utils.isBooleanFlag(field.type)) {
@@ -685,10 +685,10 @@ fn parseShortOptionsWithMeta(
 
             var char_found = false;
             inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
-                // Get the expected short option character for this field (comptime)
+                // The field's declared short char, if any (undeclared → no match).
                 const expected_char = comptime utils.shortCharForField(meta, field.name);
 
-                const matches = expected_char == char;
+                const matches = if (expected_char) |ec| ec == char else false;
 
                 if (matches and !char_found) {
                     char_found = true;
@@ -856,17 +856,48 @@ test "parseOptions basic" {
     }
 }
 
+test "short flags are explicit-only: an undeclared first-letter short is unknown (#439)" {
+    const TestOptions = struct {
+        verbose: bool = false,
+        output: []const u8 = "stdout",
+    };
+    const allocator = std.testing.allocator;
+
+    // With NO meta, no field declares a short — so `-v`/`-o` are not the
+    // first-letter shorts of `verbose`/`output`; they are simply unknown.
+    {
+        var diag: ?ZcliDiagnostic = null;
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptions(TestOptions, allocator, &.{"-v"}, &diag));
+        try std.testing.expect(diag.?.OptionUnknown.is_short);
+        try std.testing.expectEqualStrings("v", diag.?.OptionUnknown.option_name);
+    }
+    {
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptions(TestOptions, allocator, &.{ "-o", "file.txt" }, null));
+    }
+
+    // Declaring the short makes exactly that short resolve — nothing else.
+    {
+        const meta = .{ .options = .{ .output = .{ .short = 'o' } } };
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &.{ "-o", "file.txt" }, null);
+        try std.testing.expectEqualStrings("file.txt", parsed.options.output);
+        // `verbose` still has no short even though a sibling declared one.
+        try std.testing.expectError(ZcliError.OptionUnknown, parseOptionsWithMeta(TestOptions, meta, allocator, null, &.{"-v"}, null));
+    }
+}
+
 test "parseOptions short flags" {
     const TestOptions = struct {
         verbose: bool = false,
         quiet: bool = false,
     };
+    // Shorts are explicit-only, so a short-flag test must declare them.
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' }, .quiet = .{ .short = 'q' } } };
 
     const allocator = std.testing.allocator;
 
     {
         const args = [_][]const u8{"-vq"};
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
     }
@@ -894,13 +925,15 @@ test "parseOptions short option with value" {
         name: []const u8 = "default",
         port: u16 = 8080,
     };
+    // Shorts are explicit-only.
+    const meta = .{ .options = .{ .name = .{ .short = 'n' }, .port = .{ .short = 'p' } } };
 
     const allocator = std.testing.allocator;
 
     // Test with space
     {
         const args = [_][]const u8{ "-n", "test", "-p", "9000" };
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
         try std.testing.expectEqualStrings("test", parsed.options.name);
         try std.testing.expectEqual(@as(u16, 9000), parsed.options.port);
     }
@@ -908,7 +941,7 @@ test "parseOptions short option with value" {
     // Test without space
     {
         const args = [_][]const u8{ "-ntest2", "-p9001" };
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
         try std.testing.expectEqualStrings("test2", parsed.options.name);
         try std.testing.expectEqual(@as(u16, 9001), parsed.options.port);
     }
@@ -1038,6 +1071,8 @@ test "repeated boolean is a duplicate error" {
     const TestOptions = struct {
         verbose: bool = false,
     };
+    // Declared short so the `-v` cases have a short at all (explicit-only).
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' } } };
     const allocator = std.testing.allocator;
 
     const cases = [_][]const []const u8{
@@ -1049,7 +1084,7 @@ test "repeated boolean is a duplicate error" {
         &.{"-vv"}, // short, bundled
     };
     for (cases) |args| {
-        try std.testing.expectError(ZcliError.OptionDuplicate, parseOptions(TestOptions, allocator, args, null));
+        try std.testing.expectError(ZcliError.OptionDuplicate, parseOptionsWithMeta(TestOptions, meta, allocator, null, args, null));
     }
 }
 
@@ -1181,11 +1216,13 @@ test "parseOptions array accumulation with short flags" {
         files: [][]const u8 = &.{},
         numbers: []i32 = &.{},
     };
+    // Shorts are explicit-only.
+    const meta = .{ .options = .{ .files = .{ .short = 'f' }, .numbers = .{ .short = 'n' } } };
 
     const allocator = std.testing.allocator;
 
     const args = [_][]const u8{ "-f", "first.txt", "-f", "second.txt", "-n", "10", "-n", "20" };
-    const parsed = try parseOptions(TestOptions, allocator, &args, null);
+    const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.options.files.len);
@@ -1203,6 +1240,8 @@ test "parseOptions comma-separated array values" {
         numbers: []i32 = &.{},
         label: ?[]const u8 = null,
     };
+    // Shorts are explicit-only.
+    const meta = .{ .options = .{ .files = .{ .short = 'f' }, .numbers = .{ .short = 'n' } } };
 
     const allocator = std.testing.allocator;
 
@@ -1215,7 +1254,7 @@ test "parseOptions comma-separated array values" {
         "-n3,4", // attached short form
         "--label", "x,y", // scalar option — NOT split
     };
-    const parsed = try parseOptions(TestOptions, allocator, &args, null);
+    const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
     defer cleanupOptions(TestOptions, parsed.options, allocator);
 
     try std.testing.expectEqual(@as(usize, 3), parsed.options.files.len);
@@ -1361,13 +1400,20 @@ test "parseOptions bundled short options" {
         force: bool = false,
         all: bool = false,
     };
+    // Shorts are explicit-only.
+    const meta = .{ .options = .{
+        .verbose = .{ .short = 'v' },
+        .quiet = .{ .short = 'q' },
+        .force = .{ .short = 'f' },
+        .all = .{ .short = 'a' },
+    } };
 
     const allocator = std.testing.allocator;
 
     // Test various bundled combinations
     {
         const args = [_][]const u8{"-vqf"};
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
 
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
@@ -1378,7 +1424,7 @@ test "parseOptions bundled short options" {
     // Test mixed bundled and separate
     {
         const args = [_][]const u8{ "-vq", "-f", "-a" };
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
 
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
@@ -1393,13 +1439,19 @@ test "parseOptions bundled short options with trailing value-taker (GNU getopt)"
         quiet: bool = false,
         file: []const u8 = "",
     };
+    // Shorts are explicit-only.
+    const meta = .{ .options = .{
+        .verbose = .{ .short = 'v' },
+        .quiet = .{ .short = 'q' },
+        .file = .{ .short = 'f' },
+    } };
 
     const allocator = std.testing.allocator;
 
     // -vf X: boolean then value-taker taking the next argument
     {
         const args = [_][]const u8{ "-vf", "out.txt" };
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
 
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expectEqualStrings("out.txt", parsed.options.file);
@@ -1409,7 +1461,7 @@ test "parseOptions bundled short options with trailing value-taker (GNU getopt)"
     // -vvf X: repeated boolean errors as duplicate, not silently dropped
     {
         const args = [_][]const u8{ "-vqf", "out.txt" };
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
 
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expect(parsed.options.quiet);
@@ -1419,7 +1471,7 @@ test "parseOptions bundled short options with trailing value-taker (GNU getopt)"
     // -vfout.txt: value attached directly after the value-taker
     {
         const args = [_][]const u8{"-vfout.txt"};
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
 
         try std.testing.expect(parsed.options.verbose);
         try std.testing.expectEqualStrings("out.txt", parsed.options.file);
@@ -1428,7 +1480,7 @@ test "parseOptions bundled short options with trailing value-taker (GNU getopt)"
     // -fv X: value-taker first consumes the rest of the bundle as its value
     {
         const args = [_][]const u8{ "-fv", "ignored" };
-        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
 
         try std.testing.expect(!parsed.options.verbose);
         try std.testing.expectEqualStrings("v", parsed.options.file);
@@ -1437,14 +1489,14 @@ test "parseOptions bundled short options with trailing value-taker (GNU getopt)"
     // -vz: unknown char after a boolean errors
     {
         const args = [_][]const u8{"-vz"};
-        const result = parseOptions(TestOptions, allocator, &args, null);
+        const result = parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
         try std.testing.expectError(error.OptionUnknown, result);
     }
 
     // -vf with no value following errors MissingOptionValue
     {
         const args = [_][]const u8{"-vf"};
-        const result = parseOptions(TestOptions, allocator, &args, null);
+        const result = parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
         try std.testing.expectError(error.OptionMissingValue, result);
     }
 }
