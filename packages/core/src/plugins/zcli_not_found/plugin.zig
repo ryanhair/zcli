@@ -85,7 +85,14 @@ fn isCommandGroup(path: []const []const u8, available_commands: []const []const 
     return false;
 }
 
-/// Render help for a bare group access (case 2): its direct subcommands.
+/// Render help for a bare group access (case 2): its immediate subcommands.
+///
+/// Lists the next path segment of every command the group is a prefix of, so a
+/// deeply-nested pure group (e.g. `gh`, whose only descendant is
+/// `gh add workflow release` with nothing registered directly at `gh <x>`)
+/// still shows its real next hop (`add`) rather than an empty section. Segments
+/// are deduplicated: two commands sharing a subgroup (`gh add a`, `gh add b`)
+/// list `add` once.
 fn generateCommandGroupHelp(
     context: anytype,
     group_name: []const u8,
@@ -96,8 +103,12 @@ fn generateCommandGroupHelp(
     try writer.print("Subcommands:\n", .{});
 
     const depth = std.mem.count(u8, group_name, " ") + 1;
+    var seen = std.ArrayList([]const u8).empty;
+    defer seen.deinit(context.allocator);
     for (available_commands) |cmd_parts| {
-        if (cmd_parts.len != depth + 1) continue;
+        // The group must be a strict prefix — there is at least one more
+        // segment (the immediate child) beyond the group's own path.
+        if (cmd_parts.len <= depth) continue;
         var matches = true;
         var i: usize = 0;
         var iter = std.mem.splitScalar(u8, group_name, ' ');
@@ -107,7 +118,15 @@ fn generateCommandGroupHelp(
                 break;
             }
         }
-        if (matches) try writer.print("    {s}\n", .{cmd_parts[depth]});
+        if (!matches) continue;
+
+        const child = cmd_parts[depth];
+        for (seen.items) |s| {
+            if (std.mem.eql(u8, s, child)) break;
+        } else {
+            try seen.append(context.allocator, child);
+            try writer.print("    {s}\n", .{child});
+        }
     }
 
     try writer.print("\nRun '{s} {s} <subcommand> --help' for more information.\n", .{ context.app_name, group_name });
@@ -489,6 +508,59 @@ test "onError case 2: a bare known group renders its subcommands and is handled"
     try std.testing.expect(std.mem.indexOf(u8, out, "remove") != null);
     // Not a typo, so no "did you mean" noise.
     try std.testing.expect(std.mem.indexOf(u8, out, "Did you mean") == null);
+}
+
+test "onError case 2: a deeply-nested pure group lists its next hop, not an empty section (#452)" {
+    // `onError` allocates (joins, suggestion dupes) and, like the production
+    // registry, relies on an arena being torn down wholesale rather than
+    // freeing each piece — so context.allocator is arena-backed here too,
+    // not the leak-checking testing.allocator directly.
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // "gh" is a group whose only descendants are deeper than one level:
+    // `gh add workflow release` and `gh add workflow deploy`. Nothing is
+    // registered directly at `gh <x>`, so the old depth+1-only filter printed
+    // "Subcommands:" followed by nothing. It must instead show the next hop,
+    // "add", deduplicated across the two descendants.
+    ctx.command_path = &.{"gh"};
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{ "gh", "add", "workflow", "release" }, .description = "Add a release workflow" },
+        .{ .path = &.{ "gh", "add", "workflow", "deploy" }, .description = "Add a deploy workflow" },
+        .{ .path = &.{"status"}, .description = "Show status" },
+    };
+
+    const handled = try onError(&ctx, error.CommandNotFound);
+    try ctx.stderr().flush();
+
+    try std.testing.expect(handled);
+
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "'gh' is a command group.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Subcommands:") != null);
+    // The next hop is listed exactly once despite two descendants under it,
+    // and the "Subcommands:" header is not immediately followed by a blank
+    // line (which would signal an empty section).
+    try std.testing.expect(std.mem.indexOf(u8, out, "    add\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Subcommands:\n\n") == null);
+    const first = std.mem.indexOf(u8, out, "    add\n").?;
+    try std.testing.expect(std.mem.indexOf(u8, out[first + 1 ..], "    add\n") == null);
+    // Deeper segments are not leaked into the top-level group listing.
+    try std.testing.expect(std.mem.indexOf(u8, out, "workflow") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "release") == null);
 }
 
 test "onError case 3: no command at all renders the top-level list and is handled" {
