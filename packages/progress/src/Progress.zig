@@ -40,7 +40,9 @@
 //! In a zcli command, `context.progress()` returns an instance pre-wired to the
 //! command's stderr, `io`, arena allocator, and theme. Progress goes to stderr
 //! by convention so it survives stdout redirection (`myapp | tee`) while keeping
-//! piped stdout clean; interactivity keys on whether stderr is a TTY.
+//! piped stdout clean. Interactivity keys on the `writer`'s own target when its
+//! handle is recoverable (a standalone user writing to stdout gets it right),
+//! falling back to stderr otherwise.
 
 writer: *std.Io.Writer,
 /// The framework's `std.Io` — powers each indicator's `ui.App` (animation
@@ -87,6 +89,28 @@ pub fn progressBar(self: Progress, config: ProgressBarConfig) !ProgressBar {
 /// writer, `io`, allocator, and theme.
 pub fn multiBar(self: Progress, config: MultiBarConfig) !MultiBar {
     return MultiBar.init(self.allocator, self.writer, self.io, self.theme, config);
+}
+
+/// Recover the OS handle behind `writer` when it is a `std.Io.File.Writer`
+/// interface (the common case: stdout/stderr streams). Discriminates by vtable
+/// so it never `@fieldParentPtr`s a foreign writer (e.g. `Allocating`, `fixed`).
+fn writerHandle(writer: *std.Io.Writer) ?std.Io.File.Handle {
+    if (writer.vtable.drain != std.Io.File.Writer.drain) return null;
+    const file_writer: *const std.Io.File.Writer = @fieldParentPtr("interface", writer);
+    return file_writer.file.handle;
+}
+
+/// Whether animation should run: key interactivity to the writer's own target
+/// when we can recover its handle, falling back to stderr when we can't.
+fn writerInteractive(writer: *std.Io.Writer) bool {
+    if (writerHandle(writer)) |handle| return terminal.isTty(handle);
+    return terminal.isStderrTty();
+}
+
+/// The handle the App polls for terminal state (size, TTY probes): the writer's
+/// own handle when determinable, else stderr — matching `writerInteractive`.
+fn writerOutHandle(writer: *std.Io.Writer) std.Io.File.Handle {
+    return writerHandle(writer) orelse std.Io.File.stderr().handle;
 }
 
 /// Spinner animation styles
@@ -177,8 +201,8 @@ pub const Spinner = struct {
             .app = try ui.App.init(allocator, writer, .{
                 .capability = theme.capability(),
                 .unicode = config.unicode,
-                .interactive = terminal.isStderrTty(),
-                .out_handle = std.Io.File.stderr().handle,
+                .interactive = writerInteractive(writer),
+                .out_handle = writerOutHandle(writer),
             }),
         };
     }
@@ -371,8 +395,8 @@ pub const ProgressBar = struct {
             .app = try ui.App.init(allocator, writer, .{
                 .capability = theme.capability(),
                 .unicode = config.unicode,
-                .interactive = terminal.isStderrTty(),
-                .out_handle = std.Io.File.stderr().handle,
+                .interactive = writerInteractive(writer),
+                .out_handle = writerOutHandle(writer),
             }),
             .start_time = nowMsIo(io),
         };
@@ -548,8 +572,8 @@ pub const MultiBar = struct {
             .app = try ui.App.init(allocator, writer, .{
                 .capability = theme.capability(),
                 .unicode = config.unicode,
-                .interactive = terminal.isStderrTty(),
-                .out_handle = std.Io.File.stderr().handle,
+                .interactive = writerInteractive(writer),
+                .out_handle = writerOutHandle(writer),
             }),
         };
     }
@@ -656,6 +680,26 @@ const testing = std.testing;
 fn forceInteractive(app: *ui.App) void {
     app.options.interactive = true;
     app.options.term_size = .{ .w = 80, .h = 24 };
+}
+
+test "writerHandle discriminates file writers from foreign writers" {
+    // A `fixed` writer (foreign vtable) has no OS handle to recover.
+    var buf: [64]u8 = undefined;
+    var fixed: std.Io.Writer = .fixed(&buf);
+    try testing.expect(writerHandle(&fixed) == null);
+    // Interactivity/out-handle fall back to stderr when the handle is unknown.
+    try testing.expectEqual(writerInteractive(&fixed), terminal.isStderrTty());
+    try testing.expectEqual(writerOutHandle(&fixed), std.Io.File.stderr().handle);
+
+    // A real file writer exposes its target handle, so interactivity keys on
+    // that stream rather than always stderr.
+    var stream_buf: [64]u8 = undefined;
+    var file_writer = std.Io.File.stderr().writerStreaming(testing.io, &stream_buf);
+    const handle = writerHandle(&file_writer.interface);
+    try testing.expect(handle != null);
+    try testing.expectEqual(std.Io.File.stderr().handle, handle.?);
+    try testing.expectEqual(std.Io.File.stderr().handle, writerOutHandle(&file_writer.interface));
+    try testing.expectEqual(terminal.isTty(std.Io.File.stderr().handle), writerInteractive(&file_writer.interface));
 }
 
 test "spinner style frames" {
