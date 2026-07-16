@@ -128,20 +128,35 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
             // Optional field - consume the next argument if present
             const next_positional: ?usize = if (arg_index < args.len) arg_index else null;
             if (next_positional) |pos| {
-                @field(result, field.name) = parseValue(field_type, args[pos]) catch |err| {
-                    if (err == ZcliError.ArgumentInvalidValue) {
-                        if (diag) |d| d.* = .{ .ArgumentInvalidValue = .{
-                            .field_name = field.name,
-                            .position = field_index,
-                            .provided_value = args[pos],
-                            .expected_type = diagnostic_errors.expectedTypeName(field_type),
-                            .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
-                            .reason = custom_type.describeError(field_type, args[pos]),
-                        } };
+                const is_last = comptime (field_index == struct_info.fields.len - 1);
+                if (parseValue(field_type, args[pos])) |value| {
+                    @field(result, field.name) = value;
+                    arg_index = pos + 1;
+                } else |err| {
+                    // A NON-TRAILING typed optional that fails to parse falls
+                    // through: leave it null and DON'T consume the token, so a
+                    // later positional can claim it (e.g. `{ level: ?u32, rest }`
+                    // invoked as `foo bar` yields level=null, rest=["foo","bar"]
+                    // instead of hard-erroring on `foo`). A TRAILING optional
+                    // keeps the strict error — there is no later field the token
+                    // could belong to. String optionals always parse, so only
+                    // typed optionals ever reach this branch.
+                    if (err == ZcliError.ArgumentInvalidValue and !is_last) {
+                        @field(result, field.name) = null;
+                    } else {
+                        if (err == ZcliError.ArgumentInvalidValue) {
+                            if (diag) |d| d.* = .{ .ArgumentInvalidValue = .{
+                                .field_name = field.name,
+                                .position = field_index,
+                                .provided_value = args[pos],
+                                .expected_type = diagnostic_errors.expectedTypeName(field_type),
+                                .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
+                                .reason = custom_type.describeError(field_type, args[pos]),
+                            } };
+                        }
+                        return err;
                     }
-                    return err;
-                };
-                arg_index = pos + 1;
+                }
             } else {
                 // Use null for optional
                 @field(result, field.name) = null;
@@ -792,6 +807,79 @@ test "parseArgs optional at end" {
         try std.testing.expectEqual(@as(?[]const u8, null), parsed.optional1);
         try std.testing.expectEqual(@as(?i32, null), parsed.optional2);
     }
+}
+
+test "parseArgs non-trailing typed optional falls through to null on parse failure" {
+    // A typed optional followed by more positionals must NOT greedily consume
+    // and hard-error when its token doesn't parse — it leaves itself null and
+    // lets the token match the later field.
+    const TestArgs = struct {
+        level: ?u32 = null,
+        rest: [][]const u8,
+    };
+
+    // `foo bar`: `foo` doesn't parse as u32, so level=null and both tokens
+    // flow to `rest`.
+    {
+        const args = [_][]const u8{ "foo", "bar" };
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(?u32, null), parsed.level);
+        try std.testing.expectEqual(@as(usize, 2), parsed.rest.len);
+        try std.testing.expectEqualStrings("foo", parsed.rest[0]);
+        try std.testing.expectEqualStrings("bar", parsed.rest[1]);
+    }
+
+    // Regression: a value that DOES parse is still consumed greedily.
+    {
+        const args = [_][]const u8{ "3", "foo" };
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(?u32, 3), parsed.level);
+        try std.testing.expectEqual(@as(usize, 1), parsed.rest.len);
+        try std.testing.expectEqualStrings("foo", parsed.rest[0]);
+    }
+
+    // No tokens at all: optional stays null, varargs empty.
+    {
+        const args = [_][]const u8{};
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(?u32, null), parsed.level);
+        try std.testing.expectEqual(@as(usize, 0), parsed.rest.len);
+    }
+}
+
+test "parseArgs non-trailing typed optional falls through to a required field" {
+    const TestArgs = struct {
+        count: ?u32 = null,
+        name: []const u8,
+    };
+
+    // `alice`: doesn't parse as u32 → count=null, name="alice".
+    {
+        const args = [_][]const u8{"alice"};
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(?u32, null), parsed.count);
+        try std.testing.expectEqualStrings("alice", parsed.name);
+    }
+
+    // `5 alice`: count parses → count=5, name="alice".
+    {
+        const args = [_][]const u8{ "5", "alice" };
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(?u32, 5), parsed.count);
+        try std.testing.expectEqualStrings("alice", parsed.name);
+    }
+}
+
+test "parseArgs trailing typed optional keeps the strict invalid-value error" {
+    // When the typed optional IS the last field there is no later positional to
+    // hand the token to, so a non-parsing value is a genuine error (unchanged).
+    const TestArgs = struct {
+        name: []const u8,
+        level: ?u32 = null,
+    };
+
+    const args = [_][]const u8{ "svc", "notnum" };
+    try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(TestArgs, &args, null));
 }
 
 test "parseArgs unicode strings" {
