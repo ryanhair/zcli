@@ -99,13 +99,19 @@ fn scanDirectory(
                     }
 
                     // Underscore-prefixed files are helpers a command file
-                    // imports (e.g. `_wizard.zig`), not commands.
-                    if (entry.name[0] == '_') continue;
+                    // imports (e.g. `_wizard.zig`), not commands. Dot-prefixed
+                    // files are hidden (editor swap files, `.DS_Store.zig`,
+                    // etc.). Both are skipped silently — same convention as the
+                    // directory branch — BEFORE the hard-error name check below,
+                    // so a legitimately hidden file never fails the build.
+                    if (entry.name[0] == '_' or entry.name[0] == '.') continue;
 
-                    // Skip invalid command names
-                    if (!isValidCommandName(name_without_ext)) {
-                        logging.invalidCommandName(name_without_ext, "contains invalid characters or patterns");
-                        continue;
+                    // Reject invalid command names loudly. Skipping silently
+                    // (the old behavior) made the command vanish from the CLI
+                    // with only an easy-to-miss build-log line.
+                    if (commandNameRejection(name_without_ext)) |reason| {
+                        logging.invalidCommandNameError(name_without_ext, reason);
+                        return error.InvalidCommandName;
                     }
 
                     // Build command path as array of components
@@ -136,7 +142,17 @@ fn scanDirectory(
                         .subcommands = null,
                     };
 
-                    try commands.put(try allocator.dupe(u8, name_without_ext), command_info);
+                    // A leaf and a same-named group (foo.zig + foo/) would both
+                    // key this map; put()-ing the second silently drops the
+                    // first, and which survives depends on iteration order.
+                    // Detect the collision and fail loudly instead (#502).
+                    const gop = try commands.getOrPut(name_without_ext);
+                    if (gop.found_existing) {
+                        logging.duplicateCommandName(name_without_ext, gop.value_ptr.file_path, file_path);
+                        return error.DuplicateCommandName;
+                    }
+                    gop.key_ptr.* = try allocator.dupe(u8, name_without_ext);
+                    gop.value_ptr.* = command_info;
                 }
             },
             .directory => {
@@ -144,10 +160,10 @@ fn scanDirectory(
                 // directories (same convention as `_helper.zig` files).
                 if (entry.name[0] == '.' or entry.name[0] == '_') continue;
 
-                // Skip invalid command names
-                if (!isValidCommandName(entry.name)) {
-                    logging.invalidCommandName(entry.name, "contains invalid characters or patterns");
-                    continue;
+                // Reject invalid command names loudly (see the .file branch).
+                if (commandNameRejection(entry.name)) |reason| {
+                    logging.invalidCommandNameError(entry.name, reason);
+                    return error.InvalidCommandName;
                 }
 
                 // Open subdirectory
@@ -203,7 +219,15 @@ fn scanDirectory(
                         .subcommands = subcommands,
                     };
 
-                    try commands.put(try allocator.dupe(u8, entry.name), command_info);
+                    // Same collision guard as the .file branch: a group and a
+                    // same-named leaf must not clobber each other (#502).
+                    const gop = try commands.getOrPut(entry.name);
+                    if (gop.found_existing) {
+                        logging.duplicateCommandName(entry.name, gop.value_ptr.file_path, group_file_path);
+                        return error.DuplicateCommandName;
+                    }
+                    gop.key_ptr.* = try allocator.dupe(u8, entry.name);
+                    gop.value_ptr.* = command_info;
                 } else {
                     // No subcommands and no index file, cleanup and skip
                     subcommands.deinit();
@@ -225,22 +249,33 @@ fn hasIndexFile(io: std.Io, dir: std.Io.Dir) bool {
     return true;
 }
 
-/// Validate command name according to security and naming rules
-pub fn isValidCommandName(name: []const u8) bool {
-    if (name.len == 0) return false;
+/// Validate a command name, returning `null` when valid or a human-readable
+/// reason it was rejected. Used to produce actionable hard-error messages at
+/// the discovery call sites (see #517: a rejected name is a build error, never
+/// a silent skip).
+///
+/// Windows DOS device names (con, aux, nul, com1..lpt9) are rejected on ALL
+/// platforms — not just Windows targets. This is deliberate portability-by-
+/// default for a framework whose apps may later be built for Windows: a name
+/// that works on macOS/Linux today would make the Windows build fail in a far
+/// more confusing way. Because it's a hard error, a POSIX-only project that
+/// genuinely wants `commands/aux.zig` sees the reason immediately and can pick
+/// another name, rather than losing the command silently. See docs/COMMANDS.md.
+pub fn commandNameRejection(name: []const u8) ?[]const u8 {
+    if (name.len == 0) return "name is empty";
 
     // Security checks: prevent directory traversal and other dangerous patterns
-    if (std.mem.indexOf(u8, name, "..") != null) return false;
-    if (std.mem.indexOf(u8, name, "/") != null) return false;
-    if (std.mem.indexOf(u8, name, "\\") != null) return false;
-    if (std.mem.indexOf(u8, name, "\x00") != null) return false;
+    if (std.mem.indexOf(u8, name, "..") != null) return "contains '..'";
+    if (std.mem.indexOf(u8, name, "/") != null) return "contains '/'";
+    if (std.mem.indexOf(u8, name, "\\") != null) return "contains '\\'";
+    if (std.mem.indexOf(u8, name, "\x00") != null) return "contains a null byte";
 
     // Basic naming rules
     const first = name[0];
-    if (!std.ascii.isAlphabetic(first) and first != '_') return false;
+    if (!std.ascii.isAlphabetic(first) and first != '_') return "must start with a letter or underscore";
 
     for (name[1..]) |char| {
-        if (!std.ascii.isAlphanumeric(char) and char != '_' and char != '-') return false;
+        if (!std.ascii.isAlphanumeric(char) and char != '_' and char != '-') return "contains invalid characters (allowed: letters, digits, '_', '-')";
     }
 
     // Reserved names that could conflict with system operations
@@ -254,10 +289,15 @@ pub fn isValidCommandName(name: []const u8) bool {
     };
 
     for (reserved_names) |reserved| {
-        if (std.ascii.eqlIgnoreCase(name, reserved)) return false;
+        if (std.ascii.eqlIgnoreCase(name, reserved)) return "reserved name (Windows DOS device names are rejected on all platforms for portability)";
     }
 
-    return true;
+    return null;
+}
+
+/// Validate command name according to security and naming rules.
+pub fn isValidCommandName(name: []const u8) bool {
+    return commandNameRejection(name) == null;
 }
 
 // ============================================================================
@@ -356,6 +396,66 @@ test "discovery errors loudly when nesting exceeds the depth cap" {
     try testing.expectError(
         error.MaxCommandDepthExceeded,
         scanDirectory(allocator, io, dir, &commands, &.{}, 0, 1),
+    );
+}
+
+test "discovery errors loudly when a leaf and a group share a name" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    // The error path leaks the partial subtree allocations (fine in
+    // production: a hard build error aborts on an arena). Use an arena so the
+    // leak detector stays quiet — same rationale as the depth-cap test.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A leftover `users.zig` leaf alongside a `users/` group is the realistic
+    // mistake (refactor half-done). Both would key `commands` under "users",
+    // so exactly one used to survive depending on iteration order (#502).
+    try tmp.dir.writeFile(io, .{ .sub_path = "users.zig", .data = "pub fn execute() void {}" });
+    try tmp.dir.createDir(io, "users", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "users/list.zig", .data = "pub fn execute() void {}" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = std.StringHashMap(DiscoveredCommand).init(allocator);
+
+    // Must be a hard error regardless of which entry the iterator visits first.
+    try testing.expectError(
+        error.DuplicateCommandName,
+        scanDirectory(allocator, io, dir, &commands, &.{}, 0, default_max_depth),
+    );
+}
+
+test "discovery errors loudly on a reserved command name" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // `aux.zig` is valid on POSIX but a reserved DOS device name; discovery
+    // rejects it on every platform, and must do so loudly rather than dropping
+    // the command with only an easy-to-miss log line (#517).
+    try tmp.dir.writeFile(io, .{ .sub_path = "aux.zig", .data = "pub fn execute() void {}" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = std.StringHashMap(DiscoveredCommand).init(allocator);
+
+    try testing.expectError(
+        error.InvalidCommandName,
+        scanDirectory(allocator, io, dir, &commands, &.{}, 0, default_max_depth),
     );
 }
 

@@ -92,7 +92,7 @@ test "build integration: nested command groups" {
     try testing.expectEqual(@as(u32, 1), permissions_group.subcommands.?.count());
 }
 
-test "build integration: invalid and hidden names are skipped" {
+test "build integration: hidden and helper names are skipped silently" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -101,10 +101,10 @@ test "build integration: invalid and hidden names are skipped" {
     try tmp.dir.writeFile(io, .{ .sub_path = "valid_name.zig", .data = placeholder });
     try tmp.dir.writeFile(io, .{ .sub_path = "ValidName123.zig", .data = placeholder });
 
-    try tmp.dir.writeFile(io, .{ .sub_path = "invalid name.zig", .data = placeholder }); // space
-    try tmp.dir.writeFile(io, .{ .sub_path = "invalid@name.zig", .data = placeholder }); // special char
-    try tmp.dir.writeFile(io, .{ .sub_path = ".hidden.zig", .data = placeholder }); // hidden file
-    try tmp.dir.writeFile(io, .{ .sub_path = "_helper.zig", .data = placeholder }); // helper convention
+    // Hidden (dot) and helper (underscore) files are skipped silently by
+    // convention — they never reach the hard-error name check below.
+    try tmp.dir.writeFile(io, .{ .sub_path = ".hidden.zig", .data = placeholder });
+    try tmp.dir.writeFile(io, .{ .sub_path = "_helper.zig", .data = placeholder });
 
     var discovered = try discover(&tmp);
     defer discovered.deinit();
@@ -113,12 +113,23 @@ test "build integration: invalid and hidden names are skipped" {
     try testing.expect(discovered.root.contains("valid_name"));
     try testing.expect(discovered.root.contains("ValidName123"));
 
-    try testing.expect(!discovered.root.contains("invalid name"));
-    try testing.expect(!discovered.root.contains("invalid@name"));
     try testing.expect(!discovered.root.contains(".hidden"));
     try testing.expect(!discovered.root.contains("_helper"));
 
     try testing.expectEqual(@as(u32, 3), discovered.root.count());
+}
+
+test "build integration: an invalid command name fails the build" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A special character is not a valid command-name char. Unlike hidden and
+    // helper files, this is a genuine mistake and must fail loudly rather than
+    // dropping the command from the CLI with only a build-log line (#517).
+    try tmp.dir.writeFile(io, .{ .sub_path = "invalid@name.zig", .data = placeholder });
+
+    try testing.expectError(error.InvalidCommandName, discover(&tmp));
 }
 
 test "build integration: empty directories and edge cases" {

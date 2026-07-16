@@ -112,6 +112,26 @@ pub fn invalidCommandName(name: []const u8, reason: []const u8) void {
     logBuildWarning("Skipping invalid command name: {s} ({s})", .{ name, reason });
 }
 
+/// Format build error for an invalid command name. This is a hard error, not a
+/// warning: silently skipping the file makes the command vanish from the CLI
+/// with no reliable signal (mirrors the depth-cap and collision errors).
+pub fn invalidCommandNameError(name: []const u8, reason: []const u8) void {
+    logBuildError("Invalid command name '{s}': {s}", .{ name, reason });
+}
+
+/// Format build error for two commands that resolve to the same command name
+/// (e.g. `foo.zig` leaf and `foo/` group). Hard error: `put`-ing the same key
+/// twice would otherwise silently drop one, non-deterministically, depending on
+/// filesystem iteration order.
+pub fn duplicateCommandName(name: []const u8, first_path: []const u8, second_path: []const u8) void {
+    logBuildError(
+        "Duplicate command '{s}': defined by both '{s}' and '{s}'. " ++
+            "A leaf command and a command group cannot share a name — " ++
+            "delete one, or use '{s}/index.zig' for an executable parent with subcommands.",
+        .{ name, first_path, second_path, name },
+    );
+}
+
 /// Format build error for exceeding the maximum nesting depth. This is a hard
 /// error, not a warning: silently dropping a too-deep subtree hides commands.
 pub fn maxNestingDepthExceeded(max_depth: u32, path: []const u8) void {

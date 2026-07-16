@@ -177,6 +177,11 @@ fn generatePluginRegistry(
                 logging.buildError("Command Discovery Error", config.commands_dir, "Access denied to commands directory", "Please check file permissions for the directory");
             },
             error.OutOfMemory => @panic("OOM"),
+            error.DuplicateCommandName, error.InvalidCommandName, error.MaxCommandDepthExceeded => {
+                // The specific, actionable message (naming the exact file(s))
+                // was already logged at the point of discovery; adding the
+                // generic block here would only bury it.
+            },
             else => {
                 logging.buildError("Command Discovery Error", config.commands_dir, "Failed to discover commands", "Check the command directory structure and file permissions");
                 std.debug.print("Error details: {any}\n", .{err});
