@@ -58,9 +58,17 @@ pub fn insertArg(arena: std.mem.Allocator, source: [:0]const u8, a: spec.ArgSpec
 /// message. `insertStructField`/`insertMetaEntry` are safe to reuse directly in
 /// chained splices — they re-parse each intermediate result themselves.
 fn ensureParses(arena: std.mem.Allocator, result: []u8) ![]u8 {
-    const ast = try Ast.parse(arena, try arena.dupeZ(u8, result), .zig);
-    if (ast.errors.len != 0) return SpliceError.ResultDoesNotParse;
+    if (!try parses(arena, result)) return SpliceError.ResultDoesNotParse;
     return result;
+}
+
+/// True if `source` parses as valid Zig (no AST errors). The scaffold write path
+/// (`zcli add command`) reuses this as its pre-write guard so a user-supplied
+/// custom type/default that doesn't compile is caught before a file is created,
+/// exactly as `insertArg`/`insertOption` guard their verbatim `--type` splices.
+pub fn parses(arena: std.mem.Allocator, source: []const u8) !bool {
+    const ast = try Ast.parse(arena, try arena.dupeZ(u8, source), .zig);
+    return ast.errors.len == 0;
 }
 
 /// The existing field names of a command's `Args`/`Options` struct, in source

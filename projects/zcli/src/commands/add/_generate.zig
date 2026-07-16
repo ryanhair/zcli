@@ -193,6 +193,13 @@ pub fn writeCommandFile(
     file_path: []const u8,
     content: []const u8,
 ) ![]const NewGroup {
+    // Guard before touching the filesystem: a user-supplied custom type or
+    // default is spliced verbatim into the source, so a typo (e.g. `u3 2`) or an
+    // otherwise malformed snippet would produce a command file that won't parse.
+    // Refuse it here — writing nothing — rather than report success and leave a
+    // broken scaffold to surface as a confusing compile error later (#506).
+    if (!try scaffold.splice.parses(arena, content)) return error.GeneratedSourceInvalid;
+
     const cwd = std.Io.Dir.cwd();
     var new_groups = std.ArrayList(NewGroup).empty;
 
@@ -279,6 +286,40 @@ test "generateSource: multiple is independent of element type" {
     try expectContains(src, "tags: [][]const u8 = &.{},"); // multiple string option
     try expectContains(src, "\"users create <email> [age] names...\"");
 }
+test "writeCommandFile refuses source that would not parse, writing nothing (#506)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A malformed custom option type is spliced verbatim, yielding the Options
+    // field `bad: ?u3 2 = null,` — which does not parse. The write path must
+    // reject it up front (before any filesystem work) rather than scaffold a
+    // command file that won't compile.
+    const parts = try parsePath(a, "broken");
+    const opts_list = [_]OptSpec{
+        .{ .name = "bad", .elem_type = "u3 2", .multiple = false, .nullable = true, .default_expr = null, .description = "" },
+    };
+    const src = try generateSource(a, parts, "Broken", &.{}, &opts_list);
+    // parts.len == 1, so this returns on the parse guard before touching the fs.
+    try testing.expectError(error.GeneratedSourceInvalid, writeCommandFile(a, testing.io, parts, "src/commands/broken.zig", src));
+}
+
+test "a well-formed generated command passes the parse guard" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const parts = try parsePath(a, "users/create");
+    const args_list = [_]ArgSpec{
+        .{ .name = "email", .elem_type = "[]const u8", .multiple = false, .nullable = false, .description = "Email" },
+    };
+    const opts_list = [_]OptSpec{
+        .{ .name = "format", .elem_type = "enum { json, yaml }", .multiple = false, .nullable = false, .default_expr = ".yaml", .description = "Format" },
+    };
+    const src = try generateSource(a, parts, "Create a user", &args_list, &opts_list);
+    try testing.expect(try scaffold.splice.parses(a, src));
+}
+
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {
         std.debug.print("\nexpected to find:\n  {s}\nin:\n{s}\n", .{ needle, haystack });
