@@ -112,9 +112,10 @@ pub fn invalidCommandName(name: []const u8, reason: []const u8) void {
     logBuildWarning("Skipping invalid command name: {s} ({s})", .{ name, reason });
 }
 
-/// Format build warning for maximum nesting depth
-pub fn maxNestingDepthReached(max_depth: u32, path: []const u8) void {
-    logBuildWarning("Maximum command nesting depth ({d}) reached at path: {s}", .{ max_depth, path });
+/// Format build error for exceeding the maximum nesting depth. This is a hard
+/// error, not a warning: silently dropping a too-deep subtree hides commands.
+pub fn maxNestingDepthExceeded(max_depth: u32, path: []const u8) void {
+    logBuildError("Maximum command nesting depth ({d}) exceeded at path: {s}", .{ max_depth, path });
 }
 
 /// Format build warning for field name too long
@@ -191,7 +192,7 @@ test "logging utility functions" {
     optionNameTooLong("very-long-option-name", 16);
 
     invalidCommandName("bad name", "contains spaces");
-    maxNestingDepthReached(6, "/deep/path/here");
+    maxNestingDepthExceeded(6, "/deep/path/here");
     fieldNameTooLong("very_long_field_name_that_exceeds_limits", 32);
 
     buildError("Test Error", "/path/to/file", "Test description", "Test suggestion");

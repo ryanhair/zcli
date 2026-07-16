@@ -149,21 +149,18 @@ test "build integration: empty directories and edge cases" {
     try testing.expect(no_index.subcommands.?.contains("subcmd"));
 }
 
-test "build integration: maximum nesting depth" {
+test "build integration: within the nesting depth limit" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
     // Within the depth limit (6): discovered.
     try writeNested(tmp.dir, io, "level1/level2/level3/level4/level5/cmd.zig", placeholder);
-    // Beyond the limit: the whole chain ends up empty and is dropped.
-    try writeNested(tmp.dir, io, "deep/l1/l2/l3/l4/l5/l6/l7/ignored.zig", placeholder);
 
     var discovered = try discover(&tmp);
     defer discovered.deinit();
 
     try testing.expect(discovered.root.contains("level1"));
-    try testing.expect(!discovered.root.contains("deep"));
 
     // The command at level5 is reachable through the group chain.
     var current = discovered.root.get("level1").?;
@@ -172,6 +169,33 @@ test "build integration: maximum nesting depth" {
     current = current.subcommands.?.get("level4").?;
     current = current.subcommands.?.get("level5").?;
     try testing.expect(current.subcommands.?.contains("cmd"));
+}
+
+test "build integration: exceeding the nesting depth limit is a hard error" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Beyond the limit (6): rather than silently dropping the subtree — which
+    // hid commands from the CLI with only a stray build-log line — discovery
+    // now fails loudly so the too-deep tree can't slip by unnoticed.
+    try writeNested(tmp.dir, io, "deep/l1/l2/l3/l4/l5/l6/l7/ignored.zig", placeholder);
+
+    // discover() partially allocates before erroring; that memory is owned by
+    // the process arena in a real build. Here we can't call deinit on a value
+    // we never received, so route through an arena to keep the leak detector
+    // satisfied on this intentional error path.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    try testing.expectError(
+        error.MaxCommandDepthExceeded,
+        command_discovery.discoverInDir(allocator, io, dir),
+    );
 }
 
 test "build integration: registry source generation from a discovered tree" {
