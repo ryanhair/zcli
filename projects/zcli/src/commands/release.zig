@@ -14,10 +14,13 @@ pub const meta = .{
     },
     .options = .{
         .@"dry-run" = .{ .description = "Preview changes without executing" },
-        .@"skip-tests" = .{ .description = "Skip running tests before release" },
+        // `skip-tests`, `skip-checks`, and `sign` all begin with 's'; zcli forbids
+        // two options resolving to the same short flag, so each gets an explicit,
+        // distinct one (`sign` keeps the natural `-s`).
+        .@"skip-tests" = .{ .description = "Skip running tests before release", .short = 't' },
         .push = .{ .description = "Create the tag but don't push to remote" },
-        .@"skip-checks" = .{ .description = "Skip safety checks (clean working tree, branch verification)" },
-        .sign = .{ .description = "Sign the tag with GPG" },
+        .@"skip-checks" = .{ .description = "Skip safety checks (clean working tree, branch verification)", .short = 'c' },
+        .sign = .{ .description = "Sign the tag with GPG", .short = 's' },
         .message = .{ .description = "Release message (if not provided, editor will open)" },
         .branch = .{ .description = "Branch to release from" },
     },

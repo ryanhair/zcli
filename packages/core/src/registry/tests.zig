@@ -1374,7 +1374,7 @@ const ConstrainedCommand = struct {
         .description = "constrained",
         .exclusive = .{.{ .json, .yaml, .xml }},
         .options = .{
-            .output_format = .{ .requires = .{.output} },
+            .output_format = .{ .short = 'F', .requires = .{.output} },
         },
     };
     pub const Args = struct {};

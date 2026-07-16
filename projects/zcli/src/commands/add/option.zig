@@ -24,7 +24,7 @@ pub const meta = .{
         .type = .{ .description = "Element/scalar Zig type (e.g. u32, bool, []const u8; default: []const u8)", .short = 't' },
         .multiple = .{ .description = "Accumulate repeated flags into a slice" },
         .nullable = .{ .description = "Optional: renders as ?T = null" },
-        .default = .{ .description = "Default value, a Zig expression; omit on a non-nullable scalar to make the option required" },
+        .default = .{ .description = "Default value, a Zig expression; omit on a non-nullable scalar to make the option required", .short = 'D' },
         .short = .{ .description = "Single-character short flag", .short = 's' },
         .description = .{ .description = "Option description", .short = 'd' },
     },
@@ -39,11 +39,9 @@ pub const Options = struct {
     // Defaults to a string option — the same default the wizard uses for
     // its "text" choice.
     type: []const u8 = "[]const u8",
-    // `description` MUST precede `default`: zcli auto-derives a short flag from
-    // each field's first letter, so `default` would otherwise claim `-d`. Short
-    // flags resolve to the first matching field, so declaring `description`
-    // (explicit `-d`) first makes `-d` mean description; `default` keeps only
-    // its long form.
+    // `description` and `default` both start with 'd'; zcli forbids two fields
+    // resolving to the same short flag, so `description` takes `-d` (explicit)
+    // and `default` takes `-D` (explicit, see meta above).
     description: ?[]const u8 = null,
     multiple: bool = false,
     nullable: bool = false,

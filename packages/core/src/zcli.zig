@@ -458,7 +458,42 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
     // the checks below are about naming collisions, not presence.
     if (@typeInfo(OptionsType) == .@"struct") {
         const opts_meta = if (@hasDecl(Module, "meta")) Module.meta else null;
-        inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+
+        // No two fields in one Options struct may resolve to the same short
+        // flag character or the same effective long name. The parser binds a
+        // flag to the FIRST field whose short/long matches (`inline for … break`),
+        // so a collision silently makes the later field unreachable via that
+        // flag — with no runtime diagnostic. Catch it at compile time instead.
+        const opt_fields = @typeInfo(OptionsType).@"struct".fields;
+        inline for (opt_fields, 0..) |a, ai| {
+            inline for (opt_fields, 0..) |b, bi| {
+                if (bi > ai) {
+                    const a_short = option_utils.shortCharForField(opts_meta, a.name);
+                    const b_short = option_utils.shortCharForField(opts_meta, b.name);
+                    if (a_short != 0 and a_short == b_short) {
+                        const short_str = [_]u8{a_short};
+                        @compileError(loc ++ "options '" ++ a.name ++ "' and '" ++ b.name ++
+                            "' both resolve to the short flag `-" ++ &short_str ++
+                            "`. The parser binds `-" ++ &short_str ++ "` to the first match, " ++
+                            "leaving the other unreachable via its short flag. Give one field an " ++
+                            "explicit distinct short, e.g. `.meta = .{ .options = .{ ." ++ b.name ++
+                            " = .{ .short = '…' } } }`.");
+                    }
+                    const a_long = option_utils.effectiveLongName(opts_meta, a.name);
+                    const b_long = option_utils.effectiveLongName(opts_meta, b.name);
+                    if (std.mem.eql(u8, a_long, b_long)) {
+                        @compileError(loc ++ "options '" ++ a.name ++ "' and '" ++ b.name ++
+                            "' both resolve to the long flag `--" ++ a_long ++
+                            "`. The parser binds `--" ++ a_long ++ "` to the first match, " ++
+                            "leaving the other unreachable via its long flag. Rename one field or " ++
+                            "give it an explicit distinct `.meta = .{ .options = .{ ." ++ b.name ++
+                            " = .{ .name = \"…\" } } }`.");
+                    }
+                }
+            }
+        }
+
+        inline for (opt_fields) |field| {
             // A boolean flag's name must not begin with `no-`: every bool and
             // `?bool` auto-generates a `--no-<name>` negation, so a `no_`-prefixed
             // flag would collide with (and read as) another flag's negation.
@@ -795,6 +830,20 @@ test "validateCommand accepts a well-formed command" {
     };
     comptime validateCommand("group", Group);
 
+    // Two fields that share a first character are fine as long as an explicit
+    // `short` disambiguates them — this must compile without tripping the
+    // duplicate-short guard.
+    const DistinctShorts = struct {
+        pub const meta = .{ .options = .{ .version = .{ .short = 'V' } } };
+        pub const Args = struct {};
+        pub const Options = struct {
+            verbose: bool = false, // -v
+            version: bool = false, // -V (explicit)
+        };
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
+    };
+    comptime validateCommand("dup-ok", DistinctShorts);
+
     try testing.expect(true);
 }
 
@@ -829,6 +878,16 @@ test "validateCommand accepts a well-formed command" {
 //
 //   command 'broken': option 'a' lists itself in `requires`
 //     pub const meta = .{ .options = .{ .a = .{ .requires = .{.a} } } };
+//
+//   Duplicate short/long within one Options struct (issue #439). Verified by
+//   the scratch repro documented in the PR body; each guard below fires:
+//
+//   command 'broken': options 'verbose' and 'version' both resolve to the short flag `-v`. ...
+//     pub const Options = struct { verbose: bool = false, version: bool = false };
+//
+//   command 'broken': options 'dry_run' and 'dryRun' both resolve to the long flag `--dry-run`. ...
+//     pub const meta = .{ .options = .{ .dryRun = .{ .name = "dry-run" } } };
+//     pub const Options = struct { dry_run: bool = false, dryRun: bool = false };
 
 test "Context creation" {
     const allocator = testing.allocator;
