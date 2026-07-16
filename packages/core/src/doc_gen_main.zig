@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const registry = @import("command_registry");
+const build_options = @import("build_options");
 const zcli = @import("zcli");
 const esc = @import("doc_escape.zig");
 
@@ -212,9 +213,10 @@ fn writeCommandMarkdown(allocator: std.mem.Allocator, io: std.Io, output_dir: []
 // ============================================================================
 
 fn writeManPages(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
-    // The `.TH` date field (mandoc warns when it is empty). Stamped into the
-    // registry at build time, so it is stable across doc regenerations.
-    const date = registry.build_date;
+    // The `.TH` date field (mandoc warns when it is empty). Injected as a build
+    // option by `generateDocs`, so it stays out of the registry source (which
+    // must not carry a wall-clock date — see computeBuildDate).
+    const date = build_options.build_date;
     for (commands) |cmd| {
         if (cmd.hidden) continue;
         try writeCommandManPage(allocator, io, output_dir, cmd, global_opts, date);

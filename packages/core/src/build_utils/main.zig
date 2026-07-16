@@ -41,11 +41,12 @@ pub const linkSecretsBackend = types.linkSecretsBackend;
 // VERSION MANAGEMENT - Read version from build.zig.zon
 // ============================================================================
 
-/// Compute the build date (`YYYY-MM-DD`) stamped into the registry for the man
-/// page `.TH` field. Honors `SOURCE_DATE_EPOCH` (the reproducible-builds
-/// convention) when set, otherwise stamps the current build time. Either way
-/// the date is fixed at build time, so `zig build docs` is reproducible across
-/// runs of the same build.
+/// Compute the build date (`YYYY-MM-DD`) used for the man page `.TH` field.
+/// Honors `SOURCE_DATE_EPOCH` (the reproducible-builds convention) when set,
+/// otherwise stamps the current build time. This is injected only into the
+/// on-demand doc generator (via a build option), never into the command
+/// registry — baking the wall-clock date into the registry source would bust
+/// the compile cache once per calendar day for every consuming project.
 fn computeBuildDate(b: *std.Build) []const u8 {
     const epoch_secs: u64 = blk: {
         if (b.graph.environ_map.get("SOURCE_DATE_EPOCH")) |raw| {
@@ -257,7 +258,6 @@ fn generatePluginRegistry(
 pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Build.Dependency, config: GenerateConfig) GenerateError!*std.Build.Module {
     const zcli_module = zcli_dep.module("zcli");
     const app_version = readVersionFromZon(b);
-    const build_date = computeBuildDate(b);
 
     // Convert plugin configs to PluginInfo array. Each explicit plugin is
     // registered one of two ways (see PluginConfig): a built-in whose source
@@ -337,7 +337,6 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         .app_name = config.app_name,
         .app_version = app_version,
         .app_description = config.app_description,
-        .build_date = build_date,
     };
 
     return buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);
@@ -369,6 +368,15 @@ pub fn generateDocs(b: *std.Build, registry_module: *std.Build.Module, zcli_dep:
     });
     doc_exe.root_module.addImport("command_registry", registry_module);
     doc_exe.root_module.addImport("zcli", zcli_module);
+
+    // The man page `.TH` date is injected here, into the doc generator only —
+    // never into the command registry — so the wall-clock date can't bust the
+    // registry/exe compile cache once per calendar day. The doc generator is
+    // built on demand (`zig build docs`), so stamping it here is free for
+    // ordinary builds.
+    const doc_options = b.addOptions();
+    doc_options.addOption([]const u8, "build_date", computeBuildDate(b));
+    doc_exe.root_module.addOptions("build_options", doc_options);
 
     const run = b.addRunArtifact(doc_exe);
     run.addArg(config.output_dir);
