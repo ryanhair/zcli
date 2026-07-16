@@ -63,8 +63,16 @@ fn base64Alloc(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out;
 }
 
-/// Build a self-consistent release fixture with a fresh keypair.
+/// Build a self-consistent release fixture with a fresh keypair, whose signed
+/// artifacts install as `version`.
 fn makeFixture(allocator: std.mem.Allocator, io: std.Io) !Fixture {
+    return makeFixtureTagged(allocator, io, version);
+}
+
+/// Like `makeFixture`, but the trusted comment binds `tag_version` — pass a value
+/// other than `version` to model a replayed/downgraded release whose signature is
+/// genuine but whose embedded tag does not match the version being installed.
+fn makeFixtureTagged(allocator: std.mem.Allocator, io: std.Io, tag_version: []const u8) !Fixture {
     const kp = Ed25519.KeyPair.generate(io);
     const key_id = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
 
@@ -87,18 +95,41 @@ fn makeFixture(allocator: std.mem.Allocator, io: std.Io) !Fixture {
     var pre: [Blake2b512.digest_length]u8 = undefined;
     Blake2b512.hash(checksums, &pre, .{});
     const sig = try kp.sign(&pre, null);
+    const sig_bytes = sig.toBytes();
 
     var sig_blob: [2 + 8 + 64]u8 = undefined;
     @memcpy(sig_blob[0..2], "ED");
     @memcpy(sig_blob[2..10], &key_id);
-    @memcpy(sig_blob[10..74], &sig.toBytes());
+    @memcpy(sig_blob[10..74], &sig_bytes);
     const sig_b64 = try base64Alloc(allocator, &sig_blob);
     defer allocator.free(sig_b64);
 
+    // Trusted comment binds the release tag, exactly as scripts/sign-release.sh
+    // does (`-t "zcli <tag> — signed release checksums"`). minisign's global
+    // (line-4) signature covers `primary_sig_bytes || trusted_comment_text`, so
+    // we sign that concatenation with the same key to produce a GENUINE global
+    // signature — the fixture faithfully reproduces a real signed release, and
+    // the happy path therefore exercises version binding too.
+    const trusted_comment = try std.fmt.allocPrint(
+        allocator,
+        "{s} {s}-v{s} — signed release checksums",
+        .{ cli_name, cli_name, tag_version },
+    );
+    defer allocator.free(trusted_comment);
+
+    const global_msg = try allocator.alloc(u8, sig_bytes.len + trusted_comment.len);
+    defer allocator.free(global_msg);
+    @memcpy(global_msg[0..sig_bytes.len], &sig_bytes);
+    @memcpy(global_msg[sig_bytes.len..], trusted_comment);
+    const global_sig = try kp.sign(global_msg, null);
+    const global_sig_bytes = global_sig.toBytes();
+    const global_sig_b64 = try base64Alloc(allocator, &global_sig_bytes);
+    defer allocator.free(global_sig_b64);
+
     const minisig = try std.fmt.allocPrint(
         allocator,
-        "untrusted comment: signature from test key\n{s}\ntrusted comment: test\ntrusted-sig-unused==\n",
-        .{sig_b64},
+        "untrusted comment: signature from test key\n{s}\ntrusted comment: {s}\n{s}\n",
+        .{ sig_b64, trusted_comment, global_sig_b64 },
     );
     errdefer allocator.free(minisig);
 
@@ -281,6 +312,31 @@ test "pipeline: tampered checksums.txt fails signature verification" {
         error.SignatureVerificationFailed,
         runDownloadVerify(allocator, io, tmp.dir, assets, fx.public_key_b64),
     );
+}
+
+test "pipeline: a replayed older release (signed, wrong version) is rejected (#510)" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    // Model a compromised publisher replaying an OLDER, genuinely-signed release
+    // under the newer tag: every artifact (binary, checksums.txt, .minisig) is
+    // internally consistent and the primary signature verifies — but the trusted
+    // comment binds `app-v1.0.0`, not the `app-v1.2.3` being installed. The
+    // version binding must catch it even though checksum + primary signature pass.
+    var fx = try makeFixtureTagged(allocator, io, "1.0.0");
+    defer fx.deinit(allocator);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const assets = Assets{ .binary = binary_contents, .checksums = fx.checksums, .minisig = fx.minisig };
+    try testing.expectError(
+        error.VersionVerificationFailed,
+        runDownloadVerify(allocator, io, tmp.dir, assets, fx.public_key_b64),
+    );
+
+    // Fail-closed: nothing was installed.
+    try testing.expectError(error.FileNotFound, tmp.dir.openFile(io, "current", .{}));
 }
 
 test "pipeline: a binary that does not match its checksum aborts" {
