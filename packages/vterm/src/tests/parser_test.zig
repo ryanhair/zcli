@@ -126,6 +126,29 @@ test "clear screen" {
     }
 }
 
+test "ESC[2J then write lands on top viewport row" {
+    // Regression for #571: ESC[2J resets the cursor to (0,0) but must also
+    // re-sync virtual_cursor_y (the write path's line), otherwise text written
+    // after a bare clear lands on the pre-clear bottom line.
+    var term = try VTerm.init(testing.allocator, 10, 3);
+    defer term.deinit();
+
+    term.write("L0\nL1\nL2\nL3\nL4\n");
+    term.write("\x1b[2J");
+    term.write("HELLO");
+
+    // "HELLO" must render on the top viewport row (row 0).
+    const expected = "HELLO";
+    for (expected, 0..) |ch, x| {
+        try testing.expectEqual(@as(u21, ch), term.getCell(@intCast(x), 0).char);
+    }
+    // Rows 1 and 2 stay empty.
+    for (0..10) |x| {
+        try testing.expect(term.getCell(@intCast(x), 1).isEmpty());
+        try testing.expect(term.getCell(@intCast(x), 2).isEmpty());
+    }
+}
+
 test "clear line" {
     var term = try VTerm.init(testing.allocator, 5, 3);
     defer term.deinit();

@@ -427,6 +427,10 @@ pub const VTerm = struct {
     pub fn clear(self: *VTerm) void {
         @memset(self.cells, Cell.empty());
         self.cursor = Position.init(0, 0);
+        // Keep the write position (virtual_cursor_y) in sync with the reset
+        // cursor, as CUP/moveCursor does — otherwise post-clear writes key off a
+        // stale virtual_cursor_y and land on the pre-clear bottom line (#571).
+        self.virtual_cursor_y = self.viewportToLogicalLine(self.cursor.y);
     }
 
     // Resize Support
