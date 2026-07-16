@@ -24,6 +24,9 @@ pub const GenerateError = error{
     PluginDiscoveryFailed,
     /// A `PluginConfig` set neither `path` nor `dependency` (or set both).
     PluginConfigInvalid,
+    /// An external plugin's `name` is not a valid package/identifier name and
+    /// would break out of the generated `@import("...")` string literal.
+    PluginNameInvalid,
     /// Two discovered commands sanitize to the same generated module identifier.
     CommandNameCollision,
 };
@@ -269,6 +272,17 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
             if (plugin_config.path != null) {
                 logging.buildError("Plugin Config Error", plugin_config.name, "A plugin sets both '.path' and '.dependency'", "Use '.path' (via zcli.builtin) for a built-in, or '.dependency' for an external package — not both");
                 return error.PluginConfigInvalid;
+            }
+            // The external plugin's name is emitted verbatim as its
+            // `@import("<name>")` string in the generated registry. Reject a
+            // name that isn't a valid package/identifier here — otherwise a
+            // quote/backslash/space in it produces an opaque compile error in
+            // zcli_generated.zig instead of this clean diagnostic. (Built-in
+            // `.path` plugins import a filesystem-relative path, not the name,
+            // and that path is escaped at emission.)
+            if (!plugin_system.isValidPluginName(plugin_config.name)) {
+                logging.buildError("Plugin Config Error", plugin_config.name, "External plugin name is not a valid package name", "Use letters, digits, '_' and '-' only, starting with a letter or '_' (no spaces, quotes, or path separators)");
+                return error.PluginNameInvalid;
             }
             // External package plugin: its module is resolved from the
             // dependency in module_creation.addPluginModulesToRegistry via

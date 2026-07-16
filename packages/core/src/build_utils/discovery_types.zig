@@ -102,3 +102,52 @@ pub const DiscoveredCommands = struct {
         self.root.deinit();
     }
 };
+
+// ============================================================================
+// Tests — sortedByName is the pure helper that makes generated command order
+// deterministic; discovery stores entries in an unordered StringHashMap.
+// ============================================================================
+
+const testing = std.testing;
+
+fn putBare(map: *std.StringHashMap(DiscoveredCommand), allocator: std.mem.Allocator, name: []const u8) !void {
+    try map.put(try allocator.dupe(u8, name), .{
+        .name = try allocator.dupe(u8, name),
+        .path = &.{},
+        .file_path = try allocator.dupe(u8, name),
+        .command_type = .leaf,
+        .subcommands = null,
+    });
+}
+
+test "sortedByName returns entries alphabetically regardless of insertion order" {
+    const allocator = testing.allocator;
+    var commands = DiscoveredCommands.init(allocator);
+    defer commands.deinit();
+
+    // Insert deliberately out of alphabetical order.
+    try putBare(&commands.root, allocator, "delta");
+    try putBare(&commands.root, allocator, "alpha");
+    try putBare(&commands.root, allocator, "charlie");
+    try putBare(&commands.root, allocator, "bravo");
+
+    const sorted = try sortedByName(allocator, &commands.root);
+    defer allocator.free(sorted);
+
+    try testing.expectEqual(@as(usize, 4), sorted.len);
+    try testing.expectEqualStrings("alpha", sorted[0].name);
+    try testing.expectEqualStrings("bravo", sorted[1].name);
+    try testing.expectEqualStrings("charlie", sorted[2].name);
+    try testing.expectEqualStrings("delta", sorted[3].name);
+}
+
+test "sortedByName on an empty map yields an empty slice" {
+    const allocator = testing.allocator;
+    var commands = DiscoveredCommands.init(allocator);
+    defer commands.deinit();
+
+    const sorted = try sortedByName(allocator, &commands.root);
+    defer allocator.free(sorted);
+
+    try testing.expectEqual(@as(usize, 0), sorted.len);
+}

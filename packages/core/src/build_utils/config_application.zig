@@ -1,6 +1,20 @@
 const std = @import("std");
 const types = @import("types.zig");
 
+/// Whether a module config implies libc must be linked. Explicit `link_libc`
+/// wins; otherwise it is auto-detected from the presence of C sources or system
+/// libraries. Pure decision rule, unit-tested below — kept out of the
+/// std.Build-graph plumbing so a regression fails a targeted test.
+fn needsLibc(config: types.CommandModuleConfig) bool {
+    return config.link_libc orelse (config.c_sources != null or config.system_libs != null);
+}
+
+/// Whether a module config implies libc++ must be linked. Explicit
+/// `link_libcpp` wins; otherwise auto-detected from the presence of C++ sources.
+fn needsLibcpp(config: types.CommandModuleConfig) bool {
+    return config.link_libcpp orelse (config.cpp_sources != null);
+}
+
 /// Collect and apply all C/C++ dependencies from command_configs to the executable
 /// Since modules don't support C linking in Zig, all C dependencies must be applied
 /// to the final executable that links everything together
@@ -26,15 +40,9 @@ pub fn applyCommandConfigsToExecutable(
     for (command_configs) |cmd_config| {
         for (cmd_config.modules) |module_config| {
             if (module_config.config) |config| {
-                // Auto-detect libc linking
-                if (config.link_libc orelse (config.c_sources != null or config.system_libs != null)) {
-                    needs_libc = true;
-                }
-
-                // Auto-detect libc++ linking
-                if (config.link_libcpp orelse (config.cpp_sources != null)) {
-                    needs_libcpp = true;
-                }
+                // Auto-detect libc / libc++ linking (see needsLibc/needsLibcpp)
+                if (needsLibc(config)) needs_libc = true;
+                if (needsLibcpp(config)) needs_libcpp = true;
 
                 // Add include paths (deduplicate)
                 if (config.include_paths) |paths| {
@@ -94,4 +102,42 @@ pub fn applyCommandConfigsToExecutable(
     if (needs_libcpp) {
         exe.root_module.link_libcpp = true;
     }
+}
+
+// ============================================================================
+// Tests — the pure libc/libc++ auto-detection rules. The apply loop above is
+// std.Build-graph plumbing, but the merge decision it makes per module is pure.
+// ============================================================================
+
+const testing = std.testing;
+
+test "needsLibc: nothing set is false" {
+    try testing.expect(!needsLibc(.{}));
+}
+
+test "needsLibc: auto-detected from C sources and system libs" {
+    try testing.expect(needsLibc(.{ .c_sources = &.{"foo.c"} }));
+    try testing.expect(needsLibc(.{ .system_libs = &.{"curl"} }));
+}
+
+test "needsLibc: explicit link_libc overrides auto-detection both ways" {
+    // Explicit false wins even though C sources would auto-detect true.
+    try testing.expect(!needsLibc(.{ .link_libc = false, .c_sources = &.{"foo.c"} }));
+    // Explicit true wins with nothing else set.
+    try testing.expect(needsLibc(.{ .link_libc = true }));
+}
+
+test "needsLibc: C++ sources alone do not pull in libc" {
+    try testing.expect(!needsLibc(.{ .cpp_sources = &.{"foo.cpp"} }));
+}
+
+test "needsLibcpp: auto-detected only from C++ sources" {
+    try testing.expect(!needsLibcpp(.{}));
+    try testing.expect(needsLibcpp(.{ .cpp_sources = &.{"foo.cpp"} }));
+    try testing.expect(!needsLibcpp(.{ .c_sources = &.{"foo.c"} }));
+}
+
+test "needsLibcpp: explicit link_libcpp overrides auto-detection both ways" {
+    try testing.expect(!needsLibcpp(.{ .link_libcpp = false, .cpp_sources = &.{"foo.cpp"} }));
+    try testing.expect(needsLibcpp(.{ .link_libcpp = true }));
 }

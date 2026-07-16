@@ -143,12 +143,7 @@ const Ctx = struct {
 
         // Module name from the sanitized command path (unique, and distinct from
         // generate()'s `cmd_*`/`*_index` registry modules).
-        var parts = std.ArrayList([]const u8).empty;
-        defer parts.deinit(b.allocator);
-        for (info.path) |part| {
-            parts.append(b.allocator, std.mem.replaceOwned(u8, b.allocator, part, "-", "_") catch part) catch @panic("OOM");
-        }
-        const module_name = b.fmt("cmdtest_{s}", .{std.mem.join(b.allocator, "_", parts.items) catch @panic("OOM")});
+        const module_name = cmdTestModuleName(b.allocator, info.path) catch @panic("OOM");
 
         const mod = b.addModule(module_name, .{
             .root_source_file = b.path(full_path),
@@ -164,3 +159,47 @@ const Ctx = struct {
         self.test_step.dependOn(&b.addRunArtifact(t).step);
     }
 };
+
+/// Derive the unique test-module identifier for a command from its path:
+/// `cmdtest_<parts joined by '_'>`, with '-' in each part replaced by '_' so a
+/// dash-named command file yields a valid Zig identifier. Extracted from the
+/// std.Build-graph wiring in `addOne` so the derivation rule can be unit-tested
+/// directly (a regression fails here, not an opaque example build). Caller owns
+/// the returned string.
+fn cmdTestModuleName(allocator: std.mem.Allocator, path: []const []const u8) ![]u8 {
+    var parts = std.ArrayList([]const u8).empty;
+    defer {
+        for (parts.items) |p| allocator.free(p);
+        parts.deinit(allocator);
+    }
+    for (path) |part| {
+        try parts.append(allocator, try std.mem.replaceOwned(u8, allocator, part, "-", "_"));
+    }
+    const joined = try std.mem.join(allocator, "_", parts.items);
+    defer allocator.free(joined);
+    return std.fmt.allocPrint(allocator, "cmdtest_{s}", .{joined});
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "cmdTestModuleName joins path parts under a cmdtest_ prefix" {
+    const name = try cmdTestModuleName(testing.allocator, &.{ "users", "list" });
+    defer testing.allocator.free(name);
+    try testing.expectEqualStrings("cmdtest_users_list", name);
+}
+
+test "cmdTestModuleName replaces dashes so the identifier stays valid" {
+    const name = try cmdTestModuleName(testing.allocator, &.{ "gh", "add-item" });
+    defer testing.allocator.free(name);
+    try testing.expectEqualStrings("cmdtest_gh_add_item", name);
+}
+
+test "cmdTestModuleName for a single top-level command" {
+    const name = try cmdTestModuleName(testing.allocator, &.{"init"});
+    defer testing.allocator.free(name);
+    try testing.expectEqualStrings("cmdtest_init", name);
+}
