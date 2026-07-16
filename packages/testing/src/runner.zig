@@ -41,6 +41,21 @@ pub fn runInProcess(allocator: std.mem.Allocator, io: std.Io, comptime RegistryT
     return runSubprocess(allocator, io, exe_path, args);
 }
 
+const max_output = 10 * 1024 * 1024;
+
+/// Drain a child pipe to EOF, returning the bytes allocated in `arena`.
+///
+/// This runs concurrently with the sibling pipe's drain (see `runSubprocess`),
+/// so it allocates only from its own arena — never the caller's `allocator`,
+/// which the sibling drain is using at the same time on the main thread. Once
+/// both drains have joined, the result is copied into the caller's allocator on
+/// a single thread.
+fn drainPipe(io: std.Io, file: std.Io.File, arena: std.mem.Allocator) std.Io.Reader.LimitedAllocError![]u8 {
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    return reader.interface.allocRemaining(arena, .limited(max_output));
+}
+
 /// Run a command as a subprocess (for external binaries)
 pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const u8, args: []const []const u8) !Result {
     // Prepare arguments
@@ -56,14 +71,39 @@ pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const
         .stderr = .pipe,
     });
 
-    // Read all output before waiting (avoid deadlock on big outputs)
+    // Both pipes must drain simultaneously. Draining one to EOF before touching
+    // the other deadlocks: a child that fills the un-drained pipe (>~64 KB, the
+    // OS pipe buffer) blocks in write() and never exits, so the pipe we *are*
+    // draining never reaches EOF. Read stderr concurrently while the main thread
+    // drains stdout.
+    //
+    // The concurrent drain allocates from an isolated arena (page-backed, so it
+    // shares no allocator state with the main thread's stdout drain); we copy
+    // its bytes into `allocator` below, after joining, on a single thread.
+    var stderr_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer stderr_arena.deinit();
+
+    var stderr_future: ?std.Io.Future(std.Io.Reader.LimitedAllocError![]u8) =
+        io.concurrent(drainPipe, .{ io, child.stderr.?, stderr_arena.allocator() }) catch null;
+
     var stdout_buf: [4096]u8 = undefined;
-    var stderr_buf: [4096]u8 = undefined;
     var stdout_reader = child.stdout.?.reader(io, &stdout_buf);
-    var stderr_reader = child.stderr.?.reader(io, &stderr_buf);
-    const stdout = try stdout_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024));
+    const stdout = stdout_reader.interface.allocRemaining(allocator, .limited(max_output)) catch |err| {
+        // Keep stderr draining so the child can exit, then reap before failing.
+        if (stderr_future) |*f| _ = f.await(io) catch "";
+        _ = child.wait(io) catch {};
+        return err;
+    };
     errdefer allocator.free(stdout);
-    const stderr = try stderr_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024));
+
+    // Join the concurrent stderr drain (or, if concurrency was unavailable, do
+    // it sequentially now — the pre-existing fallback behavior).
+    const stderr_bytes = if (stderr_future) |*f|
+        try f.await(io)
+    else
+        try drainPipe(io, child.stderr.?, stderr_arena.allocator());
+
+    const stderr = try allocator.dupe(u8, stderr_bytes);
     errdefer allocator.free(stderr);
 
     const term = try child.wait(io);
@@ -78,6 +118,33 @@ pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const
         .exit_code = exit_code,
         .allocator = allocator,
     };
+}
+
+test "runSubprocess drains both pipes when the child floods stderr" {
+    // Regression for #430: the child writes far more than one OS pipe buffer
+    // (~64 KB) to stderr *before* writing stdout. If stderr isn't drained
+    // concurrently, the child blocks in write() on the full stderr pipe, never
+    // exits, stdout never reaches EOF, and this call hangs forever.
+    if (@import("builtin").os.tag == .windows) return; // uses /bin/sh
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // yes(1) is truncated by head(1) to exactly 200 KB on stderr, then a known
+    // marker is written to stdout. The order (stderr first) is what triggers
+    // the deadlock on the old sequential drain.
+    const program = "yes zzzzzzzz | head -c 200000 1>&2; printf STDOUT_OK";
+
+    var result = runSubprocess(allocator, io, "/bin/sh", &.{ "-c", program }) catch |err| {
+        // Spawning may be restricted in some sandboxes; don't fail the suite.
+        std.log.warn("runSubprocess skipped: {any}", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+    try std.testing.expectEqualStrings("STDOUT_OK", result.stdout);
+    try std.testing.expectEqual(@as(usize, 200000), result.stderr.len);
 }
 
 test "Result deinitialization" {
