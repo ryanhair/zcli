@@ -12,6 +12,7 @@ const ZcliError = diagnostic_errors.ZcliError;
 const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 const ResourceLimits = @import("../resource_limits.zig").ResourceLimits;
 const ResourceTracker = @import("../resource_limits.zig").ResourceTracker;
+const ResourceLimitError = @import("../resource_limits.zig").ResourceLimitError;
 
 /// Parse command-line options into a struct using default field names.
 ///
@@ -250,13 +251,13 @@ pub fn parseOptionsWithMeta(
                 return ZcliError.ResourceLimitExceeded;
             };
 
-            const consumed = parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, diag) catch |err| {
+            const consumed = parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, &resource_tracker, diag) catch |err| {
                 return convertLongOptionError(err);
             };
             arg_index += consumed;
         } else {
             // Short option(s)
-            const consumed = parseShortOptionsWithMeta(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, diag) catch |err| {
+            const consumed = parseShortOptionsWithMeta(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, &resource_tracker, diag) catch |err| {
                 return convertShortOptionError(err);
             };
             arg_index += consumed;
@@ -310,6 +311,10 @@ fn convertLongOptionError(err: anyerror) ZcliError {
         error.BooleanOptionWithValue => ZcliError.OptionBooleanWithValue,
         error.DuplicateOption => ZcliError.OptionDuplicate,
         error.OutOfMemory => ZcliError.SystemOutOfMemory,
+        // CSV array elements are counted against the option budget; overflow
+        // surfaces as the same resource-limit error as the per-token check, its
+        // diagnostic already set at the counting site.
+        error.TooManyOptions => ZcliError.ResourceLimitExceeded,
         // The helpers' error sets are hand-listed above; anything new must be
         // mapped (and given a diagnostic) rather than silently misclassified.
         else => ZcliError.OptionInvalidValue,
@@ -325,6 +330,9 @@ fn convertShortOptionError(err: anyerror) ZcliError {
         error.BooleanOptionWithValue => ZcliError.OptionBooleanWithValue,
         error.DuplicateOption => ZcliError.OptionDuplicate,
         error.OutOfMemory => ZcliError.SystemOutOfMemory,
+        // See convertLongOptionError: CSV element overflow maps to the
+        // resource-limit error with its diagnostic already set.
+        error.TooManyOptions => ZcliError.ResourceLimitExceeded,
         // See convertLongOptionError: map new helper errors explicitly.
         else => ZcliError.OptionInvalidValue,
     };
@@ -491,6 +499,34 @@ fn markBooleanFlagOnce(
     try option_counts.put(field_name, 1);
 }
 
+/// Count each additional comma-separated element of an array-option value
+/// against the option budget. The option token itself was already counted once
+/// by `checkOptionCount` at the top of the parse loop, but `--tags a,b,c`
+/// expands to N accumulated elements — so the remaining N-1 must also be
+/// counted. Without this a single CSV flag could push an array option past
+/// `max_total_options` unbounded, violating the invariant documented in
+/// resource_limits.zig ("grow by one element per flag occurrence"). On overflow
+/// it records the ResourceLimitExceeded diagnostic and returns the error;
+/// callers map `TooManyOptions` to `ZcliError.ResourceLimitExceeded`.
+fn countCsvArrayElements(
+    resource_tracker: *ResourceTracker,
+    value: []const u8,
+    diag: ?*?ZcliDiagnostic,
+) ResourceLimitError!void {
+    const extra = std.mem.count(u8, value, ",");
+    for (0..extra) |_| {
+        resource_tracker.checkOptionCount() catch {
+            if (diag) |d| d.* = .{ .ResourceLimitExceeded = .{
+                .limit_type = "total options",
+                .limit_value = resource_tracker.limits.max_total_options,
+                .actual_value = resource_tracker.option_count,
+                .suggestion = null,
+            } };
+            return ResourceLimitError.TooManyOptions;
+        };
+    }
+}
+
 /// Parse a long option with metadata support (--option or --option=value)
 fn parseLongOptions(
     comptime OptionsType: type,
@@ -501,6 +537,7 @@ fn parseLongOptions(
     arg_index: usize,
     array_lists: anytype,
     allocator: std.mem.Allocator,
+    resource_tracker: *ResourceTracker,
     diag: ?*?ZcliDiagnostic,
 ) !usize {
     const arg = args[arg_index];
@@ -562,6 +599,8 @@ fn parseLongOptions(
                 // Handle array accumulation
                 const element_type = @typeInfo(field.type).pointer.child;
                 if (array_lists[i]) |*list_union| {
+                    // CSV elements each count against the option budget.
+                    try countCsvArrayElements(resource_tracker, value, diag);
                     try array_utils.appendCsvToArrayListUnion(element_type, allocator, list_union, value, option_name);
                 }
             } else {
@@ -618,6 +657,7 @@ fn parseShortOptionsWithMeta(
     arg_index: usize,
     array_lists: anytype,
     allocator: std.mem.Allocator,
+    resource_tracker: *ResourceTracker,
     diag: ?*?ZcliDiagnostic,
 ) !usize {
     const arg = args[arg_index];
@@ -729,6 +769,8 @@ fn parseShortOptionsWithMeta(
                             // For array types, accumulate values
                             if (array_lists.*[i]) |*list_union| {
                                 const element_type = @typeInfo(field.type).pointer.child;
+                                // CSV elements each count against the option budget.
+                                try countCsvArrayElements(resource_tracker, value, diag);
                                 try array_utils.appendCsvToArrayListUnionShort(element_type, allocator, list_union, value, char);
                             }
                         } else {
@@ -1241,6 +1283,50 @@ test "parseOptions comma-separated rejects empty segments" {
     inline for (.{ "a,,b", ",a", "a," }) |bad| {
         const args = [_][]const u8{ "--files", bad };
         try std.testing.expectError(ZcliError.OptionInvalidValue, parseOptions(TestOptions, allocator, &args, null));
+    }
+}
+
+test "parseOptions CSV array elements count against the option budget" {
+    // #515: a single `--opt a,b,c,...` token expands to one accumulated element
+    // per segment, so every segment must count against max_total_options — one
+    // flag must not add unbounded elements.
+    const TestOptions = struct {
+        nums: []i32 = &.{},
+    };
+
+    const allocator = std.testing.allocator;
+
+    // Build a single --nums token with 101 comma-separated elements. The default
+    // max_total_options is 100, so this one flag must trip the resource limit.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    for (0..101) |k| {
+        if (k != 0) try buf.append(allocator, ',');
+        try buf.append(allocator, '1');
+    }
+    {
+        const args = [_][]const u8{ "--nums", buf.items };
+        try std.testing.expectError(ZcliError.ResourceLimitExceeded, parseOptions(TestOptions, allocator, &args, null));
+    }
+
+    // The same overflow via the attached short form.
+    {
+        const short = try std.fmt.allocPrint(allocator, "-n{s}", .{buf.items});
+        defer allocator.free(short);
+        const args = [_][]const u8{short};
+        const NumOpts = struct {
+            nums: []i32 = &.{},
+        };
+        const meta = .{ .options = .{ .nums = .{ .short = 'n' } } };
+        try std.testing.expectError(ZcliError.ResourceLimitExceeded, parseOptionsWithMeta(NumOpts, meta, allocator, null, &args, null));
+    }
+
+    // A CSV comfortably under the limit still parses fine.
+    {
+        const args = [_][]const u8{ "--nums", "1,2,3" };
+        const parsed = try parseOptions(TestOptions, allocator, &args, null);
+        defer cleanupOptions(TestOptions, parsed.options, allocator);
+        try std.testing.expectEqual(@as(usize, 3), parsed.options.nums.len);
     }
 }
 
