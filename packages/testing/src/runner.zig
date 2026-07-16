@@ -43,17 +43,69 @@ pub fn runInProcess(allocator: std.mem.Allocator, io: std.Io, comptime RegistryT
 
 const max_output = 10 * 1024 * 1024;
 
-/// Drain a child pipe to EOF, returning the bytes allocated in `arena`.
+/// Serializes access to a child allocator behind a mutex.
 ///
-/// This runs concurrently with the sibling pipe's drain (see `runSubprocess`),
-/// so it allocates only from its own arena — never the caller's `allocator`,
-/// which the sibling drain is using at the same time on the main thread. Once
-/// both drains have joined, the result is copied into the caller's allocator on
-/// a single thread.
-fn drainPipe(io: std.Io, file: std.Io.File, arena: std.mem.Allocator) std.Io.Reader.LimitedAllocError![]u8 {
+/// `runSubprocess` drains stdout and stderr concurrently (one on the main
+/// thread, one on an `io.concurrent` task) and both capture into the caller's
+/// `allocator`. That allocator is typically not thread-safe (e.g.
+/// `std.testing.allocator`), and Zig 0.16 removed `std.heap.ThreadSafeAllocator`,
+/// so we wrap it here rather than reaching for a process-global like
+/// `page_allocator`. The bytes end up owned by the caller's allocator directly,
+/// so `Result.deinit` frees them normally and no post-join copy is needed.
+const LockingAllocator = struct {
+    child: std.mem.Allocator,
+    io: std.Io,
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
+
+    fn allocator(self: *LockingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable: std.mem.Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *LockingAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.child.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *LockingAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.child.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *LockingAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.child.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *LockingAllocator = @ptrCast(@alignCast(ctx));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.child.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+/// Drain a child pipe to EOF, capturing the bytes in `alloc`.
+///
+/// This runs concurrently with the sibling pipe's drain (see `runSubprocess`).
+/// Both drains capture into the caller's allocator via a shared
+/// `LockingAllocator`, so their allocations are serialized against each other.
+fn drainPipe(io: std.Io, file: std.Io.File, alloc: std.mem.Allocator) std.Io.Reader.LimitedAllocError![]u8 {
     var buf: [4096]u8 = undefined;
     var reader = file.reader(io, &buf);
-    return reader.interface.allocRemaining(arena, .limited(max_output));
+    return reader.interface.allocRemaining(alloc, .limited(max_output));
 }
 
 /// Run a command as a subprocess (for external binaries)
@@ -77,33 +129,32 @@ pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const
     // draining never reaches EOF. Read stderr concurrently while the main thread
     // drains stdout.
     //
-    // The concurrent drain allocates from an isolated arena (page-backed, so it
-    // shares no allocator state with the main thread's stdout drain); we copy
-    // its bytes into `allocator` below, after joining, on a single thread.
-    var stderr_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer stderr_arena.deinit();
+    // Both drains capture into the caller's `allocator`, so they share it
+    // through a mutex (LockingAllocator) — the caller's allocator is not
+    // necessarily thread-safe and the two drains run on different threads.
+    var locked = LockingAllocator{ .child = allocator, .io = io };
+    const shared = locked.allocator();
 
     var stderr_future: ?std.Io.Future(std.Io.Reader.LimitedAllocError![]u8) =
-        io.concurrent(drainPipe, .{ io, child.stderr.?, stderr_arena.allocator() }) catch null;
+        io.concurrent(drainPipe, .{ io, child.stderr.?, shared }) catch null;
 
-    var stdout_buf: [4096]u8 = undefined;
-    var stdout_reader = child.stdout.?.reader(io, &stdout_buf);
-    const stdout = stdout_reader.interface.allocRemaining(allocator, .limited(max_output)) catch |err| {
-        // Keep stderr draining so the child can exit, then reap before failing.
-        if (stderr_future) |*f| _ = f.await(io) catch "";
+    const stdout = drainPipe(io, child.stdout.?, shared) catch |err| {
+        // Keep stderr draining so the child can exit, free it, then reap.
+        if (stderr_future) |*f| {
+            if (f.await(io)) |bytes| allocator.free(bytes) else |_| {}
+        }
         _ = child.wait(io) catch {};
         return err;
     };
     errdefer allocator.free(stdout);
 
     // Join the concurrent stderr drain (or, if concurrency was unavailable, do
-    // it sequentially now — the pre-existing fallback behavior).
-    const stderr_bytes = if (stderr_future) |*f|
+    // it sequentially now — the pre-existing fallback behavior). The bytes are
+    // owned by the caller's `allocator` directly, so no post-join copy needed.
+    const stderr = if (stderr_future) |*f|
         try f.await(io)
     else
-        try drainPipe(io, child.stderr.?, stderr_arena.allocator());
-
-    const stderr = try allocator.dupe(u8, stderr_bytes);
+        try drainPipe(io, child.stderr.?, shared);
     errdefer allocator.free(stderr);
 
     const term = try child.wait(io);
