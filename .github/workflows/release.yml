@@ -40,6 +40,15 @@ jobs:
     name: Resolve release plan
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # This job runs BEFORE the `release` environment's required-reviewer gate
+    # (that gate only wraps finalize/release/library-release below) and holds
+    # contents: write to force-push the `_release-staging/$VERSION` scratch
+    # branch (see the Plan step). This is intentionally NOT gated: it is not
+    # a privilege escalation (workflow_dispatch already requires repo write
+    # access to trigger), $VERSION is strict-semver-validated before any
+    # interpolation, and the write is confined to a disposable scratch
+    # branch — main and the real tags are only ever touched by `finalize`,
+    # which IS gated. See #541.
     permissions:
       contents: write
     outputs:
@@ -234,10 +243,17 @@ jobs:
         with:
           ref: ${{ needs.setup.outputs.ref }}
 
+      # mlugg/setup-zig's cache key includes the runner OS automatically but
+      # NOT matrix variables. Three of these six legs share os: ubuntu-latest
+      # while cross-compiling genuinely different zig_target values, so an
+      # explicit cache-key is required or those legs would thrash a single
+      # shared cache entry. Mirrors ci.yml's linux-musl-release-build job,
+      # which documents the identical hazard for its own ubuntu-latest matrix.
       - name: Setup Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+          cache-key: ${{ matrix.zig_target }}
 
       - name: Build zcli
         run: |
