@@ -19,9 +19,13 @@ const Winsize = backend.Winsize;
 const TerminalError = backend.TerminalError;
 
 const DWORD = windows.DWORD;
+const UINT = windows.UINT;
 const HANDLE = windows.HANDLE;
 const SHORT = windows.SHORT;
 const COORD = windows.COORD;
+
+/// Code page identifier for UTF-8 (see the Win32 "Code Page Identifiers" list).
+const CP_UTF8: UINT = 65001;
 
 // Console input mode flags.
 const ENABLE_PROCESSED_INPUT: DWORD = 0x0001;
@@ -68,6 +72,12 @@ extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpInfo: 
 extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
 extern "kernel32" fn PeekConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpNumberOfEventsRead: *DWORD) callconv(.winapi) c_int;
 extern "kernel32" fn ReadConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpNumberOfEventsRead: *DWORD) callconv(.winapi) c_int;
+// Console output code page: query/switch so UTF-8 box-drawing renders on legacy
+// conhost. `GetConsoleOutputCP` returns 0 when the process has no console;
+// `SetConsoleOutputCP` returns a BOOL (0 on failure), typed `c_int` to compare
+// against 0 like the other kernel32 externs here.
+extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) UINT;
+extern "kernel32" fn SetConsoleOutputCP(wCodePageID: UINT) callconv(.winapi) c_int;
 
 /// Saved console state for restoring after raw mode. Raw mode touches both the
 /// input handle (to stop line buffering/echo and turn on VT input) and the
@@ -78,11 +88,15 @@ pub const RawMode = struct {
     out: Handle,
     out_mode: DWORD,
     out_changed: bool,
+    /// The console output code page raw mode replaced, for `disable()` to put
+    /// back. 0 means "left unchanged" (no console, or it was already UTF-8).
+    out_prev_cp: UINT,
 
     /// Restore original console settings.
     pub fn disable(self: RawMode) void {
         _ = SetConsoleMode(self.in, self.in_mode);
         if (self.out_changed) _ = SetConsoleMode(self.out, self.out_mode);
+        if (self.out_prev_cp != 0) _ = SetConsoleOutputCP(self.out_prev_cp);
     }
 };
 
@@ -122,8 +136,17 @@ pub fn enableRawMode(in: Handle) TerminalError!RawMode {
 
     if (SetConsoleMode(in, rawInputMode(in_mode)) == 0) return error.TerminalSettingsError;
 
+    var out_prev_cp: UINT = 0;
     if (out_is_console) {
         _ = SetConsoleMode(out, vtOutputMode(out_mode));
+        // Legacy conhost starts on an OEM code page (e.g. 437), so the UTF-8
+        // box-drawing / symbols the ANSI output emits render as mojibake.
+        // Switch the console output code page to UTF-8 for the raw-mode session
+        // and restore it on `disable()`. Best-effort, and captured only when it
+        // wasn't already UTF-8 (Windows Terminal — and a zcli app whose registry
+        // ran `console_utf8.enable()` — already is, so this is a no-op there).
+        const cur_cp = GetConsoleOutputCP();
+        if (cur_cp != 0 and cur_cp != CP_UTF8 and SetConsoleOutputCP(CP_UTF8) != 0) out_prev_cp = cur_cp;
     }
 
     return .{
@@ -132,6 +155,7 @@ pub fn enableRawMode(in: Handle) TerminalError!RawMode {
         .out = out,
         .out_mode = out_mode,
         .out_changed = out_is_console,
+        .out_prev_cp = out_prev_cp,
     };
 }
 

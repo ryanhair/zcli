@@ -78,6 +78,10 @@ extern "kernel32" fn GetExitCodeProcess(hProcess: HANDLE, lpExitCode: *DWORD) ca
 extern "kernel32" fn TerminateProcess(hProcess: HANDLE, uExitCode: c_uint) callconv(.winapi) BOOL;
 extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
 extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+extern "kernel32" fn SetConsoleOutputCP(wCodePageID: windows.UINT) callconv(.winapi) BOOL;
+
+/// Code page identifier for UTF-8 (see the Win32 "Code Page Identifiers" list).
+const CP_UTF8: windows.UINT = 65001;
 
 pub const ConPtyError = error{
     PipeFailed,
@@ -107,6 +111,13 @@ pub const ConPtySession = struct {
         rows: u16,
         cols: u16,
     ) ConPtyError!ConPtySession {
+        // On a legacy conhost the parent (this harness) echoes the captured
+        // child frames to its own console when an e2e assertion fails — UTF-8
+        // box-drawing / symbols mojibake unless the parent's console output code
+        // page is UTF-8. Best-effort, once per spawn; a no-op on Windows
+        // Terminal (already UTF-8) and when output is redirected (no console).
+        _ = SetConsoleOutputCP(CP_UTF8);
+
         // Command line + optional cwd/env, all UTF-16.
         const cmdline = try buildCommandLineW(alloc, argv);
         defer alloc.free(cmdline);

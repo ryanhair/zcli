@@ -255,6 +255,13 @@ pub const App = struct {
     /// no `defer`, so only `ui.panic` restores it. Zig resolves the handler as
     /// `@import("root").panic` — a root-module decl an imported module can't
     /// provide — so this checks the root source file for it.
+    ///
+    /// This can only check that a `panic` decl *exists*, not that it restores
+    /// the terminal (its identity is unknowable at comptime): a root `panic`
+    /// that doesn't call `terminal.guard.restore()` (directly, or by delegating
+    /// to `ui.panic`) satisfies the check yet still strands the terminal on a
+    /// panic. The error text spells that out so a hand-rolled handler doesn't
+    /// silently reopen the hole.
     fn assertPanicInstalled() void {
         // `zig test` roots at the test runner (no panic hook) and builds Apps
         // only headlessly (fixed `term_size`, no real terminal to strand), so
@@ -265,7 +272,11 @@ pub const App = struct {
                 "(the alt-screen in full-screen; raw mode with a hidden cursor in hybrid — " ++
                 "every prompt and progress indicator). Add to your root source file (main.zig):\n\n" ++
                 "    pub const panic = zcli.ui.panic;\n\n" ++
-                "(standalone ui users: `pub const panic = ui.panic;`)",
+                "(standalone ui users: `pub const panic = ui.panic;`)\n\n" ++
+                "A custom handler is only safe if it calls `terminal.guard.restore()` " ++
+                "before it aborts (`ui.panic` does this first, then delegates to the " ++
+                "default handler) — this check can't verify that, only that some " ++
+                "`panic` decl exists.",
         );
     }
 
