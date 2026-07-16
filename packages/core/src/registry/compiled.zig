@@ -307,6 +307,13 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
     return struct {
         const Self = @This();
 
+        /// Windows console code pages captured by `run()` when it switched the
+        /// console to UTF-8 for the current invocation, handed to each Context
+        /// so `context.exit` can restore them before `std.process.exit` (which
+        /// skips run()'s deferred restore). Zero-valued (no-op) until run()
+        /// enables it, and for direct execute()/executeWithStdio callers.
+        console: console_utf8.State = .{},
+
         // Export the computed Context type for this registry
         pub const Context = zcli.ContextFor(new_plugins);
 
@@ -660,6 +667,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 .command_path = &.{},
                 .plugin_command_info = plugin_command_info_list,
                 .global_options = global_options_list,
+                .console = self.console,
             };
             defer context.deinit();
 
@@ -764,6 +772,10 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // so the reported-error path below restores explicitly.
             const console = console_utf8.enable();
             defer console.restore();
+            // Hand the captured code pages to each Context built for this run so
+            // context.exit() can restore them before std.process.exit skips the
+            // deferred restore above (issue #438).
+            self.console = console;
 
             // Own the Stdio here (rather than letting execute() create it) so
             // that after a failure we can inspect the writer state to tell a

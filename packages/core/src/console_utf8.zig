@@ -14,7 +14,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const UINT = std.os.windows.UINT;
+pub const UINT = std.os.windows.UINT;
 
 /// Code page identifier for UTF-8 (see the Win32 "Code Page Identifiers" list).
 const CP_UTF8: UINT = 65001;

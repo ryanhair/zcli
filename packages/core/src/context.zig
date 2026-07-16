@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const zcli = @import("zcli.zig");
+const console_utf8 = @import("console_utf8.zig");
 
 /// Field name in `context.plugins` for a plugin's ContextData: its `plugin_id`
 /// verbatim. `plugin_id` is required to be a valid Zig identifier — enforced at
@@ -100,6 +101,14 @@ pub fn ContextFor(comptime plugins: []const type) type {
 
         // Type-safe plugin data - each plugin's ContextData is a field
         plugins: PluginDataType(plugins) = .{},
+
+        /// Console code pages captured by the registry's `run()` when it
+        /// switched the Windows console to UTF-8 for this invocation. `exit()`
+        /// restores them before `std.process.exit` — which skips the deferred
+        /// restore `run()` relies on — so a command that exits early doesn't
+        /// leak CP_UTF8 into the parent shell. Zero-valued (a no-op restore)
+        /// for direct `execute()`/`executeWithStdio` callers and on POSIX.
+        console: console_utf8.State = .{},
 
         const Self = @This();
 
@@ -287,6 +296,11 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// just before the call.
         pub fn exit(self: *Self, code: u8) noreturn {
             self.stdio.flush();
+            // Restore the Windows console code pages `run()` switched to UTF-8;
+            // std.process.exit skips run()'s deferred restore, so without this
+            // an early exit leaks CP_UTF8 into the parent shell. No-op on POSIX
+            // and for callers that never enabled it.
+            self.console.restore();
             std.process.exit(code);
         }
 
@@ -312,6 +326,40 @@ test "context accessors type-check" {
     // signature (e.g. a stale bundle field) at build time rather than only when
     // an example happens to use it.
     std.testing.refAllDecls(ContextFor(&.{}));
+}
+
+test "Context carries the console State so exit() can restore code pages" {
+    // Regression for #438: context.exit must restore the Windows console code
+    // pages run() switched to UTF-8. exit() is `noreturn` and restore() is a
+    // no-op off Windows, so the leak itself can't be observed in-process here;
+    // this instead locks in the wiring — that Context has a `console` field the
+    // registry threads through and exit() reads — so the restore call can't be
+    // silently dropped again. The behavioral Windows path is exercised by CI.
+    const Ctx = ContextFor(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const env = std.process.Environ.Map.init(std.testing.allocator);
+
+    // A Context built with captured code pages must retain them verbatim.
+    const ctx = Ctx{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .stdio = &stdio,
+        .environ = &env,
+        .console = .{ .prev_in = 437, .prev_out = 437 },
+    };
+    try std.testing.expectEqual(@as(console_utf8.UINT, 437), ctx.console.prev_in);
+    try std.testing.expectEqual(@as(console_utf8.UINT, 437), ctx.console.prev_out);
+
+    // The default (no run(), or POSIX) is an empty, safe-to-restore State.
+    var plain = Ctx{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .stdio = &stdio,
+        .environ = &env,
+    };
+    try std.testing.expectEqual(@as(console_utf8.UINT, 0), plain.console.prev_in);
+    plain.console.restore(); // no-op, must not crash
 }
 
 test "initPluginData runs declared init hook and mutates ContextData" {
