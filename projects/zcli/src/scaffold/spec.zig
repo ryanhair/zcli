@@ -119,13 +119,10 @@ pub fn renderOptMetaEntry(arena: std.mem.Allocator, o: OptSpec) ![]u8 {
 // ---------------------------------------------------------------------------
 
 pub fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
-    for (s) |ch| switch (ch) {
-        '"' => try w.writeAll("\\\""),
-        '\\' => try w.writeAll("\\\\"),
-        '\n' => try w.writeAll("\\n"),
-        '\r' => {},
-        else => try w.writeByte(ch),
-    };
+    // Emit the inner content of a Zig string literal. std.zig.stringEscape
+    // handles the full grammar (quotes, backslashes, tabs, and arbitrary
+    // control characters via \xNN), so tabs/ESC/etc. produce compiling source.
+    try std.zig.stringEscape(s, w);
 }
 
 pub fn quoteString(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
@@ -430,4 +427,25 @@ test "isSupportedArrayElem accepts numeric and string element types" {
     try testing.expect(isSupportedArrayElem("[]const u8"));
     try testing.expect(isSupportedArrayElem("u32"));
     try testing.expect(!isSupportedArrayElem("bool"));
+}
+
+test "quoteString produces a compiling literal for tabs and control chars" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // A description with a tab, an ESC control char, quote, and backslash: the
+    // old hand-rolled escaper emitted the raw tab/ESC bytes inside the "..."
+    // literal, which Zig's tokenizer rejects. The output must round-trip.
+    const original = "a\tb\x1b\"c\\d";
+    const quoted = try quoteString(arena, original);
+
+    // Round-trip through Zig's own string-literal parser: proves the emitted
+    // text is a valid, compiling Zig string literal for the original bytes.
+    const parsed = try std.zig.string_literal.parseAlloc(arena, quoted);
+    try testing.expectEqualStrings(original, parsed);
+
+    // No raw control bytes leaked into the literal.
+    try testing.expect(std.mem.indexOfScalar(u8, quoted, '\t') == null);
+    try testing.expect(std.mem.indexOfScalar(u8, quoted, 0x1b) == null);
 }
