@@ -297,6 +297,19 @@ test "init rejects a project name that would break generated source" {
     try testing.expect(!fileExists(tmp.dir, "bad\"name"));
 }
 
+test "init rejects a Zig reserved word as the project name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // `error` is a keyword: `.name = .error` in build.zig.zon won't compile.
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "error" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "Invalid project name");
+    try expectContains(r.stderr, "reserved word");
+    try testing.expect(!fileExists(tmp.dir, "error"));
+}
+
 test "init . scaffolds into the current directory" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
