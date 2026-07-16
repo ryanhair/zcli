@@ -67,7 +67,9 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
         try writer.print("{s}{s} \n", .{ config.prefix, config.message });
         return try allocator.dupe(u8, config.default orelse "");
     };
+    var watcher = terminal.ResizeWatcher.init();
     defer {
+        watcher.deinit();
         raw.disable();
         Prompts.flushWriter(writer);
     }
@@ -77,16 +79,25 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     });
     defer app.deinit();
 
+    const stdin = std.Io.File.stdin().handle;
+
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     try renderFrame(&app, p.theme, config, buf.items);
 
     while (true) {
-        const k = if (config.interrupt_keys.len > 0)
-            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
-        else
-            try terminal.readKey(reader);
+        // A SIGWINCH arrives out-of-band via the watcher, not as a key: repaint
+        // so the wrapped prompt/cursor reflow to the new width without waiting
+        // for the next keystroke.
+        const k = switch (try terminal.readEvent(reader, stdin, &watcher)) {
+            .resize => {
+                try renderFrame(&app, p.theme, config, buf.items);
+                continue;
+            },
+            .key => |key| key,
+            else => continue,
+        };
         if (Prompts.isInterrupt(k, config.interrupt_keys)) {
             try persistLine(&app, config, buf.items);
             return error.Interrupted;

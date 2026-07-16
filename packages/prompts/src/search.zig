@@ -95,8 +95,13 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
                 .backspace => {
                     if (query.items.len > 0) {
                         Prompts.popTrailingGrapheme(&query);
+                        // Build the replacement first: if it OOMs, `filtered`
+                        // still points at the live slice, so the deferred free
+                        // (and the next rebuild) stay valid — freeing first would
+                        // leave a dangling pointer to double-free.
+                        const next = try buildFiltered(allocator, config.choices, query.items);
                         allocator.free(filtered);
-                        filtered = try buildFiltered(allocator, config.choices, query.items);
+                        filtered = next;
                         cursor = 0;
                         try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                     }
@@ -109,8 +114,10 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
                 },
                 .char => |c| {
                     _ = try Prompts.appendCodepoint(allocator, &query, c);
+                    // See the backspace branch: build then swap, never free-then-build.
+                    const next = try buildFiltered(allocator, config.choices, query.items);
                     allocator.free(filtered);
-                    filtered = try buildFiltered(allocator, config.choices, query.items);
+                    filtered = next;
                     cursor = 0;
                     try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                 },
@@ -258,6 +265,25 @@ test "buildFiltered matches all on empty query" {
     const result = try buildFiltered(allocator, choices, "");
     defer allocator.free(result);
     try std.testing.expectEqual(@as(usize, 3), result.len);
+}
+
+test "buildFiltered failure leaves the caller's slice intact (rebuild is OOM-safe)" {
+    // Regression for the rebuild double-free: the interactive loop now builds the
+    // new filtered slice *before* freeing the old one, so an OOM mid-rebuild
+    // can't dangle `filtered`. That relies on buildFiltered neither freeing nor
+    // mutating anything the caller still owns when it fails — assert exactly that.
+    const allocator = std.testing.allocator;
+    const choices = &[_][]const u8{ "alpha", "beta", "gamma" };
+
+    const filtered = try buildFiltered(allocator, choices, "");
+    defer allocator.free(filtered); // must stay valid and be freed exactly once
+
+    // Force the rebuild allocation to fail.
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, buildFiltered(failing.allocator(), choices, "a"));
+
+    // The original slice is untouched: still the full match set, still freeable.
+    try std.testing.expectEqual(@as(usize, 3), filtered.len);
 }
 
 test "buildFiltered filters by substring" {

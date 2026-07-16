@@ -59,6 +59,14 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     };
     var raw_active = true;
     errdefer if (raw_active) raw.disable();
+    // Watches for SIGWINCH so a resize while the user is at the hint line
+    // repaints instead of leaving the wrapped prompt stale. Torn down (along
+    // with raw mode) before the child editor is spawned so it inherits a clean
+    // terminal and default signal disposition.
+    var watcher = terminal.ResizeWatcher.init();
+    var watcher_active = true;
+    errdefer if (watcher_active) watcher.deinit();
+    const stdin = std.Io.File.stdin().handle;
     var app = try ui.App.init(p.allocator, writer, .{
         .capability = p.theme.capability(),
         .hybrid_raw = raw,
@@ -67,7 +75,14 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     try renderFrame(&app, p.theme, config);
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        const k = switch (try terminal.readEvent(reader, stdin, &watcher)) {
+            .resize => {
+                try renderFrame(&app, p.theme, config);
+                continue;
+            },
+            .key => |key| key,
+            else => continue,
+        };
         switch (k) {
             .enter => break,
             .ctrl => |c| {
@@ -75,6 +90,8 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
                     try app.clear();
                     try app.emit("{s}{s}", .{ config.prefix, config.message });
                     app.deinit();
+                    watcher.deinit();
+                    watcher_active = false;
                     raw.disable();
                     raw_active = false;
                     Prompts.flushWriter(writer);
@@ -85,10 +102,12 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
         }
     }
     // Persist the prompt line and hand the editor a clean terminal: region
-    // closed, cursor restored, raw mode off.
+    // closed, cursor restored, resize watcher and raw mode off.
     try app.clear();
     try app.emit("{s}{s}", .{ config.prefix, config.message });
     app.deinit();
+    watcher.deinit();
+    watcher_active = false;
     raw.disable();
     raw_active = false;
     Prompts.flushWriter(writer);
@@ -109,11 +128,18 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
         .exclusive = true,
         .permissions = @enumFromInt(0o600),
     });
-    if (config.default) |def| {
-        try tmp_file.writeStreamingAll(config.io, def);
-    }
-    tmp_file.close(config.io);
+    // Remove the scratch file on every exit path. Registered immediately after
+    // createFile — before the write below — so a failed initial write can't
+    // leak a 0600 file that may hold sensitive pre-fill content.
     defer cwd.deleteFile(config.io, tmp_name) catch {};
+    {
+        // Close the fd on any exit from this block (success or a write error)
+        // so a failed write doesn't leak the descriptor either.
+        defer tmp_file.close(config.io);
+        if (config.default) |def| {
+            try tmp_file.writeStreamingAll(config.io, def);
+        }
+    }
 
     // Spawn editor
     var child = try std.process.spawn(config.io, .{
@@ -130,6 +156,7 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
 
     // Read back content
     const raw_content = try cwd.readFileAlloc(config.io, tmp_name, allocator, .limited(1024 * 1024));
+    errdefer allocator.free(raw_content);
 
     // Trim trailing newlines
     const trimmed = std.mem.trimEnd(u8, raw_content, "\n\r");

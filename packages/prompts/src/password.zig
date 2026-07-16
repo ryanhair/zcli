@@ -42,7 +42,9 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
         try writer.print("{s}{s} \n", .{ config.prefix, config.message });
         return try allocator.dupe(u8, "");
     };
+    var watcher = terminal.ResizeWatcher.init();
     defer {
+        watcher.deinit();
         raw.disable();
         Prompts.flushWriter(writer);
     }
@@ -51,6 +53,8 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
         .hybrid_raw = raw,
     });
     defer app.deinit();
+
+    const stdin = std.Io.File.stdin().handle;
 
     var buf = std.ArrayList(u8).empty;
     defer {
@@ -64,7 +68,17 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     try renderFrame(&app, config, buf.items);
 
     while (true) {
-        const k = try terminal.readKey(reader);
+        // A SIGWINCH arrives out-of-band via the watcher, not as a key: repaint
+        // so the wrapped mask/cursor reflow to the new width without waiting for
+        // the next keystroke.
+        const k = switch (try terminal.readEvent(reader, stdin, &watcher)) {
+            .resize => {
+                try renderFrame(&app, config, buf.items);
+                continue;
+            },
+            .key => |key| key,
+            else => continue,
+        };
         switch (k) {
             .enter => {
                 try persistLine(&app, config, buf.items);
