@@ -19,7 +19,9 @@
 //!
 //! const p: Progress = .{ .writer = writer, .io = io, .allocator = allocator };
 //!
-//! // Spinner for indeterminate progress — animates itself until finished
+//! // Spinner for indeterminate progress — animates itself until finished.
+//! // While it animates it owns the stream from a background task: do not write
+//! // to that stream yourself (use `setMessage`, or finish first).
 //! var spinner = try p.spinner(.{});
 //! spinner.start("Loading...");
 //! spinner.succeed("Done!");
@@ -178,12 +180,26 @@ pub const SpinnerConfig = struct {
 };
 
 /// Spinner for indeterminate progress.
+///
+/// Writer-exclusivity requirement: while a spinner is animating it drives the
+/// underlying stream (the command's stderr) from a background task. That stream
+/// is buffered and not thread-safe, so the main thread must not write to it
+/// concurrently — a `context.stderr().print(...)` racing the animation
+/// interleaves bytes mid-escape-sequence and garbles the terminal. To surface a
+/// message while a spinner runs, use `setMessage`, or finish the spinner
+/// (`succeed`/`fail`/`stop`/…) before writing to the stream yourself.
 pub const Spinner = struct {
     io: std.Io,
     theme: ThemeContext,
     config: SpinnerConfig,
     app: ui.App,
-    message: []const u8 = "",
+    /// Spinner-owned copy of the caller's message. The background `animate`
+    /// task reads this at tick time, so we never retain the caller's slice —
+    /// a caller passing a stack/`bufPrint` buffer and reusing it after
+    /// `start`/`setMessage` returns would otherwise race the bg thread on
+    /// freed/mutated memory. Long messages truncate to the buffer.
+    message_buf: [256]u8 = undefined,
+    message_len: usize = 0,
     tick: usize = 0,
     active: bool = false,
     closed: bool = false,
@@ -208,8 +224,27 @@ pub const Spinner = struct {
     }
 
     /// Release the spinner without a result (safe after any finish method).
+    /// Stops the animation task first so an error-unwind `defer s.deinit()`
+    /// that runs while the spinner is still animating cannot tear down the App
+    /// out from under the background `animate` task (use-after-free). Mirrors
+    /// `stop()` minus the clear; both calls are safe after a prior finish.
     pub fn deinit(self: *Spinner) void {
+        self.stopAnimation();
         self.close();
+    }
+
+    /// Copy `msg` into spinner-owned storage (truncating past the buffer) so
+    /// the animation task never reads the caller's slice. Callers holding the
+    /// mutex (or before the animate task spawns) may invoke this safely.
+    fn storeMessage(self: *Spinner, msg: []const u8) void {
+        const n = @min(msg.len, self.message_buf.len);
+        @memcpy(self.message_buf[0..n], msg[0..n]);
+        self.message_len = n;
+    }
+
+    /// The current spinner message, backed by spinner-owned storage.
+    fn messageSlice(self: *const Spinner) []const u8 {
+        return self.message_buf[0..self.message_len];
     }
 
     /// Start the spinner with a message. On a TTY this spawns a background
@@ -222,7 +257,7 @@ pub const Spinner = struct {
         // leaking the first future and spawning a second animate task racing
         // the first. Also refuse to start after a finish (App is torn down).
         if (self.closed or self.active) return;
-        self.message = message;
+        self.storeMessage(message);
         self.active = true;
         self.tick = 0;
         self.render();
@@ -235,7 +270,7 @@ pub const Spinner = struct {
     pub fn setMessage(self: *Spinner, message: []const u8) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        self.message = message;
+        self.storeMessage(message);
         if (self.active) self.render();
     }
 
@@ -327,7 +362,7 @@ pub const Spinner = struct {
     fn render(self: *Spinner) void {
         if (!self.app.options.interactive) {
             // Piped: one plain status line per message.
-            self.app.emit("{s}- {s}{s}", .{ self.config.prefix, self.message, self.config.suffix }) catch {};
+            self.app.emit("{s}- {s}{s}", .{ self.config.prefix, self.messageSlice(), self.config.suffix }) catch {};
             return;
         }
         self.renderFrame() catch {};
@@ -335,7 +370,7 @@ pub const Spinner = struct {
 
     fn renderFrame(self: *Spinner) !void {
         const a = self.app.arena();
-        const tail = try std.fmt.allocPrint(a, " {s}{s}", .{ self.message, self.config.suffix });
+        const tail = try std.fmt.allocPrint(a, " {s}{s}", .{ self.messageSlice(), self.config.suffix });
         try self.app.frame(try ui.row(a, .{}, &.{
             ui.textOpts(.{ .wrap = .clip }, self.config.prefix),
             ui.widgets.spinner(.{
@@ -968,6 +1003,49 @@ test "spinner double finish does not touch a torn-down app" {
     try testing.expect(s.closed);
 }
 
+test "spinner deinit stops the animation before tearing down the App" {
+    // Regression (#500): the error-unwind path `defer s.deinit()` used to call
+    // close() -> app.deinit() WITHOUT stopping the animate task first, so the
+    // background task could render onto an already-deinited App (use-after-free
+    // + Future leak). deinit now mirrors stop(): stopAnimation() then close().
+    var output: [8192]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
+    forceInteractive(&s.app);
+
+    s.start("working");
+    // No finish method — simulate an error unwind running the defer.
+    s.deinit();
+    try testing.expect(!s.active);
+    try testing.expect(s.animation == null);
+    try testing.expect(s.closed);
+}
+
+test "spinner copies its message so a reused caller buffer is safe" {
+    // Regression (#522): the message was stored by reference and read on the
+    // animation task, so a caller reusing its buffer after start() returned
+    // could feed freed/mutated bytes to the bg thread. The spinner now copies.
+    var output: [8192]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
+    forceInteractive(&s.app);
+
+    var msg_buf: [32]u8 = undefined;
+    const msg = try std.fmt.bufPrint(&msg_buf, "loading data", .{});
+    s.start(msg);
+    // Clobber the caller's buffer after start — a by-reference spinner would
+    // now read 'X's on its next render; the copy keeps the original.
+    @memset(&msg_buf, 'X');
+    s.render();
+    s.succeed("done");
+
+    const written = writer.buffered();
+    try testing.expect(std.mem.indexOf(u8, written, "loading data") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "XXXX") == null);
+}
+
 test "spinner double start does not spawn a second animation" {
     // Regression: a second start() overwrote `animation`, leaking the first
     // future and racing a second animate task. The guard makes it a no-op, so
@@ -980,7 +1058,7 @@ test "spinner double start does not spawn a second animation" {
 
     s.start("first");
     s.start("second"); // ignored while already active
-    try testing.expectEqualStrings("first", s.message);
+    try testing.expectEqualStrings("first", s.messageSlice());
     s.stop();
     // start after finish is also refused.
     s.start("after-close");
