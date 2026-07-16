@@ -107,7 +107,10 @@ function Get-LatestVersion {
         exit 1
     }
 
-    if ($release.tag_name -notmatch '^zcli-v(.+)$') {
+    # Defense-in-depth: validate the version against a strict charset before it
+    # is interpolated into download URLs, mirroring the in-binary isValidVersionArg
+    # check. Rejects '/', '..' and other path-traversal characters.
+    if ($release.tag_name -notmatch '^zcli-v([A-Za-z0-9._-]+)$') {
         Write-ErrorMsg "Unexpected release tag format: $($release.tag_name)"
         exit 1
     }
