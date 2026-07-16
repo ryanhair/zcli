@@ -42,8 +42,13 @@ zcli achieves zero-cost dispatch by discovering commands and plugins, then gener
 
 Plugins use a lifecycle hook system with struct-based commands:
 
+The excerpt below is trimmed from the real `zcli_help` plugin
+(`packages/core/src/plugins/zcli_help/plugin.zig`) — comments condensed and the
+full help-rendering bodies omitted, but every hook name and signature matches
+the actual file:
+
 ```zig
-// Example plugin: zcli_help/plugin.zig
+// Excerpt: packages/core/src/plugins/zcli_help/plugin.zig
 const std = @import("std");
 const zcli = @import("zcli");
 
@@ -59,11 +64,7 @@ pub const ContextData = struct {
 
 // Global options the plugin provides
 pub const global_options = [_]zcli.GlobalOption{
-    zcli.option("help", bool, .{ 
-        .short = 'h', 
-        .default = false, 
-        .description = "Show help message" 
-    }),
+    zcli.option("help", bool, .{ .short = 'h', .default = false, .description = "Show help message" }),
 };
 
 // Handle global options. `context` is `anytype`: a plugin is compiled
@@ -74,9 +75,8 @@ pub fn handleGlobalOption(
     option_name: []const u8,
     value: anytype,
 ) !void {
-    if (std.mem.eql(u8, option_name, "help")) {
-        const enabled = if (@TypeOf(value) == bool) value else false;
-        if (enabled) context.plugins.zcli_help.help_requested = true;
+    if (std.mem.eql(u8, option_name, "help") and value) {
+        context.plugins.zcli_help.help_requested = true;
     }
 }
 
@@ -86,19 +86,24 @@ pub fn preExecute(
     args: zcli.ParsedArgs,
 ) !?zcli.ParsedArgs {
     if (context.plugins.zcli_help.help_requested) {
-        try showHelp(context, context.command_path);
+        // command_path == 0 → app help; otherwise the resolved command's help.
+        try command_help.showCommand(context, true);
         return null; // Stop execution
     }
     return args; // Continue execution
 }
 
 // Lifecycle hook: handle an error. Return true if handled (suppresses it).
+// zcli_help's onError renders help for a bare command group (e.g. `myapp
+// remote` with no subcommand) on a CommandNotFound — it does NOT handle
+// suggestions for unknown commands; that's zcli_not_found's job.
 pub fn onError(
     context: anytype,
     err: anyerror,
 ) !bool {
-    if (err == error.CommandNotFound) {
-        try showSuggestions(context, context.command_path);
+    if (err == error.CommandNotFound and context.command_path.len > 0) {
+        // ... walk command_path to find the deepest registered group and
+        // render its help via command_help.showCommand(context, false) ...
         return true; // Error handled, don't let it propagate
     }
     return false;
@@ -107,41 +112,26 @@ pub fn onError(
 // Commands provided by the plugin
 pub const commands = struct {
     pub const help = struct {
-        pub const Args = struct {
-            command: ?[]const u8 = null,
-        };
+        pub const Args = struct {};
         pub const Options = struct {};
-        pub const meta = .{
-            .description = "Show help for commands",
-        };
-        
+        pub const meta = .{ .description = "Show help for commands" };
+
+        // `help <cmd...>` is rewritten by transformArgs (not shown) before this
+        // ever runs, so this only fires for a bare `help` and shows app help.
         pub fn execute(args: Args, options: Options, context: anytype) !void {
-            if (args.command) |cmd| {
-                try showCommandHelp(context, cmd);
-            } else {
-                try showAppHelp(context);
-            }
+            _ = args;
+            _ = options;
+            try app_help.showApp(context, true);
         }
     };
 };
-
-// Optional setup hook for ContextData, called once per invocation before any
-// lifecycle hook. Capture references off `context` (allocator, io, app_name,
-// environ, streams) so `context.plugins.<plugin_id>` methods can serve calls
-// without re-threading `context`. Pairs with deinitContextData below.
-pub fn initContextData(data: *ContextData, context: anytype) !void {
-    _ = data;
-    _ = context;
-}
-
-// Optional cleanup hook for ContextData, called from Context.deinit().
-// Only needed when ContextData owns resources (allocations, handles, etc.).
-// Runs whether or not initContextData ran, so it must be safe on default data.
-pub fn deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void {
-    _ = data;
-    _ = allocator;
-}
 ```
+
+Plugins may also implement `initContextData(data: *ContextData, context: anytype) !void`
+and `deinitContextData(data: *ContextData, allocator: std.mem.Allocator) void` as
+optional setup/cleanup hooks for `ContextData` — `zcli_help` doesn't need them
+(its `ContextData` owns no resources), but a plugin that does (e.g. one holding
+an arena or a file handle) would use them instead of doing setup inline.
 
 ### Plugin Lifecycle Hooks
 
@@ -574,20 +564,24 @@ Plugins can be distributed as:
 
 ## Built-in Plugins
 
-### zcli_help Plugin
+zcli ships seven built-in plugins, enabled individually via `zcli.builtin(.<name>, .{})`
+in `build.zig`:
 
-Provides comprehensive help system:
-- Registers `--help` global option
-- Provides `help` command
-- Intercepts help requests in `preExecute` hook
-- Shows command-specific and application help
+- **zcli_help** — registers `--help`/`-h` and a `help` command; renders per-command
+  and application help.
+- **zcli_version** — registers `--version`/`-V` and shows app version information.
+- **zcli_not_found** — intercepts `CommandNotFound` errors and suggests the closest
+  matching command using edit distance.
+- **zcli_completions** — generates and serves shell completions for bash, zsh, fish,
+  and PowerShell, including dynamic per-field completion.
+- **zcli_config** — loads JSON/TOML/YAML config files and fills option defaults
+  below CLI/env precedence.
+- **zcli_secrets** — reads secrets from the OS keychain (or a platform-appropriate
+  fallback) into the environment.
+- **zcli_github_upgrade** — self-upgrades the CLI from GitHub releases, with
+  signature verification.
 
-### zcli_not_found Plugin  
-
-Provides intelligent command suggestions:
-- Implements `onError` hook for `CommandNotFound` errors
-- Uses Levenshtein distance for suggestions
-- Shows available commands when command not found
+See [PLUGINS.md](PLUGINS.md) for the canonical, up-to-date list and usage details.
 
 ## Advanced Features
 

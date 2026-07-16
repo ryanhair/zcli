@@ -29,7 +29,8 @@ by the CI-compiled canonical examples:
   settled enough to splice mechanically.
 - **The plugin system** — lifecycle hooks (`preExecute`, `onError`,
   `handleGlobalOption`), `global_options`, plugin-owned commands, and typed
-  `context.plugins.<id>` data. Eight plugins ship in-box on this surface.
+  `context.plugins.<id>` data. Seven plugins ship in-box on this surface (see
+  [docs/PLUGINS.md](docs/PLUGINS.md) for the canonical list).
 - **The testing tiers** — in-process unit tests against a real vterm emulator,
   subprocess integration tests, and an e2e/PTY harness. Releases are gated on the
   full suite, including native Windows.
