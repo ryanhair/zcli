@@ -6,6 +6,106 @@ on:
     branches: [main]
 
 jobs:
+  # Classifies the diff so the expensive jobs below only run when paths they
+  # actually cover changed. Deliberately job-level `if:` gating (each job
+  # declares `needs: changes`) rather than workflow-level `paths:` filtering —
+  # a path-filtered workflow never reports its checks, which leaves required
+  # status checks pending forever, whereas a skipped job reports "skipped"
+  # and satisfies them.
+  #
+  # Fail-open design, in three layers:
+  #   1. Pushes to main always run EVERYTHING — gating applies only to PRs, so
+  #      a wrong filter can delay feedback to merge time but can never let
+  #      main go unvalidated.
+  #   2. The `ci-full` PR label forces the full matrix (escape hatch when a
+  #      filter is suspected of lying).
+  #   3. Every filter includes this workflow file itself, so a change to the
+  #      filters re-runs everything they gate.
+  # `fmt` and `version-sync` are not gated: they finish in seconds — about
+  # what this job costs — and they are the only checks left on docs-only PRs.
+  changes:
+    name: classify changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter reads the PR file list via the API
+    outputs:
+      code: ${{ steps.resolve.outputs.code }}
+      cli: ${{ steps.resolve.outputs.cli }}
+      secrets: ${{ steps.resolve.outputs.secrets }}
+      examples: ${{ steps.resolve.outputs.examples }}
+    steps:
+      # Only needed for push events (PR events use the API), but checking out
+      # unconditionally keeps the job shape simple.
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Filter vocabulary (the package dependency graph is top-heavy — theme/
+      # terminal/vterm/ui sit under nearly everything — so these gates are
+      # coarse by design; finer affected-package selection happens later,
+      # inside the build, not here):
+      #   code:     any Zig source anywhere → the cross-OS unit-test matrix.
+      #   cli:      anything the zcli binary embeds (all of packages/ + the
+      #             CLI itself) → e2e matrix + release-mode builds. Only
+      #             examples-only and docs-only PRs miss this.
+      #   secrets:  the zcli_secrets plugin + core's step wiring → the 3-OS
+      #             live-keychain job, which otherwise ran on every PR for
+      #             code that changes rarely.
+      #   examples: the canonical examples or anything they compile against.
+      - name: Classify diff
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'packages/**'
+              - 'projects/**'
+              - 'examples/**'
+              - 'build.zig'
+              - 'build.zig.zon'
+              - '.github/workflows/ci.yml'
+            cli:
+              - 'packages/**'
+              - 'projects/zcli/**'
+              - 'build.zig'
+              - 'build.zig.zon'
+              - '.github/workflows/ci.yml'
+            secrets:
+              - 'packages/core/src/plugins/zcli_secrets/**'
+              - 'packages/core/build.zig'
+              - 'packages/core/build.zig.zon'
+              - 'build.zig'
+              - 'build.zig.zon'
+              - '.github/workflows/ci.yml'
+            examples:
+              - 'examples/**'
+              - 'packages/**'
+              - 'build.zig'
+              - 'build.zig.zon'
+              - '.github/workflows/ci.yml'
+
+      - name: Resolve gates (full run on main push or the ci-full label)
+        id: resolve
+        shell: bash
+        env:
+          FULL: ${{ github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci-full') }}
+          CODE: ${{ steps.filter.outputs.code }}
+          CLI: ${{ steps.filter.outputs.cli }}
+          SECRETS: ${{ steps.filter.outputs.secrets }}
+          EXAMPLES: ${{ steps.filter.outputs.examples }}
+        run: |
+          gate() {
+            local v=false
+            if [ "$FULL" = "true" ] || [ "$2" = "true" ]; then v=true; fi
+            echo "$1=$v" >> "$GITHUB_OUTPUT"
+            echo "$1: $v"
+          }
+          gate code "$CODE"
+          gate cli "$CLI"
+          gate secrets "$SECRETS"
+          gate examples "$EXAMPLES"
+
   fmt:
     name: zig fmt check
     runs-on: ubuntu-latest
@@ -154,6 +254,8 @@ jobs:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -199,6 +301,8 @@ jobs:
     name: windows release build
     runs-on: windows-latest
     timeout-minutes: 20
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -232,6 +336,8 @@ jobs:
     name: linux musl release build (${{ matrix.zig_target }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -279,6 +385,8 @@ jobs:
     name: zcli_secrets backend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    needs: changes
+    if: needs.changes.outputs.secrets == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -372,6 +480,8 @@ jobs:
     name: canonical examples compile
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    needs: changes
+    if: needs.changes.outputs.examples == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -406,6 +516,8 @@ jobs:
     name: zcli end-to-end tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
     strategy:
       fail-fast: false
       matrix:
