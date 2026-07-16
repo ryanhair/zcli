@@ -270,7 +270,10 @@ fn renderConfigValue(comptime value: anytype) []const u8 {
                 else => false,
             };
             if (!is_string) @compileError("Unsupported pointer type in plugin config: " ++ @typeName(T));
-            break :blk std.fmt.comptimePrint("\"{s}\"", .{value});
+            // Escape the value so quotes, backslashes (e.g. Windows paths), and
+            // newlines don't break out of — or inject code after — the generated
+            // string literal. Mirrors escapeStringLiteral on the app-metadata path.
+            break :blk std.fmt.comptimePrint("\"{f}\"", .{std.zig.fmtString(@as([]const u8, value))});
         },
         .bool => std.fmt.comptimePrint("{}", .{value}),
         .int, .comptime_int => std.fmt.comptimePrint("{d}", .{value}),
@@ -328,6 +331,20 @@ test "builtin() renders a bare enum-literal config field (e.g. .checksum_only)" 
     });
     try std.testing.expectEqualStrings(
         ".init(.{.repo = \"owner/app\", .verification = .checksum_only})",
+        cfg.init.?,
+    );
+}
+
+test "builtin() escapes string config values (backslash, quote, newline)" {
+    // A raw `"{s}"` splice would emit an illegal Zig escape (`\U`) for a Windows
+    // path, or break out of the literal on an embedded quote. The value must be
+    // escaped the same way app metadata is.
+    const cfg = builtin(.github_upgrade, .{
+        .key_path = "C:\\Users\\me",
+        .note = "he said \"hi\"\n",
+    });
+    try std.testing.expectEqualStrings(
+        ".init(.{.key_path = \"C:\\\\Users\\\\me\", .note = \"he said \\\"hi\\\"\\n\"})",
         cfg.init.?,
     );
 }
