@@ -116,6 +116,89 @@ test "SGR attribute disable" {
     try testing.expect(!cell.underline);
 }
 
+test "256-color foreground and background (semicolon form)" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // ESC[38;5;9m — 256-color fg index 9 (bright red). Must set the color and
+    // set NO other attributes.
+    term.write("\x1b[38;5;9mX");
+    var cell = term.getCell(0, 0);
+    try testing.expectEqual(@as(u8, 9), cell.fg);
+    try testing.expect(!cell.bold);
+    try testing.expect(!cell.italic);
+    try testing.expect(!cell.underline);
+
+    // ESC[48;5;3m — 256-color bg index 3. The `3` must NOT become italic.
+    term.write("\x1b[48;5;3mY");
+    cell = term.getCell(1, 0);
+    try testing.expectEqual(@as(u8, 3), cell.bg);
+    try testing.expect(!cell.italic);
+}
+
+test "256-color foreground (colon form)" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // ESC[38:5:9m — colon-separated 256-color fg. Same result as semicolon.
+    term.write("\x1b[38:5:9mX");
+    const cell = term.getCell(0, 0);
+    try testing.expectEqual(@as(u8, 9), cell.fg);
+    try testing.expect(!cell.bold);
+    try testing.expect(!cell.italic);
+    try testing.expect(!cell.underline);
+}
+
+test "truecolor SGR is consumed without corrupting attributes" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // ESC[38;2;1;2;3m — truecolor fg. u8 cell color can't hold RGB, so the
+    // value is discarded. Critically, the sub-params 1/2/3 must NOT be applied
+    // as independent SGR codes (bold / italic).
+    term.write("\x1b[38;2;1;2;3mX");
+    var cell = term.getCell(0, 0);
+    try testing.expect(!cell.bold);
+    try testing.expect(!cell.italic);
+    try testing.expect(!cell.underline);
+
+    // ESC[38;2;34;0;0m — the `34` must NOT set fg to blue (SGR 34).
+    term.write("\x1b[38;2;34;0;0mY");
+    cell = term.getCell(1, 0);
+    try testing.expectEqual(@as(u8, 7), cell.fg); // unchanged default
+
+    // Colon-form truecolor likewise consumed cleanly.
+    term.write("\x1b[38:2:255:0:0mZ");
+    cell = term.getCell(2, 0);
+    try testing.expect(!cell.bold);
+    try testing.expect(!cell.italic);
+}
+
+test "extended color interleaved with real attributes" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // ESC[1;38;5;2m — bold, then 256-color fg index 2. Bold set exactly once,
+    // fg set to 2, and the trailing `2` sub-param not misread.
+    term.write("\x1b[1;38;5;2mX");
+    const cell = term.getCell(0, 0);
+    try testing.expect(cell.bold);
+    try testing.expectEqual(@as(u8, 2), cell.fg);
+    try testing.expect(!cell.italic);
+}
+
+test "extended color followed by more SGR params" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // ESC[38;5;9;1m — 256-color fg then bold. The `1` after the color unit is
+    // a real bold code and must apply.
+    term.write("\x1b[38;5;9;1mX");
+    const cell = term.getCell(0, 0);
+    try testing.expectEqual(@as(u8, 9), cell.fg);
+    try testing.expect(cell.bold);
+}
+
 test "default colors" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();

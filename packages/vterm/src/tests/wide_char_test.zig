@@ -127,3 +127,19 @@ test "mixed ASCII and wide characters" {
     // Cursor should be at (7, 0)
     try testing.expect(term.cursorAt(7, 0));
 }
+
+test "wide char on 1-column terminal with DECAWM off does not panic (#529)" {
+    var term = try VTerm.init(testing.allocator, 1, 2);
+    defer term.deinit();
+
+    // Disable autowrap (DECAWM off), then write a wide (2-cell) CJK char on a
+    // 1-column terminal. Previously `self.width - 2` underflowed u16 and the
+    // continuation `cursor.x + 1` overflowed -> panic. Now the wide glyph is
+    // degraded to a single-cell write; no continuation cell, no panic.
+    term.write("\x1b[?7l");
+    term.write("你");
+
+    // The glyph lands in the single available cell; nothing overflows.
+    try testing.expect(term.getCell(0, 0).char == 0x4F60);
+    try testing.expect(!term.getCell(0, 0).wide_continuation);
+}
