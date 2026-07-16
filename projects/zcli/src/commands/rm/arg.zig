@@ -81,9 +81,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         source = try arena.dupeZ(u8, updated);
     }
 
-    var file = try std.Io.Dir.cwd().createFile(io, file_path, .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, source);
+    try scaffold.fs.writeFileAtomic(std.Io.Dir.cwd(), io, arena, file_path, source);
 
     try finish(context.stdout(), &context.theme, file_path, names.len);
 }

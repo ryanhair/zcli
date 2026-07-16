@@ -101,9 +101,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         },
     };
 
-    var file = try std.Io.Dir.cwd().createFile(io, file_path, .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, updated);
+    try scaffold.fs.writeFileAtomic(std.Io.Dir.cwd(), io, arena, file_path, updated);
 
     try finish(context.stdout(), &context.theme, file_path, opt);
 }
