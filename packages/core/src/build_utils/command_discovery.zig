@@ -54,20 +54,41 @@ fn scanDirectory(
     depth: u32,
     max_depth: u32,
 ) !void {
-    // Prevent excessive nesting
+    // Prevent excessive nesting. Exceeding the cap is a hard error rather
+    // than a silent truncation: the old behavior logged one build-log line
+    // and made the whole subtree vanish from the CLI, which is trivial to
+    // miss. The cap also doubles as a symlink-loop guard now that symlinked
+    // directories are followed (see below).
     if (depth >= max_depth) {
         // Convert path array to string for logging. On OOM log without the
         // path — the old `catch "unknown"` fallback flowed into the free
         // below, which is UB on a string literal.
         const joined: ?[]u8 = if (current_path.len == 0) null else std.mem.join(allocator, "/", current_path) catch null;
         defer if (joined) |p| allocator.free(p);
-        logging.maxNestingDepthReached(max_depth, joined orelse "");
-        return;
+        logging.maxNestingDepthExceeded(max_depth, joined orelse "");
+        return error.MaxCommandDepthExceeded;
     }
     var iterator = dir.iterate();
 
     while (try iterator.next(io)) |entry| {
-        switch (entry.kind) {
+        // Resolve symlinks to their target kind so symlinked command files
+        // and directories are discovered exactly like real ones — a monorepo
+        // may symlink a shared command tree into commands/. Without this the
+        // .sym_link entry fell through to the `else` arm and was silently
+        // dropped. statFile follows symlinks, so its reported kind is the
+        // target's; openDir/statFile below likewise follow the link.
+        const kind = switch (entry.kind) {
+            .sym_link => blk: {
+                const stat = dir.statFile(io, entry.name, .{}) catch {
+                    logging.invalidCommandName(entry.name, "cannot resolve symlink target");
+                    continue;
+                };
+                break :blk stat.kind;
+            },
+            else => entry.kind,
+        };
+
+        switch (kind) {
             .file => {
                 if (std.mem.endsWith(u8, entry.name, ".zig")) {
                     const name_without_ext = entry.name[0 .. entry.name.len - 4];
@@ -269,6 +290,73 @@ test "discovery skips underscore-prefixed helper files and directories" {
     try testing.expect(commands.root.get("deploy") != null);
     try testing.expect(commands.root.get("_generate") == null);
     try testing.expect(commands.root.get("_helpers") == null);
+}
+
+test "discovery follows symlinked command files and directories" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A real command, plus a shared command file and a shared command
+    // directory that a monorepo symlinks into commands/. All must be
+    // discovered — previously the symlink entries fell through to the
+    // `else => continue` arm and vanished from the CLI with no warning.
+    try tmp.dir.writeFile(io, .{ .sub_path = "deploy.zig", .data = "pub fn execute() void {}" });
+
+    try tmp.dir.createDir(io, "shared_src", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "shared_src/status.zig", .data = "pub fn execute() void {}" });
+    try tmp.dir.createDir(io, "shared_group_src", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "shared_group_src/list.zig", .data = "pub fn execute() void {}" });
+
+    // status.zig symlinks a shared command file; group/ symlinks a shared dir.
+    try tmp.dir.symLink(io, "shared_src/status.zig", "status.zig", .{});
+    try tmp.dir.symLink(io, "shared_group_src", "group", .{ .is_directory = true });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = try discoverInDir(testing.allocator, io, dir);
+    defer commands.deinit();
+
+    try testing.expect(commands.root.get("deploy") != null);
+    // The symlinked file resolves to a leaf command.
+    try testing.expect(commands.root.get("status") != null);
+    // The symlinked directory resolves to a group whose subcommand is found.
+    const group = commands.root.get("group") orelse return error.TestUnexpectedResult;
+    try testing.expect(group.subcommands != null);
+    try testing.expect(group.subcommands.?.get("list") != null);
+}
+
+test "discovery errors loudly when nesting exceeds the depth cap" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    // Deliberately hitting the hard-error path leaks the partial subtree
+    // allocations (fine in production: b.allocator is an arena and the build
+    // aborts). Use an arena here so the leak detector doesn't flag it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(io, "group", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "group/leaf.zig", .data = "pub fn execute() void {}" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = std.StringHashMap(DiscoveredCommand).init(allocator);
+
+    // max_depth = 1: recursing into group/ reaches the cap. This must be a
+    // hard error, not a silent drop that would hide `group leaf` from the CLI.
+    try testing.expectError(
+        error.MaxCommandDepthExceeded,
+        scanDirectory(allocator, io, dir, &commands, &.{}, 0, 1),
+    );
 }
 
 test "sortedByName yields alphabetical order regardless of discovery order" {
