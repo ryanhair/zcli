@@ -138,12 +138,13 @@ regret freezing around." **1.0 is deliberately not scheduled.** 0.20 shipped
   [minisign](https://jedisct1.github.io/minisign/) key ([ADR-0023](docs/adr/0023-release-signing-minisign.md));
   `install.sh` and `zcli upgrade` verify fail-closed. The install/upgrade path
   freezes with publisher-level integrity already in place.
+- **Split the unit-testing tier out of `testing`** (TODOS). `unit.zig` is now its
+  own module (`zcli_testing_unit`); the `testing` module no longer drags
+  zcli/vterm/serde into subprocess/PTY-only consumers. The public `zcli-testing`
+  import name is unchanged.
 
 **NON-blockers (fine to defer past 1.0 — all additive or internal):**
 
-- **Split the unit-testing tier out of `testing`** (TODOS). Internal dependency
-  hygiene; a module split can happen in any 1.x without breaking the public
-  `zcli-testing` API.
 - **Re-pressure-test config formats / HTML doc-gen** (TODOS). Scope-boundary
   review, not a compatibility issue.
 
