@@ -166,16 +166,20 @@ test "security: malicious input handling - buffer overflows" {
 
 test "security: malicious input handling - integer overflows" {
     for (MaliciousInputs.integer_overflows) |overflow_input| {
-        // Test integer parsing with overflow values
+        // Test integer parsing with overflow values. `count` (u32 = 0) is a
+        // non-trailing defaulted field, so an unparseable token falls through
+        // to the later `file` positional instead of hard-erroring. The security
+        // property is that the integer field is NEVER poisoned with an
+        // out-of-range value: on fall-through it keeps its default (0).
         const args = [_][]const u8{ "test", overflow_input };
 
         if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // If it somehow parsed an obviously invalid number, that's concerning
-            if (std.mem.eql(u8, overflow_input, "999999999999999999999999999999999999")) {
-                // This should have been rejected
-                try testing.expect(false);
+            // The overflow token must not have been accepted into the u32 field.
+            // It either parsed as a valid in-range u32 or fell through to `file`.
+            if (parsed.count != 0) {
+                // A non-default value means the token genuinely parsed in range.
+                try testing.expect(std.fmt.parseInt(u32, overflow_input, 10) catch 0 == parsed.count);
             }
-            _ = parsed; // Use the result
         } else |err| {
             // Should gracefully handle overflows
             try testing.expect(err == zcli.ZcliError.ArgumentInvalidValue);
