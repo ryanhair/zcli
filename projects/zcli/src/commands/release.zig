@@ -292,24 +292,44 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         try updateBuildZonVersion(allocator, io, new_version_str);
         try stdout.print("  ✓ build.zig.zon updated\n", .{});
 
-        // Commit the version bump
+        // Commit the version bump. Idempotent: on a retry after a failed push
+        // the bump is already written and committed, so nothing is staged —
+        // treat that as success and resume instead of aborting on
+        // "nothing to commit".
         try stdout.print("\n→ Committing version bump...\n", .{});
-        const commit_msg = try std.fmt.allocPrint(allocator, "Bump version to {s}", .{new_version_str});
-        defer allocator.free(commit_msg);
-
         try runOrFail(allocator, io, context, &.{ "git", "add", "build.zig.zon" });
-        try runOrFail(allocator, io, context, &.{ "git", "commit", "-m", commit_msg });
-        try stdout.print("  ✓ Changes committed\n", .{});
+
+        // `git diff --cached --quiet` exits 0 when nothing is staged.
+        const staged = try runCommand(allocator, io, &.{ "git", "diff", "--cached", "--quiet" });
+        defer staged.deinit(allocator);
+        if (staged.success) {
+            try stdout.print("  ✓ Version bump already committed (resuming)\n", .{});
+        } else {
+            const commit_msg = try std.fmt.allocPrint(allocator, "Bump version to {s}", .{new_version_str});
+            defer allocator.free(commit_msg);
+            try runOrFail(allocator, io, context, &.{ "git", "commit", "-m", commit_msg });
+            try stdout.print("  ✓ Changes committed\n", .{});
+        }
     }
 
     // 7. Create annotated tag
     const tag_name = try std.fmt.allocPrint(allocator, "{s}-v{s}", .{ cli_name, new_version_str });
     defer allocator.free(tag_name);
 
+    // The tag is the last local step before the push, so a partial failure
+    // never leaves a tag pointing at a commit that was not published.
     try stdout.print("\n→ Creating annotated tag {s}...\n", .{tag_name});
     if (options.@"dry-run") {
         try stdout.print("  (dry-run: would create tag)\n", .{});
     } else {
+        // On a retry, a local tag from the prior failed attempt may already
+        // exist (git would refuse to recreate it). Remove it so the tag is
+        // recreated on the current commit with the current release notes.
+        if (try localTagExists(allocator, io, tag_name)) {
+            try stdout.print("  Local tag already exists — recreating\n", .{});
+            try runOrFail(allocator, io, context, &.{ "git", "tag", "-d", tag_name });
+        }
+
         var tag_cmd = std.ArrayList([]const u8).empty;
         defer tag_cmd.deinit(allocator);
 
@@ -325,16 +345,16 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
         try stdout.print("  ✓ Tag created\n", .{});
     }
 
-    // 8. Push commit and tag
+    // 8. Push commit and tag together. `--atomic` makes the remote accept both
+    // refs or neither, so a failed push can never leave the branch pushed
+    // without its tag (or vice-versa) — the state that previously stranded the
+    // release half-done and blocked a clean re-run.
     if (options.push) {
         try stdout.print("\n→ Pushing to origin...\n", .{});
         if (options.@"dry-run") {
-            try stdout.print("  (dry-run: would push commit and tag)\n", .{});
+            try stdout.print("  (dry-run: would push commit and tag atomically)\n", .{});
         } else {
-            // Push the commit first
-            try runOrFail(allocator, io, context, &.{ "git", "push" });
-            // Then push the tag
-            try runOrFail(allocator, io, context, &.{ "git", "push", "origin", tag_name });
+            try runOrFail(allocator, io, context, &.{ "git", "push", "--atomic", "origin", options.branch, tag_name });
             try stdout.print("  ✓ Commit and tag pushed successfully\n", .{});
         }
     }
@@ -501,6 +521,17 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, io: std.Io, new_version: 
     const out_file = try std.Io.Dir.cwd().createFile(io, zon_path, .{});
     defer out_file.close(io);
     try out_file.writeStreamingAll(io, new_content.items);
+}
+
+/// Whether a local git tag named `tag_name` currently exists. Used to detect a
+/// tag left behind by a prior release attempt so a retry can clean it up.
+fn localTagExists(allocator: std.mem.Allocator, io: std.Io, tag_name: []const u8) !bool {
+    const ref = try std.fmt.allocPrint(allocator, "refs/tags/{s}", .{tag_name});
+    defer allocator.free(ref);
+
+    const result = try runCommand(allocator, io, &.{ "git", "rev-parse", "-q", "--verify", ref });
+    defer result.deinit(allocator);
+    return result.success;
 }
 
 fn getCurrentVersion(allocator: std.mem.Allocator, io: std.Io, cli_name: []const u8) !Version {
@@ -1076,6 +1107,64 @@ test "randomScratchName - hidden, fixed-length, unpredictable" {
     try testing.expectEqual(scratch_name_len, a.len);
     try testing.expect(std.mem.startsWith(u8, a, ".zcli-release-"));
     try testing.expect(!std.mem.eql(u8, a, b));
+}
+
+/// Run a git command in a test repo and assert it succeeded.
+fn expectGitOk(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
+    const r = try runCommand(allocator, io, argv);
+    defer r.deinit(allocator);
+    try testing.expect(r.success);
+}
+
+test "release retry idempotency: tag detection + empty-commit resume" {
+    // Reproduces the half-released state from a prior failed push and asserts
+    // the recovery mechanics: (1) a leftover local tag is detectable, and
+    // (2) re-staging an already-committed version bump leaves nothing staged,
+    // so the retry resumes instead of failing on "nothing to commit".
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    var temp_dir = testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    var original_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer original_dir.close(io);
+    try std.process.setCurrentDir(io, temp_dir.dir);
+    defer std.process.setCurrentDir(io, original_dir) catch {};
+
+    // Fresh, isolated repo with a committer identity.
+    try expectGitOk(allocator, io, &.{ "git", "init", "-q" });
+    try expectGitOk(allocator, io, &.{ "git", "config", "user.email", "t@example.com" });
+    try expectGitOk(allocator, io, &.{ "git", "config", "user.name", "Test" });
+
+    // Simulate the version bump already written and committed.
+    {
+        var f = try temp_dir.dir.createFile(io, "build.zig.zon", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, ".{ .version = \"1.0.0\" }\n");
+    }
+    try expectGitOk(allocator, io, &.{ "git", "add", "build.zig.zon" });
+    try expectGitOk(allocator, io, &.{ "git", "commit", "-q", "-m", "Bump version to 1.0.0" });
+
+    const tag = "app-v1.0.0";
+
+    // Before the prior attempt created a tag, none exists.
+    try testing.expect(!try localTagExists(allocator, io, tag));
+
+    // Prior attempt created the tag but failed to push it.
+    try expectGitOk(allocator, io, &.{ "git", "tag", "-a", tag, "-m", "notes" });
+    try testing.expect(try localTagExists(allocator, io, tag));
+
+    // Retry: staging the already-committed bump stages nothing, so
+    // `git diff --cached --quiet` succeeds (exit 0) and the commit is skipped.
+    try expectGitOk(allocator, io, &.{ "git", "add", "build.zig.zon" });
+    const staged = try runCommand(allocator, io, &.{ "git", "diff", "--cached", "--quiet" });
+    defer staged.deinit(allocator);
+    try testing.expect(staged.success);
+
+    // Retry: the leftover tag is cleaned so it can be recreated without error.
+    try expectGitOk(allocator, io, &.{ "git", "tag", "-d", tag });
+    try testing.expect(!try localTagExists(allocator, io, tag));
 }
 
 test "runCommand - captures stdout and surfaces failure stderr" {
