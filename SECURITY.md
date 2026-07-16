@@ -64,3 +64,42 @@ signing ceremony) to get the same guarantee for their own releases.
 The library releases (the `vX.Y.Z` tags consumed via `build.zig.zon`) are not
 signed with minisign — `zig fetch`'s content-hash pinning is the integrity
 mechanism there, verified against the hash recorded in your `build.zig.zon`.
+
+## Branch protection policy
+
+The `main` branch ruleset (`Main Protection`, id `18284157`) enforces
+deletion protection, non-fast-forward pushes, and all 15 CI status checks.
+It does **not** include a `pull_request` rule — there is no required review
+and no requirement to merge via PR — and it has one bypass actor (the
+repository-admin role) with `bypass_mode: always`.
+
+This is intentional, not an oversight:
+
+- zcli is a solo-maintainer project. Direct pushes to `main` by the
+  maintainer are accepted; requiring self-approved PRs for every change
+  would add process without adding safety.
+- The bypass actor exists because the release workflow's `finalize` job
+  (`.github/workflows/release.yml`, the "Push to main and cut tags" step)
+  pushes the staged release commit directly to `main` and cuts the release
+  tags, using `GITHUB_TOKEN`. That push must clear the ruleset's
+  non-fast-forward check, so *something* has to be able to bypass it — same
+  actor covers both the maintainer's direct pushes and CI's release push
+  today.
+- All CI status checks still apply to the release commit before `finalize`
+  runs (see the `setup`/`build` staging-branch dance in release.yml — the
+  commit is fully tested on a scratch branch before promotion), so the
+  absence of a `pull_request` rule does not mean untested code can land.
+
+**Future hardening path** (not implemented, tracked as a follow-up): add a
+`pull_request` rule requiring review, and scope the bypass actor to just the
+release workflow (GitHub supports app/workflow-scoped bypass actors) instead
+of an always-on repository role. That would close the gap where any
+direct-push-capable actor — not just the release automation — can skip
+review.
+
+**Optional idea, not implemented**: a scheduled workflow step that asserts
+the ruleset shape via `gh api repos/<owner>/<repo>/rulesets/18284157` and
+fails loudly on drift, mirroring the release environment's runtime
+self-check (see "Push to main and cut tags" above, and the `#397` lesson
+that an unenforced protection rule fails silently rather than loudly). No
+such check exists yet for the ruleset itself.
