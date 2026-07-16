@@ -848,6 +848,23 @@ fn verifyChecksumsSignature(
         err_out.print("The release may have been tampered with. Refusing to install.\n", .{}) catch {};
         return error.SignatureVerificationFailed;
     };
+
+    // Bind the signature to THIS release. The primary signature above only
+    // authenticates checksums.txt, which names artifacts but carries no version
+    // — so a compromised publisher could drop an older release's binary,
+    // checksums.txt, and its genuine .minisig into the latest tag and pass every
+    // check above, silently rolling the user back to a previously-signed
+    // (possibly vulnerable) build (CWE-294 downgrade). minisign's global
+    // signature covers the trusted comment, into which the signing ceremony
+    // embeds the release tag; verifying that comment binds the artifact to the
+    // exact tag we are installing and defeats the replay.
+    const expected_tag = try std.fmt.allocPrint(allocator, "{s}-v{s}", .{ cli_name, version });
+    defer allocator.free(expected_tag);
+    minisign.verifyTrustedComment(pinned, response.body, expected_tag) catch |err| {
+        err_out.print("Error: release version verification failed for {s} ({s}).\n", .{ expected_tag, @errorName(err) }) catch {};
+        err_out.print("The signed release does not match the version being installed — refusing a possible downgrade/replay.\n", .{}) catch {};
+        return error.VersionVerificationFailed;
+    };
 }
 
 /// Find the expected checksum for `binary_name` in a `checksums.txt` body.
