@@ -98,9 +98,18 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     defer cycle_arena.deinit();
 
     // The app started by `-- <command>`, if any. Killed and restarted each cycle.
-    // The loop below never returns normally — Ctrl-C kills the whole process
-    // group (including this child) — so there's nothing to clean up here.
     var app_child: ?std.process.Child = null;
+
+    // The loop below never returns normally. Ctrl-C needs no cleanup — in cooked
+    // mode it signals the whole foreground process group, this child included.
+    // But a plain SIGTERM/SIGHUP/`kill <pid>` (a supervisor or an IDE stop
+    // button) reaches only dev, orphaning the running app. Arm handlers that
+    // terminate the tracked child, then die by the signal. Only needed when
+    // there's an app to guard.
+    if (args.command.len > 0) {
+        reaper.arm();
+    }
+    defer reaper.disarm();
 
     // Build once up front, then rebuild on every change.
     runCycle(io, &cycle_arena, status, theme, context.app_name, args.command, &app_child);
@@ -232,6 +241,7 @@ fn doCycle(
     if (app_child.*) |*child| {
         child.kill(io);
         app_child.* = null;
+        reaper.track(null);
     }
 
     try paint(status, theme, "▸ rebuilding…", .info);
@@ -242,6 +252,7 @@ fn doCycle(
 
     if (command.len > 0) {
         app_child.* = try startApp(io, arena, status, theme, app_name, command);
+        reaper.track(app_child.*);
     }
 }
 
@@ -353,6 +364,133 @@ fn nap(io: std.Io, ms: u32) void {
 }
 
 // ============================================================================
+// Orphan guard — terminate the running app child on external termination
+// ============================================================================
+//
+// Process-global because a signal handler (POSIX) and the console control
+// handler (Windows) cannot reach the `app_child` on the stack. Only one `dev`
+// runs per process, so a single global target is enough. `track` records the
+// currently-running child (or clears it) each cycle; the handlers read it and
+// terminate that child before letting the process die by the signal.
+const reaper = struct {
+    var armed = std.atomic.Value(bool).init(false);
+
+    /// Install the external-termination handlers. Called once, before the loop.
+    fn arm() void {
+        impl.install();
+        armed.store(true, .release);
+    }
+
+    /// Remove the handlers. Idempotent — safe to `defer` unconditionally.
+    fn disarm() void {
+        if (!armed.swap(false, .acq_rel)) return;
+        impl.remove();
+    }
+
+    /// Record the currently-running app child (or `null` to clear). Called each
+    /// cycle as the child is spawned and killed.
+    fn track(child: ?std.process.Child) void {
+        impl.target.store(if (child) |c| impl.idToInt(c.id) else 0, .release);
+    }
+
+    /// Terminate the tracked child, if any. Async-signal-safe: a bare `kill(2)` /
+    /// `TerminateProcess`, no allocator and no buffered writer.
+    fn kill() void {
+        const t = impl.target.load(.acquire);
+        if (t == 0) return;
+        impl.terminate(t);
+    }
+
+    const impl = if (builtin.os.tag == .windows) struct {
+        const windows = std.os.windows;
+        const DWORD = windows.DWORD;
+        const HANDLE = windows.HANDLE;
+
+        // hProcess stored as an integer so it lives in a lock-free atomic.
+        var target = std.atomic.Value(usize).init(0);
+
+        extern "kernel32" fn SetConsoleCtrlHandler(
+            handler: ?*const fn (DWORD) callconv(.winapi) c_int,
+            add: c_int,
+        ) callconv(.winapi) c_int;
+        extern "kernel32" fn TerminateProcess(
+            hProcess: HANDLE,
+            uExitCode: c_uint,
+        ) callconv(.winapi) c_int;
+
+        fn idToInt(id: ?std.process.Child.Id) usize {
+            return if (id) |h| @intFromPtr(h) else 0;
+        }
+        fn terminate(t: usize) void {
+            _ = TerminateProcess(@ptrFromInt(t), 1);
+        }
+
+        /// Runs on a thread the console spawns for Ctrl-C / close / logoff /
+        /// shutdown. Returning FALSE lets the default handler terminate us — so
+        /// we kill the child first, then fall through to the normal death.
+        fn ctrlHandler(_: DWORD) callconv(.winapi) c_int {
+            kill();
+            return 0; // FALSE
+        }
+        fn install() void {
+            _ = SetConsoleCtrlHandler(ctrlHandler, 1);
+        }
+        fn remove() void {
+            _ = SetConsoleCtrlHandler(ctrlHandler, 0);
+        }
+    } else struct {
+        const posix = std.posix;
+
+        // POSIX pid stored as an integer; 0 means "no child" (no real child is 0).
+        var target = std.atomic.Value(usize).init(0);
+
+        const sigs = .{ posix.SIG.INT, posix.SIG.TERM, posix.SIG.HUP };
+        var old: [sigs.len]posix.Sigaction = undefined;
+
+        fn idToInt(id: ?std.process.Child.Id) usize {
+            return if (id) |pid| @intCast(pid) else 0;
+        }
+        fn terminate(t: usize) void {
+            // Best-effort: the child may already be gone. It becomes a zombie
+            // only briefly — dev is dying too, so init reaps it. Sending TERM
+            // (not KILL) lets a well-behaved app shut down cleanly.
+            posix.kill(@intCast(t), posix.SIG.TERM) catch {};
+        }
+
+        fn install() void {
+            inline for (sigs, 0..) |signo, i| {
+                var act = posix.Sigaction{
+                    .handler = .{ .handler = handlerFor(signo) },
+                    .mask = posix.sigemptyset(),
+                    // RESETHAND: disposition is back to default on entry, so the
+                    // re-raise finds SIG_DFL (no recursion). NODEFER: the signal
+                    // isn't blocked during the handler, so the re-raise is
+                    // delivered synchronously and terminates us then and there.
+                    .flags = posix.SA.RESETHAND | posix.SA.NODEFER,
+                };
+                posix.sigaction(signo, &act, &old[i]);
+            }
+        }
+        fn remove() void {
+            inline for (sigs, 0..) |signo, i| posix.sigaction(signo, &old[i], null);
+        }
+
+        /// A distinct handler per signal so each re-raises its own number: kill
+        /// the child, then re-raise so dev dies BY the signal (the parent sees
+        /// WIFSIGNALED, not a plain exit). `raise` is reachable without libc
+        /// (macOS links libSystem; libc-free Linux uses tkill).
+        fn handlerFor(comptime signo: anytype) fn (posix.SIG) callconv(.c) void {
+            return struct {
+                fn h(_: posix.SIG) callconv(.c) void {
+                    kill();
+                    posix.raise(signo) catch {};
+                }
+            }.h;
+        }
+    };
+};
+
+// ============================================================================
 // Output
 // ============================================================================
 
@@ -392,6 +530,48 @@ test "appArgv with no command is just the binary" {
     const argv = try appArgv(arena_state.allocator(), "zig-out/bin/app", &.{});
     try testing.expectEqual(@as(usize, 1), argv.len);
     try testing.expectEqualStrings("zig-out/bin/app", argv[0]);
+}
+
+test "reaper.track records and clears the child target" {
+    defer reaper.track(null);
+    try testing.expectEqual(@as(usize, 0), reaper.impl.target.load(.acquire));
+
+    // A fabricated child with a known id — track must record it verbatim so the
+    // signal handler has a pid/handle to terminate.
+    const fake: std.process.Child = .{
+        .id = if (builtin.os.tag == .windows) @ptrFromInt(0x1234) else @as(std.process.Child.Id, 4321),
+        .thread_handle = if (builtin.os.tag == .windows) undefined else {},
+        .stdin = null,
+        .stdout = null,
+        .stderr = null,
+        .request_resource_usage_statistics = false,
+    };
+    reaper.track(fake);
+    try testing.expect(reaper.impl.target.load(.acquire) != 0);
+
+    reaper.track(null);
+    try testing.expectEqual(@as(usize, 0), reaper.impl.target.load(.acquire));
+}
+
+test "reaper.kill terminates the tracked child" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // POSIX spawn/kill path
+    const io = std.testing.io;
+
+    // A long-lived child stands in for a running app. reaper.kill() must reach
+    // it via the tracked pid — this is the orphan-on-SIGTERM regression: before
+    // the fix, nothing outside the in-loop restart killed this process.
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "sleep", "30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    reaper.track(child);
+    defer reaper.track(null);
+
+    reaper.kill(); // sends SIGTERM to the tracked pid
+    const term = try child.wait(io); // reap it
+    try testing.expect(term == .signal); // died by signal, not a clean exit
 }
 
 test "WatchState coalesces and consumes the dirty signal" {
