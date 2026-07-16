@@ -310,12 +310,38 @@ test "init rejects a Zig reserved word as the project name" {
     try testing.expect(!fileExists(tmp.dir, "error"));
 }
 
-// Note (#507): init's `version` option is validated as semver in-process (see
-// init.zig `isValidSemanticVersion` + its unit test). It has no CLI e2e here
-// because the zcli tool's global `--version`/`-V` flag (zcli_version plugin)
-// shadows the command option: `zcli init app --version foo` is consumed by the
-// global flag before routing, so the option is only reachable via a config-file
-// default, not argv. The validation is covered by the unit test.
+test "init --app-version lands in build.zig.zon (#565)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // The option is spelled --app-version, not --version: the tool's global
+    // --version/-V flag (zcli_version plugin) is consumed before routing and
+    // would shadow a same-named command option (#565).
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--app-version", "2.3.4" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const zon = try readFile(proj, a, "build.zig.zon");
+    try expectContains(zon, ".version = \"2.3.4\"");
+}
+
+test "init rejects a non-semver --app-version before touching the filesystem (#507)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--app-version", "foo" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "Invalid version");
+    try testing.expect(!fileExists(tmp.dir, "myapp"));
+}
 
 test "init . scaffolds into the current directory" {
     var tmp = testing.tmpDir(.{});

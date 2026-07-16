@@ -46,6 +46,7 @@ pub const meta = .{
     .examples = &.{
         "init my-app",
         "init my-app --description \"My awesome CLI\"",
+        "init my-app --app-version 1.0.0",
         "init . --description \"Initialize in current directory\"",
     },
     .args = .{
@@ -53,7 +54,11 @@ pub const meta = .{
     },
     .options = .{
         .description = .{ .description = "Description of your CLI application" },
-        .version = .{ .description = "Initial version number" },
+        // Named app_version (--app-version), not version: the zcli_version
+        // plugin's global --version/-V flag is consumed before command routing,
+        // so a command option spelled --version would be unreachable from the
+        // CLI (#565).
+        .app_version = .{ .description = "Initial version number" },
     },
 };
 
@@ -63,7 +68,7 @@ pub const Args = struct {
 
 pub const Options = struct {
     description: ?[]const u8 = null,
-    version: ?[]const u8 = null,
+    app_version: ?[]const u8 = null,
 };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
@@ -129,7 +134,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // typo fails immediately with a clear message here, rather than surfacing later
     // as an opaque manifest error from `zig fetch`/`zig build` in a half-set-up
     // project (#507).
-    const version_str = options.version orelse "0.1.0";
+    const version_str = options.app_version orelse "0.1.0";
     if (!isValidSemanticVersion(version_str)) {
         return context.fail("Error: Invalid version '{s}'\n  Must be a semantic version like 1.2.3 (see https://semver.org)", .{version_str});
     }
@@ -615,8 +620,8 @@ test "renderPluginsBlock scaffolds a compiling github_upgrade config, not an emp
 
 /// True if `s` is a semantic version acceptable to Zig's build.zig.zon manifest
 /// parser (which requires `.version` to be semver). `init` validates the
-/// `--version` value with this up front so a bad value fails immediately rather
-/// than as an opaque manifest error downstream (#507).
+/// `--app-version` value with this up front so a bad value fails immediately
+/// rather than as an opaque manifest error downstream (#507).
 fn isValidSemanticVersion(s: []const u8) bool {
     _ = std.SemanticVersion.parse(s) catch return false;
     return true;

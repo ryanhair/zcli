@@ -190,7 +190,7 @@ zcli <span :text="$site.asset('site-data.json').ziggy().get('version')"></span>
         <pre><span class="pr">$</span> zcli init myapp <span class="fl">--description</span> "My awesome CLI"</pre>
         <button onclick="cp(this,'zcli init myapp --description &quot;My awesome CLI&quot;')">copy</button>
       </div>
-      <p class="note">Pass <code>.</code> instead of a name to initialize in the current directory (it must be empty). <code>--version</code> sets the starting version; both options are optional.</p>
+      <p class="note">Pass <code>.</code> instead of a name to initialize in the current directory (it must be empty). <code>--app-version</code> sets the starting version; both options are optional.</p>
     </div>
 
     <div class="duo" style="margin-top:26px;">
