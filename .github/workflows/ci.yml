@@ -551,3 +551,51 @@ jobs:
         env:
           ZCLI_REQUIRE_INTERACTIVE: "1"
         run: zig build e2e
+
+  # The single required status check for branch protection — the ruleset
+  # requires ONLY this job (plus nothing else), never the per-job or per-leg
+  # names. Two reasons:
+  #
+  #   1. Skipped MATRIX jobs break per-leg required checks: when a job with a
+  #      strategy matrix is skipped by its job-level `if:`, GitHub never
+  #      expands the matrix — it reports one skipped check run with the
+  #      literal, un-substituted name (observed: "zcli_secrets backend
+  #      (${{ matrix.os }})"), so required contexts like "zcli_secrets
+  #      backend (ubuntu-latest)" are never created and sit at "Expected"
+  #      forever. A gate that is itself never skipped sidesteps this.
+  #   2. It fails when `changes` fails. Downstream jobs skipped because a
+  #      needed job FAILED still read as satisfied to branch protection — so
+  #      without this, a broken path filter could merge a PR with zero tests
+  #      run. Here a failed `changes` surfaces as this job failing.
+  #
+  # `if: always()` so it reports even when everything upstream was skipped;
+  # skipped is an acceptable result (that's the path-gating working as
+  # designed), failure and cancellation are not. Adding or removing jobs or
+  # matrix legs needs no ruleset edit — only membership in `needs` below.
+  ci-ok:
+    name: CI OK
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs:
+      - changes
+      - fmt
+      - version-sync
+      - test
+      - windows-release-build
+      - linux-musl-release-build
+      - secrets
+      - examples
+      - e2e
+    steps:
+      - name: Fail if any needed job failed or was cancelled
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key] | join(", ")')
+          if [ -n "$bad" ]; then
+            echo "::error::jobs failed or were cancelled: $bad"
+            exit 1
+          fi
+          echo "all jobs succeeded or were legitimately skipped"
