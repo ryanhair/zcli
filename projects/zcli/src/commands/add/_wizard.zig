@@ -161,8 +161,12 @@ fn resolveCommandPath(
         };
         seed_opt = null;
 
-        const parts = parsePath(arena, raw) catch {
-            try warn(w, theme, "  Use letters, digits, '_' and '/' (e.g. users/create).");
+        const parts = parsePath(arena, raw) catch |e| {
+            const msg = switch (e) {
+                error.ReservedCommandPath => "  That path uses a Zig keyword \u{2014} pick another name.",
+                else => "  Use letters, digits, '_' and '/' (e.g. users/create).",
+            };
+            try warn(w, theme, msg);
             try w.writeAll("\r\n");
             continue;
         };

@@ -1,6 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
+const scaffold = @import("scaffold");
 
 /// A built-in plugin the user can opt into during `init`. `tag` is the enum
 /// tag passed to `zcli.builtin(.<tag>, <config>)` in the generated build.zig;
@@ -115,6 +116,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         break :blk sanitized;
     };
     defer allocator.free(project_identifier);
+
+    // The identifier lands in build.zig.zon as `.name = .<identifier>` — an enum
+    // literal. A Zig keyword there produces uncompilable generated source, so
+    // reject reserved words up front.
+    if (scaffold.spec.isReservedWord(project_identifier)) {
+        return context.fail("Error: Invalid project name '{s}'{s}\n  '{s}' is a Zig reserved word and cannot be used as a package name", .{ project_name, name_origin, project_identifier });
+    }
 
     // Free-text options are embedded in generated string literals — escape so
     // `--description 'say "hi"'` scaffolds a project that still compiles

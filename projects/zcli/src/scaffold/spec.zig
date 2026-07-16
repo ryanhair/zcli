@@ -248,6 +248,10 @@ pub fn parsePath(arena: std.mem.Allocator, raw: []const u8) ![]const []const u8 
     while (it.next()) |segment| {
         if (segment.len == 0) continue;
         if (!isValidIdentifier(segment)) return error.InvalidCommandPath;
+        // A segment becomes a bare identifier in generated code (import name,
+        // struct field, file stem). Zig keywords compile fine as file names but
+        // break the generated registry — refuse them up front.
+        if (isReservedWord(segment)) return error.ReservedCommandPath;
         // Underscore-prefixed names are helper files/dirs to command
         // discovery, never commands — refuse to scaffold one.
         if (segment[0] == '_') return error.InvalidCommandPath;
@@ -401,6 +405,19 @@ test "parsePath rejects underscore-prefixed segments (discovery treats them as h
 
     try testing.expectError(error.InvalidCommandPath, parsePath(a, "_wizard"));
     try testing.expectError(error.InvalidCommandPath, parsePath(a, "users/_create"));
+}
+
+test "parsePath rejects Zig reserved words (would break generated registry)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectError(error.ReservedCommandPath, parsePath(a, "error"));
+    try testing.expectError(error.ReservedCommandPath, parsePath(a, "fn"));
+    try testing.expectError(error.ReservedCommandPath, parsePath(a, "users/struct"));
+    // A keyword substring is fine — only exact keywords are rejected.
+    const ok = try parsePath(a, "errors/structure");
+    try testing.expectEqual(@as(usize, 2), ok.len);
 }
 
 test "parsePath accepts slash and space separators" {

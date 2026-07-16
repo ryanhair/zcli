@@ -69,8 +69,9 @@ fn skeleton(arena: std.mem.Allocator, context: *Context, args: Args, options: Op
         return context.fail("Error: A command path is required when input is not interactive\nUsage: zcli add command <path> [--description \"...\"]", .{});
     };
 
-    const parts = parsePath(arena, raw_path) catch {
-        return context.fail("Error: Invalid command path: '{s}'", .{raw_path});
+    const parts = parsePath(arena, raw_path) catch |e| switch (e) {
+        error.ReservedCommandPath => return context.fail("Error: Command path uses a Zig reserved word: '{s}'\n  Reserved words compile to invalid identifiers in the generated registry.", .{raw_path}),
+        else => return context.fail("Error: Invalid command path: '{s}'", .{raw_path}),
     };
 
     const file_path = try buildFilePath(arena, parts);
