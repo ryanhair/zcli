@@ -194,6 +194,10 @@ pub const Spinner = struct {
     /// implementation cannot run the animation concurrently, the spinner
     /// degrades to a static frame.
     pub fn start(self: *Spinner, message: []const u8) void {
+        // Guard double-start: a second start would overwrite `animation`,
+        // leaking the first future and spawning a second animate task racing
+        // the first. Also refuse to start after a finish (App is torn down).
+        if (self.closed or self.active) return;
         self.message = message;
         self.active = true;
         self.tick = 0;
@@ -233,6 +237,7 @@ pub const Spinner = struct {
 
     /// Stop and persist `symbol` + the message as a plain static line.
     pub fn persist(self: *Spinner, symbol: []const u8, message: []const u8) void {
+        if (self.closed) return;
         self.stopAnimation();
         self.app.clear() catch {};
         self.app.emit("{s} {s}", .{ symbol, message }) catch {};
@@ -241,6 +246,7 @@ pub const Spinner = struct {
 
     /// Stop the spinner leaving no output behind.
     pub fn stop(self: *Spinner) void {
+        if (self.closed) return;
         self.stopAnimation();
         self.app.clear() catch {};
         self.close();
@@ -273,6 +279,7 @@ pub const Spinner = struct {
     }
 
     fn finishRole(self: *Spinner, role: theme_pkg.SemanticRole, symbol: []const u8, message: []const u8) void {
+        if (self.closed) return;
         self.stopAnimation();
         self.app.clear() catch {};
         if (self.app.options.interactive) {
@@ -520,6 +527,12 @@ pub const MultiBarConfig = struct {
 /// Stacked progress bars for parallel work. Thread-safe: `set`/`increment`
 /// may be called from worker threads. Caller-driven (no animation task).
 /// Piped output is silent — log your own lines when not a TTY.
+///
+/// Quiescence requirement: every worker thread must stop calling `add`/`set`/
+/// `increment` before `finish` or `deinit` runs. Those finishers take the
+/// mutex and tear down the render App (and `deinit` frees the item labels), so
+/// a worker that keeps going past the finisher would touch freed state. Join
+/// your workers first, then finish once from a single thread.
 pub const MultiBar = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -595,6 +608,7 @@ pub const MultiBar = struct {
     }
 
     fn render(self: *MultiBar) void {
+        if (self.closed) return;
         if (!self.app.options.interactive) return;
         self.renderFrame() catch {};
     }
@@ -619,7 +633,13 @@ pub const MultiBar = struct {
         try self.app.frame(node);
     }
 
+    /// Tear down the render App. Takes the mutex so it cannot race a worker
+    /// mid-`set`/`increment` (which holds the mutex while calling `app.frame`),
+    /// and the guard is checked under the lock so a double-finish is a no-op
+    /// rather than a second `app.deinit` (use-after-free).
     fn close(self: *MultiBar) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.closed) return;
         self.closed = true;
         self.app.deinit();
@@ -882,6 +902,66 @@ test "multi bar tracks items and clamps" {
     // Piped: silent.
     try testing.expectEqual(@as(usize, 0), writer.buffered().len);
     mb.finish();
+}
+
+test "spinner double finish does not touch a torn-down app" {
+    // Regression: a second finish (succeed then stop) used to call
+    // app.clear()/emit() on an already-deinited App — a use-after-free that
+    // testing.allocator would trip. The `closed` guard makes it a no-op.
+    var output: [8192]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
+    forceInteractive(&s.app);
+
+    s.start("working");
+    s.succeed("done");
+    try testing.expect(s.closed);
+    // Second (and third) finish variants must be safe no-ops.
+    s.stop();
+    s.fail("nope");
+    s.persist("!", "nope");
+    try testing.expect(s.closed);
+}
+
+test "spinner double start does not spawn a second animation" {
+    // Regression: a second start() overwrote `animation`, leaking the first
+    // future and racing a second animate task. The guard makes it a no-op, so
+    // the message set by the first start is preserved.
+    var output: [8192]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
+    forceInteractive(&s.app);
+
+    s.start("first");
+    s.start("second"); // ignored while already active
+    try testing.expectEqualStrings("first", s.message);
+    s.stop();
+    // start after finish is also refused.
+    s.start("after-close");
+    try testing.expect(!s.active);
+}
+
+test "multi bar double finish and finish-then-deinit are safe" {
+    // Regression: finish()/deinit() now take the mutex and check `closed`
+    // under the lock, so repeated finish and a following deinit never call
+    // app.deinit() twice (a use-after-free).
+    var output: [8192]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var mb = try MultiBar.init(testing.allocator, &writer, testing.io, .fallback, .{});
+    defer mb.deinit(); // deinit after finish must be safe
+    forceInteractive(&mb.app);
+
+    const h = try mb.add("api", 100);
+    mb.set(h, 50);
+    mb.finish();
+    try testing.expect(mb.closed);
+    mb.finish(); // second finish is a no-op
+    // A set() racing past finish is dropped rather than painting a dead app.
+    mb.set(h, 75);
+    try testing.expect(mb.closed);
 }
 
 test "multi bar renders labels, bars, and percents when interactive" {
