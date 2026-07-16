@@ -106,6 +106,17 @@ pub const WaitResult = enum { input, resize, timeout };
 /// noticed one interval later, which is imperceptible.
 const poll_backstop_ms: i32 = 100;
 
+/// Milliseconds from a monotonic clock, for computing poll deadlines that don't
+/// drift when an EINTR or hangup makes `poll` return early. `std.time.Timer`
+/// was removed in 0.16 and the buffered-IO clock isn't reachable here, so we
+/// read `CLOCK.MONOTONIC` directly (libc-free, like the rest of this backend).
+fn monotonicMillis() u64 {
+    var ts: posix.timespec = undefined;
+    _ = posix.system.clock_gettime(posix.CLOCK.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ms_per_s +
+        @as(u64, @intCast(ts.nsec)) / std.time.ns_per_ms;
+}
+
 /// Set by the SIGWINCH handler, drained by the watcher. Process-global because
 /// signal handlers can't carry context; only one `ResizeWatcher` is active at a
 /// time (interactive prompts are modal), which this assumes.
@@ -156,27 +167,35 @@ pub const ResizeWatcher = struct {
     ///
     /// The deadline is honored one backstop interval at a time: each poll
     /// waits at most `poll_backstop_ms` so a SIGWINCH that raced the poll is
-    /// noticed promptly, and the remaining budget is decremented by the
-    /// interval actually waited.
+    /// noticed promptly. The remaining budget is recomputed from a monotonic
+    /// clock rather than by subtracting the nominal wait, so an EINTR or
+    /// hangup-driven instant return doesn't over-charge the timeout and expire
+    /// it early under a signal storm.
     pub fn waitTimeout(self: *ResizeWatcher, fd: Handle, timeout_ms: ?u32) WaitResult {
         _ = self;
-        var remaining: ?u32 = timeout_ms;
+        // Deadline tracked against a monotonic clock, so the remaining budget is
+        // recomputed each iteration rather than decremented by the nominal wait.
+        const deadline_ms: ?u64 = if (timeout_ms) |t| monotonicMillis() + t else null;
         while (true) {
             if (resize_pending.swap(false, .seq_cst)) return .resize;
 
-            const wait_ms: i32 = if (remaining) |r| blk: {
-                if (r == 0) return .timeout;
-                break :blk @intCast(@min(r, @as(u32, poll_backstop_ms)));
+            const wait_ms: i32 = if (deadline_ms) |deadline| blk: {
+                const now = monotonicMillis();
+                if (now >= deadline) return .timeout;
+                const remaining: u64 = deadline - now;
+                break :blk @intCast(@min(remaining, @as(u64, poll_backstop_ms)));
             } else poll_backstop_ms;
 
             var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
             const rc = posix.system.poll(&fds, 1, wait_ms);
             if (resize_pending.swap(false, .seq_cst)) return .resize;
             switch (posix.errno(rc)) {
-                .SUCCESS => if (rc > 0 and fds[0].revents & posix.POLL.IN != 0) return .input,
+                // POLLHUP/POLLERR mean the stream is gone; report `.input` so
+                // the caller's read surfaces EndOfStream instead of looping and
+                // busy-spinning the poll at 100% CPU on a stdin hangup.
+                .SUCCESS => if (rc > 0 and fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR) != 0) return .input,
                 else => {}, // EINTR / EAGAIN — loop and re-check the flag
             }
-            if (remaining) |*r| r.* -|= @intCast(wait_ms);
         }
     }
 };
@@ -233,4 +252,29 @@ test "echoTermios toggles ECHO without touching other flags" {
     const enabled = echoTermios(termios, true);
     try std.testing.expect(enabled.lflag.ECHO);
     try std.testing.expect(enabled.lflag.ICANON);
+}
+
+test "waitTimeout treats a hangup (POLLHUP) as input instead of busy-spinning" {
+    // A pipe whose write end is closed reports POLLHUP (and no POLL.IN) on the
+    // read end — the same condition as a stdin hangup. Before the fix this fell
+    // through as "no event" and, with a finite deadline, only unblocked when the
+    // timeout finally elapsed (and with a null timeout, spun the poll forever).
+    var fds: [2]posix.fd_t = undefined;
+    switch (posix.errno(posix.system.pipe(&fds))) {
+        .SUCCESS => {},
+        else => return error.SkipZigTest,
+    }
+    _ = posix.system.close(fds[1]); // close write end → read end reports POLLHUP
+    defer _ = posix.system.close(fds[0]);
+
+    var watcher = ResizeWatcher.init();
+    defer watcher.deinit();
+
+    // Generous timeout: a correct implementation returns .input immediately on
+    // the hangup, so this never actually blocks for a full second.
+    try std.testing.expectEqual(WaitResult.input, watcher.waitTimeout(fds[0], 1000));
+
+    // The infinite-timeout path (classic prompt behavior) must also surface the
+    // hangup as input rather than looping.
+    try std.testing.expectEqual(InputWait.input, watcher.wait(fds[0]));
 }
