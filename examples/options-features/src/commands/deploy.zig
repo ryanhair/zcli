@@ -15,8 +15,11 @@ pub const meta = .{
         // `--region` would.
         .region = .{ .short = 'r', .description = "Target region", .env = "DEPLOY_REGION" },
         .tag = .{ .short = 't', .description = "key=value tag (repeatable)" },
-        .replicas = .{ .description = "Number of replicas", .validate = validateReplicas },
-        .timeout = .{ .description = "Deploy timeout, e.g. 30s / 5m / 1h" },
+        // `region` has `-r`; zcli forbids two options resolving to the same
+        // short flag, so `replicas` gets an explicit distinct `-n`.
+        .replicas = .{ .short = 'n', .description = "Number of replicas", .validate = validateReplicas },
+        // `tag` has `-t`, so `timeout` gets an explicit distinct `-T`.
+        .timeout = .{ .short = 'T', .description = "Deploy timeout, e.g. 30s / 5m / 1h" },
     },
 };
 

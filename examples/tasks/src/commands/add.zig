@@ -14,7 +14,9 @@ pub const meta = .{
     .args = .{ .title = "Task title (omit for interactive mode)" },
     .options = .{
         .priority = .{ .short = 'p', .description = "Task priority" },
-        .points = .{ .description = "Story points" },
+        // `priority` has `-p`; zcli forbids two options resolving to the same
+        // short flag, so `points` gets an explicit distinct `-P`.
+        .points = .{ .short = 'P', .description = "Story points" },
     },
 };
 
