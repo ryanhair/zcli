@@ -325,7 +325,14 @@ pub const VTerm = struct {
     }
 
     pub fn putChar(self: *VTerm, char: u21) void {
-        const width = charWidth(char);
+        var width = charWidth(char);
+
+        // A 2-cell character cannot fit on a terminal narrower than 2 columns.
+        // Degrade it to a single-cell write so the `self.width - 2` math below
+        // never underflows u16 (and the continuation `cursor.x + 1` never
+        // overflows) on a 1-column terminal (#529). The wide glyph still lands
+        // in the single available cell; no continuation cell is written.
+        if (width == 2 and self.width < 2) width = 1;
 
         // Handle delayed wrapping: if cursor is at width, wrap before writing
         // (with DECAWM off, clamp to the last column and overwrite instead)
@@ -618,12 +625,14 @@ pub const VTerm = struct {
         switch (byte) {
             '\\' => self.parser_state = .ground, // ST terminator (ESC \)
             else => {
-                // Not a valid ST; the ESC could start a new escape sequence,
-                // or just be more payload garbage. Re-enter escape handling
-                // for this byte so a genuine `ESC ]`/`ESC [` inside a
-                // malformed OSC still gets parsed rather than silently eaten.
-                self.parser_state = .osc;
-                self.handleOsc(byte);
+                // Not a valid ST. Per the spec, the ESC terminates the OSC and
+                // introduces a new escape sequence. Terminate the OSC and feed
+                // this byte back through the escape state machine so a genuine
+                // `ESC [`/`ESC ]` inside an unterminated OSC is re-parsed
+                // (e.g. an unterminated OSC followed by `ESC[2J` must still
+                // clear the screen) rather than being swallowed as payload.
+                self.parser_state = .escape;
+                self.handleEscape(byte);
             },
         }
     }
@@ -645,11 +654,17 @@ pub const VTerm = struct {
                 }
             },
             // Colon sub-parameter separator (e.g. `ESC[38:2:255:0:0m` colon
-            // truecolor) and other parameter bytes 0x3C-0x3F (`<=>?`). vterm
-            // does not model sub-parameters, but it must stay in the CSI state
-            // and consume them so the sequence's final byte is not leaked as
-            // literal grid text.
-            ':', '<'...'>' => {
+            // truecolor). vterm does not distinguish sub-parameters from
+            // parameters, so treat a colon like a semicolon: start a new
+            // parameter slot. This lets colon-form extended colors reach
+            // handleSGR as separate params (`38`, `2`, `255`, …) and be
+            // consumed the same way as the semicolon form (#505).
+            ':' => {
+                self.nextParameter();
+            },
+            // Other parameter bytes 0x3C-0x3F (`<=>?`). Consume and discard;
+            // remain in the CSI state so the final byte is not leaked.
+            '<'...'>' => {
                 // Consume and discard; remain in the CSI state.
             },
             // Intermediate bytes: 0x20-0x2F (space, `!"#$%&'()*+,-./`). These
@@ -820,8 +835,47 @@ pub const VTerm = struct {
                 // Bright background colors
                 100...107 => self.current_bg = @as(u8, @intCast(param - 100 + 8)),
 
+                // Extended foreground / background color. The following
+                // sub-params form a single logical value: `5;n` (256-color
+                // palette index) or `2;r;g;b` (truecolor). Consume them as a
+                // unit so they are never interpreted as independent SGR codes
+                // (which would corrupt bold/italic/etc). Advance `i` past the
+                // consumed sub-params (#505).
+                38 => i += self.applyExtendedColor(i, true),
+                48 => i += self.applyExtendedColor(i, false),
+
                 else => {}, // Ignore unsupported SGR codes
             }
+        }
+    }
+
+    /// Apply an extended-color SGR (`38`/`48`) whose selector is at index
+    /// `start`, and return how many *additional* params were consumed so the
+    /// caller can advance past them. `is_fg` selects foreground vs background.
+    ///
+    /// `5;n`   → 256-color palette index; modeled directly (fits u8).
+    /// `2;r;g;b` → truecolor; the u8 cell color cannot hold RGB, so the value
+    ///             is consumed and discarded (color left unchanged) rather than
+    ///             corrupting other attributes.
+    fn applyExtendedColor(self: *VTerm, start: usize, is_fg: bool) usize {
+        const count: usize = self.param_count;
+        // Need at least the color-space selector after 38/48.
+        if (start + 1 > count) return 0;
+        switch (self.params[start + 1]) {
+            5 => {
+                // 256-color: one index param.
+                if (start + 2 > count) return 1;
+                const idx: u8 = @truncate(self.params[start + 2]);
+                if (is_fg) self.current_fg = idx else self.current_bg = idx;
+                return 2;
+            },
+            2 => {
+                // Truecolor: r;g;b (3 params). Consume up to 4 (selector + rgb),
+                // clamped to what is actually present. Discarded — see doc.
+                return @min(@as(usize, 4), count - start);
+            },
+            // Unknown color space; consume just the selector.
+            else => return 1,
         }
     }
 

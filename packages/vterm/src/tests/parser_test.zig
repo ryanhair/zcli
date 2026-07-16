@@ -336,13 +336,29 @@ test "a bare ESC after OSC-escape that isn't ST re-enters escape handling" {
     var term = try VTerm.init(testing.allocator, 80, 24);
     defer term.deinit();
 
-    // ESC inside the OSC payload not followed by '\\' should not terminate
-    // the OSC as ST and also should not itself get printed; the parser
-    // resumes discarding as OSC payload.
+    // ESC inside the OSC payload not followed by '\\' terminates the OSC and
+    // introduces a fresh escape sequence (#528). Here `ESC Z` is consumed as a
+    // two-byte escape, and the text after it prints as normal ground content.
+    // The OSC payload (`0;abc`) and the escape bytes never print.
     term.write("\x1b]0;abc\x1bZhello\x07world");
     try testing.expect(!term.containsText("abc"));
-    try testing.expect(!term.containsText("hello"));
+    try testing.expect(!term.containsText("Z"));
+    try testing.expect(term.containsText("hello"));
     try testing.expect(term.containsText("world"));
+}
+
+test "unterminated OSC followed by CSI still executes the CSI (#528)" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // Prime the screen with content, then send an unterminated OSC directly
+    // followed by an ED clear-screen (`ESC[2J`). The ESC must terminate the
+    // OSC and let the CSI run — the screen ends up cleared.
+    term.write("visible");
+    try testing.expect(term.containsText("visible"));
+    term.write("\x1b]0;title-without-terminator\x1b[2J");
+    try testing.expect(!term.containsText("visible"));
+    try testing.expect(!term.containsText("title"));
 }
 
 test "CSI with colon sub-parameters is consumed, not leaked" {
