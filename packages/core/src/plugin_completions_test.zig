@@ -382,6 +382,22 @@ test "tree.build - drops hidden commands entirely" {
     try std.testing.expectEqualStrings("visible", root.children[0].name);
 }
 
+test "tree.build - a hidden group suppresses its visible children" {
+    // `secret/index.zig` is hidden but `secret/list.zig` is visible. Hiddenness
+    // must propagate downward: neither `secret` nor its child may appear, so
+    // completions never offer the hidden group via a materialised child node.
+    const cmds = [_]zcli.CommandInfo{
+        .{ .path = &.{"visible"}, .description = "Shown" },
+        .{ .path = &.{"secret"}, .description = "Hidden group", .hidden = true },
+        .{ .path = &.{ "secret", "list" }, .description = "List secrets" },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const root = try tree.build(arena.allocator(), &cmds);
+    try std.testing.expectEqual(@as(usize, 1), root.children.len);
+    try std.testing.expectEqualStrings("visible", root.children[0].name);
+}
+
 // ============================================================================
 // Layer 2: escapers (adversarial input)
 // ============================================================================

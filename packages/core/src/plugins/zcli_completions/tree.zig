@@ -75,6 +75,11 @@ pub fn build(
     for (commands) |cmd| {
         if (cmd.hidden) continue;
         if (cmd.path.len == 0) continue;
+        // Hiddenness propagates to descendants: a hidden group (e.g. a hidden
+        // `secret/index.zig`) must also suppress its visible children, which
+        // would otherwise materialise the intermediate node and offer the group
+        // name in completions. Skip any command sitting under a hidden ancestor.
+        if (hasHiddenAncestor(commands, cmd.path)) continue;
         // The registry emits each alias as its OWN command entry (so `app ls`
         // resolves) that still carries the module's `meta.aliases`. Such an
         // entry's leaf name equals one of its own aliases — a signal a real
@@ -97,6 +102,24 @@ pub fn build(
 
     sortRec(root);
     return root;
+}
+
+/// True if any hidden command in `commands` is a strict prefix (ancestor) of
+/// `path` — i.e. `path` lives under a hidden group and should be suppressed.
+fn hasHiddenAncestor(commands: []const zcli.CommandInfo, path: []const []const u8) bool {
+    for (commands) |cmd| {
+        if (!cmd.hidden) continue;
+        if (cmd.path.len == 0 or cmd.path.len >= path.len) continue;
+        var is_prefix = true;
+        for (cmd.path, 0..) |segment, i| {
+            if (!std.mem.eql(u8, segment, path[i])) {
+                is_prefix = false;
+                break;
+            }
+        }
+        if (is_prefix) return true;
+    }
+    return false;
 }
 
 /// True when `cmd` is an auto-generated alias entry: its leaf (invoked name)
