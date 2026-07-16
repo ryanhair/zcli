@@ -344,3 +344,51 @@ test "a bare ESC after OSC-escape that isn't ST re-enters escape handling" {
     try testing.expect(!term.containsText("hello"));
     try testing.expect(term.containsText("world"));
 }
+
+test "CSI with colon sub-parameters is consumed, not leaked" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // Colon-separated truecolor SGR (`ESC[38:2:255:0:0m`). vterm does not
+    // model sub-parameters, but the sequence must be fully consumed rather
+    // than leaking `:2:255:0:0m` as literal cells.
+    term.write("\x1b[38:2:255:0:0mhello");
+    try testing.expect(!term.containsText(":"));
+    try testing.expect(!term.containsText("255"));
+    try testing.expect(term.containsText("hello"));
+}
+
+test "CSI with intermediate bytes is consumed, not leaked" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // DECSCUSR (`ESC[1 q`, space is an intermediate byte) and DECSTR-style
+    // (`ESC[!p`) sequences must be fully consumed. Nothing should print.
+    term.write("\x1b[1 qhello");
+    term.write("\x1b[!pworld");
+    try testing.expect(!term.containsText("q"));
+    try testing.expect(!term.containsText("p"));
+    try testing.expect(term.containsText("hello"));
+    try testing.expect(term.containsText("world"));
+}
+
+test "DCS/SOS/PM/APC payloads are consumed until ST, not printed" {
+    var term = try VTerm.init(testing.allocator, 80, 24);
+    defer term.deinit();
+
+    // DCS (`ESC P` — e.g. tmux passthrough / Sixel / terminfo replies).
+    term.write("\x1bPtmux;payload\x1b\\hello");
+    // SOS (`ESC X`).
+    term.write("\x1bXsos-junk\x1b\\ ");
+    // PM (`ESC ^`).
+    term.write("\x1b^pm-junk\x1b\\ ");
+    // APC (`ESC _` — e.g. Kitty graphics).
+    term.write("\x1b_Ggraphics-junk\x1b\\world");
+
+    try testing.expect(!term.containsText("payload"));
+    try testing.expect(!term.containsText("sos-junk"));
+    try testing.expect(!term.containsText("pm-junk"));
+    try testing.expect(!term.containsText("graphics-junk"));
+    try testing.expect(term.containsText("hello"));
+    try testing.expect(term.containsText("world"));
+}

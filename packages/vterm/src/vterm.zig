@@ -564,6 +564,15 @@ pub const VTerm = struct {
                 // discard the payload rather than leaking it as printed text.
                 self.parser_state = .osc;
             },
+            // String sequences that carry an arbitrary payload terminated by
+            // ST (ESC \): DCS (`ESC P`, e.g. tmux passthrough, Sixel, terminfo
+            // replies), SOS (`ESC X`), PM (`ESC ^`), APC (`ESC _`). vterm has
+            // no use for their contents, but must consume the payload instead
+            // of dropping it to ground where it prints as literal cells. Reuse
+            // the OSC consume-until-ST machinery.
+            'P', 'X', '^', '_' => {
+                self.parser_state = .osc;
+            },
             else => {
                 // Invalid character, abort sequence
                 self.parser_state = .ground;
@@ -613,6 +622,21 @@ pub const VTerm = struct {
                     self.private_sequence = true;
                 }
             },
+            // Colon sub-parameter separator (e.g. `ESC[38:2:255:0:0m` colon
+            // truecolor) and other parameter bytes 0x3C-0x3F (`<=>?`). vterm
+            // does not model sub-parameters, but it must stay in the CSI state
+            // and consume them so the sequence's final byte is not leaked as
+            // literal grid text.
+            ':', '<'...'>' => {
+                // Consume and discard; remain in the CSI state.
+            },
+            // Intermediate bytes: 0x20-0x2F (space, `!"#$%&'()*+,-./`). These
+            // appear before the final byte in sequences like `ESC[1 q`
+            // (DECSCUSR) or `ESC[!p` (DECSTR). Consume them so the final byte
+            // terminates the sequence cleanly instead of leaking.
+            0x20...0x2F => {
+                // Consume and discard; remain in the CSI state.
+            },
             // CSI final bytes: 0x40-0x7E (@A-Z[\]^_`a-z{|}~)
             // All bytes in this range are valid CSI final bytes per ANSI spec
             0x40...0x7E => {
@@ -621,16 +645,12 @@ pub const VTerm = struct {
                 self.parser_state = .ground;
             },
             else => {
-                // Truly invalid character (control char, etc), abort sequence
-                // For characters outside the CSI final byte range, process as ground
-                if (byte < 0x40) {
-                    // Control or parameter characters appearing at wrong time - abort and process
-                    self.parser_state = .ground;
-                    self.handleGround(byte);
-                } else {
-                    // Other invalid sequences - just abort without processing
-                    self.parser_state = .ground;
-                }
+                // Truly invalid character (control char, etc), abort sequence.
+                // Only C0 control bytes below the parameter range reach here
+                // now that intermediates (0x20-0x2F) and parameter bytes
+                // (0x30-0x3F) are consumed above.
+                self.parser_state = .ground;
+                self.handleGround(byte);
             },
         }
     }
