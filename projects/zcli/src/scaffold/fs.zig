@@ -32,6 +32,20 @@ pub fn groupPath(arena: std.mem.Allocator, segments: []const []const u8) ![]cons
     return buf.items;
 }
 
+/// Atomically replace the file at `path` with `data`: write to a sibling
+/// `<path>.tmp`, then `rename` it over the target. A write failure or crash
+/// mid-stream leaves the original file untouched (only the throwaway temp is
+/// affected) instead of a truncated/corrupt command source.
+pub fn writeFileAtomic(base: std.Io.Dir, io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8) !void {
+    const tmp_path = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
+    {
+        var file = try base.createFile(io, tmp_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, data);
+    }
+    try base.rename(tmp_path, base, path, io);
+}
+
 fn isEmptyDir(base: std.Io.Dir, io: std.Io, path: []const u8) bool {
     var dir = base.openDir(io, path, .{ .iterate = true }) catch return false;
     defer dir.close(io);
@@ -77,6 +91,29 @@ test "removeEmptyParents cascades up but stops at a non-empty group" {
     try testing.expect(!dirExists(tmp.dir, io, "src/commands/a/b"));
     try testing.expect(dirExists(tmp.dir, io, "src/commands/a"));
     try testing.expect(dirExists(tmp.dir, io, "src/commands/a/kept"));
+}
+
+test "writeFileAtomic replaces contents and leaves no temp behind" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "cmd.zig", .data = "original" });
+    try writeFileAtomic(tmp.dir, io, a, "cmd.zig", "replaced contents");
+
+    const got = try tmp.dir.readFileAlloc(io, "cmd.zig", a, .limited(1024));
+    try testing.expectEqualStrings("replaced contents", got);
+    // The temp is renamed away, not left as debris next to the target.
+    try testing.expect(!fileExists(tmp.dir, io, "cmd.zig.tmp"));
+}
+
+fn fileExists(base: std.Io.Dir, io: std.Io, path: []const u8) bool {
+    base.access(io, path, .{}) catch return false;
+    return true;
 }
 
 fn dirExists(base: std.Io.Dir, io: std.Io, path: []const u8) bool {
