@@ -107,7 +107,20 @@ fn runWizardOnce(
         switch (action) {
             0 => {
                 const content = try generate.generateSource(arena, path.parts, description, args_list.items, opts_list.items);
-                const new_groups = try generate.writeCommandFile(arena, io, path.parts, file_path, content);
+                const new_groups = generate.writeCommandFile(arena, io, path.parts, file_path, content) catch |err| switch (err) {
+                    // A custom type/default that isn't valid Zig would scaffold a
+                    // command file that won't compile; the write path refuses it
+                    // (#506). Report cleanly and keep the review loop open so the
+                    // user can start over and re-enter it — nothing was written.
+                    error.GeneratedSourceInvalid => {
+                        try w.writeAll("\r\n");
+                        try warn(w, theme, "  A custom type or default you entered isn't valid Zig \u{2014} nothing was written.");
+                        try warn(w, theme, "  Choose \"Start over\" to re-enter it.");
+                        try w.writeAll("\r\n");
+                        continue;
+                    },
+                    else => return err,
+                };
                 try finish(w, theme, path.parts, file_path, new_groups);
                 return .created;
             },
@@ -548,8 +561,28 @@ fn promptOptionDefault(
         .integer => try std.fmt.allocPrint(arena, "{d}", .{try p.number(.{ .message = "  Default value:", .default = 0, .interrupt_keys = back_keys })}),
         .decimal => try std.fmt.allocPrint(arena, "{d}", .{try readFloat(p, "  Default value:", 0)}),
         .choice => try std.fmt.allocPrint(arena, ".{s}", .{choices[try p.select(.{ .message = "  Default:", .choices = choices, .interrupt_keys = back_keys })]}),
-        .custom => try arena.dupe(u8, std.mem.trim(u8, try p.text(.{ .message = "  Default (Zig expression):", .interrupt_keys = back_keys }), " \t\r\n")),
+        .custom => try readCustomDefault(arena, p),
     };
+}
+
+/// Prompt for a custom default expression, re-prompting until it parses as valid
+/// Zig — a malformed expression is spliced verbatim and would otherwise scaffold
+/// a command file that won't compile (#506).
+fn readCustomDefault(arena: std.mem.Allocator, p: Prompts) ![]const u8 {
+    const w = p.writer;
+    const theme = &p.theme;
+    while (true) {
+        const v = std.mem.trim(u8, try p.text(.{ .message = "  Default (Zig expression):", .interrupt_keys = back_keys }), " \t\r\n");
+        if (v.len == 0) {
+            try warn(w, theme, "  Default cannot be empty (e.g. 42, \"hi\", .some_tag).");
+            continue;
+        }
+        if (!snippetParses(arena, v)) {
+            try warn(w, theme, "  That isn't a valid Zig expression.");
+            continue;
+        }
+        return try arena.dupe(u8, v);
+    }
 }
 
 fn selectOptKind(p: Prompts) !OptKind {
@@ -712,8 +745,25 @@ fn readZigType(p: Prompts) ![]const u8 {
             try warn(w, theme, "  Type cannot be empty (e.g. u8, []const u8, enum { a, b }).");
             continue;
         }
+        // Reject a syntactically broken type (e.g. `u3 2`) here, so the user gets
+        // a tight re-prompt instead of a refused write at the end (#506). A type
+        // that parses but isn't imported still fails at build time — the write
+        // guard and the compiler are the backstop.
+        if (!snippetParses(p.allocator, t)) {
+            try warn(w, theme, "  That isn't valid Zig (e.g. u8, []const u8, enum { a, b }).");
+            continue;
+        }
         return t;
     }
+}
+
+/// True if `snippet` (a type or value expression) parses as valid Zig. Wraps it
+/// in a trivial decl so a bare `[]const u8` or `enum { a, b }` is accepted while
+/// a typo like `u3 2` is rejected — the same parse-guard the write path applies.
+/// Permissive on allocation failure: the write-time guard is the real backstop.
+fn snippetParses(arena: std.mem.Allocator, snippet: []const u8) bool {
+    const wrapped = std.fmt.allocPrint(arena, "const _ = {s};", .{snippet}) catch return true;
+    return scaffold.splice.parses(arena, wrapped) catch true;
 }
 
 fn readShort(p: Prompts, used: []const u8) !u8 {
@@ -883,4 +933,29 @@ fn joinSpaced(arena: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
         try buf.appendSlice(arena, p);
     }
     return buf.items;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "snippetParses accepts valid types/expressions and rejects malformed ones (#506)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Valid type and value snippets.
+    try testing.expect(snippetParses(a, "u8"));
+    try testing.expect(snippetParses(a, "[]const u8"));
+    try testing.expect(snippetParses(a, "enum { json, yaml }"));
+    try testing.expect(snippetParses(a, "42"));
+    try testing.expect(snippetParses(a, "\"hi\""));
+    try testing.expect(snippetParses(a, ".some_tag"));
+
+    // Malformed snippets — the wizard must re-prompt rather than splice these in.
+    try testing.expect(!snippetParses(a, "u3 2"));
+    try testing.expect(!snippetParses(a, "enum {"));
+    try testing.expect(!snippetParses(a, ""));
 }

@@ -124,12 +124,22 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         return context.fail("Error: Invalid project name '{s}'{s}\n  '{s}' is a Zig reserved word and cannot be used as a package name", .{ project_name, name_origin, project_identifier });
     }
 
+    // The version lands verbatim in build.zig.zon's `.version` field, which Zig's
+    // manifest parser requires to be a semantic version. Validate it up front so a
+    // typo fails immediately with a clear message here, rather than surfacing later
+    // as an opaque manifest error from `zig fetch`/`zig build` in a half-set-up
+    // project (#507).
+    const version_str = options.version orelse "0.1.0";
+    if (!isValidSemanticVersion(version_str)) {
+        return context.fail("Error: Invalid version '{s}'\n  Must be a semantic version like 1.2.3 (see https://semver.org)", .{version_str});
+    }
+
     // Free-text options are embedded in generated string literals — escape so
     // `--description 'say "hi"'` scaffolds a project that still compiles
     // instead of breaking (or injecting code into) build.zig / build.zig.zon.
     const app_description = try escapeStringLiteral(allocator, options.description orelse "A CLI application built with zcli");
     defer allocator.free(app_description);
-    const app_version = try escapeStringLiteral(allocator, options.version orelse "0.1.0");
+    const app_version = try escapeStringLiteral(allocator, version_str);
     defer allocator.free(app_version);
 
     // Validate the target directory before prompting or creating anything, so we
@@ -601,6 +611,25 @@ test "renderPluginsBlock scaffolds a compiling github_upgrade config, not an emp
             "            }),\n",
         block,
     );
+}
+
+/// True if `s` is a semantic version acceptable to Zig's build.zig.zon manifest
+/// parser (which requires `.version` to be semver). `init` validates the
+/// `--version` value with this up front so a bad value fails immediately rather
+/// than as an opaque manifest error downstream (#507).
+fn isValidSemanticVersion(s: []const u8) bool {
+    _ = std.SemanticVersion.parse(s) catch return false;
+    return true;
+}
+
+test "isValidSemanticVersion accepts semver and rejects junk (#507)" {
+    try std.testing.expect(isValidSemanticVersion("0.1.0"));
+    try std.testing.expect(isValidSemanticVersion("1.2.3"));
+    try std.testing.expect(isValidSemanticVersion("1.2.3-rc.1+build5")); // prerelease + build metadata
+    try std.testing.expect(!isValidSemanticVersion("foo"));
+    try std.testing.expect(!isValidSemanticVersion("1.2")); // not full semver
+    try std.testing.expect(!isValidSemanticVersion("v1.2.3")); // leading v is not semver
+    try std.testing.expect(!isValidSemanticVersion(""));
 }
 
 fn escapeStringLiteral(allocator: std.mem.Allocator, s: []const u8) ![]u8 {

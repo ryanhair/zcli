@@ -310,6 +310,13 @@ test "init rejects a Zig reserved word as the project name" {
     try testing.expect(!fileExists(tmp.dir, "error"));
 }
 
+// Note (#507): init's `version` option is validated as semver in-process (see
+// init.zig `isValidSemanticVersion` + its unit test). It has no CLI e2e here
+// because the zcli tool's global `--version`/`-V` flag (zcli_version plugin)
+// shadows the command option: `zcli init app --version foo` is consumed by the
+// global flag before routing, so the option is only reachable via a config-file
+// default, not argv. The validation is covered by the unit test.
+
 test "init . scaffolds into the current directory" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
