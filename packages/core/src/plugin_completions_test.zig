@@ -842,6 +842,124 @@ test "functional bash - COMPREPLY at root and at depth 2" {
 }
 
 // ============================================================================
+// Layer 3b: value-taking global option before the command (issue #511) — the
+// option's VALUE must not be mis-counted as part of the command path.
+// ============================================================================
+
+// A global option set with a value-taking global (`--config`, boolean `--verbose`).
+const gopt_globals = [_]zcli.OptionInfo{
+    .{ .name = "verbose", .short = 'v', .description = "Verbose output" },
+    .{ .name = "config", .short = 'c', .description = "Config file", .takes_value = true },
+};
+
+test "bash gen - value-taking global option skips its value in the command path" {
+    const script = try bash.generate(std.testing.allocator, app_name, &commands, &gopt_globals);
+    defer std.testing.allocator.free(script);
+
+    // The look-ahead skip machinery is emitted...
+    try std.testing.expect(contains(script, "skip_val=0"));
+    // ...keyed on the value-taking global's long AND short forms (single-quoted),
+    // and NOT on the boolean `--verbose` (which consumes no following word).
+    try std.testing.expect(contains(script, "'--config'|'-c') skip_val=1"));
+    try std.testing.expect(!contains(script, "'--verbose'"));
+}
+
+test "bash gen - no skip machinery when no global option takes a value" {
+    // The default `global_options` fixture is all-boolean → no look-ahead case.
+    const script = try bash.generate(std.testing.allocator, app_name, &commands, &global_options);
+    defer std.testing.allocator.free(script);
+    try std.testing.expect(!contains(script, "skip_val=1"));
+}
+
+test "powershell gen - value-taking global option skips its value in the command path" {
+    const script = try powershell.generate(std.testing.allocator, app_name, &commands, &gopt_globals);
+    defer std.testing.allocator.free(script);
+
+    // The look-ahead skip machinery is emitted, keyed on the value-taking global's
+    // long AND short forms; the boolean `--verbose` contributes no skip case.
+    try std.testing.expect(contains(script, "$skipVal = $false"));
+    try std.testing.expect(contains(script, "'--config' { $skipVal = $true }"));
+    try std.testing.expect(contains(script, "'-c' { $skipVal = $true }"));
+    try std.testing.expect(!contains(script, "'--verbose' { $skipVal"));
+}
+
+test "functional bash - value-taking global option before the command keys correctly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try bash.generate(a, app_name, &commands, &gopt_globals);
+    const script_path = try writeTemp(a, tmp.dir, "zcli_gopt_completion.bash", script);
+
+    // Drive completion with a value-taking global (`--config x.json`) preceding the
+    // command. The value `x.json` must be skipped, so the command path resolves to
+    // `sprint` (depth 2) / the root — NOT to `x.json` (which matches no case → no
+    // completions, the bug in #511). The `=`-joined and boolean forms must also work.
+    const harness = try std.fmt.allocPrint(a,
+        \\source "{s}"
+        \\
+        \\run() {{
+        \\    COMP_WORDS=("$@")
+        \\    COMP_CWORD=$(( ${{#COMP_WORDS[@]}} - 1 ))
+        \\    COMPREPLY=()
+        \\    _tasks_completions
+        \\    echo "${{COMPREPLY[@]}}"
+        \\}}
+        \\
+        \\echo "SEP:$(run tasks --config x.json sprint '')"
+        \\echo "EQ:$(run tasks --config=x.json sprint '')"
+        \\echo "ROOT:$(run tasks --config x.json '')"
+        \\echo "BOOL:$(run tasks --verbose '')"
+        \\
+    , .{script_path});
+    const harness_path = try writeTemp(a, tmp.dir, "zcli_gopt_harness.bash", harness);
+
+    const result = try std.process.run(a, io, .{
+        .argv = &.{ sh, harness_path },
+    });
+    const out = result.stdout;
+
+    var sep_line: ?[]const u8 = null;
+    var eq_line: ?[]const u8 = null;
+    var root_line: ?[]const u8 = null;
+    var bool_line: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "SEP:")) sep_line = line["SEP:".len..];
+        if (std.mem.startsWith(u8, line, "EQ:")) eq_line = line["EQ:".len..];
+        if (std.mem.startsWith(u8, line, "ROOT:")) root_line = line["ROOT:".len..];
+        if (std.mem.startsWith(u8, line, "BOOL:")) bool_line = line["BOOL:".len..];
+    }
+
+    try std.testing.expect(sep_line != null);
+    try std.testing.expect(eq_line != null);
+    try std.testing.expect(root_line != null);
+    try std.testing.expect(bool_line != null);
+
+    // `tasks --config x.json sprint <TAB>` → sprint subcommands (value skipped).
+    try std.testing.expect(contains(sep_line.?, "create"));
+    try std.testing.expect(contains(sep_line.?, "list"));
+    try std.testing.expect(!contains(sep_line.?, "add"));
+
+    // The `=`-joined form resolves identically.
+    try std.testing.expect(contains(eq_line.?, "create"));
+    try std.testing.expect(contains(eq_line.?, "list"));
+
+    // `tasks --config x.json <TAB>` → the root commands (key is empty, not x.json).
+    try std.testing.expect(contains(root_line.?, "add"));
+    try std.testing.expect(contains(root_line.?, "sprint"));
+
+    // A boolean global consumes no value, so the root commands still complete.
+    try std.testing.expect(contains(bool_line.?, "add"));
+    try std.testing.expect(contains(bool_line.?, "sprint"));
+}
+
+// ============================================================================
 // Layer 3c: dynamic-completion escaping (ADR-0026) — the generated read paths
 // must pass adversarial candidate values through as SINGLE candidates, verbatim.
 // ============================================================================

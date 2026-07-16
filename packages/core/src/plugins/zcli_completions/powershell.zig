@@ -46,7 +46,7 @@ pub fn generate(
     try writer.print("Register-ArgumentCompleter -Native -CommandName '{s}' -ScriptBlock {{\n", .{esc_app});
     try writer.writeAll("    param($wordToComplete, $commandAst, $cursorPosition)\n\n");
 
-    try writePreamble(writer, esc_app);
+    try writePreamble(arena, writer, esc_app, global_options);
 
     // 1. Option-name completion (the current word starts with '-').
     try writeOptionNameBlock(arena, writer, root, global_options);
@@ -78,16 +78,22 @@ pub fn generate(
 
 /// Emit the shared preamble: reconstruct `$key`/`$prev`/`$dynWords`/`$cword` from
 /// the AST and define the `Add-Result`/`Complete-*` helpers every block uses.
-fn writePreamble(writer: anytype, esc_app: []const u8) !void {
+fn writePreamble(arena: std.mem.Allocator, writer: anytype, esc_app: []const u8, global_options: []const zcli.OptionInfo) !void {
     try writer.writeAll("    $elements = $commandAst.CommandElements\n");
     try writer.print("    $exe = if ($elements.Count -gt 0) {{ $elements[0].Extent.Text }} else {{ '{s}' }}\n\n", .{esc_app});
 
     // Walk the tokens that lie fully before the word being completed. Option words
     // are skipped for `$key` (the command path) but kept for `$dynWords` (passed to
     // `__complete`). `$prev` is the token immediately before the completion word.
+    // A value-taking global option (`--config x.json`) is followed by its VALUE,
+    // which is NOT a command word — skip it for `$key` (but keep it in `$dynWords`
+    // and as `$prev`). The `--opt=value` form carries its value in the same token,
+    // already excluded from `$key` as an option word.
+    const has_value_opt = anyValueTakingOption(global_options);
     try writer.writeAll("    $path = @()\n");
     try writer.writeAll("    $prev = ''\n");
     try writer.print("    $dynWords = @('{s}')\n", .{esc_app});
+    if (has_value_opt) try writer.writeAll("    $skipVal = $false\n");
     try writer.writeAll("    for ($i = 1; $i -lt $elements.Count; $i++) {\n");
     try writer.writeAll("        $el = $elements[$i]\n");
     try writer.writeAll("        if ($el.Extent.StartOffset -ge $cursorPosition) { break }\n");
@@ -95,7 +101,17 @@ fn writePreamble(writer: anytype, esc_app: []const u8) !void {
     try writer.writeAll("        $t = $el.Extent.Text\n");
     try writer.writeAll("        $dynWords += $t\n");
     try writer.writeAll("        $prev = $t\n");
-    try writer.writeAll("        if (-not $t.StartsWith('-')) { $path += $t }\n");
+    if (has_value_opt) {
+        try writer.writeAll("        if ($skipVal) { $skipVal = $false }\n");
+        try writer.writeAll("        elseif ($t.StartsWith('-')) {\n");
+        try writer.writeAll("            switch -CaseSensitive ($t) {\n");
+        try writeValueOptionCasesPS(arena, writer, global_options);
+        try writer.writeAll("            }\n");
+        try writer.writeAll("        }\n");
+        try writer.writeAll("        else { $path += $t }\n");
+    } else {
+        try writer.writeAll("        if (-not $t.StartsWith('-')) { $path += $t }\n");
+    }
     try writer.writeAll("    }\n");
     try writer.writeAll("    $key = ($path -join ' ')\n");
     try writer.writeAll("    $dynWords += $wordToComplete\n");
@@ -122,6 +138,28 @@ fn writePreamble(writer: anytype, esc_app: []const u8) !void {
     try writer.writeAll("        if ($dirsOnly) { $fc = $fc | Where-Object { $_.ResultType -eq [System.Management.Automation.CompletionResultType]::ProviderContainer } }\n");
     try writer.writeAll("        foreach ($f in $fc) { [void]$results.Add($f) }\n");
     try writer.writeAll("    }\n\n");
+}
+
+/// True if any option in the set takes a value (so a bare `--opt <value>` on the
+/// command line consumes the following word — which must not be mistaken for a
+/// command word when reconstructing the command path).
+fn anyValueTakingOption(options: []const zcli.OptionInfo) bool {
+    for (options) |opt| if (opt.takes_value) return true;
+    return false;
+}
+
+/// Emit `'--name' { $skipVal = $true }` (and the short form) switch cases for
+/// every value-taking option — the look-ahead that keeps an option's VALUE out
+/// of the command path. Names are escaped for their single-quoted labels.
+fn writeValueOptionCasesPS(arena: std.mem.Allocator, writer: anytype, options: []const zcli.OptionInfo) !void {
+    for (options) |opt| {
+        if (!opt.takes_value) continue;
+        const esc_name = try escape.powershell(arena, opt.name);
+        try writer.print("                '--{s}' {{ $skipVal = $true }}\n", .{esc_name});
+        if (opt.short) |short| {
+            try writer.print("                '-{c}' {{ $skipVal = $true }}\n", .{short});
+        }
+    }
 }
 
 // ============================================================================
