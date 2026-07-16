@@ -386,3 +386,54 @@ test "ConPTY smoke: spawn, read output, clean exit (#404)" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "conpty-smoke") != null);
     try std.testing.expectEqual(@as(?u8, 0), session.waitExit(5000));
 }
+
+test "ConPTY drain-after-exit captures a trailing output burst (#446)" {
+    // Regression for the exit-drain: the driver used to break out of the drain
+    // loop the moment waitExit(0) reported the child gone, even though conhost
+    // renders on its own thread and can still be flushing a final burst into the
+    // output pipe. This drives the same pattern as runInteractiveWindows' drain
+    // (pollRead until empty, then on exit keep draining until the pipe reports
+    // nothing) and asserts the LAST line — the tail of a large burst that exits
+    // immediately after — is present. The race is inherently timing-dependent
+    // and cannot be forced deterministically, so this guards against gross
+    // regressions (draining removed → large-burst truncation) rather than the
+    // exact millisecond window.
+    if (builtin.os.tag != .windows) return;
+    const alloc = std.testing.allocator;
+
+    // A big burst (many lines) that outruns the pipe buffer, ending in a unique
+    // sentinel, immediately followed by process exit.
+    var session = try ConPtySession.spawn(
+        alloc,
+        &.{ "cmd.exe", "/c", "for /L %i in (1,1,600) do @echo zcli-drain-line-%i" },
+        null,
+        null,
+        24,
+        80,
+    );
+    defer session.deinit(alloc);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var buf: [4096]u8 = undefined;
+
+    // Mirror the fixed drain loop from runInteractiveWindows exactly.
+    var attempts: usize = 0;
+    drain: while (attempts < 500) : (attempts += 1) {
+        const n = session.pollRead(&buf, 50);
+        if (n > 0) {
+            try out.appendSlice(alloc, buf[0..n]);
+            continue;
+        }
+        if (session.waitExit(0)) |_| {
+            while (true) {
+                const remaining = session.pollRead(&buf, 50);
+                if (remaining == 0) break;
+                try out.appendSlice(alloc, buf[0..remaining]);
+            }
+            break :drain;
+        }
+    }
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "zcli-drain-line-600") != null);
+}
