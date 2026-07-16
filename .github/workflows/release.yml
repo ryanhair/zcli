@@ -39,6 +39,7 @@ jobs:
   setup:
     name: Resolve release plan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     outputs:
@@ -155,6 +156,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     needs: setup
     if: needs.setup.outputs.do_cli == 'true' || needs.setup.outputs.do_lib == 'true'
     strategy:
@@ -190,6 +192,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     needs: [setup, test]
     if: needs.setup.outputs.do_cli == 'true'
     strategy:
@@ -301,6 +304,7 @@ jobs:
   finalize:
     name: Promote staged release to main
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [setup, build]
     if: github.event_name == 'workflow_dispatch'
     environment: release
@@ -349,6 +353,7 @@ jobs:
 
   release:
     name: Create Release
+    timeout-minutes: 15
     needs: [setup, build, finalize]
     if: |
       always() &&
@@ -420,6 +425,7 @@ jobs:
 
   library-release:
     name: Create Library Release
+    timeout-minutes: 15
     needs: [setup, test, finalize]
     if: |
       always() &&
