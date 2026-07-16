@@ -112,12 +112,18 @@ fn generatePluginImports(writer: anytype, plugins: []const PluginInfo, allocator
         const plugin_var_name = try pluginVarName(allocator, plugin_info.name);
         defer allocator.free(plugin_var_name);
 
+        // Escape the import path into the string literal — belt-and-braces with
+        // the up-front name validation in main.zig, and the right thing for
+        // built-in `.path` imports too.
+        const import_lit = try escapeStringLiteral(allocator, plugin_info.import_name);
+        defer allocator.free(import_lit);
+
         if (plugin_info.init) |init_code| {
             // Plugin has initialization code - call it on import
-            try writer.print("const {s} = @import(\"{s}\"){s};\n", .{ plugin_var_name, plugin_info.import_name, init_code });
+            try writer.print("const {s} = @import(\"{s}\"){s};\n", .{ plugin_var_name, import_lit, init_code });
         } else {
             // Normal plugin without config - import directly
-            try writer.print("const {s} = @import(\"{s}\");\n", .{ plugin_var_name, plugin_info.import_name });
+            try writer.print("const {s} = @import(\"{s}\");\n", .{ plugin_var_name, import_lit });
         }
     }
     if (plugins.len > 0) {
@@ -433,6 +439,39 @@ test "plugin registry generation with imports" {
     try std.testing.expect(std.mem.indexOf(u8, source, ".build();") != null);
     // Note: In the new comptime approach, plugins are registered and called through the registry
     // rather than generating complex pipeline code
+}
+
+test "plugin import path is escaped into a valid string literal" {
+    // main.zig rejects such an external plugin name up front; this is the
+    // belt-and-braces guarantee that codegen never emits a raw quote/backslash
+    // into `@import("...")` even if a bad import_name reaches it.
+    const allocator = std.testing.allocator;
+    var test_plugins = PluginTestHelper.init(allocator);
+    defer test_plugins.deinit();
+
+    try test_plugins.addExternal("foo\"bar\\baz");
+
+    var commands = DiscoveredCommands{
+        .allocator = allocator,
+        .root = std.StringHashMap(DiscoveredCommand).init(allocator),
+    };
+    defer commands.deinit();
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = test_plugins.plugins.items,
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test app",
+    };
+
+    const source = try generateComptimeRegistrySource(allocator, commands, config, test_plugins.plugins.items);
+    defer allocator.free(source);
+
+    // The quote and backslash must be escaped inside the import literal, never raw.
+    try std.testing.expect(std.mem.indexOf(u8, source, "@import(\"foo\\\"bar\\\\baz\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "@import(\"foo\"bar") == null);
 }
 
 test "plugin name sanitization for imports" {

@@ -143,7 +143,12 @@ pub fn combinePlugins(b: *std.Build, local_plugins: []const PluginInfo, external
 /// Validate a plugin file/directory name: identifier-style first char,
 /// then alphanumeric/underscore/dash; path separators and traversal
 /// rejected. (Looser than isValidCommandName — no reserved-name list.)
-fn isValidPluginName(name: []const u8) bool {
+///
+/// Also the gate for externally-configured plugin names: `generate()` emits an
+/// external plugin's name verbatim into an `@import("...")` string literal, so a
+/// name containing a quote, backslash, or newline would break out of that
+/// literal. Rejecting anything but this identifier-ish shape closes that path.
+pub fn isValidPluginName(name: []const u8) bool {
     if (name.len == 0) return false;
 
     // Check for forbidden patterns
@@ -181,6 +186,11 @@ test "isValidPluginName: accepts plugin-ish names, rejects traversal and junk" {
     try testing.expect(!isValidPluginName("../escape"));
     try testing.expect(!isValidPluginName("a/b"));
     try testing.expect(!isValidPluginName("a\\b"));
+
+    // Names that would break out of the generated `@import("...")` literal.
+    try testing.expect(!isValidPluginName("foo\"bar"));
+    try testing.expect(!isValidPluginName("foo\nbar"));
+    try testing.expect(!isValidPluginName("foo\")); pub const x = @import(\"evil"));
 }
 
 /// Free everything `scanInDir` allocated for a result slice.
