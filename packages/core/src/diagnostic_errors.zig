@@ -63,7 +63,12 @@ pub const ZcliDiagnostic = union(enum) {
         reason: ?[]const u8 = null,
     },
     ArgumentTooMany: struct {
-        expected_count: usize,
+        /// Minimum accepted positional count (required args only).
+        min_count: usize,
+        /// Maximum accepted positional count (required + optional + defaulted,
+        /// excluding varargs). Equals `min_count` when there are no optional
+        /// positionals.
+        max_count: usize,
         actual_count: usize,
     },
     /// A positional arg's `meta.args.<field>.validate` rejected the parsed value.
@@ -347,7 +352,10 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
             std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}. Did you mean '{s}'?", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type), s })
         else
             std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}. Expected {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, humanType(ctx.expected_type) }),
-        .ArgumentTooMany => |ctx| std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments, got {d}", .{ ctx.expected_count, ctx.actual_count }),
+        .ArgumentTooMany => |ctx| if (ctx.max_count == ctx.min_count)
+            std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d} arguments, got {d}", .{ ctx.max_count, ctx.actual_count })
+        else
+            std.fmt.allocPrint(allocator, "Too many arguments provided. Expected {d}-{d} arguments, got {d}", .{ ctx.min_count, ctx.max_count, ctx.actual_count }),
         .ArgumentValidationFailed => |ctx| std.fmt.allocPrint(allocator, "Invalid value '{s}' for argument '{s}' at position {d}: {s}.", .{ ctx.provided_value, ctx.field_name, ctx.position + 1, ctx.reason }),
         .OptionUnknown => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name });

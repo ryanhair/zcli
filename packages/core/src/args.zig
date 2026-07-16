@@ -199,7 +199,8 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
     // Check if there are too many arguments (only if no varargs field)
     if (!hasVarArgs(ArgsType) and arg_index < args.len) {
         if (diag) |d| d.* = .{ .ArgumentTooMany = .{
-            .expected_count = getRequiredArgCount(ArgsType),
+            .min_count = getRequiredArgCount(ArgsType),
+            .max_count = getMaxArgCount(ArgsType),
             .actual_count = args.len,
         } };
         return ZcliError.ArgumentTooMany;
@@ -301,6 +302,22 @@ fn getRequiredArgCount(comptime T: type) usize {
     var count: usize = 0;
     inline for (type_info.@"struct".fields) |field| {
         if (!isVarArgs(field.type) and @typeInfo(field.type) != .optional) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+/// Count the maximum number of accepted positional arguments: every
+/// non-varargs field, whether required, optional, or defaulted. This is the
+/// upper bound reported by the `ArgumentTooMany` diagnostic.
+fn getMaxArgCount(comptime T: type) usize {
+    const type_info = @typeInfo(T);
+    if (type_info != .@"struct") return 0;
+
+    var count: usize = 0;
+    inline for (type_info.@"struct".fields) |field| {
+        if (!isVarArgs(field.type)) {
             count += 1;
         }
     }
@@ -1012,5 +1029,21 @@ test "diagnostics: argument error sites fill precise context" {
         const args = [_][]const u8{ "one", "two" };
         try std.testing.expectError(ZcliError.ArgumentTooMany, parseArgs(Exact, &args, &diag));
         try std.testing.expectEqual(@as(usize, 2), diag.?.ArgumentTooMany.actual_count);
+        // No optional positionals: min == max == the single required field.
+        try std.testing.expectEqual(@as(usize, 1), diag.?.ArgumentTooMany.min_count);
+        try std.testing.expectEqual(@as(usize, 1), diag.?.ArgumentTooMany.max_count);
+    }
+
+    // Too many arguments with an optional positional: the accepted count is a
+    // range (1 required, up to 2 with the optional). Regression for #453 where
+    // the diagnostic under-reported the max as the required count.
+    {
+        const Range = struct { a: []const u8, b: ?[]const u8 = null };
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{ "one", "two", "three" };
+        try std.testing.expectError(ZcliError.ArgumentTooMany, parseArgs(Range, &args, &diag));
+        try std.testing.expectEqual(@as(usize, 3), diag.?.ArgumentTooMany.actual_count);
+        try std.testing.expectEqual(@as(usize, 1), diag.?.ArgumentTooMany.min_count);
+        try std.testing.expectEqual(@as(usize, 2), diag.?.ArgumentTooMany.max_count);
     }
 }
