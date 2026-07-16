@@ -520,6 +520,13 @@ pub const InteractionStep = struct {
     /// child's output through — i.e. against the SCREEN as a terminal would draw
     /// it, not the raw byte stream. `null` when the step is not a frame step.
     frame: ?FrameAssertion = null,
+    /// How long (ms) the output stream must stay idle before a `snapshot` frame
+    /// is considered settled and compared. `null` falls back to
+    /// `InteractiveConfig.frame_settle_ms`. Widen it (via `.withSettle`) for a
+    /// slow render that pauses mid-frame on a loaded runner, so the golden is
+    /// never captured mid-paint. Ignored once the child has exited — a dead
+    /// child can't paint again, so that settles the frame immediately.
+    settle_ms: ?u32 = null,
 };
 
 /// A rendered-screen assertion. Unlike `expect`, which greps the raw byte soup
@@ -663,8 +670,9 @@ pub const InteractiveScript = struct {
     /// Assert the whole rendered screen matches the golden snapshot `name`
     /// (stem under `tests/snapshots/<test-file>/`). Requires `snapshot_root` in
     /// the config; honors `.update_snapshots` (wire it to `-Dupdate-snapshots`).
-    /// The frame is settled first (poll until output goes idle) so the snapshot
-    /// captures a stable screen.
+    /// The frame is settled first — the moment the child exits, or once output
+    /// has been idle for the settle window (`config.frame_settle_ms`, overridable
+    /// per-step via `.withSettle`) — so the snapshot captures a stable screen.
     pub fn expectFrame(self: *InteractiveScript, name: []const u8) *InteractiveScript {
         self.steps.append(self.allocator, .{
             .frame = .{ .snapshot = name },
@@ -684,6 +692,17 @@ pub const InteractiveScript = struct {
     pub fn withTimeout(self: *InteractiveScript, ms: u32) *InteractiveScript {
         if (self.steps.items.len > 0) {
             self.steps.items[self.steps.items.len - 1].timeout_ms = ms;
+        }
+        return self;
+    }
+
+    /// Widen (or narrow) the idle window the preceding `expectFrame` waits for
+    /// before capturing the golden. Use it for a slow screen that can pause
+    /// longer than the default mid-render on a loaded CI runner. No effect on a
+    /// non-snapshot step.
+    pub fn withSettle(self: *InteractiveScript, ms: u32) *InteractiveScript {
+        if (self.steps.items.len > 0) {
+            self.steps.items[self.steps.items.len - 1].settle_ms = ms;
         }
         return self;
     }
@@ -739,6 +758,12 @@ pub const InteractiveConfig = struct {
     /// When true, `expectFrame` writes (or overwrites) the snapshot instead of
     /// comparing. Thread this from a `-Dupdate-snapshots` build option.
     update_snapshots: bool = false,
+    /// Default idle window (ms) an `expectFrame` snapshot waits for before it
+    /// treats the screen as settled and compares it — unless the child exits
+    /// first, which settles immediately. Kept comfortably above a single poll
+    /// window so a normal render is never snapshotted mid-frame; a per-step
+    /// `.withSettle` overrides it for a known-slow path.
+    frame_settle_ms: u32 = 150,
 };
 
 /// Terminal modes for PTY configuration
@@ -922,6 +947,17 @@ const PosixSession = struct {
             };
         }
     }
+    /// Non-destructively report whether the child has hung up: a zero-timeout
+    /// poll for HUP/ERR on the read fd (the PTY master or pipe reports it once
+    /// the child's last write end closes on exit). Never consumes pending data —
+    /// HUP/ERR land in `revents` regardless of the requested `events` — so the
+    /// settle path can drain first, then ask "is anything more coming?"
+    fn hasExited(self: *PosixSession) bool {
+        var fds = [_]posix.pollfd{.{ .fd = self.read_fd, .events = 0, .revents = 0 }};
+        const ready = posix.poll(&fds, 0) catch return false;
+        if (ready == 0) return false;
+        return fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR | posix.POLL.NVAL) != 0;
+    }
 };
 
 /// Windows session: wraps a conpty.ConPtySession and maps the harness's Signal
@@ -949,6 +985,11 @@ const WindowsSession = struct {
             .SIGINT, .SIGTERM, .SIGQUIT, .SIGHUP => self.inner.signalTerm(),
             else => {}, // SIGWINCH/SIGTSTP/... have no ConPTY analogue here
         }
+    }
+    /// Whether the child has already exited — a zero-timeout wait on its process
+    /// handle. Lets the settle path stop the moment no more paint can arrive.
+    fn hasExited(self: *WindowsSession) bool {
+        return self.inner.waitExit(0) != null;
     }
 };
 
@@ -1058,6 +1099,7 @@ fn driveScriptSteps(
                 session,
                 assertion,
                 step.timeout_ms,
+                step.settle_ms orelse config.frame_settle_ms,
                 config,
                 output_buffer,
                 transcript_buffer,
@@ -1550,20 +1592,37 @@ fn frameSatisfied(allocator: std.mem.Allocator, screen: *vterm.VTerm, assertion:
     }
 }
 
+/// Whether a `snapshot` frame is settled and safe to capture, given the two
+/// deterministic signals the settle loop tracks. `child_exited` wins outright —
+/// a dead child cannot repaint, so the current frame is final no matter how
+/// short the idle has been (this is what makes an end-of-render golden immune to
+/// CI-load timing). Otherwise the stream must have been quiet for the full
+/// `settle_ms` window, so a child that pauses mid-frame is not snapshotted
+/// half-drawn (widen `settle_ms` per-step for a known-slow path).
+fn snapshotSettled(child_exited: bool, idle_ms: i64, settle_ms: u32) bool {
+    return child_exited or idle_ms >= @as(i64, settle_ms);
+}
+
 /// Poll — feeding new output into `screen` — until the rendered frame satisfies
 /// `assertion` or `timeout_ms` elapses. This is the settle strategy for frame
 /// steps: no fixed sleep, just "read → render → re-check" like `waitForOutput`,
 /// so a slow paint is tolerated and a fast one returns immediately.
 ///
-/// A `snapshot` assertion instead waits for the stream to go idle (a few empty
-/// poll windows) — a whole-screen golden needs a stable frame, not a single
-/// substring — then compares (or updates) via the shared snapshot machinery.
+/// A `snapshot` assertion instead settles the frame before comparing — a
+/// whole-screen golden needs a stable frame, not a single substring. Two
+/// deterministic settle signals, in order of preference:
+///   1. the child has exited (HUP) — nothing can repaint, so compare at once;
+///   2. the stream has stayed idle for `settle_ms` — a time window, not a fixed
+///      poll count, so it holds regardless of poll granularity and can be
+///      widened per-step for a slow render (see `InteractionStep.settle_ms`).
+/// Then it compares (or updates) via the shared snapshot machinery.
 fn waitForFrame(
     allocator: std.mem.Allocator,
     io: std.Io,
     session: anytype,
     assertion: FrameAssertion,
     timeout_ms: u32,
+    settle_ms: u32,
     config: InteractiveConfig,
     output_buffer: *std.ArrayList(u8),
     transcript_buffer: ?*std.ArrayList(u8),
@@ -1578,7 +1637,9 @@ fn waitForFrame(
         return true;
     }
 
-    var idle_polls: u8 = 0;
+    // Timestamp of the last byte seen — the anchor for the idle window. A frame
+    // is "settled" once `settle_ms` has passed with no new output.
+    var last_activity = start_time;
     while (true) {
         const elapsed = nowMs(io) - start_time;
         if (elapsed > timeout_ms) break;
@@ -1586,16 +1647,16 @@ fn waitForFrame(
         const remaining: i32 = @intCast(@max(@as(i64, 0), @as(i64, timeout_ms) - elapsed));
         const bytes_read = session.pollRead(&temp_buffer, @min(remaining, 50));
         if (bytes_read == 0) {
-            // For a snapshot, treat a run of idle windows as "settled" and
-            // compare the stable screen. For contains/row we keep polling until
-            // the deadline (they may still be painting).
-            if (assertion == .snapshot) {
-                idle_polls += 1;
-                if (idle_polls >= 3) break;
+            // A snapshot settles on either deterministic signal (contains/row
+            // keep polling to the deadline — they may still be painting).
+            if (assertion == .snapshot and
+                snapshotSettled(session.hasExited(), nowMs(io) - last_activity, settle_ms))
+            {
+                break;
             }
             continue;
         }
-        idle_polls = 0;
+        last_activity = nowMs(io);
 
         try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
         screen.write(temp_buffer[0..bytes_read]);
@@ -1915,22 +1976,39 @@ fn drainOutput(
     const start_time = nowMs(io);
     var temp_buffer: [4096]u8 = undefined;
 
-    // Keep reading until the stream has been idle for a few poll windows (~150ms)
-    // or the timeout is hit. Breaking on "buffer already has data" would drop
-    // output that arrives after the script's last matched `expect`.
-    var idle_polls: u8 = 0;
+    // Prefer the deterministic signal: read until the write end hangs up
+    // (POLLHUP / read()==0 / EIO on a PTY master) — the child has closed its
+    // output, so nothing more is coming. The idle window (~150ms of silence) is
+    // only a fallback for a child that goes quiet without closing, so we still
+    // return instead of spinning to the full timeout. Breaking on "buffer
+    // already has data" would drop output arriving after the last matched
+    // `expect`, so we never do that.
+    const idle_settle_ms: i64 = 150;
+    var last_activity = start_time;
     while (true) {
         const elapsed = nowMs(io) - start_time;
         if (elapsed > timeout_ms) break;
 
-        const bytes_read = pollFd(fd, &temp_buffer, 50);
-        if (bytes_read == 0) {
-            idle_polls += 1;
-            if (idle_polls >= 3) break;
+        var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+        const ready = posix.poll(&fds, 50) catch break;
+        if (ready == 0) {
+            if (nowMs(io) - last_activity >= idle_settle_ms) break; // gone quiet
+            continue; // poll window elapsed; re-check deadline and poll again
+        }
+
+        if (fds[0].revents & posix.POLL.IN != 0) {
+            const bytes_read = posix.read(fd, &temp_buffer) catch |err| switch (err) {
+                error.InputOutput => break, // PTY slave closed ⇒ EOF
+                error.WouldBlock => continue,
+                else => break,
+            };
+            if (bytes_read == 0) break; // clean EOF: write end closed
+            last_activity = nowMs(io);
+            try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
             continue;
         }
-        idle_polls = 0;
-        try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
+        // Hangup/error with no more readable data: the child is gone.
+        if (fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR | posix.POLL.NVAL) != 0) break;
     }
 }
 
@@ -2222,6 +2300,43 @@ test "InteractiveConfig defaults" {
     try std.testing.expect(config.terminal_mode == .cooked);
     try std.testing.expect(config.disable_echo == false);
     try std.testing.expect(config.forward_signals == false);
+    try std.testing.expect(config.frame_settle_ms == 150);
+}
+
+test "snapshotSettled: child exit beats an unmet idle window" {
+    // A dead child cannot repaint, so the frame is final regardless of how short
+    // the idle has been — this is the deterministic settle that makes an
+    // end-of-render golden immune to CI-load timing.
+    try std.testing.expect(snapshotSettled(true, 0, 150));
+    try std.testing.expect(snapshotSettled(true, 0, 1_000_000));
+}
+
+test "snapshotSettled: alive child settles only after the full idle window" {
+    // Below the window: still painting, do not capture (the mid-frame flake).
+    try std.testing.expect(!snapshotSettled(false, 0, 150));
+    try std.testing.expect(!snapshotSettled(false, 149, 150));
+    // At/above the window: stable, safe to capture.
+    try std.testing.expect(snapshotSettled(false, 150, 150));
+    try std.testing.expect(snapshotSettled(false, 300, 150));
+    // A widened window keeps waiting where the old fixed ~150ms would have fired.
+    try std.testing.expect(!snapshotSettled(false, 200, 500));
+}
+
+test "withSettle overrides the per-step snapshot idle window" {
+    const allocator = std.testing.allocator;
+    var script = InteractiveScript.init(allocator);
+    defer script.deinit();
+
+    _ = script.expectFrame("slow_screen").withSettle(750);
+
+    const step = script.steps.items[script.steps.items.len - 1];
+    try std.testing.expect(step.frame != null);
+    try std.testing.expectEqual(@as(?u32, 750), step.settle_ms);
+
+    // A snapshot step with no override falls back to the config default.
+    _ = script.expectFrame("normal_screen");
+    const defaulted = script.steps.items[script.steps.items.len - 1];
+    try std.testing.expectEqual(@as(?u32, null), defaulted.settle_ms);
 }
 
 test "InteractiveResult structure" {
