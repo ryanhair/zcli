@@ -33,8 +33,11 @@ const RawMode = backend.RawMode;
 /// (mouse `?1002l?1006l`, focus `?1004l`). 48B covers all of them at once.
 const blob_max = 48;
 
-/// Set last by `arm` (release) and cleared first by `disarm` — so a handler that
-/// fires mid-`arm` either sees `false` (does nothing) or a fully written `g`.
+/// Gates every read of `g` by the async restore path. `arm` withdraws it before
+/// touching `g` and republishes it after (release), `restore`/`disarm` read it
+/// with acquire — so a handler that fires mid-`arm` (including a *re*-arm over an
+/// already-armed guard) sees `false` and replays nothing rather than a
+/// half-written `g`. Never a torn read of the blob.
 var armed = std.atomic.Value(bool).init(false);
 
 var g: struct {
@@ -50,11 +53,21 @@ var g: struct {
 /// from the main thread.
 pub fn arm(out: Handle, blob: []const u8, raw: ?RawMode) void {
     std.debug.assert(blob.len <= blob_max);
+    // Withdraw first: a re-arm over an already-armed guard (e.g. hybrid's
+    // `start` re-arming with the cursor-show blob) would otherwise race the
+    // async restore path reading `g` — a POSIX signal handler interrupting this
+    // thread, or Windows' console-ctrl handler on its own thread. The acq_rel
+    // swap fences the `g` stores below to happen after the withdrawal, so no
+    // handler observes a torn `g`; the tiny window where `armed` is false just
+    // means such a handler restores nothing (the same disarm-then-arm tradeoff).
+    _ = armed.swap(false, .acq_rel);
     g.out = out;
     @memcpy(g.blob[0..blob.len], blob);
     g.blob_len = blob.len;
     g.raw = raw;
     impl.install();
+    // Republish as a unit: the acquire load in `restore` pairs with this release
+    // store, so a handler that sees `true` sees every `g` write above.
     armed.store(true, .release);
 }
 
@@ -189,6 +202,7 @@ const test_raw: RawMode = if (builtin.os.tag == .windows) .{
     .out = test_handle,
     .out_mode = 0,
     .out_changed = false,
+    .out_prev_cp = 0,
 } else std.mem.zeroes(RawMode);
 
 test "arm registers the blob and raw mode; disarm clears the armed flag" {
@@ -211,6 +225,22 @@ test "arm with a null raw registers cursor-only restore" {
     defer disarm();
     arm(test_handle, "\x1b[?25h", null);
     try std.testing.expect(armed.load(.acquire));
+    try std.testing.expect(g.raw == null);
+}
+
+test "re-arm over an armed guard replaces the blob and raw mode" {
+    defer disarm();
+    // The hybrid path arms with an empty blob in `init`, then `start` re-arms
+    // with the cursor-show blob over the still-armed guard (#458 item 2).
+    arm(test_handle, "", test_raw);
+    try std.testing.expect(armed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), g.blob_len);
+
+    arm(test_handle, "\x1b[?25h", null);
+    try std.testing.expect(armed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 6), g.blob_len);
+    try std.testing.expectEqualStrings("\x1b[?25h", g.blob[0..g.blob_len]);
+    // The re-arm's fields fully replaced the prior arm's — no stale raw mode.
     try std.testing.expect(g.raw == null);
 }
 
