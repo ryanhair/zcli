@@ -131,7 +131,8 @@ const Context = @import("command_registry").Context;
 
 pub const meta = .{
     .description = "Search for users by name",
-    .usage = "search <query> [files...] [--limit <n>]",
+    // Usage lines are NOT part of meta — they're generated automatically
+    // from Args/Options when help is rendered.
     .examples = &.{
         "search John",
         "search Jane --limit 10",
@@ -813,10 +814,15 @@ pub fn onError(context: anytype, err: anyerror) !bool { }
 // CLI + env parsing but before required/dependency validation. `provided` has
 // one flag per Options field (declaration order), true when CLI or the field's
 // env fallback already set it — the hook MUST skip those fields, which is what
-// makes CLI > env > config hold. `options` is mutated in place; no error union,
-// so a malformed source warns-and-skips rather than bricking the command. Any
-// values written must outlive execution (zcli_config uses a ContextData arena).
-pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool) void { }
+// makes CLI > env > config hold. `applied` (same keying, caller-zeroed) is the
+// hook's report back: it MUST mark every field it fills — the registry's
+// required-option and constraint checks treat `provided[i] or applied[i]` as
+// "supplied", with no value diffing, so a config value equal to a field's
+// placeholder still counts as supplied. `options` is mutated in place; no
+// error union, so a malformed source warns-and-skips rather than bricking the
+// command. Any values written must outlive execution (zcli_config uses a
+// ContextData arena).
+pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void { }
 
 // Plugin can provide commands (also app-agnostic, so `context: anytype`)
 pub const commands = struct {
@@ -864,8 +870,9 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 
 **Built-in Plugins:**
 
-- **zcli_help**: Provides `--help` flag and help command
-- **zcli_not_found**: Provides command suggestions using edit distance
+zcli ships seven built-in plugins — `zcli_help`, `zcli_version`, `zcli_not_found`,
+`zcli_completions`, `zcli_config`, `zcli_secrets`, and `zcli_github_upgrade`. See
+[PLUGINS.md](PLUGINS.md) for the full, canonical list and what each one provides.
 
 ## 12. Advanced Features
 
