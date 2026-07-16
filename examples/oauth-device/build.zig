@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) !void {
 
     // Per-command unit tests (the scaffolded-project idiom): compiles each
     // command file as its own test root so its `test` blocks run.
-    _ = zcli.addCommandTests(b, zcli_dep, .{
+    _ = zcli.addCommandTests(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,
         .optimize = optimize,

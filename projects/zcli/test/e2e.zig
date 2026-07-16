@@ -716,6 +716,29 @@ test "release --dry-run previews without creating a tag" {
 /// working tree, preserving everything else `init` wrote. Zig requires path
 /// dependencies to be relative to the package root, so we compute the relative
 /// path from `proj_abs` to the repo root.
+/// Splice `zcli.builtin(.<tag>, .{})` into the generated build.zig's
+/// `.plugins = &.{` list, right after the opening brace. Used by tests that
+/// hand-write a command using a builtin plugin `init` didn't preselect — the
+/// real exe (now part of the `test` step per #531) must actually have the
+/// plugin registered to compile, same as any real app would need.
+fn addBuiltinPlugin(proj: std.Io.Dir, tag: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const orig = try readFile(proj, a, "build.zig");
+    const marker = ".plugins = &.{";
+    const idx = std.mem.indexOf(u8, orig, marker) orelse return error.NoPluginsBlock;
+    const insert_at = idx + marker.len;
+
+    const rewritten = try std.fmt.allocPrint(
+        a,
+        "{s}\n            zcli.builtin(.{s}, .{{}}),{s}",
+        .{ orig[0..insert_at], tag, orig[insert_at..] },
+    );
+    try proj.writeFile(io, .{ .sub_path = "build.zig", .data = rewritten });
+}
+
 fn pointDependencyAtLocalTree(proj: std.Io.Dir, proj_abs: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1738,12 +1761,19 @@ test "a command that uses zcli_secrets is runCommand-testable without the keycha
     const proj_abs = try tmpSubdirAbs(arena.allocator(), tmp, "app");
     try pointDependencyAtLocalTree(proj, proj_abs);
 
+    // `init`'s non-interactive default plugin set doesn't include secrets;
+    // register it explicitly so the *real* exe (part of the `test` step, not
+    // just the command-test stub) has `context.plugins.zcli_secrets` too — a
+    // command using a plugin's context data must have that plugin wired for
+    // the real app to compile, same as it would for any user's project.
+    try addBuiltinPlugin(proj, "secrets");
+
     // A command that reads a secret via the *builtin* zcli_secrets plugin, with
     // a co-located test. addCommandTests wires an in-memory zcli_secrets into the
-    // test stub, so this compiles and its runCommand test runs without the real
-    // OS keychain (and without a native link) — even though secrets is a builtin,
-    // not a local src/plugins/ plugin. Before that, `context.plugins.zcli_secrets`
-    // didn't exist in the stub and the test wouldn't compile.
+    // test stub, so the runCommand test below runs without the real OS keychain
+    // (and without a native link) even though the real exe links the real
+    // plugin. Before that, `context.plugins.zcli_secrets` didn't exist in the
+    // stub and the test wouldn't compile.
     try proj.writeFile(io, .{
         .sub_path = "src/commands/reveal.zig",
         .data =
@@ -1886,11 +1916,15 @@ test "interactive: a SIGTERM mid-prompt restores the terminal from raw mode" {
 
     // Drive the wizard to its first prompt (a raw-mode `text` prompt), let raw
     // mode engage (the same settle rationale as the wizard test above), then
-    // kill it with SIGTERM instead of answering.
+    // kill it with SIGTERM instead of answering. Named `settle_ms` (matching
+    // the idiom used throughout this file) rather than a bare literal, so the
+    // wait reads as the same settle window every other interactive test
+    // documents, not an unexplained magic number.
+    const settle_ms = 500;
     var script = harness.InteractiveScript.init(testing.allocator);
     defer script.deinit();
     _ = script
-        .expect("Command path:").delay(500)
+        .expect("Command path:").delay(settle_ms)
         .sendSignal(.SIGTERM);
 
     var result = harness.runInteractive(

@@ -13,34 +13,6 @@ pub const Result = struct {
     }
 };
 
-/// Run a command using the actual compiled binary
-///
-/// This function runs the actual CLI binary as a subprocess, ensuring we test
-/// the real implementation rather than mocks or stubs. This is the most reliable
-/// way to test CLI applications as it tests the full stack including argument
-/// parsing, command routing, and output generation.
-///
-/// The RegistryType parameter is kept for API compatibility but isn't used
-/// since we're running the actual binary rather than calling registry methods.
-pub fn runInProcess(allocator: std.mem.Allocator, io: std.Io, comptime RegistryType: type, args: []const []const u8) !Result {
-    _ = RegistryType; // Not used in subprocess approach
-
-    // Determine the binary path based on the registry type
-    // For now, we'll use a hardcoded path, but this could be made configurable
-    const exe_path = "./zig-out/bin/example-cli";
-
-    // Check if the binary exists
-    std.Io.Dir.cwd().access(io, exe_path, .{}) catch |err| {
-        // If binary doesn't exist, return a helpful error
-        std.debug.print("Error: CLI binary not found at '{s}'\n", .{exe_path});
-        std.debug.print("Please run 'zig build' first to compile the CLI\n", .{});
-        return err;
-    };
-
-    // Run the actual binary
-    return runSubprocess(allocator, io, exe_path, args);
-}
-
 const max_output = 10 * 1024 * 1024;
 
 /// Serializes access to a child allocator behind a mutex.

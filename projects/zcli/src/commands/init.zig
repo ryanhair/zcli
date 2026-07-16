@@ -328,7 +328,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         \\    // blocks use `zcli-testing`'s runCommand (bundled with the zcli
         \\    // dependency, so no extra dependency is needed). `zcli add command`
         \\    // scaffolds a starting test alongside each new command.
-        \\    _ = zcli.addCommandTests(b, zcli_dep, .{{
+        \\    _ = zcli.addCommandTests(b, exe, zcli_dep, .{{
         \\        .commands_dir = "src/commands",
         \\        .target = target,
         \\        .optimize = optimize,

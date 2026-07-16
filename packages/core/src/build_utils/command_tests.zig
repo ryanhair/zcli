@@ -30,14 +30,23 @@ const PluginInfo = types.PluginInfo;
 ///     tests are in-process; the subprocess/PTY tiers live in separate modules.)
 ///   - any `shared_modules` the commands were generated with.
 ///
+/// `exe` is the project's real executable (the one built by `generate()`). The
+/// `test` step depends on it so that `zig build test` — which CI runs on all
+/// three OSes — also proves the real registry/main.zig link on every OS. The
+/// per-command stub tests alone don't compile the app; without this, a
+/// Windows- or macOS-only link break could stay green until someone happens
+/// to run `zig build build-examples`/`b.installArtifact` there.
+///
 /// Returns the created `test` step so the caller can attach more to it.
 pub fn addCommandTests(
     b: *std.Build,
+    exe: *std.Build.Step.Compile,
     zcli_dep: *std.Build.Dependency,
     config: types.CommandTestsConfig,
 ) *std.Build.Step {
     const zcli_module = zcli_dep.module("zcli");
     const test_step = b.step("test", "Run command unit tests");
+    test_step.dependOn(&exe.step);
 
     const shared_modules = config.shared_modules;
 

@@ -49,7 +49,7 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
 
-    _ = zcli.addCommandTests(b, zcli_dep, .{
+    _ = zcli.addCommandTests(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,
         .optimize = optimize,
