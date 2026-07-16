@@ -1034,7 +1034,12 @@ fn driveScriptSteps(
             if (transcript_buffer) |tb| {
                 try transcriptPrint(tb, allocator, "Sent signal: {any}\n", .{sig});
             }
-            sleepMs(io, 100);
+            // A signal's effect (a repaint, a shutdown banner, process exit)
+            // lands asynchronously. Rather than a flat sleep — which under-waits
+            // on loaded CI (the next step snapshots before the effect arrives)
+            // and over-waits in the common case — drain the stream until it goes
+            // idle, so the effect is recorded before the next step reads it.
+            try settleStream(allocator, io, session, step.timeout_ms, output_buffer, transcript_buffer, screen);
         }
 
         if (step.action) |callback| {
@@ -1515,11 +1520,92 @@ fn waitForOutput(
         }
 
         if (exact_match) {
-            if (std.mem.endsWith(u8, output_buffer.items, expected)) return true;
+            if (endsWithSettled(output_buffer.items, expected)) return true;
         } else {
             if (std.mem.indexOf(u8, output_buffer.items, expected) != null) return true;
         }
     }
+}
+
+/// Drain output — recording every byte into `output_buffer` and `screen` —
+/// until the stream goes idle (a short run of empty poll windows) or
+/// `timeout_ms` elapses. Used after a signal in place of a fixed sleep: the
+/// signal's effect arrives asynchronously, so we wait exactly as long as the
+/// stream keeps producing (bounded by the deadline) and settle as soon as it
+/// falls quiet, leaving the frame stable for the next step to read.
+fn settleStream(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    session: anytype,
+    timeout_ms: u32,
+    output_buffer: *std.ArrayList(u8),
+    transcript_buffer: ?*std.ArrayList(u8),
+    screen: ?*vterm.VTerm,
+) InteractiveError!void {
+    const start_time = nowMs(io);
+    var temp_buffer: [4096]u8 = undefined;
+    var idle_polls: u8 = 0;
+
+    while (true) {
+        const elapsed = nowMs(io) - start_time;
+        if (elapsed > timeout_ms) return;
+
+        const remaining: i32 = @intCast(@max(@as(i64, 0), @as(i64, timeout_ms) - elapsed));
+        const bytes_read = session.pollRead(&temp_buffer, @min(remaining, 20));
+        if (bytes_read == 0) {
+            // Three consecutive quiet windows means the effect has landed and the
+            // stream is stable — settle rather than sleep out the whole deadline.
+            idle_polls += 1;
+            if (idle_polls >= 3) return;
+            continue;
+        }
+        idle_polls = 0;
+
+        try output_buffer.appendSlice(allocator, temp_buffer[0..bytes_read]);
+        if (screen) |term| term.write(temp_buffer[0..bytes_read]);
+        if (transcript_buffer) |tb| {
+            try transcriptPrint(tb, allocator, "Received: \"{s}\"\n", .{temp_buffer[0..bytes_read]});
+        }
+    }
+}
+
+/// True when `haystack`, after trailing whitespace and SGR (ANSI style/reset)
+/// sequences are stripped, ends with `needle`.
+///
+/// `expectExact` matches against the cumulative output buffer, and a program
+/// almost always emits a trailing newline or a style reset (`ESC[0m`) right
+/// after the text we're waiting for. A plain `endsWith` on the raw buffer would
+/// match for one poll and then never again once that trailing byte lands,
+/// turning a satisfied expectation into a confusing timeout. Stripping the
+/// trailing noise first makes the match stable regardless of what styling or
+/// whitespace the program appends after the expected text.
+fn endsWithSettled(haystack: []const u8, needle: []const u8) bool {
+    var end = haystack.len;
+    while (end > 0) {
+        // Trailing whitespace (newline, CR, space, tab) is never significant to
+        // an exact text match.
+        if (std.ascii.isWhitespace(haystack[end - 1])) {
+            end -= 1;
+            continue;
+        }
+        // A trailing SGR sequence — `ESC '[' (digits/';')* 'm'` — is styling
+        // emitted after the text, not part of it. Strip a well-formed one.
+        if (haystack[end - 1] == 'm') {
+            var i = end - 1;
+            while (i > 0) {
+                const c = haystack[i - 1];
+                if (std.ascii.isDigit(c) or c == ';') {
+                    i -= 1;
+                } else break;
+            }
+            if (i >= 2 and haystack[i - 1] == '[' and haystack[i - 2] == 0x1b) {
+                end = i - 2;
+                continue;
+            }
+        }
+        break;
+    }
+    return std.mem.endsWith(u8, haystack[0..end], needle);
 }
 
 /// True once the rendered `screen` satisfies `assertion` (contains/row checks).
@@ -2070,6 +2156,26 @@ test "frameSatisfied matches rendered cells, not the raw stream" {
     // Wrong row must NOT satisfy — the strength a stream substring lacks.
     try std.testing.expect(!frameSatisfied(allocator, &term, .{ .row = .{ .index = 0, .expected = "OK done" } }));
     try std.testing.expect(!frameSatisfied(allocator, &term, .{ .contains = "absent" }));
+}
+
+test "endsWithSettled: exact match survives trailing newline and SGR resets" {
+    // The bug this guards: expectExact used a plain endsWith on the cumulative
+    // buffer, so a trailing newline or style reset emitted after the expected
+    // text defeated the match permanently. endsWithSettled strips that trailing
+    // noise so the match is stable.
+    try std.testing.expect(endsWithSettled("prompt> ready", "ready"));
+    try std.testing.expect(endsWithSettled("prompt> ready\n", "ready"));
+    try std.testing.expect(endsWithSettled("prompt> ready\r\n", "ready"));
+    try std.testing.expect(endsWithSettled("prompt> ready\x1b[0m", "ready"));
+    try std.testing.expect(endsWithSettled("prompt> ready\x1b[m\n", "ready"));
+    // Any trailing SGR (not just a bare reset) is styling, not text.
+    try std.testing.expect(endsWithSettled("ready\x1b[1;32m\n", "ready"));
+
+    // Genuine non-matches must still fail: real text after the needle, and a
+    // bare 'm' that is not an SGR terminator, are not stripped.
+    try std.testing.expect(!endsWithSettled("ready then more", "ready"));
+    try std.testing.expect(!endsWithSettled("team", "ready"));
+    try std.testing.expect(!endsWithSettled("", "ready"));
 }
 
 test "reflowToRows splits a flat screen into trimmed rows" {
