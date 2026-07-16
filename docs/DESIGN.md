@@ -496,7 +496,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 **Option Formats:**
 
-- Long options: `--option value` or `--option=value`
+- Long options: `--option value` or `--option=value`. By default the long flag
+  is the field name with underscores replaced by dashes (`output_dir` →
+  `--output-dir`). A field can override this via `meta.options.<field>.name`
+  (e.g. `.output_dir = .{ .name = "out" }` makes the flag `--out` instead of
+  `--output-dir`); the field name in `Options`/`execute` is unaffected — only
+  the flag text on the command line, and in generated help/completions,
+  changes.
 - Short options: `-o value` or `-ovalue` (no space). A short exists **only** when
   explicitly declared via `meta.options.<field>.short` — a field never derives a
   short from the first letter of its name. An undeclared short is an unknown

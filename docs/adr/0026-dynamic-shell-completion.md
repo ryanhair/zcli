@@ -2,9 +2,9 @@
 
 Status: accepted (implemented — all three increments shipped)
 
-Shell completion (the `zcli_completions` plugin) generates a static bash/zsh/fish
-script from the app's compiled command tree. It knows everything derivable at
-build time: the command/subcommand names, each command's options, and — after the
+Shell completion (the `zcli_completions` plugin) generates a static
+bash/zsh/fish/PowerShell script from the app's compiled command tree. It knows
+everything derivable at build time: the command/subcommand names, each command's options, and — after the
 positional-argument work — each positional's name, description, and enum choices.
 So `tasks done <TAB>` can offer `open done blocked` (an enum), and `tasks edit
 <TAB>` can show a `Task ID` hint. What it *cannot* do is offer the **actual ids** —
@@ -195,21 +195,28 @@ for takes-value, `utils.isNegativeNumber`, `utils.effectiveLongName`). `__comple
 them. Reinventing that logic is the single biggest way this feature could ship
 subtly wrong.
 
-Because of this, the wire is **not** a reconstructed command line with a `--`
-delimiter — a real line can *contain* `--`, which would collide. Instead the
-scripts pass the shell's own word array plus the **cursor word index**, the way
-Cobra/clap do:
+Because of this, the wire is not a reconstructed command line at all — it is the
+shell's own word array plus the **cursor word index**, the way Cobra/clap do.
+The scripts invoke `__complete` as:
 
 ```
-tasks __complete <cword> <word0> <word1> …
-# bash:  "$COMP_CWORD" "${COMP_WORDS[@]}"
-# zsh:   "$CURRENT"    "$words[@]"
-# fish:  (count of tokens) (commandline -opc) + current token
+tasks __complete <cword> -- <word0> <word1> …
+# bash:  "$COMP_CWORD" -- "${COMP_WORDS[@]}"
+# zsh:   "$CURRENT"    -- "$words[@]"
+# fish:  (count of tokens) -- (commandline -opc) + current token
+# pwsh:  $cword         '--' @dynWords
 ```
 
-`__complete` treats everything after `<cword>` as literal words (no option parsing
-of its own args), so no word can be mistaken for a flag to `__complete` and there
-is no delimiter to collide. It then: resolves the command via the **same
+The `--` is there for a narrower reason than the wire shape itself: `__complete`
+is a command like any other, so its own `Args`/`Options` parsing would otherwise
+see the shell's words — and a word that starts with `-` (a real flag the user
+typed, or a negative-number positional) would be misread as an option *to
+`__complete`*. The single `--` ends `__complete`'s own option parsing up front, so
+everything after it — including any `--` the user typed — is captured as literal
+`words` data, never reinterpreted. `__complete` then treats all of `words` as
+opaque strings (no option parsing of its own args beyond that leading `--`), so
+no word can be mistaken for a flag and a user-typed `--` cannot collide with it.
+It then: resolves the command via the **same
 `cmd_entries` path→module walk `executeCommand` already does** (`compiled.zig:1107`,
 longest-path-first — no second dispatch table); runs the parser primitives over the
 post-command words up to `<cword>` to decide *positional slot N* vs *value of
@@ -344,3 +351,14 @@ escaping); 2 and 3 are additive, lower-risk wiring on top.
   Acceptable (near-zero real cases); revisit only if it bites.
 - **Caching.** A slow hook run per `<TAB>` could warrant per-directory caching
   (some shells do it). Out of scope; revisit only if a real hook proves too slow.
+
+## Addendum: PowerShell
+
+The three increments above shipped for bash/zsh/fish first; PowerShell support
+(`powershell.zig`) followed the same design — `Register-ArgumentCompleter`
+invokes `<app> __complete $cword -- @dynWords`, the identical wire format
+described in "Resolution reuses the real parser" above, including the
+`.also_files`/`.also_dirs` combine directive. No protocol changes were needed;
+this is purely another script generator consuming the same `__complete`
+contract. PowerShell is included alongside bash/zsh/fish everywhere in this ADR
+that lists supported shells.

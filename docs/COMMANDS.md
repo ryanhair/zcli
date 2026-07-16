@@ -40,7 +40,24 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
 }
 ```
 
-- **`meta`** — help text and parsing metadata (`description`, `examples`, per-arg/option descriptions, `short` flags, `aliases`, `.env` fallbacks, cross-field constraints, and per-field `validate` hooks).
+- **`meta`** — help text and parsing metadata. Top-level fields: `description`,
+  `examples`, `aliases`, `hidden`, and `args`/`options` (per-field metadata,
+  below), plus `exclusive` — sets of options where at most one may be supplied
+  (see [DESIGN.md](DESIGN.md) and [ADR-0022](adr/0022-option-constraints.md)).
+  Per-field metadata (`meta.args.<field>` / `meta.options.<field>`) accepts
+  `description`, a `validate` hook (`fn(T) ?[]const u8`, refining an
+  already-typed value — [ADR-0025](adr/0025-field-validation-and-custom-parse-types.md)),
+  and a `complete` hook for dynamic shell completion (`.file`/`.dir` builtins,
+  or a function returning runtime candidates —
+  [ADR-0026](adr/0026-dynamic-shell-completion.md)). Options additionally
+  accept `short` (single-char flag alias), `name` (override the flag's long
+  name — e.g. `.output_dir = .{ .name = "out" }` makes the flag `--out`
+  instead of `--output-dir`), `env` (fallback environment variable), and
+  `requires` (this option, if supplied, requires another option to also be
+  supplied; see ADR-0022). For values that don't map onto a plain scalar
+  (`u16`, `enum`, `[]const u8`, …), a field's type can itself declare
+  `pub fn parse(s: []const u8) E!@This()` instead of relying on `validate` —
+  see ADR-0025.
 - **`Args`** — positional arguments as a struct; a `[]const []const u8` field is variadic.
 - **`Options`** — `bool`/`?bool` fields are flags; other types take values, with defaults from the initializers.
 - **`execute`** — the command body, receiving the parsed, typed `Args` and `Options` plus the app context.
