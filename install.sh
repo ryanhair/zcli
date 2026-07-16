@@ -121,14 +121,24 @@ verify_signature() {
 
 # Get latest release version from GitHub
 get_latest_version() {
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/${REPO}/releases/latest" | \
-            grep '"tag_name":' | \
-            sed -E 's/.*"tag_name": "zcli-v([^"]+)".*/\1/'
-    else
+    if ! command -v curl >/dev/null 2>&1; then
         print_error "curl is required but not found"
         exit 1
     fi
+
+    version=$(curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/${REPO}/releases/latest" | \
+        grep '"tag_name":' | \
+        sed -E 's/.*"tag_name": "zcli-v([^"]+)".*/\1/')
+
+    # Defense-in-depth: validate the version against a strict charset before it
+    # is interpolated into download URLs, mirroring the in-binary isValidVersionArg
+    # check. Rejects '/', '..' and other path-traversal characters.
+    if ! printf '%s' "${version}" | grep -qE '^[A-Za-z0-9._-]+$'; then
+        print_error "Invalid version string from GitHub API: '${version}'"
+        exit 1
+    fi
+
+    printf '%s\n' "${version}"
 }
 
 # Download binary

@@ -55,9 +55,34 @@ pub const CommandEntry = struct {
     module: type,
 };
 
+/// Validate `app_name` against a strict identifier charset at compile time.
+///
+/// The app name is interpolated unescaped into generated shell completion
+/// scripts as function names and `complete` targets (see zcli_completions/
+/// {bash,zsh,fish}.zig). Rather than escaping it per-shell, we reject any name
+/// that isn't a safe identifier — a developer-controlled comptime value should
+/// never contain shell metacharacters, whitespace, quotes, or path separators.
+fn validateAppName(comptime app_name: []const u8) void {
+    if (app_name.len == 0) {
+        @compileError("app_name must not be empty");
+    }
+    for (app_name) |c| {
+        const ok = (c >= 'A' and c <= 'Z') or
+            (c >= 'a' and c <= 'z') or
+            (c >= '0' and c <= '9') or
+            c == '_' or c == '-' or c == '.';
+        if (!ok) {
+            @compileError("app_name \"" ++ app_name ++
+                "\" contains an invalid character; only [A-Za-z0-9._-] are allowed " ++
+                "(it is interpolated unescaped into generated shell completion scripts)");
+        }
+    }
+}
+
 /// Registry builder for comptime command registration
 pub const Registry = struct {
     pub fn init(comptime config: Config) RegistryBuilder(config, &.{}, &.{}) {
+        comptime validateAppName(config.app_name);
         return RegistryBuilder(config, &.{}, &.{}).init();
     }
 };
@@ -170,4 +195,20 @@ pub fn discoverPluginCommands(comptime CommandsStruct: type, comptime path_prefi
     }
 
     return entries;
+}
+
+test "validateAppName accepts safe identifier charset" {
+    // These must all compile without a @compileError. If any of them were
+    // rejected, this test file would fail to build.
+    comptime validateAppName("myapp");
+    comptime validateAppName("my-app");
+    comptime validateAppName("my_app");
+    comptime validateAppName("my.app");
+    comptime validateAppName("App123");
+    // Registry.init runs the same check on the way in.
+    _ = Registry.init(.{
+        .app_name = "safe-name_1.0",
+        .app_version = "1.0.0",
+        .app_description = "desc",
+    });
 }
