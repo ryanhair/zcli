@@ -53,7 +53,9 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     // TTY: single keypress
     Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch return config.default;
+    var watcher = terminal.ResizeWatcher.init();
     defer {
+        watcher.deinit();
         raw.disable();
         Prompts.flushWriter(writer);
     }
@@ -63,13 +65,22 @@ pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     });
     defer app.deinit();
 
+    const stdin = std.Io.File.stdin().handle;
+
     try renderFrame(&app, config, hint);
 
     while (true) {
-        const k = if (config.interrupt_keys.len > 0)
-            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
-        else
-            try terminal.readKey(reader);
+        // A SIGWINCH arrives out-of-band via the watcher, not as a key: repaint
+        // so the wrapped prompt/cursor reflow to the new width without waiting
+        // for the next keystroke.
+        const k = switch (try terminal.readEvent(reader, stdin, &watcher)) {
+            .resize => {
+                try renderFrame(&app, config, hint);
+                continue;
+            },
+            .key => |key| key,
+            else => continue,
+        };
         if (Prompts.isInterrupt(k, config.interrupt_keys)) {
             try persist(&app, config, hint, null);
             return error.Interrupted;

@@ -73,7 +73,9 @@ fn numberTty(p: Prompts, config: NumberConfig) !i64 {
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
         return config.default orelse error.InvalidNumber;
     };
+    var watcher = terminal.ResizeWatcher.init();
     defer {
+        watcher.deinit();
         raw.disable();
         Prompts.flushWriter(writer);
     }
@@ -83,6 +85,8 @@ fn numberTty(p: Prompts, config: NumberConfig) !i64 {
     });
     defer app.deinit();
 
+    const stdin = std.Io.File.stdin().handle;
+
     var buf: [32]u8 = undefined;
     var len: usize = 0;
     var error_msg: ?[]const u8 = null;
@@ -91,10 +95,17 @@ fn numberTty(p: Prompts, config: NumberConfig) !i64 {
     try renderFrame(&app, config, buf[0..len], error_msg);
 
     while (true) {
-        const k = if (config.interrupt_keys.len > 0)
-            try terminal.readKeyOpt(reader, std.Io.File.stdin().handle)
-        else
-            try terminal.readKey(reader);
+        // A SIGWINCH arrives out-of-band via the watcher, not as a key: repaint
+        // so the wrapped prompt/cursor reflow to the new width without waiting
+        // for the next keystroke.
+        const k = switch (try terminal.readEvent(reader, stdin, &watcher)) {
+            .resize => {
+                try renderFrame(&app, config, buf[0..len], error_msg);
+                continue;
+            },
+            .key => |key| key,
+            else => continue,
+        };
         if (Prompts.isInterrupt(k, config.interrupt_keys)) {
             try persistLine(&app, config, buf[0..len]);
             return error.Interrupted;
@@ -104,7 +115,14 @@ fn numberTty(p: Prompts, config: NumberConfig) !i64 {
                 const value = if (len == 0)
                     config.default orelse continue
                 else
-                    std.fmt.parseInt(i64, buf[0..len], 10) catch continue;
+                    std.fmt.parseInt(i64, buf[0..len], 10) catch {
+                        // A digit string can be well-formed yet overflow i64
+                        // (e.g. 20 nines). Surface it the same way a range
+                        // violation is, rather than silently swallowing Enter.
+                        error_msg = "number out of range";
+                        try renderFrame(&app, config, buf[0..len], error_msg);
+                        continue;
+                    };
 
                 if (config.min) |min| {
                     if (value < min) {
@@ -283,6 +301,20 @@ test "non-TTY: EOF errors instead of falling back to the default" {
     try std.testing.expectError(error.EndOfStream, number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Port:",
         .default = 3000,
+    }));
+}
+
+test "non-TTY: a value that overflows i64 is rejected, not silently accepted" {
+    // Regression for #527: 20 nines is all digits but overflows i64. It must
+    // surface as an error rather than being swallowed (the TTY path renders a
+    // "number out of range" message; the non-TTY path errors here).
+    var input = "99999999999999999999\n".*;
+    var reader_stream: std.Io.Reader = .fixed(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream: std.Io.Writer = .fixed(&output);
+
+    try std.testing.expectError(error.InvalidNumber, number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
+        .message = "Count:",
     }));
 }
 
