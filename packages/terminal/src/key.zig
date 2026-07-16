@@ -216,21 +216,29 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle, paste: ?Pas
             // SGR mouse (DECSET 1006): ESC [ < Cb ; Cx ; Cy (M|m).
             '<' => parseMouseSgr(reader),
             '3' => blk: {
-                // ESC [ 3 ~ = Delete
+                // ESC [ 3 ~ = Delete. A modified variant (e.g. Ctrl-Delete
+                // `ESC[3;5~`) puts a non-`~` byte here; consume the rest of
+                // the sequence so the trailing `;5~` isn't misparsed as
+                // separate keystrokes.
                 const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
                 if (tilde == '~') break :blk keyIn(.delete);
+                skipCsiTail(reader, tilde);
                 break :blk keyIn(.escape);
             },
             '5' => blk: {
-                // ESC [ 5 ~ = Page Up
+                // ESC [ 5 ~ = Page Up (e.g. Shift-PageUp `ESC[5;2~` is a
+                // modified variant — consume its tail).
                 const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
                 if (tilde == '~') break :blk keyIn(.pageup);
+                skipCsiTail(reader, tilde);
                 break :blk keyIn(.escape);
             },
             '6' => blk: {
-                // ESC [ 6 ~ = Page Down
+                // ESC [ 6 ~ = Page Down (e.g. Shift-PageDown `ESC[6;2~` is a
+                // modified variant — consume its tail).
                 const tilde = readByteFn(reader) catch break :blk keyIn(.escape);
                 if (tilde == '~') break :blk keyIn(.pagedown);
+                skipCsiTail(reader, tilde);
                 break :blk keyIn(.escape);
             },
             '2' => blk: {
@@ -650,6 +658,23 @@ test "modified Home/End does not desync the stream" {
     var reader: std.Io.Reader = .fixed(&buf);
     try std.testing.expectEqual(Key.escape, try readKey(&reader));
     try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectError(error.EndOfStream, readKey(&reader));
+}
+
+test "modified Delete/PageUp/PageDown do not desync the stream" {
+    // Ctrl-Delete = ESC[3;5~, Shift-PageUp = ESC[5;2~, Shift-PageDown =
+    // ESC[6;2~. The '3'/'5'/'6' arms must consume the whole `;N~` tail
+    // instead of leaving it to be misparsed as literal `;`, digit, and `~`
+    // keystrokes. Each sequence yields exactly one escape event, then the
+    // following real letter survives intact.
+    var buf = "\x1b[3;5~a\x1b[5;2~b\x1b[6;2~c".*;
+    var reader: std.Io.Reader = .fixed(&buf);
+    try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = 'a' }, try readKey(&reader));
+    try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = 'b' }, try readKey(&reader));
+    try std.testing.expectEqual(Key.escape, try readKey(&reader));
+    try std.testing.expectEqual(Key{ .char = 'c' }, try readKey(&reader));
     try std.testing.expectError(error.EndOfStream, readKey(&reader));
 }
 
