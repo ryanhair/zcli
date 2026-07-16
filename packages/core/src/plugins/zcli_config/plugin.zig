@@ -93,7 +93,9 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
 
     var path_allocated = false;
     var is_project_local = false;
-    const path = findConfigFile(allocator, context.io, context.environ, context.app_name, data.custom_path, stderr, &path_allocated, &is_project_local) orelse return args;
+    const path = (findConfigFile(allocator, context.io, context.environ, context.app_name, data.custom_path, stderr, &path_allocated, &is_project_local) catch |err| switch (err) {
+        error.ConfigFileNotFound => return context.fail("Error: config file '{s}' not found", .{data.custom_path.?}),
+    }) orelse return args;
 
     const format = detectFormat(path) orelse {
         // Unrecognized extension — warn and skip
@@ -537,14 +539,18 @@ fn userConfigDir(allocator: std.mem.Allocator, environ: *const std.process.Envir
     return dir;
 }
 
-fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, app_name: []const u8, custom_path: ?[]const u8, stderr: *std.Io.Writer, allocated: *bool, is_project_local: *bool) ?[]const u8 {
+/// An explicitly-requested `--config <path>` that doesn't exist is a hard
+/// error (`error.ConfigFileNotFound`) — unlike the implicit default-location
+/// search below, which stays silent when nothing is found. The caller
+/// (`preExecute`) turns this into a user-facing diagnostic via `context.fail`.
+fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, app_name: []const u8, custom_path: ?[]const u8, stderr: *std.Io.Writer, allocated: *bool, is_project_local: *bool) error{ConfigFileNotFound}!?[]const u8 {
     allocated.* = false;
     is_project_local.* = false;
     const cwd = std.Io.Dir.cwd();
 
     if (custom_path) |p| {
         if (p.len > 0) {
-            cwd.access(io, p, .{}) catch return null;
+            cwd.access(io, p, .{}) catch return error.ConfigFileNotFound;
             return p;
         }
     }
@@ -669,17 +675,71 @@ test "findConfigFile: returns null when no config exists" {
     defer environ.deinit();
     var allocated = false;
     var is_project_local = false;
-    const result = findConfigFile(testing.allocator, testing.io, &environ, "nonexistent_xyz", null, nullWriter(), &allocated, &is_project_local);
+    const result = try findConfigFile(testing.allocator, testing.io, &environ, "nonexistent_xyz", null, nullWriter(), &allocated, &is_project_local);
     try testing.expect(result == null);
 }
 
-test "findConfigFile: custom path returns null for missing file" {
+test "findConfigFile: explicit custom path errors for missing file" {
+    // An explicitly-requested --config path that doesn't exist must fail loudly
+    // (error.ConfigFileNotFound), unlike the silent auto-discovery search above.
     var environ = std.process.Environ.Map.init(testing.allocator);
     defer environ.deinit();
     var allocated = false;
     var is_project_local = false;
     const result = findConfigFile(testing.allocator, testing.io, &environ, "test", "/nonexistent/path.json", nullWriter(), &allocated, &is_project_local);
-    try testing.expect(result == null);
+    try testing.expectError(error.ConfigFileNotFound, result);
+}
+
+test "preExecute: explicit --config missing file fails the run with a clear diagnostic" {
+    const allocator = testing.allocator;
+
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(testing.io);
+    var err_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer err_aw.deinit();
+    stdio.stderr_override = &err_aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    const Ctx = zcli.TestContext(&.{@This()});
+    var ctx = Ctx.init(allocator, testing.io, &stdio, &environ);
+    defer ctx.deinit();
+    ctx.app_name = "myapp";
+
+    ctx.plugins.zcli_config.custom_path = "/nonexistent/path.json";
+
+    const args = zcli.ParsedArgs{ .positional = &.{} };
+    const result = preExecute(&ctx, args);
+    try ctx.stderr().flush();
+
+    try testing.expectError(error.CommandFailed, result);
+    try testing.expectEqualStrings(
+        "Error: config file '/nonexistent/path.json' not found\n",
+        err_aw.written(),
+    );
+}
+
+test "preExecute: auto-discovery with no config files stays silent" {
+    const allocator = testing.allocator;
+
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(testing.io);
+    var err_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer err_aw.deinit();
+    stdio.stderr_override = &err_aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    const Ctx = zcli.TestContext(&.{@This()});
+    var ctx = Ctx.init(allocator, testing.io, &stdio, &environ);
+    defer ctx.deinit();
+    ctx.app_name = "nonexistent_zcli_config_app_xyz";
+
+    const args = zcli.ParsedArgs{ .positional = &.{} };
+    const result = try preExecute(&ctx, args);
+    try ctx.stderr().flush();
+
+    // No custom_path set — implicit discovery finds nothing and stays silent.
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("", err_aw.written());
 }
 
 test "userConfigDir: POSIX XDG_CONFIG_HOME wins" {
