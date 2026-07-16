@@ -38,6 +38,10 @@ pub fn groupPath(arena: std.mem.Allocator, segments: []const []const u8) ![]cons
 /// affected) instead of a truncated/corrupt command source.
 pub fn writeFileAtomic(base: std.Io.Dir, io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8) !void {
     const tmp_path = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
+    // Clean up the temp on any failure so a failed write or rename leaves no
+    // `<path>.tmp` debris beside the target. Covers both the write below and the
+    // rename; runs after `file.close` (declared later, so it unwinds first).
+    errdefer base.deleteFile(io, tmp_path) catch {};
     {
         var file = try base.createFile(io, tmp_path, .{});
         defer file.close(io);
@@ -109,6 +113,27 @@ test "writeFileAtomic replaces contents and leaves no temp behind" {
     try testing.expectEqualStrings("replaced contents", got);
     // The temp is renamed away, not left as debris next to the target.
     try testing.expect(!fileExists(tmp.dir, io, "cmd.zig.tmp"));
+}
+
+test "writeFileAtomic cleans up the temp file when the rename fails" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Make the target an existing directory so the final `rename` of the temp
+    // file over it fails — exercising the errdefer cleanup path.
+    try tmp.dir.createDir(io, "target", .default_dir);
+
+    if (writeFileAtomic(tmp.dir, io, a, "target", "data")) |_| {
+        return error.TestExpectedRenameFailure;
+    } else |_| {}
+
+    // The temp file must not be left behind as debris.
+    try testing.expect(!fileExists(tmp.dir, io, "target.tmp"));
 }
 
 fn fileExists(base: std.Io.Dir, io: std.Io, path: []const u8) bool {

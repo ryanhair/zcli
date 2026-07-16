@@ -197,6 +197,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // Now that the destination is validated and plugins are chosen, create and
     // open the project directory.
     if (!use_current_dir) try cwd.createDir(io, args.name, .default_dir);
+    // If init created the directory, tear the whole tree down on any later
+    // scaffold failure so a retry isn't blocked by a "Directory already exists"
+    // half-created project. deleteTree is safe here: the directory did not exist
+    // before this run (validated above). Declared before `project_dir.close` so
+    // the dir handle is closed first (Windows won't delete an open dir). For
+    // use_current_dir we deliberately don't clean up — we didn't create the dir.
+    errdefer if (!use_current_dir) cwd.deleteTree(io, args.name) catch {};
     var project_dir = try cwd.openDir(io, if (use_current_dir) "." else args.name, .{});
     defer project_dir.close(io);
 

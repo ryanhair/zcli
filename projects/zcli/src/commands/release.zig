@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const scaffold = @import("scaffold");
 
 pub const meta = .{
     .description = "Create and manage project releases",
@@ -493,34 +494,51 @@ fn updateBuildZonVersion(allocator: std.mem.Allocator, io: std.Io, new_version: 
     const content = try std.Io.Dir.cwd().readFileAlloc(io, zon_path, allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
-    // Find and replace the version line
-    var new_content = std.ArrayList(u8).empty;
-    defer new_content.deinit(allocator);
+    const new_content = try rewriteZonVersion(allocator, content, new_version);
+    defer allocator.free(new_content);
+
+    // Write back atomically (temp + rename) so a crash/interrupt mid-write can
+    // never leave build.zig.zon empty or truncated — the original stays intact
+    // until the rename swaps in the fully-written replacement.
+    try scaffold.fs.writeFileAtomic(std.Io.Dir.cwd(), io, allocator, zon_path, new_content);
+}
+
+/// Return a copy of `content` with the `.version` field rewritten to
+/// `new_version`. The match is anchored to a line whose first non-whitespace
+/// token is `.version`, so `.minimum_zig_version` (or any other field that
+/// merely contains the substring) is left untouched. Pure — no I/O — so the
+/// rewrite is unit-testable.
+fn rewriteZonVersion(allocator: std.mem.Allocator, content: []const u8, new_version: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, content, '\n');
+    var first = true;
     while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, ".version")) |_| {
-            // Replace the version value
-            const indent = blk: {
-                var i: usize = 0;
-                while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
-                break :blk line[0..i];
-            };
-            {
-                const s = try std.fmt.allocPrint(allocator, "{s}.version = \"{s}\",\n", .{ indent, new_version });
-                defer allocator.free(s);
-                try new_content.appendSlice(allocator, s);
-            }
+        // Re-insert the '\n' between lines (not after the last) so the file's
+        // exact structure — including a trailing newline or lack thereof — is
+        // preserved rather than gaining a spurious blank line.
+        if (!first) try out.append(allocator, '\n');
+        first = false;
+
+        const indent = leadingWhitespace(line);
+        if (std.mem.startsWith(u8, line[indent.len..], ".version")) {
+            const s = try std.fmt.allocPrint(allocator, "{s}.version = \"{s}\",", .{ indent, new_version });
+            defer allocator.free(s);
+            try out.appendSlice(allocator, s);
         } else {
-            try new_content.appendSlice(allocator, line);
-            try new_content.append(allocator, '\n');
+            try out.appendSlice(allocator, line);
         }
     }
 
-    // Write back to file
-    const out_file = try std.Io.Dir.cwd().createFile(io, zon_path, .{});
-    defer out_file.close(io);
-    try out_file.writeStreamingAll(io, new_content.items);
+    return out.toOwnedSlice(allocator);
+}
+
+/// The leading run of spaces/tabs on `line` (its indentation).
+fn leadingWhitespace(line: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    return line[0..i];
 }
 
 /// Whether a local git tag named `tag_name` currently exists. Used to detect a
@@ -1180,4 +1198,33 @@ test "runCommand - captures stdout and surfaces failure stderr" {
     defer bad.deinit(allocator);
     try testing.expect(!bad.success);
     try testing.expect(bad.stderr.len > 0);
+}
+
+test "rewriteZonVersion - rewrites .version and leaves .minimum_zig_version alone" {
+    const allocator = testing.allocator;
+
+    const manifest =
+        \\.{
+        \\    .name = .myapp,
+        \\    .version = "0.1.0",
+        \\    .fingerprint = 0x1234,
+        \\    .minimum_zig_version = "0.16.0",
+        \\    .dependencies = .{},
+        \\}
+        \\
+    ;
+    const expected =
+        \\.{
+        \\    .name = .myapp,
+        \\    .version = "2.0.0",
+        \\    .fingerprint = 0x1234,
+        \\    .minimum_zig_version = "0.16.0",
+        \\    .dependencies = .{},
+        \\}
+        \\
+    ;
+
+    const got = try rewriteZonVersion(allocator, manifest, "2.0.0");
+    defer allocator.free(got);
+    try testing.expectEqualStrings(expected, got);
 }
