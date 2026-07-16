@@ -165,6 +165,26 @@ pub const VTerm = struct {
         return self.total_lines_written - 1;
     }
 
+    /// Convert a viewport-relative row (0..height-1) to the ABSOLUTE logical
+    /// line number the write path uses (`virtual_cursor_y`, `setCellDirect`,
+    /// `openLine`). CSI cursor moves (CUP/CUU/CUD) are addressed in viewport
+    /// coordinates, but writes and reads operate on absolute lines — without
+    /// this conversion, repositioning after the buffer scrolls past one
+    /// screen lands subsequent output on scrolled-off lines the viewport never
+    /// shows (#504). Mirrors the present-view mapping in `viewportToBuffer`
+    /// (user scrollback offset excluded: the cursor always addresses the live
+    /// bottom of the buffer).
+    fn viewportToLogicalLine(self: *VTerm, viewport_y: u16) u32 {
+        // Mirror viewportToBuffer's special case: before the buffer has filled
+        // one screen the bottom line sits above viewport row height-1, so the
+        // scroll formula would underflow — viewport rows map straight through.
+        if (self.total_lines_written <= self.height) {
+            return viewport_y;
+        }
+        const bottom_line = self.getBottomLine();
+        return bottom_line - (self.height - 1) + viewport_y;
+    }
+
     // Bounds checking
     fn isValidPos(self: VTerm, x: u16, y: u16) bool {
         return x < self.width and y < self.height;
@@ -390,8 +410,10 @@ pub const VTerm = struct {
         // Clamp to valid bounds
         self.cursor.x = @min(x, self.width - 1);
         self.cursor.y = @min(y, self.height - 1);
-        // Update virtual cursor to match visible cursor
-        self.virtual_cursor_y = self.cursor.y;
+        // Map the viewport-relative row to the absolute logical line the write
+        // path addresses, so output after repositioning lands on the row the
+        // viewport shows even once the buffer has scrolled (#504).
+        self.virtual_cursor_y = self.viewportToLogicalLine(self.cursor.y);
     }
 
     // Screen Operations
@@ -689,12 +711,14 @@ pub const VTerm = struct {
                 self.cursor.y = if (n > self.cursor.y) 0 else self.cursor.y - @as(u16, @intCast(n));
                 // Keep the write position (virtual_cursor_y) in sync, as CUP does,
                 // so text written after moving up overwrites the right rows.
-                self.virtual_cursor_y = self.cursor.y;
+                // Convert the viewport row to an absolute logical line (#504).
+                self.virtual_cursor_y = self.viewportToLogicalLine(self.cursor.y);
             },
             'B' => { // CUD - Cursor Down
                 const n = self.getParam(0, 1);
                 self.cursor.y = @min(self.cursor.y + @as(u16, @intCast(n)), self.height - 1);
-                self.virtual_cursor_y = self.cursor.y;
+                // Convert the viewport row to an absolute logical line (#504).
+                self.virtual_cursor_y = self.viewportToLogicalLine(self.cursor.y);
             },
             'C' => { // CUF - Cursor Forward
                 const n = self.getParam(0, 1);

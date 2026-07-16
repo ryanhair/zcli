@@ -32,3 +32,54 @@ test "cursor advancement" {
     try testing.expectEqual(@as(u16, 0), term.cursor.x);
     try testing.expectEqual(@as(u16, 1), term.cursor.y);
 }
+
+// Regression tests for #504: absolute cursor addressing (CUP/CUU/CUD) must map
+// viewport-relative rows to absolute logical lines once output has scrolled
+// past one screen, otherwise writes land on scrolled-off lines the viewport
+// never shows.
+
+test "CUP home-and-repaint lands on viewport after scrolling (#504)" {
+    var term = try VTerm.init(testing.allocator, 4, 2);
+    defer term.deinit();
+
+    // Four lines into a two-row viewport: the buffer scrolls, viewport row 0
+    // is absolute line 2 ('c'), row 1 is line 3 ('d').
+    term.write("a\nb\nc\nd");
+    try testing.expectEqual(@as(u21, 'c'), term.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'd'), term.getCell(0, 1).char);
+
+    // Home (ESC[1;1H) then write: 'Z' must land on viewport cell (0,0).
+    term.write("\x1b[1;1H");
+    term.write("Z");
+    try testing.expectEqual(@as(u21, 'Z'), term.getCell(0, 0).char);
+    // Row 1 is untouched.
+    try testing.expectEqual(@as(u21, 'd'), term.getCell(0, 1).char);
+}
+
+test "CUU at scrolled bottom moves up one viewport row (#504)" {
+    var term = try VTerm.init(testing.allocator, 4, 2);
+    defer term.deinit();
+
+    term.write("a\nb\nc\nd");
+    // Cursor is on the bottom viewport row (line 3) at column 1 (after 'd').
+    // ESC[A moves up one row but leaves the column unchanged.
+    term.write("\x1b[A");
+    try testing.expectEqual(@as(u16, 0), term.cursor.y);
+    // The write lands on the top viewport row, at the current column.
+    term.write("Z");
+    try testing.expectEqual(@as(u21, 'Z'), term.getCell(1, 0).char);
+    // The original 'c' in column 0 of that row is untouched.
+    try testing.expectEqual(@as(u21, 'c'), term.getCell(0, 0).char);
+}
+
+test "CUP addressing unchanged before scrolling (#504)" {
+    var term = try VTerm.init(testing.allocator, 4, 3);
+    defer term.deinit();
+
+    // Only two lines written into a three-row viewport: nothing scrolled.
+    term.write("a\nb");
+    term.write("\x1b[1;1H"); // home
+    term.write("Z");
+    try testing.expectEqual(@as(u21, 'Z'), term.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'b'), term.getCell(0, 1).char);
+}
