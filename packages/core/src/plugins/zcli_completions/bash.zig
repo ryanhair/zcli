@@ -50,12 +50,27 @@ pub fn generate(
     try writer.writeAll("    fi\n\n");
 
     // Build the command path key: non-option words between app name and cursor.
+    // A value-taking global option (e.g. `--config x.json`) is followed by its
+    // VALUE, which is NOT a command word — skip it so the value never becomes
+    // the key. The `--opt=value` form carries its value in the same token (which
+    // is already skipped as an option word), so only the separate-word form
+    // needs the look-ahead.
     try writer.writeAll("    local cmd_path=()\n");
-    try writer.writeAll("    local i\n");
+    try writer.writeAll("    local i skip_val=0\n");
     try writer.writeAll("    for ((i=1; i<cword; i++)); do\n");
-    try writer.writeAll("        if [[ \"${words[i]}\" != -* ]]; then\n");
-    try writer.writeAll("            cmd_path+=(\"${words[i]}\")\n");
+    try writer.writeAll("        if [[ $skip_val == 1 ]]; then skip_val=0; continue; fi\n");
+    try writer.writeAll("        if [[ \"${words[i]}\" == -* ]]; then\n");
+    if (anyValueTakingOption(global_options)) {
+        // A bare value-taking option word consumes the NEXT word as its value.
+        try writer.writeAll("            case \"${words[i]}\" in\n");
+        try writer.writeAll("                ");
+        try writeValueOptionPatterns(arena, writer, global_options);
+        try writer.writeAll(") skip_val=1 ;;\n");
+        try writer.writeAll("            esac\n");
+    }
+    try writer.writeAll("            continue\n");
     try writer.writeAll("        fi\n");
+    try writer.writeAll("        cmd_path+=(\"${words[i]}\")\n");
     try writer.writeAll("    done\n");
     // Join into a single word so `case` subjects match single-word patterns.
     try writer.writeAll("    local key=\"${cmd_path[*]}\"\n\n");
@@ -131,6 +146,29 @@ pub fn generate(
 
     var al = aw.toArrayList();
     return al.toOwnedSlice(allocator);
+}
+
+/// True if any option in the set takes a value (so a bare `--opt <value>` on the
+/// command line consumes the following word — which must not be mistaken for a
+/// command word when reconstructing the command path).
+fn anyValueTakingOption(options: []const zcli.OptionInfo) bool {
+    for (options) |opt| if (opt.takes_value) return true;
+    return false;
+}
+
+/// Emit `'--name'|'-s'` case patterns (joined with `|`) for every value-taking
+/// option, for the look-ahead `case` in the command-path loop. Names are
+/// escape.bash'd inside single-quoted literals so an exotic identifier can't
+/// break out of the pattern.
+fn writeValueOptionPatterns(arena: std.mem.Allocator, writer: anytype, options: []const zcli.OptionInfo) !void {
+    var first = true;
+    for (options) |opt| {
+        if (!opt.takes_value) continue;
+        if (!first) try writer.writeAll("|");
+        first = false;
+        try writer.print("'--{s}'", .{try escape.bash(arena, opt.name)});
+        if (opt.short) |short| try writer.print("|'-{c}'", .{short});
+    }
 }
 
 /// Emit `--name -s ` for each option into a space-separated list. Names are
