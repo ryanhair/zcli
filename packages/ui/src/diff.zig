@@ -106,7 +106,10 @@ pub const Renderer = struct {
         if (!dirty) return;
 
         while (first > 0 and next.cell(first, row).isContinuation()) first -= 1;
-        if (next.cell(last, row).width == 2) last += 1;
+        // Extend the span over a wide grapheme's continuation. Bound-check so a
+        // torn head at the last column (width 2 with no continuation cell) can
+        // never push `last` past the surface edge.
+        if (last + 1 < next.width and next.cell(last, row).width == 2) last += 1;
 
         try st.moveTo(row, first);
         try st.emitCells(next, row, first, last);
@@ -263,6 +266,23 @@ test "sync guard wraps the paint when enabled" {
     defer testing.allocator.free(out);
     try testing.expect(std.mem.startsWith(u8, out, "\x1b[?2026h"));
     try testing.expect(std.mem.endsWith(u8, out, "\x1b[?2026l"));
+}
+
+test "diff never extends a span past the surface edge on a torn wide head" {
+    var prev = try Surface.init(testing.allocator, 4, 1);
+    defer prev.deinit();
+    var next = try Surface.init(testing.allocator, 4, 1);
+    defer next.deinit();
+    // Synthesize a torn wide head at the last column: a width-2 cell whose
+    // continuation would fall at column 4, off the surface edge. copyRows now
+    // prevents this tear at the source, but the diff's wide-span extension must
+    // still stay in bounds — `last + 1 < next.width` guards `last += 1` from
+    // ever addressing column `width`.
+    next.cells[3] = .{ .width = 2 };
+
+    const out = try paintToString(testing.allocator, .{ .capability = .ansi_16, .sync = false }, &prev, &next);
+    defer testing.allocator.free(out);
+    try testing.expect(out.len > 0);
 }
 
 test "no_color paints text but never SGR" {

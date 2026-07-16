@@ -246,7 +246,15 @@ pub const Region = struct {
             var x: u16 = 0;
             while (x < cols) : (x += 1) {
                 const c = src.cell(x, sy);
-                try self.surface.putCell(self.rect.x + x, self.rect.y + dy, c, src.cellText(c));
+                // A wide grapheme whose continuation falls outside the copied
+                // columns would leave a torn head — a width-2 cell with no
+                // continuation — which the diff renderer reads past. Dissolve it
+                // to a styled blank instead of copying the head verbatim.
+                if (c.width == 2 and x + 1 >= cols) {
+                    self.surface.blankAt(self.rect.x + x, self.rect.y + dy, c.style);
+                } else {
+                    try self.surface.putCell(self.rect.x + x, self.rect.y + dy, c, src.cellText(c));
+                }
             }
         }
     }
@@ -506,6 +514,39 @@ test "clear resets cells and byte storage" {
     s.clear();
     try testing.expectEqual(@as(usize, 0), s.bytes.items.len);
     for (s.cells) |c| try testing.expect(c.isBlank());
+}
+
+test "copyRows blanks a wide grapheme torn by the clip boundary" {
+    // Source: "你" occupies cols 0-1 (head + continuation).
+    var src = try Surface.init(testing.allocator, 4, 1);
+    defer src.deinit();
+    _ = try src.root().writeText(0, 0, "你a", .{});
+    try testing.expectEqual(@as(u8, 2), src.cell(0, 0).width);
+
+    // Copy into a 1-wide region: only col 0 (the wide head) fits, so its
+    // continuation is clipped off. The head must dissolve to a blank rather
+    // than land as a torn width-2 cell.
+    var dst = try Surface.init(testing.allocator, 1, 1);
+    defer dst.deinit();
+    try dst.root().copyRows(&src, 0);
+
+    try testing.expect(dst.cell(0, 0).isBlank());
+    try testing.expectEqual(@as(u8, 1), dst.cell(0, 0).width);
+}
+
+test "copyRows preserves a wide grapheme that fits within the clip" {
+    var src = try Surface.init(testing.allocator, 4, 1);
+    defer src.deinit();
+    _ = try src.root().writeText(0, 0, "你a", .{});
+
+    // 2-wide region: the wide grapheme fits whole (head + continuation).
+    var dst = try Surface.init(testing.allocator, 2, 1);
+    defer dst.deinit();
+    try dst.root().copyRows(&src, 0);
+
+    try testing.expectEqual(@as(u8, 2), dst.cell(0, 0).width);
+    try testing.expect(dst.cell(1, 0).isContinuation());
+    try testing.expectEqualStrings("你", dst.cellText(dst.cell(0, 0)));
 }
 
 test "styleEql compares hex colors by content" {
