@@ -18,6 +18,7 @@ pub const SpliceError = error{
     AnchorNotFound,
     DuplicateField,
     FieldNotFound,
+    ResultDoesNotParse,
 };
 
 /// Where to place a new field among existing ones.
@@ -35,7 +36,8 @@ pub fn insertOption(arena: std.mem.Allocator, source: [:0]const u8, o: spec.OptS
     const field = try spec.renderOptField(arena, o);
     const with_field = try insertStructField(arena, source, "Options", field, .append);
     const entry = try spec.renderOptMetaEntry(arena, o);
-    return insertMetaEntry(arena, try arena.dupeZ(u8, with_field), "options", entry);
+    const result = try insertMetaEntry(arena, try arena.dupeZ(u8, with_field), "options", entry);
+    return ensureParses(arena, result);
 }
 
 /// Add an argument to a command's source: a field in `Args` (at `anchor`) and an
@@ -45,7 +47,20 @@ pub fn insertArg(arena: std.mem.Allocator, source: [:0]const u8, a: spec.ArgSpec
     const field = try spec.renderArgField(arena, a);
     const with_field = try insertStructField(arena, source, "Args", field, anchor);
     const entry = try spec.renderArgMetaEntry(arena, a);
-    return insertMetaEntry(arena, try arena.dupeZ(u8, with_field), "args", entry);
+    const result = try insertMetaEntry(arena, try arena.dupeZ(u8, with_field), "args", entry);
+    return ensureParses(arena, result);
+}
+
+/// Guard against emitting Zig that won't compile: re-parse the spliced result and
+/// refuse it (leaving the caller to abort before writing) if the AST has errors.
+/// A user-supplied `--type` is spliced verbatim, so a typo like `--type u3 2`
+/// would otherwise rewrite the file into a non-compiling state under a success
+/// message. `insertStructField`/`insertMetaEntry` are safe to reuse directly in
+/// chained splices — they re-parse each intermediate result themselves.
+fn ensureParses(arena: std.mem.Allocator, result: []u8) ![]u8 {
+    const ast = try Ast.parse(arena, try arena.dupeZ(u8, result), .zig);
+    if (ast.errors.len != 0) return SpliceError.ResultDoesNotParse;
+    return result;
 }
 
 /// The existing field names of a command's `Args`/`Options` struct, in source
@@ -561,6 +576,38 @@ test "duplicate field is rejected" {
         .default_expr = "1",
         .description = "",
     }));
+}
+
+test "insertOption rejects a --type that would not compile" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A malformed element type is spliced verbatim into `Options`, yielding
+    // `bad field: u3 2 = null` — which does not parse. The splice must refuse it
+    // rather than hand back non-compiling source the caller would write.
+    try testing.expectError(SpliceError.ResultDoesNotParse, insertOption(a, shell, .{
+        .name = "bad",
+        .elem_type = "u3 2",
+        .multiple = false,
+        .nullable = true,
+        .default_expr = null,
+        .description = "",
+    }));
+}
+
+test "insertArg rejects a --type that would not compile" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectError(SpliceError.ResultDoesNotParse, insertArg(a, shell, .{
+        .name = "bad",
+        .elem_type = "u3 2",
+        .multiple = false,
+        .nullable = true,
+        .description = "",
+    }, .append));
 }
 
 test "fieldNames reads Args in source order" {

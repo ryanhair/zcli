@@ -108,6 +108,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     const updated = splice.insertArg(arena, source, arg, anchor) catch |err| switch (err) {
         splice.SpliceError.DuplicateField => return context.fail("Error: {s} already has an argument named '{s}'", .{ file_path, name }),
+        splice.SpliceError.ResultDoesNotParse => return context.fail("Error: adding this argument would make {s} fail to compile (check --type '{s}')\nNo changes were written.", .{ file_path, arg.elem_type }),
         else => {
             try stderr.print("Error: could not edit {s}: {s}\n", .{ file_path, @errorName(err) });
             return err;

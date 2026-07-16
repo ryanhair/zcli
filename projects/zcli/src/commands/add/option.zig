@@ -95,6 +95,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     const updated = splice.insertOption(arena, source, opt) catch |err| switch (err) {
         splice.SpliceError.DuplicateField => return context.fail("Error: {s} already has an option named '{s}'", .{ file_path, name }),
+        splice.SpliceError.ResultDoesNotParse => return context.fail("Error: adding this option would make {s} fail to compile (check --type '{s}')\nNo changes were written.", .{ file_path, opt.elem_type }),
         else => {
             try stderr.print("Error: could not edit {s}: {s}\n", .{ file_path, @errorName(err) });
             return err;
