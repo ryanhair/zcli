@@ -23,6 +23,11 @@ const FakeContext = struct {
     pub fn stderr(self: *@This()) *std.Io.Writer {
         return self.stderr_writer;
     }
+
+    pub fn fail(self: *@This(), comptime fmt: []const u8, args: anytype) error{CommandFailed} {
+        self.stderr_writer.print(fmt ++ "\n", args) catch {};
+        return error.CommandFailed;
+    }
 };
 
 fn makeCtx(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map, cmd_path: []const []const u8, stderr: *std.Io.Writer) FakeContext {
