@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) !void {
     // command file as its own test root, with `zcli-testing` (the unit tier,
     // `runCommand`) wired in — see `src/commands/greet.zig`'s own `test`
     // blocks. Returns the `test` step so more tiers can attach to it below.
-    const test_step = zcli.addCommandTests(b, zcli_dep, .{
+    const test_step = zcli.addCommandTests(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,
         .optimize = optimize,

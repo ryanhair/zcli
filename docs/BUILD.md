@@ -277,7 +277,7 @@ command-test stub only wires the shared modules you hand it, so a command that
 imports one won't compile under `zig build test` otherwise:
 
 ```zig
-_ = zcli.addCommandTests(b, zcli_dep, .{
+_ = zcli.addCommandTests(b, exe, zcli_dep, .{
     .commands_dir = "src/commands",
     .target = target,
     .optimize = optimize,
@@ -299,9 +299,15 @@ compiles each as its own in-process test binary, so a command's `test` blocks
 (typically using `zcli-testing`'s `runCommand`) actually run — without pulling
 in the whole generated app.
 
+`exe` is the project's real executable (the same one passed to `generate()`);
+the returned `test` step depends on it so `zig build test` also proves the
+real registry/main.zig link — on every OS the test job runs on, not just
+wherever someone happens to run `zig build build-examples`/install the exe.
+
 ```zig
 pub fn addCommandTests(
     b: *std.Build,
+    exe: *std.Build.Step.Compile,
     zcli_dep: *std.Build.Dependency,
     config: zcli.CommandTestsConfig,
 ) *std.Build.Step
@@ -330,7 +336,7 @@ registry — a command's tests must not require the whole app to compile.
 
 ```zig
 // build.zig
-_ = zcli.addCommandTests(b, zcli_dep, .{
+_ = zcli.addCommandTests(b, exe, zcli_dep, .{
     .commands_dir = "src/commands",
     .target = target,
     .optimize = optimize,
