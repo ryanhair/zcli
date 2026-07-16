@@ -1428,6 +1428,19 @@ fn runInteractiveWindows(
         }
         if (cp.waitExit(0)) |code| {
             exit_code = code;
+            // The process object has signaled, but ConPTY's conhost renders the
+            // child's console on its own thread and may still be flushing a final
+            // burst of VT into the output pipe. waitExit reports the process, not
+            // the pipe, and a single empty 50ms pollRead window above is not proof
+            // the pipe is drained. Keep reading until a full window elapses with
+            // nothing available (PeekNamedPipe reporting 0 / broken pipe) so a
+            // trailing write is never dropped — the ConPTY analogue of the POSIX
+            // drain-to-HUP edge.
+            while (true) {
+                const remaining = cp.pollRead(&temp_buffer, 50);
+                if (remaining == 0) break;
+                try output_buffer.appendSlice(allocator, temp_buffer[0..remaining]);
+            }
             break;
         }
         const elapsed: u64 = @intCast(nowMs(io) - start_time);
