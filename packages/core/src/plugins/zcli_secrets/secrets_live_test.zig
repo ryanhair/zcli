@@ -201,29 +201,24 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
 // ---------------------------------------------------------------------------
 //
 // This exercises the macOS Keychain `set` retry (PR #234): its store path is
-// Add → (on duplicate) Find → Modify, which has *two* TOCTOU windows — a
-// concurrent `delete` landing between our Add and our Find, or between our Find
-// and our Modify, makes the later call return `errSecItemNotFound`; the bounded
-// retry re-Adds rather than surfacing an opaque `KeychainFailure`. Nothing raced
-// `set` against `delete` before, so that retry had never actually run. This drives
-// it live: one worker hammers `set` with distinct values while two others hammer
-// `delete`, all against the same key.
+// Add → (on duplicate) Update, which has a TOCTOU window — a concurrent `delete`
+// landing between our Add and our Update makes the Update return
+// `errSecItemNotFound`; the bounded retry re-Adds rather than surfacing an opaque
+// `KeychainFailure`. Nothing raced `set` against `delete` before, so that retry
+// had never actually run. This drives it live: one worker hammers `set` with
+// distinct values while two others hammer `delete`, all against the same key.
 //
 // ## Why the racers are separate *processes*, not threads
 //
 // The realistic scenario the retry defends against is two CLI *invocations*
 // racing (a `login` writing a token while a `logout` deletes it) — separate
 // processes contending on the shared OS store, which is exactly what a keychain /
-// Secret Service is built to serialize. It is NOT two threads in one process:
-// macOS's legacy `SecKeychain*GenericPassword` API (what `keychain_macos.zig`
-// uses) is not safe for concurrent same-process mutation of one item — two threads
-// doing Add/Modify vs Delete deadlock inside Security.framework's own
-// `securityd`-side mutex (observed via `sample`: both threads blocked in
-// `_pthread_mutex_firstfit_lock_wait` under `SecKeychainItemDelete` /
-// `SecKeychainItemModifyAttributesAndData`). That deadlock is an Apple-API
-// limitation, not a zcli bug, and a CLI is single-threaded anyway — so racing with
-// threads would only manufacture a hang that no product code path can hit. Racing
-// with processes models the real contention and lets the OS store arbitrate it.
+// Secret Service is built to serialize. It is NOT two threads in one process: a
+// CLI is single-threaded, so racing one item's mutation from two threads of a
+// single process is a shape no product code path can hit (and the legacy
+// `SecKeychain*GenericPassword` API this backend used before the SecItem
+// migration would even deadlock in `securityd` under it). Racing with processes
+// models the real contention and lets the OS store arbitrate it.
 //
 // The test re-exec's *itself*: `std.process.executablePath` gives this test
 // binary's path, and each child is spawned with `ZCLI_SECRETS_RACE_ROLE` set to
