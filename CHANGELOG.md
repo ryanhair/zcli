@@ -86,4 +86,4 @@ Zig 0.15.1 era. Windows support landed (v0.15.0), `std.posix.getenv` was dropped
 
 ## v0.1.0 – v0.13.1 — 2025-10-09 to 2025-10-19
 
-The foundation, built in ten days: build-time command discovery and routing, the plugin system (help, version, not-found, completions, config, output, upgrade), shell completions, hidden commands, shared modules, the `zcli` meta-CLI with `init`/`release`/`upgrade`, and the `curl | sh` install script. The dual-tag release scheme (`v*` library / `zcli-v*` CLI) was established at v0.11.0.
+The foundation, built in ten days: build-time command discovery and routing, the plugin system (help, version, not-found, completions, config, upgrade), shell completions, hidden commands, shared modules, the `zcli` meta-CLI with `init`/`release`/`upgrade`, and the `curl | sh` install script. The dual-tag release scheme (`v*` library / `zcli-v*` CLI) was established during the 0.11–0.14 series.
