@@ -49,4 +49,4 @@ All of these also run from the repo root: `zig build test-core` aggregates the `
 - [docs/DESIGN.md](../../docs/DESIGN.md) — architecture and runtime design
 - [docs/BUILD.md](../../docs/BUILD.md) — the codegen pipeline
 - [zcli.sh/testing](https://zcli.sh/testing/) — the testing tiers
-- [docs/adr/](../../docs/adr/) — the decision record (0001–0009)
+- [docs/adr/](../../docs/adr/) — the decision record (0001–0027)
