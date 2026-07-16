@@ -269,8 +269,8 @@ pub fn writeGlobalOptionsSection(writer: *std.Io.Writer, fmt: anytype, context: 
     for (global_opts) |opt| {
         if (opt.short) |short| {
             try fmt.write("    <flag>-{c}</flag>, <flag>--{s}</flag>", .{ short, opt.name });
-            // Pad to align descriptions
-            const used = 8 + opt.name.len; // "-x, --name"
+            // Pad to align descriptions. Visible prefix is "-x, --" (6) + name.
+            const used = 6 + opt.name.len; // "-x, --name"
             if (used < NAME_COLUMN_WIDTH) {
                 var i: usize = 0;
                 while (i < NAME_COLUMN_WIDTH - used) : (i += 1) {
@@ -281,7 +281,8 @@ pub fn writeGlobalOptionsSection(writer: *std.Io.Writer, fmt: anytype, context: 
             }
         } else {
             try fmt.write("    <flag>--{s}</flag>", .{opt.name});
-            const used = 4 + opt.name.len;
+            // Visible prefix is "--" (2) + name.
+            const used = 2 + opt.name.len;
             if (used < NAME_COLUMN_WIDTH) {
                 var i: usize = 0;
                 while (i < NAME_COLUMN_WIDTH - used) : (i += 1) {

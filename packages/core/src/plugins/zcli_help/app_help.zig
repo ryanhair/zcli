@@ -140,6 +140,19 @@ fn showCommandList(context: anytype, fmt: anytype) !void {
     var displayed_names: std.ArrayList([]const u8) = .empty;
     defer displayed_names.deinit(context.allocator);
 
+    // A group marked hidden hides its whole subtree from listings: a hidden
+    // `secret/index.zig` (path == {"secret"}, hidden) must also suppress a
+    // visible `secret/list.zig`, which would otherwise re-insert "secret" into
+    // the top-level list with no description. Collect the top-level names of all
+    // hidden groups first so we can filter their descendants below.
+    var hidden_groups = std.StringHashMap(void).init(context.allocator);
+    defer hidden_groups.deinit();
+    for (command_infos) |cmd_info| {
+        if (cmd_info.hidden and cmd_info.path.len == 1) {
+            try hidden_groups.put(cmd_info.path[0], {});
+        }
+    }
+
     // First pass: collect unique command names and find the best description for each
     // Use CommandDisplayInfo to also track aliases
     var command_map = std.StringHashMap(CommandDisplayInfo).init(context.allocator);
@@ -150,6 +163,8 @@ fn showCommandList(context: anytype, fmt: anytype) !void {
         if (cmd_info.hidden) continue;
 
         if (cmd_info.path.len < 1) continue;
+        // Skip descendants of a hidden group (hiddenness propagates downward).
+        if (hidden_groups.contains(cmd_info.path[0])) continue;
         const display_name = cmd_info.path[0];
         // Exact match if this is a top-level command (path.len == 1); a nested
         // command contributes its top-level name but no description.
@@ -312,6 +327,39 @@ test "showCommandList: dedups, sorts alphabetically, and renders aliases" {
 
     // The nested subcommand does not leak into the top-level list.
     try std.testing.expect(std.mem.indexOf(u8, out, "sub") == null);
+}
+
+test "showCommandList: a hidden group suppresses its visible children" {
+    const allocator = std.testing.allocator;
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // `secret` is a hidden group (its index is hidden) but has a visible child
+    // `secret list`. Hiddenness must propagate: neither `secret` nor its child
+    // may appear in the top-level command list. `apple` stays visible.
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"apple"}, .description = "Apple command" },
+        .{ .path = &.{"secret"}, .description = "Secret group", .hidden = true },
+        .{ .path = &.{ "secret", "list" }, .description = "List secrets" },
+    };
+
+    var fmt = md.formatterWithPalette(ctx.stdout(), ctx.theme.capability(), app_palette);
+    try showCommandList(&ctx, &fmt);
+    try ctx.stdout().flush();
+
+    const out = aw.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "apple") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "secret") == null);
 }
 
 test "isAlias: name in aliases list" {
