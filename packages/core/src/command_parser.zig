@@ -1102,7 +1102,7 @@ test "#287 non-integer negative as an option value (both positions agree)" {
 test "#427 bundled short with value-taker last consumes the separated value" {
     const allocator = std.testing.allocator;
     const Options = struct { verbose: bool = false, file: []const u8 = "" };
-    const meta = .{ .options = .{ .file = .{ .short = 'f' } } };
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' }, .file = .{ .short = 'f' } } };
 
     const result = try parseCommandLine(struct {}, Options, meta, allocator, null, &.{ "-vf", "out.txt" }, null);
     defer result.deinit();
@@ -1113,7 +1113,7 @@ test "#427 bundled short with value-taker last consumes the separated value" {
 test "#427 bundled short with attached value" {
     const allocator = std.testing.allocator;
     const Options = struct { verbose: bool = false, file: []const u8 = "" };
-    const meta = .{ .options = .{ .file = .{ .short = 'f' } } };
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' }, .file = .{ .short = 'f' } } };
 
     const result = try parseCommandLine(struct {}, Options, meta, allocator, null, &.{"-vfout.txt"}, null);
     defer result.deinit();
@@ -1124,7 +1124,7 @@ test "#427 bundled short with attached value" {
 test "#427 unbundled short value-taker still works" {
     const allocator = std.testing.allocator;
     const Options = struct { verbose: bool = false, file: []const u8 = "" };
-    const meta = .{ .options = .{ .file = .{ .short = 'f' } } };
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' }, .file = .{ .short = 'f' } } };
 
     const result = try parseCommandLine(struct {}, Options, meta, allocator, null, &.{ "-v", "-f", "out.txt" }, null);
     defer result.deinit();
@@ -1136,7 +1136,7 @@ test "#427 all-boolean bundle keeps a following word as a positional" {
     const allocator = std.testing.allocator;
     const Args = struct { path: []const u8 };
     const Options = struct { verbose: bool = false, debug: bool = false };
-    const meta = .{ .options = .{ .debug = .{ .short = 'd' } } };
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' }, .debug = .{ .short = 'd' } } };
 
     const result = try parseCommandLine(Args, Options, meta, allocator, null, &.{ "-vd", "input.txt" }, null);
     defer result.deinit();
@@ -1149,7 +1149,7 @@ test "#427 value-taker mid-bundle takes the rest as attached value, next word st
     const allocator = std.testing.allocator;
     const Args = struct { path: []const u8 };
     const Options = struct { verbose: bool = false, file: []const u8 = "", debug: bool = false };
-    const meta = .{ .options = .{ .file = .{ .short = 'f' }, .debug = .{ .short = 'd' } } };
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' }, .file = .{ .short = 'f' }, .debug = .{ .short = 'd' } } };
 
     // `-vfd`: v is boolean, f is the first value-taker and is not the last char,
     // so the remaining `d` is f's attached value (NOT a boolean flag). The
