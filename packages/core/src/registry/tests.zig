@@ -1150,6 +1150,11 @@ const TypedGlobalsPlugin = struct {
     var captured_err: ?anyerror = null;
     var captured_diag: ?zcli.ZcliDiagnostic = null;
     var command_ran: bool = false;
+    // Positional args the `echo` command received — lets tests confirm that a
+    // token which looks like a global option lands in the command's positionals
+    // (rather than being consumed by the global layer) after a bare `--`.
+    var echo_first: []const u8 = "";
+    var echo_second: []const u8 = "";
 
     pub fn reset() void {
         level = -1;
@@ -1161,6 +1166,8 @@ const TypedGlobalsPlugin = struct {
         captured_err = null;
         captured_diag = null;
         command_ran = false;
+        echo_first = "";
+        echo_second = "";
     }
 
     pub const global_options = [_]zcli.GlobalOption{
@@ -1204,6 +1211,22 @@ const TypedGlobalsPlugin = struct {
                 _ = args;
                 _ = options;
                 _ = context;
+                TypedGlobalsPlugin.command_ran = true;
+            }
+        };
+
+        // Two positionals so tests can send option-shaped tokens after `--`
+        // (including a value-taking global's name and its value) and confirm
+        // they arrive as the command's positionals untouched.
+        pub const echo = struct {
+            pub const meta = .{ .description = "echoes two positionals" };
+            pub const Args = struct { first: []const u8, second: []const u8 };
+            pub const Options = struct {};
+            pub fn execute(args: Args, options: Options, context: anytype) !void {
+                _ = options;
+                _ = context;
+                TypedGlobalsPlugin.echo_first = args.first;
+                TypedGlobalsPlugin.echo_second = args.second;
                 TypedGlobalsPlugin.command_ran = true;
             }
         };
@@ -1342,6 +1365,57 @@ test "global options: defaultValue recovers the typed comptime default" {
             try testing.expectEqualStrings("", opt.defaultValue(opt.type));
         }
     }
+}
+
+// A bare `--` at the global layer terminates global-option matching, exactly as
+// the command parsers do (options/parser.zig, command_parser.zig). Tokens after
+// `--` — even option-shaped ones — flow to the command as positionals instead of
+// being consumed as globals, so the two layers can no longer disagree (#501).
+test "global options: a bare `--` shields following tokens from the global layer (#501)" {
+    const TestApp = typedGlobalsApp();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    // A boolean global's long form after `--` is a positional, not a global.
+    TypedGlobalsPlugin.reset();
+    try runQuiet(&app, &test_environ, &.{ "echo", "--", "--verbose", "hello" });
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+    try testing.expect(!TypedGlobalsPlugin.verbose);
+    try testing.expectEqualStrings("--verbose", TypedGlobalsPlugin.echo_first);
+    try testing.expectEqualStrings("hello", TypedGlobalsPlugin.echo_second);
+
+    // A value-taking global after `--` keeps BOTH its name and its value as
+    // positionals — the global layer must not steal `--level 5`.
+    TypedGlobalsPlugin.reset();
+    try runQuiet(&app, &test_environ, &.{ "echo", "--", "--level", "5" });
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+    try testing.expectEqual(@as(i64, -1), TypedGlobalsPlugin.level); // never dispatched
+    try testing.expectEqualStrings("--level", TypedGlobalsPlugin.echo_first);
+    try testing.expectEqualStrings("5", TypedGlobalsPlugin.echo_second);
+
+    // Short global forms after `--` are also just positionals.
+    TypedGlobalsPlugin.reset();
+    try runQuiet(&app, &test_environ, &.{ "echo", "--", "-v", "-l" });
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+    try testing.expect(!TypedGlobalsPlugin.verbose);
+    try testing.expectEqualStrings("-v", TypedGlobalsPlugin.echo_first);
+    try testing.expectEqualStrings("-l", TypedGlobalsPlugin.echo_second);
+}
+
+// Only the terminator and what follows are shielded; globals BEFORE `--` are
+// still consumed normally (#501).
+test "global options: globals before `--` still parse (#501)" {
+    const TestApp = typedGlobalsApp();
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    TypedGlobalsPlugin.reset();
+    try runQuiet(&app, &test_environ, &.{ "-v", "echo", "--", "-l", "x" });
+    try testing.expect(TypedGlobalsPlugin.command_ran);
+    try testing.expect(TypedGlobalsPlugin.verbose); // consumed before `--`
+    try testing.expectEqual(@as(i64, -1), TypedGlobalsPlugin.level); // shielded after `--`
+    try testing.expectEqualStrings("-l", TypedGlobalsPlugin.echo_first);
+    try testing.expectEqualStrings("x", TypedGlobalsPlugin.echo_second);
 }
 
 // ============================================================================

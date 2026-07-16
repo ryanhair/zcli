@@ -726,16 +726,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // diagnostic when unhandled.
             const global_result = self.parseGlobalOptions(&context, current_args) catch |err| {
                 if (!isReportedCliError(err)) return err;
-                var error_handled = false;
-                inline for (sorted_plugins) |Plugin| {
-                    if (@hasDecl(Plugin, "onError")) {
-                        if (try Plugin.onError(&context, err)) {
-                            error_handled = true;
-                            break;
-                        }
-                    }
-                }
-                if (!error_handled) {
+                // Dispatch through runOnErrorHooks (not a bare `try Plugin.onError`)
+                // so a hook that itself errors can't shadow the original parse
+                // diagnostic — the same catch-warn-continue contract every other
+                // error site uses (#390/#512).
+                if (!try runOnErrorHooks(&context, err)) {
                     try reportParseError(&context, context.diagnostic);
                     return err;
                 }
@@ -844,11 +839,20 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             defer remaining.deinit(context.allocator);
 
             var i: usize = 0;
+            // Once a bare `--` is seen, stop matching global options for the rest
+            // of argv — the command-level parsers honor `--` as an end-of-options
+            // terminator (options/parser.zig, command_parser.zig), so the global
+            // layer must too or the two disagree (#501). The `--` itself and every
+            // token after it flow untouched into `remaining` so the command parser
+            // still sees its own terminator.
+            var options_ended = false;
             while (i < args.len) {
                 const arg = args[i];
                 var handled = false;
 
-                if (std.mem.startsWith(u8, arg, "--")) {
+                if (!options_ended and std.mem.eql(u8, arg, "--")) {
+                    options_ended = true;
+                } else if (!options_ended and std.mem.startsWith(u8, arg, "--")) {
                     // Split `--name=value` before matching, mirroring the
                     // command-option long path (#391).
                     const opt_body = arg[2..];
@@ -896,7 +900,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                             break;
                         }
                     }
-                } else if (std.mem.startsWith(u8, arg, "-") and arg.len == 2) {
+                } else if (!options_ended and std.mem.startsWith(u8, arg, "-") and arg.len == 2) {
                     // Single short option: mirrors the long path, including
                     // values for non-boolean globals (`-c config.json`).
                     const short_char = arg[1];
@@ -926,7 +930,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                             break;
                         }
                     }
-                } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 2) {
+                } else if (!options_ended and std.mem.startsWith(u8, arg, "-") and arg.len > 2) {
                     // Bundled shorts (-abc): consumed as globals only when
                     // EVERY char is a boolean global — a partial match would
                     // silently drop the other chars, and a value-taking short

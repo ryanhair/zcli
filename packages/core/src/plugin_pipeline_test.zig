@@ -561,6 +561,32 @@ test "pipeline: a failing onError hook falls through to the next handler (#390)"
     try testing.expectEqual(@as(?anyerror, error.Boom), SuppressErrPlugin.seen);
 }
 
+// The global-option parse-error path must dispatch onError through the same
+// catch-warn-continue machinery as every other error site — a bare
+// `try Plugin.onError` there would let a hook error shadow the original global
+// parse diagnostic and skip later hooks (#512, the #390 regression at a
+// different layer). `--verbose=x` is a boolean-with-value error raised inside
+// parseGlobalOptions before any command routing.
+test "pipeline: a failing onError hook at the global-option layer does not swallow the parse error (#512)" {
+    const App = zcli.Registry.init(test_config)
+        .register("greet", Greet)
+        .registerPlugin(GlobalOptPlugin)
+        .registerPlugin(ThrowingOnError)
+        .registerPlugin(SuppressErrPlugin)
+        .build();
+
+    SuppressErrPlugin.seen = null;
+    const cap = try runCapture(App, &.{ "--verbose=x", "greet" });
+    defer cap.deinit(testing.allocator);
+
+    // The throwing hook ran first and its failure was surfaced, not dropped.
+    try testing.expect(contains(cap.stderr, "onError hook failed with HookBoom"));
+    // The lower-priority handler still saw the ORIGINAL global parse error
+    // (not the hook's HookBoom) and suppressed it.
+    try testing.expectEqual(@as(?anyerror, null), cap.err);
+    try testing.expectEqual(@as(?anyerror, error.OptionBooleanWithValue), SuppressErrPlugin.seen);
+}
+
 test "pipeline: onError returning true suppresses CommandNotFound" {
     const App = zcli.Registry.init(test_config)
         .register("greet", Greet)
