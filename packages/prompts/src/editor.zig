@@ -23,8 +23,9 @@ pub const EditorConfig = struct {
     environ: ?*const std.process.Environ.Map = null,
 };
 
-/// Launch the user's editor for multiline input. Returns owned string, or
-/// `error.EndOfStream` if stdin closes with no input to submit.
+/// Launch the user's editor for multiline input. Returns owned string,
+/// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
+/// stdin closes with no input to submit.
 pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
@@ -35,6 +36,9 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
         try writer.print("{s}{s}", .{ config.prefix, config.message });
         // Non-TTY: read all remaining input until EOF.
         try writer.writeAll("\n");
+        // Flush so the prompt is visible before we block reading input —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
         while (true) {

@@ -23,8 +23,9 @@ pub const SelectConfig = struct {
 };
 
 /// Prompt to select one item from a list. Returns the chosen index,
-/// `error.Interrupted` if the user presses one of `config.interrupt_keys`, or
-/// `error.EndOfStream` if stdin closes with no line to submit.
+/// `error.Interrupted` if the user presses one of `config.interrupt_keys`,
+/// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
+/// stdin closes with no line to submit.
 pub fn select(p: Prompts, config: SelectConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
@@ -38,6 +39,9 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
             try writer.print("  {d}) {s}\n", .{ i, choice });
         }
         try writer.writeAll("> ");
+        // Flush so the prompt is visible before we block reading the reply —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         const line = try readLine(reader, p.allocator);
         defer p.allocator.free(line);
         const num = std.fmt.parseInt(usize, line, 10) catch return 0;

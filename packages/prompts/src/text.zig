@@ -33,8 +33,9 @@ pub const TextConfig = struct {
 };
 
 /// Prompt for text input. Returns an owned string (caller frees),
-/// `error.Interrupted` if the user presses one of `config.interrupt_keys`, or
-/// `error.EndOfStream` if stdin closes with no line to submit.
+/// `error.Interrupted` if the user presses one of `config.interrupt_keys`,
+/// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
+/// stdin closes with no line to submit.
 pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
@@ -48,6 +49,9 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
             try writer.print(" ({s})", .{def});
         }
         try writer.writeAll(" ");
+        // Flush so the prompt is visible before we block reading the reply —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         const line = try readLine(reader, allocator);
         defer allocator.free(line);
         if (line.len == 0) {
@@ -265,6 +269,67 @@ test "text: prompt message appears in output" {
     const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "Enter name:") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "(foo)") != null);
+}
+
+// A genuinely buffered writer: bytes accumulate in an internal buffer and only
+// reach `sink` when the writer is drained (i.e. flushed, or the buffer fills).
+// `std.Io.Writer.fixed` can't model the bug because its bytes are observable in
+// its buffer immediately; this one keeps them hidden until a flush, exactly like
+// a real buffered stdout.
+const BufferedSpy = struct {
+    writer: std.Io.Writer,
+    sink: *std.ArrayList(u8),
+    gpa: std.mem.Allocator,
+
+    fn init(buffer: []u8, sink: *std.ArrayList(u8), gpa: std.mem.Allocator) BufferedSpy {
+        return .{
+            .writer = .{ .vtable = &.{ .drain = drain }, .buffer = buffer },
+            .sink = sink,
+            .gpa = gpa,
+        };
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *BufferedSpy = @fieldParentPtr("writer", w);
+        self.sink.appendSlice(self.gpa, w.buffered()) catch return error.WriteFailed;
+        _ = w.consume(w.end);
+        var written: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            self.sink.appendSlice(self.gpa, bytes) catch return error.WriteFailed;
+            written += bytes.len;
+        }
+        const last = data[data.len - 1];
+        var i: usize = 0;
+        while (i < splat) : (i += 1) {
+            self.sink.appendSlice(self.gpa, last) catch return error.WriteFailed;
+        }
+        return written + last.len * splat;
+    }
+};
+
+test "text: non-TTY flushes the prompt before blocking on the read" {
+    // Regression for #456: the non-TTY path must flush the writer before it
+    // blocks reading the reply, or a buffered writer strands the prompt in its
+    // buffer and the user sees nothing until after they've typed. The only flush
+    // in this path is the one before the read, so anything reaching `sink` mid-
+    // call proves it happened. Without the fix `sink` stays empty (the prompt is
+    // never drained during the call).
+    const allocator = std.testing.allocator;
+
+    var sink = std.ArrayList(u8).empty;
+    defer sink.deinit(allocator);
+    var buffer: [256]u8 = undefined;
+    var spy = BufferedSpy.init(&buffer, &sink, allocator);
+
+    var input = "hello\n".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+
+    const result = try text(.{ .writer = &spy.writer, .reader = &input_reader, .allocator = allocator }, .{
+        .message = "Name:",
+    });
+    defer allocator.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, sink.items, "Name:") != null);
 }
 
 test "frameNode: prompt line with input; preview row above wears the hint token" {

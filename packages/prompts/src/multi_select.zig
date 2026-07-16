@@ -19,7 +19,8 @@ pub const MultiSelectConfig = struct {
 };
 
 /// Prompt to select multiple items. Returns owned slice of selected indices,
-/// or `error.EndOfStream` if stdin closes with no line to submit.
+/// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
+/// stdin closes with no line to submit.
 pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
     const writer = p.writer;
     const reader = p.reader;
@@ -37,6 +38,9 @@ pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
         }
         try writer.writeAll("> ");
 
+        // Flush so the prompt is visible before we block reading the reply —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         // A submitted blank line accepts the defaults; a closed stdin errors.
         const line = try readLine(reader, allocator);
         defer allocator.free(line);

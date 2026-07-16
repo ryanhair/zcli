@@ -16,8 +16,9 @@ pub const PasswordConfig = struct {
     prefix: []const u8 = "? ",
 };
 
-/// Prompt for password input with masking. Returns owned string, or
-/// `error.EndOfStream` if stdin closes with no line to submit.
+/// Prompt for password input with masking. Returns owned string,
+/// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
+/// stdin closes with no line to submit.
 pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
@@ -27,6 +28,9 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     if (!is_tty) {
         // Non-TTY: read line (no masking possible)
         try writer.print("{s}{s} ", .{ config.prefix, config.message });
+        // Flush so the prompt is visible before we block reading the reply —
+        // buffered writers otherwise strand it until after input arrives.
+        Prompts.flushWriter(writer);
         const line = try readLine(reader, allocator);
         try writer.writeAll("\n");
         return line;
