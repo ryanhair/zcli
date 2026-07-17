@@ -92,8 +92,18 @@ const topics = [_]Topic{
         \\File path = command path:
         \\  src/commands/deploy.zig        → app deploy
         \\  src/commands/users/create.zig  → app users create
-        \\  src/commands/users/index.zig   → the "users" group landing (empty Args)
+        \\  src/commands/users/index.zig   → the "users" group landing
+        \\  src/commands/index.zig         → the root command: `app` itself
         \\  src/plugins/<name>.zig         → an auto-discovered plugin
+        \\
+        \\The root of src/commands/ is a group like any other. A top-level
+        \\index.zig is the root command — it runs for `app` with no subcommand,
+        \\for leading options (`app --loud`), and, when its Args declares
+        \\positionals, for bare words that match no command (`app World`). An
+        \\executable root index with no sibling commands is a single-command CLI
+        \\(rg/fd style). Exact command names always win over root positionals.
+        \\A group index (root included) may declare positional Args; an index
+        \\with NO positionals keeps "did you mean" suggestions for stray words.
         \\
         \\A command file declares `meta`, `Args`, `Options`, and `execute`. `execute`
         \\returns `!void`, so returning an error fails the command with a non-zero

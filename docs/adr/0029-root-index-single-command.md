@@ -1,6 +1,6 @@
 # First-class single-command CLIs: the root is a group
 
-Status: proposed
+Status: accepted (implemented — all four increments)
 
 A large class of excellent CLIs is a single command: `rg`, `fd`, `jq`, `curl`.
 zcli today half-supports this via a special `src/commands/root.zig` file: the
@@ -84,12 +84,16 @@ document this, don't special-case it.
   only file-based command, lead with `myapp [OPTIONS] <ARGS>` usage and its
   ARGUMENTS/OPTIONS; list plugin commands (e.g. `help`) only if visible. The
   existing merged app+root help rendering carries over.
-- **Completions**: top-level completion offers the root index's options and
-  positional hints (enum candidates, dynamic callback per ADR-0026), not just
-  command names.
+- **Completions**: top-level completion offers the root index's options in
+  all four shells (the root's metadata attaches to the completion tree's
+  synthetic root; bash/PowerShell pick it up via their existing empty-key
+  cases, zsh/fish gained explicit top-level emission). Root *positional
+  value* completion (enum candidates, dynamic callback) is deferred:
+  position 1 is the command-name slot, and offering both at once needs
+  per-shell alternation work — a follow-up, not part of this ADR's landing.
 - **Docs**: DESIGN.md loses its two `root.zig` lines and documents the
-  root-group model; `zcli guide structure` gains the single-command shape;
-  the website structure guide follows.
+  root-group model; `zcli guide structure` gains the single-command shape.
+  The website structure guide is a follow-up.
 
 ## What is removed
 
