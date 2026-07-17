@@ -1850,9 +1850,7 @@ fn assertFrameSnapshot(
 
     // Full rendered screen, rows joined by newlines, trailing blank rows kept so
     // the golden captures the exact frame geometry.
-    const actual = try screen.getAllText(allocator);
-    defer allocator.free(actual);
-    const framed = try reflowToRows(allocator, actual, screen.width, screen.height);
+    const framed = try screen.getAllLines(allocator);
     defer allocator.free(framed);
 
     const masked = try snapshot.maskDynamicContent(allocator, framed);
@@ -1895,28 +1893,6 @@ fn assertFrameSnapshot(
     }
 }
 
-/// getAllText emits width*height chars with no row breaks; split it back into
-/// `height` rows of `width`, trimming each row's trailing spaces.
-fn reflowToRows(allocator: std.mem.Allocator, flat: []const u8, width: u16, height: u16) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    // getAllText UTF-8-encodes wide chars, so byte length can exceed width*height;
-    // fall back to a plain copy if the geometry doesn't line up (ASCII TUIs, the
-    // common case here, always line up).
-    if (flat.len != @as(usize, width) * @as(usize, height)) {
-        return allocator.dupe(u8, flat);
-    }
-    var row: u16 = 0;
-    while (row < height) : (row += 1) {
-        if (row > 0) try out.append(allocator, '\n');
-        const start = @as(usize, row) * width;
-        var end = start + width;
-        while (end > start and flat[end - 1] == ' ') end -= 1;
-        try out.appendSlice(allocator, flat[start..end]);
-    }
-    return out.toOwnedSlice(allocator);
-}
-
 /// Print a readable rendered-screen diagnostic for a failed contains/row frame
 /// assertion — the whole screen boxed, so the reader sees exactly what WAS
 /// drawn versus what was asserted.
@@ -1933,9 +1909,7 @@ fn printFrameMismatch(allocator: std.mem.Allocator, screen: *vterm.VTerm, assert
         .snapshot => {},
     }
     std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ screen.width, screen.height });
-    const flat = screen.getAllText(allocator) catch return;
-    defer allocator.free(flat);
-    const framed = reflowToRows(allocator, flat, screen.width, screen.height) catch return;
+    const framed = screen.getAllLines(allocator) catch return;
     defer allocator.free(framed);
     printBoxedScreen(framed);
     std.debug.print("\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
@@ -1950,9 +1924,7 @@ fn printFrameNeverSettled(allocator: std.mem.Allocator, screen: *vterm.VTerm, na
     std.debug.print("\u{2502} expectFrame(\"{s}\") — frame never settled within {d}ms (still painting at the deadline)\n", .{ name, timeout_ms });
     std.debug.print("\u{2502} raise the step's timeout/settle window, or check the command for a render that never stops\n", .{});
     std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ screen.width, screen.height });
-    const flat = screen.getAllText(allocator) catch return;
-    defer allocator.free(flat);
-    const framed = reflowToRows(allocator, flat, screen.width, screen.height) catch return;
+    const framed = screen.getAllLines(allocator) catch return;
     defer allocator.free(framed);
     printBoxedScreen(framed);
     std.debug.print("\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
@@ -1986,12 +1958,9 @@ fn dumpScriptFailure(
     }
     if (screen) |term| {
         std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ term.width, term.height });
-        if (term.getAllText(allocator)) |flat| {
-            defer allocator.free(flat);
-            if (reflowToRows(allocator, flat, term.width, term.height)) |framed| {
-                defer allocator.free(framed);
-                printBoxedScreen(framed);
-            } else |_| {}
+        if (term.getAllLines(allocator)) |framed| {
+            defer allocator.free(framed);
+            printBoxedScreen(framed);
         } else |_| {}
     } else {
         std.debug.print("\u{2502} (no VTerm allocated — cannot render screen)\n", .{});
@@ -2374,11 +2343,13 @@ test "endsWithSettled: exact match survives trailing newline and SGR resets" {
     try std.testing.expect(!endsWithSettled("", "ready"));
 }
 
-test "reflowToRows splits a flat screen into trimmed rows" {
+test "getAllLines renders a screen into trimmed rows" {
     const allocator = std.testing.allocator;
-    // 4 wide, 2 tall: "ab  " + "c   " → "ab\nc" (trailing spaces trimmed).
-    const flat = "ab  c   ";
-    const out = try reflowToRows(allocator, flat, 4, 2);
+    // 4 wide, 2 tall: "ab" on row 0, "c" on row 1 → "ab\nc" (padding trimmed).
+    var term = try vterm.VTerm.init(allocator, 4, 2);
+    defer term.deinit();
+    term.write("ab\nc");
+    const out = try term.getAllLines(allocator);
     defer allocator.free(out);
     try std.testing.expectEqualStrings("ab\nc", out);
 }

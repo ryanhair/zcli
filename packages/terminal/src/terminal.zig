@@ -33,6 +33,8 @@ pub const guard = @import("guard.zig");
 /// Display-width measurement and word-wrapping (grapheme- and ANSI-aware).
 pub const wrap = @import("wrap.zig");
 pub const displayWidth = wrap.displayWidth;
+pub const truncateToWidth = wrap.truncateToWidth;
+pub const visibleGraphemes = wrap.visibleGraphemes;
 pub const wrapToWidth = wrap.wrapToWidth;
 pub const wrapForEach = wrap.wrapForEach;
 pub const wrapCount = wrap.wrapCount;

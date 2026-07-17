@@ -15,7 +15,6 @@
 //! what makes the ADR's zero-config defaults fall out.
 
 const std = @import("std");
-const Graphemes = @import("Graphemes");
 const terminal = @import("terminal");
 const surface_mod = @import("surface.zig");
 
@@ -303,24 +302,9 @@ fn writeTruncated(ctx: *const RenderCtx, region: Region, content: []const u8, st
         _ = try region.writeText(0, 0, ellipsis, style);
         return;
     }
-    const keep = prefixForWidth(content, w - ellipsis_w);
+    const keep = terminal.truncateToWidth(content, w - ellipsis_w);
     const cols = try region.writeText(0, 0, content[0..keep], style);
     _ = try region.writeText(cols, 0, ellipsis, style);
-}
-
-/// Byte length of the longest prefix of `text` that fits `width` columns.
-fn prefixForWidth(text: []const u8, width: u16) usize {
-    var cols: usize = 0;
-    var end: usize = 0;
-    var it = Graphemes.iterator(text);
-    while (it.next()) |g| {
-        const gw = g.displayWidth(text);
-        const w: usize = if (gw > 0) @intCast(gw) else 0;
-        if (cols + w > width) break;
-        cols += w;
-        end = g.offset + g.len;
-    }
-    return end;
 }
 
 fn renderBox(ctx: *const RenderCtx, b: *const Box, region: Region) !void {
