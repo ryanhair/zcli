@@ -163,9 +163,10 @@ pub fn frameNode(
     const usable: u16 = @intCast(@min(@max(width -| 1, 1), std.math.maxInt(u16)));
     const height = @max(@as(usize, ws.row), 2);
 
-    const cursor_sym = terminal.symbols.select_cursor(config.unicode);
-    const sel_sym = terminal.symbols.selected(config.unicode);
-    const unsel_sym = terminal.symbols.unselected(config.unicode);
+    const glyphs = ctx.glyphTokens();
+    const cursor_sym = glyphs.select_cursor.pick(config.unicode);
+    const sel_sym = glyphs.selected.pick(config.unicode);
+    const unsel_sym = glyphs.unselected.pick(config.unicode);
     // Cursor row "  <cur> <marker> " and plain row "    <marker> " are both
     // this wide (single-column cursor glyph), so labels and their wrapped
     // continuation lines all align.
@@ -360,7 +361,7 @@ test "frameNode: a wrapping option measures its true physical rows" {
     // header (wraps: it carries the toggle hint) + short(1) + the long
     // label's wrap count at the item width (usable 23 minus the prefix).
     const header_rows = terminal.wrapCount("Pick (space to toggle, enter to confirm)", 23 - 2);
-    const prefix_w = 5 + terminal.displayWidth(terminal.symbols.selected(true));
+    const prefix_w = 5 + terminal.displayWidth(Prompts.default_style.glyphTokens().selected.pick(true));
     const expected = header_rows + 1 + terminal.wrapCount(long, 23 - prefix_w);
     try std.testing.expectEqual(@as(u16, @intCast(expected)), size.h);
 }

@@ -74,6 +74,45 @@ pub const StyleRef = union(enum) {
     }
 };
 
+/// A themeable glyph: the character to paint, plus an ASCII fallback for
+/// terminals that can't render Unicode. `pick` resolves which to use from the
+/// terminal's detected Unicode capability — the capability-based fallback that
+/// used to live in `terminal.symbols`, now owned by the theme so an app can
+/// swap a glyph's *shape* (not just recolor it).
+pub const Glyph = struct {
+    /// The preferred glyph, shown when the terminal advertises UTF-8.
+    unicode: []const u8,
+    /// The fallback shown on a non-Unicode terminal.
+    ascii: []const u8,
+
+    pub fn pick(self: Glyph, unicode: bool) []const u8 {
+        return if (unicode) self.unicode else self.ascii;
+    }
+};
+
+/// Component tokens for adaptive glyph *shapes* (consumed by the prompts and
+/// progress packages). The `PromptTheme`/`ProgressTheme` tokens own glyph
+/// *color*; this is the shape counterpart, so "one place to define how an app
+/// looks" covers both. Defaults are the historical `terminal.symbols` set.
+pub const Glyphs = struct {
+    /// The selection cursor in select-style prompts.
+    select_cursor: Glyph = .{ .unicode = "❯", .ascii = ">" },
+    /// A checked item in a multi-select.
+    selected: Glyph = .{ .unicode = "◉", .ascii = "[x]" },
+    /// An unchecked item in a multi-select.
+    unselected: Glyph = .{ .unicode = "○", .ascii = "[ ]" },
+    /// Success marker (e.g. a completed spinner).
+    success: Glyph = .{ .unicode = "✔", .ascii = "+" },
+    /// Failure marker.
+    failure: Glyph = .{ .unicode = "✖", .ascii = "x" },
+    /// Warning marker.
+    warning: Glyph = .{ .unicode = "⚠", .ascii = "!" },
+    /// Info marker.
+    info: Glyph = .{ .unicode = "ℹ", .ascii = "i" },
+    /// List bullet.
+    bullet: Glyph = .{ .unicode = "•", .ascii = "*" },
+};
+
 /// Component tokens for interactive prompts (consumed by the prompts package).
 pub const PromptTheme = struct {
     /// The selection cursor glyph
@@ -115,6 +154,7 @@ pub const Theme = struct {
     prompts: PromptTheme = .{},
     progress: ProgressTheme = .{},
     surface: SurfaceTheme = .{},
+    glyphs: Glyphs = .{},
 };
 
 pub const default_theme: Theme = .{};
@@ -170,6 +210,11 @@ pub const ThemeContext = struct {
     /// The active theme's surface-chrome component tokens
     pub fn surfaceTokens(self: ThemeContext) SurfaceTheme {
         return self.theme.surface;
+    }
+
+    /// The active theme's adaptive glyph shapes
+    pub fn glyphTokens(self: ThemeContext) Glyphs {
+        return self.theme.glyphs;
     }
 
     /// The effective terminal capability (no_color when color is disabled)

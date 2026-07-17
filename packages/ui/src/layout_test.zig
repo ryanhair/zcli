@@ -700,8 +700,8 @@ test "panel derives an opaque themed surface; every field overridable" {
     try testing.expect(ui.styleEql(s2.cell(4, 1).style, .{ .reverse = true }));
 }
 
-test "role resolves a semantic role through the app palette" {
+test "role resolves a semantic role through an explicit palette" {
     const th = theme_mod.appTheme();
-    try testing.expect(ui.styleEql(ui.role(.muted), th.palette.get(.muted)));
-    try testing.expect(ui.styleEql(ui.role(.accent), th.palette.get(.accent)));
+    try testing.expect(ui.styleEql(ui.role(th, .muted), th.palette.get(.muted)));
+    try testing.expect(ui.styleEql(ui.role(th, .accent), th.palette.get(.accent)));
 }

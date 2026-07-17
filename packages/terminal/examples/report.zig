@@ -50,14 +50,21 @@ pub fn main(init: std.process.Init) !void {
     const unicode = terminal.unicodeSupported(init.environ_map);
     try w.print("unicode (utf-8): {}\n\n", .{unicode});
 
-    // The adaptive symbol set resolves to Unicode glyphs or ASCII fallbacks based
-    // on that detection — this is what prompts/progress use so a non-UTF-8 terminal
-    // still gets readable output instead of mojibake.
-    try w.writeAll("adaptive symbols (resolved for this terminal):\n");
-    try w.print("  cursor  {s}\n", .{terminal.symbols.select_cursor(unicode)});
-    try w.print("  success {s}\n", .{terminal.symbols.success(unicode)});
-    try w.print("  failure {s}\n", .{terminal.symbols.failure(unicode)});
-    try w.print("  warning {s}\n", .{terminal.symbols.warning(unicode)});
-    try w.print("  info    {s}\n", .{terminal.symbols.info(unicode)});
-    try w.print("  bullet  {s}\n", .{terminal.symbols.bullet(unicode)});
+    // Adaptive glyphs resolve to Unicode or an ASCII fallback based on that same
+    // detection — this is what prompts/progress do (via the theme's `Glyphs`
+    // tokens) so a non-UTF-8 terminal gets readable output instead of mojibake.
+    // The glyph *table* now lives in the theme; here we just show the mechanism:
+    // `unicode ? preferred : fallback`.
+    const glyph = struct {
+        fn pick(uni: bool, preferred: []const u8, fallback: []const u8) []const u8 {
+            return if (uni) preferred else fallback;
+        }
+    }.pick;
+    try w.writeAll("adaptive glyphs (resolved for this terminal):\n");
+    try w.print("  cursor  {s}\n", .{glyph(unicode, "❯", ">")});
+    try w.print("  success {s}\n", .{glyph(unicode, "✔", "+")});
+    try w.print("  failure {s}\n", .{glyph(unicode, "✖", "x")});
+    try w.print("  warning {s}\n", .{glyph(unicode, "⚠", "!")});
+    try w.print("  info    {s}\n", .{glyph(unicode, "ℹ", "i")});
+    try w.print("  bullet  {s}\n", .{glyph(unicode, "•", "*")});
 }

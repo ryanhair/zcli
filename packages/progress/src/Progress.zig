@@ -152,22 +152,6 @@ pub const SpinnerStyle = enum {
     }
 };
 
-/// Result symbols for spinner completion. Adapts to terminal unicode support.
-pub const ResultSymbol = struct {
-    pub fn success(unicode: bool) []const u8 {
-        return terminal.symbols.success(unicode);
-    }
-    pub fn failure(unicode: bool) []const u8 {
-        return terminal.symbols.failure(unicode);
-    }
-    pub fn warning(unicode: bool) []const u8 {
-        return terminal.symbols.warning(unicode);
-    }
-    pub fn info(unicode: bool) []const u8 {
-        return terminal.symbols.info(unicode);
-    }
-};
-
 /// Spinner configuration
 pub const SpinnerConfig = struct {
     style: SpinnerStyle = .dots,
@@ -281,24 +265,30 @@ pub const Spinner = struct {
         if (self.active) self.render();
     }
 
+    /// The completion glyph for `role`, resolved through the theme's glyph
+    /// tokens at the terminal's detected unicode capability.
+    fn resultGlyph(self: *Spinner, glyph: theme_pkg.Glyph) []const u8 {
+        return glyph.pick(self.config.unicode);
+    }
+
     /// Stop the spinner with a success message
     pub fn succeed(self: *Spinner, message: []const u8) void {
-        self.finishRole(.success, ResultSymbol.success(self.config.unicode), message);
+        self.finishRole(.success, self.resultGlyph(self.theme.glyphTokens().success), message);
     }
 
     /// Stop the spinner with a failure message
     pub fn fail(self: *Spinner, message: []const u8) void {
-        self.finishRole(.err, ResultSymbol.failure(self.config.unicode), message);
+        self.finishRole(.err, self.resultGlyph(self.theme.glyphTokens().failure), message);
     }
 
     /// Stop the spinner with a warning message
     pub fn warn(self: *Spinner, message: []const u8) void {
-        self.finishRole(.warning, ResultSymbol.warning(self.config.unicode), message);
+        self.finishRole(.warning, self.resultGlyph(self.theme.glyphTokens().warning), message);
     }
 
     /// Stop the spinner with an info message
     pub fn info(self: *Spinner, message: []const u8) void {
-        self.finishRole(.info, ResultSymbol.info(self.config.unicode), message);
+        self.finishRole(.info, self.resultGlyph(self.theme.glyphTokens().info), message);
     }
 
     /// Stop and persist `symbol` + the message as a plain static line.
