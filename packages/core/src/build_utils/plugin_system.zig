@@ -43,9 +43,9 @@ pub fn scanLocalPlugins(b: *std.Build, plugins_dir: []const u8) !?[]PluginInfo {
 /// `scanLocalPlugins` so the entry-iteration and error-propagation behaviour
 /// can be unit-tested against a tmp dir without constructing a `*std.Build`
 /// (mirrors command_discovery's `discoverInDir` split). Real errors mid-scan
-/// (an unreadable subdirectory, a failing stat) propagate; the only skips are
-/// deliberate classification (non-plugin entries, invalid names, dirs without a
-/// plugin.zig).
+/// (an unreadable subdirectory, a failing stat, an invalid plugin name)
+/// propagate; the only skips are deliberate classification (non-plugin
+/// entries, dirs without a plugin.zig).
 fn scanInDir(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, plugins_dir: []const u8) ![]PluginInfo {
     var plugins = std.ArrayList(PluginInfo).empty;
     defer plugins.deinit(allocator);
@@ -58,9 +58,14 @@ fn scanInDir(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, plugins_
                 if (std.mem.endsWith(u8, entry.name, ".zig")) {
                     const plugin_name = entry.name[0 .. entry.name.len - 4]; // Remove .zig
 
-                    if (!isValidPluginName(plugin_name)) {
-                        logging.invalidCommandName(plugin_name, "invalid plugin name");
-                        continue;
+                    // Reject invalid plugin names loudly. Skipping silently
+                    // (the old behavior) made the plugin vanish from the CLI
+                    // with only an easy-to-miss build-log line — the same
+                    // failure mode command_discovery was hardened against
+                    // for command names (#517, #629).
+                    if (pluginNameRejection(plugin_name)) |reason| {
+                        logging.invalidPluginNameError(plugin_name, reason);
+                        return error.InvalidPluginName;
                     }
 
                     const import_name = try std.fmt.allocPrint(allocator, "plugins/{s}", .{plugin_name});
@@ -82,9 +87,10 @@ fn scanInDir(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, plugins_
                 // Multi-file plugins (e.g., metrics/ with plugin.zig inside)
                 if (entry.name[0] == '.') continue; // Skip hidden directories
 
-                if (!isValidPluginName(entry.name)) {
-                    logging.invalidCommandName(entry.name, "invalid plugin directory name");
-                    continue;
+                // Reject invalid plugin names loudly (see the .file branch).
+                if (pluginNameRejection(entry.name)) |reason| {
+                    logging.invalidPluginNameError(entry.name, reason);
+                    return error.InvalidPluginName;
                 }
 
                 // Check if directory has a plugin.zig file. Failing to open a
@@ -242,30 +248,39 @@ pub fn pluginLocator(b: *std.Build, plugin: *const PluginInfo) []const u8 {
 
 /// Validate a plugin file/directory name: identifier-style first char,
 /// then alphanumeric/underscore/dash; path separators and traversal
-/// rejected. (Looser than isValidCommandName — no reserved-name list.)
+/// rejected. (Looser than commandNameRejection — no reserved-name list.)
+/// Returns a human-readable rejection reason, or `null` when the name is
+/// valid — the reason feeds `logging.invalidPluginNameError` so a rejected
+/// plugin fails the build with an actionable message instead of vanishing.
 ///
 /// Also the gate for externally-configured plugin names: `generate()` emits an
 /// external plugin's name verbatim into an `@import("...")` string literal, so a
 /// name containing a quote, backslash, or newline would break out of that
 /// literal. Rejecting anything but this identifier-ish shape closes that path.
-pub fn isValidPluginName(name: []const u8) bool {
-    if (name.len == 0) return false;
+pub fn pluginNameRejection(name: []const u8) ?[]const u8 {
+    if (name.len == 0) return "name is empty";
 
     // Check for forbidden patterns
-    if (std.mem.indexOf(u8, name, "..") != null) return false;
-    if (std.mem.indexOf(u8, name, "/") != null) return false;
-    if (std.mem.indexOf(u8, name, "\\") != null) return false;
+    if (std.mem.indexOf(u8, name, "..") != null) return "contains '..'";
+    if (std.mem.indexOf(u8, name, "/") != null) return "contains '/'";
+    if (std.mem.indexOf(u8, name, "\\") != null) return "contains '\\'";
 
     // Check first character
     const first = name[0];
-    if (!std.ascii.isAlphabetic(first) and first != '_') return false;
+    if (!std.ascii.isAlphabetic(first) and first != '_') return "must start with a letter or underscore";
 
     // Check remaining characters
     for (name[1..]) |char| {
-        if (!std.ascii.isAlphanumeric(char) and char != '_' and char != '-') return false;
+        if (!std.ascii.isAlphanumeric(char) and char != '_' and char != '-') return "contains invalid characters (allowed: letters, digits, '_', '-')";
     }
 
-    return true;
+    return null;
+}
+
+/// Validate a plugin file/directory name. See `pluginNameRejection` for the
+/// rejection reasons this collapses to a bool.
+pub fn isValidPluginName(name: []const u8) bool {
+    return pluginNameRejection(name) == null;
 }
 
 // ============================================================================
@@ -358,6 +373,45 @@ test "scanInDir: empty directory yields no plugins" {
     defer freeScanResult(testing.allocator, plugins);
 
     try testing.expectEqual(@as(usize, 0), plugins.len);
+}
+
+test "scanInDir: hard-errors on an invalid single-file plugin name" {
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // "my plugin.zig" has a space — a plugin named this would previously
+    // vanish from the CLI with only a build-log warning (#669).
+    try tmp.dir.writeFile(io, .{ .sub_path = "my plugin.zig", .data = "pub const foo = 1;" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    try testing.expectError(
+        error.InvalidPluginName,
+        scanInDir(testing.allocator, io, dir, "src/plugins"),
+    );
+}
+
+test "scanInDir: hard-errors on an invalid plugin directory name" {
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // "my plugin/" has a space — same silent-vanish failure mode as above,
+    // but for a multi-file plugin directory.
+    try tmp.dir.createDir(io, "my plugin", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "my plugin/plugin.zig", .data = "pub const foo = 1;" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    try testing.expectError(
+        error.InvalidPluginName,
+        scanInDir(testing.allocator, io, dir, "src/plugins"),
+    );
 }
 
 // NOTE: The real-error classification in `scanLocalPlugins` (traversal in the

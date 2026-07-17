@@ -136,6 +136,13 @@ fn buildWithPlugins(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.
                 logging.buildError("Plugin Discovery Error", dir, "Access denied to plugins directory", "Please check file permissions for the directory");
                 return error.PluginDiscoveryFailed;
             },
+            error.InvalidPluginName => {
+                // The specific, actionable message (naming the exact
+                // file/directory) was already logged at the point of
+                // discovery; adding the generic block here would only bury
+                // it (mirrors command_discovery's error.InvalidCommandName).
+                return error.PluginDiscoveryFailed;
+            },
             error.OutOfMemory => @panic("OOM"),
             else => {
                 logging.buildError("Plugin Discovery Error", dir, "Failed to discover plugins", "Check the plugins directory structure and file permissions");
