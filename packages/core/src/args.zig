@@ -165,20 +165,35 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
             // Field with default value - optional in parsing
             const next_positional: ?usize = if (arg_index < args.len) arg_index else null;
             if (next_positional) |pos| {
-                @field(result, field.name) = parseValue(field_type, args[pos]) catch |err| {
-                    if (err == ZcliError.ArgumentInvalidValue) {
-                        if (diag) |d| d.* = .{ .ArgumentInvalidValue = .{
-                            .field_name = field.name,
-                            .position = field_index,
-                            .provided_value = args[pos],
-                            .expected_type = diagnostic_errors.expectedTypeName(field_type),
-                            .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
-                            .reason = custom_type.describeError(field_type, args[pos]),
-                        } };
+                const is_last = comptime (field_index == struct_info.fields.len - 1);
+                if (parseValue(field_type, args[pos])) |value| {
+                    @field(result, field.name) = value;
+                    arg_index = pos + 1;
+                } else |err| {
+                    // Mirror the typed-optional branch above: a NON-TRAILING
+                    // defaulted field whose token fails to parse falls through,
+                    // keeping its default and NOT consuming the token, so a later
+                    // positional can claim it (e.g. `{ count: u32 = 5, name }`
+                    // invoked as `alice` yields count=5, name="alice" instead of
+                    // hard-erroring on `alice`). A TRAILING defaulted field keeps
+                    // the strict error — there is no later field the token could
+                    // belong to.
+                    if (err == ZcliError.ArgumentInvalidValue and !is_last) {
+                        // Leave the default in place; don't consume the token.
+                    } else {
+                        if (err == ZcliError.ArgumentInvalidValue) {
+                            if (diag) |d| d.* = .{ .ArgumentInvalidValue = .{
+                                .field_name = field.name,
+                                .position = field_index,
+                                .provided_value = args[pos],
+                                .expected_type = diagnostic_errors.expectedTypeName(field_type),
+                                .suggestion = diagnostic_errors.nearestEnumValue(field_type, args[pos]),
+                                .reason = custom_type.describeError(field_type, args[pos]),
+                            } };
+                        }
+                        return err;
                     }
-                    return err;
-                };
-                arg_index = pos + 1;
+                }
             }
             // If no argument provided, default value is already set by struct initialization
         } else {
@@ -876,6 +891,41 @@ test "parseArgs trailing typed optional keeps the strict invalid-value error" {
     const TestArgs = struct {
         name: []const u8,
         level: ?u32 = null,
+    };
+
+    const args = [_][]const u8{ "svc", "notnum" };
+    try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(TestArgs, &args, null));
+}
+
+test "parseArgs non-trailing defaulted field falls through to a required field" {
+    const TestArgs = struct {
+        count: u32 = 5,
+        name: []const u8,
+    };
+
+    // `alice`: doesn't parse as u32 → count keeps its default, name="alice".
+    {
+        const args = [_][]const u8{"alice"};
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(u32, 5), parsed.count);
+        try std.testing.expectEqualStrings("alice", parsed.name);
+    }
+
+    // `10 alice`: count parses → count=10, name="alice".
+    {
+        const args = [_][]const u8{ "10", "alice" };
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(u32, 10), parsed.count);
+        try std.testing.expectEqualStrings("alice", parsed.name);
+    }
+}
+
+test "parseArgs trailing defaulted field keeps the strict invalid-value error" {
+    // When the defaulted field IS the last field there is no later positional to
+    // hand the token to, so a non-parsing value is a genuine error.
+    const TestArgs = struct {
+        name: []const u8,
+        count: u32 = 5,
     };
 
     const args = [_][]const u8{ "svc", "notnum" };
