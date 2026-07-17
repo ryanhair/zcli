@@ -82,6 +82,18 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     // any in-file tests travel with the file).
     try fs.removeEmptyParents(cwd, io, arena, from_parts);
 
+    // The scaffolder embeds the old path in three self-referential spots
+    // (leading meta.examples entry, the execute TODO print, and the
+    // co-located test name) — rewrite those so the moved file doesn't keep
+    // pointing at its old address (#591).
+    const old_path = try std.mem.join(arena, " ", from_parts);
+    const new_path = try std.mem.join(arena, " ", to_parts);
+    const content = try cwd.readFileAlloc(io, to_file, arena, .limited(1024 * 1024));
+    const rewritten = try fs.rewriteCommandPathReferences(arena, content, old_path, new_path);
+    if (!std.mem.eql(u8, content, rewritten)) {
+        try fs.writeFileAtomic(cwd, io, arena, to_file, rewritten);
+    }
+
     try finish(context.stdout(), &context.theme, from_file, to_file);
 }
 
@@ -90,7 +102,7 @@ fn finish(w: *std.Io.Writer, theme: *const ThemeContext, from_file: []const u8, 
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "\u{2714} Moved {s} \u{2192} {s}", .{ from_file, to_file }) catch "\u{2714} Moved command";
     try themed(line).success().render(w, theme);
-    try w.writeAll("\n\n  Note: update the command's `meta.examples` if they name the old path.\n");
+    try w.writeAll("\n\n  Note: any other mentions of the old path in comments or hand-written description text were left as-is.\n");
 }
 
 fn exists(io: std.Io, path: []const u8) bool {
