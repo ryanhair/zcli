@@ -306,6 +306,74 @@ test "init scaffolds a project with the expected files and wiring" {
     try expectContains(agents, "per-command arena");
 }
 
+test "init --template single scaffolds a root index.zig instead of hello (ADR-0028/0029)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "mytool", "--template", "single" });
+    defer r.deinit();
+
+    // The single template needs a released library with root index support
+    // (> 0.20.0). While this CLI still pins 0.20.0, init fails closed with
+    // the reason rather than scaffolding a silently-dead index.zig — assert
+    // whichever outcome init declared (same pattern as the fetch-outcome
+    // branch above). The guard branch dies with the release bump.
+    if (r.exit_code != 0) {
+        try expectContains(r.stderr, "--template single requires");
+        try testing.expect(!fileExists(tmp.dir, "mytool/src/commands/index.zig"));
+        return;
+    }
+
+    var proj = try tmp.dir.openDir(io, "mytool", .{});
+    defer proj.close(io);
+
+    // The single shape seeds the root command, not the hello subcommand.
+    try testing.expect(fileExists(proj, "src/commands/index.zig"));
+    try testing.expect(!fileExists(proj, "src/commands/hello.zig"));
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The root index is the app's own command: optional positional so bare
+    // invocation runs, executable (a meta-only root index is a compile error).
+    const index = try readFile(proj, a, "src/commands/index.zig");
+    try expectContains(index, "pub fn execute(");
+    try expectContains(index, "name: ?[]const u8 = null");
+
+    // Next-steps must demo the single shape (no `hello` anywhere).
+    try expectContains(r.stdout, "Creating root command (index.zig)");
+    try testing.expect(std.mem.indexOf(u8, r.stdout, "hello World") == null);
+}
+
+test "init defaults to the multi template when non-interactive" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // No --template and no TTY: the shape prompt falls back to multi —
+    // today's scaffold, an example hello subcommand and no root index.
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    try testing.expect(fileExists(proj, "src/commands/hello.zig"));
+    try testing.expect(!fileExists(proj, "src/commands/index.zig"));
+}
+
+test "init rejects an unknown --template value with the enum diagnostic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--template", "solo" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    // The enum parser names the valid choices; the project must not be created.
+    try expectContains(r.stderr, "single");
+    try testing.expect(!fileExists(tmp.dir, "myapp"));
+}
+
 test "init escapes free-text --description into a valid string literal" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

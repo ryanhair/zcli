@@ -47,6 +47,7 @@ pub const meta = .{
         "init my-app",
         "init my-app --description \"My awesome CLI\"",
         "init my-app --app-version 1.0.0",
+        "init my-tool --template single",
         "init . --description \"Initialize in current directory\"",
     },
     .args = .{
@@ -59,8 +60,15 @@ pub const meta = .{
         // so a command option spelled --version would be unreachable from the
         // CLI (#565).
         .app_version = .{ .description = "Initial version number" },
+        .template = .{ .description = "CLI shape: multi (subcommands, git style) or single (the app itself is the command, rg style)" },
     },
 };
+
+/// The two scaffold shapes (ADR-0028/0029). `multi` is the classic subcommand
+/// tree seeded with an example `hello` command; `single` seeds a root
+/// `src/commands/index.zig` — the app itself is the command. Restructuring
+/// between shapes later is annoying, which is why init asks up front.
+const Template = enum { multi, single };
 
 pub const Args = struct {
     name: []const u8,
@@ -69,6 +77,7 @@ pub const Args = struct {
 pub const Options = struct {
     description: ?[]const u8 = null,
     app_version: ?[]const u8 = null,
+    template: ?Template = null,
 };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
@@ -184,6 +193,40 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         try stdout.print("Creating new zcli project: {s}\n", .{project_name});
     }
 
+    const p = context.prompts();
+
+    // Root index support (ADR-0029) ships in the first release AFTER 0.20.0.
+    // init pins the generated project to this CLI's own version tag, so a CLI
+    // still carrying the 0.20.0 version would scaffold an index.zig the
+    // released library silently ignores — a project that builds but routes
+    // every positional to "Unknown command". While that's the pinned release,
+    // don't offer the shape (default multi) and fail closed on an explicit
+    // --template single. The guard clears automatically when the release bump
+    // moves the version past 0.20.0.
+    const root_index_ok = rootIndexSupported(context.app_version);
+
+    // Ask for the CLI shape first (ADR-0028 step 3) unless --template decided
+    // it. Restructuring between shapes later is annoying, so it's asked up
+    // front; non-interactive invocations default to multi (today's scaffold).
+    const template: Template = options.template orelse blk: {
+        if (!root_index_ok) break :blk .multi;
+        const shape = p.select(.{
+            .message = "What kind of CLI?",
+            .choices = &.{
+                "multi-command — subcommands like `app hello` (git style)",
+                "single-command — the app itself is the command (rg style)",
+            },
+        }) catch |err| switch (err) {
+            error.EndOfStream => break :blk .multi,
+            else => return err,
+        };
+        break :blk if (shape == 1) .single else .multi;
+    };
+
+    if (template == .single and !root_index_ok) {
+        return context.fail("Error: --template single requires the zcli library released after 0.20.0 (root index support, ADR-0029)\n  This zcli pins generated projects to v{s}, which ignores a top-level index.zig.\n  Upgrade zcli, or scaffold with the default multi-command template.", .{context.app_version});
+    }
+
     // Ask which built-in plugins to include, before touching the filesystem.
     // Falls back to the preselected defaults when stdin is not a TTY.
     var choices: [builtin_choices.len][]const u8 = undefined;
@@ -192,7 +235,6 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         choices[i] = choice.label;
         defaults[i] = choice.default;
     }
-    const p = context.prompts();
     const selected = p.multiSelect(.{
         .message = "Select built-in plugins to include:",
         .choices = &choices,
@@ -292,16 +334,26 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer main_file.close(io);
     try main_file.writeStreamingAll(io, scaffold.reference.main_zig);
 
-    // Generate example command: src/commands/hello.zig — verbatim from the
-    // compiled reference.
-    try stdout.print("  Creating example command (hello)...\n", .{});
-
+    // Seed the chosen shape's starting command — verbatim from the compiled
+    // reference. multi: an example `hello` subcommand. single: a root
+    // `index.zig` (ADR-0029) — the app itself is the command.
     var commands_dir = try src_dir.openDir(io, "commands", .{});
     defer commands_dir.close(io);
 
-    var hello_file = try commands_dir.createFile(io, "hello.zig", .{});
-    defer hello_file.close(io);
-    try hello_file.writeStreamingAll(io, scaffold.reference.hello_zig);
+    switch (template) {
+        .multi => {
+            try stdout.print("  Creating example command (hello)...\n", .{});
+            var hello_file = try commands_dir.createFile(io, "hello.zig", .{});
+            defer hello_file.close(io);
+            try hello_file.writeStreamingAll(io, scaffold.reference.hello_zig);
+        },
+        .single => {
+            try stdout.print("  Creating root command (index.zig)...\n", .{});
+            var index_file = try commands_dir.createFile(io, "index.zig", .{});
+            defer index_file.close(io);
+            try index_file.writeStreamingAll(io, scaffold.reference.index_zig);
+        },
+    }
 
     // Scaffold AGENTS.md — the thin, frozen, command-speaking spine that points
     // coding agents at `zcli guide` (ADR-0008). Marker-delimited so it never
@@ -338,27 +390,28 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     // Success message. When the fetch failed, `zig build` would only fail with
     // a missing-dependency error the user never asked for — don't claim success
-    // or suggest a next step that can't work yet.
+    // or suggest a next step that can't work yet. The try-it line matches the
+    // scaffolded shape: `hello World` for multi, a bare root positional for
+    // single.
     if (fetch_ok) {
         try stdout.print("\n✓ Project '{s}' created successfully!\n\n", .{project_name});
         try stdout.print("Next steps:\n", .{});
-        if (!use_current_dir) {
-            try stdout.print("  cd {s}\n", .{args.name});
-        }
-        try stdout.print("  zig build\n", .{});
-        try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
-        try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
     } else {
         try stdout.print("\n⚠ Project '{s}' created, but the zcli dependency was not fetched.\n\n", .{project_name});
         try stdout.print("Next steps:\n", .{});
-        if (!use_current_dir) {
-            try stdout.print("  cd {s}\n", .{args.name});
-        }
-        try stdout.print("  zig fetch --save {s}\n", .{zcli_url});
-        try stdout.print("  zig build\n", .{});
-        try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
-        try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
     }
+    if (!use_current_dir) {
+        try stdout.print("  cd {s}\n", .{args.name});
+    }
+    if (!fetch_ok) {
+        try stdout.print("  zig fetch --save {s}\n", .{zcli_url});
+    }
+    try stdout.print("  zig build\n", .{});
+    switch (template) {
+        .multi => try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name}),
+        .single => try stdout.print("  ./zig-out/bin/{s} World\n", .{project_name}),
+    }
+    try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +462,8 @@ const agents_section = agents_begin ++
     \\5. Verify with `zig build` and `zig build test`. Run `zcli guide <topic>` for
     \\   version-matched API detail and worked examples.
     \\6. File path = command path: `src/commands/foo/bar.zig` → `app foo bar`; a directory's
-    \\   `index.zig` is the group landing; plugins live in `src/plugins/`.
+    \\   `index.zig` is the group landing; a top-level `index.zig` is the root command
+    \\   (`app` itself — single-command CLIs); plugins live in `src/plugins/`.
     \\
     \\`zcli guide` topics: structure, sharing, storage, arena, output, prompts, http, secrets, plugins, testing.
     \\
@@ -561,6 +615,25 @@ test "renderBuildZig substitutes name, description, plugins and pins addCommandT
     try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, exe, zcli_dep,") == null);
     // Framework-coupled call the reference compile-guards survives verbatim.
     try std.testing.expect(std.mem.indexOf(u8, build, "try zcli.generate(b, exe, zcli_dep, .{") != null);
+}
+
+/// True when the zcli release this CLI pins (its own version) contains root
+/// index support (ADR-0029) — i.e. is strictly newer than 0.20.0, the last
+/// release without it. Unparseable versions count as unsupported: fail closed
+/// rather than scaffold a silently-dead index.zig.
+fn rootIndexSupported(version_str: []const u8) bool {
+    const v = std.SemanticVersion.parse(version_str) catch return false;
+    const last_without = std.SemanticVersion{ .major = 0, .minor = 20, .patch = 0 };
+    return v.order(last_without) == .gt;
+}
+
+test "rootIndexSupported: strictly newer than 0.20.0, fail closed on junk" {
+    try std.testing.expect(!rootIndexSupported("0.20.0"));
+    try std.testing.expect(!rootIndexSupported("0.19.9"));
+    try std.testing.expect(rootIndexSupported("0.20.1"));
+    try std.testing.expect(rootIndexSupported("0.21.0"));
+    try std.testing.expect(rootIndexSupported("1.0.0"));
+    try std.testing.expect(!rootIndexSupported("not-a-version"));
 }
 
 /// True if `s` is a semantic version acceptable to Zig's build.zig.zon manifest
