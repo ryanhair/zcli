@@ -65,16 +65,17 @@
       <!-- PKG -->
       <div class="panel" id="p-pkg">
         <h3>Add as a Zig package</h3>
-        <p>The usual path: add zcli to <code class="mono" style="color:var(--accent)">build.zig.zon</code> and import the module in <code class="mono" style="color:var(--accent)">build.zig</code>.</p>
+        <p>The usual path: add zcli to <code class="mono" style="color:var(--accent)">build.zig.zon</code> and import the module in <code class="mono" style="color:var(--accent)">build.zig</code>. Pin a tagged release for an immutable hash:</p>
         <div class="cmdbox">
           <pre>.dependencies = .{
     .zcli = .{
-        <span class="pr">.url</span> = "https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz",
+        <span class="pr">.url</span> = "https://github.com/ryanhair/zcli/archive/refs/tags/v0.20.0.tar.gz",
         <span class="pr">.hash</span> = "...", // zig build prints the correct hash
     },
 },</pre>
-          <button onclick="cp(this,'.zcli = .{ .url = &quot;https://github.com/ryanhair/zcli/archive/refs/heads/main.tar.gz&quot;, .hash = &quot;...&quot; },')">copy</button>
+          <button onclick="cp(this,'.zcli = .{ .url = &quot;https://github.com/ryanhair/zcli/archive/refs/tags/v0.20.0.tar.gz&quot;, .hash = &quot;...&quot; },')">copy</button>
         </div>
+        <p style="font-size:13.5px;">To track the development branch instead, fetch <code class="mono" style="color:var(--accent)">.../archive/refs/heads/main.tar.gz</code> — its hash changes with every commit, so re-run <code class="mono">zig fetch --save</code> to update.</p>
         <p style="font-size:13.5px;">Then follow steps 2 & 3 in the <a href="$site.page('docs').link().suffix('#quick-start')">docs</a> to wire up <code class="mono">zcli.generate</code>.</p>
       </div>
 
