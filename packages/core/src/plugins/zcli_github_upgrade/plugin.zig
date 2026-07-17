@@ -454,38 +454,57 @@ pub fn init(config: Config) type {
 
             const current_version = context.app_version;
             if (isNewerVersion(current_version, latest_version)) {
-                // Format and show the out-of-date message
-                var message = std.ArrayList(u8).empty;
-                defer message.deinit(allocator);
-
-                var iter = std.mem.splitScalar(u8, plugin_config.out_of_date_message, '{');
-                var first = true;
-                while (iter.next()) |part| {
-                    if (first) {
-                        try message.appendSlice(allocator, part);
-                        first = false;
-                        continue;
-                    }
-
-                    if (std.mem.startsWith(u8, part, "app}")) {
-                        try message.appendSlice(allocator, context.app_name);
-                        try message.appendSlice(allocator, part[4..]);
-                    } else if (std.mem.startsWith(u8, part, "current}")) {
-                        try message.appendSlice(allocator, current_version);
-                        try message.appendSlice(allocator, part[8..]);
-                    } else if (std.mem.startsWith(u8, part, "latest}")) {
-                        try message.appendSlice(allocator, latest_version);
-                        try message.appendSlice(allocator, part[7..]);
-                    } else {
-                        try message.append(allocator, '{');
-                        try message.appendSlice(allocator, part);
-                    }
-                }
-
-                try stderr.print("\n{s}\n\n", .{message.items});
+                // Show the out-of-date message. This is a cosmetic notice, not
+                // the user's actual command - an OOM formatting it or a write
+                // failure emitting it (e.g. a full disk on stderr's target)
+                // must never abort startup, so failures here are swallowed
+                // just like the fetch above.
+                emitOutOfDateMessage(allocator, stderr, plugin_config.out_of_date_message, context.app_name, current_version, latest_version) catch {};
             }
         }
     };
+}
+
+/// Formats `out_of_date_message`, substituting `{app}`, `{current}`, and
+/// `{latest}` placeholders, and writes it to `stderr`. Split out so the
+/// caller can treat both OOM (formatting) and write failures (emission) as a
+/// single best-effort operation.
+fn emitOutOfDateMessage(
+    allocator: std.mem.Allocator,
+    stderr: *std.Io.Writer,
+    out_of_date_message: []const u8,
+    app_name: []const u8,
+    current_version: []const u8,
+    latest_version: []const u8,
+) !void {
+    var message = std.ArrayList(u8).empty;
+    defer message.deinit(allocator);
+
+    var iter = std.mem.splitScalar(u8, out_of_date_message, '{');
+    var first = true;
+    while (iter.next()) |part| {
+        if (first) {
+            try message.appendSlice(allocator, part);
+            first = false;
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, part, "app}")) {
+            try message.appendSlice(allocator, app_name);
+            try message.appendSlice(allocator, part[4..]);
+        } else if (std.mem.startsWith(u8, part, "current}")) {
+            try message.appendSlice(allocator, current_version);
+            try message.appendSlice(allocator, part[8..]);
+        } else if (std.mem.startsWith(u8, part, "latest}")) {
+            try message.appendSlice(allocator, latest_version);
+            try message.appendSlice(allocator, part[7..]);
+        } else {
+            try message.append(allocator, '{');
+            try message.appendSlice(allocator, part);
+        }
+    }
+
+    try stderr.print("\n{s}\n\n", .{message.items});
 }
 
 // ============================================================================
@@ -895,12 +914,21 @@ fn sha256FileHex(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) ![64]u8 {
     const file = try dir.openFile(io, sub_path, .{});
     defer file.close(io);
 
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     var read_buf: [8192]u8 = undefined;
     var file_reader = file.reader(io, &read_buf);
+    return sha256ReaderHex(&file_reader.interface);
+}
+
+/// Compute the lowercase hex SHA-256 digest of everything `reader` yields.
+/// A mid-stream read error is propagated to the caller rather than treated
+/// as EOF - hashing only the bytes read so far would produce a truncated
+/// digest that a genuine local I/O failure (e.g. a flaky disk) would then
+/// misreport as a checksum mismatch/tamper event.
+fn sha256ReaderHex(reader: *std.Io.Reader) ![64]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     var buffer: [8192]u8 = undefined;
     while (true) {
-        const n = file_reader.interface.readSliceShort(&buffer) catch break;
+        const n = reader.readSliceShort(&buffer) catch |e| return e;
         if (n == 0) break;
         hasher.update(buffer[0..n]);
     }
@@ -1418,6 +1446,16 @@ test "sha256FileHex - hashes file contents" {
 
     const digest = try sha256FileHex(std.testing.io, tmp.dir, "data.bin");
     try std.testing.expectEqualStrings(abc_digest, &digest);
+}
+
+test "sha256ReaderHex - propagates a mid-stream read error instead of truncating the digest" {
+    // A reader that fails on its very first read stands in for a mid-file
+    // I/O failure (e.g. a flaky disk while hashing the fresh download).
+    // Before this fix, that error was swallowed as an early EOF, silently
+    // hashing zero bytes and misreporting the resulting mismatch as a
+    // tampered/corrupted binary rather than a local read failure.
+    var failing_reader = std.Io.Reader.failing;
+    try std.testing.expectError(error.ReadFailed, sha256ReaderHex(&failing_reader));
 }
 
 test "checksum verification - end-to-end parse + hash + compare" {
