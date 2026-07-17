@@ -131,7 +131,11 @@ pub fn renderCodeBlock(comptime language: []const u8, comptime content: []const 
             }
             if (visible_len > max_len) max_len = visible_len;
         }
-        const box_width = @max(max_len + 2, 20); // Minimum width 20
+        // Ensure the box is wide enough for the language tag too: the top
+        // border renders "─ <language> " which consumes `language.len + 3`
+        // visible cells, so `box_width` must be at least that to avoid the
+        // `box_width - language.len - 3` subtraction underflowing.
+        const box_width = @max(max_len + 2, language.len + 3, 20); // Minimum width 20
 
         // Build top border
         var result: []const u8 = "\n" ++ color_code;
@@ -270,6 +274,18 @@ test "render code block" {
     const result = comptime renderCodeBlock("zig", "const x = 42;", palette, .true_color);
     try std.testing.expect(std.mem.indexOf(u8, result, "zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "const x = 42;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "┌") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "└") != null);
+}
+
+test "render code block with long language tag and short content" {
+    // Regression: a language tag longer than the content (and the minimum
+    // width) used to underflow `box_width - language.len - 3`, crashing at
+    // comptime with an opaque usize overflow.
+    const palette = semantic.Palette{};
+    const result = comptime renderCodeBlock("verylonglanguagename123456", "x", palette, .true_color);
+    try std.testing.expect(std.mem.indexOf(u8, result, "verylonglanguagename123456") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "x") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "┌") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "└") != null);
 }
