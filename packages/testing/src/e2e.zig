@@ -1726,6 +1726,12 @@ fn waitForFrame(
     // Timestamp of the last byte seen — the anchor for the idle window. A frame
     // is "settled" once `settle_ms` has passed with no new output.
     var last_activity = start_time;
+    // Did a snapshot reach a deterministic settle signal, or did the loop only
+    // fall out on the deadline? Comparing a golden against a still-painting
+    // frame is meaningless — it bakes a half-drawn snapshot in update mode and
+    // misattributes a nondeterministic mismatch in compare mode — so a snapshot
+    // that never settled must fail loudly rather than compare a mid-paint frame.
+    var snapshot_settled = false;
     while (true) {
         const elapsed = nowMs(io) - start_time;
         if (elapsed > timeout_ms) break;
@@ -1738,6 +1744,7 @@ fn waitForFrame(
             if (assertion == .snapshot and
                 snapshotSettled(session.hasExited(), nowMs(io) - last_activity, settle_ms))
             {
+                snapshot_settled = true;
                 break;
             }
             continue;
@@ -1753,10 +1760,21 @@ fn waitForFrame(
         }
     }
 
-    // Deadline (or settle) reached. Snapshot compares the settled frame; the
-    // others print a readable rendered-screen diagnostic and fail.
+    // Deadline (or settle) reached. Snapshot compares only a frame that reached
+    // a settle signal; a snapshot that hit the deadline mid-paint — and the
+    // always-poll-to-deadline contains/row — print a readable rendered-screen
+    // diagnostic and fail.
     switch (assertion) {
         .snapshot => |name| {
+            if (!snapshot_settled) {
+                // Loud box for humans, but stay silent under the test runner: a
+                // test that drives this path asserts the returned `false`, and
+                // writing to stderr in an otherwise-passing run makes Zig's build
+                // runner echo a misleading `failed command: …` (see snapshot.zig).
+                if (!builtin.is_test) printFrameNeverSettled(allocator, screen, name, timeout_ms);
+                try reportFrame(allocator, transcript_buffer, assertion, false);
+                return false;
+            }
             try assertFrameSnapshot(allocator, io, screen, config, name);
             try reportFrame(allocator, transcript_buffer, assertion, true);
             return true;
@@ -1880,6 +1898,23 @@ fn printFrameMismatch(allocator: std.mem.Allocator, screen: *vterm.VTerm, assert
         },
         .snapshot => {},
     }
+    std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ screen.width, screen.height });
+    const flat = screen.getAllText(allocator) catch return;
+    defer allocator.free(flat);
+    const framed = reflowToRows(allocator, flat, screen.width, screen.height) catch return;
+    defer allocator.free(framed);
+    printBoxedScreen(framed);
+    std.debug.print("\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
+}
+
+/// A snapshot step that ran out its `timeout_ms` while output was still arriving
+/// — the frame never settled, so there is nothing valid to compare a golden to.
+/// Fail loudly with the deadline and the (still-painting) screen instead of
+/// baking or diffing a mid-paint frame.
+fn printFrameNeverSettled(allocator: std.mem.Allocator, screen: *vterm.VTerm, name: []const u8, timeout_ms: u32) void {
+    std.debug.print("\n\u{250c}\u{2500} FRAME NEVER SETTLED \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", .{});
+    std.debug.print("\u{2502} expectFrame(\"{s}\") — frame never settled within {d}ms (still painting at the deadline)\n", .{ name, timeout_ms });
+    std.debug.print("\u{2502} raise the step's timeout/settle window, or check the command for a render that never stops\n", .{});
     std.debug.print("\u{2502} rendered screen ({d}x{d}):\n", .{ screen.width, screen.height });
     const flat = screen.getAllText(allocator) catch return;
     defer allocator.free(flat);
@@ -2426,6 +2461,53 @@ test "snapshotSettled: alive child settles only after the full idle window" {
     try std.testing.expect(snapshotSettled(false, 300, 150));
     // A widened window keeps waiting where the old fixed ~150ms would have fired.
     try std.testing.expect(!snapshotSettled(false, 200, 500));
+}
+
+test "waitForFrame: a snapshot that never settles fails instead of comparing a mid-paint frame" {
+    // A session that keeps painting right up to the deadline: every poll honors
+    // its window and then emits another byte, so the idle window never opens and
+    // `snapshotSettled` never fires. The loop can only fall out on `timeout_ms`.
+    const AlwaysPaintingSession = struct {
+        io: std.Io,
+        fn pollRead(self: *@This(), buf: []u8, timeout_ms: i32) usize {
+            sleepMs(self.io, @intCast(@max(@as(i32, 0), timeout_ms)));
+            if (buf.len == 0) return 0;
+            buf[0] = '.';
+            return 1;
+        }
+        fn hasExited(_: *@This()) bool {
+            return false;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var screen = try vterm.VTerm.init(allocator, 20, 3);
+    defer screen.deinit();
+
+    var output = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer output.deinit(allocator);
+
+    var session = AlwaysPaintingSession{ .io = io };
+
+    // Reaching the deadline mid-paint must fail (return false), not silently
+    // compare/bake a half-drawn golden. `snapshot_root` is left unset on purpose:
+    // if this ever fell through to the compare path it would surface as a
+    // different (InvalidScript) failure rather than a false pass.
+    const ok = try waitForFrame(
+        allocator,
+        io,
+        &session,
+        .{ .snapshot = "never_settles" },
+        30, // timeout_ms — short, so the busy paint runs out the clock quickly
+        150, // settle_ms — never reached, the stream is never idle
+        .{},
+        &output,
+        null,
+        &screen,
+    );
+    try std.testing.expect(!ok);
 }
 
 test "withSettle overrides the per-step snapshot idle window" {
