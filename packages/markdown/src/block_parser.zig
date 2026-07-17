@@ -27,7 +27,13 @@ pub const Block = struct {
 /// Parse markdown into blocks at comptime
 pub fn parseBlocks(comptime markdown: []const u8) []const Block {
     comptime {
-        var blocks: []const Block = &[_]Block{};
+        // Every iteration of the outer loop emits exactly one block and consumes
+        // at least one byte of input, so the block count is bounded by
+        // `markdown.len`. Fill a single fixed-size buffer instead of growing a
+        // slice one element at a time (which reallocated+copied the whole array
+        // per block, making discovery O(n²) in the doc size).
+        var blocks: [markdown.len + 1]Block = undefined;
+        var count: usize = 0;
         var i: usize = 0;
 
         while (i < markdown.len) {
@@ -46,38 +52,45 @@ pub fn parseBlocks(comptime markdown: []const u8) []const Block {
 
             // Check for blank line
             if (isBlank(line)) {
-                blocks = blocks ++ &[_]Block{.{
+                blocks[count] = .{
                     .type = .blank_line,
                     .content = "",
-                }};
+                };
+                count += 1;
                 continue;
             }
 
             // Check for horizontal rule (---, ***, ___)
             if (isHorizontalRule(line)) {
-                blocks = blocks ++ &[_]Block{.{
+                blocks[count] = .{
                     .type = .horizontal_rule,
                     .content = line,
-                }};
+                };
+                count += 1;
                 continue;
             }
 
             // Check for heading (# through ######)
             if (detectHeading(line)) |heading_level| {
                 const content = std.mem.trimStart(u8, line[heading_level..], " ");
-                blocks = blocks ++ &[_]Block{.{
+                blocks[count] = .{
                     .type = .heading,
                     .content = content,
                     .level = heading_level,
-                }};
+                };
+                count += 1;
                 continue;
             }
 
             // Check for code block start (```)
             if (std.mem.startsWith(u8, line, "```")) {
                 const lang = std.mem.trim(u8, line[3..], " ");
-                var code_content: []const u8 = "";
-                var found_end = false;
+                // The code content is a contiguous run of source lines joined by
+                // '\n' — exactly the substring between the opening fence and the
+                // closing fence. Track its byte span and slice it out once,
+                // rather than concatenating line by line (which was O(n²)).
+                const content_start = i;
+                var content_end = i;
 
                 // Collect code block content
                 while (i < markdown.len) {
@@ -92,33 +105,32 @@ pub fn parseBlocks(comptime markdown: []const u8) []const Block {
 
                     // Check for closing ```
                     if (std.mem.startsWith(u8, code_line, "```")) {
-                        found_end = true;
                         break;
                     }
 
-                    // Add line to code content
-                    if (code_content.len > 0) {
-                        code_content = code_content ++ "\n" ++ code_line;
-                    } else {
-                        code_content = code_line;
-                    }
+                    // Extend the content span up to (but not including) this
+                    // line's trailing newline; the '\n' separators between kept
+                    // lines fall inside the resulting slice.
+                    content_end = code_line_end;
                 }
 
-                blocks = blocks ++ &[_]Block{.{
+                blocks[count] = .{
                     .type = .code_block,
-                    .content = code_content,
+                    .content = markdown[content_start..content_end],
                     .language = lang,
-                }};
+                };
+                count += 1;
                 continue;
             }
 
             // Check for blockquote (> text)
             if (std.mem.startsWith(u8, line, ">")) {
                 const content = std.mem.trimStart(u8, line[1..], " ");
-                blocks = blocks ++ &[_]Block{.{
+                blocks[count] = .{
                     .type = .blockquote,
                     .content = content,
-                }};
+                };
+                count += 1;
                 continue;
             }
 
@@ -126,34 +138,38 @@ pub fn parseBlocks(comptime markdown: []const u8) []const Block {
             if (line.len >= 2 and (line[0] == '-' or line[0] == '*' or line[0] == '+') and line[1] == ' ') {
                 const nesting = countLeadingSpaces(line) / 2;
                 const content = std.mem.trimStart(u8, line[2..], " ");
-                blocks = blocks ++ &[_]Block{.{
+                blocks[count] = .{
                     .type = .unordered_list_item,
                     .content = content,
                     .level = nesting,
-                }};
+                };
+                count += 1;
                 continue;
             }
 
             // Check for ordered list (1., 2., etc.)
             if (detectOrderedList(line)) |info| {
                 const nesting = countLeadingSpaces(line) / 2;
-                blocks = blocks ++ &[_]Block{.{
+                blocks[count] = .{
                     .type = .ordered_list_item,
                     .content = info.content,
                     .level = nesting,
                     .ordered_number = info.number,
-                }};
+                };
+                count += 1;
                 continue;
             }
 
             // Default: paragraph
-            blocks = blocks ++ &[_]Block{.{
+            blocks[count] = .{
                 .type = .paragraph,
                 .content = line,
-            }};
+            };
+            count += 1;
         }
 
-        return blocks;
+        const final = blocks;
+        return final[0..count];
     }
 }
 
