@@ -123,10 +123,16 @@ pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const
     // Join the concurrent stderr drain (or, if concurrency was unavailable, do
     // it sequentially now — the pre-existing fallback behavior). The bytes are
     // owned by the caller's `allocator` directly, so no post-join copy needed.
-    const stderr = if (stderr_future) |*f|
-        try f.await(io)
+    //
+    // If the drain errors (e.g. `error.StreamTooLong` past the `max_output`
+    // cap), reap the child before propagating so it doesn't linger as a zombie.
+    const stderr = (if (stderr_future) |*f|
+        f.await(io)
     else
-        try drainPipe(io, child.stderr.?, shared);
+        drainPipe(io, child.stderr.?, shared)) catch |err| {
+        _ = child.wait(io) catch {};
+        return err;
+    };
     errdefer allocator.free(stderr);
 
     const term = try child.wait(io);
@@ -168,6 +174,38 @@ test "runSubprocess drains both pipes when the child floods stderr" {
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
     try std.testing.expectEqualStrings("STDOUT_OK", result.stdout);
     try std.testing.expectEqual(@as(usize, 200000), result.stderr.len);
+}
+
+test "runSubprocess reaps the child when the stderr drain errors" {
+    // Regression for #572: when the child floods stderr past the `max_output`
+    // cap, the stderr drain fails with `error.StreamTooLong`. The error must
+    // propagate *after* the child is reaped (`child.wait`), otherwise the child
+    // lingers as a zombie. We can't observe the zombie directly, but we assert
+    // the error surfaces without hanging — the reap happens on the same path.
+    if (@import("builtin").os.tag == .windows) return; // uses /bin/sh
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Write just over the 10 MiB stderr cap (by 4 KiB — small enough that the
+    // final bytes fit in the OS pipe buffer, so the child still exits instead of
+    // blocking on a pipe we stop draining), then some stdout. The stdout drain
+    // succeeds; the stderr drain trips the limit and returns an error.
+    const over_cap = max_output + 4096;
+    const program = std.fmt.comptimePrint(
+        "yes zzzzzzzz | head -c {d} 1>&2; printf STDOUT_OK",
+        .{over_cap},
+    );
+
+    if (runSubprocess(allocator, io, "/bin/sh", &.{ "-c", program })) |res| {
+        var r = res;
+        r.deinit();
+        return error.ExpectedStreamTooLong;
+    } else |err| switch (err) {
+        error.StreamTooLong => {}, // expected: cap tripped and child reaped
+        // Spawning may be restricted in some sandboxes; don't fail the suite.
+        else => std.log.warn("runSubprocess skipped: {any}", .{err}),
+    }
 }
 
 test "Result deinitialization" {
