@@ -24,7 +24,7 @@ const app_palette = format.app_palette;
 /// pollute a piped stdout.
 pub fn showApp(context: anytype, to_stdout: bool) !void {
     var writer = if (to_stdout) context.stdout() else context.stderr();
-    var fmt = md.formatterWithPalette(writer, context.theme.capability(), app_palette);
+    var fmt = md.formatterWithPalette(writer, context.theme.capabilityFor(context.io, writer), app_palette);
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
@@ -55,7 +55,8 @@ pub fn showApp(context: anytype, to_stdout: bool) !void {
 /// arguments, options, and examples (the root command can be invoked directly).
 pub fn showRoot(context: anytype, to_stdout: bool) !void {
     var writer = if (to_stdout) context.stdout() else context.stderr();
-    var fmt = md.formatterWithPalette(writer, context.theme.capability(), app_palette);
+    const capability = context.theme.capabilityFor(context.io, writer);
+    var fmt = md.formatterWithPalette(writer, capability, app_palette);
     const app_name = context.app_name;
     const app_version = context.app_version;
     const app_description = context.app_description;
@@ -84,7 +85,7 @@ pub fn showRoot(context: anytype, to_stdout: bool) !void {
     // Root command's own options, before the navigation list below.
     if (context.command_module_info) |module_info| {
         if (module_info.has_options) {
-            if (format.generateOptionsHelp(module_info, context) catch null) |options_help| {
+            if (format.generateOptionsHelp(module_info, context, capability) catch null) |options_help| {
                 defer context.allocator.free(options_help);
                 try fmt.write("<header>OPTIONS:</header>\n", .{});
                 try writer.writeAll(options_help);

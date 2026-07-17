@@ -99,10 +99,13 @@ pub const Capabilities = struct {
     is_tty: bool,
     color_enabled: bool,
 
-    /// Initialize theme context with automatic detection
+    /// Initialize theme context with automatic detection. `is_tty` /
+    /// `color_enabled` describe the *default* output stream (stdout); use
+    /// `capabilityFor` to gate color on whichever stream is actually being
+    /// styled (issue #588).
     pub fn init(env: *const std.process.Environ.Map, io: std.Io) Capabilities {
         const capability = TerminalCapability.detect(env);
-        const is_tty = detectTTY(io);
+        const is_tty = detectTTY(io, std.Io.File.stdout());
 
         return .{
             .capability = capability,
@@ -113,7 +116,7 @@ pub const Capabilities = struct {
 
     /// Initialize with explicit capability (for testing or forced modes)
     pub fn initWithCapability(capability: TerminalCapability, io: std.Io) Capabilities {
-        const is_tty = detectTTY(io);
+        const is_tty = detectTTY(io, std.Io.File.stdout());
         return .{
             .capability = capability,
             .is_tty = is_tty,
@@ -124,13 +127,26 @@ pub const Capabilities = struct {
     /// Initialize with forced color setting (override TTY detection)
     pub fn initForced(env: *const std.process.Environ.Map, io: std.Io, force_color: bool) Capabilities {
         const capability = TerminalCapability.detect(env);
-        const is_tty = detectTTY(io);
+        const is_tty = detectTTY(io, std.Io.File.stdout());
 
         return .{
             .capability = capability,
             .is_tty = is_tty,
             .color_enabled = if (force_color) capability != .no_color else capability != .no_color and is_tty,
         };
+    }
+
+    /// The effective capability for output written to `writer`, keyed off that
+    /// writer's own stream rather than a single global assumption: a redirected
+    /// stderr disables color there even when stdout is a TTY, and vice-versa
+    /// (issue #588). The terminal's color depth still comes from the environment
+    /// (`self.capability`); this only gates it on the destination being a TTY.
+    /// Foreign writers whose OS handle can't be recovered (in-memory buffers,
+    /// test overrides) fall back to the detected default (`self.is_tty`).
+    pub fn capabilityFor(self: *const Capabilities, io: std.Io, writer: *std.Io.Writer) TerminalCapability {
+        if (self.capability == .no_color) return .no_color;
+        const tty = if (writerFile(writer)) |file| detectTTY(io, file) else self.is_tty;
+        return if (tty) self.capability else .no_color;
     }
 
     /// Get the effective capability (accounting for color_enabled)
@@ -165,9 +181,19 @@ pub const Capabilities = struct {
     }
 };
 
-/// Detect if output is to a TTY (terminal)
-fn detectTTY(io: std.Io) bool {
-    return std.Io.File.stdout().isTty(io) catch false;
+/// Detect if `file` is connected to a TTY (terminal).
+fn detectTTY(io: std.Io, file: std.Io.File) bool {
+    return file.isTty(io) catch false;
+}
+
+/// Recover the OS file behind `writer` when it is a `std.Io.File.Writer`
+/// interface (the common case: stdout/stderr streams). Discriminates by vtable
+/// so it never `@fieldParentPtr`s a foreign writer (`Allocating`, `fixed`, a
+/// test override). Mirrors the writer-handle recovery in `progress`.
+fn writerFile(writer: *std.Io.Writer) ?std.Io.File {
+    if (writer.vtable.drain != std.Io.File.Writer.drain) return null;
+    const file_writer: *const std.Io.File.Writer = @fieldParentPtr("interface", writer);
+    return file_writer.file;
 }
 
 test "NO_COLOR: empty string does not disable color" {
@@ -236,7 +262,7 @@ test "TTY detection" {
     const testing = std.testing;
 
     // Test TTY detection doesn't crash
-    const is_tty = detectTTY(std.testing.io);
+    const is_tty = detectTTY(std.testing.io, std.Io.File.stdout());
     try testing.expect(@TypeOf(is_tty) == bool);
 
     // Test theme includes TTY info
@@ -327,4 +353,27 @@ test "Capabilities capability hierarchy" {
         try testing.expect(ansi256.supports256Color());
         try testing.expect(ansi256.supportsColor());
     }
+}
+
+test "capabilityFor: gates color on the target stream, not a global assumption" {
+    const testing = std.testing;
+    const io = std.testing.io;
+
+    // An in-memory (foreign) writer can't expose an OS handle, so detection
+    // falls back to the stored `is_tty` — modelling the default stream.
+    var buf: [64]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&buf);
+
+    // NO_COLOR from the environment wins regardless of the destination stream.
+    const forced_off = Capabilities{ .capability = .no_color, .is_tty = true, .color_enabled = false };
+    try testing.expect(forced_off.capabilityFor(io, &sink) == .no_color);
+
+    // A supported terminal keeps its color depth when the fallback stream is a TTY…
+    const on = Capabilities{ .capability = .true_color, .is_tty = true, .color_enabled = true };
+    try testing.expect(on.capabilityFor(io, &sink) == .true_color);
+
+    // …and drops to no_color when the target stream is not a TTY, even though the
+    // terminal itself is capable — this is the redirected-stderr case (#588).
+    const redirected = Capabilities{ .capability = .true_color, .is_tty = false, .color_enabled = false };
+    try testing.expect(redirected.capabilityFor(io, &sink) == .no_color);
 }

@@ -176,6 +176,14 @@ pub const ThemeContext = struct {
     pub fn capability(self: ThemeContext) TerminalCapability {
         return self.caps.getCapability();
     }
+
+    /// The effective capability for output written to `writer` (issue #588):
+    /// keyed off that writer's own stream, so themed output on a redirected
+    /// stderr picks up (or drops) color independently of stdout. Prefer this
+    /// over `capability()` wherever the destination stream is known.
+    pub fn capabilityFor(self: ThemeContext, io: std.Io, writer: *std.Io.Writer) TerminalCapability {
+        return self.caps.capabilityFor(io, writer);
+    }
 };
 
 const testing = std.testing;

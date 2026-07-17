@@ -55,13 +55,13 @@ pub fn generateArgsPattern(module_info: zcli.CommandModuleInfo, context: anytype
 
 /// Generate args help text (the ARGUMENTS table body) from command module info.
 /// Returns null if there are no args to display.
-pub fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u8 {
+pub fn generateArgsHelp(module_info: zcli.CommandModuleInfo, context: anytype, capability: md.TerminalCapability) !?[]u8 {
     if (!module_info.has_args or module_info.args_fields.len == 0) return null;
 
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.formatterWithPalette(buf_writer, context.theme.capability(), app_palette);
+    var buf_fmt = md.formatterWithPalette(buf_writer, capability, app_palette);
 
     // Each row: name column, then the description (from meta.args), then the
     // valid choices for an enum-typed arg — `one of: dev, staging, prod`. When a
@@ -106,13 +106,13 @@ fn writeChoices(fmt: anytype, values: []const []const u8, leading_space: bool) !
 
 /// Generate options help text (the OPTIONS table body) from command module info.
 /// Returns null if there are no options to display.
-pub fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype) !?[]u8 {
+pub fn generateOptionsHelp(module_info: zcli.CommandModuleInfo, context: anytype, capability: md.TerminalCapability) !?[]u8 {
     if (!module_info.has_options or module_info.options_fields.len == 0) return null;
 
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var buf_fmt = md.formatterWithPalette(buf_writer, context.theme.capability(), app_palette);
+    var buf_fmt = md.formatterWithPalette(buf_writer, capability, app_palette);
 
     // Generate help from field info with metadata
     for (module_info.options_fields) |field_info| {
@@ -237,7 +237,7 @@ fn writeDashedFlag(buf_fmt: anytype, field_name: []const u8) !void {
 pub fn writeArgumentsSection(writer: *std.Io.Writer, fmt: anytype, context: anytype) !void {
     if (context.command_module_info) |module_info| {
         if (module_info.has_args) {
-            if (generateArgsHelp(module_info, context) catch null) |args_help| {
+            if (generateArgsHelp(module_info, context, fmt.capability) catch null) |args_help| {
                 defer context.allocator.free(args_help);
                 try fmt.write("<header>ARGUMENTS:</header>\n", .{});
                 try writer.writeAll(args_help);
@@ -322,7 +322,7 @@ test "help never renders auto-generated --no- negation flags" {
         },
     };
 
-    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    const help = (try generateOptionsHelp(module_info, &ctx, ctx.theme.capability())).?;
     defer allocator.free(help);
 
     // default-false bool: positive shown, negation hidden.
@@ -354,7 +354,7 @@ test "help renders requires markers and mutually-exclusive sets" {
         .exclusive = &.{&.{ "json", "yaml" }},
     };
 
-    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    const help = (try generateOptionsHelp(module_info, &ctx, ctx.theme.capability())).?;
     defer allocator.free(help);
 
     // The dependent option shows its requirement (dash-converted).
@@ -387,7 +387,7 @@ test "help renders each argument row on its own line" {
         },
     };
 
-    const help = (try generateArgsHelp(module_info, &ctx)).?;
+    const help = (try generateArgsHelp(module_info, &ctx, ctx.theme.capability())).?;
     defer allocator.free(help);
 
     try std.testing.expect(std.mem.endsWith(u8, help, "\n"));
@@ -429,7 +429,7 @@ test "help renders each option row on its own line" {
         },
     };
 
-    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    const help = (try generateOptionsHelp(module_info, &ctx, ctx.theme.capability())).?;
     defer allocator.free(help);
 
     // Two options → two rows, each ending in its own newline. The block ends
@@ -484,7 +484,7 @@ test "help marks array options as repeatable but not scalars" {
         },
     };
 
-    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    const help = (try generateOptionsHelp(module_info, &ctx, ctx.theme.capability())).?;
     defer allocator.free(help);
 
     // The array option carries the marker; the scalar option does not (there is
@@ -516,7 +516,7 @@ test "help option rendering does not overflow on a >64-char field name" {
         },
     };
 
-    const help = (try generateOptionsHelp(module_info, &ctx)).?;
+    const help = (try generateOptionsHelp(module_info, &ctx, ctx.theme.capability())).?;
     defer allocator.free(help);
 
     // The truncated (64-char, underscores→dashes) prefix is present; the render
