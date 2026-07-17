@@ -98,12 +98,37 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
             },
             .char => |c| {
                 // One mask glyph per typed character, not per UTF-8 byte.
-                _ = try Prompts.appendCodepoint(allocator, &buf, c);
+                try secureAppendCodepoint(allocator, &buf, c);
                 try renderFrame(&app, config, buf.items);
             },
             else => {},
         }
     }
+}
+
+/// Append `c` to `buf` as UTF-8, wiping the cleartext from any backing block we
+/// outgrow. `std.ArrayList`'s own realloc frees the old block without zeroing
+/// it, stranding copies of the password in freed heap; on a grow we instead
+/// allocate the new block, copy, `secureZero` the old, and free it ourselves,
+/// so no cleartext survives past a keystroke (the caller's `defer` wipes the
+/// final block).
+fn secureAppendCodepoint(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), c: u21) !void {
+    var utf8: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(c, &utf8) catch unreachable; // readKey only yields valid scalars
+    if (buf.items.len + n > buf.capacity) {
+        const len = buf.items.len;
+        const new_cap = @max(@max(buf.capacity *| 2, len + n), 16);
+        const new_mem = try allocator.alloc(u8, new_cap);
+        @memcpy(new_mem[0..len], buf.items);
+        if (buf.capacity > 0) {
+            const old = buf.allocatedSlice();
+            std.crypto.secureZero(u8, old);
+            allocator.free(old);
+        }
+        buf.items = new_mem[0..len];
+        buf.capacity = new_cap;
+    }
+    buf.appendSliceAssumeCapacity(utf8[0..n]);
 }
 
 /// The masked prompt line: "? message ****".
@@ -194,6 +219,32 @@ test "prompt shows message" {
 
     const written = output_writer.buffer[0..output_writer.end];
     try std.testing.expect(std.mem.indexOf(u8, written, "Enter secret:") != null);
+}
+
+test "secureAppendCodepoint appends correctly across the reallocs it manages" {
+    // The secure grow does its own alloc/copy/free (so it can wipe the old
+    // block) instead of leaning on ArrayList's realloc — this exercises that
+    // hand-rolled pointer surgery across many grows and multibyte codepoints.
+    // (The wipe itself only manifests in release builds: safe builds already
+    // poison freed memory in `Allocator.free`, so it can't be observed here.)
+    const allocator = std.testing.allocator;
+
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+
+    var expected = std.ArrayList(u8).empty;
+    defer expected.deinit(allocator);
+
+    // ASCII plus a 3-byte codepoint, repeated enough to force several grows.
+    for (0..40) |_| {
+        try secureAppendCodepoint(allocator, &buf, 'a');
+        try expected.appendSlice(allocator, "a");
+        try secureAppendCodepoint(allocator, &buf, '你'); // 3 bytes
+        try expected.appendSlice(allocator, "你");
+    }
+
+    try std.testing.expectEqualStrings(expected.items, buf.items);
+    try std.testing.expect(buf.capacity >= buf.items.len);
 }
 
 test "composeLine: one mask glyph per grapheme, not per byte" {

@@ -87,46 +87,48 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     try renderFrame(&app, p.theme, config, buf.items);
 
     while (true) {
-        // A SIGWINCH arrives out-of-band via the watcher, not as a key: repaint
-        // so the wrapped prompt/cursor reflow to the new width without waiting
-        // for the next keystroke.
-        const k = switch (try terminal.readEvent(reader, stdin, &watcher)) {
-            .resize => {
-                try renderFrame(&app, p.theme, config, buf.items);
-                continue;
-            },
-            .key => |key| key,
-            else => continue,
-        };
-        if (Prompts.isInterrupt(k, config.interrupt_keys)) {
-            try persistLine(&app, config, buf.items);
-            return error.Interrupted;
-        }
-        switch (k) {
-            .enter => {
-                try persistLine(&app, config, buf.items);
-                if (buf.items.len == 0) {
-                    if (config.default) |def| return try allocator.dupe(u8, def);
-                }
-                return try allocator.dupe(u8, buf.items);
-            },
-            .backspace => {
-                if (buf.items.len > 0) {
-                    Prompts.popTrailingGrapheme(&buf);
-                    try renderFrame(&app, p.theme, config, buf.items);
-                }
-            },
-            .ctrl => |c| {
-                if (c == 'c') {
+        // A SIGWINCH arrives out-of-band via the watcher, not as a key; it falls
+        // through to the coalesced repaint below so the wrapped prompt/cursor
+        // reflow to the new width without waiting for the next keystroke.
+        switch (try terminal.readEvent(reader, stdin, &watcher)) {
+            .resize => {},
+            .key => |k| {
+                if (Prompts.isInterrupt(k, config.interrupt_keys)) {
                     try persistLine(&app, config, buf.items);
-                    return error.UserAborted;
+                    return error.Interrupted;
+                }
+                switch (k) {
+                    .enter => {
+                        try persistLine(&app, config, buf.items);
+                        if (buf.items.len == 0) {
+                            if (config.default) |def| return try allocator.dupe(u8, def);
+                        }
+                        return try allocator.dupe(u8, buf.items);
+                    },
+                    .backspace => {
+                        if (buf.items.len > 0) Prompts.popTrailingGrapheme(&buf);
+                    },
+                    .ctrl => |c| {
+                        if (c == 'c') {
+                            try persistLine(&app, config, buf.items);
+                            return error.UserAborted;
+                        }
+                    },
+                    .char => |c| {
+                        _ = try Prompts.appendCodepoint(allocator, &buf, c);
+                    },
+                    else => {},
                 }
             },
-            .char => |c| {
-                _ = try Prompts.appendCodepoint(allocator, &buf, c);
-                try renderFrame(&app, p.theme, config, buf.items);
-            },
-            else => {},
+            else => {}, // mouse/focus never arrive — prompts don't enable them
+        }
+        // Coalesce a burst of buffered input (e.g. a paste) into a single reflow:
+        // only repaint once the reader has drained. Repainting per character is
+        // O(n²) over a large paste; this makes it O(n). Individually typed keys
+        // arrive one at a time, so nothing is buffered and this still paints on
+        // every keystroke.
+        if (terminal.key.bufferedLen(reader) == 0) {
+            try renderFrame(&app, p.theme, config, buf.items);
         }
     }
 }
