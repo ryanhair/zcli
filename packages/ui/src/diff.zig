@@ -5,8 +5,9 @@
 //! entry and is returned there on exit. All vertical movement is relative
 //! (CUD/CUU) and columns are addressed with CR + CUF, never absolute CUP —
 //! the live region floats in normal-screen scrollback, where absolute rows
-//! are meaningless. The caller (the App loop) owns creating the region's
-//! rows and parking the cursor; this renderer never scrolls.
+//! are meaningless. The App loop owns creating the region's rows; the parked
+//! cursor is owned and enforced by `RegionCursor` (region_cursor.zig) — the
+//! App asserts `isParked()` before every paint. This renderer never scrolls.
 
 const std = @import("std");
 const theme = @import("theme");
