@@ -61,7 +61,16 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     };
 
     const description = options.description orelse "TODO: describe this plugin";
-    const content = try generatePlugin(arena, name, description);
+    const content = generatePlugin(arena, name, description) catch |err| switch (err) {
+        // `description` lands on a `///` line, so a newline would end the doc
+        // comment and splice the remainder in as live top-level Zig (build-time
+        // code injection). Reject multi-line input rather than escape it — a doc
+        // comment has no escape for a line break.
+        error.DescriptionNotSingleLine => return context.fail("Error: --description must be a single line (no newlines)", .{}),
+        // Defense-in-depth: never write a plugin file that doesn't parse.
+        error.GeneratedSourceInvalid => return context.fail("Error: generated plugin source did not parse (unexpected --description content)", .{}),
+        else => return err,
+    };
 
     var file = try cwd.createFile(io, file_path, .{});
     defer file.close(io);
@@ -76,6 +85,11 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 /// needs neither (hooks are `@hasDecl`-gated; `plugin_id` is only required
 /// alongside `ContextData`).
 fn generatePlugin(arena: std.mem.Allocator, name: []const u8, description: []const u8) ![]u8 {
+    // `description` is spliced verbatim into a `///` doc-comment line; a newline
+    // would terminate the comment and turn the rest into live top-level code.
+    // There is no in-comment escape for a line break, so reject it outright.
+    if (std.mem.indexOfAny(u8, description, "\r\n") != null) return error.DescriptionNotSingleLine;
+
     var aw = std.Io.Writer.Allocating.init(arena);
     const w = &aw.writer;
 
@@ -175,7 +189,11 @@ fn generatePlugin(arena: std.mem.Allocator, name: []const u8, description: []con
         \\
     );
 
-    return aw.written();
+    // Defense-in-depth: match `add command`'s pre-write guard — never hand back
+    // source that doesn't parse, even if some future interpolation slips through.
+    const source = aw.written();
+    if (!try scaffold.splice.parses(arena, source)) return error.GeneratedSourceInvalid;
+    return source;
 }
 
 /// Whether build.zig already sets `plugins_dir` (best-effort; on any read error
@@ -243,6 +261,31 @@ test "generatePlugin: only the working hook is uncommented" {
         if (std.mem.startsWith(u8, t, "pub fn ")) count += 1;
     }
     try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "generatePlugin: rejects a newline in the description (code injection)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Repro from issue #664: an embedded newline would end the `///` doc comment
+    // and land the next line as live top-level Zig.
+    const payload = "x\npub fn pwned() void {}\n///";
+    try testing.expectError(error.DescriptionNotSingleLine, generatePlugin(a, "foo", payload));
+
+    // A bare carriage return is rejected too (can act as a line ending).
+    try testing.expectError(error.DescriptionNotSingleLine, generatePlugin(a, "foo", "x\rpub fn pwned() void {}"));
+}
+
+test "generatePlugin: a single-line description with quotes is accepted verbatim" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Quotes and other single-line punctuation are harmless on a `///` line.
+    const src = try generatePlugin(a, "auth", "attach a \"bearer\" token");
+    try testing.expect(std.mem.indexOf(u8, src, "The `auth` plugin — attach a \"bearer\" token") != null);
+    try expectParses(a, src);
 }
 
 fn expectParses(arena: std.mem.Allocator, source: []const u8) !void {
