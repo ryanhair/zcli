@@ -393,6 +393,40 @@ test "Table rowAt maps a click through the header offset and scroll window" {
     try testing.expectEqual(@as(?usize, null), t.rowAt(rect, 4)); // still the header
 }
 
+test "Table rowAt hit-tests against the scroll view derived (not the stale one)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // 30 rows, one column. Enough to scroll a small window well down the list.
+    const grid = try a.alloc([]const []const u8, 30);
+    for (grid, 0..) |*row, i| {
+        const cell = try std.fmt.allocPrint(a, "{d}", .{i});
+        row.* = try a.dupe([]const u8, &.{cell});
+    }
+    const cols = [_]Table.Column{.{ .header = "N" }};
+
+    // The documented case `view`'s re-derive exists for: a caller sets `highlighted`
+    // directly (here row 25), leaving the persistent `scroll` at its stale 0. Before
+    // the fix, `rowAt` mapped the first body click through scroll=0 → row 0, while the
+    // frame actually painted rows 18-25 (scrollFor(0, 25, 8, 30) == 18).
+    var t = Table{};
+    t.highlighted = 25;
+
+    var s = try ui.Surface.init(testing.allocator, 4, 10);
+    defer s.deinit();
+    // Rendering derives the window and writes it back to `self.scroll`.
+    try renderNode(a, try t.view(a, .{ .focused = true, .columns = &cols, .rows = grid, .height = 8 }), &s);
+    try testing.expectEqual(@as(usize, 18), t.scroll);
+
+    // The table rect matches what was painted: 1 header + 8 body rows at y=4.
+    const rect = ui.Rect{ .x = 0, .y = 4, .w = 4, .h = 1 + 8 };
+    // The first body click now maps to the window top (18), not the stale 0.
+    try testing.expectEqual(@as(?usize, 18), t.rowAt(rect, 5));
+    // ...and the highlighted row (25) sits at the bottom of the painted window.
+    try testing.expectEqual(@as(?usize, 25), t.rowAt(rect, 12));
+}
+
 // ---- handle: Button --------------------------------------------------------
 
 test "Button activates on Enter and Space, ignores other keys" {
