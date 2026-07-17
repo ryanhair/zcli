@@ -1183,6 +1183,28 @@ test "TextInput caret reports the scrolled column" {
     try testing.expectEqual(@as(u16, 3), caret.?.x);
 }
 
+test "TextInput caret stays aligned when scroll splits a wide grapheme" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: [32]u8 = undefined;
+    var ti = TextInput{ .buffer = &buf };
+    // "a世界": 'a' at col 0, '世' at cols 1-2, '界' at cols 3-4 → cursor_col 5.
+    for ([_]u21{ 'a', '世', '界' }) |c| _ = ti.handle(.{ .char = c });
+
+    var caret: ?ui.Point = null;
+    var s = try ui.Surface.init(testing.allocator, 4, 1); // width 4 → scroll 2
+    defer s.deinit();
+    try renderNode(a, try ti.view(a, .{ .focused = true, .cursor_out = &caret }), &s);
+
+    // scroll 2 falls inside '世' (cols 1-2); it is stepped over whole, so the
+    // painted left edge is '界' at actual column 3. The caret (cursor_col 5)
+    // must anchor on that edge → column 2, in line with the drawn '界'.
+    try testing.expectEqual(@as(u16, 2), caret.?.x);
+    try testing.expectEqualStrings("界  ", try rowString(a, &s, 0));
+}
+
 test "unfocused TextInput reports no caret" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
