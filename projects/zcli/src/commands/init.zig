@@ -48,6 +48,8 @@ pub const meta = .{
         "init my-app --description \"My awesome CLI\"",
         "init my-app --app-version 1.0.0",
         "init my-tool --template single",
+        "init my-app --plugins help,version,completions --defaults",
+        "init my-app --dry-run",
         "init . --description \"Initialize in current directory\"",
     },
     .args = .{
@@ -61,6 +63,10 @@ pub const meta = .{
         // CLI (#565).
         .app_version = .{ .description = "Initial version number" },
         .template = .{ .description = "CLI shape: multi (subcommands, git style) or single (the app itself is the command, rg style)" },
+        .plugins = .{ .description = "Built-in plugins as a comma-separated list (e.g. help,version,completions), or 'none'" },
+        .defaults = .{ .description = "Answer every prompt with its default (implied when stdin is not a TTY)" },
+        .yes = .{ .description = "Like --defaults, and skip any confirmation", .short = 'y' },
+        .dry_run = .{ .description = "Print what would be created without writing anything" },
     },
 };
 
@@ -78,6 +84,10 @@ pub const Options = struct {
     description: ?[]const u8 = null,
     app_version: ?[]const u8 = null,
     template: ?Template = null,
+    plugins: ?[]const u8 = null,
+    defaults: bool = false,
+    yes: bool = false,
+    dry_run: bool = false,
 };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
@@ -180,7 +190,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             return context.fail("Error: Current directory is not empty\nTip: only hidden files and an existing AGENTS.md are allowed", .{});
         }
 
-        try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
+        if (!options.dry_run) try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
     } else {
         // Check if directory already exists (access succeeds => the path exists).
         if (cwd.access(io, args.name, .{})) |_| {
@@ -190,10 +200,18 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             else => return err,
         }
 
-        try stdout.print("Creating new zcli project: {s}\n", .{project_name});
+        if (!options.dry_run) try stdout.print("Creating new zcli project: {s}\n", .{project_name});
     }
 
     const p = context.prompts();
+
+    // The agent contract (ADR-0028): every prompt has a flag, and --defaults
+    // answers every remaining prompt with its default. --yes implies
+    // --defaults (it will additionally skip the confirm step when one
+    // exists). A non-TTY stdin gets the same effect through each prompt's
+    // EndOfStream fallback; --defaults also short-circuits the prompts
+    // entirely so a script WITH a terminal attached never blocks.
+    const use_defaults = options.defaults or options.yes;
 
     // Root index support (ADR-0029) ships in the first release AFTER 0.20.0.
     // init pins the generated project to this CLI's own version tag, so a CLI
@@ -209,7 +227,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // it. Restructuring between shapes later is annoying, so it's asked up
     // front; non-interactive invocations default to multi (today's scaffold).
     const template: Template = options.template orelse blk: {
-        if (!root_index_ok) break :blk .multi;
+        if (!root_index_ok or use_defaults) break :blk .multi;
         const shape = p.select(.{
             .message = "What kind of CLI?",
             .choices = &.{
@@ -227,29 +245,66 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         return context.fail("Error: --template single requires the zcli library released after 0.20.0 (root index support, ADR-0029)\n  This zcli pins generated projects to v{s}, which ignores a top-level index.zig.\n  Upgrade zcli, or scaffold with the default multi-command template.", .{context.app_version});
     }
 
-    // Ask which built-in plugins to include, before touching the filesystem.
-    // Falls back to the preselected defaults when stdin is not a TTY.
+    // Which built-in plugins to include: --plugins decides outright,
+    // --defaults/--yes takes the preselected defaults, otherwise ask (with
+    // the same defaults as the non-TTY fallback).
     var choices: [builtin_choices.len][]const u8 = undefined;
     var defaults: [builtin_choices.len]bool = undefined;
     for (builtin_choices, 0..) |choice, i| {
         choices[i] = choice.label;
         defaults[i] = choice.default;
     }
-    const selected = p.multiSelect(.{
-        .message = "Select built-in plugins to include:",
-        .choices = &choices,
-        .defaults = &defaults,
-    }) catch |err| switch (err) {
-        // Non-interactive invocation (piped/closed stdin): take the preselected
-        // defaults rather than aborting — `init` must work in scripts and CI.
-        error.EndOfStream => try collectDefaultPlugins(allocator, &defaults),
-        else => return err,
-    };
+    const selected = if (options.plugins) |plugins_arg|
+        parsePluginsFlag(allocator, plugins_arg) catch |err| switch (err) {
+            error.UnknownPlugin => return context.fail("Error: unknown plugin in --plugins '{s}'\n  Valid plugins: {s} — or 'none'", .{ plugins_arg, valid_plugin_tags },),
+            else => return err,
+        }
+    else if (use_defaults)
+        try collectDefaultPlugins(allocator, &defaults)
+    else
+        p.multiSelect(.{
+            .message = "Select built-in plugins to include:",
+            .choices = &choices,
+            .defaults = &defaults,
+        }) catch |err| switch (err) {
+            // Non-interactive invocation (piped/closed stdin): take the
+            // preselected defaults rather than aborting — `init` must work in
+            // scripts and CI.
+            error.EndOfStream => try collectDefaultPlugins(allocator, &defaults),
+            else => return err,
+        };
     defer allocator.free(selected);
 
     // Build the `zcli.builtin(...)` registration lines for build.zig.
     const plugins_block = try renderPluginsBlock(allocator, selected);
     defer allocator.free(plugins_block);
+
+    // --dry-run: everything is decided and validated; report what would be
+    // created and stop before touching the filesystem.
+    if (options.dry_run) {
+        try stdout.print("\nDry run — nothing written. Would create:\n", .{});
+        const prefix: []const u8 = if (use_current_dir) "" else args.name;
+        const sep: []const u8 = if (use_current_dir) "" else "/";
+        try stdout.print("  template: {s}\n", .{@tagName(template)});
+        try stdout.print("  plugins:  ", .{});
+        if (selected.len == 0) {
+            try stdout.print("(none)", .{});
+        } else for (selected, 0..) |idx, i| {
+            if (i > 0) try stdout.print(", ", .{});
+            try stdout.print("{s}", .{builtin_choices[idx].tag});
+        }
+        try stdout.print("\n  files:\n", .{});
+        try stdout.print("    {s}{s}build.zig\n", .{ prefix, sep });
+        try stdout.print("    {s}{s}build.zig.zon\n", .{ prefix, sep });
+        try stdout.print("    {s}{s}src/main.zig\n", .{ prefix, sep });
+        switch (template) {
+            .multi => try stdout.print("    {s}{s}src/commands/hello.zig\n", .{ prefix, sep }),
+            .single => try stdout.print("    {s}{s}src/commands/index.zig\n", .{ prefix, sep }),
+        }
+        try stdout.print("    {s}{s}AGENTS.md\n", .{ prefix, sep });
+        try stdout.print("  then: zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz\n", .{context.app_version});
+        return;
+    }
 
     // Now that the destination is validated and plugins are chosen, create and
     // open the project directory.
@@ -480,6 +535,69 @@ const AgentsResult = enum { created, appended, refreshed };
 /// Owned slice of the indices whose `defaults` bit is set — the non-interactive
 /// fallback for the plugin picker (mirrors what `multiSelect` returns for a
 /// submitted-defaults selection).
+/// The valid --plugins names, comma-joined for the error message. Comptime so
+/// the list can never drift from builtin_choices.
+const valid_plugin_tags = blk: {
+    var s: []const u8 = "";
+    for (builtin_choices, 0..) |choice, i| {
+        if (i > 0) s = s ++ ", ";
+        s = s ++ choice.tag;
+    }
+    break :blk s;
+};
+
+/// Parse the --plugins flag: a comma-separated list of builtin_choices tags
+/// ('help,version,completions'), or 'none' for an empty selection. Returns
+/// owned picker indices (same shape as multiSelect). Empty items from
+/// stray/trailing commas are ignored; duplicates collapse (indices are
+/// deduped so build.zig never registers a plugin twice). Unknown names are
+/// error.UnknownPlugin — the caller renders the message with the valid list.
+fn parsePluginsFlag(allocator: std.mem.Allocator, arg: []const u8) ![]usize {
+    var list = std.ArrayList(usize).empty;
+    errdefer list.deinit(allocator);
+
+    if (std.mem.eql(u8, std.mem.trim(u8, arg, " "), "none")) {
+        return list.toOwnedSlice(allocator);
+    }
+
+    var it = std.mem.splitScalar(u8, arg, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " ");
+        if (name.len == 0) continue;
+        const idx = for (builtin_choices, 0..) |choice, i| {
+            if (std.mem.eql(u8, choice.tag, name)) break i;
+        } else return error.UnknownPlugin;
+        const already = for (list.items) |have| {
+            if (have == idx) break true;
+        } else false;
+        if (!already) try list.append(allocator, idx);
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+test "parsePluginsFlag: named plugins resolve to picker indices, deduped" {
+    const allocator = std.testing.allocator;
+    const selected = try parsePluginsFlag(allocator, "version,help,version");
+    defer allocator.free(selected);
+    // Indices follow builtin_choices order of the names given, first mention wins.
+    try std.testing.expectEqualSlices(usize, &.{ 1, 0 }, selected);
+}
+
+test "parsePluginsFlag: 'none' and empty items" {
+    const allocator = std.testing.allocator;
+    const none = try parsePluginsFlag(allocator, "none");
+    defer allocator.free(none);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
+
+    const trailing = try parsePluginsFlag(allocator, "help,");
+    defer allocator.free(trailing);
+    try std.testing.expectEqualSlices(usize, &.{0}, trailing);
+}
+
+test "parsePluginsFlag: unknown names are rejected" {
+    try std.testing.expectError(error.UnknownPlugin, parsePluginsFlag(std.testing.allocator, "help,bogus"));
+}
+
 fn collectDefaultPlugins(allocator: std.mem.Allocator, defaults: []const bool) ![]usize {
     var list = std.ArrayList(usize).empty;
     errdefer list.deinit(allocator);

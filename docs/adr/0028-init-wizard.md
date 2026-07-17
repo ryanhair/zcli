@@ -110,7 +110,10 @@ Each lands independently, in this order:
 
 1. **Flag parity + `--defaults`/`--yes`/`--dry-run`** for the existing surface
    (plugins flag, non-TTY = defaults formalized). Pure additive; unblocks agents
-   immediately.
+   immediately. — Implemented: `--plugins <list|none>` (comma-separated,
+   validated against the picker set, deduped), `--defaults`, `--yes`/`-y`
+   (implies `--defaults`; will additionally skip the confirm once increment 2
+   adds one), `--dry-run` (plan summary + file list, exit 0, nothing written).
 2. **Git + README + `zig build` verification** with spinners and the summary/
    confirm step. The bulk of the perceived-quality win.
 3. **`--template single`** (top-level `src/commands/index.zig` scaffold) and

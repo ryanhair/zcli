@@ -346,6 +346,99 @@ test "init --template single scaffolds a root index.zig instead of hello (ADR-00
     try testing.expect(std.mem.indexOf(u8, r.stdout, "hello World") == null);
 }
 
+test "init --plugins takes the list verbatim, no prompt (agent contract)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "help,completions" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const build_zig = try readFile(proj, arena.allocator(), "build.zig");
+    try expectContains(build_zig, "zcli.builtin(.help");
+    try expectContains(build_zig, "zcli.builtin(.completions");
+    // Exactly the named plugins — not the picker defaults on top.
+    try testing.expect(std.mem.indexOf(u8, build_zig, "zcli.builtin(.version") == null);
+    try testing.expect(std.mem.indexOf(u8, build_zig, "zcli.builtin(.not_found") == null);
+    // The flag answered the prompt: no picker rendered.
+    try testing.expect(std.mem.indexOf(u8, r.stdout, "Select built-in plugins") == null);
+}
+
+test "init --plugins none scaffolds a plugin-free project" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "none" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const build_zig = try readFile(proj, arena.allocator(), "build.zig");
+    try testing.expect(std.mem.indexOf(u8, build_zig, "zcli.builtin(") == null);
+}
+
+test "init --plugins rejects unknown names, listing the valid set, creating nothing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "help,bogus" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "unknown plugin");
+    try expectContains(r.stderr, "github_upgrade");
+    try testing.expect(!fileExists(tmp.dir, "myapp"));
+}
+
+test "init --dry-run reports the plan and writes nothing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--dry-run", "--defaults" });
+    defer r.deinit();
+    try expectOk(r);
+
+    try expectContains(r.stdout, "Dry run — nothing written");
+    try expectContains(r.stdout, "template: multi");
+    try expectContains(r.stdout, "help, version, not_found");
+    try expectContains(r.stdout, "myapp/src/commands/hello.zig");
+    try expectContains(r.stdout, "zig fetch --save");
+    // Nothing on disk, and no misleading "Creating..." banner.
+    try testing.expect(!fileExists(tmp.dir, "myapp"));
+    try testing.expect(std.mem.indexOf(u8, r.stdout, "Creating new zcli project") == null);
+}
+
+test "init --defaults answers the prompts without rendering them" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--defaults" });
+    defer r.deinit();
+    try expectOk(r);
+
+    // No prompt output even in the non-TTY numbered-list form.
+    try testing.expect(std.mem.indexOf(u8, r.stdout, "Select built-in plugins") == null);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const build_zig = try readFile(proj, arena.allocator(), "build.zig");
+    try expectContains(build_zig, "zcli.builtin(.help");
+    try expectContains(build_zig, "zcli.builtin(.version");
+    try expectContains(build_zig, "zcli.builtin(.not_found");
+    try testing.expect(fileExists(proj, "src/commands/hello.zig"));
+}
+
 test "init defaults to the multi template when non-interactive" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
