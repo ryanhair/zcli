@@ -334,6 +334,7 @@ pub fn maskDynamicContent(allocator: std.mem.Allocator, text: []const u8) ![]con
 /// Mask UUID patterns
 fn maskUUIDs(allocator: std.mem.Allocator, text: []const u8, replacement: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
     var i: usize = 0;
 
     while (i < text.len) {
@@ -369,6 +370,7 @@ fn isUUID(text: []const u8) bool {
 /// Mask ISO 8601 timestamps
 fn maskTimestamps(allocator: std.mem.Allocator, text: []const u8, replacement: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
     var i: usize = 0;
 
     while (i < text.len) {
@@ -411,6 +413,7 @@ fn isTimestamp(text: []const u8) bool {
 /// Mask memory addresses (0x followed by hex)
 fn maskMemoryAddresses(allocator: std.mem.Allocator, text: []const u8, replacement: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
     var i: usize = 0;
 
     while (i < text.len) {
@@ -472,6 +475,7 @@ pub fn expectSnapshotWithData(
 /// Strip ANSI escape sequences from text for clean comparison
 pub fn stripAnsi(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
 
     var i: usize = 0;
     while (i < text.len) {
