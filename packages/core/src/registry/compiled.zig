@@ -805,6 +805,20 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 }
                 return err;
             };
+
+            // The command completed without erroring, but the writers may still
+            // have hit a broken pipe on the *final* buffered flush — the one
+            // `executeWithStdio`'s `defer stdio.flush()` runs on its way out,
+            // which swallows the write error (`catch {}`) rather than surfacing
+            // it as `error.WriteFailed`. A whole-output-fits-in-one-buffer
+            // command (`yourcli cmd | head -c0`) never sees a mid-command write
+            // failure, so without this check it would exit 0 instead of the
+            // conventional SIGPIPE status. Check the recorded writer error the
+            // same way the error path above does.
+            if (wroteToBrokenPipe(&stdio)) {
+                console.restore();
+                std.process.exit(broken_pipe_status);
+            }
         }
 
         /// Convert `value` and hand it to the plugin that declared
