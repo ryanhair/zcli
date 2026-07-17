@@ -23,5 +23,6 @@ included (see `build.zig` at the repo root, `test_projects`).
 | [**prompts-features**](prompts-features) | The `password` and `multi_select` prompt types (the other prompt types are covered in `tasks`). |
 | [**testing-demo**](testing-demo) | The `zcli-testing` harness used directly in app code: unit-tier `runCommand` inside a command's own tests, plus a subprocess/snapshot integration test against the compiled binary. |
 | [**upgrade-demo**](upgrade-demo) | Wires the `github_upgrade` plugin to add a self-upgrade `upgrade` command backed by GitHub Releases. |
+| [**init-scaffold**](init-scaffold) | Exactly what `zcli init` scaffolds — its `build.zig`, `main.zig`, and `hello.zig` are the reference sources `init` embeds, so compiling it here catches scaffold drift against the live framework API. |
 
 Building something with zcli? Open a PR to add it here.

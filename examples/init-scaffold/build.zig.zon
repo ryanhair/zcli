@@ -1,0 +1,19 @@
+.{
+    .name = .myapp,
+    .version = "0.1.0",
+    .fingerprint = 0x8798022a9813d1b5,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Local path because this reference project lives in-repo (so CI
+        // compiles it against unreleased changes as the `zcli init` scaffold's
+        // drift-detector — see the README below). A real `zcli init` fetches a
+        // released zcli instead:
+        //   .zcli = .{ .url = "git+https://github.com/ryanhair/zcli#<tag>", .hash = "..." },
+        .zcli = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

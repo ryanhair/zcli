@@ -32,6 +32,24 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    // The `zcli init` scaffold's reference sources (issue #679 part 2). `init`
+    // `@embedFile`s these and substitutes the project's values in; the same files
+    // are the `examples/init-scaffold` project, compiled against the local zcli by
+    // the root build's example/test-project steps. So a change to `zcli.generate`,
+    // `zcli.addCommandTests`, `zcli.builtin`, `zcli.SharedModule`, `zcli.ui.panic`,
+    // or the command contract breaks OUR build here — not a downstream user's
+    // `zig build` after `zcli init`. These are cross-package embeds, so they can
+    // only be reached through this build wiring (a bare relative `@embedFile` is
+    // rejected as "outside package path").
+    scaffold_module.addAnonymousImport("reference/build.zig", .{
+        .root_source_file = b.path("../../examples/init-scaffold/build.zig"),
+    });
+    scaffold_module.addAnonymousImport("reference/main.zig", .{
+        .root_source_file = b.path("../../examples/init-scaffold/src/main.zig"),
+    });
+    scaffold_module.addAnonymousImport("reference/hello.zig", .{
+        .root_source_file = b.path("../../examples/init-scaffold/src/commands/hello.zig"),
+    });
 
     // Canonical example sources embedded into `zcli guide` (ADR-0004/0008). Each
     // anonymous import binds a `@embedFile` name in guide_examples.zig to a real
