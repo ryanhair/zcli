@@ -22,7 +22,7 @@
 //!     every registered plugin.
 //!   - Cross-module rules are implemented HERE, where the whole composition
 //!     is visible: command-path uniqueness (file vs file, plugin vs file,
-//!     plugin vs plugin), command-group shape, global-option uniqueness
+//!     plugin vs plugin), global-option uniqueness
 //!     across plugins, and global-vs-command option shadowing — effective
 //!     long names, declared shorts, and derived `--no-…` negations.
 //!
@@ -100,34 +100,15 @@ pub fn validateComposition(
         }
 
         // ── Command-group shape ─────────────────────────────────────────────
-        // A command that has subcommands is a group: routing tries the longest
-        // path first, so the group's own positionals would swallow what looks
-        // like a subcommand name. Checked over the combined list so a plugin
-        // command nested under a file-based group (or vice versa) counts too.
+        // A group index MAY declare positional Args (ADR-0029): routing tries
+        // the longest path first, so an exact subcommand name always wins and
+        // the group's positionals only capture words that matched no
+        // subcommand. The gate in executeResolvedCommand keeps the other side
+        // honest — a group index with NO positionals still treats a stray
+        // word as a mistyped subcommand ("did you mean" suggestions). No
+        // shape restriction remains; declaring positionals is the group
+        // author's explicit choice to accept values at that level.
         const all_entries = cmd_entries ++ plugin_cmd_entries;
-        for (all_entries) |cmd| {
-            const has_subcommands = blk: {
-                for (all_entries) |other| {
-                    if (other.path.len <= cmd.path.len) continue;
-                    var is_subcommand = true;
-                    for (cmd.path, 0..) |component, i| {
-                        if (!std.mem.eql(u8, component, other.path[i])) {
-                            is_subcommand = false;
-                            break;
-                        }
-                    }
-                    if (is_subcommand) break :blk true;
-                }
-                break :blk false;
-            };
-            if (has_subcommands and @hasDecl(cmd.module, "Args")) {
-                if (std.meta.fields(cmd.module.Args).len > 0) {
-                    @compileError("Optional command group '" ++ comptimeJoinPath(cmd.path) ++
-                        "' cannot have Args fields. " ++
-                        "Command groups with subcommands must have an empty Args struct.");
-                }
-            }
-        }
 
         // ── Global-option uniqueness across plugins ─────────────────────────
         // Globals from every plugin share one namespace; the first match wins
@@ -258,9 +239,6 @@ test "validateComposition accepts a well-formed composition" {
 //
 //   Duplicate plugin command: version
 //     two plugins both exporting `commands.version`
-//
-//   Optional command group 'users' cannot have Args fields. ...
-//     a group with subcommands whose Args struct has fields
 //
 //   Duplicate global option name: --verbose. Two plugins define the same global option.
 //   Duplicate global option short flag: -v (used by both --verbose and --version)

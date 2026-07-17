@@ -391,6 +391,9 @@ pub const CommandParseResult = command_parser.CommandParseResult;
 /// registered path (e.g. "add command"), which maps directly to the file under
 /// src/commands/ — so the author, or an AI agent, can jump straight to it.
 fn commandContext(comptime path: []const u8) []const u8 {
+    // The empty path is the root group's index (src/commands/index.zig) —
+    // name it by its file so contract errors still point somewhere real.
+    if (path.len == 0) return "root command (src/commands/index.zig): ";
     return "command '" ++ path ++ "': ";
 }
 
@@ -411,6 +414,24 @@ fn commandContext(comptime path: []const u8) []const u8 {
 pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
     @setEvalBranchQuota(10000);
     const loc = commandContext(path);
+
+    // The root group's index (a top-level index.zig, registered at the empty
+    // path — ADR-0029) must be executable. A metadata-only index is useful in
+    // a subdirectory (its description shows in the parent's help listing), but
+    // the root has no parent listing: `app_description` in build.zig already
+    // owns that slot, so a meta-only root index would be a silent no-op. Fail
+    // loudly and point at the real knob instead.
+    if (path.len == 0 and !@hasDecl(Module, "execute")) {
+        @compileError("root command (src/commands/index.zig): missing `pub fn execute`. " ++
+            "The root index is your app's own command — it runs for `app` with no " ++
+            "subcommand — so it must be executable. A metadata-only root index does " ++
+            "nothing: the app's description comes from `app_description` in build.zig, " ++
+            "not from a root index's meta. Add an execute function:\n" ++
+            "    pub const Args = struct {};\n" ++
+            "    pub const Options = struct {};\n" ++
+            "    pub fn execute(args: Args, options: Options, context: *Context) !void { ... }\n" ++
+            "or delete src/commands/index.zig if you don't want a root command.");
+    }
 
     // The command contract is declaration-driven: zcli reads a command's
     // `Args`/`Options` *declarations* to build parsing and dispatch — it never

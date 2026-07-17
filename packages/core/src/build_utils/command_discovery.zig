@@ -26,6 +26,21 @@ pub fn discoverInDir(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) 
 
     try scanDirectory(allocator, io, dir, &commands.root, &.{}, 0, default_max_depth);
 
+    // The root of commands_dir is a group like any other (ADR-0029): a
+    // top-level index.zig is the root group's index, registered at the empty
+    // path. scanDirectory skips index.zig files (subdirectory indexes are
+    // recorded by the directory branch of the *parent* scan), so the root —
+    // which has no parent scan — is picked up here.
+    if (hasIndexFile(io, dir)) {
+        commands.root_index = DiscoveredCommand{
+            .name = try allocator.dupe(u8, "index"),
+            .path = try allocator.alloc([]const u8, 0),
+            .file_path = try allocator.dupe(u8, "index.zig"),
+            .command_type = .optional_group,
+            .subcommands = null,
+        };
+    }
+
     return commands;
 }
 
@@ -356,6 +371,49 @@ test "discovery skips underscore-prefixed helper files and directories" {
     try testing.expect(commands.root.get("deploy") != null);
     try testing.expect(commands.root.get("_generate") == null);
     try testing.expect(commands.root.get("_helpers") == null);
+}
+
+test "discovery records a top-level index.zig as the root group's index (ADR-0029)" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "index.zig", .data = "pub fn execute() void {}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "greet.zig", .data = "pub fn execute() void {}" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = try discoverInDir(testing.allocator, io, dir);
+    defer commands.deinit();
+
+    // index.zig is the root group's index — at the empty path, never a
+    // command named "index".
+    try testing.expect(commands.root.get("index") == null);
+    try testing.expectEqual(@as(usize, 1), commands.root.count());
+    const ri = commands.root_index.?;
+    try testing.expectEqual(@as(usize, 0), ri.path.len);
+    try testing.expectEqualStrings("index.zig", ri.file_path);
+    try testing.expectEqual(CommandType.optional_group, ri.command_type);
+}
+
+test "discovery leaves root_index null without a top-level index.zig" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "greet.zig", .data = "pub fn execute() void {}" });
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = try discoverInDir(testing.allocator, io, dir);
+    defer commands.deinit();
+
+    try testing.expect(commands.root_index == null);
 }
 
 test "discovery follows symlinked command files and directories" {

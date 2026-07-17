@@ -513,8 +513,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
-                // Add regular commands (paths are already arrays)
+                // Add regular commands (paths are already arrays). The root
+                // index (empty path) is not a *named* command — it must not
+                // appear in suggestion/"available commands" lists.
                 for (cmd_entries) |cmd| {
+                    if (cmd.path.len == 0) continue;
                     cmd_list = cmd_list ++ .{cmd.path};
                 }
                 // Add plugin commands (with full paths including nested)
@@ -1242,9 +1245,23 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         fn executeCommand(_: *Self, context: *Context, args: []const []const u8) !void {
             @setEvalBranchQuota(10000);
 
-            // No command given: run the hooks (the help plugin answers a bare
-            // --help here), then route through CommandNotFound.
-            if (args.len == 0) {
+            // The root group's index (a top-level index.zig) registers at the
+            // empty path (ADR-0029). It is deliberately NOT matched by the
+            // longest-path loop below — an empty path matches any argv, which
+            // would shadow plugin commands like `help`. It is the fallback of
+            // last resort instead: after named commands and plugin commands.
+            const root_index_exists = comptime blk: {
+                for (cmd_entries) |cmd| {
+                    if (cmd.path.len == 0) break :blk true;
+                }
+                break :blk false;
+            };
+
+            // No command given and no root index to run it: run the hooks (the
+            // help plugin answers a bare --help here), then route through
+            // CommandNotFound. With a root index, bare invocation falls
+            // through to it below.
+            if (!root_index_exists and args.len == 0) {
                 const parsed_args = try runPostParseHooks(context, zcli.ParsedArgs.init(context.allocator));
                 _ = (try runPreExecuteHooks(context, parsed_args)) orelse return; // plugin cancelled execution
                 if (try runOnErrorHooks(context, error.CommandNotFound)) return;
@@ -1255,7 +1272,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // Regular commands, longest path first so the longest match wins.
             const sorted_commands = comptime sortedByPathLengthDesc(cmd_entries);
             inline for (sorted_commands) |cmd| {
-                if (cmd.path.len <= args.len) {
+                if (cmd.path.len > 0 and cmd.path.len <= args.len) {
                     var parts_match = true;
                     for (cmd.path, 0..) |part, i| {
                         if (!std.mem.eql(u8, part, args[i])) {
@@ -1291,6 +1308,20 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 inline for (plugin_command_entries, 0..) |plugin_cmd, idx| {
                     if (idx == match_idx) {
                         return executeResolvedCommand(plugin_cmd.module, .plugin, context, plugin_cmd.path, args[plugin_cmd.path.len..]);
+                    }
+                }
+            }
+
+            // Root index fallback: the whole argv — empty, option-first, or
+            // positionals — belongs to the root command. Note the argv is NOT
+            // trimmed (the root's path is empty, so it consumed no words).
+            // executeResolvedCommand's mistyped-subcommand gate still applies:
+            // a root index whose Args declares no positionals treats a stray
+            // word as CommandNotFound, preserving "did you mean" suggestions.
+            if (root_index_exists) {
+                inline for (cmd_entries) |cmd| {
+                    if (comptime cmd.path.len == 0) {
+                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, args);
                     }
                 }
             }
