@@ -8,6 +8,7 @@ const console_utf8 = @import("../console_utf8.zig");
 const response_file = @import("../response_file.zig");
 const paths = @import("paths.zig");
 const builder = @import("builder.zig");
+const validation = @import("validation.zig");
 const comptimeJoinPath = paths.comptimeJoinPath;
 const sortedByPathLengthDesc = paths.sortedByPathLengthDesc;
 const Config = builder.Config;
@@ -191,118 +192,23 @@ test "wroteToBrokenPipe: test overrides are never mistaken for a broken pipe" {
 
 /// Compiled registry with all command and plugin information
 pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const CommandEntry, comptime new_plugins: []const type) type {
-    // Validate plugin conflicts at compile time
-    comptime {
-        // Use arrays to check for conflicts since ComptimeStringMap may not be available
-        var command_paths: []const []const []const u8 = &.{};
-
-        // Check for command path conflicts among regular commands
-        for (cmd_entries) |cmd| {
-            for (command_paths) |existing_path| {
-                // Compare path arrays element by element
-                var paths_equal = existing_path.len == cmd.path.len;
-                if (paths_equal) {
-                    for (existing_path, 0..) |existing_component, i| {
-                        if (!std.mem.eql(u8, existing_component, cmd.path[i])) {
-                            paths_equal = false;
-                            break;
-                        }
-                    }
-                }
-                if (paths_equal) {
-                    @compileError("Duplicate command path: " ++ comptimeJoinPath(cmd.path));
-                }
-            }
-            command_paths = command_paths ++ .{cmd.path};
-        }
-
-        // Validate optional command groups (commands that have subcommands)
-        for (cmd_entries) |cmd| {
-            // Check if this command has subcommands
-            var has_subcommands = false;
-            for (cmd_entries) |other_cmd| {
-                // Skip self
-                if (other_cmd.path.len <= cmd.path.len) continue;
-
-                // Check if other_cmd is a subcommand of cmd
-                var is_subcommand = true;
-                for (cmd.path, 0..) |component, i| {
-                    if (!std.mem.eql(u8, component, other_cmd.path[i])) {
-                        is_subcommand = false;
-                        break;
-                    }
-                }
-
-                if (is_subcommand) {
-                    has_subcommands = true;
-                    break;
-                }
-            }
-
-            // If this command has subcommands, validate it's an optional command group
-            if (has_subcommands) {
-                if (@hasDecl(cmd.module, "Args")) {
-                    const args_fields = std.meta.fields(cmd.module.Args);
-                    if (args_fields.len > 0) {
-                        // Build path string for error message
-                        var path_str: []const u8 = "";
-                        for (cmd.path, 0..) |component, idx| {
-                            if (idx > 0) path_str = path_str ++ " ";
-                            path_str = path_str ++ component;
-                        }
-                        @compileError("Optional command group '" ++ path_str ++ "' cannot have Args fields. " ++
-                            "Command groups with subcommands must have an empty Args struct.");
-                    }
-                }
-            }
-        }
-
-        // Check for conflicts between plugin commands and regular commands
-        var plugin_command_paths: []const []const []const u8 = &.{};
+    // Discover every plugin command (including nested) up front, then run THE
+    // single registry-level validation pass over the whole composition —
+    // file-based commands, plugin commands, and plugin global options. All
+    // comptime validation (per-command contract, per-plugin contract, path
+    // uniqueness, group shape, global-option conflicts and shadowing) lives in
+    // validation.zig; nothing else in the framework calls @compileError over
+    // the composition.
+    const discovered_plugin_commands = comptime blk: {
+        var entries: []const CommandEntry = &.{};
         for (new_plugins) |Plugin| {
             if (@hasDecl(Plugin, "commands")) {
-                // Recursively discover all plugin commands (including nested)
-                const plugin_cmd_entries = discoverPluginCommands(Plugin.commands, &.{});
-
-                for (plugin_cmd_entries) |plugin_cmd| {
-                    // Check against regular commands
-                    for (command_paths) |existing_path| {
-                        var paths_equal = existing_path.len == plugin_cmd.path.len;
-                        if (paths_equal) {
-                            for (existing_path, 0..) |existing_component, i| {
-                                if (!std.mem.eql(u8, existing_component, plugin_cmd.path[i])) {
-                                    paths_equal = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if (paths_equal) {
-                            @compileError("Plugin command conflicts with existing command: " ++ comptimeJoinPath(plugin_cmd.path));
-                        }
-                    }
-                    // Check against other plugin commands
-                    for (plugin_command_paths) |existing_plugin_path| {
-                        var paths_equal = existing_plugin_path.len == plugin_cmd.path.len;
-                        if (paths_equal) {
-                            for (existing_plugin_path, 0..) |existing_component, i| {
-                                if (!std.mem.eql(u8, existing_component, plugin_cmd.path[i])) {
-                                    paths_equal = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if (paths_equal) {
-                            @compileError("Duplicate plugin command: " ++ comptimeJoinPath(plugin_cmd.path));
-                        }
-                    }
-                    plugin_command_paths = plugin_command_paths ++ .{plugin_cmd.path};
-                }
+                entries = entries ++ discoverPluginCommands(Plugin.commands, &.{});
             }
         }
-        // Global-option conflicts (both names and short flags) are validated once
-        // over the flattened `global_options` list below (see the `comptime` block
-        // after it) — no separate names-only pass here.
-    }
+        break :blk entries;
+    };
+    comptime validation.validateComposition(cmd_entries, discovered_plugin_commands, new_plugins);
 
     return struct {
         const Self = @This();
@@ -386,69 +292,14 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             break :blk opts;
         };
 
-        // Validate no duplicate global option names or short flags
-        comptime {
-            for (global_options, 0..) |opt_a, i| {
-                for (global_options[i + 1 ..]) |opt_b| {
-                    if (std.mem.eql(u8, opt_a.name, opt_b.name)) {
-                        @compileError("Duplicate global option name: --" ++ opt_a.name ++ ". Two plugins define the same global option.");
-                    }
-                    if (opt_a.short != null and opt_b.short != null and opt_a.short.? == opt_b.short.?) {
-                        @compileError("Duplicate global option short flag: -" ++ &[_]u8{opt_a.short.?} ++ " (used by both --" ++ opt_a.name ++ " and --" ++ opt_b.name ++ ")");
-                    }
-                }
-            }
-        }
+        // Global-option conflicts (duplicate names/shorts across plugins) and
+        // global-vs-command shadowing (#663) are validated by the single
+        // registry-level pass in validation.zig, which sees the whole
+        // composition.
 
-        // Validate no command option is silently shadowed by a plugin global
-        // option. parseGlobalOptions() scans the entire argv and consumes any
-        // token matching a global option's long name or short flag *before*
-        // routing, so a command field that collides with a global would never
-        // receive its own flag — the global handler eats it and the field keeps
-        // its default (see issue #663). Catch it here with a message naming the
-        // command, the field, and the owning plugin.
-        comptime {
-            for (new_plugins) |Plugin| {
-                if (!plugin_types.hasGlobalOptions(Plugin)) continue;
-                for (Plugin.global_options) |gopt| {
-                    for (cmd_entries) |cmd| {
-                        if (!@hasDecl(cmd.module, "Options")) continue;
-                        const meta = if (@hasDecl(cmd.module, "meta")) cmd.module.meta else null;
-                        for (std.meta.fields(cmd.module.Options)) |field| {
-                            const long = option_utils.effectiveLongName(meta, field.name);
-                            if (std.mem.eql(u8, long, gopt.name)) {
-                                @compileError("Command '" ++ comptimeJoinPath(cmd.path) ++
-                                    "' option --" ++ long ++ " (field '" ++ field.name ++
-                                    "') collides with global option --" ++ gopt.name ++
-                                    " provided by plugin '" ++ @typeName(Plugin) ++
-                                    "'. The global handler consumes this flag before the command runs, so the command would never see it. Rename the command's option (e.g. `meta.options." ++
-                                    field.name ++ ".name`) or remove the conflicting global option.");
-                            }
-                            const short = option_utils.shortCharForField(meta, field.name);
-                            if (short != null and gopt.short != null and short.? == gopt.short.?) {
-                                @compileError("Command '" ++ comptimeJoinPath(cmd.path) ++
-                                    "' option -" ++ &[_]u8{short.?} ++ " (field '" ++ field.name ++
-                                    "') collides with global short flag -" ++ &[_]u8{gopt.short.?} ++
-                                    " (--" ++ gopt.name ++ ") provided by plugin '" ++ @typeName(Plugin) ++
-                                    "'. The global handler consumes this flag before the command runs, so the command would never see it. Rename the command's short (`meta.options." ++
-                                    field.name ++ ".short`) or remove the conflicting global option.");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Discover all plugin command entries (including nested)
-        const plugin_command_entries = blk: {
-            var entries: []const CommandEntry = &.{};
-            for (new_plugins) |Plugin| {
-                if (@hasDecl(Plugin, "commands")) {
-                    entries = entries ++ discoverPluginCommands(Plugin.commands, &.{});
-                }
-            }
-            break :blk entries;
-        };
+        // All plugin command entries (including nested), discovered once above
+        // and already validated by the registry-level pass.
+        const plugin_command_entries = discovered_plugin_commands;
 
         // Sort plugins by priority at compile time
         const sorted_plugins = blk: {

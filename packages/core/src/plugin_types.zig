@@ -281,7 +281,8 @@ pub fn requirePluginId(comptime Plugin: type) void {
 
 /// Comptime backstop against silently-dead hooks. Hooks are detected by exact
 /// name (`@hasDecl`), so a typo'd hook — `preExeucte` — compiles fine and
-/// simply never fires. Called by Registry.registerPlugin: any *function* decl
+/// simply never fires. Called by the registry-level validation pass
+/// (registry/validation.zig) for every registered plugin: any *function* decl
 /// whose name is within edit distance 2 of a hook (but isn't one) is rejected
 /// with a pointer at the hook it resembles.
 pub fn validatePlugin(comptime Plugin: type) void {

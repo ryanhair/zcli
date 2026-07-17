@@ -930,6 +930,9 @@ test "validateCommand accepts a well-formed command" {
 
 // The negative cases below are compile errors by design, so they cannot be run
 // as tests. Each is verified by hand; uncomment one to see the message it emits.
+// (These are the PER-MODULE cases `validateCommand` catches; composition-level
+// cases — duplicate paths, global-option conflicts, global-vs-command
+// shadowing — live with the registry-level pass in registry/validation.zig.)
 //
 //   command 'broken': unknown meta field 'desciption'. Valid fields are: ...
 //     pub const meta = .{ .desciption = "typo" };
