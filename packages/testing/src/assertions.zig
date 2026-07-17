@@ -1,14 +1,13 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const runner = @import("runner.zig");
 const testing = std.testing;
 
 /// Assert that the exit code matches expected value
 pub fn expectExitCode(result: runner.Result, expected: u8) !void {
     if (result.exit_code != expected) {
-        if (!builtin.is_test) std.debug.print("\nExpected exit code {d}, but got {d}\n", .{ expected, result.exit_code });
+        std.debug.print("\nExpected exit code {d}, but got {d}\n", .{ expected, result.exit_code });
         if (result.stderr.len > 0) {
-            if (!builtin.is_test) std.debug.print("stderr: {s}\n", .{result.stderr});
+            std.debug.print("stderr: {s}\n", .{result.stderr});
         }
         return error.ExitCodeMismatch;
     }
@@ -17,7 +16,7 @@ pub fn expectExitCode(result: runner.Result, expected: u8) !void {
 /// Assert that the exit code does not match a value
 pub fn expectExitCodeNot(result: runner.Result, not_expected: u8) !void {
     if (result.exit_code == not_expected) {
-        if (!builtin.is_test) std.debug.print("\nExpected exit code to not be {d}, but it was\n", .{not_expected});
+        std.debug.print("\nExpected exit code to not be {d}, but it was\n", .{not_expected});
         return error.UnexpectedExitCode;
     }
 }
@@ -25,7 +24,7 @@ pub fn expectExitCodeNot(result: runner.Result, not_expected: u8) !void {
 /// Assert that stdout is empty
 pub fn expectStdoutEmpty(result: runner.Result) !void {
     if (result.stdout.len > 0) {
-        if (!builtin.is_test) std.debug.print("\nExpected stdout to be empty, but got:\n{s}\n", .{result.stdout});
+        std.debug.print("\nExpected stdout to be empty, but got:\n{s}\n", .{result.stdout});
         return error.StdoutNotEmpty;
     }
 }
@@ -33,7 +32,7 @@ pub fn expectStdoutEmpty(result: runner.Result) !void {
 /// Assert that stderr is empty
 pub fn expectStderrEmpty(result: runner.Result) !void {
     if (result.stderr.len > 0) {
-        if (!builtin.is_test) std.debug.print("\nExpected stderr to be empty, but got:\n{s}\n", .{result.stderr});
+        std.debug.print("\nExpected stderr to be empty, but got:\n{s}\n", .{result.stderr});
         return error.StderrNotEmpty;
     }
 }
@@ -41,7 +40,7 @@ pub fn expectStderrEmpty(result: runner.Result) !void {
 /// Assert that output contains a substring
 pub fn expectContains(output: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, output, needle) == null) {
-        if (!builtin.is_test) std.debug.print("\nExpected output to contain:\n  '{s}'\n\nActual output:\n{s}\n", .{ needle, output });
+        std.debug.print("\nExpected output to contain:\n  '{s}'\n\nActual output:\n{s}\n", .{ needle, output });
         return error.SubstringNotFound;
     }
 }
@@ -49,7 +48,7 @@ pub fn expectContains(output: []const u8, needle: []const u8) !void {
 /// Assert that output does not contain a substring
 pub fn expectNotContains(output: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, output, needle) != null) {
-        if (!builtin.is_test) std.debug.print("\nExpected output to NOT contain:\n  '{s}'\n\nActual output:\n{s}\n", .{ needle, output });
+        std.debug.print("\nExpected output to NOT contain:\n  '{s}'\n\nActual output:\n{s}\n", .{ needle, output });
         return error.UnexpectedSubstring;
     }
 }
@@ -57,7 +56,7 @@ pub fn expectNotContains(output: []const u8, needle: []const u8) !void {
 /// Assert that two strings are equal
 pub fn expectEqualStrings(expected: []const u8, actual: []const u8) !void {
     if (!std.mem.eql(u8, expected, actual)) {
-        if (!builtin.is_test) std.debug.print("\nStrings not equal!\n\nExpected:\n{s}\n\nActual:\n{s}\n", .{ expected, actual });
+        std.debug.print("\nStrings not equal!\n\nExpected:\n{s}\n\nActual:\n{s}\n", .{ expected, actual });
         return error.StringMismatch;
     }
 }
@@ -65,7 +64,7 @@ pub fn expectEqualStrings(expected: []const u8, actual: []const u8) !void {
 /// Assert that output is valid JSON
 pub fn expectValidJson(allocator: std.mem.Allocator, output: []const u8) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, output, .{}) catch |err| {
-        if (!builtin.is_test) std.debug.print("\nExpected valid JSON but got error: {}\n\nOutput:\n{s}\n", .{ err, output });
+        std.debug.print("\nExpected valid JSON but got error: {}\n\nOutput:\n{s}\n", .{ err, output });
         return error.InvalidJson;
     };
     defer parsed.deinit();
