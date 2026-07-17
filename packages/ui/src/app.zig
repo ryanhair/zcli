@@ -1,9 +1,26 @@
 //! App: the static/live frame loop (ADR-0013 step 3), in two modes (ADR-0015).
 //!
-//! Owns everything the demo used to hand-roll: the frame arena, the
-//! double-buffered surfaces, reserving the live region's rows, parking the
-//! cursor at the region's top-left (the diff renderer's addressing
-//! contract), and cursor hide/restore.
+//! The App is the orchestrator over four owned components, each with one
+//! responsibility:
+//!
+//! - `RenderCore` (render_core.zig) — the pure measure→paint→diff pipeline:
+//!   double-buffered surfaces and the minimal-byte diff paint.
+//! - `RegionCursor` (region_cursor.zig) — owns the cursor-parking invariant:
+//!   between operations the real cursor sits at column 0 of the live
+//!   region's top row (or at the start of an empty line when no region is
+//!   painted). `place` is the one sanctioned excursion; every paint path
+//!   parks first and asserts `isParked()` before handing bytes to the diff
+//!   renderer. Callers must hand over the terminal at the start of a line,
+//!   and must not write to the App's writer directly while a live region is
+//!   up — that's what `emit` is for.
+//! - `TerminalSession` (terminal_session.zig) — raw mode, the resize
+//!   watcher, the signal/panic restore guard, and the full-screen
+//!   enter/restore protocol: the only part that touches real process state.
+//! - `HybridScrollback` (hybrid_scrollback.zig) — the retained static tail
+//!   and its width-resize reflow (ADR-0013 resize tier 2).
+//!
+//! What remains here is the region bookkeeping (`live_rows`, reserve/clear)
+//! and the mode orchestration.
 //!
 //! The default is `hybrid`: a static stream (`emit`) flowing into scrollback
 //! with a live region (`frame`) pinned above it, sharing the screen. Opting
@@ -27,12 +44,6 @@
 //! Build each frame's tree from `app.arena()`: allocations live until the
 //! next `frame()` call consumes them, then the arena resets wholesale —
 //! that's the immediate-mode contract.
-//!
-//! Cursor bookkeeping invariant: between calls, the cursor sits at column 0
-//! of the live region's top row (or at the start of an empty line when no
-//! region is painted). Callers must hand over the terminal at the start of a
-//! line, and must not write to the App's writer directly while a live region
-//! is up — that's what `emit` is for.
 
 const std = @import("std");
 const theme = @import("theme");
@@ -40,6 +51,10 @@ const terminal = @import("terminal");
 const surface_mod = @import("surface.zig");
 const node_mod = @import("node.zig");
 const diff_mod = @import("diff.zig");
+const render_core_mod = @import("render_core.zig");
+const region_cursor_mod = @import("region_cursor.zig");
+const session_mod = @import("terminal_session.zig");
+const scrollback_mod = @import("hybrid_scrollback.zig");
 
 const Surface = surface_mod.Surface;
 const Point = surface_mod.Point;
@@ -47,23 +62,15 @@ const Node = node_mod.Node;
 const Size = node_mod.Size;
 const Limits = node_mod.Limits;
 const RenderCtx = node_mod.RenderCtx;
+const RenderCore = render_core_mod.RenderCore;
+const RegionCursor = region_cursor_mod.RegionCursor;
+const TerminalSession = session_mod.TerminalSession;
+const HybridScrollback = scrollback_mod.HybridScrollback;
 
 /// An input event surfaced by `nextEvent` in full-screen mode: a key press, a
 /// terminal resize, or (when enabled) a mouse or focus event (re-exported from
 /// `terminal`). Bracketed paste joins here when it lands (ADR-0015 deferred).
 pub const Event = terminal.Event;
-
-// Full-screen takeover/restore escape sequences. The `*_on`/`*_off` pairs are
-// DECSET enable/disable for the opt-in input modes; `restore_tail` shows the
-// cursor and leaves the alt-screen. Restore order is the reverse of enter:
-// disable input modes, then cursor, then alt-screen.
-const mouse_on = "\x1b[?1002h\x1b[?1006h"; // button+drag tracking, SGR encoding
-const mouse_off = "\x1b[?1002l\x1b[?1006l";
-const focus_on = "\x1b[?1004h";
-const focus_off = "\x1b[?1004l";
-const paste_on = "\x1b[?2004h"; // bracketed paste
-const paste_off = "\x1b[?2004l";
-const restore_tail = "\x1b[?25h\x1b[?1049l";
 
 pub const App = struct {
     /// How the App shares the terminal (ADR-0015).
@@ -143,15 +150,6 @@ pub const App = struct {
         paste_max: usize = 5 << 20, // 5 MiB
     };
 
-    /// A static block kept for the resize tail repaint (ADR-0013 resize
-    /// tier 2): the SOURCE text, not rendered cells, so it can rewrap at a
-    /// new width. `rows` is what it occupies at the width it was last
-    /// printed at (terminal character-wrapping, not word-wrapping).
-    const StaticBlock = struct {
-        text: []u8,
-        rows: u16,
-    };
-
     writer: *std.Io.Writer,
     gpa: std.mem.Allocator,
     options: Options,
@@ -162,42 +160,28 @@ pub const App = struct {
     mode: Mode = .hybrid,
 
     frame_arena: std.heap.ArenaAllocator,
-    /// What the terminal currently shows (diff source) / the paint target.
-    front: Surface,
-    back: Surface,
+    /// The measure→paint→diff pipeline: double-buffered surfaces + validity.
+    core: RenderCore,
+    /// Owner of the cursor-parking invariant (see module docs).
+    cursor: RegionCursor = .{},
+    /// Process-global terminal state: raw mode, resize watcher, restore guard.
+    session: TerminalSession,
+    /// The retained static tail and its width-resize reflow (hybrid only).
+    scrollback: HybridScrollback,
     /// Rows currently reserved on screen for the live region.
     live_rows: u16 = 0,
-    /// Whether `front` matches what's on screen (false forces a full paint).
-    front_valid: bool = false,
     /// Whether we've taken over the terminal (cursor hidden) yet.
     started: bool = false,
-    /// Recently emitted static blocks that may still be visible above the
-    /// live region — the reflowable tail. Bounded to about a screenful by
-    /// `evictRetained`; oldest first.
-    retained: std.ArrayList(StaticBlock) = .empty,
     /// Terminal width at the last frame/emit; a change triggers the tail
     /// repaint.
     last_width: ?u16 = null,
-    /// Where `showCursorAt` placed the real cursor within the live region
-    /// (region-relative), if anywhere. Any frame/emit/clear un-places it.
-    placed: ?CursorPos = null,
     /// Guard for idempotent deinit (finish paths may close the App early).
     deinited: bool = false,
-    /// Whether this App armed the process-global restore guard (in `init` when
-    /// it took the caller's raw mode, in `start`/`enterFullScreen` on takeover).
-    /// Gates the `deinit` disarm — armed can precede `started`, so `started`
-    /// alone would leak the guard on a construct-then-error path.
-    guard_armed: bool = false,
-    /// Session-owned raw mode, in full-screen only (the App reads input via
-    /// `nextEvent`). `null` in hybrid, where input ownership stays external.
-    raw: ?terminal.RawMode = null,
-    /// Resize watcher backing `nextEvent`, full-screen only.
-    watcher: ?terminal.ResizeWatcher = null,
     /// Reused accumulator for bracketed-paste content (full-screen, `paste`
     /// enabled). `Event.paste` borrows its bytes until the next `nextEvent`.
     paste_buf: std.ArrayList(u8) = .empty,
 
-    pub const CursorPos = struct { x: u16, y: u16 };
+    pub const CursorPos = RegionCursor.Pos;
 
     /// A hybrid App (ADR-0013): a static stream flowing into scrollback with a
     /// live region pinned above it. Shares the screen, stays in cooked mode,
@@ -210,8 +194,16 @@ pub const App = struct {
             .options = options,
             .mode = .hybrid,
             .frame_arena = std.heap.ArenaAllocator.init(gpa),
-            .front = try Surface.init(gpa, 0, 0),
-            .back = try Surface.init(gpa, 0, 0),
+            .core = try RenderCore.init(gpa),
+            .session = .{
+                .out_handle = options.out_handle orelse std.Io.File.stdout().handle,
+                .modes = .{
+                    .mouse = options.mouse,
+                    .focus = options.focus,
+                    .paste = options.paste,
+                },
+            },
+            .scrollback = HybridScrollback.init(gpa),
         };
         // Arm the restore guard the moment we hold the caller's raw mode: in
         // hybrid the caller enables raw mode *before* constructing the App (a
@@ -221,8 +213,7 @@ pub const App = struct {
         // once it hides the cursor. The blob is empty here — nothing on screen to
         // undo yet, only the termios carried in `hybrid_raw`.
         if (options.term_size == null and options.hybrid_raw != null) {
-            terminal.guard.arm(self.outHandle(), "", options.hybrid_raw);
-            self.guard_armed = true;
+            self.session.arm("", options.hybrid_raw);
         }
         return self;
     }
@@ -240,8 +231,7 @@ pub const App = struct {
         var self = try init(gpa, writer, options);
         self.mode = .full_screen;
         errdefer {
-            self.front.deinit();
-            self.back.deinit();
+            self.core.deinit();
             self.frame_arena.deinit();
         }
         try self.enterFullScreen();
@@ -294,85 +284,25 @@ pub const App = struct {
         }
     }.call);
 
-    /// Take the terminal over: enable session raw mode, switch to the
-    /// alternate-screen buffer (saving the shell's screen + scrollback), hide
-    /// the cursor, and anchor at the origin — `?1049h` clears the alt buffer
-    /// but carries the cursor position over from the main screen, so the diff
-    /// renderer's "cursor parked at the region's top-left" contract must be
-    /// established explicitly before the first paint (ADR-0015 choice 2).
+    /// Take the terminal over (ADR-0015): the session enables raw mode,
+    /// starts the resize watcher, arms the guard, and writes the takeover
+    /// bytes; then the parked-cursor invariant is established explicitly at
+    /// the origin — `?1049h` clears the alt buffer but carries the cursor
+    /// position over from the main screen (ADR-0015 choice 2).
     fn enterFullScreen(self: *App) !void {
         if (!self.options.interactive) return error.NotATerminal;
         // Restore terminal state if any step below fails — same bytes/order as
         // deinit, so a half-entered session never strands the terminal.
-        errdefer {
-            terminal.guard.disarm();
-            self.writeRestore();
-            self.writer.flush() catch {};
-            if (self.watcher) |*w| w.deinit();
-            if (self.raw) |r| r.disable();
-        }
+        errdefer self.session.abortEnter(self.writer);
+        self.started = true; // cursor hidden, terminal owned
         // A fixed `term_size` is the headless-harness path (tests): there is
         // no real terminal to put in raw mode, watch for resizes, or arm the
-        // restore guard against (tests must not grab process signals). Still
-        // emit the alt-screen takeover so the byte stream is exercised; live
-        // input (`nextEvent`) is a real-terminal-only affair.
-        if (self.options.term_size == null) {
-            self.raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
-            self.watcher = terminal.ResizeWatcher.init();
-            // Register the full restore (disable input modes → show cursor →
-            // leave alt-screen → restore termios) for the signal/panic paths
-            // that skip deinit. Armed before the takeover bytes go out so a
-            // signal in the gap still restores; disabling modes / leaving an
-            // alt-screen we haven't entered yet is a harmless no-op.
-            var blob: [64]u8 = undefined;
-            terminal.guard.arm(self.outHandle(), self.restoreBlob(&blob), self.raw);
-            self.guard_armed = true;
-        }
-        self.started = true; // cursor hidden, terminal owned
-        try self.writer.writeAll("\x1b[?1049h\x1b[?25l");
-        if (self.options.mouse) try self.writer.writeAll(mouse_on);
-        if (self.options.focus) try self.writer.writeAll(focus_on);
-        if (self.options.paste) try self.writer.writeAll(paste_on);
-        try self.anchor();
+        // restore guard against (tests must not grab process signals). The
+        // alt-screen takeover bytes still go out so the stream is exercised;
+        // live input (`nextEvent`) is a real-terminal-only affair.
+        try self.session.takeover(self.writer, self.options.term_size != null);
+        try self.cursor.anchor(self.writer, self.termSize().h);
         try self.writer.flush();
-    }
-
-    /// The restore blob for the signal/panic guard: disable whichever input
-    /// modes are on, then `restore_tail` (show cursor + leave alt-screen). Same
-    /// bytes `writeRestore` emits on the normal path, packed into `buf`.
-    fn restoreBlob(self: *App, buf: []u8) []const u8 {
-        var n: usize = 0;
-        const put = struct {
-            fn f(dst: []u8, at: *usize, s: []const u8) void {
-                @memcpy(dst[at.*..][0..s.len], s);
-                at.* += s.len;
-            }
-        }.f;
-        if (self.options.mouse) put(buf, &n, mouse_off);
-        if (self.options.focus) put(buf, &n, focus_off);
-        if (self.options.paste) put(buf, &n, paste_off);
-        put(buf, &n, restore_tail);
-        return buf[0..n];
-    }
-
-    /// Emit the restore sequence to the writer (normal teardown / errdefer):
-    /// disable input modes, then show cursor and leave the alt-screen.
-    fn writeRestore(self: *App) void {
-        if (self.options.mouse) self.writer.writeAll(mouse_off) catch {};
-        if (self.options.focus) self.writer.writeAll(focus_off) catch {};
-        if (self.options.paste) self.writer.writeAll(paste_off) catch {};
-        self.writer.writeAll(restore_tail) catch {};
-    }
-
-    /// Park the cursor at the screen origin (the diff renderer's addressing
-    /// anchor in full-screen). One relative sequence — CR plus a
-    /// viewport-height CUU that clamps at the top row — so the renderer stays
-    /// CUP-free and shared byte-for-byte with the hybrid. Used on entry and
-    /// after a resize, the two moments the parked position is invalidated.
-    fn anchor(self: *App) !void {
-        const h = self.termSize().h;
-        try self.writer.writeByte('\r');
-        if (h > 0) try self.writer.print("\x1b[{d}A", .{h});
     }
 
     /// Restores the terminal (cursor shown, parked on a fresh line below the
@@ -384,19 +314,18 @@ pub const App = struct {
         // Clean teardown owns the restore from here — disarm so a racing signal
         // doesn't also replay, and to put the old signal dispositions back.
         // Idempotent: a no-op on the headless path that never armed.
-        if (self.guard_armed) terminal.guard.disarm();
+        self.session.disarm();
         if (self.mode == .full_screen) {
             // Restore in strict reverse of enter (ADR-0015 choice 5): disable
             // input modes → show cursor → leave alt-screen (restores the shell's
             // screen and scrollback; the final frame is discarded by design) →
             // disable raw mode. The alt-screen leave must precede the raw-mode
             // restore so its bytes still go out while we own the terminal.
-            if (self.started) self.writeRestore();
+            if (self.started) self.session.writeRestore(self.writer);
             self.writer.flush() catch {};
-            if (self.watcher) |*w| w.deinit();
-            if (self.raw) |r| r.disable();
+            self.session.release();
         } else if (self.started) {
-            self.unplace() catch {};
+            self.cursor.park(self.writer) catch {};
             if (self.live_rows > 1) {
                 self.writer.print("\x1b[{d}B", .{self.live_rows - 1}) catch {};
             }
@@ -406,32 +335,24 @@ pub const App = struct {
         } else {
             self.writer.flush() catch {};
         }
-        for (self.retained.items) |b| self.gpa.free(b.text);
-        self.retained.deinit(self.gpa);
+        self.scrollback.deinit();
         self.paste_buf.deinit(self.gpa);
-        self.front.deinit();
-        self.back.deinit();
+        self.core.deinit();
         self.frame_arena.deinit();
     }
 
     /// Show the real terminal cursor at (x, y) in live-region coordinates —
     /// a line editor's insertion point. Cleared by the next frame, emit, or
     /// clear (the region invariant parks the cursor at the top-left between
-    /// operations; this is the one sanctioned excursion). No-op without an
-    /// interactive live region.
+    /// operations; `RegionCursor.place` is the one sanctioned excursion).
+    /// No-op without an interactive live region.
     pub fn showCursorAt(self: *App, x: u16, y: u16) !void {
         if (!self.options.interactive or self.live_rows == 0) return;
-        try self.unplace();
-        const pos = CursorPos{
-            .x = @min(x, self.front.width -| 1),
+        try self.cursor.place(self.writer, .{
+            .x = @min(x, self.core.front.width -| 1),
             .y = @min(y, self.live_rows - 1),
-        };
-        if (pos.y > 0) try self.writer.print("\x1b[{d}B", .{pos.y});
-        try self.writer.writeByte('\r');
-        if (pos.x > 0) try self.writer.print("\x1b[{d}C", .{pos.x});
-        try self.writer.writeAll("\x1b[?25h");
+        });
         try self.writer.flush();
-        self.placed = pos;
     }
 
     /// Place the real terminal cursor at an absolute screen cell, or hide it
@@ -445,18 +366,9 @@ pub const App = struct {
         if (p) |pt| {
             try self.showCursorAt(pt.x, pt.y);
         } else {
-            try self.unplace();
+            try self.cursor.park(self.writer);
             try self.writer.flush();
         }
-    }
-
-    /// Hide the placed cursor and return to the region's top-left, restoring
-    /// the parking invariant every other operation assumes.
-    fn unplace(self: *App) !void {
-        const pos = self.placed orelse return;
-        self.placed = null;
-        try self.writer.writeAll("\x1b[?25l\r");
-        if (pos.y > 0) try self.writer.print("\x1b[{d}A", .{pos.y});
     }
 
     /// The frame arena: build each frame's node tree from this. Valid until
@@ -492,19 +404,14 @@ pub const App = struct {
         const text = try std.fmt.allocPrint(self.gpa, base ++ "\r\n", args);
         errdefer self.gpa.free(text);
 
-        try self.unplace();
+        try self.cursor.park(self.writer);
         const had_live = self.live_rows > 0;
         try self.clearLive();
         try self.writer.writeAll(text);
         if (had_live) try self.repaintLive();
         try self.writer.flush();
 
-        // Retain last: eviction may free the block we just printed.
-        try self.retained.append(self.gpa, .{
-            .text = text,
-            .rows = textRows(text, ts.w),
-        });
-        _ = self.evictRetained(ts.h -| self.live_rows);
+        try self.scrollback.retain(text, ts.w, ts.h -| self.live_rows);
     }
 
     /// Live output: measure, lay out, paint the diff. The tree (built from
@@ -514,7 +421,7 @@ pub const App = struct {
         defer _ = self.frame_arena.reset(.retain_capacity);
         if (!self.options.interactive) return;
         if (self.mode == .full_screen) return self.frameFullScreen(node);
-        try self.unplace();
+        try self.cursor.park(self.writer);
 
         const ts = self.termSize();
         const width_changed = self.last_width != null and self.last_width.? != ts.w;
@@ -543,12 +450,7 @@ pub const App = struct {
         }
 
         try self.start();
-
-        if (size.w != self.back.width or size.h != self.back.height) {
-            try self.back.resize(size.w, size.h);
-            try self.front.resize(size.w, size.h);
-            self.front_valid = false;
-        }
+        try self.core.setSize(size.w, size.h);
 
         // Resize tier 2 (ADR-0013): on a width change, the visible static
         // tail is erased and reprinted reflowed at the new width, in the
@@ -557,7 +459,15 @@ pub const App = struct {
         const tail_repaint = width_changed and self.live_rows > 0;
         if (tail_repaint) {
             if (self.options.sync) try self.writer.writeAll("\x1b[?2026h");
-            try self.repaintTail(ts, size.h);
+            try self.scrollback.reflow(
+                self.writer,
+                self.frame_arena.allocator(),
+                ts.w,
+                ts.h -| size.h,
+            );
+            self.live_rows = 0;
+            self.core.invalidate();
+            try self.reserve(size.h);
         } else if (size.h != self.live_rows) {
             // Region height changed (or first frame): re-reserve from
             // scratch. Erasing rather than incrementally growing keeps the
@@ -566,17 +476,14 @@ pub const App = struct {
             try self.reserve(size.h);
         }
 
-        self.back.clear();
-        try node_mod.render(&rctx, &node, self.back.root());
-
-        const prev: ?*const Surface = if (self.front_valid) &self.front else null;
+        // The diff renderer addresses everything relative to the park —
+        // the invariant `RegionCursor` owns, checked before every paint.
+        std.debug.assert(self.cursor.isParked());
         const renderer = diff_mod.Renderer{
             .capability = self.options.capability,
             .sync = self.options.sync and !tail_repaint,
         };
-        try renderer.paint(self.writer, prev, &self.back);
-        std.mem.swap(Surface, &self.front, &self.back);
-        self.front_valid = true;
+        try self.core.frame(self.writer, &rctx, &node, renderer);
         if (tail_repaint and self.options.sync) try self.writer.writeAll("\x1b[?2026l");
         try self.writer.flush();
     }
@@ -598,7 +505,7 @@ pub const App = struct {
         // A hardware cursor placed after the last frame (`cursorAt`) sits away
         // from the origin the diff renderer addresses relative to — return it
         // before painting, mirroring the hybrid `frame`.
-        try self.unplace();
+        try self.cursor.park(self.writer);
 
         const ts = self.termSize();
         const size = Size{ .w = ts.w, .h = ts.h };
@@ -610,31 +517,22 @@ pub const App = struct {
         const resized = self.last_width != null and
             (self.last_width.? != ts.w or self.live_rows != ts.h);
         self.last_width = ts.w;
-        if (resized) try self.anchor();
+        if (resized) try self.cursor.anchor(self.writer, ts.h);
 
         const rctx = RenderCtx{
             .allocator = self.frame_arena.allocator(),
             .unicode = self.options.unicode,
         };
 
-        if (size.w != self.back.width or size.h != self.back.height) {
-            try self.back.resize(size.w, size.h);
-            try self.front.resize(size.w, size.h);
-            self.front_valid = false;
-        }
+        try self.core.setSize(size.w, size.h);
         self.live_rows = size.h;
 
-        self.back.clear();
-        try node_mod.render(&rctx, &node, self.back.root());
-
-        const prev: ?*const Surface = if (self.front_valid) &self.front else null;
+        std.debug.assert(self.cursor.isParked());
         const renderer = diff_mod.Renderer{
             .capability = self.options.capability,
             .sync = self.options.sync,
         };
-        try renderer.paint(self.writer, prev, &self.back);
-        std.mem.swap(Surface, &self.front, &self.back);
-        self.front_valid = true;
+        try self.core.frame(self.writer, &rctx, &node, renderer);
         try self.writer.flush();
     }
 
@@ -653,7 +551,7 @@ pub const App = struct {
         const reader = self.options.stdin orelse return error.NoInput;
         // No watcher means the headless-harness path (`term_size` set): there
         // is no real terminal to read from.
-        if (self.watcher == null) return error.NoInput;
+        if (self.session.watcher == null) return error.NoInput;
         try self.writer.flush();
         // The paste sink borrows `paste_buf` (reused each call); the returned
         // `Event.paste` is valid only until the next `nextEvent`.
@@ -665,7 +563,7 @@ pub const App = struct {
         return terminal.readEventTimeout(
             reader,
             std.Io.File.stdin().handle,
-            &self.watcher.?,
+            &self.session.watcher.?,
             timeout_ms,
             sink,
         );
@@ -746,14 +644,15 @@ pub const App = struct {
     /// for a widget whose result is an `emit`ted line (or no output at
     /// all), as opposed to `deinit`'s leave-the-final-frame-visible.
     pub fn clear(self: *App) !void {
-        try self.unplace();
+        try self.cursor.park(self.writer);
         try self.clearLive();
         try self.writer.flush();
     }
 
     // ------------------------------------------------------------------
-    // Region bookkeeping. Invariant: cursor at column 0 of the region's
-    // top row (or of an empty line when live_rows == 0).
+    // Region bookkeeping. The cursor-parking invariant (column 0 of the
+    // region's top row, or of an empty line when live_rows == 0) is owned
+    // by `RegionCursor`; these keep `live_rows` in step with the screen.
     // ------------------------------------------------------------------
 
     /// Erase the live region (cursor-to-end-of-screen — the region is the
@@ -762,7 +661,7 @@ pub const App = struct {
         if (self.live_rows == 0) return;
         try self.writer.writeAll("\r\x1b[0J");
         self.live_rows = 0;
-        self.front_valid = false;
+        self.core.invalidate();
     }
 
     /// Create `rows` rows starting at the cursor's line (scrolling as
@@ -780,96 +679,14 @@ pub const App = struct {
 
     /// Re-reserve and fully repaint the last frame (after `emit` erased it).
     fn repaintLive(self: *App) !void {
-        if (self.front.width == 0 or self.front.height == 0) return;
+        if (self.core.front.width == 0 or self.core.front.height == 0) return;
         try self.start();
-        try self.reserve(self.front.height);
-        const renderer = diff_mod.Renderer{
+        try self.reserve(self.core.front.height);
+        std.debug.assert(self.cursor.isParked());
+        try self.core.repaint(self.writer, .{
             .capability = self.options.capability,
             .sync = self.options.sync,
-        };
-        try renderer.paint(self.writer, null, &self.front);
-        self.front_valid = true;
-    }
-
-    /// The width-resize repaint (ADR-0013 resize tier 2). The cursor sits at
-    /// the live region's top; the retained tail sits directly above it. Move
-    /// up over the tail's footprint (bottom-anchored, relative — CUU clamps
-    /// at the viewport top exactly when the tail extends into scrollback),
-    /// erase from there down, reprint the tail so the terminal rewraps it at
-    /// the new width, and re-reserve the live region below.
-    ///
-    /// The erase covers the LARGER of the kept blocks' old footprint and
-    /// their new one: a tail that unwraps (width grew) must not leave its
-    /// old extra rows stale above the reprint. Content above that is never
-    /// touched; deeper scrollback keeps its old wrap width — that seam is
-    /// immutable by terminal authority.
-    fn repaintTail(self: *App, ts: Size, live_h: u16) !void {
-        // Old footprints, index-aligned with `retained` (frame arena — this
-        // runs inside frame(), which resets it on return).
-        const olds = try self.frame_arena.allocator().alloc(u16, self.retained.items.len);
-        for (self.retained.items, olds) |*b, *old| {
-            old.* = b.rows;
-            b.rows = textRows(b.text, ts.w);
-        }
-        const dropped = self.evictRetained(ts.h -| live_h);
-
-        var old_tail: u32 = 0;
-        for (olds[dropped..]) |r| old_tail += r;
-        var new_tail: u32 = 0;
-        for (self.retained.items) |b| new_tail += b.rows;
-
-        try self.writer.writeByte('\r');
-        const up = @max(old_tail, new_tail);
-        if (up > 0) try self.writer.print("\x1b[{d}A", .{up});
-        try self.writer.writeAll("\x1b[0J");
-        for (self.retained.items) |b| try self.writer.writeAll(b.text);
-        self.live_rows = 0;
-        self.front_valid = false;
-        try self.reserve(live_h);
-    }
-
-    /// Drop retained blocks (oldest first) whose rows no longer fit in
-    /// `budget` (the viewport rows above the live region) — they have
-    /// scrolled beyond the viewport, where nothing can repaint them anyway.
-    /// Returns how many were dropped.
-    fn evictRetained(self: *App, budget: u32) usize {
-        var total: u32 = 0;
-        var keep_from = self.retained.items.len;
-        var i = self.retained.items.len;
-        while (i > 0) {
-            i -= 1;
-            const rows = self.retained.items[i].rows;
-            if (total + rows > budget) break;
-            total += rows;
-            keep_from = i;
-        }
-        if (keep_from == 0) return 0;
-        for (self.retained.items[0..keep_from]) |b| self.gpa.free(b.text);
-        const kept = self.retained.items.len - keep_from;
-        std.mem.copyForwards(
-            StaticBlock,
-            self.retained.items[0..kept],
-            self.retained.items[keep_from..],
-        );
-        self.retained.shrinkRetainingCapacity(kept);
-        return keep_from;
-    }
-
-    /// Rows `text` occupies at `width` — the terminal's own soft-wrapping
-    /// (hard character wrap at the last column), NOT `terminal.wrap`'s word
-    /// wrap: emit prints raw text and the terminal breaks the lines, so the
-    /// bookkeeping must count the way the terminal counts. (Tabs would
-    /// desync this — emit output is expected tab-free.)
-    fn textRows(text: []const u8, width: u16) u16 {
-        const w: u32 = @max(width, 1);
-        const body = std.mem.trimEnd(u8, text, "\r\n");
-        var rows: u32 = 0;
-        var it = std.mem.splitScalar(u8, body, '\n');
-        while (it.next()) |line| {
-            const cols: u32 = @intCast(terminal.displayWidth(line));
-            rows += @max(1, (cols + w - 1) / w);
-        }
-        return @intCast(@min(rows, std.math.maxInt(u16)));
+        });
     }
 
     /// Hybrid takeover: hide the cursor (the only *display* state hybrid owns).
@@ -885,8 +702,7 @@ pub const App = struct {
         self.started = true;
         try self.writer.writeAll("\x1b[?25l");
         if (self.options.term_size == null) {
-            terminal.guard.arm(self.outHandle(), "\x1b[?25h", self.options.hybrid_raw);
-            self.guard_armed = true;
+            self.session.arm("\x1b[?25h", self.options.hybrid_raw);
         }
     }
 
@@ -899,9 +715,10 @@ pub const App = struct {
 
     /// The handle output escapes actually reach — `options.out_handle` when the
     /// caller's writer targets something other than stdout (e.g. progress on
-    /// stderr), stdout otherwise.
+    /// stderr), stdout otherwise. Owned by the session (it arms the guard
+    /// against it); exposed for the size poll above and tests.
     fn outHandle(self: *const App) std.Io.File.Handle {
-        return self.options.out_handle orelse std.Io.File.stdout().handle;
+        return self.session.out_handle;
     }
 };
 

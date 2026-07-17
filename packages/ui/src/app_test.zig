@@ -263,7 +263,7 @@ test "retention stays bounded at about a screenful" {
     }
     // Live region is 1 row on a 6-row terminal: at most 5 one-row blocks
     // can still be visible above it.
-    try testing.expect(h.app.retained.items.len <= 5);
+    try testing.expect(h.app.scrollback.len() <= 5);
     // (Leaks in evicted blocks would trip std.testing.allocator on deinit.)
 }
 

@@ -9,4 +9,8 @@ test {
     _ = @import("input_test.zig");
     _ = @import("golden_test.zig");
     _ = @import("app_test.zig");
+    _ = @import("region_cursor.zig");
+    _ = @import("render_core.zig");
+    _ = @import("hybrid_scrollback.zig");
+    _ = @import("scrollback_test.zig");
 }
