@@ -31,6 +31,9 @@ pub const GenerateError = error{
     CommandNameCollision,
     /// Two registered plugins sanitize to the same generated import identifier.
     PluginNameCollision,
+    /// A registered plugin sanitizes to a reserved generated-registry
+    /// identifier (`std`, `zcli`, or a `cmd_`/`_index` affix).
+    ReservedPluginIdentifier,
 };
 
 /// Re-exported so the zcli_secrets plugin's own test targets (in
@@ -183,7 +186,7 @@ fn generatePluginRegistry(
                 logging.buildError("Command Discovery Error", config.commands_dir, "Access denied to commands directory", "Please check file permissions for the directory");
             },
             error.OutOfMemory => @panic("OOM"),
-            error.DuplicateCommandName, error.InvalidCommandName, error.MaxCommandDepthExceeded => {
+            error.DuplicateCommandName, error.InvalidCommandName, error.MaxCommandDepthExceeded, error.CommandPathUnreadable => {
                 // The specific, actionable message (naming the exact file(s))
                 // was already logged at the point of discovery; adding the
                 // generic block here would only bury it.
@@ -237,6 +240,26 @@ fn generatePluginRegistry(
             "Rename one plugin so their sanitized names differ — every non-alphanumeric byte (e.g. '-') becomes '_', so e.g. a local 'my-plugin.zig' and an external '.name = \"my_plugin\"' collide",
         );
         return error.PluginNameCollision;
+    }
+
+    // A plugin name sanitizing to a reserved generated-registry identifier
+    // (the `std`/`zcli` top-of-file imports, or the `cmd_`/`_index`
+    // affixes every command module gets) would emit a duplicate top-level
+    // decl the same way a plugin-vs-plugin collision would — but commands
+    // can never trigger it themselves, so it's checked separately from the
+    // symmetric pass above (#637).
+    if (plugin_system.findReservedPluginIdentifier(b.allocator, plugins) catch @panic("OOM")) |reserved| {
+        const detail = b.fmt("'{s}' sanitizes to '{s}'", .{
+            plugin_system.pluginLocator(b, reserved.plugin),
+            reserved.identifier,
+        });
+        logging.buildError(
+            "Reserved Plugin Identifier",
+            detail,
+            "Plugin name sanitizes to a reserved generated-registry identifier",
+            "The generated registry reserves 'std', 'zcli', and any 'cmd_'/'_index'-affixed identifier for itself — rename the plugin so its sanitized name avoids these",
+        );
+        return error.ReservedPluginIdentifier;
     }
 
     // Generate plugin-enhanced registry source code. The only failure here is

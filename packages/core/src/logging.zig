@@ -138,6 +138,15 @@ pub fn maxNestingDepthExceeded(max_depth: u32, path: []const u8) void {
     logBuildError("Maximum command nesting depth ({d}) exceeded at path: {s}", .{ max_depth, path });
 }
 
+/// Format build error for a command path that could not be read: an
+/// unreadable directory (permissions, or it vanished mid-scan) or a dangling
+/// symlink whose target can't be resolved. Hard error: silently skipping made
+/// an entire command subtree vanish from the CLI with only an easy-to-miss
+/// build-log line (#629).
+pub fn commandPathUnreadable(path: []const u8, reason: []const u8) void {
+    logBuildError("Cannot read command path '{s}': {s}", .{ path, reason });
+}
+
 /// Format build warning for field name too long
 pub fn fieldNameTooLong(field_name: []const u8, max_length: u32) void {
     logBuildWarning("Field name too long for conversion buffer (max {d} characters): {s}", .{ max_length, field_name });
@@ -214,6 +223,7 @@ test "logging utility functions" {
     invalidCommandName("bad name", "contains spaces");
     maxNestingDepthExceeded(6, "/deep/path/here");
     fieldNameTooLong("very_long_field_name_that_exceeds_limits", 32);
+    commandPathUnreadable("commands/broken", "cannot open directory");
 
     buildError("Test Error", "/path/to/file", "Test description", "Test suggestion");
 }
