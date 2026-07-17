@@ -1254,7 +1254,6 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             return .{
                 .has_args = @hasDecl(Module, "Args"),
                 .has_options = @hasDecl(Module, "Options"),
-                .raw_meta_ptr = if (@hasDecl(Module, "meta")) &Module.meta else null,
                 .args_fields = if (@hasDecl(Module, "Args")) buildFieldInfoList(Module.Args, args_meta, false) else &.{},
                 .options_fields = if (@hasDecl(Module, "Options")) buildFieldInfoList(Module.Options, options_meta, true) else &.{},
                 .exclusive = option_utils.exclusiveSets(if (@hasDecl(Module, "meta")) Module.meta else null),
