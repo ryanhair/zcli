@@ -19,7 +19,7 @@
 //!
 //! // Integration test
 //! test "help flag" {
-//!     const result = try testing.integration.runSubprocess(allocator, "./myapp", &.{"--help"});
+//!     const result = try testing.integration.runSubprocess(allocator, std.testing.io, "./myapp", &.{"--help"});
 //!     try testing.expectExitCode(result, 0);
 //!     try testing.expectContains(result.stdout, "USAGE:");
 //! }
