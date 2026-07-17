@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+# Least-privilege default: every job here checks out, builds, and tests — none
+# needs to write anything. The `changes` job further narrows its own token
+# (adds `pull-requests: read` for the paths-filter API call); no other job
+# needs elevation above this default.
+permissions:
+  contents: read
+
 jobs:
   # Classifies the diff so the expensive jobs below only run when paths they
   # actually cover changed. Deliberately job-level `if:` gating (each job
