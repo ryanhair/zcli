@@ -74,6 +74,13 @@ const kCFStringEncodingUTF8: CFStringEncoding = 0x08000100;
 /// The default CoreFoundation allocator is a null `CFAllocatorRef`.
 const kCFAllocatorDefault: CFAllocatorRef = null;
 
+// The "null" allocator, used as the `bytesDeallocator` for
+// `CFDataCreateWithBytesNoCopy`: it tells CoreFoundation the `CFData` does *not*
+// own its backing buffer — CF neither copies the bytes in nor frees them on
+// release. That is what lets `cfData` wrap the caller's own secret buffer instead
+// of minting a CF-owned plaintext copy we could never wipe (see `cfData`).
+extern "c" const kCFAllocatorNull: CFAllocatorRef;
+
 // The dictionary key/value callback tables are opaque structs; we only ever need
 // their addresses. `kCFTypeDictionaryKeyCallBacks` / `...ValueCallBacks` make the
 // dictionary retain/release + hash/equal its CF-object keys and values, which is
@@ -106,10 +113,11 @@ extern "c" fn CFStringCreateWithBytes(
     isExternalRepresentation: u8,
 ) callconv(.c) CFStringRef;
 
-extern "c" fn CFDataCreate(
+extern "c" fn CFDataCreateWithBytesNoCopy(
     alloc: CFAllocatorRef,
     bytes: [*]const u8,
     length: CFIndex,
+    bytesDeallocator: CFAllocatorRef,
 ) callconv(.c) CFDataRef;
 
 extern "c" fn CFDataGetBytePtr(data: CFDataRef) callconv(.c) ?[*]const u8;
@@ -150,12 +158,22 @@ fn cfString(bytes: []const u8) Error!CFStringRef {
         Error.KeychainFailure;
 }
 
-/// Wrap secret bytes in a `CFData`. CoreFoundation copies the bytes into its own
-/// buffer; the caller's `bytes` slice is never mutated and never reaches argv (it
-/// travels only through this in-memory CF object). Caller owns the result and
-/// must `CFRelease` it.
+/// Wrap secret bytes in a `CFData` for a single Keychain write.
+///
+/// Uses `CFDataCreateWithBytesNoCopy` with `kCFAllocatorNull` as the byte
+/// deallocator so CoreFoundation *borrows* the caller's `bytes` slice rather than
+/// duplicating the plaintext into a CF-owned buffer. That matters for secret
+/// hygiene: a `CFData` minted by `CFDataCreate` is immutable and CF-owned, so its
+/// bytes can only be `CFRelease`d, never wiped (`CFDataGetBytePtr` is `const`).
+/// Borrowing instead means the sole in-process plaintext copy is the caller's own
+/// `value` buffer, which the caller owns and can zero. The bytes are never mutated
+/// and never reach argv.
+///
+/// Because CF does not copy, the returned `CFData` must not outlive `bytes`: every
+/// caller `CFRelease`s it before returning, well within the lifetime of the slice
+/// it wraps. Caller owns the result and must `CFRelease` it.
 fn cfData(bytes: []const u8) Error!CFDataRef {
-    return CFDataCreate(kCFAllocatorDefault, bytes.ptr, @intCast(bytes.len)) orelse
+    return CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, bytes.ptr, @intCast(bytes.len), kCFAllocatorNull) orelse
         Error.KeychainFailure;
 }
 
@@ -210,6 +228,12 @@ pub fn get(allocator: std.mem.Allocator, _: std.Io, _: *const std.process.Enviro
     // is not a documented outcome, but guard it rather than dereference null:
     // treat it as an empty secret.
     const data: CFDataRef = result orelse return try allocator.dupe(u8, "");
+    // `data` is an immutable, CoreFoundation-owned `CFData` handed back by
+    // securityd; `CFDataGetBytePtr` is `const` and the buffer may be shared/mapped
+    // read-only, so there is no API-supported way to scrub its plaintext before
+    // release — we can only `CFRelease` it. Wiping the returned secret is therefore
+    // the *caller's* responsibility (the `allocator`-owned dupe below is theirs to
+    // zero once done). This CF-side residue is an accepted, API-constrained limit.
     defer CFRelease(data);
 
     const len: usize = @intCast(CFDataGetLength(data));
