@@ -47,63 +47,16 @@ pub fn generateComptimeRegistrySource(
 
 /// Generate command module imports
 fn generateCommandImports(writer: anytype, commands: DiscoveredCommands) !void {
-    // Emit in alphabetical order (see types.sortedByName) so the generated
-    // registry is deterministic rather than filesystem-iteration ordered.
-    const sorted = try types.sortedByName(commands.allocator, &commands.root);
-    defer commands.allocator.free(sorted);
-    for (sorted) |cmd_info| {
-        const cmd_name = cmd_info.name;
-
-        if (cmd_info.command_type != .leaf) {
-            // Generate import for optional group with index file
-            if (cmd_info.command_type == .optional_group) {
-                const module_name = try module_names.indexModuleName(commands.allocator, cmd_name);
-                defer commands.allocator.free(module_name);
-
-                try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
-            }
-            // Generate imports for subcommands
-            try generateGroupImports(writer, cmd_name, &cmd_info);
-        } else {
-            const module_name = try module_names.leafModuleName(commands.allocator, cmd_name);
-            defer commands.allocator.free(module_name);
-
-            try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
-        }
+    // One walk of the tree (module_names.flatten), shared with the registration
+    // pass below and with module_creation.zig, so import strings can never drift
+    // from registered module names. Ordering is pre-order + alphabetical, so the
+    // generated registry is deterministic rather than filesystem-iteration ordered.
+    const emitted = try module_names.flatten(commands.allocator, commands);
+    defer module_names.freeEmitted(commands.allocator, emitted);
+    for (emitted) |e| {
+        try writer.print("const {s} = @import(\"{s}\");\n", .{ e.module_name, e.module_name });
     }
     try writer.writeAll("\n");
-}
-
-/// Generate group command imports recursively
-fn generateGroupImports(writer: anytype, _: []const u8, group_info: *const DiscoveredCommand) !void {
-    if (group_info.subcommands) |subcommands| {
-        const sorted = try types.sortedByName(subcommands.allocator, &subcommands);
-        defer subcommands.allocator.free(sorted);
-        for (sorted) |subcmd_info| {
-            const subcmd_name = subcmd_info.name;
-
-            if (subcmd_info.command_type == .optional_group) {
-                // Generate import for optional group with index file
-                const module_name_with_index = try module_names.pathIndexModuleName(subcommands.allocator, subcmd_info.path);
-                defer subcommands.allocator.free(module_name_with_index);
-
-                try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name_with_index, module_name_with_index });
-
-                // Also recurse for subcommands
-                try generateGroupImports(writer, subcmd_name, &subcmd_info);
-            } else if (subcmd_info.command_type == .pure_group) {
-                // Pure groups have no imports, just recurse
-                try generateGroupImports(writer, subcmd_name, &subcmd_info);
-            } else {
-                // Module name from the full command path — same derivation
-                // module_creation.zig uses, via module_names.
-                const module_name = try module_names.pathModuleName(subcommands.allocator, subcmd_info.path);
-                defer subcommands.allocator.free(module_name);
-
-                try writer.print("const {s} = @import(\"{s}\");\n", .{ module_name, module_name });
-            }
-        }
-    }
 }
 
 /// Generate plugin imports and initialization
@@ -223,83 +176,18 @@ fn generatePureGroupsFromMap(writer: anytype, command_map: *const std.StringHash
 
 /// Generate command registrations
 fn generateCommandRegistrations(writer: anytype, commands: DiscoveredCommands, allocator: std.mem.Allocator) !void {
-    // Registration order becomes the registry's command order (and thus the
-    // order help/completions read back), so emit alphabetically.
-    const sorted = try types.sortedByName(allocator, &commands.root);
-    defer allocator.free(sorted);
-    for (sorted) |cmd_info| {
-        const cmd_name = cmd_info.name;
+    // Same single walk as the import pass: registration order becomes the
+    // registry's command order (and thus the order help/completions read back),
+    // which flatten already emits alphabetically and pre-order.
+    const emitted = try module_names.flatten(allocator, commands);
+    defer module_names.freeEmitted(allocator, emitted);
+    for (emitted) |e| {
+        const command_path_str = try std.mem.join(allocator, " ", e.path);
+        defer allocator.free(command_path_str);
+        const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
+        defer allocator.free(command_path_lit);
 
-        if (cmd_info.command_type != .leaf) {
-            // Register optional group with index file as a command
-            if (cmd_info.command_type == .optional_group) {
-                const module_name = try module_names.indexModuleName(allocator, cmd_name);
-                defer allocator.free(module_name);
-
-                const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
-                defer allocator.free(command_path_str);
-                const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
-                defer allocator.free(command_path_lit);
-
-                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name });
-            }
-            // Register subcommands
-            try generateGroupRegistrations(writer, cmd_name, &cmd_info, allocator);
-        } else {
-            const module_name = try module_names.leafModuleName(allocator, cmd_name);
-            defer allocator.free(module_name);
-
-            // Use the actual command path from DiscoveredCommand (it's now an array)
-            const command_path_str = try std.mem.join(allocator, " ", cmd_info.path);
-            defer allocator.free(command_path_str);
-            const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
-            defer allocator.free(command_path_lit);
-
-            try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name });
-        }
-    }
-}
-
-/// Generate group command registrations recursively
-fn generateGroupRegistrations(writer: anytype, _: []const u8, group_info: *const DiscoveredCommand, allocator: std.mem.Allocator) !void {
-    if (group_info.subcommands) |subcommands| {
-        const sorted = try types.sortedByName(allocator, &subcommands);
-        defer allocator.free(sorted);
-        for (sorted) |subcmd_info| {
-            const subcmd_name = subcmd_info.name;
-
-            if (subcmd_info.command_type == .optional_group) {
-                // Register the optional group itself
-                const module_name_with_index = try module_names.pathIndexModuleName(allocator, subcmd_info.path);
-                defer allocator.free(module_name_with_index);
-
-                const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
-                defer allocator.free(command_path_str);
-                const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
-                defer allocator.free(command_path_lit);
-
-                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name_with_index });
-
-                // Also recurse for its subcommands
-                try generateGroupRegistrations(writer, subcmd_name, &subcmd_info, allocator);
-            } else if (subcmd_info.command_type == .pure_group) {
-                // Pure groups are not registered, just recurse
-                try generateGroupRegistrations(writer, subcmd_name, &subcmd_info, allocator);
-            } else {
-                // Module name from the full command path — same derivation
-                // module_creation.zig uses, via module_names.
-                const module_name = try module_names.pathModuleName(allocator, subcmd_info.path);
-                defer allocator.free(module_name);
-
-                // Use the actual command path from the DiscoveredCommand (it's now an array)
-                const command_path_str = try std.mem.join(allocator, " ", subcmd_info.path);
-                defer allocator.free(command_path_str);
-                const command_path_lit = try escapeStringLiteral(allocator, command_path_str);
-                defer allocator.free(command_path_lit);
-
-                try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, module_name });
-            }
-        }
+        try writer.print("\n    .register(\"{s}\", {s})", .{ command_path_lit, e.module_name });
     }
 }
 
@@ -363,6 +251,87 @@ const PluginTestHelper = struct {
         });
     }
 };
+
+fn tcDupePath(a: std.mem.Allocator, path: []const []const u8) ![]const []const u8 {
+    const out = try a.alloc([]const u8, path.len);
+    for (path, 0..) |p, i| out[i] = try a.dupe(u8, p);
+    return out;
+}
+
+fn tcCmd(
+    a: std.mem.Allocator,
+    name: []const u8,
+    path: []const []const u8,
+    file_path: []const u8,
+    command_type: CommandType,
+    subcommands: ?std.StringHashMap(DiscoveredCommand),
+) !DiscoveredCommand {
+    return .{
+        .name = try a.dupe(u8, name),
+        .path = try tcDupePath(a, path),
+        .file_path = try a.dupe(u8, file_path),
+        .command_type = command_type,
+        .subcommands = subcommands,
+    };
+}
+
+test "nested imports and registrations share one alphabetical pre-order walk" {
+    // Mirrors the real projects/zcli tree: a leaf, an optional group with a
+    // nested leaf, and an optional group whose descendants sit under two pure
+    // groups. The import block and the .register(...) chain must cover the same
+    // commands, name each module identically, and appear in the same order —
+    // which is exactly what routing both passes through module_names.flatten
+    // guarantees. Insert out of alphabetical order to prove the walk sorts.
+    const allocator = std.testing.allocator;
+    var commands = DiscoveredCommands.init(allocator);
+    defer commands.deinit();
+
+    // gh (optional_group) → add (pure) → workflow (pure) → release (leaf)
+    var wf_subs = std.StringHashMap(DiscoveredCommand).init(allocator);
+    try wf_subs.put(try allocator.dupe(u8, "release"), try tcCmd(allocator, "release", &.{ "gh", "add", "workflow", "release" }, "gh/add/workflow/release.zig", .leaf, null));
+    var ghadd_subs = std.StringHashMap(DiscoveredCommand).init(allocator);
+    try ghadd_subs.put(try allocator.dupe(u8, "workflow"), try tcCmd(allocator, "workflow", &.{ "gh", "add", "workflow" }, "gh/add/workflow", .pure_group, wf_subs));
+    var gh_subs = std.StringHashMap(DiscoveredCommand).init(allocator);
+    try gh_subs.put(try allocator.dupe(u8, "add"), try tcCmd(allocator, "add", &.{ "gh", "add" }, "gh/add", .pure_group, ghadd_subs));
+    try commands.root.put(try allocator.dupe(u8, "gh"), try tcCmd(allocator, "gh", &.{"gh"}, "gh/index.zig", .optional_group, gh_subs));
+
+    // init (leaf)
+    try commands.root.put(try allocator.dupe(u8, "init"), try tcCmd(allocator, "init", &.{"init"}, "init.zig", .leaf, null));
+
+    // add (optional_group) → command (leaf)
+    var add_subs = std.StringHashMap(DiscoveredCommand).init(allocator);
+    try add_subs.put(try allocator.dupe(u8, "command"), try tcCmd(allocator, "command", &.{ "add", "command" }, "add/command.zig", .leaf, null));
+    try commands.root.put(try allocator.dupe(u8, "add"), try tcCmd(allocator, "add", &.{"add"}, "add/index.zig", .optional_group, add_subs));
+
+    const config = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = &.{},
+        .app_name = "app",
+        .app_version = "1.0.0",
+        .app_description = "app",
+    };
+
+    const source = try generateComptimeRegistrySource(allocator, commands, config, &.{});
+    defer allocator.free(source);
+
+    const expected_imports =
+        \\const add_index = @import("add_index");
+        \\const add_command = @import("add_command");
+        \\const gh_index = @import("gh_index");
+        \\const gh_add_workflow_release = @import("gh_add_workflow_release");
+        \\const cmd_init = @import("cmd_init");
+    ;
+    try std.testing.expect(std.mem.indexOf(u8, source, expected_imports) != null);
+
+    const expected_registrations =
+        "\n    .register(\"add\", add_index)" ++
+        "\n    .register(\"add command\", add_command)" ++
+        "\n    .register(\"gh\", gh_index)" ++
+        "\n    .register(\"gh add workflow release\", gh_add_workflow_release)" ++
+        "\n    .register(\"init\", cmd_init)";
+    try std.testing.expect(std.mem.indexOf(u8, source, expected_registrations) != null);
+}
 
 test "app metadata is escaped into valid string literals" {
     const allocator = std.testing.allocator;
