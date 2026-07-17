@@ -1,16 +1,71 @@
 const std = @import("std");
 
+/// How a child process terminated.
+///
+/// A clean `exited 1` and a death by SIGSEGV both used to collapse to
+/// `exit_code == 1`, so a test couldn't tell them apart. This distinguishes
+/// them: `Result.exit_code` is *derived* from this via `exitCode()` (signal
+/// deaths map to the conventional `128 + signum`), while the raw kind stays
+/// available for assertions like "was this killed, and by which signal?".
+pub const Termination = union(enum) {
+    /// Normal exit with this status code.
+    exited: u8,
+    /// Killed by this POSIX signal number (e.g. 11 = SIGSEGV, 6 = SIGABRT).
+    signaled: u8,
+    /// Stopped, or an unknown termination — neither a clean exit nor a kill.
+    unknown,
+
+    /// Translate a std child termination into this portable kind.
+    pub fn fromChild(term: std.process.Child.Term) Termination {
+        return switch (term) {
+            .exited => |code| .{ .exited = code },
+            .signal => |sig| .{ .signaled = @intCast(@intFromEnum(sig)) },
+            .stopped, .unknown => .unknown,
+        };
+    }
+
+    /// The conventional exit code for this termination: the real status for a
+    /// clean exit, `128 + signum` for a signal death (the shell convention, so
+    /// `expectExitCode(r, 139)` matches a SIGSEGV), and `1` otherwise.
+    pub fn exitCode(self: Termination) u8 {
+        return switch (self) {
+            .exited => |code| code,
+            .signaled => |sig| 128 +| sig,
+            .unknown => 1,
+        };
+    }
+};
+
 /// Result of running a CLI command
 pub const Result = struct {
     stdout: []const u8,
     stderr: []const u8,
+    /// Conventional exit code: the child's real status for a clean exit, or
+    /// `128 + signum` for a signal death. Derived from `term.exitCode()`.
     exit_code: u8,
+    /// How the child terminated (exited / signaled / unknown), so a test can
+    /// distinguish a real `exited 1` from a kill and assert on the signal.
+    term: Termination,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Result) void {
         self.allocator.free(self.stdout);
         self.allocator.free(self.stderr);
     }
+};
+
+/// Optional overrides for `runSubprocess`.
+pub const RunOptions = struct {
+    /// Environment for the child. `null` (the default) inherits the harness's
+    /// environment; supply a map to test env-driven behavior (e.g. `NO_COLOR`)
+    /// without escalating to the PTY e2e tier. Threaded through explicitly —
+    /// no ambient/C-level environ.
+    env: ?*const std.process.Environ.Map = null,
+    /// Bytes to feed the child on stdin, then close (giving it EOF). `null`
+    /// (the default) inherits the harness's stdin, preserving prior behavior.
+    /// Suited to modest input that fits the OS pipe buffer (~64 KiB): the bytes
+    /// are written in full before the output pipes are drained.
+    stdin: ?[]const u8 = null,
 };
 
 const max_output = 10 * 1024 * 1024;
@@ -80,20 +135,44 @@ fn drainPipe(io: std.Io, file: std.Io.File, alloc: std.mem.Allocator) std.Io.Rea
     return reader.interface.allocRemaining(alloc, .limited(max_output));
 }
 
-/// Run a command as a subprocess (for external binaries)
-pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const u8, args: []const []const u8) !Result {
+/// Run a command as a subprocess (for external binaries).
+///
+/// `options` optionally overrides the child's environment and pipes bytes to
+/// its stdin — so env-driven behavior (`NO_COLOR`) and stdin-reading commands
+/// are testable here, without escalating to the PTY e2e tier.
+pub fn runSubprocess(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    exe_path: []const u8,
+    args: []const []const u8,
+    options: RunOptions,
+) !Result {
     // Prepare arguments
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
     try argv.append(allocator, exe_path);
     try argv.appendSlice(allocator, args);
 
-    // Spawn the subprocess with piped stdout/stderr
+    // Spawn the subprocess with piped stdout/stderr. Stdin is a pipe only when
+    // the caller supplies bytes to feed; otherwise it inherits (prior behavior).
     var child = try std.process.spawn(io, .{
         .argv = argv.items,
+        .environ_map = options.env,
+        .stdin = if (options.stdin != null) .pipe else .inherit,
         .stdout = .pipe,
         .stderr = .pipe,
     });
+
+    // Feed stdin (if any) to EOF before draining output. The child's stdout is
+    // piped and drained below, so a child that echoes as it reads won't deadlock
+    // us for modest input; oversized input that fills the OS pipe before the
+    // child reads any is out of scope for this tier (documented on RunOptions).
+    if (options.stdin) |input| {
+        var stdin_file = child.stdin.?;
+        stdin_file.writeStreamingAll(io, input) catch {};
+        stdin_file.close(io);
+        child.stdin = null;
+    }
 
     // Both pipes must drain simultaneously. Draining one to EOF before touching
     // the other deadlocks: a child that fills the un-drained pipe (>~64 KB, the
@@ -135,16 +214,13 @@ pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, exe_path: []const
     };
     errdefer allocator.free(stderr);
 
-    const term = try child.wait(io);
-    const exit_code: u8 = switch (term) {
-        .exited => |code| @intCast(code),
-        else => 1,
-    };
+    const term = Termination.fromChild(try child.wait(io));
 
     return Result{
         .stdout = stdout,
         .stderr = stderr,
-        .exit_code = exit_code,
+        .exit_code = term.exitCode(),
+        .term = term,
         .allocator = allocator,
     };
 }
@@ -164,7 +240,7 @@ test "runSubprocess drains both pipes when the child floods stderr" {
     // the deadlock on the old sequential drain.
     const program = "yes zzzzzzzz | head -c 200000 1>&2; printf STDOUT_OK";
 
-    var result = runSubprocess(allocator, io, "/bin/sh", &.{ "-c", program }) catch |err| {
+    var result = runSubprocess(allocator, io, "/bin/sh", &.{ "-c", program }, .{}) catch |err| {
         // Spawning may be restricted in some sandboxes; don't fail the suite.
         std.log.warn("runSubprocess skipped: {any}", .{err});
         return;
@@ -197,7 +273,7 @@ test "runSubprocess reaps the child when the stderr drain errors" {
         .{over_cap},
     );
 
-    if (runSubprocess(allocator, io, "/bin/sh", &.{ "-c", program })) |res| {
+    if (runSubprocess(allocator, io, "/bin/sh", &.{ "-c", program }, .{})) |res| {
         var r = res;
         r.deinit();
         return error.ExpectedStreamTooLong;
@@ -215,10 +291,78 @@ test "Result deinitialization" {
         .stdout = try allocator.dupe(u8, "test output"),
         .stderr = try allocator.dupe(u8, "test error"),
         .exit_code = 0,
+        .term = .{ .exited = 0 },
         .allocator = allocator,
     };
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test output", result.stdout);
     try std.testing.expectEqualStrings("test error", result.stderr);
+}
+
+test "Termination maps signal deaths to 128 + signum" {
+    // #682: a signal death is no longer collapsed to exit_code 1 — it maps to
+    // the shell-conventional 128 + signum, and the raw kind stays inspectable.
+    try std.testing.expectEqual(@as(u8, 0), (Termination{ .exited = 0 }).exitCode());
+    try std.testing.expectEqual(@as(u8, 1), (Termination{ .exited = 1 }).exitCode());
+    try std.testing.expectEqual(@as(u8, 139), (Termination{ .signaled = 11 }).exitCode()); // SIGSEGV
+    try std.testing.expectEqual(@as(u8, 130), (Termination{ .signaled = 2 }).exitCode()); // SIGINT
+    try std.testing.expectEqual(@as(u8, 1), (@as(Termination, .unknown)).exitCode());
+}
+
+test "runSubprocess env overrides the child environment" {
+    // #681: env-driven behavior is testable at the integration tier — no PTY.
+    if (@import("builtin").os.tag == .windows) return; // uses /bin/sh
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("ZCLI_TEST_VAR", "from-env");
+
+    var result = runSubprocess(allocator, io, "/bin/sh", &.{ "-c", "printf %s \"$ZCLI_TEST_VAR\"" }, .{ .env = &env }) catch |err| {
+        std.log.warn("runSubprocess skipped: {any}", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+    try std.testing.expectEqualStrings("from-env", result.stdout);
+}
+
+test "runSubprocess feeds stdin to the child" {
+    // #681: stdin-reading commands are testable at the integration tier — no PTY.
+    if (@import("builtin").os.tag == .windows) return; // uses /bin/cat
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var result = runSubprocess(allocator, io, "/bin/cat", &.{}, .{ .stdin = "piped input\n" }) catch |err| {
+        std.log.warn("runSubprocess skipped: {any}", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+    try std.testing.expectEqualStrings("piped input\n", result.stdout);
+}
+
+test "runSubprocess surfaces a signal death as termination kind and 128 + signum" {
+    // #682: a child killed by a signal reports `.signaled` with the number, and
+    // its exit_code is 128 + signum rather than a misleading 1.
+    if (@import("builtin").os.tag == .windows) return; // uses /bin/sh
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // The shell kills itself with SIGSEGV (11); the process is reaped as signaled.
+    var result = runSubprocess(allocator, io, "/bin/sh", &.{ "-c", "kill -SEGV $$" }, .{}) catch |err| {
+        std.log.warn("runSubprocess skipped: {any}", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    try std.testing.expectEqual(Termination{ .signaled = 11 }, result.term);
+    try std.testing.expectEqual(@as(u8, 139), result.exit_code);
 }

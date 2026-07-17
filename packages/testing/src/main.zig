@@ -19,7 +19,7 @@
 //!
 //! // Integration test
 //! test "help flag" {
-//!     const result = try testing.integration.runSubprocess(allocator, std.testing.io, "./myapp", &.{"--help"});
+//!     const result = try testing.integration.runSubprocess(allocator, std.testing.io, "./myapp", &.{"--help"}, .{});
 //!     try testing.expectExitCode(result, 0);
 //!     try testing.expectContains(result.stdout, "USAGE:");
 //! }
@@ -75,6 +75,8 @@ pub const build_utils = @import("build_utils.zig");
 // ============================================================================
 
 pub const Result = integration.Result;
+pub const Termination = integration.Termination;
+pub const RunOptions = integration.RunOptions;
 pub const runSubprocess = integration.runSubprocess;
 
 pub const expectExitCode = assertions.expectExitCode;

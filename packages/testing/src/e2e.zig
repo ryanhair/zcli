@@ -4,6 +4,12 @@ const posix = std.posix;
 const conpty = @import("conpty.zig");
 const vterm = @import("vterm");
 const snapshot = @import("snapshot.zig");
+const runner = @import("runner.zig");
+
+/// How a child process terminated (exited / signaled / unknown). Shared with the
+/// integration tier so both surface signal deaths as `128 + signum` rather than
+/// collapsing them to exit code 1. See `runner.Termination`.
+pub const Termination = runner.Termination;
 
 /// Interactive testing support for CLIs that require user input.
 ///
@@ -810,8 +816,12 @@ fn toPosixSig(s: Signal) posix.SIG {
 
 /// Result of an interactive test execution
 pub const InteractiveResult = struct {
-    /// Final exit code of the process
+    /// Final exit code of the process. For a signal death this is the
+    /// shell-conventional `128 + signum` (derived from `term`), not a flat 1.
     exit_code: u8,
+    /// How the child terminated (exited / signaled / unknown), so a test can
+    /// distinguish a real `exited 1` from a kill and assert on the signal.
+    term: Termination = .{ .exited = 0 },
     /// Complete output captured during interaction
     output: []const u8,
     /// Complete input sent during interaction (for debugging)
@@ -1375,11 +1385,8 @@ fn runInteractivePosix(
         }
     }
 
-    const term = child.wait(io) catch return InteractiveError.ProcessCrashed;
-    const exit_code: u8 = switch (term) {
-        .exited => |code| code,
-        else => 1,
-    };
+    const term = Termination.fromChild(child.wait(io) catch return InteractiveError.ProcessCrashed);
+    const exit_code: u8 = term.exitCode();
 
     // A step that broke the run left the child blocked mid-prompt (we killed it
     // above), so the only visible symptom in the test would be a nonzero exit
@@ -1403,6 +1410,7 @@ fn runInteractivePosix(
 
     return InteractiveResult{
         .exit_code = exit_code,
+        .term = term,
         .output = try output_buffer.toOwnedSlice(allocator),
         .input = try input_buffer.toOwnedSlice(allocator),
         .success = script_success and exit_code == 0,
@@ -1540,6 +1548,9 @@ fn runInteractiveWindows(
 
     return InteractiveResult{
         .exit_code = exit_code,
+        // Windows has no POSIX signal deaths here — ConPTY reports a plain exit
+        // code, so the termination kind is always `.exited` with that code.
+        .term = .{ .exited = exit_code },
         .output = try output_buffer.toOwnedSlice(allocator),
         .input = try input_buffer.toOwnedSlice(allocator),
         .success = script_success and exit_code == 0,

@@ -88,6 +88,7 @@ test "expectExitCode" {
         .stdout = "",
         .stderr = "",
         .exit_code = 0,
+        .term = .{ .exited = 0 },
         .allocator = undefined,
     };
 
@@ -124,6 +125,7 @@ test "expectStdoutEmpty" {
         .stdout = "",
         .stderr = "some error",
         .exit_code = 0,
+        .term = .{ .exited = 0 },
         .allocator = undefined,
     };
 
@@ -131,6 +133,7 @@ test "expectStdoutEmpty" {
         .stdout = "output",
         .stderr = "",
         .exit_code = 0,
+        .term = .{ .exited = 0 },
         .allocator = undefined,
     };
 
@@ -143,6 +146,7 @@ test "expectStderrEmpty" {
         .stdout = "output",
         .stderr = "",
         .exit_code = 0,
+        .term = .{ .exited = 0 },
         .allocator = undefined,
     };
 
@@ -150,6 +154,7 @@ test "expectStderrEmpty" {
         .stdout = "",
         .stderr = "error",
         .exit_code = 0,
+        .term = .{ .exited = 0 },
         .allocator = undefined,
     };
 
@@ -181,6 +186,7 @@ test "expectExitCode with various codes" {
         .stdout = "",
         .stderr = "",
         .exit_code = 0,
+        .term = .{ .exited = 0 },
         .allocator = undefined,
     };
 
@@ -188,13 +194,15 @@ test "expectExitCode with various codes" {
         .stdout = "",
         .stderr = "",
         .exit_code = 1,
+        .term = .{ .exited = 1 },
         .allocator = undefined,
     };
 
     const signal_result = runner.Result{
         .stdout = "",
         .stderr = "",
-        .exit_code = 130, // SIGINT
+        .exit_code = 130, // SIGINT: 128 + 2
+        .term = .{ .signaled = 2 },
         .allocator = undefined,
     };
 

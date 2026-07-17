@@ -98,19 +98,25 @@ fn contextParamType(comptime Command: type) ?type {
 }
 
 /// The `config` parameter type for `runCommand`, tailored to `Command`: `args`/
-/// `options` are only optional-to-pass when default-constructible, and `plugins`
-/// sets the command's plugin state (`.plugins = .{ .verbose = .{ .enabled = true } }`).
+/// `options` are only optional-to-pass when default-constructible, `plugins`
+/// sets the command's plugin state (`.plugins = .{ .verbose = .{ .enabled = true } }`),
+/// and `environ` injects environment variables the command reads via
+/// `context.environ` (defaults to an empty environment).
 fn RunConfig(comptime Command: type) type {
     const default_alloc: std.mem.Allocator = std.testing.allocator;
     const PluginData = @FieldType(ContextTypeFor(Command), "plugins");
     const default_plugins: PluginData = .{};
-    const names = [_][]const u8{ "args", "options", "allocator", "plugins" };
-    const field_types = [_]type{ Command.Args, Command.Options, std.mem.Allocator, PluginData };
+    const default_environ: ?*const std.process.Environ.Map = null;
+    const names = [_][]const u8{ "args", "options", "allocator", "plugins", "environ" };
+    const field_types = [_]type{ Command.Args, Command.Options, std.mem.Allocator, PluginData, ?*const std.process.Environ.Map };
     const attrs = [_]std.builtin.Type.StructField.Attributes{
         fieldAttrs(Command.Args),
         fieldAttrs(Command.Options),
         .{ .default_value_ptr = &default_alloc },
         .{ .default_value_ptr = &default_plugins },
+        // `&default_environ` is a pointer to an optional pointer; Zig won't
+        // implicitly coerce that double pointer to `?*const anyopaque`, so cast.
+        .{ .default_value_ptr = @ptrCast(&default_environ) },
     };
     return @Struct(.auto, null, &names, &field_types, &attrs);
 }
@@ -155,15 +161,18 @@ pub fn runCommand(
     defer arena.deinit();
 
     // Build the command's own Context (so a scaffolded command's project plugins
-    // are in scope), with an empty environment; commands that read env vars
-    // should take them as options instead.
-    const test_environ = std.process.Environ.Map.init(allocator);
+    // are in scope). The environment defaults to empty; a test that exercises
+    // env-driven behavior (e.g. `NO_COLOR`) injects one via `.environ` rather
+    // than escalating to the subprocess/PTY tiers.
+    var empty_environ = std.process.Environ.Map.init(allocator);
+    defer empty_environ.deinit();
+    const test_environ: *const std.process.Environ.Map = config.environ orelse &empty_environ;
     const Ctx = ContextTypeFor(Command);
     var context = Ctx{
         .allocator = arena.allocator(),
         .io = std.testing.io,
         .stdio = &stdio,
-        .environ = &test_environ,
+        .environ = test_environ,
         .plugins = config.plugins,
     };
     defer context.deinit();
@@ -388,6 +397,41 @@ test "runCommand sets plugin state for a command with a concrete context" {
         var r = try runCommand(TestCommand, .{ .plugins = .{ .flag = .{ .on = true } } });
         defer r.deinit();
         try std.testing.expectEqualStrings("flag on\n", r.stdout);
+    }
+}
+
+test "runCommand injects environment via .environ" {
+    // #681: env-driven behavior (e.g. NO_COLOR) is testable at the unit tier,
+    // no subprocess/PTY needed. The command reads context.environ directly.
+    const Ctx = zcli.TestContext(&.{});
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            if (context.environ.get("NO_COLOR") != null) {
+                try context.stdout().writeAll("plain\n");
+            } else {
+                try context.stdout().writeAll("colored\n");
+            }
+        }
+    };
+
+    // Default: empty environment — NO_COLOR is unset.
+    {
+        var r = try runCommand(TestCommand, .{});
+        defer r.deinit();
+        try std.testing.expectEqualStrings("colored\n", r.stdout);
+    }
+    // Inject NO_COLOR and observe the command adapt.
+    {
+        var env = std.process.Environ.Map.init(std.testing.allocator);
+        defer env.deinit();
+        try env.put("NO_COLOR", "1");
+
+        var r = try runCommand(TestCommand, .{ .environ = &env });
+        defer r.deinit();
+        try std.testing.expectEqualStrings("plain\n", r.stdout);
     }
 }
 
