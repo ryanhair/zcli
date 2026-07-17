@@ -1,14 +1,21 @@
 name: Deploy Documentation
 
+# The website deploys when a RELEASE is published, not on pushes to main:
+# docs merged between releases describe features nobody can install yet, so
+# they accumulate on main and ship the moment the version does. The
+# `published` event fires when sign-release.sh flips the drafted zcli-v*
+# release public (ADR-0023's offline-signing ceremony) — so the human
+# approval that used to live on a docs-deploy environment is now implicit in
+# signing the release. On this event checkout resolves to the release tag's
+# commit, so the site is built from exactly the released tree even if main
+# has moved on.
+#
+# workflow_dispatch is the manual override for out-of-band deploys (typo
+# fixes, broken page): it builds whatever ref it's dispatched on — main by
+# default, which may be ahead of the released version.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "website/**"
-      - "CHANGELOG.md"
-      - "install.sh"
-      - "install.ps1"
-      - "build.zig.zon"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -22,17 +29,18 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Deliberately ungated (2026-07-16): this job used to sit behind the
-    # "docs-deploy" environment with a required reviewer (grade6 #293/#397)
-    # because every deploy republishes install.sh/install.ps1 — the curl|sh
-    # trust root. In practice the approval stalled every docs deploy (a
-    # waiting run also holds the cloudflare-pages concurrency group, so
-    # follow-up deploys queued and were superseded) and the human review
-    # rubber-stamped content that had already passed PR review. The trust
-    # model is now: main is protected (PR + required "CI OK" check), the
-    # install scripts only change via reviewed PRs, and the release ceremony
-    # keeps its own required-reviewer gate (release.yml's `finalize` job via
-    # the "release" environment) — approval is spent on releases, not docs.
+    # Both zcli-v* (CLI) and v* (library) releases publish at the same
+    # lockstep version, but only the CLI release goes through the offline
+    # signing ceremony that makes "published" mean "a human shipped this" —
+    # deploy on that one, skip the library tag (deploying twice per release
+    # would be harmless but pointless).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'zcli-v')
+    # No environment gate (2026-07-16): the required-reviewer approval that
+    # used to live on a "docs-deploy" environment (grade6 #293/#397) stalled
+    # deploys — a waiting run holds the cloudflare-pages concurrency group —
+    # and is redundant under the release trigger above: publishing the signed
+    # release IS the approval. install.sh/install.ps1 (the curl|sh trust
+    # root) still only change via reviewed PRs on protected main.
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
