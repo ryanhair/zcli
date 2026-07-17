@@ -175,11 +175,14 @@ const FieldView = struct {
         // Scroll horizontally so the caret stays in view (right-anchored once
         // the text outgrows the field).
         const scroll: u16 = if (self.cursor_col < w) 0 else self.cursor_col - w + 1;
-        const start = byteAtColumn(self.text, scroll);
-        _ = try region.writeText(0, 0, self.text[start..], self.text_style);
+        // A wide grapheme straddling `scroll` is stepped over whole, so the
+        // painted left edge (`edge.col`) can sit past `scroll`; anchor the caret
+        // on that actual column so it lines up with what was drawn.
+        const edge = byteAtColumn(self.text, scroll);
+        _ = try region.writeText(0, 0, self.text[edge.byte..], self.text_style);
         if (!self.focused) return;
 
-        const vis_col = self.cursor_col - scroll;
+        const vis_col = self.cursor_col - edge.col;
         if (self.cursor_out) |out| {
             // Report the caret's absolute cell for a real terminal cursor; no
             // block (the App draws the cursor there instead).

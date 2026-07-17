@@ -43,9 +43,16 @@ pub fn utf8Count(s: []const u8) usize {
     return n;
 }
 
-/// The byte offset in `text` at which the cumulative display width first
-/// reaches `target_col` — the left edge of a horizontally scrolled field.
-pub fn byteAtColumn(text: []const u8, target_col: u16) usize {
+/// The left edge of a horizontally scrolled field: the byte offset in `text` at
+/// which the cumulative display width first reaches `target_col`, paired with the
+/// actual column that offset lands on. Graphemes are never split, so when a
+/// wide-cell grapheme straddles `target_col` the whole grapheme is stepped over
+/// and `col` overshoots to the first column *past* it (`col >= target_col`).
+/// Callers must anchor their caret math on `col`, not `target_col`, to stay
+/// aligned with what is painted.
+pub const ColumnStart = struct { byte: usize, col: u16 };
+
+pub fn byteAtColumn(text: []const u8, target_col: u16) ColumnStart {
     var col: u16 = 0;
     var i: usize = 0;
     while (i < text.len and col < target_col) {
@@ -53,7 +60,7 @@ pub fn byteAtColumn(text: []const u8, target_col: u16) usize {
         col += @intCast(terminal.displayWidth(text[i..end]));
         i = end;
     }
-    return i;
+    return .{ .byte = i, .col = col };
 }
 
 // ============================================================================
