@@ -18,7 +18,7 @@ test "greet world prints a greeting and exits 0" {
 
     // The first arg is the command name — `greeter greet world`, exactly as a
     // user would type it (runSubprocess supplies the binary as argv[0]).
-    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "world" });
+    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "world" }, .{});
     defer result.deinit();
 
     try testing.expectExitCode(result, 0);
@@ -30,7 +30,7 @@ test "greet --loud shouts" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "world", "--loud" });
+    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "world", "--loud" }, .{});
     defer result.deinit();
 
     try testing.expectExitCode(result, 0);
@@ -41,7 +41,7 @@ test "an unrecognized flag is reported misuse (exit code 2)" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "world", "--bogus" });
+    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "world", "--bogus" }, .{});
     defer result.deinit();
 
     // See DESIGN.md's exit-code table: 2 is reserved for CLI misuse (unknown
@@ -54,7 +54,7 @@ test "greet output matches a golden snapshot" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "snapshot-friend" });
+    var result = try testing.runSubprocess(allocator, io, exe_path, &.{ "greet", "snapshot-friend" }, .{});
     defer result.deinit();
 
     // Compares against the golden checked in at

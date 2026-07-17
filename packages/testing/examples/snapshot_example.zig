@@ -33,7 +33,7 @@ test "runSubprocess captures stdout and exit code" {
     // In a real suite the first arg is your built binary, e.g.
     // `"./zig-out/bin/myapp"`, and the slice is its CLI args. Here `echo hi`
     // stands in for that binary.
-    var result = testing.runSubprocess(allocator, io, "/bin/echo", &.{"hi"}) catch |err| {
+    var result = testing.runSubprocess(allocator, io, "/bin/echo", &.{"hi"}, .{}) catch |err| {
         // Spawning can be restricted in some sandboxes; skip rather than fail.
         std.log.warn("runSubprocess skipped: {any}", .{err});
         return;
@@ -54,7 +54,7 @@ test "runSubprocess sees a non-zero exit" {
     const io = std.testing.io;
 
     // `/usr/bin/false` exits 1 and prints nothing.
-    var result = testing.runSubprocess(allocator, io, "/usr/bin/false", &.{}) catch |err| {
+    var result = testing.runSubprocess(allocator, io, "/usr/bin/false", &.{}, .{}) catch |err| {
         std.log.warn("runSubprocess skipped: {any}", .{err});
         return;
     };
