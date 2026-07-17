@@ -8,6 +8,7 @@
 pub const spec = @import("scaffold/spec.zig");
 pub const splice = @import("scaffold/splice.zig");
 pub const fs = @import("scaffold/fs.zig");
+pub const reference = @import("scaffold/reference.zig");
 
 test {
     _ = spec;

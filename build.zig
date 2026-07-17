@@ -114,6 +114,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "prompts-features", .path = "examples/prompts-features" },
         .{ .name = "testing-demo", .path = "examples/testing-demo" },
         .{ .name = "upgrade-demo", .path = "examples/upgrade-demo" },
+        // The `zcli init` scaffold's reference project: `init` embeds these files
+        // and substitutes the project's values in, so compiling it here guards the
+        // scaffold against framework API drift (issue #679 part 2).
+        .{ .name = "init-scaffold", .path = "examples/init-scaffold" },
     };
 
     // Add tests for each project that has them
@@ -161,6 +165,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "prompts-features", .path = "examples/prompts-features" },
         .{ .name = "testing-demo", .path = "examples/testing-demo" },
         .{ .name = "upgrade-demo", .path = "examples/upgrade-demo" },
+        .{ .name = "init-scaffold", .path = "examples/init-scaffold" },
         .{ .name = "vterm_example", .path = "packages/vterm/example" },
     };
 

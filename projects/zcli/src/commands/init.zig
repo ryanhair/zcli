@@ -269,168 +269,39 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer zon_file.close(io);
     try zon_file.writeStreamingAll(io, zon_content);
 
-    // Generate build.zig
+    // Generate build.zig from the embedded reference source. The reference is
+    // the `examples/init-scaffold` project the root build compiles against the
+    // local zcli, so a framework API change breaks that build instead of shipping
+    // a broken scaffold (issue #679 part 2; see renderBuildZig and
+    // scaffold/reference.zig).
     try stdout.print("  Creating build.zig...\n", .{});
-    const build_content = try std.fmt.allocPrint(allocator,
-        \\const std = @import("std");
-        \\
-        \\pub fn build(b: *std.Build) !void {{
-        \\    const target = b.standardTargetOptions(.{{}});
-        \\    const optimize = b.standardOptimizeOption(.{{}});
-        \\
-        \\    // Debug info dominates binary size (roughly 10x on a static build).
-        \\    // Release builds pass -Dstrip=true (the generated release workflow
-        \\    // does); local builds keep debug info for stack traces.
-        \\    const strip = b.option(bool, "strip", "Omit debug info from the binary") orelse false;
-        \\
-        \\    // Get zcli dependency
-        \\    const zcli_dep = b.dependency("zcli", .{{
-        \\        .target = target,
-        \\        .optimize = optimize,
-        \\    }});
-        \\    const zcli_module = zcli_dep.module("zcli");
-        \\
-        \\    // Create the executable
-        \\    const exe = b.addExecutable(.{{
-        \\        .name = "{s}",
-        \\        .root_module = b.createModule(.{{
-        \\            .root_source_file = b.path("src/main.zig"),
-        \\            .target = target,
-        \\            .optimize = optimize,
-        \\            .strip = strip,
-        \\        }}),
-        \\    }});
-        \\
-        \\    exe.root_module.addImport("zcli", zcli_module);
-        \\
-        \\    const zcli = @import("zcli");
-        \\
-        \\    // Shared modules: helper code (e.g. a `store.zig`) imported by more
-        \\    // than one command. Create it with `b.createModule(...)`, then add an
-        \\    // entry here — this one list is wired into your commands AND their
-        \\    // tests below, so you never register it twice. Editing this build
-        \\    // config by hand is expected; `zcli add`/`rm`/`mv` manage command
-        \\    // *structure*, not build wiring.
-        \\    const shared_modules = [_]zcli.SharedModule{{
-        \\        // .{{ .name = "store", .module = store_module }},
-        \\    }};
-        \\
-        \\    // Generate command registry with built-in plugins
-        \\    const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{{
-        \\        .commands_dir = "src/commands",
-        \\        // Local plugins in src/plugins/ are auto-discovered (add with
-        \\        // `zcli add plugin <name>`). Harmless when the directory is absent.
-        \\        .plugins_dir = "src/plugins",
-        \\        .plugins = &.{{
-        \\{s}        }},
-        \\        .shared_modules = &shared_modules,
-        \\        .app_name = "{s}",
-        \\        .app_description = "{s}",
-        \\    }});
-        \\
-        \\    exe.root_module.addImport("command_registry", cmd_registry);
-        \\    b.installArtifact(exe);
-        \\
-        \\    // Add run step for convenience
-        \\    const run_cmd = b.addRunArtifact(exe);
-        \\    run_cmd.step.dependOn(b.getInstallStep());
-        \\    if (b.args) |args| run_cmd.addArgs(args);
-        \\
-        \\    const run_step = b.step("run", "Run the app");
-        \\    run_step.dependOn(&run_cmd.step);
-        \\
-        \\    // `zig build test` — unit-test each command in-process. Command test
-        \\    // blocks use `zcli-testing`'s runCommand (bundled with the zcli
-        \\    // dependency, so no extra dependency is needed). `zcli add command`
-        \\    // scaffolds a starting test alongside each new command.
-        \\    _ = zcli.addCommandTests(b, zcli_dep, .{{
-        \\        .commands_dir = "src/commands",
-        \\        .target = target,
-        \\        .optimize = optimize,
-        \\        .plugins_dir = "src/plugins",
-        \\        .shared_modules = &shared_modules,
-        \\    }});
-        \\}}
-        \\
-    , .{ project_name, plugins_block, project_name, app_description });
+    const build_content = try renderBuildZig(allocator, project_name, app_description, plugins_block);
     defer allocator.free(build_content);
 
     var build_file = try project_dir.createFile(io, "build.zig", .{});
     defer build_file.close(io);
     try build_file.writeStreamingAll(io, build_content);
 
-    // Generate src/main.zig
+    // Generate src/main.zig — emitted verbatim from the compiled reference.
     try stdout.print("  Creating src/main.zig...\n", .{});
-    const main_content =
-        \\const std = @import("std");
-        \\const zcli = @import("zcli");
-        \\const registry = @import("command_registry");
-        \\
-        \\/// Prompts (`add`, `init`) and progress bars hide the cursor and drive raw
-        \\/// mode, so a panic mid-prompt must restore the terminal.
-        \\pub const panic = zcli.ui.panic;
-        \\
-        \\pub fn main(init: std.process.Init) !void {
-        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
-        \\    var app = registry.init();
-        \\    try app.run(init.gpa, init.io, init.environ_map, args);
-        \\}
-        \\
-    ;
 
     var src_dir = try project_dir.openDir(io, "src", .{});
     defer src_dir.close(io);
 
     var main_file = try src_dir.createFile(io, "main.zig", .{});
     defer main_file.close(io);
-    try main_file.writeStreamingAll(io, main_content);
+    try main_file.writeStreamingAll(io, scaffold.reference.main_zig);
 
-    // Generate example command: src/commands/hello.zig
+    // Generate example command: src/commands/hello.zig — verbatim from the
+    // compiled reference.
     try stdout.print("  Creating example command (hello)...\n", .{});
-    const hello_content =
-        \\const std = @import("std");
-        \\const zcli = @import("zcli");
-        \\const Context = @import("command_registry").Context;
-        \\
-        \\pub const meta = .{
-        \\    .description = "Say hello to someone",
-        \\    .examples = &.{
-        \\        "hello World",
-        \\        "hello Alice --loud",
-        \\    },
-        \\    // Arg descriptions are plain strings; option descriptions are structs
-        \\    // that can also declare a short flag (and .name/.env). These show up in
-        \\    // `--help` and the generated docs, so the first command a user reads
-        \\    // models the full grammar.
-        \\    .args = .{
-        \\        .name = "Who to greet",
-        \\    },
-        \\    .options = .{
-        \\        .loud = .{ .description = "Shout the greeting", .short = 'l' },
-        \\    },
-        \\};
-        \\
-        \\pub const Args = struct {
-        \\    name: []const u8,
-        \\};
-        \\
-        \\pub const Options = struct {
-        \\    loud: bool = false,
-        \\};
-        \\
-        \\pub fn execute(args: Args, options: Options, context: *Context) !void {
-        \\    const greeting = if (options.loud) "HELLO" else "Hello";
-        \\    try context.stdout().print("{s}, {s}!\n", .{ greeting, args.name });
-        \\}
-        \\
-    ;
 
     var commands_dir = try src_dir.openDir(io, "commands", .{});
     defer commands_dir.close(io);
 
     var hello_file = try commands_dir.createFile(io, "hello.zig", .{});
     defer hello_file.close(io);
-    try hello_file.writeStreamingAll(io, hello_content);
+    try hello_file.writeStreamingAll(io, scaffold.reference.hello_zig);
 
     // Scaffold AGENTS.md — the thin, frozen, command-speaking spine that points
     // coding agents at `zcli guide` (ADR-0008). Marker-delimited so it never
@@ -616,6 +487,80 @@ test "renderPluginsBlock scaffolds a compiling github_upgrade config, not an emp
             "            }),\n",
         block,
     );
+}
+
+// The plugins-list region in the reference build.zig, delimited so init can
+// swap the reference's default builtins for the user's selection. The markers
+// keep the reference itself compiling (with the defaults between them).
+const ref_plugins_begin = "            //<zcli:plugins>\n";
+const ref_plugins_end = "            //</zcli:plugins>\n";
+
+/// Assemble the project's `build.zig` from the embedded reference source
+/// (`scaffold.reference.build_zig`), substituting this project's values:
+///   - the `//<zcli:plugins>…//</zcli:plugins>` region → the selected builtins;
+///   - the reference app name (`"myapp"`, at both `.name` and `.app_name`) and
+///     its default description string → this project's name and (already-escaped)
+///     description.
+///
+/// The reference is written against the *local* (unreleased) zcli so it stays
+/// compile-checked by the `examples/init-scaffold` build. `init`, though, pins
+/// the released tag `context.app_version` points at, whose `addCommandTests`
+/// still predates the `exe` parameter (#531) — so emit the 3-arg form that
+/// release expects. (The local-tree e2e build bridges it back up; the
+/// pinned-release e2e, #623, builds this unmodified against the real tag.) Drop
+/// this last rewrite once the pinned release carries the `exe` signature.
+fn renderBuildZig(
+    allocator: std.mem.Allocator,
+    project_name: []const u8,
+    app_description: []const u8,
+    plugins_block: []const u8,
+) ![]u8 {
+    const ref = scaffold.reference.build_zig;
+    const begin = std.mem.indexOf(u8, ref, ref_plugins_begin) orelse return error.MalformedReference;
+    const end = (std.mem.indexOf(u8, ref, ref_plugins_end) orelse return error.MalformedReference) + ref_plugins_end.len;
+
+    const name_quoted = try std.fmt.allocPrint(allocator, "\"{s}\"", .{project_name});
+    defer allocator.free(name_quoted);
+    const desc_quoted = try std.fmt.allocPrint(allocator, "\"{s}\"", .{app_description});
+    defer allocator.free(desc_quoted);
+
+    // 1) Replace the marked plugins region with the rendered selection.
+    const spliced = try std.mem.concat(allocator, u8, &.{ ref[0..begin], plugins_block, ref[end..] });
+    defer allocator.free(spliced);
+    // 2) App name — both the exe `.name` and `.app_name` sites.
+    const named = try std.mem.replaceOwned(u8, allocator, spliced, "\"myapp\"", name_quoted);
+    defer allocator.free(named);
+    // 3) Description (name is substituted first so it can't collide with a
+    //    user-supplied description, which is inserted last and never rescanned).
+    const described = try std.mem.replaceOwned(u8, allocator, named, "\"A CLI application built with zcli\"", desc_quoted);
+    defer allocator.free(described);
+    // 4) Pin `addCommandTests` down to the released 3-arg shape (see doc comment).
+    return std.mem.replaceOwned(u8, allocator, described, "zcli.addCommandTests(b, exe, zcli_dep,", "zcli.addCommandTests(b, zcli_dep,");
+}
+
+test "renderBuildZig substitutes name, description, plugins and pins addCommandTests" {
+    const allocator = std.testing.allocator;
+    const plugins =
+        "            zcli.builtin(.help, .{}),\n" ++
+        "            zcli.builtin(.version, .{}),\n";
+    const build = try renderBuildZig(allocator, "cool-app", "Say \\\"hi\\\"", plugins);
+    defer allocator.free(build);
+
+    // Name lands at the exe `.name` and `.app_name`; the reference sentinel is gone.
+    try std.testing.expect(std.mem.indexOf(u8, build, ".name = \"cool-app\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, build, ".app_name = \"cool-app\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, build, "myapp") == null);
+    // Description (already escaped) lands verbatim.
+    try std.testing.expect(std.mem.indexOf(u8, build, ".app_description = \"Say \\\"hi\\\"\"") != null);
+    // Selected plugins are spliced in, markers removed.
+    try std.testing.expect(std.mem.indexOf(u8, build, "zcli.builtin(.help, .{}),") != null);
+    try std.testing.expect(std.mem.indexOf(u8, build, "//<zcli:plugins>") == null);
+    // Emitted call matches the pinned release's 3-arg signature, not the
+    // reference's local 4-arg one.
+    try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, zcli_dep,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, exe, zcli_dep,") == null);
+    // Framework-coupled call the reference compile-guards survives verbatim.
+    try std.testing.expect(std.mem.indexOf(u8, build, "try zcli.generate(b, exe, zcli_dep, .{") != null);
 }
 
 /// True if `s` is a semantic version acceptable to Zig's build.zig.zon manifest
