@@ -798,12 +798,13 @@ pub const global_options = [_]zcli.GlobalOption{
 
 // Lifecycle hooks (all optional). Plugins are compiled independently of the
 // host app, so hooks take `context: anytype` rather than a named Context type.
+pub fn onStartup(context: anytype) !void { }
 pub fn handleGlobalOption(context: anytype, name: []const u8, value: anytype) !void { }
 pub fn preParse(context: anytype, args: []const []const u8) ![]const []const u8 { }
 pub fn transformArgs(context: anytype, args: []const []const u8) !zcli.TransformResult { }
 pub fn postParse(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
 pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs { }
-pub fn postExecute(context: anytype, result: anytype) !void { }
+pub fn postExecute(context: anytype, success: bool) !void { }
 pub fn onError(context: anytype, err: anyerror) !bool { }
 
 // Fill option fields from a lower-precedence source (e.g. a config file) after

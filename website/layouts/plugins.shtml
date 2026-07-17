@@ -119,7 +119,7 @@
           </div>
           <div class="code">
             <div class="code-head"><span class="fname">build.zig — all three together</span><span class="lang">zig</span></div>
-<pre><span class="kw">const</span> cmd_registry = zcli.<span class="fn">generate</span>(b, exe, zcli_dep, zcli_module, .{
+<pre><span class="kw">const</span> cmd_registry = <span class="kw">try</span> zcli.<span class="fn">generate</span>(b, exe, zcli_dep, .{
     .commands_dir = <span class="str">"src/commands"</span>,
 
     <span class="cm">// Auto-discover everything in your own plugins folder</span>
@@ -205,9 +205,13 @@
           <table class="hooks">
             <tbody>
               <tr><td class="h">onStartup</td><td class="d">Runs once before routing — set up shared state.</td></tr>
+              <tr><td class="h">preParse</td><td class="d">Runs before argument parsing; can rewrite the raw argv.</td></tr>
+              <tr><td class="h">transformArgs</td><td class="d">Runs after <code>preParse</code>; can rewrite or short-circuit the raw argv before parsing.</td></tr>
               <tr><td class="h">handleGlobalOption</td><td class="d">Called for each global option your plugin declared; stash the value in your context data.</td></tr>
+              <tr><td class="h">postParse</td><td class="d">Runs after parsing, before command execution.</td></tr>
+              <tr><td class="h">applyConfigDefaults</td><td class="d">Fills option fields from a lower-precedence source (e.g. a config file), after CLI + env parsing but before required/dependency validation.</td></tr>
               <tr><td class="h">preExecute</td><td class="d">Runs before the matched command. Return <code>null</code> to halt execution, or the (possibly transformed) args to continue.</td></tr>
-              <tr><td class="h">postExecute</td><td class="d">Runs after the command succeeds — flush, report, clean up.</td></tr>
+              <tr><td class="h">postExecute</td><td class="d">Runs after the command finishes, with a <code>success: bool</code> outcome — flush, report, clean up.</td></tr>
               <tr><td class="h">onError</td><td class="d">Handle an error. Return <code>true</code> if you handled it.</td></tr>
             </tbody>
           </table>
@@ -226,7 +230,8 @@
     <span class="kw">return</span> args;
 }
 
-<span class="kw">pub fn</span> <span class="fn">postExecute</span>(context: <span class="kw">anytype</span>) !<span class="kw">void</span> {
+<span class="kw">pub fn</span> <span class="fn">postExecute</span>(context: <span class="kw">anytype</span>, success: <span class="fn">bool</span>) !<span class="kw">void</span> {
+    _ = success;
     <span class="kw">const</span> start = context.plugins.timing.started_ns;
     <span class="kw">if</span> (start != <span class="num">0</span>) {
         <span class="kw">const</span> ms = <span class="at">@divTrunc</span>(std.time.<span class="fn">nanoTimestamp</span>() - start, <span class="num">1_000_000</span>);
