@@ -451,6 +451,23 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
             "`. Example: `pub const Options = struct { verbose: bool = false };`");
     }
 
+    // A varargs field (`[][]const u8` / `[]const []const u8`) captures ALL
+    // remaining positionals, so any `Args` field after it can never receive a
+    // value: the parser leaves it `undefined` and command_parser frees the
+    // backing slice out from under the varargs slice (a verified use-after-free
+    // SEGV, #662). Reject it at build time so the author fixes the field order
+    // instead of shipping a crash.
+    if (@typeInfo(ArgsType) == .@"struct") {
+        const arg_fields = @typeInfo(ArgsType).@"struct".fields;
+        inline for (arg_fields, 0..) |field, i| {
+            if (args_parser.isVarArgs(field.type) and i != arg_fields.len - 1) {
+                @compileError(loc ++ "varargs arg '" ++ field.name ++ "' (`" ++ @typeName(field.type) ++
+                    "`) must be the LAST `Args` field — it captures every remaining positional, so `" ++
+                    arg_fields[i + 1].name ++ "` after it could never be filled. Move it to the end.");
+            }
+        }
+    }
+
     // Args field shapes. An optional positional carries a `null` "absent"
     // state, and the parser initializes optionals to `null` when the positional
     // is not supplied — a non-null default would be silently discarded. Forbid
