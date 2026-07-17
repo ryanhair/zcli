@@ -269,8 +269,15 @@ fn parseEscapeSequence(reader: anytype, esc_handle: ?backend.Handle, paste: ?Pas
         };
     } else if (next == 'O') {
         // SS3 sequence: ESC O ...
+        // In DECCKM (application cursor keys) mode, terminals emit the cursor
+        // keys as SS3 (`ESC O A/B/C/D`, plus `ESC O H/F` for Home/End) instead
+        // of CSI. Decode them identically to the CSI arm above.
         const code = readByteFn(reader) catch return keyIn(.escape);
         return switch (code) {
+            'A' => keyIn(.up),
+            'B' => keyIn(.down),
+            'C' => keyIn(.right),
+            'D' => keyIn(.left),
             'H' => keyIn(.home),
             'F' => keyIn(.end),
             else => keyIn(.escape),
@@ -542,6 +549,25 @@ test "readKey parses arrow down" {
     var reader: std.Io.Reader = .fixed(&buf);
     const k = try readKey(&reader);
     try std.testing.expect(k == .down);
+}
+
+test "readKey parses SS3 arrows (application-cursor mode)" {
+    // DECCKM (application cursor keys) mode: arrows arrive as ESC O A/B/C/D
+    // rather than CSI, and must decode to the same keys as their CSI forms.
+    const cases = [_]struct { seq: []const u8, key: Key }{
+        .{ .seq = "\x1bOA", .key = .up },
+        .{ .seq = "\x1bOB", .key = .down },
+        .{ .seq = "\x1bOC", .key = .right },
+        .{ .seq = "\x1bOD", .key = .left },
+        .{ .seq = "\x1bOH", .key = .home },
+        .{ .seq = "\x1bOF", .key = .end },
+    };
+    inline for (cases) |c| {
+        var buf = c.seq[0..3].*;
+        var reader: std.Io.Reader = .fixed(&buf);
+        const k = try readKey(&reader);
+        try std.testing.expectEqual(c.key, k);
+    }
 }
 
 test "readKey parses ctrl+c" {
