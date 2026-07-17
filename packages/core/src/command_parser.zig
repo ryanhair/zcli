@@ -2,6 +2,7 @@ const std = @import("std");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
 const option_utils = @import("options/utils.zig");
+const tokenizer = @import("options/tokenizer.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 
 pub const ZcliError = diagnostic_errors.ZcliError;
@@ -70,77 +71,33 @@ pub fn parseCommandLine(
     var positional_args = std.ArrayList([]const u8).empty;
     defer positional_args.deinit(allocator);
 
-    var i: usize = 0;
-    while (i < args.len) {
-        const arg = args[i];
-
-        // Handle "--" separator (everything after is positional)
-        if (std.mem.eql(u8, arg, "--")) {
-            // Add remaining args as positional
-            for (args[i + 1 ..]) |remaining_arg| {
-                positional_args.append(allocator, remaining_arg) catch return ZcliError.SystemOutOfMemory;
-            }
-            break;
-        }
-
-        // Handle options. `isOption` (options/utils.zig — the single source of
-        // truth) excludes negative numbers (`-.5`, `-inf`) and the bare `-`
-        // stdin/stdout sentinel, which are positionals, not flags.
-        if (option_utils.isOption(arg)) {
-            option_args.append(allocator, arg) catch return ZcliError.SystemOutOfMemory;
-
-            // Check if this option expects a value
-            if (std.mem.startsWith(u8, arg, "--")) {
-                // Long option
-                if (std.mem.indexOf(u8, arg, "=")) |_| {
-                    // --option=value format, no additional arg needed
-                    i += 1;
-                    continue;
-                } else {
-                    // --option format, might need next arg as value. Uses the
-                    // same resolution the options parser uses (incl. custom
-                    // meta names) and the same "next token is a value, not
-                    // another flag" condition, so split and parse agree.
-                    const option_name = arg[2..]; // Remove "--"
-                    const takes_value = option_utils.longOptionTakesValue(OptionsType, meta, option_name) orelse false;
-                    if (takes_value and i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
-                        i += 1;
-                        option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
-                    }
+    // Drive the shared argv tokenizer (options/tokenizer.zig) with the same
+    // Options/meta spec the options parser resolves against, so this split and
+    // the parse cannot disagree about which token is a flag's value (#287,
+    // #299, #427): the tokenizer owns the `--` terminator, the negative-number
+    // and bare-`-` positional rules, the short-bundle state machine, and the
+    // next-token value lookahead. Here a token classifies to one of two piles;
+    // a value the tokenizer consumed for an option travels with the option.
+    var tok = tokenizer.Tokenizer(tokenizer.OptionsSpec(OptionsType, meta)){ .args = args };
+    while (tok.next()) |token| {
+        switch (token) {
+            // The `--` itself is dropped; everything after it arrives as
+            // `.positional`, verbatim.
+            .terminator => {},
+            .positional => |item| positional_args.append(allocator, item.raw) catch return ZcliError.SystemOutOfMemory,
+            .long => |long| {
+                option_args.append(allocator, long.raw) catch return ZcliError.SystemOutOfMemory;
+                if (long.next_value) |value| {
+                    option_args.append(allocator, value) catch return ZcliError.SystemOutOfMemory;
                 }
-            } else {
-                // Short option `-x` or bundle `-xyz`. Walk the chars mirroring
-                // the options parser's mixed-bundle handling
-                // (parseShortOptionsWithMeta): skip leading boolean chars; the
-                // first value-taking char either carries the rest of the token
-                // as its attached value (no next-token lookahead) or — when it
-                // is the last char — consumes the next token as its value under
-                // the shared `isValueToken` rule (#299). Reusing the shared
-                // `shortOptionTakesValue`/`isValueToken` classifiers keeps this
-                // split and the parser in agreement so a bundle like
-                // `-vf out.txt` no longer strands its value (#427).
-                const option_chars = arg[1..];
-                var ci: usize = 0;
-                while (ci < option_chars.len) : (ci += 1) {
-                    const takes_value = option_utils.shortOptionTakesValue(OptionsType, meta, option_chars[ci]) orelse false;
-                    // Boolean (or unknown) leading char: keep walking.
-                    if (!takes_value) continue;
-                    // First value-taking char. If it is not the last char, the
-                    // rest of the token is its attached value — no lookahead. If
-                    // it is the last char, the next token may be its value.
-                    if (ci + 1 == option_chars.len and i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
-                        i += 1;
-                        option_args.append(allocator, args[i]) catch return ZcliError.SystemOutOfMemory;
-                    }
-                    break;
+            },
+            .shorts => |shorts| {
+                option_args.append(allocator, shorts.raw) catch return ZcliError.SystemOutOfMemory;
+                if (shorts.next_value) |value| {
+                    option_args.append(allocator, value) catch return ZcliError.SystemOutOfMemory;
                 }
-            }
-        } else {
-            // Positional argument
-            positional_args.append(allocator, arg) catch return ZcliError.SystemOutOfMemory;
+            },
         }
-
-        i += 1;
     }
 
     // Parse options from the collected option arguments. Always goes through

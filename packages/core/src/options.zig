@@ -44,4 +44,5 @@ test {
     _ = parser;
     _ = array_utils;
     _ = utils;
+    _ = @import("options/tokenizer.zig");
 }
