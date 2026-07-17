@@ -1,0 +1,7 @@
+# `zcli init` `@embedFile`s the sources in this project and splices them on LF
+# boundaries (the `//<zcli:plugins>` markers in build.zig), then emits them into
+# the scaffolded project verbatim. They must stay LF on every OS: without this,
+# Windows' default core.autocrlf=true rewrites them to CRLF at checkout, which
+# breaks the marker splice (error.MalformedReference in renderBuildZig) and would
+# emit CRLF scaffolds. Keep the whole reference project LF for the same reason.
+* text eol=lf
