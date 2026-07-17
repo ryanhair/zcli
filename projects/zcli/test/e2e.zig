@@ -794,6 +794,24 @@ fn pointDependencyAtLocalTree(proj: std.Io.Dir, proj_abs: []const u8) !void {
         .{ orig[0..dep_start], rel, orig[paths_start..] },
     );
     try proj.writeFile(io, .{ .sub_path = "build.zig.zon", .data = rewritten });
+
+    // The template targets the *pinned release* API (init pins the same tag this
+    // CLI was released as; see init.zig). The local working tree can be ahead of
+    // that release — right now HEAD's `addCommandTests` takes the project `exe`
+    // (#531) while the last release's is 3-arg — so building the release-shaped
+    // template against the local tree needs that one call bridged up to HEAD.
+    // This only adapts the local-tree path; the `scaffold builds against the
+    // pinned release` test below builds the template *unmodified* against the
+    // real tag, which is what actually guards the release-drift this bridges.
+    const build_zig = try readFile(proj, a, "build.zig");
+    const bridged = try std.mem.replaceOwned(
+        u8,
+        a,
+        build_zig,
+        "zcli.addCommandTests(b, zcli_dep,",
+        "zcli.addCommandTests(b, exe, zcli_dep,",
+    );
+    try proj.writeFile(io, .{ .sub_path = "build.zig", .data = bridged });
 }
 
 /// Absolute path of a sub-directory created in this test run's temp dir.
@@ -1276,6 +1294,41 @@ test "scaffolded project builds, runs, and round-trips add command" {
         defer r.deinit();
         try testing.expect(r.exit_code != 0);
     }
+}
+
+// Guards #623: the `init` template must compile against the release tag it
+// pins (`context.app_version`), not just against the local working tree. Every
+// other layer-2 test rewrites the dependency to the local tree, which is ahead
+// of the last release and so masks exactly this drift — a template that emits a
+// HEAD-only API silently "passes" there while a real `zcli init` → `zig build`
+// fails. This one builds the *unmodified* scaffold against the real pinned tag.
+//
+// The tag can be unreachable: offline CI, or a release run whose tag is not yet
+// published (tests gate tag creation, #301) — in both, `init` reports "was not
+// fetched" and we skip rather than fail on the network.
+test "scaffold builds against the pinned release (#623)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const pinned_dep_present = present: {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        defer r.deinit();
+        try expectOk(r);
+        // `init` runs `zig fetch --save` of the pinned tag itself; it says so
+        // explicitly when that fetch didn't land (unreachable tag / no network).
+        break :present std.mem.indexOf(u8, r.stdout, "was not fetched") == null;
+    };
+    if (!pinned_dep_present) return error.SkipZigTest;
+
+    var proj = try tmp.dir.openDir(io, "demo", .{});
+    defer proj.close(io);
+
+    // No local-tree rewrite: build the template exactly as a user would, against
+    // the release the dependency now pins.
+    var r = try run(proj, &.{ "zig", "build" });
+    defer r.deinit();
+    try expectOk(r);
+    try testing.expect(fileExists(proj, "zig-out/bin/demo" ++ exe_ext));
 }
 
 test "required options and enum args: end-user messages and help" {
