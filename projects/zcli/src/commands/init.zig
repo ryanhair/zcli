@@ -67,6 +67,8 @@ pub const meta = .{
         .defaults = .{ .description = "Answer every prompt with its default (implied when stdin is not a TTY)" },
         .yes = .{ .description = "Like --defaults, and skip any confirmation", .short = 'y' },
         .dry_run = .{ .description = "Print what would be created without writing anything" },
+        .git = .{ .description = "Initialize a git repository with a .gitignore and an initial commit (--no-git to skip)" },
+        .build = .{ .description = "Verify the scaffold with `zig build` after fetching (--no-build to skip)" },
     },
 };
 
@@ -88,6 +90,8 @@ pub const Options = struct {
     defaults: bool = false,
     yes: bool = false,
     dry_run: bool = false,
+    git: bool = true,
+    build: bool = true,
 };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
@@ -161,7 +165,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // Free-text options are embedded in generated string literals — escape so
     // `--description 'say "hi"'` scaffolds a project that still compiles
     // instead of breaking (or injecting code into) build.zig / build.zig.zon.
-    const app_description = try escapeStringLiteral(allocator, options.description orelse "A CLI application built with zcli");
+    // Raw for README.md (markdown, no escaping); escaped below for generated
+    // Zig/zon string literals.
+    const description_raw = options.description orelse "A CLI application built with zcli";
+    const app_description = try escapeStringLiteral(allocator, description_raw);
     defer allocator.free(app_description);
     const app_version = try escapeStringLiteral(allocator, version_str);
     defer allocator.free(app_version);
@@ -282,21 +289,31 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     const plugins_block = try renderPluginsBlock(allocator, selected);
     defer allocator.free(plugins_block);
 
-    // --dry-run: everything is decided and validated; report what would be
-    // created and stop before touching the filesystem.
+    // Everything is decided: one summary, shown for both the dry run and the
+    // interactive confirm (ADR-0028 step 6).
+    const summarize = struct {
+        fn print(w: anytype, tpl: Template, sel: []const usize, with_git: bool, with_build: bool) !void {
+            try w.print("  template: {s}\n", .{@tagName(tpl)});
+            try w.print("  plugins:  ", .{});
+            if (sel.len == 0) {
+                try w.print("(none)", .{});
+            } else for (sel, 0..) |idx, i| {
+                if (i > 0) try w.print(", ", .{});
+                try w.print("{s}", .{builtin_choices[idx].tag});
+            }
+            try w.print("\n  git:      {s}\n", .{if (with_git) "init + .gitignore + initial commit" else "skipped (--no-git)"});
+            try w.print("  build:    {s}\n", .{if (with_build) "verify with `zig build`" else "skipped (--no-build)"});
+        }
+    }.print;
+
+    // --dry-run: report what would be created and stop before touching the
+    // filesystem.
     if (options.dry_run) {
         try stdout.print("\nDry run — nothing written. Would create:\n", .{});
         const prefix: []const u8 = if (use_current_dir) "" else args.name;
         const sep: []const u8 = if (use_current_dir) "" else "/";
-        try stdout.print("  template: {s}\n", .{@tagName(template)});
-        try stdout.print("  plugins:  ", .{});
-        if (selected.len == 0) {
-            try stdout.print("(none)", .{});
-        } else for (selected, 0..) |idx, i| {
-            if (i > 0) try stdout.print(", ", .{});
-            try stdout.print("{s}", .{builtin_choices[idx].tag});
-        }
-        try stdout.print("\n  files:\n", .{});
+        try summarize(stdout, template, selected, options.git, options.build);
+        try stdout.print("  files:\n", .{});
         try stdout.print("    {s}{s}build.zig\n", .{ prefix, sep });
         try stdout.print("    {s}{s}build.zig.zon\n", .{ prefix, sep });
         try stdout.print("    {s}{s}src/main.zig\n", .{ prefix, sep });
@@ -304,9 +321,27 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             .multi => try stdout.print("    {s}{s}src/commands/hello.zig\n", .{ prefix, sep }),
             .single => try stdout.print("    {s}{s}src/commands/index.zig\n", .{ prefix, sep }),
         }
+        try stdout.print("    {s}{s}README.md\n", .{ prefix, sep });
+        if (options.git) try stdout.print("    {s}{s}.gitignore\n", .{ prefix, sep });
         try stdout.print("    {s}{s}AGENTS.md\n", .{ prefix, sep });
         try stdout.print("  then: zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz\n", .{context.app_version});
         return;
+    }
+
+    // Summary + confirm before anything touches disk. --yes/--defaults skip
+    // it; a non-TTY stdin answers the default (proceed) via EndOfStream, so
+    // scripts and CI sail through.
+    if (!use_defaults) {
+        try stdout.print("\nAbout to create '{s}':\n", .{project_name});
+        try summarize(stdout, template, selected, options.git, options.build);
+        try stdout.flush();
+        const proceed = p.confirm(.{ .message = "Proceed?" }) catch |err| switch (err) {
+            error.EndOfStream => true,
+            else => return err,
+        };
+        if (!proceed) {
+            return context.fail("Aborted — nothing written.", .{});
+        }
     }
 
     // Now that the destination is validated and plugins are chosen, create and
@@ -413,6 +448,15 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         },
     }
 
+    // README.md — the human-facing stub (name, description, build/run/test).
+    // The try-it line matches the scaffolded shape.
+    try stdout.print("  Creating README.md...\n", .{});
+    const readme_content = try renderReadme(allocator, project_name, description_raw, template);
+    defer allocator.free(readme_content);
+    var readme_file = try project_dir.createFile(io, "README.md", .{});
+    defer readme_file.close(io);
+    try readme_file.writeStreamingAll(io, readme_content);
+
     // Scaffold AGENTS.md — the thin, frozen, command-speaking spine that points
     // coding agents at `zcli guide` (ADR-0008). Marker-delimited so it never
     // clobbers a user's own AGENTS.md, and a future upgrade can refresh just the
@@ -422,6 +466,22 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         .appended => try stdout.print("  Adding zcli section to existing AGENTS.md...\n", .{}),
         .refreshed => try stdout.print("  Refreshing zcli section in AGENTS.md...\n", .{}),
     }
+
+    // git: init + .gitignore now, so the initial commit below captures exactly
+    // the verified scaffold. Skipped silently when git is absent or the
+    // destination is already inside a work tree (ADR-0028); any later git
+    // failure is a warning with the exact command — the project is valid
+    // either way, never a rollback.
+    const git_initialized = if (options.git) git: {
+        // Already inside a work tree (e.g. `init .` in a repo)? Leave it be.
+        if (spawnQuiet(io, project_dir, &.{ "git", "rev-parse", "--is-inside-work-tree" })) break :git false;
+        if (!spawnQuiet(io, project_dir, &.{ "git", "init", "--quiet" })) break :git false; // git absent: skip silently
+        try stdout.print("  Initializing git repository...\n", .{});
+        var gitignore_file = try project_dir.createFile(io, ".gitignore", .{});
+        defer gitignore_file.close(io);
+        try gitignore_file.writeStreamingAll(io, gitignore_content);
+        break :git true;
+    } else false;
 
     // Fetch the zcli dependency. `zig fetch --save` computes the real hash and
     // writes the dependency into build.zig.zon; without it the generated project
@@ -446,11 +506,44 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         try stderr.print("  Run this inside the project to finish setup:\n    zig fetch --save {s}\n", .{zcli_url});
     }
 
+    // Verify the scaffold with a real `zig build` (default on, --no-build to
+    // skip) so the user's first manual command runs their CLI instead of the
+    // compiler — and a broken scaffold is OUR failure, surfaced right here.
+    // Only meaningful after a successful fetch; a failure is a warning with
+    // the exact command (the project is valid), never a rollback.
+    const built_ok = if (options.build and fetch_ok) blk: {
+        try stdout.flush();
+        var spin = try context.progress().spinner(.{});
+        spin.start("Building (the first build may take a minute)...");
+        const ok = spawnQuiet(io, project_dir, &.{ "zig", "build" });
+        if (ok) {
+            spin.succeed("Build verified");
+        } else {
+            spin.fail("Build failed");
+            try stderr.print("  Warning: `zig build` failed. Run it inside the project to see the error:\n    zig build\n", .{});
+        }
+        break :blk ok;
+    } else false;
+
+    // Initial commit of exactly what was scaffolded (zig-out/.zig-cache are
+    // ignored, so building first changes nothing tracked). Commit needs a git
+    // identity, which fresh machines and CI runners often lack — warn with
+    // the exact commands instead of failing init.
+    if (git_initialized) {
+        const committed = spawnQuiet(io, project_dir, &.{ "git", "add", "-A" }) and
+            spawnQuiet(io, project_dir, &.{ "git", "commit", "--quiet", "-m", "Initial commit (zcli init)" });
+        if (!committed) {
+            try stderr.print("  Warning: could not create the initial commit (is your git identity configured?).\n", .{});
+            try stderr.print("  Run this inside the project when ready:\n    git add -A && git commit -m \"Initial commit\"\n", .{});
+        }
+    }
+
     // Success message. When the fetch failed, `zig build` would only fail with
     // a missing-dependency error the user never asked for — don't claim success
-    // or suggest a next step that can't work yet. The try-it line matches the
-    // scaffolded shape: `hello World` for multi, a bare root positional for
-    // single.
+    // or suggest a next step that can't work yet. When the build already
+    // verified, don't tell the user to build again — their next step is
+    // running the CLI. The try-it line matches the scaffolded shape: `hello
+    // World` for multi, a bare root positional for single.
     if (fetch_ok) {
         try stdout.print("\n✓ Project '{s}' created successfully!\n\n", .{project_name});
         try stdout.print("Next steps:\n", .{});
@@ -464,12 +557,91 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     if (!fetch_ok) {
         try stdout.print("  zig fetch --save {s}\n", .{zcli_url});
     }
-    try stdout.print("  zig build\n", .{});
+    if (!built_ok) {
+        try stdout.print("  zig build\n", .{});
+    }
     switch (template) {
         .multi => try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name}),
         .single => try stdout.print("  ./zig-out/bin/{s} World\n", .{project_name}),
     }
     try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
+}
+
+/// Run `argv` in `dir` with all output suppressed; true on exit code 0.
+/// The quiet building block for the post-scaffold steps (git probes/init/
+/// commit, the `zig build` verification): a spawn failure (binary absent)
+/// and a non-zero exit both read as "no".
+fn spawnQuiet(io: std.Io, dir: std.Io.Dir, argv: []const []const u8) bool {
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .dir = dir },
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return false;
+    const term = child.wait(io) catch return false;
+    return term == .exited and term.exited == 0;
+}
+
+/// The scaffold's .gitignore: Zig's two generated trees, nothing else — a
+/// fresh project has no other artifacts, and users grow it themselves.
+const gitignore_content =
+    \\.zig-cache/
+    \\zig-out/
+    \\
+;
+
+/// Render README.md: name, description, and the build/run/test loop with the
+/// try-it line matching the scaffolded shape. Owned slice.
+fn renderReadme(allocator: std.mem.Allocator, name: []const u8, description: []const u8, template: Template) ![]u8 {
+    const try_it: []const u8 = switch (template) {
+        .multi => " hello World",
+        .single => " World",
+    };
+    return std.fmt.allocPrint(allocator,
+        \\# {s}
+        \\
+        \\{s}
+        \\
+        \\Built with [zcli](https://github.com/ryanhair/zcli).
+        \\
+        \\## Build and run
+        \\
+        \\```sh
+        \\zig build
+        \\./zig-out/bin/{s}{s}
+        \\./zig-out/bin/{s} --help
+        \\```
+        \\
+        \\## Test
+        \\
+        \\```sh
+        \\zig build test
+        \\```
+        \\
+        \\## Project layout
+        \\
+        \\Commands are files: `src/commands/<name>.zig` is `{s} <name>`. Read the
+        \\current shape with `zcli tree`, and change it with `zcli add` / `zcli rm` /
+        \\`zcli mv`. See AGENTS.md and `zcli guide` for the full authoring loop.
+        \\
+    , .{ name, description, name, try_it, name, name });
+}
+
+test "renderReadme: single template demos the bare root positional" {
+    const allocator = std.testing.allocator;
+    const readme = try renderReadme(allocator, "mytool", "Does things", .single);
+    defer allocator.free(readme);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "# mytool\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "Does things") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "./zig-out/bin/mytool World") != null);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "hello World") == null);
+}
+
+test "renderReadme: multi template demos the hello subcommand" {
+    const allocator = std.testing.allocator;
+    const readme = try renderReadme(allocator, "myapp", "A CLI", .multi);
+    defer allocator.free(readme);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "./zig-out/bin/myapp hello World") != null);
 }
 
 // ---------------------------------------------------------------------------

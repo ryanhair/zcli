@@ -252,7 +252,7 @@ test "init scaffolds a project with the expected files and wiring" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -304,13 +304,106 @@ test "init scaffolds a project with the expected files and wiring" {
     try expectContains(agents, "<!-- zcli:end -->");
     try expectContains(agents, "zcli guide");
     try expectContains(agents, "per-command arena");
+
+    // Increment 2 (ADR-0028): README stub by default. Git is NOT asserted
+    // here — testing.tmpDir lives under the zcli repo's own work tree, where
+    // init deliberately skips `git init`; see the dedicated outside-a-work-
+    // tree test below.
+    const readme = try readFile(proj, a, "README.md");
+    try expectContains(readme, "# myapp");
+    try expectContains(readme, "zig build test");
+    try testing.expect(!fileExists(proj, ".git/HEAD"));
+}
+
+test "init inside an existing work tree skips git; outside it initializes one" {
+    // The inside-a-work-tree half is covered by every other test here (tmpDir
+    // sits under the zcli repo). The outside half needs a scaffold in the
+    // system temp dir. POSIX-only: the path below is /tmp; the git code path
+    // is identical on Windows.
+    if (builtin.os.tag == .windows) return;
+
+    var bytes: [8]u8 = undefined;
+    io.random(&bytes);
+    var name_buf: [64]u8 = undefined;
+    const dir_name = try std.fmt.bufPrint(&name_buf, "zcli-e2e-git-{x}", .{&bytes});
+
+    var tmp_root = try std.Io.Dir.cwd().openDir(io, "/tmp", .{});
+    defer tmp_root.close(io);
+    try tmp_root.createDir(io, dir_name, .default_dir);
+    defer tmp_root.deleteTree(io, dir_name) catch {};
+    var work = try tmp_root.openDir(io, dir_name, .{});
+    defer work.close(io);
+
+    var r = try run(work, &.{ zcli_exe, "init", "myapp", "--no-build" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try work.openDir(io, "myapp", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try expectContains(r.stdout, "Initializing git repository");
+    try testing.expect(fileExists(proj, ".git/HEAD"));
+    const gitignore = try readFile(proj, arena.allocator(), ".gitignore");
+    try expectContains(gitignore, ".zig-cache/");
+    try expectContains(gitignore, "zig-out/");
+    // The initial commit needs a configured git identity (absent on CI
+    // runners) — init degrades to a warning; either outcome is correct here.
+}
+
+test "init --no-git skips the repository, README still scaffolds" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--no-git", "--no-build" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    try testing.expect(!fileExists(proj, ".git/HEAD"));
+    try testing.expect(!fileExists(proj, ".gitignore"));
+    try testing.expect(fileExists(proj, "README.md"));
+}
+
+test "init verifies the scaffold with zig build by default (full flow)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // The one init test WITHOUT --no-build: the real end-to-end promise —
+    // after init, the user's first manual command runs their CLI. Deliberately
+    // slow (fetches and compiles the released zcli once per suite run).
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "built" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "built", .{});
+    defer proj.close(io);
+
+    if (std.mem.indexOf(u8, r.stdout, "was not fetched") != null) {
+        // Release-run window: the pinned tag doesn't exist yet, so the build
+        // step is skipped by design and next-steps must include `zig build`.
+        try expectContains(r.stdout, "zig build");
+        return;
+    }
+
+    // Fetch succeeded: the build must have been verified and the binary must
+    // exist — and next-steps must NOT tell the user to build again. The
+    // spinner renders on stderr (Progress convention: stdout stays clean for
+    // pipes), so the verification line lands there.
+    try expectContains(r.stderr, "Build verified");
+    try testing.expect(fileExists(proj, "zig-out/bin/built") or fileExists(proj, "zig-out/bin/built.exe"));
+    const after_success = std.mem.indexOf(u8, r.stdout, "created successfully").?;
+    try testing.expect(std.mem.indexOf(u8, r.stdout[after_success..], "\n  zig build\n") == null);
 }
 
 test "init --template single scaffolds a root index.zig instead of hello (ADR-0028/0029)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "mytool", "--template", "single" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "mytool", "--template", "single", "--no-build" });
     defer r.deinit();
 
     // The single template needs a released library with root index support
@@ -350,7 +443,7 @@ test "init --plugins takes the list verbatim, no prompt (agent contract)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "help,completions" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "help,completions", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -373,7 +466,7 @@ test "init --plugins none scaffolds a plugin-free project" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "none" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "none", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -390,7 +483,7 @@ test "init --plugins rejects unknown names, listing the valid set, creating noth
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "help,bogus" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "help,bogus", "--no-build" });
     defer r.deinit();
     try testing.expect(r.exit_code != 0);
     try expectContains(r.stderr, "unknown plugin");
@@ -402,7 +495,7 @@ test "init --dry-run reports the plan and writes nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--dry-run", "--defaults" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--dry-run", "--defaults", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -420,7 +513,7 @@ test "init --defaults answers the prompts without rendering them" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--defaults" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--defaults", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -445,7 +538,7 @@ test "init defaults to the multi template when non-interactive" {
 
     // No --template and no TTY: the shape prompt falls back to multi —
     // today's scaffold, an example hello subcommand and no root index.
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -459,7 +552,7 @@ test "init rejects an unknown --template value with the enum diagnostic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--template", "solo" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--template", "solo", "--no-build" });
     defer r.deinit();
     try testing.expect(r.exit_code != 0);
     // The enum parser names the valid choices; the project must not be created.
@@ -471,7 +564,7 @@ test "init escapes free-text --description into a valid string literal" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--description", "say \"hi\"\\back" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--description", "say \"hi\"\\back", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -492,7 +585,7 @@ test "init rejects a project name that would break generated source" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "bad\"name" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "bad\"name", "--no-build" });
     defer r.deinit();
     try testing.expect(r.exit_code != 0);
     try expectContains(r.stderr, "Invalid project name");
@@ -505,7 +598,7 @@ test "init rejects a Zig reserved word as the project name" {
     defer tmp.cleanup();
 
     // `error` is a keyword: `.name = .error` in build.zig.zon won't compile.
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "error" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "error", "--no-build" });
     defer r.deinit();
     try testing.expect(r.exit_code != 0);
     try expectContains(r.stderr, "Invalid project name");
@@ -520,7 +613,7 @@ test "init --app-version lands in build.zig.zon (#565)" {
     // The option is spelled --app-version, not --version: the tool's global
     // --version/-V flag (zcli_version plugin) is consumed before routing and
     // would shadow a same-named command option (#565).
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--app-version", "2.3.4" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--app-version", "2.3.4", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -539,7 +632,7 @@ test "init rejects a non-semver --app-version before touching the filesystem (#5
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--app-version", "foo" });
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--app-version", "foo", "--no-build" });
     defer r.deinit();
     try testing.expect(r.exit_code != 0);
     try expectContains(r.stderr, "Invalid version");
@@ -557,7 +650,7 @@ test "init . scaffolds into the current directory" {
     var proj = try tmp.dir.openDir(io, "myapp", .{});
     defer proj.close(io);
 
-    var r = try run(proj, &.{ zcli_exe, "init", "." });
+    var r = try run(proj, &.{ zcli_exe, "init", ".", "--no-build" });
     defer r.deinit();
     try expectOk(r);
 
@@ -575,7 +668,7 @@ test "init . rejects a directory name that can't be a project name" {
     var proj = try tmp.dir.openDir(io, "7wonders", .{});
     defer proj.close(io);
 
-    var r = try run(proj, &.{ zcli_exe, "init", "." });
+    var r = try run(proj, &.{ zcli_exe, "init", ".", "--no-build" });
     defer r.deinit();
     try testing.expect(r.exit_code != 0);
     try expectContains(r.stderr, "Invalid project name");
@@ -596,7 +689,7 @@ test "init . appends to a pre-existing AGENTS.md instead of refusing" {
     // treats it as appendable, not a conflict (ADR-0008).
     try proj.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "# House rules\n\nRun the linter.\n" });
 
-    var r = try run(proj, &.{ zcli_exe, "init", "." });
+    var r = try run(proj, &.{ zcli_exe, "init", ".", "--no-build" });
     defer r.deinit();
     try expectOk(r);
     try testing.expect(fileExists(proj, "build.zig"));
@@ -1037,7 +1130,7 @@ test "scaffolded project builds, runs, and round-trips add command" {
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -1529,7 +1622,7 @@ test "scaffold builds against the pinned release (#623)" {
     defer tmp.cleanup();
 
     const pinned_dep_present = present: {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo", "--no-build" });
         defer r.deinit();
         try expectOk(r);
         // `init` runs `zig fetch --save` of the pinned tag itself; it says so
@@ -1554,7 +1647,7 @@ test "required options and enum args: end-user messages and help" {
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -1671,7 +1764,7 @@ test "root zcli_theme declaration themes help output" {
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -1810,7 +1903,7 @@ test "scaffolded commands are unit-testable via zig build test" {
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -1898,7 +1991,7 @@ test "a shared module reaches both commands and their tests" {
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -1976,7 +2069,7 @@ test "a command's plugin state is testable via runCommand .plugins" {
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -2053,7 +2146,7 @@ test "a command that uses zcli_secrets is runCommand-testable without the keycha
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "app", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
@@ -2371,12 +2464,13 @@ test "interactive: init's plugin multi-select toggles an opt-in plugin" {
     defer script.deinit();
     _ = script
         .expect("Select built-in plugins").delay(settle_ms)
-        .sendRaw("\x1b[B\x1b[B\x1b[B \r");
+        .sendRaw("\x1b[B\x1b[B\x1b[B \r")
+        .expect("Proceed?").delay(settle_ms).sendRaw("\r");
 
     var result = harness.runInteractive(
         testing.allocator,
         io,
-        &.{ zcli_exe, "init", "myapp" },
+        &.{ zcli_exe, "init", "myapp", "--no-build", "--template", "multi" },
         script,
         .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 30000 },
     ) catch |err| switch (err) {
@@ -2436,12 +2530,13 @@ test "interactive: init's plugin multi-select toggles github_upgrade and the sca
     defer script.deinit();
     _ = script
         .expect("Select built-in plugins").delay(settle_ms)
-        .sendRaw("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B \r");
+        .sendRaw("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B \r")
+        .expect("Proceed?").delay(settle_ms).sendRaw("\r");
 
     var result = harness.runInteractive(
         testing.allocator,
         io,
-        &.{ zcli_exe, "init", "myapp" },
+        &.{ zcli_exe, "init", "myapp", "--no-build", "--template", "multi" },
         script,
         .{ .cwd = try tmpDirAbs(arena.allocator(), tmp), .allocate_pty = true, .total_timeout_ms = 30000 },
     ) catch |err| switch (err) {
@@ -2539,7 +2634,7 @@ test "dev builds, runs the app, restarts on change, survives a failed build, and
     defer tmp.cleanup();
 
     {
-        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo" });
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo", "--no-build" });
         defer r.deinit();
         try expectOk(r);
     }
