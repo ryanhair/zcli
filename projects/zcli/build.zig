@@ -154,8 +154,15 @@ pub fn build(b: *std.Build) !void {
         "src/commands/add/plugin.zig",
         "src/commands/rm/option.zig",
         "src/commands/rm/arg.zig",
+        "src/commands/rm/command.zig",
+        "src/commands/rm/index.zig",
         "src/commands/init.zig",
         "src/commands/release.zig",
+        "src/commands/mv.zig",
+        "src/commands/guide.zig",
+        "src/commands/add/index.zig",
+        "src/commands/gh/index.zig",
+        "src/commands/gh/add/workflow/release.zig",
     };
     for (command_test_files) |path| {
         const mod = b.addModule(b.fmt("test-{s}", .{path}), .{
@@ -167,6 +174,7 @@ pub fn build(b: *std.Build) !void {
         mod.addImport("nightwatch", nightwatch_module);
         mod.addImport("scaffold", scaffold_module);
         mod.addImport("command_registry", command_registry_stub);
+        mod.addImport("guide_examples", guide_examples_module);
         const cmd_tests = b.addTest(.{ .root_module = mod });
         test_step.dependOn(&b.addRunArtifact(cmd_tests).step);
     }
