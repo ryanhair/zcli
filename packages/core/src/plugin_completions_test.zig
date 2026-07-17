@@ -868,8 +868,16 @@ const gopt_globals = [_]zcli.OptionInfo{
     .{ .name = "config", .short = 'c', .description = "Config file", .takes_value = true },
 };
 
+// A command set with NO value-taking options anywhere (so the look-ahead patterns
+// come only from the globals). `sprint create` is a nested pure-group leaf; `list`
+// declares an enum positional but no options.
+const no_value_opt_commands = [_]zcli.CommandInfo{
+    .{ .path = &.{"list"}, .description = "List tasks", .args = &list_args },
+    .{ .path = &.{ "sprint", "create" }, .description = "Create a sprint" },
+};
+
 test "bash gen - value-taking global option skips its value in the command path" {
-    const script = try bash.generate(std.testing.allocator, app_name, &commands, &gopt_globals);
+    const script = try bash.generate(std.testing.allocator, app_name, &no_value_opt_commands, &gopt_globals);
     defer std.testing.allocator.free(script);
 
     // The look-ahead skip machinery is emitted...
@@ -880,11 +888,109 @@ test "bash gen - value-taking global option skips its value in the command path"
     try std.testing.expect(!contains(script, "'--verbose'"));
 }
 
-test "bash gen - no skip machinery when no global option takes a value" {
-    // The default `global_options` fixture is all-boolean → no look-ahead case.
-    const script = try bash.generate(std.testing.allocator, app_name, &commands, &global_options);
+test "bash gen - no skip machinery when no option takes a value" {
+    // Both the `global_options` fixture and `no_value_opt_commands` are value-free
+    // → no look-ahead case at all.
+    const script = try bash.generate(std.testing.allocator, app_name, &no_value_opt_commands, &global_options);
     defer std.testing.allocator.free(script);
     try std.testing.expect(!contains(script, "skip_val=1"));
+}
+
+// ============================================================================
+// Layer 3b': value-taking COMMAND-scoped option before a positional (issue #578).
+// A command-scoped `--target prod` must have its VALUE skipped too, or `prod`
+// pollutes the command path and the command's static positional completions die.
+// ============================================================================
+
+const scoped_envs = [_][]const u8{ "staging", "production" };
+// `deploy` has a value-taking option (`--target`) AND a static enum positional.
+const scoped_deploy_opts = [_]zcli.OptionInfo{
+    .{ .name = "target", .short = 't', .description = "Deploy target", .takes_value = true },
+};
+const scoped_deploy_args = [_]zcli.ArgInfo{
+    .{ .name = "env", .description = "Environment", .enum_values = &scoped_envs },
+};
+const scoped_commands = [_]zcli.CommandInfo{
+    .{ .path = &.{"deploy"}, .description = "Deploy", .options = &scoped_deploy_opts, .args = &scoped_deploy_args },
+};
+
+test "bash gen - value-taking command option skips its value in the command path (issue #578)" {
+    const script = try bash.generate(std.testing.allocator, app_name, &scoped_commands, &global_options);
+    defer std.testing.allocator.free(script);
+
+    // The command-scoped value option's long AND short forms are recognised by the
+    // command-path look-ahead — even though `--target` is not a GLOBAL option.
+    try std.testing.expect(contains(script, "'--target'|'-t') skip_val=1"));
+}
+
+test "functional bash - value-taking command option preserves static positional completion (issue #578)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const sh = findShell("bash") orelse return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try bash.generate(a, app_name, &scoped_commands, &global_options);
+    const script_path = try writeTemp(a, tmp.dir, "zcli_scoped_completion.bash", script);
+
+    // Drive completion with a command-scoped value option (`--target h1`) before the
+    // positional. The value `h1` must be skipped so the command path resolves to
+    // `deploy` (not `deploy h1`) and the enum positional's choices are offered.
+    // The separate-word (`--target h1` / `-t h1`) and `=`-joined forms must all work.
+    const harness = try std.fmt.allocPrint(a,
+        \\source "{s}"
+        \\
+        \\run() {{
+        \\    COMP_WORDS=("$@")
+        \\    COMP_CWORD=$(( ${{#COMP_WORDS[@]}} - 1 ))
+        \\    COMPREPLY=()
+        \\    _tasks_completions
+        \\    echo "${{COMPREPLY[@]}}"
+        \\}}
+        \\
+        \\echo "LONG:$(run tasks deploy --target h1 '')"
+        \\echo "SHORT:$(run tasks deploy -t h1 '')"
+        \\echo "EQ:$(run tasks deploy --target=h1 '')"
+        \\echo "PLAIN:$(run tasks deploy '')"
+        \\
+    , .{script_path});
+    const harness_path = try writeTemp(a, tmp.dir, "zcli_scoped_harness.bash", harness);
+
+    const result = try std.process.run(a, io, .{
+        .argv = &.{ sh, harness_path },
+    });
+    const out = result.stdout;
+
+    var long_line: ?[]const u8 = null;
+    var short_line: ?[]const u8 = null;
+    var eq_line: ?[]const u8 = null;
+    var plain_line: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "LONG:")) long_line = line["LONG:".len..];
+        if (std.mem.startsWith(u8, line, "SHORT:")) short_line = line["SHORT:".len..];
+        if (std.mem.startsWith(u8, line, "EQ:")) eq_line = line["EQ:".len..];
+        if (std.mem.startsWith(u8, line, "PLAIN:")) plain_line = line["PLAIN:".len..];
+    }
+
+    try std.testing.expect(long_line != null);
+    try std.testing.expect(short_line != null);
+    try std.testing.expect(eq_line != null);
+    try std.testing.expect(plain_line != null);
+
+    // Every form keys to `deploy` and offers the enum positional's choices — the
+    // #578 bug keyed to `deploy h1`, matched no positional case, and offered none.
+    try std.testing.expect(contains(long_line.?, "staging"));
+    try std.testing.expect(contains(long_line.?, "production"));
+    try std.testing.expect(contains(short_line.?, "staging"));
+    try std.testing.expect(contains(short_line.?, "production"));
+    try std.testing.expect(contains(eq_line.?, "staging"));
+    try std.testing.expect(contains(eq_line.?, "production"));
+    // Sanity: with no option at all the positional still completes.
+    try std.testing.expect(contains(plain_line.?, "staging"));
 }
 
 test "powershell gen - value-taking global option skips its value in the command path" {

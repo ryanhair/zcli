@@ -50,21 +50,26 @@ pub fn generate(
     try writer.writeAll("    fi\n\n");
 
     // Build the command path key: non-option words between app name and cursor.
-    // A value-taking global option (e.g. `--config x.json`) is followed by its
-    // VALUE, which is NOT a command word — skip it so the value never becomes
-    // the key. The `--opt=value` form carries its value in the same token (which
-    // is already skipped as an option word), so only the separate-word form
-    // needs the look-ahead.
+    // A value-taking option (e.g. a global `--config x.json` or a command-scoped
+    // `--target prod`) is followed by its VALUE, which is NOT a command word —
+    // skip it so the value never becomes the key. The `--opt=value` form carries
+    // its value in the same token (which is already skipped as an option word),
+    // so only the separate-word form needs the look-ahead. The loop runs before
+    // the command is known, so the patterns cover EVERY value-taking option —
+    // global AND command-scoped, anywhere in the tree — matching the same
+    // pragmatic "keyed regardless of command path" simplification used by the
+    // `$prev` option-value cases below (option names rarely collide).
+    const value_opts = try collectValueTakingOptions(arena, root, global_options);
     try writer.writeAll("    local cmd_path=()\n");
     try writer.writeAll("    local i skip_val=0\n");
     try writer.writeAll("    for ((i=1; i<cword; i++)); do\n");
     try writer.writeAll("        if [[ $skip_val == 1 ]]; then skip_val=0; continue; fi\n");
     try writer.writeAll("        if [[ \"${words[i]}\" == -* ]]; then\n");
-    if (anyValueTakingOption(global_options)) {
+    if (value_opts.len > 0) {
         // A bare value-taking option word consumes the NEXT word as its value.
         try writer.writeAll("            case \"${words[i]}\" in\n");
         try writer.writeAll("                ");
-        try writeValueOptionPatterns(arena, writer, global_options);
+        try writeValueOptionPatterns(arena, writer, value_opts);
         try writer.writeAll(") skip_val=1 ;;\n");
         try writer.writeAll("            esac\n");
     }
@@ -148,12 +153,43 @@ pub fn generate(
     return al.toOwnedSlice(allocator);
 }
 
-/// True if any option in the set takes a value (so a bare `--opt <value>` on the
-/// command line consumes the following word — which must not be mistaken for a
-/// command word when reconstructing the command path).
-fn anyValueTakingOption(options: []const zcli.OptionInfo) bool {
-    for (options) |opt| if (opt.takes_value) return true;
-    return false;
+/// Collect every value-taking option — the global options plus every command's
+/// options anywhere in the tree — into one list, deduplicated by long name. The
+/// command-path loop consumes a value-taking option's separate-word value before
+/// it knows which command it is in, so it must recognise ALL of them (not just
+/// the globals); otherwise a command-scoped `--target prod` leaks `prod` into the
+/// command path and kills that command's static positional completions.
+fn collectValueTakingOptions(
+    arena: std.mem.Allocator,
+    node: *const tree.CommandNode,
+    global_options: []const zcli.OptionInfo,
+) ![]const zcli.OptionInfo {
+    var out = std.ArrayList(zcli.OptionInfo).empty;
+    try addValueTakingOptions(arena, &out, global_options);
+    try addValueTakingOptionsRec(arena, &out, node);
+    return out.items;
+}
+
+fn addValueTakingOptionsRec(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(zcli.OptionInfo),
+    node: *const tree.CommandNode,
+) !void {
+    try addValueTakingOptions(arena, out, node.options);
+    for (node.children) |child| try addValueTakingOptionsRec(arena, out, child);
+}
+
+fn addValueTakingOptions(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(zcli.OptionInfo),
+    options: []const zcli.OptionInfo,
+) !void {
+    for (options) |opt| {
+        if (!opt.takes_value) continue;
+        for (out.items) |existing| {
+            if (std.mem.eql(u8, existing.name, opt.name)) break;
+        } else try out.append(arena, opt);
+    }
 }
 
 /// Emit `'--name'|'-s'` case patterns (joined with `|`) for every value-taking
