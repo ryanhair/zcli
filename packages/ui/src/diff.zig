@@ -182,18 +182,17 @@ const EmitState = struct {
         self.cur_style = style;
     }
 
-    /// Emit the cells first..=last of `row`, skipping continuations (their
-    /// head's grapheme paints both columns).
+    /// Emit the cells first..=last of `row`. A wide grapheme's head advances
+    /// `x` by 2, stepping over its continuation cell so both columns are
+    /// painted by the head's write. An orphan continuation — reachable only
+    /// when a span begins mid-character during a full repaint of a
+    /// blank-headed row — falls through to the general path below, which
+    /// paints it as a styled space (`text_len == 0`) and advances one column
+    /// (`@max(c.width, 1)`), keeping `cur_col` in lockstep with the model.
     fn emitCells(self: *EmitState, s: *const Surface, row: u16, first: u16, last: u16) !void {
         var x = first;
         while (x <= last) {
             const c = s.cell(x, row);
-            if (c.isContinuation()) {
-                // Only reachable when a span begins mid-character during a
-                // full repaint of a blank-headed row; paint it as a space.
-                x += 1;
-                continue;
-            }
             try self.setStyle(c.style);
             if (c.text_len == 0) {
                 try self.writer.writeByte(' ');
@@ -283,6 +282,26 @@ test "diff never extends a span past the surface edge on a torn wide head" {
     const out = try paintToString(testing.allocator, .{ .capability = .ansi_16, .sync = false }, &prev, &next);
     defer testing.allocator.free(out);
     try testing.expect(out.len > 0);
+}
+
+test "span starting on an orphan continuation paints a space so the cursor stays in lockstep" {
+    var prev = try Surface.init(testing.allocator, 4, 1);
+    defer prev.deinit();
+    var next = try Surface.init(testing.allocator, 4, 1);
+    defer next.deinit();
+    // Synthesize an orphan continuation at column 0: a width-0 cell with no
+    // head to its left. `paintRowDiff` cannot back `first` off column 0
+    // (the `first > 0` guard), so `emitCells` begins the span on the
+    // continuation itself. It must paint a space and advance `cur_col`, or the
+    // following real cell would be written one column too far left.
+    next.cells[0] = .{ .width = 0 };
+    _ = try next.root().writeText(1, 0, "X", .{});
+
+    const out = try paintToString(testing.allocator, .{ .capability = .no_color, .sync = false }, &prev, &next);
+    defer testing.allocator.free(out);
+    // The continuation renders as a space, immediately followed by the head of
+    // the next cell — no shift.
+    try testing.expect(std.mem.indexOf(u8, out, " X") != null);
 }
 
 test "no_color paints text but never SGR" {
