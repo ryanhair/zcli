@@ -105,7 +105,14 @@ pub fn get(allocator: std.mem.Allocator, _: std.Io, _: *const std.process.Enviro
     defer CredFree(c);
 
     const blob = c.CredentialBlob orelse return try allocator.dupe(u8, "");
-    return try allocator.dupe(u8, blob[0..c.CredentialBlobSize]);
+    const plaintext = blob[0..c.CredentialBlobSize];
+    // Wipe the OS-heap plaintext before CredFree hands the buffer back to the
+    // heap — otherwise a copy of the secret lingers in freed memory (recoverable
+    // via core dump, attached debugger, or heap reuse). `secureZero` uses
+    // volatile writes so the compiler cannot elide it. Registered after the
+    // `CredFree` defer so it runs first (LIFO): wipe, then free.
+    defer std.crypto.secureZero(u8, plaintext);
+    return try allocator.dupe(u8, plaintext);
 }
 
 /// Store (or overwrite) a secret. `CredWriteW` overwrites an existing
