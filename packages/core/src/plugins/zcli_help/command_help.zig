@@ -17,7 +17,8 @@ const app_palette = format.app_palette;
 /// explicit-vs-error stream rule as the app-level renderers.
 pub fn showCommand(context: anytype, to_stdout: bool) !void {
     var writer = if (to_stdout) context.stdout() else context.stderr();
-    var fmt = md.formatterWithPalette(writer, context.theme.capability(), app_palette);
+    const capability = context.theme.capabilityFor(context.io, writer);
+    var fmt = md.formatterWithPalette(writer, capability, app_palette);
     const app_name = context.app_name;
 
     // Lead with the description (like the root help), then USAGE below. No
@@ -30,7 +31,7 @@ pub fn showCommand(context: anytype, to_stdout: bool) !void {
 
     // Usage
     try fmt.write("<header>USAGE:</header>\n", .{});
-    const usage_string = try generateUsage(context);
+    const usage_string = try generateUsage(context, capability);
     defer context.allocator.free(usage_string);
     try writer.print("    {s}\n\n", .{usage_string});
 
@@ -43,7 +44,7 @@ pub fn showCommand(context: anytype, to_stdout: bool) !void {
     try fmt.write("<header>OPTIONS:</header>\n", .{});
     if (context.command_module_info) |module_info| {
         if (module_info.has_options) {
-            if (format.generateOptionsHelp(module_info, context) catch null) |options_help| {
+            if (format.generateOptionsHelp(module_info, context, capability) catch null) |options_help| {
                 defer context.allocator.free(options_help);
                 try writer.writeAll(options_help);
             }
@@ -72,12 +73,12 @@ pub fn showCommand(context: anytype, to_stdout: bool) !void {
 /// Generate the command's synopsis string. Required options are spelled out
 /// (e.g. `--region <value>`); optional ones fold into `[OPTIONS]`. The
 /// positional pattern comes from the shared arg-token convention.
-fn generateUsage(context: anytype) ![]const u8 {
+fn generateUsage(context: anytype, capability: md.TerminalCapability) ![]const u8 {
     // Build a markdown-formatted usage string using the formatter
     var aw: std.Io.Writer.Allocating = .init(context.allocator);
     errdefer aw.deinit();
     const buf_writer = &aw.writer;
-    var fmt = md.formatterWithPalette(buf_writer, context.theme.capability(), app_palette);
+    var fmt = md.formatterWithPalette(buf_writer, capability, app_palette);
 
     // Start with app name and command path
     try fmt.write("<command>{s}</command>", .{context.app_name});
@@ -456,7 +457,7 @@ test "generateUsage: folds optional options, shows required ones explicitly" {
         },
     };
 
-    const usage = try generateUsage(&ctx);
+    const usage = try generateUsage(&ctx, ctx.theme.capability());
     defer allocator.free(usage);
 
     // Required option is spelled out (dash-converted); the rest fold into
@@ -485,7 +486,7 @@ test "generateUsage: a command with subcommands shows COMMAND, not its options" 
     };
     ctx.command_module_info = .{ .has_options = false, .has_args = false };
 
-    const usage = try generateUsage(&ctx);
+    const usage = try generateUsage(&ctx, ctx.theme.capability());
     defer allocator.free(usage);
 
     try std.testing.expect(std.mem.indexOf(u8, usage, "remote") != null);
@@ -510,7 +511,7 @@ test "generateUsage: an empty Args struct renders no [ARGS...] placeholder" {
     // regression: this used to fall through to a bogus `[ARGS...]`.
     ctx.command_module_info = .{ .has_args = true, .has_options = false };
 
-    const usage = try generateUsage(&ctx);
+    const usage = try generateUsage(&ctx, ctx.theme.capability());
     defer allocator.free(usage);
 
     // Exact line: no positionals, no [ARGS...] tail.
@@ -540,7 +541,7 @@ test "generateUsage: a command with real args renders their names in the shared 
         .has_options = false,
     };
 
-    const usage = try generateUsage(&ctx);
+    const usage = try generateUsage(&ctx, ctx.theme.capability());
     defer allocator.free(usage);
 
     // Exact line: real, uppercased arg names in the shared clap-style
