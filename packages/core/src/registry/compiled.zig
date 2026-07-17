@@ -427,9 +427,6 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         fn buildCommandInfoFromEntries(entries: anytype) []const zcli.CommandInfo {
             var cmd_info_list: []const zcli.CommandInfo = &.{};
             for (entries) |cmd| {
-                // Skip root command
-                if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) continue;
-
                 var description: ?[]const u8 = null;
                 var examples: ?[]const []const u8 = null;
                 var hidden: bool = false;
@@ -516,12 +513,8 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // Build list of available commands at compile time
             const available_commands = comptime blk: {
                 var cmd_list: []const []const []const u8 = &.{};
-                // Add regular commands (paths are already arrays), but skip "root"
+                // Add regular commands (paths are already arrays)
                 for (cmd_entries) |cmd| {
-                    // Skip root command from the visible commands list
-                    if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) {
-                        continue;
-                    }
                     cmd_list = cmd_list ++ .{cmd.path};
                 }
                 // Add plugin commands (with full paths including nested)
@@ -1246,27 +1239,11 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
         }
 
-        fn executeCommand(_: *Self, context: *Context, args_input: []const []const u8) !void {
+        fn executeCommand(_: *Self, context: *Context, args: []const []const u8) !void {
             @setEvalBranchQuota(10000);
-            // The root command handles bare invocation: no args, or a first
-            // arg that's an option rather than a command name.
-            const use_root_command = args_input.len == 0 or std.mem.startsWith(u8, args_input[0], "-");
 
-            const root_exists = comptime blk: {
-                for (cmd_entries) |cmd| {
-                    if (cmd.path.len == 1 and std.mem.eql(u8, cmd.path[0], "root")) break :blk true;
-                }
-                break :blk false;
-            };
-
-            // Route through the "root" pseudo-path when applicable. The root
-            // command still receives the original argv for option parsing.
-            const root_args = [_][]const u8{"root"};
-            const args: []const []const u8 = if (use_root_command and root_exists) &root_args else args_input;
-
-            // No command and no root command to fall back on: run the hooks
-            // (the help plugin answers a bare --help here), then route
-            // through CommandNotFound.
+            // No command given: run the hooks (the help plugin answers a bare
+            // --help here), then route through CommandNotFound.
             if (args.len == 0) {
                 const parsed_args = try runPostParseHooks(context, zcli.ParsedArgs.init(context.allocator));
                 _ = (try runPreExecuteHooks(context, parsed_args)) orelse return; // plugin cancelled execution
@@ -1287,14 +1264,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         }
                     }
                     if (parts_match) {
-                        // The root command keeps the original argv (it's all
-                        // options/positionals for root); other commands skip
-                        // their matched path parts.
-                        const remaining_args = if (use_root_command and std.mem.eql(u8, cmd.path[0], "root"))
-                            args_input
-                        else
-                            args[cmd.path.len..];
-                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, remaining_args);
+                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, args[cmd.path.len..]);
                     }
                 }
             }

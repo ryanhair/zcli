@@ -83,16 +83,12 @@ pub fn preExecute(
     args: zcli.ParsedArgs,
 ) !?zcli.ParsedArgs {
     if (context.plugins.zcli_help.help_requested) {
-        // If command_path is empty, show app help. The root command resolves
-        // to the "root" pseudo-path and gets root help (app help + root's own
-        // options). Otherwise the resolved command's context drives the command
-        // help — payload-free, everything renders from context.command_meta /
-        // command_module_info.
+        // If command_path is empty, show app help. Otherwise the resolved
+        // command's context drives the command help — payload-free, everything
+        // renders from context.command_meta / command_module_info.
         // Explicit help request → stdout.
         if (context.command_path.len == 0) {
             try app_help.showApp(context, true);
-        } else if (context.command_path.len == 1 and std.mem.eql(u8, context.command_path[0], "root")) {
-            try app_help.showRoot(context, true);
         } else {
             try command_help.showCommand(context, true);
         }
