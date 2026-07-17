@@ -162,26 +162,22 @@ fn runIntoHeadViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, bin: []const u8, c
 /// exit 141 rather than 0. The subshell's own exit status is captured to
 /// `exit_file` (not stdout, so it doesn't confuse `head`) so the caller can
 /// assert on the CLI's real exit code rather than the pipeline's.
+///
+/// POSIX-only: exit code 141 is the SIGPIPE convention (128 + 13), which has
+/// no meaning on Windows (no SIGPIPE at all), so callers must gate on
+/// `builtin.os.tag == .windows` and skip rather than call this.
 fn runIntoHeadC0ViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, bin: []const u8, cmd: []const u8, exit_file: []const u8) !u8 {
-    const argv: []const []const u8 = if (builtin.os.tag == .windows) blk: {
-        const trimmed = if (std.mem.startsWith(u8, bin, "./")) bin[2..] else bin;
-        const win_bin = try a.dupe(u8, trimmed);
-        std.mem.replaceScalar(u8, win_bin, '/', '\\');
-        // `Select-Object -First 0` closes the pipe without reading any input,
-        // mirroring `head -c0` on POSIX.
-        break :blk &.{ "cmd", "/c", try std.fmt.allocPrint(
+    const argv: []const []const u8 = &.{
+        "sh", "-c",
+        try std.fmt.allocPrint(
             a,
-            "(cmd /c \"{s} {s} & echo %errorlevel% > {s}\") | powershell -NoProfile -Command \"$input | Select-Object -First 0\" > NUL",
-            .{ win_bin, cmd, exit_file },
-        ) };
-    } else &.{ "sh", "-c", try std.fmt.allocPrint(
-        a,
-        // `echo $? > file` writes to a file, not to the piped stdout stream,
-        // so it can't confuse `head`. This avoids relying on bash-only
-        // `PIPESTATUS`, which plain POSIX `sh` (e.g. dash) doesn't have.
-        "('{s}' {s}; echo $? > {s}) | head -c0",
-        .{ bin, cmd, exit_file },
-    ) };
+            // `echo $? > file` writes to a file, not to the piped stdout stream,
+            // so it can't confuse `head`. This avoids relying on bash-only
+            // `PIPESTATUS`, which plain POSIX `sh` (e.g. dash) doesn't have.
+            "('{s}' {s}; echo $? > {s}) | head -c0",
+            .{ bin, cmd, exit_file },
+        ),
+    };
 
     var child = try std.process.spawn(io, .{
         .argv = argv,
@@ -959,7 +955,10 @@ test "scaffolded project builds, runs, and round-trips add command" {
     // the deferred final flush after `execute()` has already returned
     // successfully. The framework must still notice it and exit with the
     // conventional SIGPIPE status (141), not 0.
-    {
+    //
+    // POSIX-only: 141 (128 + SIGPIPE) is a POSIX convention with no Windows
+    // analogue (no SIGPIPE at all), and `sh -c` piping isn't portable either.
+    if (builtin.os.tag != .windows) {
         const exit_code = try runIntoHeadC0ViaShell(arena.allocator(), proj, demo_bin, "hello World", "hello.exit");
         try testing.expectEqual(@as(u8, 141), exit_code);
     }
