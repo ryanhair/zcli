@@ -116,8 +116,9 @@ fn rgbToAnsi256(r: u8, g: u8, b: u8) u8 {
     return 16 + (r_idx * 36) + (g_idx * 6) + b_idx;
 }
 
-/// Convert 256-color palette index to closest 16-color ANSI equivalent
-fn approximateToAnsi16(idx: u8) u8 {
+/// Convert 256-color palette index to closest 16-color ANSI equivalent.
+/// Pure integer math, so it is safe on both the comptime and runtime paths.
+pub fn approximateToAnsi16(idx: u8) u8 {
     // First 16 colors map directly
     if (idx < 16) return idx;
 
