@@ -1228,6 +1228,11 @@ fn runInteractivePosix(
     const environ_map: ?*const std.process.Environ.Map = if (env_copy) |*e| e else null;
     const cwd: std.process.Child.Cwd = if (config.cwd) |c| .{ .path = c } else .inherit;
 
+    // Read end of the merged stdout+stderr pipe used by the non-PTY path; closed
+    // at teardown. Stays -1 for the PTY path, which reads the master fd instead.
+    var combined_read_fd: posix.fd_t = -1;
+    defer if (combined_read_fd != -1) closeFd(combined_read_fd);
+
     // Spawn the child with its stdio pointed at the PTY slave (or pipes).
     var child: std.process.Child = undefined;
     if (pty_manager) |*pty| {
@@ -1257,19 +1262,37 @@ fn runInteractivePosix(
         }
         if (config.disable_echo) pty.setEcho(false) catch {};
     } else {
+        // Merge the child's stdout and stderr onto a single pipe, mirroring the
+        // PTY path where both share the slave fd. Giving stderr its own pipe that
+        // the harness never drained let a child writing past one OS pipe buffer
+        // (~64 KiB) to stderr block in write() forever: stdout never reached EOF
+        // and child.wait deadlocked the whole suite (#624). One combined stream,
+        // drained continuously by the same loop that reads stdout, sidesteps that
+        // class entirely and captures stderr in order.
+        const out_pipe = makePipe() catch return InteractiveError.ProcessStartFailed;
+        const out_write = fileFromFd(out_pipe[1]);
         child = std.process.spawn(io, .{
             .argv = command,
             .stdin = .pipe,
-            .stdout = .pipe,
-            .stderr = .pipe,
+            .stdout = .{ .file = out_write },
+            .stderr = .{ .file = out_write },
             .cwd = cwd,
             .environ_map = environ_map,
-        }) catch return InteractiveError.ProcessStartFailed;
+        }) catch {
+            closeFd(out_pipe[0]);
+            closeFd(out_pipe[1]);
+            return InteractiveError.ProcessStartFailed;
+        };
+        // The child dup'd the write end onto fds 1 and 2; the parent's copy must
+        // close so the read end sees EOF once the child exits.
+        closeFd(out_pipe[1]);
+        combined_read_fd = out_pipe[0];
     }
 
     const using_pty = pty_manager != null;
-    // For a PTY, both directions share the master fd; for pipes, use the child's.
-    const read_fd: posix.fd_t = if (pty_manager) |*pty| pty.master_fd else child.stdout.?.handle;
+    // For a PTY, both directions share the master fd; for pipes, read the merged
+    // stdout+stderr pipe and write to the child's stdin.
+    const read_fd: posix.fd_t = if (pty_manager) |*pty| pty.master_fd else combined_read_fd;
     const write_fd: posix.fd_t = if (pty_manager) |*pty| pty.master_fd else child.stdin.?.handle;
 
     // A virtual terminal mirroring the child's output, sized to the PTY winsize
@@ -2247,6 +2270,42 @@ test "runInteractive drives a command over pipes" {
     defer result.deinit();
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "zcli-e2e-ping") != null);
+}
+
+test "runInteractive pipe mode drains a child that floods stderr (#624)" {
+    // Regression for #624: in pipe mode (allocate_pty = false) the child's stderr
+    // used to get its own pipe the harness never drained. A child writing far more
+    // than one OS pipe buffer (~64 KiB) to stderr *before* its stdout marker would
+    // block in write() on the full stderr pipe, the stdout expect would never
+    // resolve, and child.wait would deadlock the suite. stderr is now merged onto
+    // the read pipe, so draining it continuously lets the child make progress.
+    if (builtin.os.tag == .windows) return; // uses /bin/sh
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var script = InteractiveScript.init(allocator);
+    defer script.deinit();
+
+    // The stdout marker only appears *after* 200 KB of stderr; seeing it proves
+    // the flood was drained rather than deadlocking the child mid-write.
+    _ = script.expect("STDOUT_OK");
+
+    const program = "yes zzzzzzzz | head -c 200000 1>&2; printf STDOUT_OK";
+
+    var result = runInteractive(allocator, io, &.{ "/bin/sh", "-c", program }, script, .{
+        .allocate_pty = false,
+        .total_timeout_ms = 10000,
+    }) catch |err| {
+        // Spawning may be restricted in some sandboxes; don't fail the suite.
+        std.log.warn("runInteractive skipped: {any}", .{err});
+        return;
+    };
+    defer result.deinit();
+
+    // Both streams are captured in order: the stderr flood then the marker.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "STDOUT_OK") != null);
+    try std.testing.expect(result.output.len >= 200000);
 }
 
 test "expectFrame* builders record frame assertions" {
