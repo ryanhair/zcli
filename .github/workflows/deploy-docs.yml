@@ -1,14 +1,21 @@
 name: Deploy Documentation
 
+# The website deploys when a RELEASE is published, not on pushes to main:
+# docs merged between releases describe features nobody can install yet, so
+# they accumulate on main and ship the moment the version does. The
+# `published` event fires when sign-release.sh flips the drafted zcli-v*
+# release public (ADR-0023's offline-signing ceremony) — so the human
+# approval that used to live on a docs-deploy environment is now implicit in
+# signing the release. On this event checkout resolves to the release tag's
+# commit, so the site is built from exactly the released tree even if main
+# has moved on.
+#
+# workflow_dispatch is the manual override for out-of-band deploys (typo
+# fixes, broken page): it builds whatever ref it's dispatched on — main by
+# default, which may be ahead of the released version.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "website/**"
-      - "CHANGELOG.md"
-      - "install.sh"
-      - "install.ps1"
-      - "build.zig.zon"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -22,27 +29,19 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Every deploy republishes install.sh/install.ps1 — the curl|sh trust root —
-    # so the job is gated behind a protected environment with required reviewers
-    # (grade6 #293). Inert until the "docs-deploy" environment is created in
-    # repo settings; create it with at least one required reviewer.
-    environment: docs-deploy
+    # Both zcli-v* (CLI) and v* (library) releases publish at the same
+    # lockstep version, but only the CLI release goes through the offline
+    # signing ceremony that makes "published" mean "a human shipped this" —
+    # deploy on that one, skip the library tag (deploying twice per release
+    # would be harmless but pointless).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'zcli-v')
+    # No environment gate (2026-07-16): the required-reviewer approval that
+    # used to live on a "docs-deploy" environment (grade6 #293/#397) stalled
+    # deploys — a waiting run holds the cloudflare-pages concurrency group —
+    # and is redundant under the release trigger above: publishing the signed
+    # release IS the approval. install.sh/install.ps1 (the curl|sh trust
+    # root) still only change via reviewed PRs on protected main.
     steps:
-      # Environment gating is a repo-settings fact this YAML cannot see: if
-      # the environment loses its required-reviewers rule, the gate is
-      # silently inert (#397). An unprotected environment starts this job
-      # immediately — and this step then refuses to deploy. Fail-closed.
-      - name: Assert the docs-deploy environment is protected
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/docs-deploy" --jq '[.protection_rules[].type]') || {
-            echo "::error::cannot read the 'docs-deploy' environment — it must exist with a required-reviewers rule (Settings → Environments)"; exit 1; }
-          echo "protection rules: $rules"
-          echo "$rules" | grep -q required_reviewers || {
-            echo "::error::the 'docs-deploy' environment has NO required-reviewers rule — the approval gate is inert (#397); refusing to deploy"; exit 1; }
-
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
