@@ -30,6 +30,10 @@ pub const CommandNode = struct {
     args: []const zcli.ArgInfo = &.{},
     /// Child commands, sorted by name for deterministic output.
     children: []const *CommandNode = &.{},
+    /// Internal: full-capacity backing store for `children`, grown by doubling as
+    /// children are appended. `children` is always `children_buf[0..children.len]`.
+    /// Not part of the public tree shape — renderers use `children`.
+    children_buf: []*CommandNode = &.{},
 
     /// A command with no children is a leaf (a runnable command); one with
     /// children is (at least) a command group.
@@ -147,10 +151,18 @@ fn childNamed(
     const child = try arena.create(CommandNode);
     child.* = .{ .name = name, .path = try arena.dupe([]const u8, path) };
 
-    const grown = try arena.alloc(*CommandNode, parent.children.len + 1);
-    @memcpy(grown[0..parent.children.len], parent.children);
-    grown[parent.children.len] = child;
-    parent.children = grown;
+    // Grow the backing store by doubling when full, so appending C children is
+    // O(C) amortized instead of O(C²) (a fresh alloc + full copy per append) and
+    // leaves only O(C) stale bytes resident in the arena rather than O(C²).
+    if (parent.children.len == parent.children_buf.len) {
+        const new_cap = if (parent.children_buf.len == 0) 4 else parent.children_buf.len * 2;
+        const grown = try arena.alloc(*CommandNode, new_cap);
+        @memcpy(grown[0..parent.children.len], parent.children);
+        parent.children_buf = grown;
+    }
+    const n = parent.children.len;
+    parent.children_buf[n] = child;
+    parent.children = parent.children_buf[0 .. n + 1];
     return child;
 }
 

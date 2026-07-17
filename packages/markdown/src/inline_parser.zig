@@ -5,33 +5,66 @@
 const std = @import("std");
 const semantic = @import("semantic.zig");
 
+/// Comptime string builder. Appending with `result = result ++ piece` reallocates
+/// and copies the whole accumulated string per append, making a build over an
+/// N-byte doc O(N²). Instead we collect the output pieces into a fixed-capacity
+/// list (piece count is bounded by the input length) and concatenate them once.
+fn Builder(comptime cap: usize) type {
+    return struct {
+        pieces: [cap][]const u8 = undefined,
+        len: usize = 0,
+
+        fn push(comptime self: *@This(), comptime piece: []const u8) void {
+            self.pieces[self.len] = piece;
+            self.len += 1;
+        }
+
+        fn build(comptime self: *const @This()) []const u8 {
+            comptime {
+                var total: usize = 0;
+                for (self.pieces[0..self.len]) |p| total += p.len;
+
+                var out: [total]u8 = undefined;
+                var idx: usize = 0;
+                for (self.pieces[0..self.len]) |p| {
+                    @memcpy(out[idx..][0..p.len], p);
+                    idx += p.len;
+                }
+                const final = out;
+                return &final;
+            }
+        }
+    };
+}
+
 /// Re-apply formatting after reset codes to maintain outer formatting in nested contexts
 pub fn reapplyAfterResets(comptime content: []const u8, comptime format_code: []const u8, comptime ansi_reset: []const u8) []const u8 {
     comptime {
         if (ansi_reset.len == 0) return content;
 
-        var result: []const u8 = "";
+        // At most two pieces (reset + format) per input byte.
+        var result = Builder(content.len * 2 + 2){};
         var i: usize = 0;
 
         while (i < content.len) {
             // Look for ANSI_RESET
             if (i + ansi_reset.len <= content.len and std.mem.eql(u8, content[i .. i + ansi_reset.len], ansi_reset)) {
                 // Found a reset - add it and then re-apply our format
-                result = result ++ ansi_reset;
+                result.push(ansi_reset);
 
                 // Check if there's more content after reset (don't re-apply if at end)
                 if (i + ansi_reset.len < content.len) {
-                    result = result ++ format_code;
+                    result.push(format_code);
                 }
 
                 i += ansi_reset.len;
             } else {
-                result = result ++ &[_]u8{content[i]};
+                result.push(content[i .. i + 1]);
                 i += 1;
             }
         }
 
-        return result;
+        return result.build();
     }
 }
 
@@ -45,7 +78,9 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
         const strikethrough = if (capability == .no_color) "" else "\x1b[9m";
         const reset = if (capability == .no_color) "" else "\x1b[0m";
 
-        var result: []const u8 = "";
+        // Piece count is bounded by input length; collect pieces and join once
+        // instead of reallocating the whole result per append (which was O(n²)).
+        var result = Builder(markdown.len * 2 + 16){};
         var i: usize = 0;
 
         while (i < markdown.len) {
@@ -56,12 +91,12 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                     ((markdown[i + 1] == '*' and markdown[i + 2] == '*') or
                         (markdown[i + 1] == '~' and markdown[i + 2] == '~')))
                 {
-                    result = result ++ &[_]u8{ markdown[i + 1], markdown[i + 2] };
+                    result.push(markdown[i + 1 .. i + 3]);
                     i += 3;
                     continue;
                 }
                 // Escape next character
-                result = result ++ &[_]u8{markdown[i + 1]};
+                result.push(markdown[i + 1 .. i + 2]);
                 i += 2;
                 continue;
             }
@@ -81,7 +116,7 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                     if (markdown[j] == ':') has_colon = true;
                 }
                 if (j < search_limit and markdown[j] == '}' and (j <= i + 2 or has_colon)) {
-                    result = result ++ markdown[i .. j + 1];
+                    result.push(markdown[i .. j + 1]);
                     i = j + 1;
                     continue;
                 }
@@ -96,20 +131,19 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 while (i < markdown.len) {
                     if (markdown[i] == '`') {
                         const content = markdown[start..i];
-                        const code_color = palette.code;
-                        const code_ansi = code_color.sequenceComptime(capability);
+                        const code_ansi = palette.code.sequenceComptime(capability);
 
+                        result.push(code_ansi);
                         // Escape braces in code content to prevent them being treated as format specifiers
-                        var escaped_content: []const u8 = "";
-                        for (content) |c| {
+                        for (content, 0..) |c, ci| {
                             if (c == '{' or c == '}') {
-                                escaped_content = escaped_content ++ &[_]u8{ c, c }; // {{ or }}
+                                result.push(&[_]u8{ c, c }); // {{ or }}
                             } else {
-                                escaped_content = escaped_content ++ &[_]u8{c};
+                                result.push(content[ci .. ci + 1]);
                             }
                         }
+                        result.push(reset);
 
-                        result = result ++ code_ansi ++ escaped_content ++ reset;
                         i += 1;
                         found_close = true;
                         break;
@@ -118,7 +152,8 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 }
 
                 if (!found_close) {
-                    result = result ++ "`" ++ markdown[start..];
+                    result.push("`");
+                    result.push(markdown[start..]);
                     break;
                 }
                 continue;
@@ -136,7 +171,9 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                         // Recursively parse content inside strikethrough for nested formatting
                         const parsed_content = parseInline(content, palette, capability);
                         const fixed_content = reapplyAfterResets(parsed_content, strikethrough, reset);
-                        result = result ++ strikethrough ++ fixed_content ++ reset;
+                        result.push(strikethrough);
+                        result.push(fixed_content);
+                        result.push(reset);
                         i += 2;
                         found_close = true;
                         break;
@@ -145,7 +182,8 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 }
 
                 if (!found_close) {
-                    result = result ++ "~~" ++ markdown[start..];
+                    result.push("~~");
+                    result.push(markdown[start..]);
                     break;
                 }
                 continue;
@@ -159,10 +197,14 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
 
                     if (capability == .no_color) {
                         // No OSC 8 in no_color mode
-                        result = result ++ parsed_text;
+                        result.push(parsed_text);
                     } else {
                         // OSC 8 hyperlink: \x1b]8;;URL\x1b\\TEXT\x1b]8;;\x1b\\
-                        result = result ++ "\x1b]8;;" ++ link_info.url ++ "\x1b\\" ++ parsed_text ++ "\x1b]8;;\x1b\\";
+                        result.push("\x1b]8;;");
+                        result.push(link_info.url);
+                        result.push("\x1b\\");
+                        result.push(parsed_text);
+                        result.push("\x1b]8;;\x1b\\");
                     }
                     i += link_info.consumed;
                     continue;
@@ -184,7 +226,9 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                         // If nested content contains resets, we need to re-apply bold after each reset
                         const fixed_content = reapplyAfterResets(parsed_content, bold, reset);
 
-                        result = result ++ bold ++ fixed_content ++ reset;
+                        result.push(bold);
+                        result.push(fixed_content);
+                        result.push(reset);
                         i += 2;
                         found_close = true;
                         break;
@@ -193,7 +237,8 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 }
 
                 if (!found_close) {
-                    result = result ++ "**" ++ markdown[start..];
+                    result.push("**");
+                    result.push(markdown[start..]);
                     break;
                 }
                 continue;
@@ -211,7 +256,9 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                         // Recursively parse content inside italic for nested formatting
                         const parsed_content = parseInline(content, palette, capability);
                         const fixed_content = reapplyAfterResets(parsed_content, italic, reset);
-                        result = result ++ italic ++ fixed_content ++ reset;
+                        result.push(italic);
+                        result.push(fixed_content);
+                        result.push(reset);
                         i += 1;
                         found_close = true;
                         break;
@@ -220,7 +267,8 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 }
 
                 if (!found_close) {
-                    result = result ++ "*" ++ markdown[start..];
+                    result.push("*");
+                    result.push(markdown[start..]);
                     break;
                 }
                 continue;
@@ -238,7 +286,9 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                         // Recursively parse content inside dim for nested formatting
                         const parsed_content = parseInline(content, palette, capability);
                         const fixed_content = reapplyAfterResets(parsed_content, dim, reset);
-                        result = result ++ dim ++ fixed_content ++ reset;
+                        result.push(dim);
+                        result.push(fixed_content);
+                        result.push(reset);
                         i += 1;
                         found_close = true;
                         break;
@@ -247,7 +297,8 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 }
 
                 if (!found_close) {
-                    result = result ++ "~" ++ markdown[start..];
+                    result.push("~");
+                    result.push(markdown[start..]);
                     break;
                 }
                 continue;
@@ -258,14 +309,14 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
             // final rendered string is used as a std.fmt format string by
             // callers of `Formatter.print` (see main.zig).
             if (markdown[i] == '{' or markdown[i] == '}') {
-                result = result ++ &[_]u8{ markdown[i], markdown[i] };
+                result.push(&[_]u8{ markdown[i], markdown[i] });
             } else {
-                result = result ++ &[_]u8{markdown[i]};
+                result.push(markdown[i .. i + 1]);
             }
             i += 1;
         }
 
-        return result;
+        return result.build();
     }
 }
 
