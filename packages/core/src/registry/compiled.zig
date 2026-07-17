@@ -400,6 +400,45 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
         }
 
+        // Validate no command option is silently shadowed by a plugin global
+        // option. parseGlobalOptions() scans the entire argv and consumes any
+        // token matching a global option's long name or short flag *before*
+        // routing, so a command field that collides with a global would never
+        // receive its own flag — the global handler eats it and the field keeps
+        // its default (see issue #663). Catch it here with a message naming the
+        // command, the field, and the owning plugin.
+        comptime {
+            for (new_plugins) |Plugin| {
+                if (!plugin_types.hasGlobalOptions(Plugin)) continue;
+                for (Plugin.global_options) |gopt| {
+                    for (cmd_entries) |cmd| {
+                        if (!@hasDecl(cmd.module, "Options")) continue;
+                        const meta = if (@hasDecl(cmd.module, "meta")) cmd.module.meta else null;
+                        for (std.meta.fields(cmd.module.Options)) |field| {
+                            const long = option_utils.effectiveLongName(meta, field.name);
+                            if (std.mem.eql(u8, long, gopt.name)) {
+                                @compileError("Command '" ++ comptimeJoinPath(cmd.path) ++
+                                    "' option --" ++ long ++ " (field '" ++ field.name ++
+                                    "') collides with global option --" ++ gopt.name ++
+                                    " provided by plugin '" ++ @typeName(Plugin) ++
+                                    "'. The global handler consumes this flag before the command runs, so the command would never see it. Rename the command's option (e.g. `meta.options." ++
+                                    field.name ++ ".name`) or remove the conflicting global option.");
+                            }
+                            const short = option_utils.shortCharForField(meta, field.name);
+                            if (short != null and gopt.short != null and short.? == gopt.short.?) {
+                                @compileError("Command '" ++ comptimeJoinPath(cmd.path) ++
+                                    "' option -" ++ &[_]u8{short.?} ++ " (field '" ++ field.name ++
+                                    "') collides with global short flag -" ++ &[_]u8{gopt.short.?} ++
+                                    " (--" ++ gopt.name ++ ") provided by plugin '" ++ @typeName(Plugin) ++
+                                    "'. The global handler consumes this flag before the command runs, so the command would never see it. Rename the command's short (`meta.options." ++
+                                    field.name ++ ".short`) or remove the conflicting global option.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Discover all plugin command entries (including nested)
         const plugin_command_entries = blk: {
             var entries: []const CommandEntry = &.{};
