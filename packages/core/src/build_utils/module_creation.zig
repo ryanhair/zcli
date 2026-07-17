@@ -5,7 +5,6 @@ const command_config_lookup = @import("command_config_lookup.zig");
 
 const PluginInfo = types.PluginInfo;
 const DiscoveredCommands = types.DiscoveredCommands;
-const DiscoveredCommand = types.DiscoveredCommand;
 
 // ============================================================================
 // MODULE CREATION - Build-time module creation and linking
@@ -37,7 +36,14 @@ fn applyCommandSpecificModules(
     }
 }
 
-/// Create modules for all discovered commands dynamically
+/// Create modules for all discovered commands dynamically.
+///
+/// Iterates the single `module_names.flatten` walk — the same list of
+/// (module_name, path, file_path) triples code_generation.zig emits imports and
+/// registrations from — so a build module is created and named for exactly the
+/// commands the generated registry imports, with no separate recursion to keep
+/// in sync. Pure groups contribute no entry (they get no module); their
+/// descendants still appear because flatten visits them.
 pub fn createDiscoveredModules(
     b: *std.Build,
     registry_module: *std.Build.Module,
@@ -47,128 +53,28 @@ pub fn createDiscoveredModules(
     shared_modules: []const types.SharedModule,
     command_configs: []const types.CommandConfig,
 ) void {
-    var it = commands.root.iterator();
-    while (it.next()) |entry| {
-        const cmd_name = entry.key_ptr.*;
-        const cmd_info = entry.value_ptr.*;
+    const emitted = module_names.flatten(b.allocator, commands) catch @panic("OOM");
+    defer module_names.freeEmitted(b.allocator, emitted);
+    for (emitted) |e| {
+        const full_path = b.fmt("{s}/{s}", .{ commands_dir, e.file_path });
+        const cmd_module = b.addModule(e.module_name, .{
+            .root_source_file = b.path(full_path),
+        });
+        cmd_module.addImport("zcli", zcli_module);
+        // Let commands optionally name the generated Context type via
+        // `@import("command_registry").Context`. The back-reference is safe:
+        // Context depends only on config + plugins, not commands.
+        cmd_module.addImport("command_registry", registry_module);
 
-        if (cmd_info.command_type != .leaf) {
-            // Create module for optional group with index file
-            if (cmd_info.command_type == .optional_group) {
-                const module_name = module_names.indexModuleName(b.allocator, cmd_name) catch @panic("OOM");
-                const full_path = b.fmt("{s}/{s}", .{ commands_dir, cmd_info.file_path });
-                const cmd_module = b.addModule(module_name, .{
-                    .root_source_file = b.path(full_path),
-                });
-                cmd_module.addImport("zcli", zcli_module);
-                // Let commands optionally name the generated Context type via
-                // `@import("command_registry").Context`. The back-reference is
-                // safe: Context depends only on config + plugins, not commands.
-                cmd_module.addImport("command_registry", registry_module);
-
-                // Add shared modules
-                for (shared_modules) |shared_mod| {
-                    cmd_module.addImport(shared_mod.name, shared_mod.module);
-                }
-
-                // Add command-specific modules
-                applyCommandSpecificModules(b, cmd_module, cmd_info.path, shared_modules, command_configs);
-
-                registry_module.addImport(module_name, cmd_module);
-            }
-            // Create modules for subcommands
-            createGroupModules(b, registry_module, zcli_module, cmd_name, &cmd_info, commands_dir, shared_modules, command_configs);
-        } else {
-            const module_name = module_names.leafModuleName(b.allocator, cmd_name) catch @panic("OOM");
-
-            const full_path = b.fmt("{s}/{s}", .{ commands_dir, cmd_info.file_path });
-            const cmd_module = b.addModule(module_name, .{
-                .root_source_file = b.path(full_path),
-            });
-            cmd_module.addImport("zcli", zcli_module);
-            cmd_module.addImport("command_registry", registry_module);
-
-            // Add shared modules
-            for (shared_modules) |shared_mod| {
-                cmd_module.addImport(shared_mod.name, shared_mod.module);
-            }
-
-            // Add command-specific modules
-            applyCommandSpecificModules(b, cmd_module, cmd_info.path, shared_modules, command_configs);
-
-            registry_module.addImport(module_name, cmd_module);
+        // Add shared modules
+        for (shared_modules) |shared_mod| {
+            cmd_module.addImport(shared_mod.name, shared_mod.module);
         }
-    }
-}
 
-/// Create modules for command groups recursively
-fn createGroupModules(
-    b: *std.Build,
-    registry_module: *std.Build.Module,
-    zcli_module: *std.Build.Module,
-    _: []const u8,
-    group_info: *const DiscoveredCommand,
-    commands_dir: []const u8,
-    shared_modules: []const types.SharedModule,
-    command_configs: []const types.CommandConfig,
-) void {
-    if (group_info.subcommands) |subcommands| {
-        var it = subcommands.iterator();
-        while (it.next()) |entry| {
-            const subcmd_name = entry.key_ptr.*;
-            const subcmd_info = entry.value_ptr.*;
+        // Add command-specific modules
+        applyCommandSpecificModules(b, cmd_module, e.path, shared_modules, command_configs);
 
-            if (subcmd_info.command_type == .optional_group) {
-                // Create module for nested optional group — same derivation
-                // code_generation.zig emits imports with, via module_names.
-                const module_name_with_index = module_names.pathIndexModuleName(b.allocator, subcmd_info.path) catch @panic("OOM");
-
-                const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.file_path });
-                const cmd_module = b.addModule(module_name_with_index, .{
-                    .root_source_file = b.path(full_path),
-                });
-                cmd_module.addImport("zcli", zcli_module);
-                cmd_module.addImport("command_registry", registry_module);
-
-                // Add shared modules
-                for (shared_modules) |shared_mod| {
-                    cmd_module.addImport(shared_mod.name, shared_mod.module);
-                }
-
-                // Add command-specific modules
-                applyCommandSpecificModules(b, cmd_module, subcmd_info.path, shared_modules, command_configs);
-
-                registry_module.addImport(module_name_with_index, cmd_module);
-
-                // Also recurse for its subcommands
-                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules, command_configs);
-            } else if (subcmd_info.command_type == .pure_group) {
-                // Pure groups have no module, just recurse
-                createGroupModules(b, registry_module, zcli_module, subcmd_name, &subcmd_info, commands_dir, shared_modules, command_configs);
-            } else {
-                // Module name from the full command path (unique even for
-                // deeply nested commands) — same derivation code_generation.zig
-                // emits imports with, via module_names.
-                const module_name = module_names.pathModuleName(b.allocator, subcmd_info.path) catch @panic("OOM");
-
-                const full_path = b.fmt("{s}/{s}", .{ commands_dir, subcmd_info.file_path });
-                const cmd_module = b.addModule(module_name, .{
-                    .root_source_file = b.path(full_path),
-                });
-                cmd_module.addImport("zcli", zcli_module);
-                cmd_module.addImport("command_registry", registry_module);
-
-                // Add shared modules
-                for (shared_modules) |shared_mod| {
-                    cmd_module.addImport(shared_mod.name, shared_mod.module);
-                }
-
-                // Add command-specific modules
-                applyCommandSpecificModules(b, cmd_module, subcmd_info.path, shared_modules, command_configs);
-
-                registry_module.addImport(module_name, cmd_module);
-            }
-        }
+        registry_module.addImport(e.module_name, cmd_module);
     }
 }
 

@@ -12,6 +12,7 @@ const discovery_types = @import("discovery_types.zig");
 
 const DiscoveredCommand = discovery_types.DiscoveredCommand;
 const DiscoveredCommands = discovery_types.DiscoveredCommands;
+const CommandType = discovery_types.CommandType;
 
 /// Top-level leaf command: `cmd_<name>`. The prefix keeps top-level command
 /// modules from colliding with other module-level decls (and keeps "test"
@@ -132,6 +133,70 @@ fn findCollisionInMap(
         }
     }
     return null;
+}
+
+// --- The single tree walk -----------------------------------------------------
+
+/// One command that gets a generated module: everything the two codegen passes
+/// need and nothing they must recompute. `path` and `file_path` are borrowed
+/// from the `DiscoveredCommands` that produced them; `module_name` is owned by
+/// the caller (freed via `freeEmitted`).
+pub const EmittedCommand = struct {
+    module_name: []u8,
+    path: []const []const u8,
+    file_path: []const u8,
+    kind: CommandType,
+};
+
+/// Flatten the discovered command tree into the exact, ordered sequence of
+/// commands that get a generated module — the ONE walk shared by both codegen
+/// passes. code_generation.zig emits an `@import` + a `.register(...)` per
+/// entry; module_creation.zig builds + wires one `b.addModule` per entry. Since
+/// both iterate this same list, they can never disagree on which commands are
+/// covered or what each module is named — the drift the "Nested command groups
+/// not being registered" troubleshooting entry documents becomes impossible.
+///
+/// Order is pre-order and alphabetical at every level (via `sortedByName`),
+/// matching the generated registry's command order. Pure groups get no module
+/// (mirroring `moduleNameFor` returning null) but their descendants are still
+/// visited. Caller owns the slice and each entry's `module_name`.
+pub fn flatten(allocator: std.mem.Allocator, commands: DiscoveredCommands) ![]EmittedCommand {
+    var out = std.ArrayList(EmittedCommand).empty;
+    errdefer {
+        for (out.items) |e| allocator.free(e.module_name);
+        out.deinit(allocator);
+    }
+    try flattenMap(allocator, &out, &commands.root, true);
+    return out.toOwnedSlice(allocator);
+}
+
+fn flattenMap(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(EmittedCommand),
+    map: *const std.StringHashMap(DiscoveredCommand),
+    is_root: bool,
+) !void {
+    const sorted = try discovery_types.sortedByName(allocator, map);
+    defer allocator.free(sorted);
+    for (sorted) |cmd| {
+        if (try moduleNameFor(allocator, &cmd, is_root)) |name| {
+            try out.append(allocator, .{
+                .module_name = name,
+                .path = cmd.path,
+                .file_path = cmd.file_path,
+                .kind = cmd.command_type,
+            });
+        }
+        if (cmd.subcommands) |*subcmds| {
+            try flattenMap(allocator, out, subcmds, false);
+        }
+    }
+}
+
+/// Free the slice returned by `flatten` and every entry's owned `module_name`.
+pub fn freeEmitted(allocator: std.mem.Allocator, emitted: []EmittedCommand) void {
+    for (emitted) |e| allocator.free(e.module_name);
+    allocator.free(emitted);
 }
 
 const testing = std.testing;
