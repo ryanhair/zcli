@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const logging = @import("../logging.zig");
 const types = @import("discovery_types.zig");
 
@@ -80,8 +81,14 @@ fn scanDirectory(
         const kind = switch (entry.kind) {
             .sym_link => blk: {
                 const stat = dir.statFile(io, entry.name, .{}) catch {
-                    logging.invalidCommandName(entry.name, "cannot resolve symlink target");
-                    continue;
+                    // A dangling symlink (or one whose target we can't reach)
+                    // used to fall through to a `continue` here, silently
+                    // dropping a command that looked like it should exist.
+                    // Working symlinks are first-class, so a broken one must
+                    // fail loudly instead of vanishing (#629).
+                    const path_str = joinedPath(allocator, current_path, entry.name) catch entry.name;
+                    logging.commandPathUnreadable(path_str, "dangling symlink or unreadable symlink target");
+                    return error.CommandPathUnreadable;
                 };
                 break :blk stat.kind;
             },
@@ -166,10 +173,15 @@ fn scanDirectory(
                     return error.InvalidCommandName;
                 }
 
-                // Open subdirectory
+                // Open subdirectory. A permissions error (or the directory
+                // vanishing mid-scan) used to log a warning and `continue`,
+                // silently dropping the entire command subtree while the
+                // build still succeeded. Fail loudly instead, matching the
+                // module's documented fail-loud philosophy (#629).
                 var subdir = dir.openDir(io, entry.name, .{ .iterate = true }) catch {
-                    logging.invalidCommandName(entry.name, "cannot access directory");
-                    continue;
+                    const path_str = joinedPath(allocator, current_path, entry.name) catch entry.name;
+                    logging.commandPathUnreadable(path_str, "cannot open directory (permission denied or not accessible)");
+                    return error.CommandPathUnreadable;
                 };
                 defer subdir.close(io);
 
@@ -241,6 +253,20 @@ fn scanDirectory(
             else => continue,
         }
     }
+}
+
+/// Join `current_path` components and `name` into a single `/`-separated
+/// path string, for error messages. Best-effort: callers fall back to `name`
+/// alone on allocation failure since this only runs on an already-fatal
+/// error path.
+fn joinedPath(allocator: std.mem.Allocator, current_path: []const []const u8, name: []const u8) ![]u8 {
+    if (current_path.len == 0) return allocator.dupe(u8, name);
+
+    var list = std.ArrayList([]const u8).empty;
+    defer list.deinit(allocator);
+    try list.appendSlice(allocator, current_path);
+    try list.append(allocator, name);
+    return std.mem.join(allocator, "/", list.items);
 }
 
 /// Check if directory has an index.zig file
@@ -430,6 +456,78 @@ test "discovery errors loudly when a leaf and a group share a name" {
         error.DuplicateCommandName,
         scanDirectory(allocator, io, dir, &commands, &.{}, 0, default_max_depth),
     );
+}
+
+test "discovery errors loudly on a dangling symlink" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A symlink named like a command whose target doesn't exist. Working
+    // symlinks are discovered like real files/directories (see the
+    // "follows symlinked command files" test), so a broken one must fail
+    // the build loudly rather than silently vanishing from the CLI (#629).
+    try tmp.dir.symLink(io, "does_not_exist.zig", "broken.zig", .{});
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = std.StringHashMap(DiscoveredCommand).init(allocator);
+
+    try testing.expectError(
+        error.CommandPathUnreadable,
+        scanDirectory(allocator, io, dir, &commands, &.{}, 0, default_max_depth),
+    );
+}
+
+test "discovery errors loudly on an unreadable command directory" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // POSIX permission bits
+
+    const testing = std.testing;
+    const io = testing.io;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(io, "locked", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "locked/leaf.zig", .data = "pub fn execute() void {}" });
+
+    // Strip all permissions from the subdirectory (via the parent, so we
+    // never have to open the now-unreadable directory ourselves) so opening
+    // it fails with a permission error, the way a misconfigured monorepo
+    // checkout or a partially-restored backup could. This used to log a
+    // warning and silently drop the whole subtree while the build succeeded
+    // (#629).
+    try tmp.dir.setFilePermissions(io, "locked", @enumFromInt(0o000), .{});
+    defer tmp.dir.setFilePermissions(io, "locked", @enumFromInt(0o755), .{}) catch {};
+
+    var dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer dir.close(io);
+
+    var commands = std.StringHashMap(DiscoveredCommand).init(allocator);
+
+    // Skip by observed behavior rather than checking the effective uid: root
+    // (and some sandboxed/containerized CI runners) ignores POSIX permission
+    // bits entirely, so `locked` would still be openable. Checking for that
+    // directly (e.g. via `geteuid`) would pull in a libc dependency that this
+    // test module doesn't otherwise link — asking "did stripping permissions
+    // actually block access?" needs no such symbol.
+    const result = scanDirectory(allocator, io, dir, &commands, &.{}, 0, default_max_depth);
+    if (result) |_| {
+        return error.SkipZigTest;
+    } else |err| {
+        try testing.expectEqual(error.CommandPathUnreadable, err);
+    }
 }
 
 test "discovery errors loudly on a reserved command name" {

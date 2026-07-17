@@ -190,6 +190,46 @@ pub fn findPluginNameCollision(allocator: std.mem.Allocator, plugins: []const Pl
     return null;
 }
 
+/// A plugin whose sanitized name collides with a reserved generated-registry
+/// identifier. `identifier` is owned by the caller; `plugin` borrows from the
+/// plugin slice passed to `findReservedPluginIdentifier`.
+pub const ReservedPluginIdentifier = struct {
+    identifier: []u8,
+    plugin: *const PluginInfo,
+};
+
+/// `true` when `id` (an already-sanitized plugin identifier) collides with a
+/// name the generated registry reserves for itself: the two unconditional
+/// top-of-file imports (`std`, `zcli`), the `cmd_` prefix every top-level leaf
+/// command module gets, or the `_index` suffix every optional-group module
+/// gets (see module_names.zig). A plugin sanitizing to one of these would emit
+/// a duplicate top-level decl in the generated registry.
+fn isReservedPluginIdentifier(id: []const u8) bool {
+    if (std.mem.eql(u8, id, "std")) return true;
+    if (std.mem.eql(u8, id, "zcli")) return true;
+    if (std.mem.startsWith(u8, id, "cmd_")) return true;
+    if (std.mem.endsWith(u8, id, "_index")) return true;
+    return false;
+}
+
+/// Scan every registered plugin and report the first one whose sanitized name
+/// collides with a reserved generated-registry identifier, or null when none
+/// do. Mirrors `findPluginNameCollision` but against the fixed reserved set
+/// instead of pairwise against other plugins — commands can never produce a
+/// `std`/`zcli`/bare-`cmd_`/bare-`_index` module name (module_names.zig always
+/// adds the `cmd_`/`_index` affix itself), so this is the one namespace only
+/// plugins can walk into (#637).
+pub fn findReservedPluginIdentifier(allocator: std.mem.Allocator, plugins: []const PluginInfo) !?ReservedPluginIdentifier {
+    for (plugins) |*plugin| {
+        const id = try identifier.sanitize(allocator, plugin.name);
+        if (isReservedPluginIdentifier(id)) {
+            return ReservedPluginIdentifier{ .identifier = id, .plugin = plugin };
+        }
+        allocator.free(id);
+    }
+    return null;
+}
+
 /// Human-readable locator for a plugin in a collision diagnostic: the local
 /// source path when known, otherwise a built-in/external-package label. Names
 /// alone can be identical across a collision (a local `my_plugin` shadowing a
@@ -395,6 +435,74 @@ test "findPluginNameCollision: returns null when all plugin identifiers are uniq
     };
 
     try testing.expect((try findPluginNameCollision(allocator, &plugins)) == null);
+}
+
+test "findReservedPluginIdentifier: flags a plugin named 'std'" {
+    const allocator = testing.allocator;
+
+    const plugins = [_]PluginInfo{
+        .{ .name = "std", .import_name = "plugins/std", .is_local = true, .dependency = null },
+    };
+
+    const reserved = (try findReservedPluginIdentifier(allocator, &plugins)).?;
+    defer allocator.free(reserved.identifier);
+
+    try testing.expectEqualStrings("std", reserved.identifier);
+    try testing.expectEqualStrings("std", reserved.plugin.name);
+}
+
+test "findReservedPluginIdentifier: flags a plugin named 'zcli'" {
+    const allocator = testing.allocator;
+
+    const plugins = [_]PluginInfo{
+        .{ .name = "auth", .import_name = "plugins/auth", .is_local = true, .dependency = null },
+        .{ .name = "zcli", .import_name = "zcli-plugin", .is_local = false, .dependency = null },
+    };
+
+    const reserved = (try findReservedPluginIdentifier(allocator, &plugins)).?;
+    defer allocator.free(reserved.identifier);
+
+    try testing.expectEqualStrings("zcli", reserved.identifier);
+}
+
+test "findReservedPluginIdentifier: flags a plugin whose sanitized name starts with 'cmd_'" {
+    const allocator = testing.allocator;
+
+    // `cmd-deploy` sanitizes to `cmd_deploy`, colliding with the `cmd_`
+    // prefix module_names.zig uses for every top-level leaf command.
+    const plugins = [_]PluginInfo{
+        .{ .name = "cmd-deploy", .import_name = "plugins/cmd-deploy", .is_local = true, .dependency = null },
+    };
+
+    const reserved = (try findReservedPluginIdentifier(allocator, &plugins)).?;
+    defer allocator.free(reserved.identifier);
+
+    try testing.expectEqualStrings("cmd_deploy", reserved.identifier);
+}
+
+test "findReservedPluginIdentifier: flags a plugin whose sanitized name ends with '_index'" {
+    const allocator = testing.allocator;
+
+    const plugins = [_]PluginInfo{
+        .{ .name = "users_index", .import_name = "plugins/users_index", .is_local = true, .dependency = null },
+    };
+
+    const reserved = (try findReservedPluginIdentifier(allocator, &plugins)).?;
+    defer allocator.free(reserved.identifier);
+
+    try testing.expectEqualStrings("users_index", reserved.identifier);
+}
+
+test "findReservedPluginIdentifier: returns null for ordinary plugin names" {
+    const allocator = testing.allocator;
+
+    const plugins = [_]PluginInfo{
+        .{ .name = "auth", .import_name = "plugins/auth", .is_local = true, .dependency = null },
+        .{ .name = "metrics", .import_name = "plugins/metrics/plugin", .is_local = true, .dependency = null },
+        .{ .name = "zcli_help", .import_name = "zcli_help", .is_local = false, .dependency = null },
+    };
+
+    try testing.expect((try findReservedPluginIdentifier(allocator, &plugins)) == null);
 }
 
 test "pluginLocator: project_path takes precedence and needs no *std.Build" {
