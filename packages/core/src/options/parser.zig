@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const utils = @import("utils.zig");
+const tokenizer = @import("tokenizer.zig");
 const array_utils = @import("array_utils.zig");
 const logging = @import("../logging.zig");
 const args_parser = @import("../args.zig");
@@ -201,68 +202,60 @@ pub fn parseOptionsWithMeta(
         }
     }
 
-    // Parse options, converting any errors to structured errors
-    var arg_index: usize = 0;
+    // Parse options, converting any errors to structured errors. The shared
+    // argv tokenizer (tokenizer.zig) owns the walking: the `--` terminator,
+    // the GNU-style positional skip (a bare word, a negative number, or the
+    // bare `-` sentinel is left in place), the short-bundle state machine, and
+    // the next-token value lookahead. This parser only resolves names to
+    // fields and applies values.
     var option_counts = std.StringHashMap(u32).init(allocator);
     defer option_counts.deinit();
 
-    while (arg_index < args.len) {
-        const arg = args[arg_index];
+    var tok = tokenizer.Tokenizer(tokenizer.OptionsSpec(OptionsType, meta)){ .args = args };
+    parse: while (tok.next()) |token| {
+        switch (token) {
+            // Stop parsing options at "--"
+            .terminator => break :parse,
+            .positional => {},
+            .long, .shorts => {
+                // Check resource limits before processing option
+                resource_tracker.checkOptionCount() catch {
+                    if (diag) |d| d.* = .{ .ResourceLimitExceeded = .{
+                        .limit_type = "total options",
+                        .limit_value = resource_tracker.limits.max_total_options,
+                        .actual_value = resource_tracker.option_count,
+                        .suggestion = null,
+                    } };
+                    return ZcliError.ResourceLimitExceeded;
+                };
 
-        // Stop parsing options at "--"
-        if (std.mem.eql(u8, arg, "--")) {
-            arg_index += 1;
-            break;
-        }
+                switch (token) {
+                    .long => |long| {
+                        resource_tracker.checkOptionNameLength(long.name) catch {
+                            if (diag) |d| d.* = .{ .ResourceLimitExceeded = .{
+                                .limit_type = "option name length",
+                                .limit_value = resource_tracker.limits.max_option_name_length,
+                                .actual_value = long.name.len,
+                                .suggestion = null,
+                            } };
+                            return ZcliError.ResourceLimitExceeded;
+                        };
 
-        // Not an option — a bare word, a negative number (`-5`, `-.5`, `-inf`),
-        // or the bare `-` stdin/stdout sentinel: skip it (GNU-style parsing
-        // leaves positionals in place). `isOption` is the single source of truth.
-        if (!utils.isOption(arg)) {
-            arg_index += 1;
-            continue;
-        }
-
-        // Check resource limits before processing option
-        resource_tracker.checkOptionCount() catch {
-            if (diag) |d| d.* = .{ .ResourceLimitExceeded = .{
-                .limit_type = "total options",
-                .limit_value = resource_tracker.limits.max_total_options,
-                .actual_value = resource_tracker.option_count,
-                .suggestion = null,
-            } };
-            return ZcliError.ResourceLimitExceeded;
-        };
-
-        if (std.mem.startsWith(u8, arg, "--")) {
-            // Long option - check option name length
-            const option_name = if (std.mem.indexOf(u8, arg[2..], "=")) |eq_pos|
-                arg[2 .. 2 + eq_pos]
-            else
-                arg[2..];
-
-            resource_tracker.checkOptionNameLength(option_name) catch {
-                if (diag) |d| d.* = .{ .ResourceLimitExceeded = .{
-                    .limit_type = "option name length",
-                    .limit_value = resource_tracker.limits.max_option_name_length,
-                    .actual_value = option_name.len,
-                    .suggestion = null,
-                } };
-                return ZcliError.ResourceLimitExceeded;
-            };
-
-            const consumed = parseLongOptions(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, &resource_tracker, diag) catch |err| {
-                return convertLongOptionError(err);
-            };
-            arg_index += consumed;
-        } else {
-            // Short option(s)
-            const consumed = parseShortOptionsWithMeta(OptionsType, meta, &result, &option_counts, args, arg_index, &array_lists, allocator, &resource_tracker, diag) catch |err| {
-                return convertShortOptionError(err);
-            };
-            arg_index += consumed;
+                        applyLongOption(OptionsType, meta, &result, &option_counts, long, &array_lists, allocator, &resource_tracker, diag) catch |err| {
+                            return convertLongOptionError(err);
+                        };
+                    },
+                    .shorts => |shorts| {
+                        applyShortBundle(OptionsType, meta, &result, &option_counts, shorts, &array_lists, allocator, &resource_tracker, diag) catch |err| {
+                            return convertShortOptionError(err);
+                        };
+                    },
+                    else => unreachable,
+                }
+            },
         }
     }
+    const arg_index = tok.index;
 
     // Fold CLI-set fields into `provided`. `option_counts` is keyed by field
     // name for every option the CLI touched (values, booleans, negations), so
@@ -527,35 +520,26 @@ fn countCsvArrayElements(
     }
 }
 
-/// Parse a long option with metadata support (--option or --option=value)
-fn parseLongOptions(
+/// Apply a tokenized long option (`--option`, `--option=value`) to the result
+/// struct. Field matching uses the shared resolution rules (options/utils.zig)
+/// that the tokenizer's spec classifies with, so the tokenizer's value decision
+/// (`long.next_value`) always concerns the field matched here.
+fn applyLongOption(
     comptime OptionsType: type,
     comptime meta: anytype,
     result: *OptionsType,
     option_counts: *std.StringHashMap(u32),
-    args: []const []const u8,
-    arg_index: usize,
+    long: anytype,
     array_lists: anytype,
     allocator: std.mem.Allocator,
     resource_tracker: *ResourceTracker,
     diag: ?*?ZcliDiagnostic,
-) !usize {
-    const arg = args[arg_index];
-    const option_part = arg[2..]; // Skip "--"
-
-    var option_name: []const u8 = undefined;
-    var option_value: ?[]const u8 = null;
-
-    // Check for --option=value syntax
-    if (std.mem.indexOf(u8, option_part, "=")) |eq_index| {
-        option_name = option_part[0..eq_index];
-        option_value = option_part[eq_index + 1 ..];
-    } else {
-        option_name = option_part;
-    }
+) !void {
+    const option_name = long.name;
+    const option_value: ?[]const u8 = long.attached;
 
     // Generate field matching code at comptime, via the shared resolution
-    // rules (options/utils.zig) that the pre-split classifier also uses.
+    // rules (options/utils.zig) that the tokenizer's spec also uses.
     var found = false;
     inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
         const matches = utils.longNameMatchesField(meta, field.name, option_name);
@@ -571,27 +555,24 @@ fn parseLongOptions(
                 if (option_value) |val| return booleanWithValueError(diag, option_name, false, val);
                 try markBooleanFlagOnce(diag, option_counts, field.name, option_name, false);
                 @field(result, field.name) = true;
-                return 1;
+                return;
             }
 
             // Track usage count for duplicate detection (use field name for tracking)
             const count = option_counts.get(field.name) orelse 0;
             try option_counts.put(field.name, count + 1);
 
-            // Get the value
-            const value = blk: {
-                if (option_value) |val| {
-                    break :blk val;
-                } else if (arg_index + 1 < args.len and utils.isValueToken(args[arg_index + 1])) {
-                    break :blk args[arg_index + 1];
-                } else {
-                    if (diag) |d| d.* = .{ .OptionMissingValue = .{
-                        .option_name = option_name,
-                        .is_short = false,
-                        .expected_type = diagnostic_errors.expectedTypeName(field.type),
-                    } };
-                    return error.MissingOptionValue;
-                }
+            // The value: attached (`--opt=val`) or the next argv token the
+            // tokenizer consumed under the shared lookahead rule; neither
+            // present means the value is missing (a following flag is never
+            // consumed as a value, #299).
+            const value = long.value() orelse {
+                if (diag) |d| d.* = .{ .OptionMissingValue = .{
+                    .option_name = option_name,
+                    .is_short = false,
+                    .expected_type = diagnostic_errors.expectedTypeName(field.type),
+                } };
+                return error.MissingOptionValue;
             };
 
             // Parse and set the value based on field type
@@ -619,8 +600,7 @@ fn parseLongOptions(
                 @field(result, field.name) = parsed_value;
             }
 
-            // Return number of arguments consumed
-            return if (option_value != null) 1 else 2;
+            return;
         } else if (comptime utils.isBooleanFlag(field.type)) {
             // Not the positive name — is it the auto-generated `--no-<flag>`
             // negation? Only boolean flags have one. It sets the field false and,
@@ -630,7 +610,7 @@ fn parseLongOptions(
                 if (option_value) |val| return booleanWithValueError(diag, option_name, false, val);
                 try markBooleanFlagOnce(diag, option_counts, field.name, option_name, false);
                 @field(result, field.name) = false;
-                return 1;
+                return;
             }
         }
     }
@@ -643,168 +623,105 @@ fn parseLongOptions(
         } };
         return error.UnknownOption;
     }
-
-    return 1;
 }
 
-/// Parse short options with metadata support (-o or -ovalue or -abc)
-fn parseShortOptionsWithMeta(
+/// Apply a tokenized short token (`-o`, `-ovalue`, `-abc`) to the result
+/// struct, driving the shared short-bundle walk (GNU getopt semantics):
+/// leading boolean flags one at a time; the first value-taking char gets the
+/// rest of the token as an attached value, or the next argv token the
+/// tokenizer consumed (`-vf out.txt` == `-v -f out.txt`, `-vfout.txt` ==
+/// `-v -fout.txt`).
+fn applyShortBundle(
     comptime OptionsType: type,
     comptime meta: anytype,
     result: *OptionsType,
     option_counts: *std.StringHashMap(u32),
-    args: []const []const u8,
-    arg_index: usize,
+    shorts: anytype,
     array_lists: anytype,
     allocator: std.mem.Allocator,
     resource_tracker: *ResourceTracker,
     diag: ?*?ZcliDiagnostic,
-) !usize {
-    const arg = args[arg_index];
-    const options_part = arg[1..]; // Skip "-"
-
-    if (options_part.len == 0) {
-        if (diag) |d| d.* = .{ .OptionUnknown = .{
-            .option_name = options_part,
-            .is_short = true,
-            .suggestions = &.{},
-        } };
-        return error.UnknownOption;
-    }
-
-    // Try to parse as bundled boolean flags first
-    var all_boolean = true;
-    for (options_part) |char| {
-        var char_field_found = false;
-        var char_is_boolean = false;
-        inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
-            // The field's declared short char, if any (undeclared → no match).
-            const expected_char = comptime utils.shortCharForField(meta, field.name);
-
-            const matches = if (expected_char) |ec| ec == char else false;
-
-            if (matches) {
-                char_field_found = true;
-                char_is_boolean = comptime utils.isBooleanFlag(field.type);
-                break;
-            }
-        }
-        if (!char_field_found or !char_is_boolean) {
-            all_boolean = false;
-            break;
-        }
-    }
-
-    if (all_boolean and options_part.len > 1) {
-        // Parse as bundled boolean flags
-        for (options_part, 0..) |char, ci| {
-            inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
-                _ = i; // Unused for boolean flags
-                const expected_char = comptime utils.shortCharForField(meta, field.name);
-
-                const matches = if (expected_char) |ec| ec == char else false;
-
-                if (matches) {
-                    if (comptime utils.isBooleanFlag(field.type)) {
-                        try markBooleanFlagOnce(diag, option_counts, field.name, options_part[ci .. ci + 1], true);
-                        @field(result, field.name) = true;
+) !void {
+    const chars = shorts.chars;
+    var walk = shorts.walk();
+    while (walk.next()) |step| switch (step) {
+        .unknown => |ci| {
+            if (diag) |d| d.* = .{ .OptionUnknown = .{
+                .option_name = chars[ci .. ci + 1],
+                .is_short = true,
+                .suggestions = &.{},
+            } };
+            return error.UnknownOption;
+        },
+        .flag => |ci| {
+            // A boolean flag char: the spec classified it against the same
+            // first-matching field this loop finds.
+            const char = chars[ci];
+            inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+                if (comptime utils.isBooleanFlag(field.type)) {
+                    if (comptime utils.shortCharForField(meta, field.name)) |expected_char| {
+                        if (expected_char == char) {
+                            try markBooleanFlagOnce(diag, option_counts, field.name, chars[ci .. ci + 1], true);
+                            @field(result, field.name) = true;
+                            break;
+                        }
                     }
-                    break;
                 }
             }
-        }
-        return 1;
-    } else {
-        // Mixed bundle (GNU getopt semantics): consume leading boolean flags
-        // one at a time; the first value-taking option gets the rest of the
-        // token as an attached value, or the next argument (`-vf out.txt` ==
-        // `-v -f out.txt`, `-vfout.txt` == `-v -fout.txt`).
-        var ci: usize = 0;
-        while (ci < options_part.len) : (ci += 1) {
-            const char = options_part[ci];
-
-            var char_found = false;
+        },
+        .value => |v| {
+            const char = chars[v.index];
             inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
-                // The field's declared short char, if any (undeclared → no match).
-                const expected_char = comptime utils.shortCharForField(meta, field.name);
+                if (comptime !utils.isBooleanFlag(field.type)) {
+                    if (comptime utils.shortCharForField(meta, field.name)) |expected_char| {
+                        if (expected_char == char) {
+                            // Track usage count for duplicate detection
+                            const count = option_counts.get(field.name) orelse 0;
+                            try option_counts.put(field.name, count + 1);
 
-                const matches = if (expected_char) |ec| ec == char else false;
-
-                if (matches and !char_found) {
-                    char_found = true;
-
-                    if (comptime utils.isBooleanFlag(field.type)) {
-                        try markBooleanFlagOnce(diag, option_counts, field.name, options_part[ci .. ci + 1], true);
-                        @field(result, field.name) = true;
-                    } else {
-                        // Track usage count for duplicate detection
-                        const count = option_counts.get(field.name) orelse 0;
-                        try option_counts.put(field.name, count + 1);
-
-                        // Value-taking option
-                        var value: []const u8 = undefined;
-                        var consumed: usize = 1;
-
-                        if (options_part.len > ci + 1) {
-                            // Value attached: -ovalue
-                            value = options_part[ci + 1 ..];
-                        } else {
-                            // Value in the next argument — but only if that token is
-                            // a value, not another option (#299). A following flag
-                            // (`-t --verbose`) is a missing value, mirroring the long
-                            // path; the bare `-` and negative numbers count as values.
-                            if (arg_index + 1 >= args.len or !utils.isValueToken(args[arg_index + 1])) {
+                            // The value: the rest of the token (`-ovalue`) or the
+                            // next argv token the tokenizer consumed; neither
+                            // present means the value is missing — a following
+                            // flag (`-t --verbose`) is never consumed as a value,
+                            // mirroring the long path (#299).
+                            const value = v.attached orelse shorts.next_value orelse {
                                 if (diag) |d| d.* = .{ .OptionMissingValue = .{
-                                    .option_name = options_part[ci .. ci + 1],
+                                    .option_name = chars[v.index .. v.index + 1],
                                     .is_short = true,
                                     .expected_type = diagnostic_errors.expectedTypeName(field.type),
                                 } };
                                 return error.MissingOptionValue;
-                            }
-                            value = args[arg_index + 1];
-                            consumed = 2;
-                        }
-
-                        if (comptime utils.isArrayType(field.type)) {
-                            // For array types, accumulate values
-                            if (array_lists.*[i]) |*list_union| {
-                                const element_type = @typeInfo(field.type).pointer.child;
-                                // CSV elements each count against the option budget.
-                                try countCsvArrayElements(resource_tracker, value, diag);
-                                try array_utils.appendCsvToArrayListUnionShort(element_type, allocator, list_union, value, char);
-                            }
-                        } else {
-                            const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
-                                if (diag) |d| d.* = .{ .OptionInvalidValue = .{
-                                    .option_name = options_part[ci .. ci + 1],
-                                    .is_short = true,
-                                    .provided_value = value,
-                                    .expected_type = diagnostic_errors.expectedTypeName(field.type),
-                                    .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
-                                    .reason = custom_type.describeError(field.type, value),
-                                } };
-                                return err;
                             };
-                            @field(result, field.name) = parsed_value;
-                        }
 
-                        return consumed;
+                            if (comptime utils.isArrayType(field.type)) {
+                                // For array types, accumulate values
+                                if (array_lists.*[i]) |*list_union| {
+                                    const element_type = @typeInfo(field.type).pointer.child;
+                                    // CSV elements each count against the option budget.
+                                    try countCsvArrayElements(resource_tracker, value, diag);
+                                    try array_utils.appendCsvToArrayListUnionShort(element_type, allocator, list_union, value, char);
+                                }
+                            } else {
+                                const parsed_value = utils.parseOptionValue(field.type, value) catch |err| {
+                                    if (diag) |d| d.* = .{ .OptionInvalidValue = .{
+                                        .option_name = chars[v.index .. v.index + 1],
+                                        .is_short = true,
+                                        .provided_value = value,
+                                        .expected_type = diagnostic_errors.expectedTypeName(field.type),
+                                        .suggestion = diagnostic_errors.nearestEnumValue(field.type, value),
+                                        .reason = custom_type.describeError(field.type, value),
+                                    } };
+                                    return err;
+                                };
+                                @field(result, field.name) = parsed_value;
+                            }
+                            return; // the value-taker always ends the bundle
+                        }
                     }
                 }
             }
-
-            if (!char_found) {
-                if (diag) |d| d.* = .{ .OptionUnknown = .{
-                    .option_name = options_part[ci .. ci + 1],
-                    .is_short = true,
-                    .suggestions = &.{},
-                } };
-                return error.UnknownOption;
-            }
-        }
-
-        return 1;
-    }
+        },
+    };
 }
 
 /// Helper function to clean up array fields in options

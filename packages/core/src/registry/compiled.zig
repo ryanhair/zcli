@@ -1,6 +1,7 @@
 const std = @import("std");
 const command_parser = @import("../command_parser.zig");
 const option_utils = @import("../options/utils.zig");
+const tokenizer = @import("../options/tokenizer.zig");
 const plugin_types = @import("../plugin_types.zig");
 const zcli = @import("../zcli.zig");
 
@@ -736,182 +737,131 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
         }
 
+        /// The shared argv tokenizer's spec for the global-option namespace:
+        /// exact long-name matches (no dashed aliases, no negation) and the
+        /// plugins' declared shorts. `unknown_short_aborts` because this layer
+        /// cannot partially consume a bundle — a non-global char before the
+        /// first value-taking global leaves the whole token (and any would-be
+        /// value) for the command's own option parser.
+        const GlobalSpec = struct {
+            pub const unknown_short_aborts = true;
+            pub fn longTakesValue(name: []const u8) ?bool {
+                inline for (global_options) |global_opt| {
+                    if (std.mem.eql(u8, name, global_opt.name)) return global_opt.type != bool;
+                }
+                return null;
+            }
+            pub fn shortTakesValue(char: u8) ?bool {
+                inline for (global_options) |global_opt| {
+                    if (global_opt.short == char) return global_opt.type != bool;
+                }
+                return null;
+            }
+        };
+
         pub fn parseGlobalOptions(_: *Self, context: *Context, args: []const []const u8) !zcli.GlobalOptionsResult {
             var consumed = std.ArrayList(usize).empty;
             var remaining = std.ArrayList([]const u8).empty;
             defer consumed.deinit(context.allocator);
             defer remaining.deinit(context.allocator);
 
-            var i: usize = 0;
-            // Once a bare `--` is seen, stop matching global options for the rest
-            // of argv — the command-level parsers honor `--` as an end-of-options
-            // terminator (options/parser.zig, command_parser.zig), so the global
-            // layer must too or the two disagree (#501). The `--` itself and every
-            // token after it flow untouched into `remaining` so the command parser
-            // still sees its own terminator.
-            var options_ended = false;
-            while (i < args.len) {
-                const arg = args[i];
-                var handled = false;
-
-                if (!options_ended and std.mem.eql(u8, arg, "--")) {
-                    options_ended = true;
-                } else if (!options_ended and std.mem.startsWith(u8, arg, "--")) {
-                    // Split `--name=value` before matching, mirroring the
-                    // command-option long path (#391).
-                    const opt_body = arg[2..];
-                    const eq_idx = std.mem.indexOfScalar(u8, opt_body, '=');
-                    const opt_name = if (eq_idx) |e| opt_body[0..e] else opt_body;
-                    const attached: ?[]const u8 = if (eq_idx) |e| opt_body[e + 1 ..] else null;
-                    // Check if this is a global option
-                    inline for (global_options) |global_opt| {
-                        if (std.mem.eql(u8, opt_name, global_opt.name)) {
-                            // Handle the global option
-                            try consumed.append(context.allocator, i);
-
-                            var value: []const u8 = "true"; // Boolean flags: presence == true
-                            if (global_opt.type != bool) {
-                                if (attached) |v| {
-                                    value = v;
-                                } else if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
-                                    // Same next-token-is-a-value rule the command
-                                    // parsers share (options/utils.zig).
-                                    i += 1;
-                                    value = args[i];
-                                    try consumed.append(context.allocator, i);
-                                } else {
-                                    context.diagnostic = .{ .OptionMissingValue = .{
+            // The shared tokenizer (options/tokenizer.zig) owns the walking:
+            // the `--` terminator (#501 — after it, every token flows untouched
+            // into `remaining`, the `--` itself included, so the command parser
+            // still sees its own terminator), the `--name=value` split (#391),
+            // the short-bundle state machine, and the next-token value
+            // lookahead the command parsers share. This layer only filters:
+            // tokens that resolve to globals are consumed and dispatched,
+            // everything else passes through verbatim.
+            var tok = tokenizer.Tokenizer(GlobalSpec){ .args = args };
+            while (tok.next()) |token| {
+                switch (token) {
+                    .terminator, .positional => |item| try remaining.append(context.allocator, item.raw),
+                    .long => |long| {
+                        if (long.takes_value == null) {
+                            // Not a global option — the command's to parse.
+                            try remaining.append(context.allocator, long.raw);
+                            continue;
+                        }
+                        try consumed.append(context.allocator, long.index);
+                        inline for (global_options) |global_opt| {
+                            if (std.mem.eql(u8, long.name, global_opt.name)) {
+                                var value: []const u8 = "true"; // Boolean flags: presence == true
+                                if (global_opt.type != bool) {
+                                    if (long.attached) |v| {
+                                        value = v;
+                                    } else if (long.next_value) |v| {
+                                        value = v;
+                                        try consumed.append(context.allocator, long.index + 1);
+                                    } else {
+                                        context.diagnostic = .{ .OptionMissingValue = .{
+                                            .option_name = global_opt.name,
+                                            .is_short = false,
+                                            .expected_type = zcli.expectedTypeName(global_opt.type),
+                                        } };
+                                        return zcli.ZcliError.OptionMissingValue;
+                                    }
+                                } else if (long.attached) |v| {
+                                    // `--flag=x` on a boolean global errors like the
+                                    // command parser's boolean-with-value path.
+                                    context.diagnostic = .{ .OptionBooleanWithValue = .{
                                         .option_name = global_opt.name,
                                         .is_short = false,
-                                        .expected_type = zcli.expectedTypeName(global_opt.type),
+                                        .provided_value = v,
                                     } };
-                                    return zcli.ZcliError.OptionMissingValue;
+                                    return zcli.ZcliError.OptionBooleanWithValue;
                                 }
-                            } else if (attached) |v| {
-                                // `--flag=x` on a boolean global errors like the
-                                // command parser's boolean-with-value path.
-                                context.diagnostic = .{ .OptionBooleanWithValue = .{
-                                    .option_name = global_opt.name,
-                                    .is_short = false,
-                                    .provided_value = v,
-                                } };
-                                return zcli.ZcliError.OptionBooleanWithValue;
-                            }
 
-                            try dispatchGlobalOption(context, global_opt, value, false);
-
-                            handled = true;
-                            break;
-                        }
-                    }
-                } else if (!options_ended and std.mem.startsWith(u8, arg, "-") and arg.len == 2) {
-                    // Single short option: mirrors the long path, including
-                    // values for non-boolean globals (`-c config.json`).
-                    const short_char = arg[1];
-                    inline for (global_options) |global_opt| {
-                        if (global_opt.short == short_char) {
-                            try consumed.append(context.allocator, i);
-
-                            var value: []const u8 = "true";
-                            if (global_opt.type != bool) {
-                                if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
-                                    i += 1;
-                                    value = args[i];
-                                    try consumed.append(context.allocator, i);
-                                } else {
-                                    context.diagnostic = .{ .OptionMissingValue = .{
-                                        .option_name = global_opt.name,
-                                        .is_short = true,
-                                        .expected_type = zcli.expectedTypeName(global_opt.type),
-                                    } };
-                                    return zcli.ZcliError.OptionMissingValue;
-                                }
-                            }
-
-                            try dispatchGlobalOption(context, global_opt, value, true);
-
-                            handled = true;
-                            break;
-                        }
-                    }
-                } else if (!options_ended and std.mem.startsWith(u8, arg, "-") and arg.len > 2) {
-                    // Mixed short bundle (GNU getopt), mirroring the command-option
-                    // parser (options/parser.zig): consume leading boolean globals
-                    // one at a time; the first value-taking global short claims the
-                    // rest of the token as an attached value (`-cval` == `-c val`),
-                    // or the next argument when it ends the token (`-vc val`). The
-                    // whole token is consumed only when it resolves entirely to
-                    // globals — a non-global leading char aborts (the token layer
-                    // can't partially consume), leaving the token in `remaining`
-                    // for the command's own option parser.
-                    const short_opts = arg[1..];
-
-                    // First pass: decide whether the token is consumable without
-                    // mutating any state. Every char up to (and including) the first
-                    // value-taking global must resolve to a global; a value-taking
-                    // global ends the scan since the remainder is its value.
-                    var consumable = true;
-                    for (short_opts) |short_char| {
-                        var is_bool_global = false;
-                        var is_value_global = false;
-                        inline for (global_options) |global_opt| {
-                            if (global_opt.short == short_char) {
-                                if (global_opt.type == bool) {
-                                    is_bool_global = true;
-                                } else {
-                                    is_value_global = true;
-                                }
+                                try dispatchGlobalOption(context, global_opt, value, false);
+                                break;
                             }
                         }
-                        if (is_value_global) break; // rest of token is this option's value
-                        if (!is_bool_global) {
-                            consumable = false;
-                            break;
+                    },
+                    .shorts => |shorts| {
+                        if (!shorts.consumable) {
+                            // Some char isn't a global — the token layer can't
+                            // partially consume, so the whole token passes.
+                            try remaining.append(context.allocator, shorts.raw);
+                            continue;
                         }
-                    }
-
-                    if (consumable) {
-                        try consumed.append(context.allocator, i);
-                        var ci: usize = 0;
-                        dispatch: while (ci < short_opts.len) : (ci += 1) {
-                            const short_char = short_opts[ci];
-                            inline for (global_options) |global_opt| {
-                                if (global_opt.short == short_char) {
-                                    if (global_opt.type == bool) {
+                        try consumed.append(context.allocator, shorts.index);
+                        var walk = shorts.walk();
+                        while (walk.next()) |step| switch (step) {
+                            // A consumable bundle resolved every char before the
+                            // value-taker to a global.
+                            .unknown => unreachable,
+                            .flag => |ci| {
+                                const short_char = shorts.chars[ci];
+                                inline for (global_options) |global_opt| {
+                                    if (global_opt.short == short_char) {
                                         try dispatchGlobalOption(context, global_opt, "true", true);
-                                    } else {
-                                        const attached = short_opts[ci + 1 ..];
-                                        var value: []const u8 = attached;
-                                        if (attached.len == 0) {
-                                            if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
-                                                i += 1;
-                                                value = args[i];
-                                                try consumed.append(context.allocator, i);
-                                            } else {
-                                                context.diagnostic = .{ .OptionMissingValue = .{
-                                                    .option_name = global_opt.name,
-                                                    .is_short = true,
-                                                    .expected_type = zcli.expectedTypeName(global_opt.type),
-                                                } };
-                                                return zcli.ZcliError.OptionMissingValue;
-                                            }
+                                        break;
+                                    }
+                                }
+                            },
+                            .value => |v| {
+                                const short_char = shorts.chars[v.index];
+                                inline for (global_options) |global_opt| {
+                                    if (global_opt.short == short_char) {
+                                        const value = v.attached orelse shorts.next_value orelse {
+                                            context.diagnostic = .{ .OptionMissingValue = .{
+                                                .option_name = global_opt.name,
+                                                .is_short = true,
+                                                .expected_type = zcli.expectedTypeName(global_opt.type),
+                                            } };
+                                            return zcli.ZcliError.OptionMissingValue;
+                                        };
+                                        if (v.attached == null) {
+                                            try consumed.append(context.allocator, shorts.index + 1);
                                         }
                                         try dispatchGlobalOption(context, global_opt, value, true);
-                                        break :dispatch; // value claimed the rest of the token
+                                        break;
                                     }
-                                    break;
                                 }
-                            }
-                        }
-                        handled = true;
-                    }
+                            },
+                        };
+                    },
                 }
-
-                if (!handled) {
-                    try remaining.append(context.allocator, arg);
-                }
-
-                i += 1;
             }
 
             const result = zcli.GlobalOptionsResult{
