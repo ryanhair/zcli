@@ -352,6 +352,14 @@ What a real zcli app looks like. The meta-CLI you install is one; the rest are t
 | [**oauth-device**](examples/oauth-device) | Mints a token from scratch by running GitHub's OAuth device flow (RFC 8628), then keychains it — freeform command code, not a framework feature. |
 | [**notes**](examples/notes) | A tiny note keeper: saves and loads a typed struct as a JSON file and shares one `store` module across three commands. |
 | [**repostat**](examples/repostat) | Prints stats for a public GitHub repo — the minimal `zcli.http` + typed-JSON example, with safe client defaults out of the box. |
+| [**ext-plugin**](examples/ext-plugin) | Registers a third-party plugin shipped as its own Zig package (`.dependency = greet_plugin_dep`), contrasting the local-path and built-in plugin styles used elsewhere. |
+| [**vault**](examples/vault) | A secrets-backed CLI combining `zcli_secrets` (OS keychain), `zcli_config`, dynamic completions, and password prompts in one app. |
+| [**options-features**](examples/options-features) | Exercises option-parsing edge cases: required options (flag/env/config), array options, per-field `validate` hooks, custom `parse` types, and `meta.exclusive`/`meta.options.*.requires`. |
+| [**prompts-features**](examples/prompts-features) | Covers the `password` and `multi_select` prompt types not shown elsewhere. |
+| [**testing-demo**](examples/testing-demo) | Shows the `zcli-testing` harness used directly in app code — unit-tier `runCommand` in command tests plus a subprocess/snapshot integration test against the compiled binary. |
+| [**upgrade-demo**](examples/upgrade-demo) | Wires the `github_upgrade` plugin to add a self-upgrade `upgrade` command backed by GitHub Releases. |
+
+See [`examples/README.md`](examples/README.md) for the full index, including how each example is built and tested in CI.
 
 Building something with zcli? Open a PR to add it here.
 

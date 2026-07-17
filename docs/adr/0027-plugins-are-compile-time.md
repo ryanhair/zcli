@@ -57,10 +57,11 @@ Stated plainly, because it is real:
 The gap is narrower in practice than it looks, because the workflows runtime
 plugins usually serve are covered another way:
 
-- **Local plugins are convention-discovered.** A `plugins_dir` (default
-  `src/plugins`) is scanned exactly like `commands_dir`; dropping a
-  `plugins/<name>.zig` file is enough (`build_utils/plugin_system.zig`
-  `scanLocalPlugins`, ADR-0006). No `build.zig` array to splice.
+- **Local plugins are convention-discovered.** A `plugins_dir` (opt-in; `null`
+  unless the project sets it — `zcli init` scaffolds it to `src/plugins`) is
+  scanned exactly like `commands_dir`; dropping a `plugins/<name>.zig` file is
+  enough (`build_utils/plugin_system.zig` `scanLocalPlugins`, ADR-0006). No
+  `build.zig` array to splice.
 - **`zcli add plugin <name>` scaffolds one** as a guided skeleton, auto-discovered
   on the next build (ADR-0006).
 - **Rebuilds are fast**, and `zcli dev` watches and rebuilds on change — the
