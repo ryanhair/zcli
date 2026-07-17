@@ -1,6 +1,4 @@
 const std = @import("std");
-const zcli = @import("../zcli.zig");
-const plugin_types = @import("../plugin_types.zig");
 
 const paths = @import("paths.zig");
 const compiled = @import("compiled.zig");
@@ -101,10 +99,11 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
         ) {
             _ = self;
 
-            // Validate the whole command contract at compile time, with errors
-            // that name this command by its path.
-            comptime zcli.validateCommand(path, Module);
-
+            // No validation here: `register` only accumulates. The command
+            // contract is checked by the single registry-level pass
+            // (registry/validation.zig), which `build()` runs over the whole
+            // composition — file-based commands, plugin commands, and global
+            // options together.
             return RegistryBuilder(
                 config,
                 computeEntriesWithAliases(commands, path, Module),
@@ -118,9 +117,9 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
             new_plugins ++ [_]type{Plugin},
         ) {
             _ = self;
-            // Backstop against silently-dead misspelled hooks (exact-name
-            // detection has no diagnostics of its own).
-            comptime plugin_types.validatePlugin(Plugin);
+            // No validation here either — the plugin contract (misspelled
+            // hooks, ContextData) is checked by the registry-level pass in
+            // registry/validation.zig when `build()` runs.
             return RegistryBuilder(
                 config,
                 commands,
@@ -145,6 +144,12 @@ fn isCommandDecl(comptime name: []const u8) bool {
 
 /// Recursively discover plugin commands from a struct type
 pub fn discoverPluginCommands(comptime CommandsStruct: type, comptime path_prefix: []const []const u8) []const CommandEntry {
+    // Discovery walks every decl of every plugin's `commands` struct with
+    // comptime string comparisons; the default 1000-branch quota is too small
+    // for a real plugin set. (validateCommand used to raise it as a side
+    // effect of being called here; validation now lives in the registry-level
+    // pass, so discovery sets its own headroom.)
+    @setEvalBranchQuota(100_000);
     const info = @typeInfo(CommandsStruct);
     if (info != .@"struct") return &.{};
 
@@ -171,17 +176,10 @@ pub fn discoverPluginCommands(comptime CommandsStruct: type, comptime path_prefi
         // Only process struct types
         if (command_type_info != .@"struct") continue;
 
-        // Build the path for this command
+        // Build the path for this command. (No validation here: discovery only
+        // collects entries; the registry-level pass in validation.zig runs
+        // `validateCommand` over every discovered plugin command.)
         const current_path = path_prefix ++ .{decl.name};
-
-        // Validate the whole command contract at compile time, naming the
-        // command by its space-joined path.
-        comptime var path_str: []const u8 = "";
-        inline for (current_path, 0..) |component, idx| {
-            if (idx > 0) path_str = path_str ++ " ";
-            path_str = path_str ++ component;
-        }
-        comptime zcli.validateCommand(path_str, CommandType);
 
         // Add this command/group to entries
         entries = entries ++ .{CommandEntry{
