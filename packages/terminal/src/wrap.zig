@@ -76,6 +76,15 @@ pub fn trailingGraphemeLen(text: []const u8) usize {
     return last;
 }
 
+/// Byte length of the leading grapheme cluster of `text` (0 for empty text).
+/// The mirror of `trailingGraphemeLen`: line editors use it to step the cursor
+/// forward, or delete-forward one *visible* character, so multibyte chars,
+/// combining marks, and ZWJ emoji sequences move as a single unit.
+pub fn leadingGraphemeLen(text: []const u8) usize {
+    var it = Graphemes.iterator(text);
+    return if (it.next()) |g| g.len else 0;
+}
+
 /// Number of grapheme clusters in `text` (what a user perceives as characters).
 pub fn graphemeCount(text: []const u8) usize {
     var n: usize = 0;
@@ -278,6 +287,18 @@ test "trailingGraphemeLen: ascii, CJK, combining, ZWJ emoji" {
     // Family ZWJ sequence is a single cluster.
     const family = "👨\u{200D}👩\u{200D}👧";
     try testing.expectEqual(family.len, trailingGraphemeLen("x" ++ family));
+}
+
+test "leadingGraphemeLen: ascii, CJK, combining, ZWJ emoji" {
+    try testing.expectEqual(@as(usize, 0), leadingGraphemeLen(""));
+    try testing.expectEqual(@as(usize, 1), leadingGraphemeLen("abc"));
+    // 你 is 3 bytes.
+    try testing.expectEqual(@as(usize, 3), leadingGraphemeLen("你a"));
+    // 'e' + combining acute = one 3-byte cluster at the front.
+    try testing.expectEqual(@as(usize, 3), leadingGraphemeLen("e\u{0301}fg"));
+    // Family ZWJ sequence is a single leading cluster.
+    const family = "👨\u{200D}👩\u{200D}👧";
+    try testing.expectEqual(family.len, leadingGraphemeLen(family ++ "x"));
 }
 
 test "graphemeCount counts clusters, not bytes" {
