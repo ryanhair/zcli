@@ -882,20 +882,10 @@ zcli ships seven built-in plugins — `zcli_help`, `zcli_version`, `zcli_not_fou
 
 ## 12. Advanced Features
 
-**Subcommand Inheritance:**
-
-- Commands can inherit options from parent commands
-- Shared validation and preprocessing
-
 **Command Aliases:**
 
 - Define aliases in command metadata
 - Multiple paths to same handler
-
-**Interactive Mode:**
-
-- Optional REPL for command exploration
-- Tab completion using comptime-generated data
 
 **Type-Safe Context Extensions:**
 
