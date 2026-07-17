@@ -125,8 +125,16 @@ fn parseArgsInternal(comptime ArgsType: type, args: []const []const u8, diag: ?*
             }
             break;
         } else if (comptime @typeInfo(field_type) == .optional) {
-            // Optional field - consume the next argument if present
-            const next_positional: ?usize = if (arg_index < args.len) arg_index else null;
+            // Optional field - consume the next argument only if doing so still
+            // leaves enough tokens for the required fields behind it. Without
+            // this lookahead an always-parsing optional (e.g. `?[]const u8`)
+            // greedily steals the last token and starves a later required field
+            // (#675). A typed optional whose token fails to parse still falls
+            // through below; this guard additionally rescues optionals whose
+            // token WOULD parse but is needed downstream.
+            const required_after = comptime countRequiredArgsAfter(ArgsType, field_index);
+            const has_room = (args.len - arg_index) > required_after;
+            const next_positional: ?usize = if (arg_index < args.len and has_room) arg_index else null;
             if (next_positional) |pos| {
                 const is_last = comptime (field_index == struct_info.fields.len - 1);
                 if (parseValue(field_type, args[pos])) |value| {
@@ -324,16 +332,38 @@ fn hasVarArgs(comptime T: type) bool {
     return false;
 }
 
-/// Count the number of required arguments (non-optional, non-varargs)
+/// A field is "required" as a positional when it has no way to be absent: not
+/// varargs (may be empty), not optional (defaults to null), and not defaulted
+/// (a value is already supplied). Counting defaulted fields as required
+/// overstated the `ArgumentTooMany` diagnostic's `min_count` (#675).
+fn isRequiredArg(comptime T: type, comptime field: std.builtin.Type.StructField) bool {
+    return !isVarArgs(field.type) and
+        @typeInfo(field.type) != .optional and
+        !type_utils.hasDefaultValue(T, field.name);
+}
+
+/// Count the number of required arguments (see `isRequiredArg`).
 fn getRequiredArgCount(comptime T: type) usize {
     const type_info = @typeInfo(T);
     if (type_info != .@"struct") return 0;
 
     var count: usize = 0;
     inline for (type_info.@"struct".fields) |field| {
-        if (!isVarArgs(field.type) and @typeInfo(field.type) != .optional) {
-            count += 1;
-        }
+        if (isRequiredArg(T, field)) count += 1;
+    }
+    return count;
+}
+
+/// Count required args (see `isRequiredArg`) strictly after `field_index`. Used
+/// as parse-time lookahead so an optional field only consumes a token when the
+/// required fields behind it can still be satisfied (#675).
+fn countRequiredArgsAfter(comptime T: type, comptime field_index: usize) usize {
+    const type_info = @typeInfo(T);
+    if (type_info != .@"struct") return 0;
+
+    var count: usize = 0;
+    inline for (type_info.@"struct".fields, 0..) |field, i| {
+        if (i > field_index and isRequiredArg(T, field)) count += 1;
     }
     return count;
 }
@@ -946,6 +976,49 @@ test "parseArgs defaulted leading positional falls through to varargs (#626)" {
     try std.testing.expectEqual(@as(usize, 2), parsed.rest.len);
     try std.testing.expectEqualStrings("foo", parsed.rest[0]);
     try std.testing.expectEqualStrings("bar", parsed.rest[1]);
+}
+
+test "parseArgs optional string before required does not steal the token (#675)" {
+    // A string optional always parses, so it used to greedily consume the only
+    // token and starve the required field (ArgumentMissingRequired). With
+    // lookahead it declines the token when a required field behind it would go
+    // unfilled.
+    const TestArgs = struct {
+        maybe: ?[]const u8 = null,
+        required: []const u8,
+    };
+
+    // One token: it must satisfy `required`, not get stolen by `maybe`.
+    {
+        const args = [_][]const u8{"only"};
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqual(@as(?[]const u8, null), parsed.maybe);
+        try std.testing.expectEqualStrings("only", parsed.required);
+    }
+
+    // Two tokens: optional fills first, required second.
+    {
+        const args = [_][]const u8{ "a", "b" };
+        const parsed = try parseArgs(TestArgs, &args, null);
+        try std.testing.expectEqualStrings("a", parsed.maybe.?);
+        try std.testing.expectEqualStrings("b", parsed.required);
+    }
+}
+
+test "parseArgs too-many min_count excludes defaulted fields (#675)" {
+    // A non-optional field with a default is NOT required — the ArgumentTooMany
+    // diagnostic's min_count must not count it.
+    const TestArgs = struct {
+        name: []const u8,
+        tag: []const u8 = "latest",
+    };
+
+    var diag: ?ZcliDiagnostic = null;
+    const args = [_][]const u8{ "a", "b", "c" };
+    try std.testing.expectError(ZcliError.ArgumentTooMany, parseArgs(TestArgs, &args, &diag));
+    // Only `name` is truly required; `tag` is defaulted, so min is 1, not 2.
+    try std.testing.expectEqual(@as(usize, 1), diag.?.ArgumentTooMany.min_count);
+    try std.testing.expectEqual(@as(usize, 2), diag.?.ArgumentTooMany.max_count);
 }
 
 test "parseArgs unicode strings" {
