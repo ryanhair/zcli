@@ -256,6 +256,24 @@ test "alternate screen" {
     try testing.expect(!term.alt_screen);
 }
 
+test "multi-param DEC private mode sequence applies all modes" {
+    var term = try VTerm.init(testing.allocator, 10, 5);
+    defer term.deinit();
+
+    try testing.expect(term.cursor_visible);
+    try testing.expect(!term.alt_screen);
+
+    // A combined sequence like `CSI ? 25 ; 1049 h` must apply BOTH modes,
+    // not just the first param.
+    term.write("\x1b[?25;1049h");
+    try testing.expect(term.cursor_visible);
+    try testing.expect(term.alt_screen);
+
+    term.write("\x1b[?25;1049l");
+    try testing.expect(!term.cursor_visible);
+    try testing.expect(!term.alt_screen);
+}
+
 test "parameter defaults and edge cases" {
     var term = try VTerm.init(testing.allocator, 10, 10);
     defer term.deinit();

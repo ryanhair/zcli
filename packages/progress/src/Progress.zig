@@ -237,7 +237,14 @@ pub const Spinner = struct {
     /// the animation task never reads the caller's slice. Callers holding the
     /// mutex (or before the animate task spawns) may invoke this safely.
     fn storeMessage(self: *Spinner, msg: []const u8) void {
-        const n = @min(msg.len, self.message_buf.len);
+        var n = @min(msg.len, self.message_buf.len);
+        if (n < msg.len) {
+            // A hard byte-count truncation can land mid-codepoint. Back off
+            // over UTF-8 continuation bytes (0b10xxxxxx) until `n` sits on a
+            // codepoint boundary, so ui.text never receives a truncated
+            // multibyte sequence.
+            while (n > 0 and (msg[n] & 0xC0) == 0x80) : (n -= 1) {}
+        }
         @memcpy(self.message_buf[0..n], msg[0..n]);
         self.message_len = n;
     }
@@ -1044,6 +1051,35 @@ test "spinner copies its message so a reused caller buffer is safe" {
     const written = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, written, "loading data") != null);
     try testing.expect(std.mem.indexOf(u8, written, "XXXX") == null);
+}
+
+test "spinner message truncation never splits a UTF-8 codepoint" {
+    // Regression (#643): storeMessage hard-cuts at 256 bytes. Build a
+    // message whose 256-byte cut point lands inside a 4-byte codepoint
+    // (a padding prefix of 253 ASCII bytes followed by 😀, which starts
+    // at byte 253 and spans bytes 253-256) and confirm the stored
+    // message backs off to a codepoint boundary instead of emitting
+    // invalid UTF-8.
+    var output: [8192]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&output);
+
+    var s = try Spinner.init(testing.allocator, &writer, testing.io, .fallback, .{});
+
+    var msg_buf: [512]u8 = undefined;
+    @memset(msg_buf[0..253], 'a');
+    const emoji = "\u{1F600}"; // 😀, 4 UTF-8 bytes
+    @memcpy(msg_buf[253..257], emoji);
+    const msg = msg_buf[0..257];
+
+    s.storeMessage(msg);
+    const stored = s.messageSlice();
+
+    try testing.expect(stored.len <= 256);
+    try testing.expect(std.unicode.utf8ValidateSlice(stored));
+    // The emoji doesn't fully fit within 256 bytes, so it must be dropped
+    // entirely rather than truncated mid-sequence.
+    try testing.expectEqual(@as(usize, 253), stored.len);
+    try testing.expect(std.mem.indexOf(u8, stored, "\u{1F600}") == null);
 }
 
 test "spinner double start does not spawn a second animation" {
