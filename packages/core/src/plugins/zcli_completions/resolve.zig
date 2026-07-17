@@ -134,8 +134,13 @@ pub fn resolve(
 }
 
 /// The completion `Spec` of the option named by `tok` (a `--long` or `-x` flag,
-/// optionally with a trailing `=`), looked up in the command's options then the
-/// globals, or null when unknown / no completion declared.
+/// optionally with a trailing `=`), or null when unknown / no completion
+/// declared. Globals are consulted before command options — the same
+/// global-first precedence `optionTakesSeparateValue` uses, matching the runtime
+/// parser, which extracts global options from argv before command routing so a
+/// name/short collision resolves to the global. The two lookups must agree or the
+/// cursor walk can miscount positional slots (arity) while completing against the
+/// other definition (spec).
 fn optionSpecFor(
     tok: []const u8,
     global_options: []const zcli.OptionInfo,
@@ -143,14 +148,14 @@ fn optionSpecFor(
 ) ?zcli.completion.Spec {
     if (std.mem.startsWith(u8, tok, "--")) {
         const name = tok[2..];
-        if (lookupLong(cmd_options, name)) |o| return o.complete;
         if (lookupLong(global_options, name)) |o| return o.complete;
+        if (lookupLong(cmd_options, name)) |o| return o.complete;
         return null;
     }
     if (tok.len == 2 and tok[0] == '-') {
         const ch = tok[1];
-        if (lookupShort(cmd_options, ch)) |o| return o.complete;
         if (lookupShort(global_options, ch)) |o| return o.complete;
+        if (lookupShort(cmd_options, ch)) |o| return o.complete;
     }
     return null;
 }

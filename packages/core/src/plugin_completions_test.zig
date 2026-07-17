@@ -208,6 +208,55 @@ test "resolve - a positional field with no .complete yields nothing" {
     try expectNoResolve(&.{ "tasks", "list", "" }, 2);
 }
 
+// A command option colliding with a global on long name AND short char, differing
+// in both `takes_value` and `complete`. The resolver's arity walk and its spec
+// lookup must agree on precedence; the runtime parser extracts globals first, so
+// the collision resolves to the GLOBAL definition (issue #577). Two distinct
+// hooks let the test tell which definition won.
+fn globalHook(_: *zcli.completion.Request) anyerror!zcli.completion.Result {
+    return .{};
+}
+fn commandHook(_: *zcli.completion.Request) anyerror!zcli.completion.Result {
+    return .{};
+}
+
+test "resolve - option name collision resolves to the global (arity + spec agree)" {
+    // Global `--out`/`-o` takes a value and has globalHook; command `gen`'s
+    // `--out`/`-o` is a valueless boolean with commandHook. Completing the token
+    // after `--out` must (a) treat it as the option's value, not a positional
+    // (global-first arity), and (b) complete with the global's hook (global-first
+    // spec). A command-first order would classify `--out` as boolean and shift the
+    // slot, completing against the wrong definition.
+    const collide_globals = [_]zcli.OptionInfo{
+        .{ .name = "out", .short = 'o', .takes_value = true, .complete = .{ .hook = globalHook } },
+    };
+    const gen_opts = [_]zcli.OptionInfo{
+        .{ .name = "out", .short = 'o', .takes_value = false, .complete = .{ .hook = commandHook } },
+    };
+    const gen_args = [_]zcli.ArgInfo{.{ .name = "target", .complete = hook_spec }};
+    const collide_commands = [_]zcli.CommandInfo{
+        .{ .path = &.{"gen"}, .options = &gen_opts, .args = &gen_args },
+    };
+
+    // Long form: `tasks gen --out <TAB>`.
+    {
+        const m = (try resolve.resolve(std.testing.allocator, &collide_commands, &collide_globals, &.{ "tasks", "gen", "--out", "" }, 3)) orelse return error.NoMatch;
+        defer std.testing.allocator.free(m.positionals);
+        try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+        try std.testing.expect(m.spec == .hook);
+        try std.testing.expectEqual(&globalHook, m.spec.hook);
+    }
+
+    // Short form: `tasks gen -o <TAB>`.
+    {
+        const m = (try resolve.resolve(std.testing.allocator, &collide_commands, &collide_globals, &.{ "tasks", "gen", "-o", "" }, 3)) orelse return error.NoMatch;
+        defer std.testing.allocator.free(m.positionals);
+        try std.testing.expectEqual(@as(usize, 0), m.positionals.len);
+        try std.testing.expect(m.spec == .hook);
+        try std.testing.expectEqual(&globalHook, m.spec.hook);
+    }
+}
+
 test "resolve - cursor on the command name is not dynamic" {
     try expectNoResolve(&.{ "tasks", "ed" }, 1);
 }
