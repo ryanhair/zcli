@@ -111,6 +111,31 @@ pub fn missingFields(arena: std.mem.Allocator, source: [:0]const u8, container: 
     return missing.items;
 }
 
+/// The `targets` that appear more than once, each reported a single time in the
+/// order of its first repeat. Lets a bulk `rm` reject a batch that would
+/// otherwise strip a field on the first pass and hit `FieldNotFound` on the
+/// second.
+pub fn duplicateFields(arena: std.mem.Allocator, targets: []const []const u8) ![]const []const u8 {
+    var dups = std.ArrayList([]const u8).empty;
+    for (targets, 0..) |t, i| {
+        var already = false;
+        for (dups.items) |d| {
+            if (std.mem.eql(u8, d, t)) {
+                already = true;
+                break;
+            }
+        }
+        if (already) continue;
+        for (targets[i + 1 ..]) |other| {
+            if (std.mem.eql(u8, other, t)) {
+                try dups.append(arena, t);
+                break;
+            }
+        }
+    }
+    return dups.items;
+}
+
 /// The ordering-relevant shape of an existing `Args`/`Options` field.
 pub const FieldShape = struct {
     name: []const u8,
@@ -561,6 +586,23 @@ test "removing an absent field errors" {
     defer arena.deinit();
     const a = arena.allocator();
     try testing.expectError(SpliceError.FieldNotFound, removeOption(a, shell, "ghost"));
+}
+
+test "duplicateFields reports each repeated name once, in first-repeat order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 0), (try duplicateFields(a, &.{ "a", "b", "c" })).len);
+
+    const dups = try duplicateFields(a, &.{ "region", "retries", "region", "region" });
+    try testing.expectEqual(@as(usize, 1), dups.len);
+    try testing.expectEqualStrings("region", dups[0]);
+
+    const many = try duplicateFields(a, &.{ "x", "y", "x", "y", "z" });
+    try testing.expectEqual(@as(usize, 2), many.len);
+    try testing.expectEqualStrings("x", many[0]);
+    try testing.expectEqualStrings("y", many[1]);
 }
 
 test "duplicate field is rejected" {

@@ -58,6 +58,19 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         };
     }
 
+    // Reject duplicates up front: the removal loop strips each field once, so a
+    // repeated name would remove it on the first pass and fail on the second.
+    const dups = try splice.duplicateFields(arena, names);
+    if (dups.len > 0) {
+        var msg = std.Io.Writer.Allocating.init(arena);
+        try msg.writer.print("Error: option name listed more than once: ", .{});
+        for (dups, 0..) |d, i| {
+            if (i > 0) try msg.writer.print(", ", .{});
+            try msg.writer.print("'{s}'", .{d});
+        }
+        return context.fail("{s}", .{msg.written()});
+    }
+
     const raw = std.Io.Dir.cwd().readFileAlloc(io, file_path, arena, .limited(max_source_bytes)) catch {
         return context.fail("Error: Command not found: {s}", .{file_path});
     };
