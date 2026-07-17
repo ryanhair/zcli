@@ -108,13 +108,17 @@ pub const Table = struct {
     /// is into the caller's full row slice. It does not bound against the row
     /// count — the caller clamps (a click below the last populated row is theirs to
     /// reject); it only rejects the header and rows past the rendered rect.
+    ///
+    /// `scroll` is the window `view` last painted: `view` writes its derived scroll
+    /// back to `self.scroll`, so a click hit-tests the same window on screen even
+    /// when the caller set `highlighted` directly and never called `handle`.
     pub fn rowAt(self: *const Table, rect: Rect, y: u16) ?usize {
         if (y < rect.y + header_rows) return null; // header or above
         if (y >= rect.y + rect.h) return null; // below the table
         return self.scroll + (y - rect.y - header_rows);
     }
 
-    pub fn view(self: *const Table, a: std.mem.Allocator, opts: ViewOpts) !Node {
+    pub fn view(self: *Table, a: std.mem.Allocator, opts: ViewOpts) !Node {
         const th = opts.theme;
         const cols = opts.columns;
         const count = opts.rows.len;
@@ -141,8 +145,12 @@ pub const Table = struct {
         const hi = if (count == 0) 0 else @min(self.highlighted, count - 1);
         const visible = @min(@max(@as(usize, opts.height), 1), count);
         // Persistent scroll, re-derived so the selection stays in view even if the
-        // caller set `highlighted` directly, bypassing `handle`.
+        // caller set `highlighted` directly, bypassing `handle`. Written back to
+        // `self.scroll` so `rowAt` hit-tests a click against the same window this
+        // frame actually paints — otherwise a caller that set `highlighted` and
+        // clicked before any `handle` would map the click through the stale scroll.
         const scroll = if (count == 0) 0 else scrollFor(self.scroll, hi, @intCast(visible), count);
+        self.scroll = scroll;
 
         const more_above = scroll > 0;
         const more_below = scroll + visible < count;
