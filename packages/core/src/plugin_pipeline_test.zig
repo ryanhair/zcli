@@ -1215,3 +1215,172 @@ test "not_found (self-contained): no command at all lists commands, no bare fall
     // The registry's own bare fallback must not double-print.
     try testing.expect(!contains(cap.stderr, "Use --help for usage information"));
 }
+
+// ---------------------------------------------------------------------------
+// Root index routing (ADR-0029): the root of the command tree is a group; a
+// command registered at the EMPTY path is its index. It runs for bare argv,
+// option-first argv, and — when its Args declares positionals — unmatched
+// first words. Named commands (file-based AND plugin) always win over it.
+// ---------------------------------------------------------------------------
+
+const RootWithPositional = struct {
+    var ran = false;
+    var last_word: ?[]const u8 = null;
+    var last_loud = false;
+    pub const meta = .{ .description = "root with a positional" };
+    pub const Args = struct { word: ?[]const u8 = null };
+    pub const Options = struct { loud: bool = false };
+    pub fn execute(args: Args, options: Options, _: anytype) !void {
+        ran = true;
+        last_word = args.word;
+        last_loud = options.loud;
+    }
+    fn reset() void {
+        ran = false;
+        last_word = null;
+        last_loud = false;
+    }
+};
+
+const RootNoPositional = struct {
+    var ran = false;
+    pub const meta = .{ .description = "dashboard root, no positionals" };
+    pub const Args = struct {};
+    pub const Options = struct { loud: bool = false };
+    pub fn execute(_: Args, _: Options, _: anytype) !void {
+        ran = true;
+    }
+};
+
+test "root index: bare argv executes the empty-path command" {
+    const App = zcli.Registry.init(test_config)
+        .register("", RootWithPositional)
+        .register("greet", Greet)
+        .build();
+
+    RootWithPositional.reset();
+    try run(App, &.{});
+    try testing.expect(RootWithPositional.ran);
+    try testing.expect(RootWithPositional.last_word == null);
+}
+
+test "root index: option-first argv routes to the root with the full argv" {
+    const App = zcli.Registry.init(test_config)
+        .register("", RootWithPositional)
+        .register("greet", Greet)
+        .build();
+
+    RootWithPositional.reset();
+    try run(App, &.{"--loud"});
+    try testing.expect(RootWithPositional.ran);
+    try testing.expect(RootWithPositional.last_loud);
+}
+
+test "root index: an unmatched word becomes the root's positional" {
+    const App = zcli.Registry.init(test_config)
+        .register("", RootWithPositional)
+        .register("greet", Greet)
+        .build();
+
+    RootWithPositional.reset();
+    try run(App, &.{"World"});
+    try testing.expect(RootWithPositional.ran);
+    try testing.expectEqualStrings("World", RootWithPositional.last_word.?);
+}
+
+test "root index: an exact command name beats the root's positional" {
+    const App = zcli.Registry.init(test_config)
+        .register("", RootWithPositional)
+        .register("greet", Greet)
+        .build();
+
+    RootWithPositional.reset();
+    Greet.executed = false;
+    try run(App, &.{"greet"});
+    try testing.expect(Greet.executed);
+    try testing.expect(!RootWithPositional.ran);
+}
+
+test "root index: a plugin command beats the root's positional" {
+    const VersionCmdPlugin = struct {
+        var plugin_ran = false;
+        pub const commands = struct {
+            pub const version = struct {
+                pub const meta = .{ .description = "version" };
+                pub const Args = struct {};
+                pub const Options = struct {};
+                pub fn execute(_: Args, _: Options, _: anytype) !void {
+                    @import("std").debug.assert(true);
+                    plugin_ran = true;
+                }
+            };
+        };
+    };
+    const App = zcli.Registry.init(test_config)
+        .register("", RootWithPositional)
+        .registerPlugin(VersionCmdPlugin)
+        .build();
+
+    RootWithPositional.reset();
+    VersionCmdPlugin.plugin_ran = false;
+    try run(App, &.{"version"});
+    try testing.expect(VersionCmdPlugin.plugin_ran);
+    try testing.expect(!RootWithPositional.ran);
+}
+
+test "root index without positionals: stray word stays CommandNotFound (suggestions preserved)" {
+    const App = zcli.Registry.init(test_config)
+        .register("", RootNoPositional)
+        .register("greet", Greet)
+        .registerPlugin(NotFound)
+        .build();
+
+    RootNoPositional.ran = false;
+    const cap = try runCapture(App, &.{"gret"});
+    defer cap.deinit(testing.allocator);
+
+    // The gate in executeResolvedCommand: no declared positionals means the
+    // stray word is a mistyped command, not a value — the not_found plugin
+    // renders "did you mean" and the root does NOT run.
+    try testing.expect(!RootNoPositional.ran);
+    try testing.expect(contains(cap.stderr, "greet"));
+}
+
+test "root index without positionals: bare argv still executes it" {
+    const App = zcli.Registry.init(test_config)
+        .register("", RootNoPositional)
+        .register("greet", Greet)
+        .build();
+
+    RootNoPositional.ran = false;
+    try run(App, &.{});
+    try testing.expect(RootNoPositional.ran);
+}
+
+test "group index with positionals: exact subcommand wins, unmatched word is a value (all-depths rule)" {
+    const UsersIndex = struct {
+        var last_id: ?[]const u8 = null;
+        pub const meta = .{ .description = "look up a user" };
+        pub const Args = struct { id: []const u8 };
+        pub const Options = struct {};
+        pub fn execute(args: Args, _: Options, _: anytype) !void {
+            last_id = args.id;
+        }
+    };
+    const App = zcli.Registry.init(test_config)
+        .register("users", UsersIndex)
+        .register("users list", Greet)
+        .build();
+
+    UsersIndex.last_id = null;
+    Greet.executed = false;
+
+    // Exact subcommand name: longest path wins.
+    try run(App, &.{ "users", "list" });
+    try testing.expect(Greet.executed);
+    try testing.expect(UsersIndex.last_id == null);
+
+    // Unmatched word: the group index's declared positional captures it.
+    try run(App, &.{ "users", "123" });
+    try testing.expectEqualStrings("123", UsersIndex.last_id.?);
+}

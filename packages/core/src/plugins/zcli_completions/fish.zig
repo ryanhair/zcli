@@ -67,6 +67,14 @@ pub fn generate(
     }
     if (global_options.len > 0) try writer.writeAll("\n");
 
+    // The root command's own options (the root group's index, ADR-0029):
+    // offered while no subcommand has been typed — the empty-path condition,
+    // the same gate as the top-level subcommand list.
+    for (root.options) |opt| {
+        try writeOption(arena, writer, app_name, root.path, opt);
+    }
+    if (root.options.len > 0) try writer.writeAll("\n");
+
     // Subcommands + per-command options, walking the tree.
     try writeNode(arena, writer, app_name, root);
 

@@ -12,7 +12,7 @@ myapp/
 ├── src/
 │   ├── main.zig         # Entry point, minimal runtime code
 │   └── commands/
-│       ├── root.zig      # Optional root command (when no subcommand given)
+│       ├── index.zig     # Optional root command: `myapp` itself (single-command CLIs)
 │       ├── version.zig   # `myapp version` command (leaf command)
 │       └── users/
 │           ├── index.zig  # `myapp users` command (optional for command groups)
@@ -26,7 +26,7 @@ myapp/
 - Leaf commands (no subcommands): Use a `.zig` file directly
 - Command groups (has subcommands): Use a folder with optional `index.zig`
 - File names map directly to command names (kebab-case supported)
-- Special file: `root.zig` for base command (optional, executed when no subcommand given)
+- The root of `commands/` is a group like any other: a top-level `index.zig` is the root command, executed for `myapp` itself (bare invocation, leading options, or root positionals) — an executable root index with no sibling commands is a single-command CLI
 - Hidden directories (starting with `.`) are automatically skipped
 - Underscore-prefixed files and directories (e.g. `_helpers.zig`, `_render/`) are helper code a command imports, never commands themselves
 - Maximum nesting depth: 6 levels (configurable)

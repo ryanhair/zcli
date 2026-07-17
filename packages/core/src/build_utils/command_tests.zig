@@ -119,6 +119,9 @@ pub fn addCommandTests(
 
     // Discovery failures (e.g. no commands dir yet) simply yield an empty step.
     var commands = command_discovery.discoverCommands(b, config.commands_dir) catch return test_step;
+    // The root group's index (a top-level index.zig) is a real command file
+    // that may carry tests, same as any nested group index.
+    if (commands.root_index) |*ri| ctx.addOne(ri);
     ctx.addMapTests(&commands.root);
 
     return test_step;
@@ -176,6 +179,10 @@ const Ctx = struct {
 /// directly (a regression fails here, not an opaque example build). Caller owns
 /// the returned string.
 fn cmdTestModuleName(allocator: std.mem.Allocator, path: []const []const u8) ![]u8 {
+    // The root group's index has the empty path; give it a stable name in the
+    // same reserved (underscore-prefixed, hence non-producible) namespace as
+    // its registry module.
+    if (path.len == 0) return allocator.dupe(u8, "cmdtest__root_index");
     var parts = std.ArrayList([]const u8).empty;
     defer {
         for (parts.items) |p| allocator.free(p);
@@ -194,6 +201,12 @@ fn cmdTestModuleName(allocator: std.mem.Allocator, path: []const []const u8) ![]
 // ============================================================================
 
 const testing = std.testing;
+
+test "cmdTestModuleName names the root index from the reserved namespace" {
+    const name = try cmdTestModuleName(testing.allocator, &.{});
+    defer testing.allocator.free(name);
+    try testing.expectEqualStrings("cmdtest__root_index", name);
+}
 
 test "cmdTestModuleName joins path parts under a cmdtest_ prefix" {
     const name = try cmdTestModuleName(testing.allocator, &.{ "users", "list" });

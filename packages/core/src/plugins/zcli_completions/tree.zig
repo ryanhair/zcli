@@ -78,7 +78,16 @@ pub fn build(
 
     for (commands) |cmd| {
         if (cmd.hidden) continue;
-        if (cmd.path.len == 0) continue;
+        // The empty path is the root group's index (ADR-0029): the app's own
+        // command. Attach its metadata to the synthetic root so renderers
+        // offer its options at the top level alongside command names.
+        if (cmd.path.len == 0) {
+            root.description = cmd.description;
+            root.aliases = cmd.aliases;
+            root.options = cmd.options;
+            root.args = cmd.args;
+            continue;
+        }
         // Hiddenness propagates to descendants: a hidden group (e.g. a hidden
         // `secret/index.zig`) must also suppress its visible children, which
         // would otherwise materialise the intermediate node and offer the group

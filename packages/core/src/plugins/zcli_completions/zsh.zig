@@ -48,9 +48,11 @@ pub fn generate(
     }
     try writer.writeAll("\n");
 
-    // Top-level _arguments: global options + a command slot + the rest.
+    // Top-level _arguments: global options + the root command's own options
+    // (the root group's index, if any — ADR-0029) + a command slot + the rest.
     try writer.writeAll("    _arguments -S -C \\\n");
     try writeOptionSpecs(arena, writer, app_name, "        ", global_options);
+    try writeOptionSpecs(arena, writer, app_name, "        ", root.options);
     try writer.writeAll("        '1: :->command' \\\n");
     try writer.writeAll("        '*::arg:->args'\n\n");
 

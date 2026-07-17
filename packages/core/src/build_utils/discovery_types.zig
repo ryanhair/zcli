@@ -15,7 +15,8 @@ pub const CommandType = enum {
     leaf,
     /// Pure command group - directory without index.zig, always shows help
     pure_group,
-    /// Optional command group - directory with index.zig, can execute but no Args allowed
+    /// Optional command group - directory with index.zig; may execute and may
+    /// declare positional Args (exact subcommand names win over positionals)
     optional_group,
 };
 
@@ -83,6 +84,12 @@ fn lessByName(_: void, a: DiscoveredCommand, b: DiscoveredCommand) bool {
 pub const DiscoveredCommands = struct {
     allocator: std.mem.Allocator,
     root: std.StringHashMap(DiscoveredCommand),
+    /// The root group's own index: a top-level `index.zig` in commands_dir.
+    /// The root of the command tree is a group like any other (ADR-0029) —
+    /// this is its `optional_group` command, registered at the empty path.
+    /// An executable root index with no sibling commands is a single-command
+    /// CLI. Null when commands_dir has no top-level index.zig (a pure root).
+    root_index: ?DiscoveredCommand = null,
 
     pub fn init(allocator: std.mem.Allocator) DiscoveredCommands {
         return DiscoveredCommands{
@@ -100,6 +107,7 @@ pub const DiscoveredCommands = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.root.deinit();
+        if (self.root_index) |*ri| ri.deinit(self.allocator);
     }
 };
 

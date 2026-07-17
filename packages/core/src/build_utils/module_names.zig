@@ -14,6 +14,12 @@ const DiscoveredCommand = discovery_types.DiscoveredCommand;
 const DiscoveredCommands = discovery_types.DiscoveredCommands;
 const CommandType = discovery_types.CommandType;
 
+/// The root group's index module (a top-level `index.zig`, ADR-0029). The
+/// leading underscore keeps it out of the producible namespace: discovery
+/// skips underscore-prefixed files and directories, so no command file can
+/// ever sanitize to this name.
+pub const root_index_module_name = "_root_index";
+
 /// Top-level leaf command: `cmd_<name>`. The prefix keeps top-level command
 /// modules from colliding with other module-level decls (and keeps "test"
 /// legal — `@import("test")` aside, `const test = ...` is not).
@@ -166,6 +172,16 @@ pub fn flatten(allocator: std.mem.Allocator, commands: DiscoveredCommands) ![]Em
         for (out.items) |e| allocator.free(e.module_name);
         out.deinit(allocator);
     }
+    // The root group's index (empty path) comes first — before the pre-order
+    // walk — mirroring its position at the top of the tree.
+    if (commands.root_index) |*ri| {
+        try out.append(allocator, .{
+            .module_name = try allocator.dupe(u8, root_index_module_name),
+            .path = ri.path,
+            .file_path = ri.file_path,
+            .kind = ri.command_type,
+        });
+    }
     try flattenMap(allocator, &out, &commands.root, true);
     return out.toOwnedSlice(allocator);
 }
@@ -229,6 +245,30 @@ test "pathIndexModuleName appends _index" {
     const name = try pathIndexModuleName(testing.allocator, &.{ "sprint", "sub-group" });
     defer testing.allocator.free(name);
     try testing.expectEqualStrings("sprint_sub_group_index", name);
+}
+
+test "flatten emits the root group's index first, at the empty path" {
+    const allocator = testing.allocator;
+    var commands = DiscoveredCommands.init(allocator);
+    defer commands.deinit();
+
+    try putLeaf(allocator, &commands.root, "greet", &.{"greet"}, "greet.zig");
+    commands.root_index = .{
+        .name = try allocator.dupe(u8, "index"),
+        .path = try allocator.alloc([]const u8, 0),
+        .file_path = try allocator.dupe(u8, "index.zig"),
+        .command_type = .optional_group,
+        .subcommands = null,
+    };
+
+    const emitted = try flatten(allocator, commands);
+    defer freeEmitted(allocator, emitted);
+
+    try testing.expectEqual(@as(usize, 2), emitted.len);
+    try testing.expectEqualStrings(root_index_module_name, emitted[0].module_name);
+    try testing.expectEqual(@as(usize, 0), emitted[0].path.len);
+    try testing.expectEqualStrings("index.zig", emitted[0].file_path);
+    try testing.expectEqualStrings("cmd_greet", emitted[1].module_name);
 }
 
 // --- Collision detection helpers ---------------------------------------------

@@ -63,9 +63,32 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
     const stdout = context.stdout();
     const theme = &context.theme;
 
-    // Root is the app name itself.
+    // Root is the app name itself — enriched by the root group's index when a
+    // top-level index.zig exists (ADR-0029): the app's own command.
     try paint(stdout, theme, context.app_name, .header);
-    try stdout.writeByte('\n');
+    if (discovered.root_index) |ri| {
+        const parsed = parseFile(arena, io, dir, ri.file_path);
+        try paint(stdout, theme, " (root command)", .marker);
+        if (parsed.description) |d| {
+            try paint(stdout, theme, " [", .desc);
+            try paint(stdout, theme, d, .desc);
+            try paint(stdout, theme, "]", .desc);
+        }
+        try stdout.writeByte('\n');
+        if (options.show_options) {
+            // Render the root command's own signature exactly like a leaf's,
+            // anchored at the left margin above the child rows.
+            const root_node = Node{
+                .name = context.app_name,
+                .command_type = .leaf,
+                .args = parsed.args,
+                .options = parsed.options,
+            };
+            try renderSignature(arena, stdout, theme, root_node, "");
+        }
+    } else {
+        try stdout.writeByte('\n');
+    }
 
     try renderNodes(arena, stdout, theme, children, "", options.show_options);
 }
