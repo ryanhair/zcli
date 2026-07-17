@@ -8,9 +8,11 @@ Parsing errors are handled for you. The framework parses and validates every arg
 
 ```
 $ myapp deploy --verbos
-Unknown option '--verbos'
+Error: Unknown option '--verbos'
 Did you mean:
   --verbose
+
+Run 'myapp deploy --help' for usage.
 ```
 
 The exit code follows the conventional CLI split: `0` success, `2` misuse (a bad/unknown/missing option or argument, or a constraint/validation failure), `3` an unknown (sub)command, and `1` a general failure a command reported itself via `context.fail()`. A closed downstream pipe (`myapp cmd | head`) exits `141` like any well-behaved unix program.
