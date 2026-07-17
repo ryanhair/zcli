@@ -32,6 +32,39 @@ pub fn groupPath(arena: std.mem.Allocator, segments: []const []const u8) ![]cons
     return buf.items;
 }
 
+/// Rewrite scaffold-generated self-references to a command's own path after
+/// `mv` renames its file. The scaffolder (`add/_generate.zig`) embeds the
+/// space-joined command path in three places: the leading `meta.examples`
+/// entry, the `execute` TODO print, and the co-located `test "<path>"` name.
+/// Any occurrence of `old_path` that starts and ends on a word boundary (not
+/// embedded in a longer identifier or word) is rewritten to `new_path`; other
+/// prose — e.g. a hand-written description mentioning the old name — is left
+/// alone.
+pub fn rewriteCommandPathReferences(arena: std.mem.Allocator, content: []const u8, old_path: []const u8, new_path: []const u8) ![]const u8 {
+    if (old_path.len == 0 or std.mem.eql(u8, old_path, new_path)) return content;
+
+    var out = std.ArrayList(u8).empty;
+    var i: usize = 0;
+    while (i < content.len) {
+        if (std.mem.startsWith(u8, content[i..], old_path) and
+            !isWordByte(if (i == 0) null else content[i - 1]) and
+            !isWordByte(if (i + old_path.len >= content.len) null else content[i + old_path.len]))
+        {
+            try out.appendSlice(arena, new_path);
+            i += old_path.len;
+        } else {
+            try out.append(arena, content[i]);
+            i += 1;
+        }
+    }
+    return out.items;
+}
+
+fn isWordByte(b: ?u8) bool {
+    const c = b orelse return false;
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
 /// Atomically replace the file at `path` with `data`: write to a sibling
 /// `<path>.tmp`, then `rename` it over the target. A write failure or crash
 /// mid-stream leaves the original file untouched (only the throwaway temp is
@@ -95,6 +128,60 @@ test "removeEmptyParents cascades up but stops at a non-empty group" {
     try testing.expect(!dirExists(tmp.dir, io, "src/commands/a/b"));
     try testing.expect(dirExists(tmp.dir, io, "src/commands/a"));
     try testing.expect(dirExists(tmp.dir, io, "src/commands/a/kept"));
+}
+
+test "rewriteCommandPathReferences rewrites the scaffolded self-references" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const content =
+        \\pub const meta = .{
+        \\    .description = "Create a user",
+        \\    .examples = &.{
+        \\        "users create <email>",
+        \\    },
+        \\};
+        \\
+        \\pub fn execute(_: Args, _: Options, context: *Context) !void {
+        \\    const stdout = context.stdout();
+        \\    try stdout.print("TODO: Implement users create\n", .{});
+        \\}
+        \\
+        \\test "users create" {
+        \\    _ = @This();
+        \\}
+        \\
+    ;
+
+    const got = try rewriteCommandPathReferences(a, content, "users create", "admin register");
+
+    try testing.expect(std.mem.indexOf(u8, got, "\"admin register <email>\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "TODO: Implement admin register\\n") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "test \"admin register\" {") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "users create") == null);
+}
+
+test "rewriteCommandPathReferences does not touch a longer identifier containing the old path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // "create" is a word-boundary match inside "users create" but "recreate"
+    // must not be split just because it contains "create".
+    const content = "// recreate the users create index\n";
+    const got = try rewriteCommandPathReferences(a, content, "create", "register");
+    try testing.expectEqualStrings("// recreate the users register index\n", got);
+}
+
+test "rewriteCommandPathReferences is a no-op when the path is unchanged" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const content = "test \"users create\" {}\n";
+    const got = try rewriteCommandPathReferences(a, content, "users create", "users create");
+    try testing.expectEqualStrings(content, got);
 }
 
 test "writeFileAtomic replaces contents and leaves no temp behind" {

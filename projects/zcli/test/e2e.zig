@@ -1250,11 +1250,12 @@ test "scaffolded project builds, runs, and round-trips add command" {
         try expectOk(r);
     }
     {
-        // The moved command runs at its new path (its execute() travelled intact).
+        // The moved command runs at its new path (its execute() travelled intact,
+        // and mv rewrote the scaffolded TODO print to the new path — #591).
         var r = try run(proj, &.{ demo_bin, "tools", "scratch" });
         defer r.deinit();
         try expectOk(r);
-        try expectContains(r.stdout, "TODO: Implement scratch");
+        try expectContains(r.stdout, "TODO: Implement tools scratch");
     }
     {
         var r = try run(proj, &.{ zcli_exe, "rm", "command", "tools/scratch" });
