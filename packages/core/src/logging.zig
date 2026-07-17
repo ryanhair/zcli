@@ -119,6 +119,14 @@ pub fn invalidCommandNameError(name: []const u8, reason: []const u8) void {
     logBuildError("Invalid command name '{s}': {s}", .{ name, reason });
 }
 
+/// Format build error for an invalid plugin file/directory name. This is a
+/// hard error, not a warning: silently skipping the entry makes the plugin
+/// vanish from the CLI with no reliable signal (mirrors
+/// `invalidCommandNameError`, which this is deliberately kept parallel to).
+pub fn invalidPluginNameError(name: []const u8, reason: []const u8) void {
+    logBuildError("Invalid plugin name '{s}': {s}", .{ name, reason });
+}
+
 /// Format build error for two commands that resolve to the same command name
 /// (e.g. `foo.zig` leaf and `foo/` group). Hard error: `put`-ing the same key
 /// twice would otherwise silently drop one, non-deterministically, depending on
