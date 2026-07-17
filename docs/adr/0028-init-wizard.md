@@ -133,9 +133,20 @@ Each lands independently, in this order:
    `--template single` fails closed with the reason. The gate clears
    automatically at the next release bump.
 4. **Plugin config prompt-through** (`github_upgrade` repo, `--upgrade-repo`,
-   git-remote default).
+   git-remote default). — Implemented: `--upgrade-repo OWNER/REPO` implies
+   selecting the plugin; interactive picker selection gets a follow-up text
+   prompt defaulted from the destination's github origin remote; slug
+   validated to `[A-Za-z0-9._-]` + one `/` (doubles as the generated-literal
+   injection guard); empty/`--defaults` keep the compiling TODO placeholder,
+   and `verification` stays a TODO either way.
 5. **`zcli gh add workflow ci`**, then the extras step reusing both gh
-   scaffolds from init.
+   scaffolds from init. — Implemented: workflow content + write logic moved
+   to the `scaffold` shared module (command modules can't import each
+   other); new `gh add workflow ci` (single ubuntu build+test job, pinned
+   actions); init's `--github <ci,release|none>` flag and interactive
+   multi-select with `release` preselected when github_upgrade was chosen
+   (it feeds the self-updater); workflows written with the project files so
+   the initial commit captures them.
 
 Every increment keeps `zig build e2e` green and adds e2e coverage for its
 non-interactive path (the interactive paths are covered by the existing

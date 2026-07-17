@@ -491,6 +491,117 @@ test "init --plugins rejects unknown names, listing the valid set, creating noth
     try testing.expect(!fileExists(tmp.dir, "myapp"));
 }
 
+test "init --upgrade-repo renders the repo and implies the github_upgrade plugin" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "help", "--upgrade-repo", "acme/mytool", "--no-build" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const build_zig = try readFile(proj, arena.allocator(), "build.zig");
+    // The flag implies the plugin even though --plugins named only help...
+    try expectContains(build_zig, "zcli.builtin(.github_upgrade");
+    // ...and the repo lands in the config instead of the TODO placeholder.
+    try expectContains(build_zig, ".repo = \"acme/mytool\",");
+    try testing.expect(std.mem.indexOf(u8, build_zig, "OWNER/REPO") == null);
+    // Verification stays an explicit TODO — key pinning is a deliberate act.
+    try expectContains(build_zig, ".verification = .checksum_only");
+}
+
+test "init --upgrade-repo rejects a malformed slug, creating nothing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--upgrade-repo", "not-a-slug", "--no-build" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "Expected OWNER/REPO");
+    try testing.expect(!fileExists(tmp.dir, "myapp"));
+}
+
+test "init --github ci,release scaffolds both workflows; default scaffolds none" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--github", "ci,release", "--defaults", "--no-build" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    try testing.expect(fileExists(proj, ".github/workflows/ci.yml"));
+    try testing.expect(fileExists(proj, ".github/workflows/release.yml"));
+
+    var r2 = try run(tmp.dir, &.{ zcli_exe, "init", "plain", "--defaults", "--no-build" });
+    defer r2.deinit();
+    try expectOk(r2);
+    var plain = try tmp.dir.openDir(io, "plain", .{});
+    defer plain.close(io);
+    try testing.expect(!fileExists(plain, ".github/workflows/ci.yml"));
+    try testing.expect(!fileExists(plain, ".github/workflows/release.yml"));
+}
+
+test "init --defaults with github_upgrade selected preselects the release workflow" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--plugins", "github_upgrade", "--defaults", "--no-build" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+    // The release workflow feeds the self-updater — suggested on by default.
+    try testing.expect(fileExists(proj, ".github/workflows/release.yml"));
+    try testing.expect(!fileExists(proj, ".github/workflows/ci.yml"));
+}
+
+test "init --github rejects unknown workflow names, creating nothing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--github", "ci,deploy", "--no-build" });
+    defer r.deinit();
+    try testing.expect(r.exit_code != 0);
+    try expectContains(r.stderr, "unknown workflow");
+    try testing.expect(!fileExists(tmp.dir, "myapp"));
+}
+
+test "gh add workflow ci scaffolds the pinned CI workflow" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try run(tmp.dir, &.{ zcli_exe, "init", "myapp", "--defaults", "--no-build" });
+    defer r.deinit();
+    try expectOk(r);
+
+    var proj = try tmp.dir.openDir(io, "myapp", .{});
+    defer proj.close(io);
+
+    var r2 = try run(proj, &.{ zcli_exe, "gh", "add", "workflow", "ci" });
+    defer r2.deinit();
+    try expectOk(r2);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const ci = try readFile(proj, arena.allocator(), ".github/workflows/ci.yml");
+    try expectContains(ci, "name: CI");
+    try expectContains(ci, "zig build test");
+    try expectContains(ci, "mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1");
+
+    // Idempotence guard: a second run refuses rather than overwrites.
+    var r3 = try run(proj, &.{ zcli_exe, "gh", "add", "workflow", "ci" });
+    defer r3.deinit();
+    try testing.expect(r3.exit_code != 0);
+    try expectContains(r3.stderr, "already exists");
+}
+
 test "init --dry-run reports the plan and writes nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2465,6 +2576,7 @@ test "interactive: init's plugin multi-select toggles an opt-in plugin" {
     _ = script
         .expect("Select built-in plugins").delay(settle_ms)
         .sendRaw("\x1b[B\x1b[B\x1b[B \r")
+        .expect("GitHub Actions workflows").delay(settle_ms).sendRaw("\r")
         .expect("Proceed?").delay(settle_ms).sendRaw("\r");
 
     var result = harness.runInteractive(
@@ -2531,6 +2643,8 @@ test "interactive: init's plugin multi-select toggles github_upgrade and the sca
     _ = script
         .expect("Select built-in plugins").delay(settle_ms)
         .sendRaw("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B \r")
+        .expect("GitHub repo for self-update").delay(settle_ms).sendRaw("\r")
+        .expect("GitHub Actions workflows").delay(settle_ms).sendRaw("\r")
         .expect("Proceed?").delay(settle_ms).sendRaw("\r");
 
     var result = harness.runInteractive(

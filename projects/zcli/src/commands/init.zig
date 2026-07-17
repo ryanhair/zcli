@@ -70,6 +70,7 @@ pub const meta = .{
         .git = .{ .description = "Initialize a git repository with a .gitignore and an initial commit (--no-git to skip)" },
         .build = .{ .description = "Verify the scaffold with `zig build` after fetching (--no-build to skip)" },
         .upgrade_repo = .{ .description = "GitHub OWNER/REPO the zcli_github_upgrade plugin pulls releases from (implies selecting that plugin)" },
+        .github = .{ .description = "GitHub Actions workflows as a comma-separated list of ci,release — or 'none'" },
     },
 };
 
@@ -94,7 +95,11 @@ pub const Options = struct {
     git: bool = true,
     build: bool = true,
     upgrade_repo: ?[]const u8 = null,
+    github: ?[]const u8 = null,
 };
+
+/// Which GitHub Actions workflows to scaffold (the extras step).
+const Workflows = struct { ci: bool = false, release: bool = false };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
     const allocator = context.allocator;
@@ -310,7 +315,11 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             break :repo r;
         }
         if (use_defaults or std.mem.indexOfScalar(usize, selected, upgrade_idx) == null) break :repo null;
-        const remote_default = gitRemoteSlug(allocator, io);
+        // The remote default only makes sense for `init .` in an existing
+        // repo — the process cwd IS the destination there. For a new
+        // subdirectory project, the enclosing directory's remote (if any)
+        // names a *different* project; suggesting it would be a trap.
+        const remote_default = if (use_current_dir) gitRemoteSlug(allocator, io) else null;
         defer if (remote_default) |d| allocator.free(d);
         const answer = p.text(.{
             .message = "GitHub repo for self-update releases (OWNER/REPO, empty to fill in later):",
@@ -327,6 +336,38 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         break :repo trimmed;
     };
 
+    // GitHub Actions extras (ADR-0028 step 5): --github decides outright;
+    // otherwise ask, with `release` preselected when github_upgrade was
+    // chosen — the release workflow is what feeds the self-updater.
+    // --defaults / non-TTY take the preselection, same as the plugin picker.
+    const upgrade_selected = std.mem.indexOfScalar(usize, selected, upgrade_idx) != null;
+    const workflows: Workflows = if (options.github) |github_arg|
+        parseGithubFlag(github_arg) catch {
+            return context.fail("Error: unknown workflow in --github '{s}'\n  Valid workflows: ci, release — or 'none'", .{github_arg});
+        }
+    else if (use_defaults)
+        Workflows{ .release = upgrade_selected }
+    else wf: {
+        var wf_defaults = [_]bool{ false, upgrade_selected };
+        const wf_selected = p.multiSelect(.{
+            .message = "GitHub Actions workflows to add:",
+            .choices = &.{
+                "ci — build and test on every push and PR",
+                "release — build binaries and publish a GitHub release on tag push",
+            },
+            .defaults = &wf_defaults,
+        }) catch |err| switch (err) {
+            error.EndOfStream => break :wf Workflows{ .release = upgrade_selected },
+            else => return err,
+        };
+        defer allocator.free(wf_selected);
+        var wf = Workflows{};
+        for (wf_selected) |idx| {
+            if (idx == 0) wf.ci = true else wf.release = true;
+        }
+        break :wf wf;
+    };
+
     // Build the `zcli.builtin(...)` registration lines for build.zig.
     const plugins_block = try renderPluginsBlock(allocator, selected, upgrade_repo);
     defer allocator.free(plugins_block);
@@ -334,7 +375,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // Everything is decided: one summary, shown for both the dry run and the
     // interactive confirm (ADR-0028 step 6).
     const summarize = struct {
-        fn print(w: anytype, tpl: Template, sel: []const usize, up_repo: ?[]const u8, with_git: bool, with_build: bool) !void {
+        fn print(w: anytype, tpl: Template, sel: []const usize, up_repo: ?[]const u8, wf: Workflows, with_git: bool, with_build: bool) !void {
             try w.print("  template: {s}\n", .{@tagName(tpl)});
             try w.print("  plugins:  ", .{});
             if (sel.len == 0) {
@@ -345,6 +386,14 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             }
             try w.print("\n", .{});
             if (up_repo) |r| try w.print("  upgrades: github.com/{s} releases\n", .{r});
+            if (wf.ci or wf.release) {
+                try w.print("  github:   {s}{s}{s} workflow{s}\n", .{
+                    if (wf.ci) "ci" else "",
+                    if (wf.ci and wf.release) ", " else "",
+                    if (wf.release) "release" else "",
+                    if (wf.ci and wf.release) "s" else "",
+                });
+            }
             try w.print("  git:      {s}\n", .{if (with_git) "init + .gitignore + initial commit" else "skipped (--no-git)"});
             try w.print("  build:    {s}\n", .{if (with_build) "verify with `zig build`" else "skipped (--no-build)"});
         }
@@ -356,7 +405,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         try stdout.print("\nDry run — nothing written. Would create:\n", .{});
         const prefix: []const u8 = if (use_current_dir) "" else args.name;
         const sep: []const u8 = if (use_current_dir) "" else "/";
-        try summarize(stdout, template, selected, upgrade_repo, options.git, options.build);
+        try summarize(stdout, template, selected, upgrade_repo, workflows, options.git, options.build);
         try stdout.print("  files:\n", .{});
         try stdout.print("    {s}{s}build.zig\n", .{ prefix, sep });
         try stdout.print("    {s}{s}build.zig.zon\n", .{ prefix, sep });
@@ -366,6 +415,8 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             .single => try stdout.print("    {s}{s}src/commands/index.zig\n", .{ prefix, sep }),
         }
         try stdout.print("    {s}{s}README.md\n", .{ prefix, sep });
+        if (workflows.ci) try stdout.print("    {s}{s}.github/workflows/ci.yml\n", .{ prefix, sep });
+        if (workflows.release) try stdout.print("    {s}{s}.github/workflows/release.yml\n", .{ prefix, sep });
         if (options.git) try stdout.print("    {s}{s}.gitignore\n", .{ prefix, sep });
         try stdout.print("    {s}{s}AGENTS.md\n", .{ prefix, sep });
         try stdout.print("  then: zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz\n", .{context.app_version});
@@ -377,7 +428,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // scripts and CI sail through.
     if (!use_defaults) {
         try stdout.print("\nAbout to create '{s}':\n", .{project_name});
-        try summarize(stdout, template, selected, upgrade_repo, options.git, options.build);
+        try summarize(stdout, template, selected, upgrade_repo, workflows, options.git, options.build);
         try stdout.flush();
         const proceed = p.confirm(.{ .message = "Proceed?" }) catch |err| switch (err) {
             error.EndOfStream => true,
@@ -500,6 +551,26 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     var readme_file = try project_dir.createFile(io, "README.md", .{});
     defer readme_file.close(io);
     try readme_file.writeStreamingAll(io, readme_content);
+
+    // GitHub Actions workflows (extras): written with the other project files
+    // so the initial commit below captures them. The shared scaffold is the
+    // same one `gh add workflow ci|release` uses. A fresh scaffold can't hit
+    // .not_a_project (src/commands was just created) or .already_exists for a
+    // new directory; `init .` tolerates a pre-existing workflow by warning.
+    if (workflows.ci) {
+        switch (try scaffold.workflows.write(project_dir, io, "ci.yml", scaffold.workflows.ci_yml)) {
+            .created => try stdout.print("  Creating .github/workflows/ci.yml...\n", .{}),
+            .already_exists => try stderr.print("  Warning: .github/workflows/ci.yml already exists — left untouched.\n", .{}),
+            .not_a_project => unreachable,
+        }
+    }
+    if (workflows.release) {
+        switch (try scaffold.workflows.write(project_dir, io, "release.yml", scaffold.workflows.release_yml)) {
+            .created => try stdout.print("  Creating .github/workflows/release.yml...\n", .{}),
+            .already_exists => try stderr.print("  Warning: .github/workflows/release.yml already exists — left untouched.\n", .{}),
+            .not_a_project => unreachable,
+        }
+    }
 
     // Scaffold AGENTS.md — the thin, frozen, command-speaking spine that points
     // coding agents at `zcli guide` (ADR-0008). Marker-delimited so it never
@@ -754,6 +825,35 @@ const AgentsResult = enum { created, appended, refreshed };
 /// Owned slice of the indices whose `defaults` bit is set — the non-interactive
 /// fallback for the plugin picker (mirrors what `multiSelect` returns for a
 /// submitted-defaults selection).
+/// Parse the --github flag: a comma-separated subset of {ci, release}, or
+/// 'none'. Unknown names are error.UnknownWorkflow — the caller renders the
+/// message with the valid list.
+fn parseGithubFlag(arg: []const u8) !Workflows {
+    var wf = Workflows{};
+    if (std.mem.eql(u8, std.mem.trim(u8, arg, " "), "none")) return wf;
+    var it = std.mem.splitScalar(u8, arg, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " ");
+        if (name.len == 0) continue;
+        if (std.mem.eql(u8, name, "ci")) {
+            wf.ci = true;
+        } else if (std.mem.eql(u8, name, "release")) {
+            wf.release = true;
+        } else {
+            return error.UnknownWorkflow;
+        }
+    }
+    return wf;
+}
+
+test "parseGithubFlag: subsets, none, and unknown names" {
+    try std.testing.expectEqual(Workflows{ .ci = true, .release = true }, try parseGithubFlag("ci,release"));
+    try std.testing.expectEqual(Workflows{ .ci = true }, try parseGithubFlag("ci"));
+    try std.testing.expectEqual(Workflows{}, try parseGithubFlag("none"));
+    try std.testing.expectEqual(Workflows{ .release = true }, try parseGithubFlag("release,"));
+    try std.testing.expectError(error.UnknownWorkflow, parseGithubFlag("ci,deploy"));
+}
+
 /// Picker index of the builtin choice named `tag`, or null. Runtime lookup
 /// over the (tiny) comptime table so call sites can't drift from it.
 fn pluginIndex(tag: []const u8) ?usize {
