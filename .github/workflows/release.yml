@@ -139,13 +139,25 @@ jobs:
           else
             TAG="${GITHUB_REF#refs/tags/}"
             echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+            # Git ref names permit shell metacharacters ($, ;, backticks, …)
+            # and these outputs are later inlined into `run:` shell text, so
+            # validate the charset strictly here — mirror the dispatch path's
+            # semver check — before any value escapes this step. See #593.
             case "$TAG" in
               zcli-v*)
+                if ! echo "$TAG" | grep -qE '^zcli-v[0-9]+\.[0-9]+\.[0-9]+$'; then
+                  echo "::error::CLI tag must look like zcli-v0.20.0 (got '$TAG')"
+                  exit 1
+                fi
                 echo "do_cli=true" >> "$GITHUB_OUTPUT"
                 echo "do_lib=false" >> "$GITHUB_OUTPUT"
                 echo "cli_tag=$TAG" >> "$GITHUB_OUTPUT"
                 ;;
               v*)
+                if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+                  echo "::error::library tag must look like v0.20.0 (got '$TAG')"
+                  exit 1
+                fi
                 echo "do_cli=false" >> "$GITHUB_OUTPUT"
                 echo "do_lib=true" >> "$GITHUB_OUTPUT"
                 echo "lib_version=${TAG#v}" >> "$GITHUB_OUTPUT"
@@ -436,8 +448,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Signing reminder
+        env:
+          CLI_TAG: ${{ needs.setup.outputs.cli_tag }}
         run: |
-          echo "::notice title=Sign this release::CLI release ${{ needs.setup.outputs.cli_tag }} is a DRAFT. Run 'scripts/sign-release.sh ${{ needs.setup.outputs.cli_tag }}' locally to sign checksums.txt and publish. See docs/RELEASE-SIGNING.md."
+          echo "::notice title=Sign this release::CLI release $CLI_TAG is a DRAFT. Run 'scripts/sign-release.sh $CLI_TAG' locally to sign checksums.txt and publish. See docs/RELEASE-SIGNING.md."
 
   library-release:
     name: Create Library Release
@@ -485,9 +499,12 @@ jobs:
       - name: Compute package hash
         id: hash
         shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          LIB_VERSION: ${{ needs.setup.outputs.lib_version }}
         run: |
           set -eo pipefail
-          URL="https://github.com/${{ github.repository }}/archive/refs/tags/v${{ needs.setup.outputs.lib_version }}.tar.gz"
+          URL="https://github.com/$REPOSITORY/archive/refs/tags/v$LIB_VERSION.tar.gz"
           HASH="$(zig fetch "$URL" | tail -n1 | tr -d '[:space:]')"
           if [ -z "$HASH" ]; then
             echo "::error::zig fetch produced no hash for $URL"
