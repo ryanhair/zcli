@@ -115,7 +115,16 @@ Each lands independently, in this order:
    (implies `--defaults`; will additionally skip the confirm once increment 2
    adds one), `--dry-run` (plan summary + file list, exit 0, nothing written).
 2. **Git + README + `zig build` verification** with spinners and the summary/
-   confirm step. The bulk of the perceived-quality win.
+   confirm step. The bulk of the perceived-quality win. — Implemented:
+   README.md stub (shape-aware try-it line); `git init` + `.gitignore` +
+   initial commit (default on, `--no-git`; skipped silently when git is
+   absent or the destination is already inside a work tree; a commit
+   without a configured git identity degrades to a warning with the exact
+   commands); `zig build` verification with a spinner (default on,
+   `--no-build`, only after a successful fetch; failure is a warning naming
+   `zig build`, never a rollback) — a verified build drops `zig build` from
+   next-steps; summary + confirm before anything touches disk (skipped by
+   `--defaults`/`--yes`; non-TTY proceeds via the confirm's default).
 3. **`--template single`** (top-level `src/commands/index.zig` scaffold) and
    the shape prompt — implemented on top of ADR-0029. Release-gated: init
    pins generated projects to this CLI's released tag, and root index
