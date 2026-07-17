@@ -932,6 +932,22 @@ test "parseArgs trailing defaulted field keeps the strict invalid-value error" {
     try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(TestArgs, &args, null));
 }
 
+test "parseArgs defaulted leading positional falls through to varargs (#626)" {
+    const TestArgs = struct {
+        count: u32 = 5,
+        rest: [][]const u8,
+    };
+
+    // `foo bar`: `foo` doesn't parse as u32 → count keeps its default and the
+    // token falls through to the varargs field instead of hard-erroring.
+    const args = [_][]const u8{ "foo", "bar" };
+    const parsed = try parseArgs(TestArgs, &args, null);
+    try std.testing.expectEqual(@as(u32, 5), parsed.count);
+    try std.testing.expectEqual(@as(usize, 2), parsed.rest.len);
+    try std.testing.expectEqualStrings("foo", parsed.rest[0]);
+    try std.testing.expectEqualStrings("bar", parsed.rest[1]);
+}
+
 test "parseArgs unicode strings" {
     const TestArgs = struct {
         text: []const u8,

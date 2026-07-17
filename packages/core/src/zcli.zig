@@ -451,6 +451,26 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
             "`. Example: `pub const Options = struct { verbose: bool = false };`");
     }
 
+    // Args field shapes. An optional positional carries a `null` "absent"
+    // state, and the parser initializes optionals to `null` when the positional
+    // is not supplied — a non-null default would be silently discarded. Forbid
+    // it, mirroring the same rule for options: `?T = null` is the only valid
+    // optional spelling; for a guaranteed value use a non-optional field with a
+    // default.
+    if (@typeInfo(ArgsType) == .@"struct") {
+        inline for (@typeInfo(ArgsType).@"struct".fields) |field| {
+            if (@typeInfo(field.type) == .optional and field.default_value_ptr != null) {
+                const dv: *const field.type = @ptrCast(@alignCast(field.default_value_ptr.?));
+                if (dv.* != null) {
+                    @compileError(loc ++ "optional argument '" ++ field.name ++ "' has a non-null default. " ++
+                        "Optionals default to `null` when the positional is absent. " ++
+                        "Drop the `?` and declare it non-optional (`" ++ field.name ++ ": " ++
+                        @typeName(@typeInfo(field.type).optional.child) ++ " = …`) for a guaranteed value.");
+                }
+            }
+        }
+    }
+
     // Options field shapes. A field with no absent-flag value — not bool,
     // optional, accumulating array, or defaulted — is a REQUIRED option: its
     // type says a value must be supplied, and the parser enforces that at
