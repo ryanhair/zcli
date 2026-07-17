@@ -27,11 +27,12 @@ pub fn renderHeader(comptime level: usize, comptime content: []const u8, comptim
                 // H1: Bold + underline with ═
                 const header_line = color_code ++ parsed_content ++ ANSI_RESET;
 
-                // Calculate visible width (approximate - count non-ANSI characters)
-                var visible_width: usize = 0;
-                for (content) |c| {
-                    if (c != '\x1b') visible_width += 1;
-                }
+                // Measure the parsed, marker-stripped text (markdown syntax
+                // like `**` removed, no ANSI codes) at display width, so
+                // multi-byte / wide characters underline correctly instead
+                // of using the raw pre-parse byte count.
+                const plain_content = inline_parser.parseInline(content, palette, .no_color);
+                const visible_width = inline_parser.visibleWidth(plain_content);
 
                 // Create underline
                 var underline: []const u8 = "\n" ++ color_code;
@@ -47,10 +48,8 @@ pub fn renderHeader(comptime level: usize, comptime content: []const u8, comptim
                 // H2: Bold + underline with ─
                 const header_line = color_code ++ parsed_content ++ ANSI_RESET;
 
-                var visible_width: usize = 0;
-                for (content) |c| {
-                    if (c != '\x1b') visible_width += 1;
-                }
+                const plain_content = inline_parser.parseInline(content, palette, .no_color);
+                const visible_width = inline_parser.visibleWidth(plain_content);
 
                 var underline: []const u8 = "\n" ++ color_code;
                 var i: usize = 0;
@@ -86,6 +85,17 @@ pub fn renderCodeBlock(comptime language: []const u8, comptime content: []const 
                 escaped_content = escaped_content ++ &[_]u8{ c, c }; // {{ or }}
             } else {
                 escaped_content = escaped_content ++ &[_]u8{c};
+            }
+        }
+
+        // Escape braces in the language tag too - it's spliced into the same
+        // result string, which callers use as a std.fmt format string.
+        var escaped_language: []const u8 = "";
+        for (language) |c| {
+            if (c == '{' or c == '}') {
+                escaped_language = escaped_language ++ &[_]u8{ c, c }; // {{ or }}
+            } else {
+                escaped_language = escaped_language ++ &[_]u8{c};
             }
         }
 
@@ -141,7 +151,7 @@ pub fn renderCodeBlock(comptime language: []const u8, comptime content: []const 
         var result: []const u8 = "\n" ++ color_code;
         result = result ++ "┌";
         if (language.len > 0) {
-            result = result ++ "─ " ++ language ++ " ";
+            result = result ++ "─ " ++ escaped_language ++ " ";
             const remaining = box_width - language.len - 3;
             var j: usize = 0;
             while (j < remaining) : (j += 1) {
@@ -288,6 +298,54 @@ test "render code block with long language tag and short content" {
     try std.testing.expect(std.mem.indexOf(u8, result, "x") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "┌") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "└") != null);
+}
+
+test "render code block with braces in language tag" {
+    // Regression: the language tag is spliced into the same result string as
+    // the (brace-escaped) content, and callers use that result as a
+    // std.fmt format string - so an unescaped tag like "{s}" broke print().
+    const palette = semantic.Palette{};
+    const result = comptime renderCodeBlock("{s}", "x", palette, .true_color);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{{s}}") != null);
+
+    var buf: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try writer.print(result, .{});
+}
+
+test "render header with non-ascii text underlines to display width" {
+    // Regression: the underline used to count raw pre-parse bytes, so a
+    // 3-codepoint / 9-byte CJK heading drew a 9-wide underline instead of
+    // the correct 6 display columns (each codepoint is double-width).
+    const palette = semantic.Palette{};
+    const result = comptime renderHeader(1, "日本語", palette, .no_color);
+
+    var underline_len: usize = 0;
+    var it = std.mem.splitScalar(u8, result, '\n');
+    while (it.next()) |line| {
+        if (std.mem.indexOf(u8, line, "═") != null) {
+            underline_len = std.mem.count(u8, line, "═");
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 6), underline_len);
+}
+
+test "render header with markdown markers underlines to visible width, not byte count" {
+    // Regression: the underline used to count the raw content bytes,
+    // including markdown syntax markers (e.g. "**"), producing an
+    // underline wider than the actual rendered text.
+    const palette = semantic.Palette{};
+    const result = comptime renderHeader(1, "Hello **World**", palette, .no_color);
+
+    var underline_len: usize = 0;
+    var it = std.mem.splitScalar(u8, result, '\n');
+    while (it.next()) |line| {
+        if (std.mem.indexOf(u8, line, "═") != null) {
+            underline_len = std.mem.count(u8, line, "═");
+        }
+    }
+    // Visible text is "Hello World" (11 chars).
+    try std.testing.expectEqual(@as(usize, 11), underline_len);
 }
 
 test "render horizontal rule" {

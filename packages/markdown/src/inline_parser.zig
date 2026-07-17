@@ -66,11 +66,25 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 continue;
             }
 
-            // Check for format specifiers - preserve them exactly
-            if (markdown[i] == '{' and i + 2 < markdown.len and markdown[i + 2] == '}') {
-                result = result ++ markdown[i .. i + 3];
-                i += 3;
-                continue;
+            // Check for format specifiers - preserve them exactly for runtime
+            // interpolation. Recognized as either a single-character
+            // specifier ({s}, {d}, {}...) or one carrying fill/alignment/
+            // width/precision directives, which always contain a ':' (e.g.
+            // {s:<16}). Anything else between literal braces (e.g.
+            // "{threshold}" in prose) is ordinary text, not a specifier, and
+            // falls through to be brace-escaped below.
+            if (markdown[i] == '{') {
+                var j = i + 1;
+                var has_colon = false;
+                const search_limit = @min(markdown.len, i + 1 + 32);
+                while (j < search_limit and markdown[j] != '}' and markdown[j] != '{') : (j += 1) {
+                    if (markdown[j] == ':') has_colon = true;
+                }
+                if (j < search_limit and markdown[j] == '}' and (j <= i + 2 or has_colon)) {
+                    result = result ++ markdown[i .. j + 1];
+                    i = j + 1;
+                    continue;
+                }
             }
 
             // Check for inline code (`code`)
@@ -239,13 +253,64 @@ pub fn parseInline(comptime markdown: []const u8, comptime palette: semantic.Pal
                 continue;
             }
 
-            // Regular character
-            result = result ++ &[_]u8{markdown[i]};
+            // Regular character. Literal braces that aren't a recognized
+            // format specifier (handled above) must be escaped, since the
+            // final rendered string is used as a std.fmt format string by
+            // callers of `Formatter.print` (see main.zig).
+            if (markdown[i] == '{' or markdown[i] == '}') {
+                result = result ++ &[_]u8{ markdown[i], markdown[i] };
+            } else {
+                result = result ++ &[_]u8{markdown[i]};
+            }
             i += 1;
         }
 
         return result;
     }
+}
+
+/// Display width of already-parsed, ANSI-free plain text (e.g. the output of
+/// `parseInline(content, palette, .no_color)`). UTF-8 codepoint aware, and
+/// treats common East Asian wide ranges as occupying two terminal columns so
+/// headings underline to the correct visible width instead of the raw byte
+/// count.
+pub fn visibleWidth(comptime text: []const u8) usize {
+    comptime {
+        var width: usize = 0;
+        var i: usize = 0;
+        while (i < text.len) {
+            const seq_len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+            const len = @min(seq_len, text.len - i);
+            const codepoint: u21 = if (len > 1)
+                std.unicode.utf8Decode(text[i .. i + len]) catch 0
+            else
+                text[i];
+            width += if (isWideCodepoint(codepoint)) 2 else 1;
+            i += len;
+        }
+        return width;
+    }
+}
+
+/// Best-effort East Asian Wide/Fullwidth check (not a full Unicode Annex #11
+/// table, but covers the common CJK/Hangul/fullwidth ranges).
+fn isWideCodepoint(cp: u21) bool {
+    return switch (cp) {
+        0x1100...0x115F, // Hangul Jamo
+        0x2E80...0x303E, // CJK Radicals Supplement .. CJK Symbols/Punctuation
+        0x3041...0x33FF, // Hiragana .. CJK Compatibility
+        0x3400...0x4DBF, // CJK Unified Ideographs Extension A
+        0x4E00...0x9FFF, // CJK Unified Ideographs
+        0xA000...0xA4CF, // Yi Syllables/Radicals
+        0xAC00...0xD7A3, // Hangul Syllables
+        0xF900...0xFAFF, // CJK Compatibility Ideographs
+        0xFF00...0xFF60, // Fullwidth Forms
+        0xFFE0...0xFFE6, // Fullwidth Signs
+        0x20000...0x2FFFD, // CJK Unified Ideographs Extension B+ / Compat Supplement
+        0x30000...0x3FFFD, // CJK Unified Ideographs Extension G+
+        => true,
+        else => false,
+    };
 }
 
 /// Parse a markdown link [text](url)
@@ -359,6 +424,35 @@ test "no color mode strips all ANSI" {
     const palette = semantic.Palette{};
     const result = comptime parseInline("**bold** and `code`", palette, .no_color);
     try std.testing.expectEqualStrings("bold and code", result);
+}
+
+test "literal braces in prose are escaped" {
+    // Regression: `{threshold}` isn't a recognized single-char format
+    // specifier like `{s}`/`{d}`, so it must be escaped to `{{threshold}}`
+    // rather than passed through raw - otherwise the final rendered string
+    // (used as a std.fmt format string by callers) fails to compile/parse.
+    const palette = semantic.Palette{};
+    const result = comptime parseInline("Set {threshold} high", palette, .no_color);
+    try std.testing.expectEqualStrings("Set {{threshold}} high", result);
+
+    // Actual format specifiers must still be preserved for interpolation.
+    const with_spec = comptime parseInline("Value: {s}", palette, .no_color);
+    try std.testing.expectEqualStrings("Value: {s}", with_spec);
+
+    // The escaped output must itself be a valid format string (with no args).
+    var buf: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try writer.print(result, .{});
+    try std.testing.expectEqualStrings("Set {threshold} high", writer.buffered());
+}
+
+test "visibleWidth counts ASCII as one column each" {
+    try std.testing.expectEqual(@as(usize, 11), comptime visibleWidth("Hello World"));
+}
+
+test "visibleWidth treats CJK codepoints as double width" {
+    // "日本語" is 3 codepoints (9 UTF-8 bytes), each rendering 2 columns wide.
+    try std.testing.expectEqual(@as(usize, 6), comptime visibleWidth("日本語"));
 }
 
 test {
