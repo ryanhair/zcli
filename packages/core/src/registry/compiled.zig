@@ -833,6 +833,9 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                             .flag => |ci| {
                                 const short_char = shorts.chars[ci];
                                 inline for (global_options) |global_opt| {
+                                    // A .flag step means shortTakesValue returned false for this
+                                    // char — the first-matching global is boolean — so first-match
+                                    // dispatch of "true" is safe.
                                     if (global_opt.short == short_char) {
                                         try dispatchGlobalOption(context, global_opt, "true", true);
                                         break;
