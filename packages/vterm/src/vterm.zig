@@ -885,12 +885,18 @@ pub const VTerm = struct {
 
     // Private mode handling (DEC sequences)
     fn handlePrivateMode(self: *VTerm, enable: bool) void {
-        const mode = self.getParam(0, 0);
-        switch (mode) {
-            7 => self.autowrap = enable, // DECAWM auto-wrap
-            25 => self.cursor_visible = enable, // Cursor visibility
-            1049 => self.alt_screen = enable, // Alternate screen buffer
-            else => {}, // Ignore other modes
+        // A combined sequence like `CSI ? 7;25;1049 h` carries multiple
+        // modes in one escape; apply every param, not just the first
+        // (mirrors the loop in handleSGR).
+        var i: usize = 0;
+        while (i <= self.param_count) : (i += 1) {
+            const mode = self.params[i];
+            switch (mode) {
+                7 => self.autowrap = enable, // DECAWM auto-wrap
+                25 => self.cursor_visible = enable, // Cursor visibility
+                1049 => self.alt_screen = enable, // Alternate screen buffer
+                else => {}, // Ignore other modes
+            }
         }
     }
 
