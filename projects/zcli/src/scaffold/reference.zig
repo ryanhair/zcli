@@ -18,3 +18,4 @@
 pub const build_zig = @embedFile("reference/build.zig");
 pub const main_zig = @embedFile("reference/main.zig");
 pub const hello_zig = @embedFile("reference/hello.zig");
+pub const index_zig = @embedFile("reference/index.zig");

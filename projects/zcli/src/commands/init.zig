@@ -47,6 +47,9 @@ pub const meta = .{
         "init my-app",
         "init my-app --description \"My awesome CLI\"",
         "init my-app --app-version 1.0.0",
+        "init my-tool --template single",
+        "init my-app --plugins help,version,completions --defaults",
+        "init my-app --dry-run",
         "init . --description \"Initialize in current directory\"",
     },
     .args = .{
@@ -59,8 +62,19 @@ pub const meta = .{
         // so a command option spelled --version would be unreachable from the
         // CLI (#565).
         .app_version = .{ .description = "Initial version number" },
+        .template = .{ .description = "CLI shape: multi (subcommands, git style) or single (the app itself is the command, rg style)" },
+        .plugins = .{ .description = "Built-in plugins as a comma-separated list (e.g. help,version,completions), or 'none'" },
+        .defaults = .{ .description = "Answer every prompt with its default (implied when stdin is not a TTY)" },
+        .yes = .{ .description = "Like --defaults, and skip any confirmation", .short = 'y' },
+        .dry_run = .{ .description = "Print what would be created without writing anything" },
     },
 };
+
+/// The two scaffold shapes (ADR-0028/0029). `multi` is the classic subcommand
+/// tree seeded with an example `hello` command; `single` seeds a root
+/// `src/commands/index.zig` — the app itself is the command. Restructuring
+/// between shapes later is annoying, which is why init asks up front.
+const Template = enum { multi, single };
 
 pub const Args = struct {
     name: []const u8,
@@ -69,6 +83,11 @@ pub const Args = struct {
 pub const Options = struct {
     description: ?[]const u8 = null,
     app_version: ?[]const u8 = null,
+    template: ?Template = null,
+    plugins: ?[]const u8 = null,
+    defaults: bool = false,
+    yes: bool = false,
+    dry_run: bool = false,
 };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
@@ -171,7 +190,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             return context.fail("Error: Current directory is not empty\nTip: only hidden files and an existing AGENTS.md are allowed", .{});
         }
 
-        try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
+        if (!options.dry_run) try stdout.print("Initializing zcli project in current directory: {s}\n", .{project_name});
     } else {
         // Check if directory already exists (access succeeds => the path exists).
         if (cwd.access(io, args.name, .{})) |_| {
@@ -181,33 +200,114 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             else => return err,
         }
 
-        try stdout.print("Creating new zcli project: {s}\n", .{project_name});
+        if (!options.dry_run) try stdout.print("Creating new zcli project: {s}\n", .{project_name});
     }
 
-    // Ask which built-in plugins to include, before touching the filesystem.
-    // Falls back to the preselected defaults when stdin is not a TTY.
+    const p = context.prompts();
+
+    // The agent contract (ADR-0028): every prompt has a flag, and --defaults
+    // answers every remaining prompt with its default. --yes implies
+    // --defaults (it will additionally skip the confirm step when one
+    // exists). A non-TTY stdin gets the same effect through each prompt's
+    // EndOfStream fallback; --defaults also short-circuits the prompts
+    // entirely so a script WITH a terminal attached never blocks.
+    const use_defaults = options.defaults or options.yes;
+
+    // Root index support (ADR-0029) ships in the first release AFTER 0.20.0.
+    // init pins the generated project to this CLI's own version tag, so a CLI
+    // still carrying the 0.20.0 version would scaffold an index.zig the
+    // released library silently ignores — a project that builds but routes
+    // every positional to "Unknown command". While that's the pinned release,
+    // don't offer the shape (default multi) and fail closed on an explicit
+    // --template single. The guard clears automatically when the release bump
+    // moves the version past 0.20.0.
+    const root_index_ok = rootIndexSupported(context.app_version);
+
+    // Ask for the CLI shape first (ADR-0028 step 3) unless --template decided
+    // it. Restructuring between shapes later is annoying, so it's asked up
+    // front; non-interactive invocations default to multi (today's scaffold).
+    const template: Template = options.template orelse blk: {
+        if (!root_index_ok or use_defaults) break :blk .multi;
+        const shape = p.select(.{
+            .message = "What kind of CLI?",
+            .choices = &.{
+                "multi-command — subcommands like `app hello` (git style)",
+                "single-command — the app itself is the command (rg style)",
+            },
+        }) catch |err| switch (err) {
+            error.EndOfStream => break :blk .multi,
+            else => return err,
+        };
+        break :blk if (shape == 1) .single else .multi;
+    };
+
+    if (template == .single and !root_index_ok) {
+        return context.fail("Error: --template single requires the zcli library released after 0.20.0 (root index support, ADR-0029)\n  This zcli pins generated projects to v{s}, which ignores a top-level index.zig.\n  Upgrade zcli, or scaffold with the default multi-command template.", .{context.app_version});
+    }
+
+    // Which built-in plugins to include: --plugins decides outright,
+    // --defaults/--yes takes the preselected defaults, otherwise ask (with
+    // the same defaults as the non-TTY fallback).
     var choices: [builtin_choices.len][]const u8 = undefined;
     var defaults: [builtin_choices.len]bool = undefined;
     for (builtin_choices, 0..) |choice, i| {
         choices[i] = choice.label;
         defaults[i] = choice.default;
     }
-    const p = context.prompts();
-    const selected = p.multiSelect(.{
-        .message = "Select built-in plugins to include:",
-        .choices = &choices,
-        .defaults = &defaults,
-    }) catch |err| switch (err) {
-        // Non-interactive invocation (piped/closed stdin): take the preselected
-        // defaults rather than aborting — `init` must work in scripts and CI.
-        error.EndOfStream => try collectDefaultPlugins(allocator, &defaults),
-        else => return err,
-    };
+    const selected = if (options.plugins) |plugins_arg|
+        parsePluginsFlag(allocator, plugins_arg) catch |err| switch (err) {
+            error.UnknownPlugin => return context.fail(
+                "Error: unknown plugin in --plugins '{s}'\n  Valid plugins: {s} — or 'none'",
+                .{ plugins_arg, valid_plugin_tags },
+            ),
+            else => return err,
+        }
+    else if (use_defaults)
+        try collectDefaultPlugins(allocator, &defaults)
+    else
+        p.multiSelect(.{
+            .message = "Select built-in plugins to include:",
+            .choices = &choices,
+            .defaults = &defaults,
+        }) catch |err| switch (err) {
+            // Non-interactive invocation (piped/closed stdin): take the
+            // preselected defaults rather than aborting — `init` must work in
+            // scripts and CI.
+            error.EndOfStream => try collectDefaultPlugins(allocator, &defaults),
+            else => return err,
+        };
     defer allocator.free(selected);
 
     // Build the `zcli.builtin(...)` registration lines for build.zig.
     const plugins_block = try renderPluginsBlock(allocator, selected);
     defer allocator.free(plugins_block);
+
+    // --dry-run: everything is decided and validated; report what would be
+    // created and stop before touching the filesystem.
+    if (options.dry_run) {
+        try stdout.print("\nDry run — nothing written. Would create:\n", .{});
+        const prefix: []const u8 = if (use_current_dir) "" else args.name;
+        const sep: []const u8 = if (use_current_dir) "" else "/";
+        try stdout.print("  template: {s}\n", .{@tagName(template)});
+        try stdout.print("  plugins:  ", .{});
+        if (selected.len == 0) {
+            try stdout.print("(none)", .{});
+        } else for (selected, 0..) |idx, i| {
+            if (i > 0) try stdout.print(", ", .{});
+            try stdout.print("{s}", .{builtin_choices[idx].tag});
+        }
+        try stdout.print("\n  files:\n", .{});
+        try stdout.print("    {s}{s}build.zig\n", .{ prefix, sep });
+        try stdout.print("    {s}{s}build.zig.zon\n", .{ prefix, sep });
+        try stdout.print("    {s}{s}src/main.zig\n", .{ prefix, sep });
+        switch (template) {
+            .multi => try stdout.print("    {s}{s}src/commands/hello.zig\n", .{ prefix, sep }),
+            .single => try stdout.print("    {s}{s}src/commands/index.zig\n", .{ prefix, sep }),
+        }
+        try stdout.print("    {s}{s}AGENTS.md\n", .{ prefix, sep });
+        try stdout.print("  then: zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz\n", .{context.app_version});
+        return;
+    }
 
     // Now that the destination is validated and plugins are chosen, create and
     // open the project directory.
@@ -292,16 +392,26 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer main_file.close(io);
     try main_file.writeStreamingAll(io, scaffold.reference.main_zig);
 
-    // Generate example command: src/commands/hello.zig — verbatim from the
-    // compiled reference.
-    try stdout.print("  Creating example command (hello)...\n", .{});
-
+    // Seed the chosen shape's starting command — verbatim from the compiled
+    // reference. multi: an example `hello` subcommand. single: a root
+    // `index.zig` (ADR-0029) — the app itself is the command.
     var commands_dir = try src_dir.openDir(io, "commands", .{});
     defer commands_dir.close(io);
 
-    var hello_file = try commands_dir.createFile(io, "hello.zig", .{});
-    defer hello_file.close(io);
-    try hello_file.writeStreamingAll(io, scaffold.reference.hello_zig);
+    switch (template) {
+        .multi => {
+            try stdout.print("  Creating example command (hello)...\n", .{});
+            var hello_file = try commands_dir.createFile(io, "hello.zig", .{});
+            defer hello_file.close(io);
+            try hello_file.writeStreamingAll(io, scaffold.reference.hello_zig);
+        },
+        .single => {
+            try stdout.print("  Creating root command (index.zig)...\n", .{});
+            var index_file = try commands_dir.createFile(io, "index.zig", .{});
+            defer index_file.close(io);
+            try index_file.writeStreamingAll(io, scaffold.reference.index_zig);
+        },
+    }
 
     // Scaffold AGENTS.md — the thin, frozen, command-speaking spine that points
     // coding agents at `zcli guide` (ADR-0008). Marker-delimited so it never
@@ -338,27 +448,28 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
     // Success message. When the fetch failed, `zig build` would only fail with
     // a missing-dependency error the user never asked for — don't claim success
-    // or suggest a next step that can't work yet.
+    // or suggest a next step that can't work yet. The try-it line matches the
+    // scaffolded shape: `hello World` for multi, a bare root positional for
+    // single.
     if (fetch_ok) {
         try stdout.print("\n✓ Project '{s}' created successfully!\n\n", .{project_name});
         try stdout.print("Next steps:\n", .{});
-        if (!use_current_dir) {
-            try stdout.print("  cd {s}\n", .{args.name});
-        }
-        try stdout.print("  zig build\n", .{});
-        try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
-        try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
     } else {
         try stdout.print("\n⚠ Project '{s}' created, but the zcli dependency was not fetched.\n\n", .{project_name});
         try stdout.print("Next steps:\n", .{});
-        if (!use_current_dir) {
-            try stdout.print("  cd {s}\n", .{args.name});
-        }
-        try stdout.print("  zig fetch --save {s}\n", .{zcli_url});
-        try stdout.print("  zig build\n", .{});
-        try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name});
-        try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
     }
+    if (!use_current_dir) {
+        try stdout.print("  cd {s}\n", .{args.name});
+    }
+    if (!fetch_ok) {
+        try stdout.print("  zig fetch --save {s}\n", .{zcli_url});
+    }
+    try stdout.print("  zig build\n", .{});
+    switch (template) {
+        .multi => try stdout.print("  ./zig-out/bin/{s} hello World\n", .{project_name}),
+        .single => try stdout.print("  ./zig-out/bin/{s} World\n", .{project_name}),
+    }
+    try stdout.print("  ./zig-out/bin/{s} --help\n", .{project_name});
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +520,8 @@ const agents_section = agents_begin ++
     \\5. Verify with `zig build` and `zig build test`. Run `zcli guide <topic>` for
     \\   version-matched API detail and worked examples.
     \\6. File path = command path: `src/commands/foo/bar.zig` → `app foo bar`; a directory's
-    \\   `index.zig` is the group landing; plugins live in `src/plugins/`.
+    \\   `index.zig` is the group landing; a top-level `index.zig` is the root command
+    \\   (`app` itself — single-command CLIs); plugins live in `src/plugins/`.
     \\
     \\`zcli guide` topics: structure, sharing, storage, arena, output, prompts, http, secrets, plugins, testing.
     \\
@@ -426,6 +538,69 @@ const AgentsResult = enum { created, appended, refreshed };
 /// Owned slice of the indices whose `defaults` bit is set — the non-interactive
 /// fallback for the plugin picker (mirrors what `multiSelect` returns for a
 /// submitted-defaults selection).
+/// The valid --plugins names, comma-joined for the error message. Comptime so
+/// the list can never drift from builtin_choices.
+const valid_plugin_tags = blk: {
+    var s: []const u8 = "";
+    for (builtin_choices, 0..) |choice, i| {
+        if (i > 0) s = s ++ ", ";
+        s = s ++ choice.tag;
+    }
+    break :blk s;
+};
+
+/// Parse the --plugins flag: a comma-separated list of builtin_choices tags
+/// ('help,version,completions'), or 'none' for an empty selection. Returns
+/// owned picker indices (same shape as multiSelect). Empty items from
+/// stray/trailing commas are ignored; duplicates collapse (indices are
+/// deduped so build.zig never registers a plugin twice). Unknown names are
+/// error.UnknownPlugin — the caller renders the message with the valid list.
+fn parsePluginsFlag(allocator: std.mem.Allocator, arg: []const u8) ![]usize {
+    var list = std.ArrayList(usize).empty;
+    errdefer list.deinit(allocator);
+
+    if (std.mem.eql(u8, std.mem.trim(u8, arg, " "), "none")) {
+        return list.toOwnedSlice(allocator);
+    }
+
+    var it = std.mem.splitScalar(u8, arg, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " ");
+        if (name.len == 0) continue;
+        const idx = for (builtin_choices, 0..) |choice, i| {
+            if (std.mem.eql(u8, choice.tag, name)) break i;
+        } else return error.UnknownPlugin;
+        const already = for (list.items) |have| {
+            if (have == idx) break true;
+        } else false;
+        if (!already) try list.append(allocator, idx);
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+test "parsePluginsFlag: named plugins resolve to picker indices, deduped" {
+    const allocator = std.testing.allocator;
+    const selected = try parsePluginsFlag(allocator, "version,help,version");
+    defer allocator.free(selected);
+    // Indices follow builtin_choices order of the names given, first mention wins.
+    try std.testing.expectEqualSlices(usize, &.{ 1, 0 }, selected);
+}
+
+test "parsePluginsFlag: 'none' and empty items" {
+    const allocator = std.testing.allocator;
+    const none = try parsePluginsFlag(allocator, "none");
+    defer allocator.free(none);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
+
+    const trailing = try parsePluginsFlag(allocator, "help,");
+    defer allocator.free(trailing);
+    try std.testing.expectEqualSlices(usize, &.{0}, trailing);
+}
+
+test "parsePluginsFlag: unknown names are rejected" {
+    try std.testing.expectError(error.UnknownPlugin, parsePluginsFlag(std.testing.allocator, "help,bogus"));
+}
+
 fn collectDefaultPlugins(allocator: std.mem.Allocator, defaults: []const bool) ![]usize {
     var list = std.ArrayList(usize).empty;
     errdefer list.deinit(allocator);
@@ -561,6 +736,25 @@ test "renderBuildZig substitutes name, description, plugins and pins addCommandT
     try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, exe, zcli_dep,") == null);
     // Framework-coupled call the reference compile-guards survives verbatim.
     try std.testing.expect(std.mem.indexOf(u8, build, "try zcli.generate(b, exe, zcli_dep, .{") != null);
+}
+
+/// True when the zcli release this CLI pins (its own version) contains root
+/// index support (ADR-0029) — i.e. is strictly newer than 0.20.0, the last
+/// release without it. Unparseable versions count as unsupported: fail closed
+/// rather than scaffold a silently-dead index.zig.
+fn rootIndexSupported(version_str: []const u8) bool {
+    const v = std.SemanticVersion.parse(version_str) catch return false;
+    const last_without = std.SemanticVersion{ .major = 0, .minor = 20, .patch = 0 };
+    return v.order(last_without) == .gt;
+}
+
+test "rootIndexSupported: strictly newer than 0.20.0, fail closed on junk" {
+    try std.testing.expect(!rootIndexSupported("0.20.0"));
+    try std.testing.expect(!rootIndexSupported("0.19.9"));
+    try std.testing.expect(rootIndexSupported("0.20.1"));
+    try std.testing.expect(rootIndexSupported("0.21.0"));
+    try std.testing.expect(rootIndexSupported("1.0.0"));
+    try std.testing.expect(!rootIndexSupported("not-a-version"));
 }
 
 /// True if `s` is a semantic version acceptable to Zig's build.zig.zon manifest

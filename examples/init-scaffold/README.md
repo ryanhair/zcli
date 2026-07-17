@@ -1,9 +1,15 @@
 # init-scaffold
 
 This is the exact project `zcli init` scaffolds — its `build.zig`,
-`src/main.zig`, and `src/commands/hello.zig` are the **reference sources** the
-`init` command `@embedFile`s and (for `build.zig`) substitutes the project
-name, description, and selected plugins into.
+`src/main.zig`, `src/commands/hello.zig`, and `src/commands/index.zig` are the
+**reference sources** the `init` command `@embedFile`s and (for `build.zig`)
+substitutes the project name, description, and selected plugins into.
+
+A generated project gets ONE of the two command files, by template:
+`hello.zig` for `--template multi` (the default), `index.zig` — the root
+command (ADR-0029) — for `--template single`. They coexist here so one
+compiled project vouches for both scaffolds (an exact command name beats the
+root's positionals, so both are exercised).
 
 Because it lives in-repo and is registered as a test project (root `build.zig`),
 `zig build test` and `zig build build-examples` compile it against the local,

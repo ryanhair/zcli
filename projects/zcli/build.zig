@@ -50,6 +50,9 @@ pub fn build(b: *std.Build) !void {
     scaffold_module.addAnonymousImport("reference/hello.zig", .{
         .root_source_file = b.path("../../examples/init-scaffold/src/commands/hello.zig"),
     });
+    scaffold_module.addAnonymousImport("reference/index.zig", .{
+        .root_source_file = b.path("../../examples/init-scaffold/src/commands/index.zig"),
+    });
 
     // Canonical example sources embedded into `zcli guide` (ADR-0004/0008). Each
     // anonymous import binds a `@embedFile` name in guide_examples.zig to a real

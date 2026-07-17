@@ -110,11 +110,19 @@ Each lands independently, in this order:
 
 1. **Flag parity + `--defaults`/`--yes`/`--dry-run`** for the existing surface
    (plugins flag, non-TTY = defaults formalized). Pure additive; unblocks agents
-   immediately.
+   immediately. — Implemented: `--plugins <list|none>` (comma-separated,
+   validated against the picker set, deduped), `--defaults`, `--yes`/`-y`
+   (implies `--defaults`; will additionally skip the confirm once increment 2
+   adds one), `--dry-run` (plan summary + file list, exit 0, nothing written).
 2. **Git + README + `zig build` verification** with spinners and the summary/
    confirm step. The bulk of the perceived-quality win.
 3. **`--template single`** (top-level `src/commands/index.zig` scaffold) and
-   the shape prompt — blocked on ADR-0029 landing first.
+   the shape prompt — implemented on top of ADR-0029. Release-gated: init
+   pins generated projects to this CLI's released tag, and root index
+   support ships in the first release after 0.20.0, so while the CLI still
+   carries 0.20.0 the shape prompt is not offered and an explicit
+   `--template single` fails closed with the reason. The gate clears
+   automatically at the next release bump.
 4. **Plugin config prompt-through** (`github_upgrade` repo, `--upgrade-repo`,
    git-remote default).
 5. **`zcli gh add workflow ci`**, then the extras step reusing both gh
