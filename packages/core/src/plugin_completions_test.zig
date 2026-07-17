@@ -506,6 +506,76 @@ test "escape.powershell - doubles single quotes, nothing else" {
     try std.testing.expect(run % 2 == 0);
 }
 
+// Multi-line descriptions (issue #638): a literal `\n`/`\r\n` is legal inside a
+// shell single-quoted string, so it never breaks the SCRIPT's syntax — but it
+// splits a logical one-line entry (a `complete`/`_describe`/case-pattern line)
+// across physical lines, corrupting that entry. Every escaper collapses
+// `\r`/`\n` to a single space so a multi-line `meta.description` always stays
+// on one physical line.
+const multiline_desc = "first line\nsecond line\r\nthird $(touch PWNED) line 'quoted'";
+
+test "escape.bash - collapses embedded newlines to spaces" {
+    const out = try escape.bash(std.testing.allocator, multiline_desc);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(!contains(out, "\n"));
+    try std.testing.expect(!contains(out, "\r"));
+    try std.testing.expect(contains(out, "first line second line  third"));
+    // The apostrophe dance still applies to the trailing quoted word.
+    try std.testing.expect(contains(out, "'\\''quoted"));
+}
+
+test "escape.fish - collapses embedded newlines to spaces" {
+    const out = try escape.fish(std.testing.allocator, multiline_desc);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(!contains(out, "\n"));
+    try std.testing.expect(!contains(out, "\r"));
+    try std.testing.expect(contains(out, "first line second line  third"));
+}
+
+test "escape.zsh - collapses embedded newlines to spaces" {
+    const out = try escape.zsh(std.testing.allocator, multiline_desc);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(!contains(out, "\n"));
+    try std.testing.expect(!contains(out, "\r"));
+    try std.testing.expect(contains(out, "first line second line  third"));
+}
+
+test "escape.powershell - collapses embedded newlines to spaces" {
+    const out = try escape.powershell(std.testing.allocator, multiline_desc);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(!contains(out, "\n"));
+    try std.testing.expect(!contains(out, "\r"));
+    try std.testing.expect(contains(out, "first line second line  third"));
+}
+
+// A `short: ?u8` option character (issue #638): previously interpolated raw via
+// `{c}` with no escaping at all, so `.short = '\''` broke the surrounding
+// single-quoted context outright. Every escaper must be safe to run on a
+// one-byte slice too.
+test "escape.bash - a single-quote short char stays safe inside '-…'" {
+    const out = try escape.bash(std.testing.allocator, &[_]u8{'\''});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("'\\''", out);
+}
+
+test "escape.fish - a single-quote short char stays safe inside '-…'" {
+    const out = try escape.fish(std.testing.allocator, &[_]u8{'\''});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("\\'", out);
+}
+
+test "escape.zsh - a single-quote short char stays safe inside '-…'" {
+    const out = try escape.zsh(std.testing.allocator, &[_]u8{'\''});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("'\\''", out);
+}
+
+test "escape.powershell - a single-quote short char stays safe inside '-…'" {
+    const out = try escape.powershell(std.testing.allocator, &[_]u8{'\''});
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("''", out);
+}
+
 // ============================================================================
 // Layer 3a: structural assertions
 // ============================================================================
@@ -1601,4 +1671,110 @@ test "functional bash - adversarial command/option NAMES do NOT execute at TAB" 
         const present = if (tmp.dir.access(io, marker, .{})) |_| true else |_| false;
         try std.testing.expect(!present);
     }
+}
+
+// ============================================================================
+// Layer 5: adversarial SHORT chars + multi-line DESCRIPTIONS (issue #638)
+//
+// `short: ?u8` used to be interpolated raw via `{c}` in every generator — no
+// escaper in the path at all — so `.short = '\''` broke the surrounding
+// single-quoted context outright. Separately, a `meta.description` containing
+// `\n` split a logical one-line completion entry across physical lines. Both
+// are exercised end to end here: a real single-quote short AND a multi-line,
+// quote-and-`$(...)`-bearing description, on every generator, plus a real-shell
+// syntax check.
+// ============================================================================
+
+const adv_short_desc = "line one\nline two 'quoted' $(touch PWNED_desc)";
+
+const adv_short_opts = [_]zcli.OptionInfo{
+    .{ .name = "quiet", .short = '\'', .description = adv_short_desc },
+};
+
+const adv_short_commands = [_]zcli.CommandInfo{
+    .{ .path = &.{"run"}, .description = adv_short_desc, .options = &adv_short_opts },
+};
+
+test "gen - adversarial SHORT char and multi-line description are escaped everywhere" {
+    const b = try bash.generate(std.testing.allocator, "advapp", &adv_short_commands, &global_options);
+    defer std.testing.allocator.free(b);
+    const z = try zsh.generate(std.testing.allocator, "advapp", &adv_short_commands, &global_options);
+    defer std.testing.allocator.free(z);
+    const f = try fish.generate(std.testing.allocator, "advapp", &adv_short_commands, &global_options);
+    defer std.testing.allocator.free(f);
+    const p = try powershell.generate(std.testing.allocator, "advapp", &adv_short_commands, &global_options);
+    defer std.testing.allocator.free(p);
+
+    // No generator emits a raw newline: every description stays on one physical
+    // line, so a corrupted multi-line entry can never appear in the script.
+    // (bash never emits descriptions at all — COMPREPLY has no description
+    // channel — so it has nothing to collapse; zsh/fish/powershell do.)
+    try std.testing.expect(!contains(b, "line one\nline two"));
+    try std.testing.expect(!contains(z, "line one\nline two"));
+    try std.testing.expect(!contains(f, "line one\nline two"));
+    try std.testing.expect(!contains(p, "line one\nline two"));
+
+    // The collapsed, single-line description text is present in some escaped form.
+    try std.testing.expect(contains(z, "line one line two"));
+    try std.testing.expect(contains(f, "line one line two"));
+    try std.testing.expect(contains(p, "line one line two"));
+
+    // The short char (a literal `'`) never survives as a raw, unescaped quote
+    // immediately after a `-`: bash/zsh dance it to `-'\''`, fish escapes to
+    // `-\'` (quoted), powershell doubles it to `-''`.
+    try std.testing.expect(contains(b, "-'\\''"));
+    try std.testing.expect(contains(z, "-'\\''"));
+    try std.testing.expect(contains(f, " -s '\\''"));
+    try std.testing.expect(contains(p, "-''"));
+}
+
+test "shell syntax - generators accept an adversarial SHORT char (bash -n / zsh -n / fish)" {
+    const bash_sh = findShell("bash");
+    const zsh_sh = findShell("zsh");
+    const fish_sh = findShell("fish");
+    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    if (fish_sh == null and ciRequiresFish(a)) return error.FishRequiredButMissing;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    if (bash_sh) |sh| {
+        const s = try bash.generate(a, "advapp", &adv_short_commands, &global_options);
+        const path = try writeTemp(a, tmp.dir, "adv_short.bash", s);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", path }));
+    }
+    if (zsh_sh) |sh| {
+        const s = try zsh.generate(a, "advapp", &adv_short_commands, &global_options);
+        const path = try writeTemp(a, tmp.dir, "adv_short.zsh", s);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "-n", path }));
+    }
+    if (fish_sh) |sh| {
+        const s = try fish.generate(a, "advapp", &adv_short_commands, &global_options);
+        const path = try writeTemp(a, tmp.dir, "adv_short.fish", s);
+        try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ sh, "--no-execute", path }));
+    }
+}
+
+test "shell syntax - pwsh accepts an adversarial SHORT char and multi-line description" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const pwsh = findPwsh(a) orelse {
+        if (ciRequiresPwsh(a)) return error.PwshRequiredButMissing;
+        return error.SkipZigTest;
+    };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const script = try powershell.generate(a, "advapp", &adv_short_commands, &global_options);
+    const path = try writeTemp(a, tmp.dir, "adv_short.ps1", script);
+    const cmd = try std.fmt.allocPrint(a, "$null = [scriptblock]::Create((Get-Content -Raw -LiteralPath '{s}')); exit 0", .{path});
+    try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ pwsh, "-NoProfile", "-NonInteractive", "-Command", cmd }));
 }

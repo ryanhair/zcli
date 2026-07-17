@@ -157,7 +157,8 @@ fn writeValueOptionCasesPS(arena: std.mem.Allocator, writer: anytype, options: [
         const esc_name = try escape.powershell(arena, opt.name);
         try writer.print("                '--{s}' {{ $skipVal = $true }}\n", .{esc_name});
         if (opt.short) |short| {
-            try writer.print("                '-{c}' {{ $skipVal = $true }}\n", .{short});
+            const esc_short = try escape.powershell(arena, &[_]u8{short});
+            try writer.print("                '-{s}' {{ $skipVal = $true }}\n", .{esc_short});
         }
     }
 }
@@ -199,7 +200,8 @@ fn writeCompleteOption(arena: std.mem.Allocator, writer: anytype, indent: []cons
     const esc_desc = if (opt.description) |d| try escape.powershell(arena, d) else "";
     try writer.print("{s}Complete-Option '--{s}' '{s}'\n", .{ indent, esc_name, esc_desc });
     if (opt.short) |short| {
-        try writer.print("{s}Complete-Option '-{c}' '{s}'\n", .{ indent, short, esc_desc });
+        const esc_short = try escape.powershell(arena, &[_]u8{short});
+        try writer.print("{s}Complete-Option '-{s}' '{s}'\n", .{ indent, esc_short, esc_desc });
     }
 }
 
@@ -244,7 +246,8 @@ fn writeStaticOptionValueCasesFor(arena: std.mem.Allocator, writer: anytype, see
         try writeOptionValueBody(arena, writer, opt);
         try writer.writeAll("        }\n");
         if (opt.short) |short| {
-            try writer.print("        '-{c}' {{\n", .{short});
+            const esc_short = try escape.powershell(arena, &[_]u8{short});
+            try writer.print("        '-{s}' {{\n", .{esc_short});
             try writeOptionValueBody(arena, writer, opt);
             try writer.writeAll("        }\n");
         }
