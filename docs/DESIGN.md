@@ -643,14 +643,8 @@ EXAMPLES:
 When a user makes an error, show relevant help subset:
 
 ```
-Error: Unknown subcommand 'searh' for 'users'
-
-Did you mean 'search'?
-
-Available subcommands for 'users':
-    list      List all users
-    search    Search for users
-    create    Create a new user
+Error: Unknown subcommand 'searh' for command path: users
+Run 'myapp users --help' for usage.
 ```
 
 **Generation Rules:**
@@ -671,9 +665,9 @@ Smart error handling helps users recover from mistakes:
 Error: Unknown command 'ustats'
 
 Did you mean one of these?
-    stats    Show statistics
-    status   Show current status
-    users    Manage users
+    stats
+    status
+    users
 
 Run 'myapp --help' to see all available commands.
 ```
@@ -681,29 +675,25 @@ Run 'myapp --help' to see all available commands.
 **Subcommand Errors:**
 
 ```
-Error: 'myapp users delete' expects at least 1 argument
-
-USAGE:
-    myapp users delete [OPTIONS] <USER-ID>
-
-Run 'myapp users delete --help' for more information.
+Error: Missing required argument 'user-id' at position 1. Expected text.
+Run 'myapp users delete --help' for usage.
 ```
 
 **Invalid Option Values:**
 
 ```
-Error: Invalid value 'abc' for option '--port'
-Expected: u16 (number between 0 and 65535)
+Error: Invalid value 'abc' for option '--port'. Expected an integer.
+Run 'myapp serve --help' for usage.
 ```
 
 **Unknown Options:**
 
 ```
 Error: Unknown option '--formt'
+Did you mean:
+  --format
 
-Did you mean '--format'?
-
-Run 'myapp users list --help' to see available options.
+Run 'myapp users list --help' for usage.
 ```
 
 **Error Design:**
