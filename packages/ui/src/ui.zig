@@ -22,10 +22,11 @@ pub const appTheme = theme_mod.appTheme;
 pub const Theme = theme_mod.Theme;
 pub const SemanticRole = theme_mod.SemanticRole;
 
-/// A semantic role resolved through the app palette — one word for themed
-/// text: `ui.text(ui.role(.success), "done")`.
-pub fn role(r: SemanticRole) Style {
-    const th = appTheme();
+/// A semantic role resolved through an explicit theme's palette — one word for
+/// themed text: `ui.text(ui.role(theme, .success), "done")`. Pass `ui.appTheme()`
+/// to resolve against the app's declared theme; taking it as an argument keeps
+/// the resulting style a pure function of its inputs (issue #683).
+pub fn role(th: *const Theme, r: SemanticRole) Style {
     return th.palette.get(r);
 }
 
@@ -100,6 +101,10 @@ pub const BoxOpts = struct {
     max_width: ?u16 = null,
     min_height: ?u16 = null,
     max_height: ?u16 = null,
+    /// The theme a `null` `border_style` derives from (ADR-0020). Defaults to
+    /// the app theme, but taking it here makes the built node a pure function
+    /// of its inputs rather than of the ambient global (issue #683).
+    theme: *const Theme = appTheme(),
 };
 
 pub fn row(a: std.mem.Allocator, opts: BoxOpts, children: []const Node) !Node {
@@ -136,16 +141,15 @@ pub fn box(a: std.mem.Allocator, dir: Direction, opts: BoxOpts, children: []cons
             .gap = opts.gap,
             .padding = opts.padding,
             .border = opts.border orelse .none,
-            .border_style = opts.border_style orelse themedBorder(),
+            .border_style = opts.border_style orelse themedBorder(opts.theme),
             .style = opts.style orelse .{},
         } },
     };
 }
 
-/// The theme-derived border color (`surface.border` through the app palette) —
-/// what a bordered box wears unless `border_style` is set (ADR-0020).
-fn themedBorder() Style {
-    const th = appTheme();
+/// The theme-derived border color (`surface.border` through the palette) — what
+/// a bordered box wears unless `border_style` is set (ADR-0020).
+fn themedBorder(th: *const Theme) Style {
     return th.surface.border.resolve(th.palette);
 }
 
@@ -161,20 +165,23 @@ pub const PanelOpts = struct {
     dir: Direction = .column,
     /// The shared box options; defaults exactly as `BoxOpts` does, with the two
     /// panel defaults filled in by `panel()` (e.g. `.box = .{ .padding = .all(1) }`
-    /// still gets the rounded border and opaque fill).
+    /// still gets the rounded border and opaque fill). Carries `.box.theme`, the
+    /// theme the panel's surface tokens derive from (issue #683).
     box: BoxOpts = .{},
 };
 
 /// An opaque themed surface (ADR-0020): border and background come from the
-/// app theme's surface tokens, so a modal/dropdown/panel needs no style
-/// mentions at all — `ui.panel(a, .{ .box = .{ .padding = .all(1) } }, children)`
-/// reskins entirely from the root `zcli_theme`. Every field remains overridable.
+/// theme's surface tokens, so a modal/dropdown/panel needs no style mentions at
+/// all — `ui.panel(a, .{ .box = .{ .padding = .all(1) } }, children)` reskins
+/// entirely from the app theme (`.box.theme`, the root `zcli_theme` by default).
+/// Every field remains overridable.
 pub fn panel(a: std.mem.Allocator, opts: PanelOpts, children: []const Node) !Node {
-    const th = appTheme();
     var box_opts = opts.box;
+    const th = box_opts.theme;
     // Panel chrome via `BoxOpts` sentinels: an unset border is rounded, and an
-    // unset background derives the themed `surface.panel` fill — a panel is
-    // opaque, unlike a bare box, which stays transparent.
+    // unset background derives the themed `surface.panel` fill — from the panel's
+    // own explicit theme, not the ambient global (issue #683). A panel is opaque,
+    // unlike a bare box, which stays transparent.
     if (box_opts.border == null) box_opts.border = .rounded;
     if (box_opts.style == null) box_opts.style = th.surface.panel.resolve(th.palette);
     return box(a, opts.dir, box_opts, children);
@@ -384,6 +391,10 @@ pub const ViewportOpts = struct {
     /// (dim track, brighter thumb) and the content is measured/blitted at
     /// `width − 1`. Theme-derived: thumb = `surface.border`, track = `prompts.hint`.
     scrollbar: bool = false,
+    /// The theme the scrollbar colors derive from (only consulted when
+    /// `scrollbar` is on). Defaults to the app theme; taking it here keeps the
+    /// rendered scrollbar a pure function of its inputs (issue #683).
+    theme: *const Theme = appTheme(),
 };
 
 /// A scrolling window onto content taller than the space it's granted (ADR-0017):
@@ -395,7 +406,7 @@ pub const ViewportOpts = struct {
 /// screenful-or-few; very tall content pays for its full height in scratch.
 pub fn viewport(a: std.mem.Allocator, opts: ViewportOpts, child: Node) !Node {
     const ctx = try a.create(ViewportCtx);
-    ctx.* = .{ .child = child, .scroll_y = opts.scroll_y, .scrollbar = opts.scrollbar };
+    ctx.* = .{ .child = child, .scroll_y = opts.scroll_y, .scrollbar = opts.scrollbar, .theme = opts.theme };
     return .{
         .width = opts.width,
         .height = opts.height,
@@ -411,6 +422,7 @@ const ViewportCtx = struct {
     child: Node,
     scroll_y: u16,
     scrollbar: bool,
+    theme: *const Theme,
 
     /// A viewport takes the whole offer — it's a fixed window (the node's own
     /// `.len`/`.fill` dims, applied by `measure` after this, refine it).
@@ -441,7 +453,7 @@ const ViewportCtx = struct {
         try body.copyRows(&scratch, sy);
 
         if (gutter == 1) {
-            const th = appTheme();
+            const th = self.theme;
             const track = th.prompts.hint.resolve(th.palette);
             const thumb = th.surface.border.resolve(th.palette);
             region.sub(.{ .x = w, .y = 0, .w = 1, .h = h })

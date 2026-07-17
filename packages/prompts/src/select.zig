@@ -138,7 +138,7 @@ pub fn frameNode(
     const usable: u16 = @intCast(@min(@max(width -| 1, 1), std.math.maxInt(u16)));
     const height = @max(@as(usize, ws.row), 2);
 
-    const cursor_sym = terminal.symbols.select_cursor(config.unicode);
+    const cursor_sym = ctx.glyphTokens().select_cursor.pick(config.unicode);
     // "  <cur> " and "    " are both 4 columns (single-column cursor glyph).
     const prefix_w: u16 = 4;
     const avail = @max(@as(usize, usable) -| prefix_w, 1);

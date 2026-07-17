@@ -130,34 +130,10 @@ fn containsUtf8(val: []const u8) bool {
     return false;
 }
 
-/// Symbols that adapt based on unicode support.
-/// Use these instead of hardcoding Unicode characters.
-pub const symbols = struct {
-    pub fn select_cursor(unicode: bool) []const u8 {
-        return if (unicode) "❯" else ">";
-    }
-    pub fn selected(unicode: bool) []const u8 {
-        return if (unicode) "◉" else "[x]";
-    }
-    pub fn unselected(unicode: bool) []const u8 {
-        return if (unicode) "○" else "[ ]";
-    }
-    pub fn success(unicode: bool) []const u8 {
-        return if (unicode) "✔" else "+";
-    }
-    pub fn failure(unicode: bool) []const u8 {
-        return if (unicode) "✖" else "x";
-    }
-    pub fn warning(unicode: bool) []const u8 {
-        return if (unicode) "⚠" else "!";
-    }
-    pub fn info(unicode: bool) []const u8 {
-        return if (unicode) "ℹ" else "i";
-    }
-    pub fn bullet(unicode: bool) []const u8 {
-        return if (unicode) "•" else "*";
-    }
-};
+// Adaptive glyph shapes now live in the theme package (`theme.Glyphs`), so an
+// app can swap a prompt/progress glyph's shape as well as recolor it. The
+// unicode/ASCII fallback is `theme.Glyph.pick(unicode)`, driven by the Unicode
+// support this package detects (`unicodeSupported`).
 
 // ============================================================================
 // ANSI escape helpers
@@ -200,13 +176,6 @@ test "containsUtf8" {
     try std.testing.expect(!containsUtf8("C"));
     try std.testing.expect(!containsUtf8("POSIX"));
     try std.testing.expect(!containsUtf8("en_US.ISO-8859-1"));
-}
-
-test "symbols provide correct fallbacks" {
-    try std.testing.expectEqualStrings("❯", symbols.select_cursor(true));
-    try std.testing.expectEqualStrings(">", symbols.select_cursor(false));
-    try std.testing.expectEqualStrings("✔", symbols.success(true));
-    try std.testing.expectEqualStrings("+", symbols.success(false));
 }
 
 test {
