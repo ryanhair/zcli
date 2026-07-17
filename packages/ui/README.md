@@ -115,14 +115,11 @@ action control that exposes firing as `activated` state). Each is a plain struct
 you embed in your state with a `view(a, opts) !Node` + `handle(key) bool`
 contract; `handle` always returns *consumed* (`true` = "this key is mine, not
 navigation"), focus is caller-owned (an enum), and an unconsumed key is
-form-level navigation. For routing, `focusNext`/`focusPrev` wrap over a hand-written focus
-enum, or `FocusRing(State)` derives the whole ring from `State`'s widget fields
-(any field whose type has a `handle` method) — a reified `Focus` enum,
-`next`/`prev`, and a `dispatch(state, focus, key, extras)` that routes to the
-focused widget (`extras` supplies the multi-arg widgets' extra args; it must
-cover every multi-arg widget since dispatch compiles all arms). It's sugar over
-the switch — no framework loop, fully bypassable
-([ADR-0021](../../docs/adr/0021-widget-catalog-completion.md); `examples/form.zig`).
+form-level navigation. For routing, `focusNext`/`focusPrev` wrap a hand-written focus enum
+over its variants, and a plain `switch (focus)` — one arm per widget, calling
+its `handle` — routes the key to the focused widget. No ring object or framework
+loop; the switch is the whole model
+([ADR-0018](../../docs/adr/0018-focusable-widgets.md); `examples/form.zig`).
 Overlays (`stack` + `center`, [ADR-0016](../../docs/adr/0016-overlays-z-layers.md)),
 scrolling panes (`viewport`, [ADR-0017](../../docs/adr/0017-scrollable-viewports.md);
 opt-in proportional `scrollbar`, [ADR-0021](../../docs/adr/0021-widget-catalog-completion.md)),

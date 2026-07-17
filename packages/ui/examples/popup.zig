@@ -168,7 +168,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try ui.App.initFullScreen(gpa, &stdout.interface, .{
         .capability = .ansi_256,
         .stdin = &stdin.interface,
-        .mouse = true, // click a button to open
+        .session = .{ .mouse = true }, // click a button to open
     });
     defer app.deinit();
 

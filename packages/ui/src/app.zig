@@ -85,12 +85,33 @@ pub const App = struct {
     ///   identical; full-screen is a mode, not a fork.
     pub const Mode = enum { hybrid, full_screen };
 
+    /// The app-author session knobs, shared as a single embedded core between
+    /// `Options` (as `Options.session`) and `context.ui()` /
+    /// `context.uiFullScreen()`. The environment-derived fields (capability,
+    /// unicode, interactive, stdin) are wired by the context or the
+    /// constructor; these are the choices left to the app author. Declared once
+    /// here and embedded, so a new knob can't drift between the two structs.
+    pub const SessionOptions = struct {
+        /// Wrap paints in synchronized output (DECSET 2026).
+        sync: bool = true,
+        /// Report mouse press/release/drag as `Event.mouse` (full-screen only).
+        /// Off by default — mouse reporting overrides the terminal's own text
+        /// selection, so it's opt-in.
+        mouse: bool = false,
+        /// Report window focus in/out as `Event.focus` (full-screen only).
+        focus: bool = false,
+        /// Deliver bracketed paste as `Event.paste` (full-screen only). Off by
+        /// default; the borrowed slice is valid until the next `nextEvent`.
+        paste: bool = false,
+        /// Cap on a single paste's buffered bytes — a pathological multi-MB
+        /// paste is truncated to this, not an OOM. Only meaningful with `paste`.
+        paste_max: usize = 5 << 20, // 5 MiB
+    };
+
     pub const Options = struct {
         capability: theme.TerminalCapability = .ansi_16,
         /// Chooses border/ellipsis glyphs (`terminal.unicodeSupported`).
         unicode: bool = true,
-        /// Wrap paints in synchronized output (DECSET 2026).
-        sync: bool = true,
         /// Fixed terminal size (tests, non-TTY output). `null` polls the
         /// real terminal on every frame, which is what makes the live
         /// region re-layout on resize.
@@ -113,41 +134,15 @@ pub const App = struct {
         /// signal/panic that skips `deinit`. `null` leaves the guard's raw
         /// restore empty (the historical hybrid behaviour: cursor only).
         hybrid_raw: ?terminal.RawMode = null,
-        /// Report mouse press/release/drag as `Event.mouse` (full-screen only).
-        /// Off by default — mouse reporting overrides the terminal's own text
-        /// selection, so it's opt-in.
-        mouse: bool = false,
-        /// Report window focus in/out as `Event.focus` (full-screen only).
-        focus: bool = false,
-        /// Deliver bracketed paste as `Event.paste` (full-screen only). Off by
-        /// default; the borrowed slice is valid until the next `nextEvent`.
-        paste: bool = false,
-        /// Cap on a single paste's buffered bytes — a pathological multi-MB
-        /// paste is truncated to this, not an OOM. Only meaningful with `paste`.
-        paste_max: usize = 5 << 20, // 5 MiB
         /// The file handle `writer` targets — used to arm the restore guard
         /// (the signal/panic replay must hit the same tty the escapes went to)
         /// and to poll the terminal size. `null` means stdout. Callers whose
         /// writer is stderr (progress indicators) must pass stderr's handle,
         /// or a redirected stdout swallows the cursor restore (#385).
         out_handle: ?std.Io.File.Handle = null,
-    };
-
-    /// The caller-facing subset of `Options` for `context.ui()` /
-    /// `context.uiFullScreen()`: the environment-derived fields (capability,
-    /// unicode, interactive, stdin) are wired by the context, so this is the
-    /// choice left to the app author.
-    pub const SessionOptions = struct {
-        /// Wrap paints in synchronized output (DECSET 2026).
-        sync: bool = true,
-        /// Report mouse events (full-screen only; see `Options.mouse`).
-        mouse: bool = false,
-        /// Report focus in/out (full-screen only; see `Options.focus`).
-        focus: bool = false,
-        /// Deliver bracketed paste as `Event.paste` (see `Options.paste`).
-        paste: bool = false,
-        /// Cap on a single paste's buffered bytes (see `Options.paste_max`).
-        paste_max: usize = 5 << 20, // 5 MiB
+        /// The app-author session knobs (sync + the full-screen input modes),
+        /// shared with `context.ui()` / `context.uiFullScreen()`.
+        session: SessionOptions = .{},
     };
 
     writer: *std.Io.Writer,
@@ -198,9 +193,9 @@ pub const App = struct {
             .session = .{
                 .out_handle = options.out_handle orelse std.Io.File.stdout().handle,
                 .modes = .{
-                    .mouse = options.mouse,
-                    .focus = options.focus,
-                    .paste = options.paste,
+                    .mouse = options.session.mouse,
+                    .focus = options.session.focus,
+                    .paste = options.session.paste,
                 },
             },
             .scrollback = HybridScrollback.init(gpa),
@@ -458,7 +453,7 @@ pub const App = struct {
         // guard is suppressed — DECSET 2026 doesn't nest.
         const tail_repaint = width_changed and self.live_rows > 0;
         if (tail_repaint) {
-            if (self.options.sync) try self.writer.writeAll("\x1b[?2026h");
+            if (self.options.session.sync) try self.writer.writeAll("\x1b[?2026h");
             try self.scrollback.reflow(
                 self.writer,
                 self.frame_arena.allocator(),
@@ -481,10 +476,10 @@ pub const App = struct {
         std.debug.assert(self.cursor.isParked());
         const renderer = diff_mod.Renderer{
             .capability = self.options.capability,
-            .sync = self.options.sync and !tail_repaint,
+            .sync = self.options.session.sync and !tail_repaint,
         };
         try self.core.frame(self.writer, &rctx, &node, renderer);
-        if (tail_repaint and self.options.sync) try self.writer.writeAll("\x1b[?2026l");
+        if (tail_repaint and self.options.session.sync) try self.writer.writeAll("\x1b[?2026l");
         try self.writer.flush();
     }
 
@@ -530,7 +525,7 @@ pub const App = struct {
         std.debug.assert(self.cursor.isParked());
         const renderer = diff_mod.Renderer{
             .capability = self.options.capability,
-            .sync = self.options.sync,
+            .sync = self.options.session.sync,
         };
         try self.core.frame(self.writer, &rctx, &node, renderer);
         try self.writer.flush();
@@ -555,10 +550,10 @@ pub const App = struct {
         try self.writer.flush();
         // The paste sink borrows `paste_buf` (reused each call); the returned
         // `Event.paste` is valid only until the next `nextEvent`.
-        const sink: ?terminal.PasteSink = if (self.options.paste) .{
+        const sink: ?terminal.PasteSink = if (self.options.session.paste) .{
             .buf = &self.paste_buf,
             .allocator = self.gpa,
-            .max = self.options.paste_max,
+            .max = self.options.session.paste_max,
         } else null;
         return terminal.readEventTimeout(
             reader,
@@ -685,7 +680,7 @@ pub const App = struct {
         std.debug.assert(self.cursor.isParked());
         try self.core.repaint(self.writer, .{
             .capability = self.options.capability,
-            .sync = self.options.sync,
+            .sync = self.options.session.sync,
         });
     }
 
