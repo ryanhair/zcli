@@ -1,4 +1,8 @@
-//! Editor prompt — launches $EDITOR for multiline text input.
+//! Editor prompt — launches the user's editor for multiline text input.
+//!
+//! The editor command is resolved from the threaded `environ` (`$VISUAL`, then
+//! `$EDITOR`, falling back to `vi`) unless `editor_cmd` overrides it. We read
+//! the environment through the passed-in map rather than a global getenv.
 //!
 //! The hint line renders on the ui engine; before spawning the editor the
 //! App is closed (cursor restored, region persisted) so the editor gets a
@@ -15,13 +19,25 @@ pub const EditorConfig = struct {
     default: ?[]const u8 = null,
     extension: []const u8 = ".txt",
     prefix: []const u8 = "? ",
-    editor_cmd: []const u8 = "vi",
+    /// Explicit editor command. When null the editor is resolved from `environ`
+    /// (`$VISUAL`, then `$EDITOR`, else `vi`); set this to force a specific
+    /// program regardless of the environment.
+    editor_cmd: ?[]const u8 = null,
     io: std.Io,
-    /// Threaded environ, used to honor `$TMPDIR` when placing the scratch
-    /// file. Falls back to `/tmp` when unset (or when `environ` itself is
-    /// null, e.g. in tests that don't exercise the temp-file path).
+    /// Threaded environ. Used to resolve the editor command (`$VISUAL`/`$EDITOR`)
+    /// and to honor `$TMPDIR` when placing the scratch file. Falls back to `vi`
+    /// and `/tmp` respectively when unset (or when `environ` itself is null,
+    /// e.g. in tests that don't exercise those paths).
     environ: ?*const std.process.Environ.Map = null,
 };
+
+/// Resolve the editor command: an explicit `editor_cmd` wins, else `$VISUAL`,
+/// then `$EDITOR` from the threaded environ, falling back to `vi`.
+fn resolveEditorCmd(config: EditorConfig) []const u8 {
+    if (config.editor_cmd) |cmd| return cmd;
+    const env = config.environ orelse return "vi";
+    return env.get("VISUAL") orelse env.get("EDITOR") orelse "vi";
+}
 
 /// Launch the user's editor for multiline input. Returns owned string,
 /// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
@@ -142,8 +158,9 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     }
 
     // Spawn editor
+    const editor_cmd = resolveEditorCmd(config);
     var child = try std.process.spawn(config.io, .{
-        .argv = &.{ config.editor_cmd, tmp_name },
+        .argv = &.{ editor_cmd, tmp_name },
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
@@ -154,8 +171,10 @@ pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
         return try allocator.dupe(u8, config.default orelse "");
     }
 
-    // Read back content
-    const raw_content = try cwd.readFileAlloc(config.io, tmp_name, allocator, .limited(1024 * 1024));
+    // Read back content. The cap is generous (a hand-edited document, not a
+    // data stream) so the user's work is never silently truncated at a small
+    // limit — a 1 MiB cap discarded whole documents with error.StreamTooLong.
+    const raw_content = try cwd.readFileAlloc(config.io, tmp_name, allocator, .limited(max_editor_bytes));
     errdefer allocator.free(raw_content);
 
     // Trim trailing newlines
@@ -205,6 +224,11 @@ test "non-TTY: reads piped multiline input" {
     try std.testing.expectEqualStrings("line one\nline two", result);
 }
 
+/// Upper bound on the edited document we read back. High enough that real
+/// hand-edited text never hits it, low enough to stay a sane guard against a
+/// pathological file. The old 1 MiB cap threw away the user's work.
+const max_editor_bytes = 128 * 1024 * 1024;
+
 /// Length of a scratch file name: the ".prompts_edit-" prefix plus 16 hex chars.
 const scratch_name_len = ".prompts_edit-".len + 16;
 
@@ -215,6 +239,27 @@ fn randomScratchName(io: std.Io, buf: *[scratch_name_len]u8) []const u8 {
     io.random(&random_bytes);
     const hex = std.fmt.bytesToHex(&random_bytes, .lower);
     return std.fmt.bufPrint(buf, ".prompts_edit-{s}", .{hex}) catch unreachable;
+}
+
+test "resolveEditorCmd - explicit override wins, else VISUAL then EDITOR then vi" {
+    const io = std.testing.io;
+
+    // No environ, no override → vi.
+    try std.testing.expectEqualStrings("vi", resolveEditorCmd(.{ .message = "e", .io = io }));
+
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+
+    // Only EDITOR set.
+    try env.put("EDITOR", "nano");
+    try std.testing.expectEqualStrings("nano", resolveEditorCmd(.{ .message = "e", .io = io, .environ = &env }));
+
+    // VISUAL takes precedence over EDITOR.
+    try env.put("VISUAL", "code -w");
+    try std.testing.expectEqualStrings("code -w", resolveEditorCmd(.{ .message = "e", .io = io, .environ = &env }));
+
+    // An explicit override beats the environment entirely.
+    try std.testing.expectEqualStrings("emacs", resolveEditorCmd(.{ .message = "e", .io = io, .environ = &env, .editor_cmd = "emacs" }));
 }
 
 test "randomScratchName - hidden, fixed-length, unpredictable" {

@@ -1,9 +1,11 @@
 //! `Prompts.editor` — capture multi-line input by launching an external editor.
 //!
-//! Pressing Enter opens `editor_cmd` on a temp file seeded with `default`;
+//! Pressing Enter opens the user's editor on a temp file seeded with `default`;
 //! whatever is saved (trailing newlines trimmed) is returned. Options:
-//!   * `editor_cmd` — the program to launch (default `vi`). Here we honour the
-//!                    user's `$EDITOR`, falling back to `vi`.
+//!   * `environ`    — the editor is resolved from it (`$VISUAL`, then `$EDITOR`,
+//!                    else `vi`), and it also honours `$TMPDIR`.
+//!   * `editor_cmd` — optional override to force a specific program regardless
+//!                    of the environment.
 //!   * `extension`  — temp-file suffix so the editor picks the right syntax
 //!                    highlighting (`.md`, `.txt`, ...).
 //!   * `io`         — the editor spawns a child process and does file I/O, so it
@@ -23,14 +25,12 @@ pub fn main(init: std.process.Init) !void {
 
     const p: Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
 
-    // Respect the user's editor of choice; fall back to vi.
-    const editor_cmd = init.environ_map.get("EDITOR") orelse "vi";
-
+    // The editor is resolved from the environment ($VISUAL/$EDITOR, else vi) —
+    // just pass the environ through.
     const message = p.editor(.{
         .message = "Write a commit message",
         .default = "Summary line\n\nDetails go here.\n",
         .extension = ".md",
-        .editor_cmd = editor_cmd,
         .io = init.io,
         .environ = init.environ_map,
     }) catch |err| {

@@ -71,7 +71,12 @@ fn numberTty(p: Prompts, config: NumberConfig) !i64 {
 
     Prompts.flushWriter(writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        return config.default orelse error.InvalidNumber;
+        // No interactive editing available: fall back to the default, but hold
+        // it to the same range the interactive path enforces — otherwise a
+        // default outside [min, max] would slip through unvalidated.
+        const def = config.default orelse return error.InvalidNumber;
+        try validateRange(config, def);
+        return def;
     };
     var watcher = terminal.ResizeWatcher.init();
     defer {
@@ -199,6 +204,14 @@ fn persistLine(app: *ui.App, config: NumberConfig, input: []const u8) !void {
     try app.emit("{s}", .{line});
 }
 
+/// Reject `value` if it falls outside the configured `[min, max]` range. The
+/// single gate every path funnels through so the default can never be accepted
+/// where a typed equal would be refused.
+fn validateRange(config: NumberConfig, value: i64) !void {
+    if (config.min) |min| if (value < min) return error.InvalidNumber;
+    if (config.max) |max| if (value > max) return error.InvalidNumber;
+}
+
 fn readNumberNonTty(reader: anytype, config: NumberConfig) !i64 {
     var buf: [32]u8 = undefined;
     const line = try readLine(reader, &buf);
@@ -288,6 +301,31 @@ test "non-TTY: empty input with no default errors" {
     try std.testing.expectError(error.InvalidNumber, number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
         .message = "Port:",
     }));
+}
+
+test "non-TTY: an empty submission does not accept a default that violates min" {
+    // Regression for #639: `.default = 0` with `.min = 1` must not slip 0
+    // through on Enter — a typed 0 would be rejected, so the default is too.
+    // The invalid default is refused and the next (valid) line is what returns.
+    var input = "\n5\n".*;
+    var reader_stream: std.Io.Reader = .fixed(&input);
+    var output: [256]u8 = undefined;
+    var writer_stream: std.Io.Writer = .fixed(&output);
+
+    const result = try number(.{ .writer = &writer_stream, .reader = &reader_stream, .allocator = std.testing.allocator }, .{
+        .message = "Count:",
+        .default = 0,
+        .min = 1,
+    });
+    try std.testing.expectEqual(@as(i64, 5), result);
+}
+
+test "validateRange gates min and max" {
+    const cfg = NumberConfig{ .message = "n", .min = 1, .max = 10 };
+    try validateRange(cfg, 1);
+    try validateRange(cfg, 10);
+    try std.testing.expectError(error.InvalidNumber, validateRange(cfg, 0));
+    try std.testing.expectError(error.InvalidNumber, validateRange(cfg, 11));
 }
 
 test "non-TTY: EOF errors instead of falling back to the default" {

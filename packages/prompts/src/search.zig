@@ -17,8 +17,10 @@ pub const SearchConfig = struct {
 };
 
 /// Prompt with search filtering. Returns the index of the selected item in the
-/// original choices array, `error.UserAborted` if the user presses Ctrl-C, or
-/// `error.EndOfStream` if stdin closes with no line to submit.
+/// original choices array, `error.UserAborted` if the user presses Ctrl-C,
+/// `error.EndOfStream` if stdin closes with no line to submit, or
+/// `error.InvalidSelection` if a non-TTY reply is not a number naming one of the
+/// choices.
 pub fn search(p: Prompts, config: SearchConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
@@ -38,9 +40,12 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
         Prompts.flushWriter(writer);
         const line = try readLine(reader, allocator);
         defer allocator.free(line);
-        const num = std.fmt.parseInt(usize, line, 10) catch return 0;
+        // Mirror the TTY path: an unparseable or out-of-range reply must not
+        // fabricate index 0 — surface it so the caller can tell a real pick from
+        // garbage piped in.
+        const num = std.fmt.parseInt(usize, line, 10) catch return error.InvalidSelection;
         if (num >= 1 and num <= config.choices.len) return num - 1;
-        return 0;
+        return error.InvalidSelection;
     }
 
     // TTY: interactive search. A raw-mode failure must not fabricate a choice
@@ -68,21 +73,26 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
     defer allocator.free(filtered);
     const stdin = std.Io.File.stdin().handle;
     var cursor: usize = 0;
+    // Set whenever `query` changes; the filter is rebuilt lazily once the input
+    // burst drains (see below) so a paste of N chars costs one rebuild, not N.
+    var query_dirty = false;
     try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
 
     while (true) {
         switch (try terminal.readEvent(reader, stdin, &watcher)) {
-            .resize => try renderFrame(&app, p.theme, config, query.items, filtered, cursor),
+            .resize => {},
             .key => |k| switch (k) {
                 .up => {
                     if (cursor > 0) cursor -= 1;
-                    try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                 },
                 .down => {
                     if (cursor < filtered.len -| 1) cursor += 1;
-                    try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
                 },
                 .enter => {
+                    // A paste ending in a newline leaves the query dirty: settle
+                    // it before selecting so we pick from the filtered set, not
+                    // the stale pre-paste one.
+                    try settleFilter(allocator, config.choices, query.items, &filtered, &cursor, &query_dirty);
                     if (filtered.len > 0) {
                         const selected_idx = filtered[cursor];
                         try app.clear();
@@ -95,15 +105,7 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
                 .backspace => {
                     if (query.items.len > 0) {
                         Prompts.popTrailingGrapheme(&query);
-                        // Build the replacement first: if it OOMs, `filtered`
-                        // still points at the live slice, so the deferred free
-                        // (and the next rebuild) stay valid — freeing first would
-                        // leave a dangling pointer to double-free.
-                        const next = try buildFiltered(allocator, config.choices, query.items);
-                        allocator.free(filtered);
-                        filtered = next;
-                        cursor = 0;
-                        try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
+                        query_dirty = true;
                     }
                 },
                 .ctrl => |c| {
@@ -114,18 +116,42 @@ pub fn search(p: Prompts, config: SearchConfig) !usize {
                 },
                 .char => |c| {
                     _ = try Prompts.appendCodepoint(allocator, &query, c);
-                    // See the backspace branch: build then swap, never free-then-build.
-                    const next = try buildFiltered(allocator, config.choices, query.items);
-                    allocator.free(filtered);
-                    filtered = next;
-                    cursor = 0;
-                    try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
+                    query_dirty = true;
                 },
                 else => {},
             },
             else => {}, // mouse/focus never arrive — prompts don't enable them
         }
+        // Coalesce a burst of buffered input (e.g. a paste): keep applying events
+        // and only rebuild the filter + repaint once the reader has drained.
+        // Rebuilding per character is O(n²) over a large paste; this makes it
+        // O(n). Individually typed keys arrive one at a time, so nothing is
+        // buffered afterward and this still paints on every keystroke.
+        if (terminal.key.bufferedLen(reader) == 0) {
+            try settleFilter(allocator, config.choices, query.items, &filtered, &cursor, &query_dirty);
+            try renderFrame(&app, p.theme, config, query.items, filtered, cursor);
+        }
     }
+}
+
+/// Rebuild `filtered` from the current `query` if it changed, resetting the
+/// cursor to the top. The replacement is built before the old slice is freed:
+/// if it OOMs, `filtered` still points at the live slice (valid for its deferred
+/// free and the next rebuild) instead of dangling into a double-free.
+fn settleFilter(
+    allocator: std.mem.Allocator,
+    choices: []const []const u8,
+    query: []const u8,
+    filtered: *[]usize,
+    cursor: *usize,
+    dirty: *bool,
+) !void {
+    if (!dirty.*) return;
+    const next = try buildFiltered(allocator, choices, query);
+    allocator.free(filtered.*);
+    filtered.* = next;
+    cursor.* = 0;
+    dirty.* = false;
 }
 
 fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: SearchConfig, query: []const u8, filtered: []const usize, cursor: usize) !void {
@@ -307,6 +333,30 @@ test "non-TTY: EOF errors instead of defaulting to index 0" {
     var output_writer: std.Io.Writer = .fixed(&output);
 
     try std.testing.expectError(error.EndOfStream, search(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
+        .message = "Pick:",
+        .choices = &.{ "a", "b" },
+    }));
+}
+
+test "non-TTY: out-of-range number errors instead of defaulting to index 0" {
+    var input = "999\n".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    try std.testing.expectError(error.InvalidSelection, search(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
+        .message = "Pick:",
+        .choices = &.{ "a", "b" },
+    }));
+}
+
+test "non-TTY: non-numeric input errors instead of defaulting to index 0" {
+    var input = "banana\n".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    try std.testing.expectError(error.InvalidSelection, search(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Pick:",
         .choices = &.{ "a", "b" },
     }));

@@ -24,8 +24,9 @@ pub const SelectConfig = struct {
 
 /// Prompt to select one item from a list. Returns the chosen index,
 /// `error.Interrupted` if the user presses one of `config.interrupt_keys`,
-/// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
-/// stdin closes with no line to submit.
+/// `error.UserAborted` if the user presses Ctrl-C, `error.EndOfStream` if stdin
+/// closes with no line to submit, or `error.InvalidSelection` if a non-TTY reply
+/// is not a number naming one of the choices.
 pub fn select(p: Prompts, config: SelectConfig) !usize {
     const writer = p.writer;
     const reader = p.reader;
@@ -44,9 +45,12 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
         Prompts.flushWriter(writer);
         const line = try readLine(reader, p.allocator);
         defer p.allocator.free(line);
-        const num = std.fmt.parseInt(usize, line, 10) catch return 0;
+        // Mirror the TTY path: an unparseable or out-of-range reply must not
+        // fabricate index 0 — surface it so the caller can tell a real pick from
+        // garbage piped in.
+        const num = std.fmt.parseInt(usize, line, 10) catch return error.InvalidSelection;
         if (num >= 1 and num <= config.choices.len) return num - 1;
-        return 0;
+        return error.InvalidSelection;
     }
 
     // TTY: interactive selection. A raw-mode failure must not fabricate a
@@ -188,7 +192,7 @@ fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
     return try buf.toOwnedSlice(allocator);
 }
 
-pub const SelectError = error{NoChoices};
+pub const SelectError = error{ NoChoices, InvalidSelection };
 
 test "SelectConfig" {
     const cfg = SelectConfig{ .message = "Pick:", .choices = &.{ "a", "b" } };
@@ -210,18 +214,28 @@ test "non-TTY: selects by number" {
     try std.testing.expectEqual(@as(usize, 1), result); // 2 => index 1
 }
 
-test "non-TTY: invalid number returns 0" {
+test "non-TTY: out-of-range number errors instead of defaulting to index 0" {
     var input = "999\n".*;
     var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    const result = try select(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
+    try std.testing.expectError(error.InvalidSelection, select(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Pick:",
         .choices = &.{ "a", "b" },
-    });
+    }));
+}
 
-    try std.testing.expectEqual(@as(usize, 0), result);
+test "non-TTY: non-numeric input errors instead of defaulting to index 0" {
+    var input = "banana\n".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [1024]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    try std.testing.expectError(error.InvalidSelection, select(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
+        .message = "Pick:",
+        .choices = &.{ "a", "b" },
+    }));
 }
 
 test "non-TTY: EOF errors instead of defaulting to index 0" {
