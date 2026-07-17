@@ -205,7 +205,9 @@ fn writeOption(
     try writer.print("complete -c {s}", .{app_name});
     if (path) |p| try writeCondition(arena, writer, app_name, p);
 
-    if (opt.short) |short| try writer.print(" -s {c}", .{short});
+    // Quote + escape.fish the short char so a pathological `short = '\''` can't
+    // break out of the bare token (fish's `-s` value is normally unquoted).
+    if (opt.short) |short| try writer.print(" -s '{s}'", .{try escape.fish(arena, &[_]u8{short})});
     // Single-quote + escape.fish the long name so an exotic identifier stays one
     // literal token rather than shell syntax.
     try writer.print(" -l '{s}'", .{try escape.fish(arena, opt.name)});

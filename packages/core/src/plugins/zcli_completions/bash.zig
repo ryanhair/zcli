@@ -203,7 +203,7 @@ fn writeValueOptionPatterns(arena: std.mem.Allocator, writer: anytype, options: 
         if (!first) try writer.writeAll("|");
         first = false;
         try writer.print("'--{s}'", .{try escape.bash(arena, opt.name)});
-        if (opt.short) |short| try writer.print("|'-{c}'", .{short});
+        if (opt.short) |short| try writer.print("|'-{s}'", .{try escape.bash(arena, &[_]u8{short})});
     }
 }
 
@@ -212,7 +212,7 @@ fn writeValueOptionPatterns(arena: std.mem.Allocator, writer: anytype, options: 
 fn writeOptionNames(arena: std.mem.Allocator, writer: anytype, options: []const zcli.OptionInfo) !void {
     for (options) |opt| {
         try writer.print("--{s} ", .{try escape.bash(arena, opt.name)});
-        if (opt.short) |short| try writer.print("-{c} ", .{short});
+        if (opt.short) |short| try writer.print("-{s} ", .{try escape.bash(arena, &[_]u8{short})});
     }
 }
 
@@ -336,7 +336,7 @@ fn writeStaticOptionValueCasesFor(arena: std.mem.Allocator, writer: anytype, opt
     for (options) |opt| {
         const gen = (try staticCompgenArgs(arena, opt.enum_values, opt.complete)) orelse continue;
         try writer.print("        '--{s}'", .{try escape.bash(arena, opt.name)});
-        if (opt.short) |short| try writer.print("|'-{c}'", .{short});
+        if (opt.short) |short| try writer.print("|'-{s}'", .{try escape.bash(arena, &[_]u8{short})});
         try writer.writeAll(")\n");
         try writer.print("            COMPREPLY=($(compgen {s} -- \"$cur\"))\n", .{gen});
         try writer.writeAll("            return 0\n");

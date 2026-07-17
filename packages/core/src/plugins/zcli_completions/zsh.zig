@@ -213,10 +213,11 @@ fn appendOptionSpecs(
         const action = try optionAction(arena, app_name, opt);
 
         if (opt.short) |short| {
+            const esc_short = try escape.zsh(arena, &[_]u8{short});
             const spec = if (esc_desc) |d|
-                try std.fmt.allocPrint(arena, "-{c}[{s}]{s}", .{ short, d, action })
+                try std.fmt.allocPrint(arena, "-{s}[{s}]{s}", .{ esc_short, d, action })
             else
-                try std.fmt.allocPrint(arena, "-{c}{s}", .{ short, action });
+                try std.fmt.allocPrint(arena, "-{s}{s}", .{ esc_short, action });
             try specs.append(arena, spec);
         }
         const spec = if (esc_desc) |d|
