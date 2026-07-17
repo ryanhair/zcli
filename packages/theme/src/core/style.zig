@@ -9,6 +9,7 @@ const toAnsi16 = @import("color.zig").toAnsi16;
 const toAnsi256 = @import("color.zig").toAnsi256;
 const parseHex = @import("color.zig").parseHex;
 const approximateRgbToAnsi16 = @import("color.zig").approximateRgbToAnsi16;
+const approximateToAnsi16 = @import("color.zig").approximateToAnsi16;
 const TerminalCapability = @import("../detection/capability.zig").TerminalCapability;
 
 // Runtime version of toAnsi16 (color.zig's version requires comptime for hex parsing)
@@ -30,7 +31,7 @@ fn toAnsi16Runtime(color: Color) u8 {
         .bright_magenta => 13,
         .bright_cyan => 14,
         .bright_white => 15,
-        .indexed => |idx| if (idx < 16) idx else 7,
+        .indexed => |idx| approximateToAnsi16(idx),
         .rgb => |rgb| approximateRgbToAnsi16(rgb.r, rgb.g, rgb.b),
         .hex => |hex_str| {
             const rgb = parseHex(hex_str);
@@ -403,6 +404,42 @@ test "hex colors render as exact RGB in true color mode" {
 
     const comptime_seq = comptime (Style{ .foreground = Color{ .hex = "#FF8040" } }).sequenceComptime(.true_color);
     try testing.expectEqualStrings("\x1B[38;2;255;128;64m", comptime_seq);
+}
+
+test "runtime indexed→ansi16 downconversion picks nearest color" {
+    const testing = std.testing;
+
+    // First 16 palette entries pass straight through.
+    try testing.expectEqual(@as(u8, 9), toAnsi16Runtime(Color{ .indexed = 9 }));
+
+    // 216-color cube entries map to the nearest ANSI-16 color instead of
+    // collapsing to white (7). Regression: idx 196 is pure red, not white.
+    try testing.expectEqual(@as(u8, 9), toAnsi16Runtime(Color{ .indexed = 196 })); // bright red
+    try testing.expectEqual(@as(u8, 1), toAnsi16Runtime(Color{ .indexed = 88 })); // dim red
+    try testing.expectEqual(@as(u8, 12), toAnsi16Runtime(Color{ .indexed = 21 })); // bright blue
+    try testing.expectEqual(@as(u8, 13), toAnsi16Runtime(Color{ .indexed = 201 })); // bright magenta
+    try testing.expectEqual(@as(u8, 14), toAnsi16Runtime(Color{ .indexed = 123 })); // bright cyan
+
+    // Grayscale ramp (232-255) spans black → gray → bright white.
+    try testing.expectEqual(@as(u8, 0), toAnsi16Runtime(Color{ .indexed = 232 })); // black
+    try testing.expectEqual(@as(u8, 8), toAnsi16Runtime(Color{ .indexed = 244 })); // gray
+    try testing.expectEqual(@as(u8, 15), toAnsi16Runtime(Color{ .indexed = 255 })); // bright white
+}
+
+test "indexed colors render as nearest ANSI-16 sequence" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+
+    // Regression test: the runtime fallback used to emit bright white (97) for
+    // every index ≥ 16, so pure-red 196 rendered white on a 16-color terminal.
+    const red_style = Style{ .foreground = Color{ .indexed = 196 } };
+    try testing.expectEqualStrings("\x1B[91m", try sequenceToBuf(red_style, .ansi_16, &buf));
+
+    const blue_bg = Style{ .background = Color{ .indexed = 21 } };
+    try testing.expectEqualStrings("\x1B[104m", try sequenceToBuf(blue_bg, .ansi_16, &buf));
+
+    const gray_style = Style{ .foreground = Color{ .indexed = 244 } };
+    try testing.expectEqualStrings("\x1B[90m", try sequenceToBuf(gray_style, .ansi_16, &buf));
 }
 
 test "multiple text decorations" {
