@@ -61,11 +61,12 @@ const MoveOutcome = union(enum) {
 };
 
 /// The actual move: validates both paths, checks for destination conflicts,
-/// creates any parent group directories the destination needs, renames the
-/// file, tidies up any group the source left empty, and rewrites the moved
-/// file's self-referential path mentions. Takes `dir` explicitly (rather than
-/// hardcoding `std.Io.Dir.cwd()`) so it can be exercised against a scratch
-/// directory in tests.
+/// creates any parent group directories the destination needs, rewrites the
+/// file's self-referential path mentions and writes the result atomically at
+/// the destination before deleting the source, then tidies up any group the
+/// source left empty. Takes `dir` explicitly (rather than hardcoding
+/// `std.Io.Dir.cwd()`) so it can be exercised against a scratch directory in
+/// tests.
 fn performMove(dir: std.Io.Dir, io: std.Io, arena: std.mem.Allocator, from: []const u8, to: []const u8) !MoveOutcome {
     dir.access(io, "src/commands", .{}) catch return .not_a_project;
 
@@ -102,22 +103,28 @@ fn performMove(dir: std.Io.Dir, io: std.Io, arena: std.mem.Allocator, from: []co
         }
     }
 
-    try dir.rename(from_file, dir, to_file, io);
-    // Tidy up any group the source left empty (its co-located `execute` and
-    // any in-file tests travel with the file).
-    try fs.removeEmptyParents(dir, io, arena, from_parts);
-
-    // The scaffolder embeds the old path in three self-referential spots
-    // (leading meta.examples entry, the execute TODO print, and the
+    // Order the move so a mid-flight failure can never leave a partially
+    // applied result (#672): read the source, rewrite its self-references in
+    // memory, write the finished file atomically at the destination, and only
+    // then delete the source. If the read or rewrite fails, the source is still
+    // in place and the destination was never created; if the atomic write
+    // fails, likewise. The old path stops existing only once the new one holds
+    // correct content.
+    //
+    // The scaffolder embeds the old path in three self-referential spots (the
+    // leading `meta.examples` entry, the `execute` TODO print, and the
     // co-located test name) — rewrite those so the moved file doesn't keep
     // pointing at its old address (#591).
     const old_path = try std.mem.join(arena, " ", from_parts);
     const new_path = try std.mem.join(arena, " ", to_parts);
-    const content = try dir.readFileAlloc(io, to_file, arena, .limited(1024 * 1024));
+    const content = try dir.readFileAlloc(io, from_file, arena, .limited(1024 * 1024));
     const rewritten = try fs.rewriteCommandPathReferences(arena, content, old_path, new_path);
-    if (!std.mem.eql(u8, content, rewritten)) {
-        try fs.writeFileAtomic(dir, io, arena, to_file, rewritten);
-    }
+    try fs.writeFileAtomic(dir, io, arena, to_file, rewritten);
+    try dir.deleteFile(io, from_file);
+
+    // Tidy up any group the source left empty (its co-located `execute` and
+    // any in-file tests travelled with the file).
+    try fs.removeEmptyParents(dir, io, arena, from_parts);
 
     return .{ .ok = .{ .from_file = from_file, .to_file = to_file } };
 }
@@ -243,6 +250,39 @@ test "performMove renames the file, creates parent groups, and rewrites self-ref
     defer testing.allocator.free(moved);
     try testing.expect(std.mem.indexOf(u8, moved, "release deploy --env prod") != null);
     try testing.expect(std.mem.indexOf(u8, moved, "\"release deploy: works\"") != null);
+}
+
+test "performMove leaves the source intact and creates no destination when the write fails" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProject(tmp.dir, io);
+    const source =
+        \\pub const meta = .{
+        \\    .examples = &.{"deploy --env prod"},
+        \\};
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/commands/deploy.zig", .data = source });
+
+    // Force the atomic write to fail by occupying its temp path with a
+    // directory, so `createFile("src/commands/release.zig.tmp")` errors out
+    // mid-move. The rewrite-then-rename ordering must leave the source in place
+    // and never materialise the destination.
+    try tmp.dir.createDir(io, "src/commands/release.zig.tmp", .default_dir);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.IsDir, performMove(tmp.dir, io, arena.allocator(), "deploy", "release"));
+
+    // Source is untouched (still present, still holding its original content)
+    // and the destination was never created.
+    try testing.expect(exists(tmp.dir, io, "src/commands/deploy.zig"));
+    try testing.expect(!exists(tmp.dir, io, "src/commands/release.zig"));
+    const still = try tmp.dir.readFileAlloc(io, "src/commands/deploy.zig", testing.allocator, .limited(4096));
+    defer testing.allocator.free(still);
+    try testing.expectEqualStrings(source, still);
 }
 
 test "performMove cascades removeEmptyParents when the source group is left empty" {
