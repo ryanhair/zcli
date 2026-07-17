@@ -505,6 +505,21 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
                         "Drop the default, or use a non-optional field with a default for a guaranteed value.");
                 }
             }
+
+            // An accumulating-array option collects repeated flags, so the parser
+            // always initializes it to the empty slice *before* any declared
+            // default is read (the overwrite is required — `cleanupOptions` would
+            // otherwise `free` a static literal). A non-empty default is therefore
+            // silently discarded. Forbid it, mirroring the optional-default rule:
+            // arrays default to empty; supply values by passing the flag.
+            if (comptime option_utils.isArrayType(field.type) and field.default_value_ptr != null) {
+                const dv: *const field.type = @ptrCast(@alignCast(field.default_value_ptr.?));
+                if (dv.*.len != 0) {
+                    @compileError(loc ++ "array option '" ++ field.name ++ "' has a non-empty default. " ++
+                        "Accumulating arrays always default to empty (repeat the flag to add values); " ++
+                        "a non-empty default is silently discarded. Drop the default.");
+                }
+            }
         }
 
         // No two options may collide on a spelling: the parser resolves a flag by
@@ -856,6 +871,19 @@ test "validateCommand accepts a well-formed command" {
     };
     comptime validateCommand("distinct", Distinct);
 
+    // Accumulating-array options are valid with no default (implicitly empty) or
+    // an explicitly empty default. A non-empty default is a compile error (see
+    // the hand-verified negative case below).
+    const Arrays = struct {
+        pub const Args = struct {};
+        pub const Options = struct {
+            tags: []const []const u8,
+            ports: []const u16 = &.{},
+        };
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
+    };
+    comptime validateCommand("arrays", Arrays);
+
     try testing.expect(true);
 }
 
@@ -901,6 +929,16 @@ test "validateCommand accepts a well-formed command" {
 //
 //   command 'broken': options 'dry_run' and 'dry-run' both resolve to the long flag `--dry-run`. ...
 //     pub const Options = struct { @"dry-run": bool = false, dry_run: bool = false };
+//
+//   Option default shapes. Optionals default to null and accumulating arrays
+//   default to empty; a non-null/non-empty default is silently discarded, so
+//   both are rejected. Each guard below is verified by hand:
+//
+//   command 'broken': optional option 'name' has a non-null default. ...
+//     pub const Options = struct { name: ?[]const u8 = "x" };
+//
+//   command 'broken': array option 'tags' has a non-empty default. ...
+//     pub const Options = struct { tags: []const []const u8 = &.{"a"} };
 
 test "Context creation" {
     const allocator = testing.allocator;
