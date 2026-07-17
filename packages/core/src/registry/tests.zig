@@ -1712,6 +1712,112 @@ test "commands inherit global options" {
     try testing.expect(LocalCmd.local_seen);
 }
 
+// Test the attached short form for a value-taking global option: `-cval` must be
+// parsed identically to `-c val` and `--config=val` (issue #573). The value-taking
+// short falls into the >2-char bundle branch, which used to require every char to
+// be a boolean global and so passed `-cval` through to the command parser (which
+// has no such field) as OptionUnknown.
+test "global options: attached short value -cval and mixed bundle" {
+    const GlobalAttachedPlugin = struct {
+        var config_seen: ?[]const u8 = null;
+        var verbose_seen: ?bool = null;
+
+        pub const global_options = [_]zcli.GlobalOption{
+            zcli.option("config", []const u8, .{ .short = 'c', .default = "~/.config", .description = "Config file path" }),
+            zcli.option("verbose", bool, .{ .short = 'v', .default = false, .description = "Verbose output" }),
+        };
+
+        pub fn handleGlobalOption(_: anytype, name: []const u8, value: anytype) !void {
+            if (std.mem.eql(u8, name, "config")) {
+                if (@TypeOf(value) == []const u8) config_seen = value;
+            } else if (std.mem.eql(u8, name, "verbose")) {
+                if (@TypeOf(value) == bool) verbose_seen = value;
+            }
+        }
+    };
+
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
+    };
+
+    const TestRegistry = Registry.init(.{
+        .app_name = "test-app",
+        .app_version = "1.0.0",
+        .app_description = "Test application",
+    })
+        .registerPlugin(GlobalAttachedPlugin)
+        .register("global-test", TestCommand)
+        .build();
+
+    // Case 1: bare attached short `-c/custom/path`.
+    {
+        GlobalAttachedPlugin.config_seen = null;
+        GlobalAttachedPlugin.verbose_seen = null;
+
+        var app = TestRegistry.init();
+        var stdio: zcli.Stdio = undefined;
+        stdio.init(std.testing.io);
+        var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+        defer out_aw.deinit();
+        var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+        defer err_aw.deinit();
+        stdio.stdout_override = &out_aw.writer;
+        stdio.stderr_override = &err_aw.writer;
+        const args = [_][]const u8{ "-c/custom/path", "global-test" };
+        try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
+
+        try testing.expect(GlobalAttachedPlugin.config_seen != null);
+        try testing.expectEqualStrings("/custom/path", GlobalAttachedPlugin.config_seen.?);
+    }
+
+    // Case 2: leading boolean global then attached value `-vc/custom/path`
+    // (GNU getopt mixed bundle: -v consumed, -c takes the rest as its value).
+    {
+        GlobalAttachedPlugin.config_seen = null;
+        GlobalAttachedPlugin.verbose_seen = null;
+
+        var app = TestRegistry.init();
+        var stdio: zcli.Stdio = undefined;
+        stdio.init(std.testing.io);
+        var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+        defer out_aw.deinit();
+        var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+        defer err_aw.deinit();
+        stdio.stdout_override = &out_aw.writer;
+        stdio.stderr_override = &err_aw.writer;
+        const args = [_][]const u8{ "-vc/custom/path", "global-test" };
+        try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
+
+        try testing.expectEqual(@as(?bool, true), GlobalAttachedPlugin.verbose_seen);
+        try testing.expect(GlobalAttachedPlugin.config_seen != null);
+        try testing.expectEqualStrings("/custom/path", GlobalAttachedPlugin.config_seen.?);
+    }
+
+    // Case 3: value-taking short ends the token, value in the next arg `-vc val`.
+    {
+        GlobalAttachedPlugin.config_seen = null;
+        GlobalAttachedPlugin.verbose_seen = null;
+
+        var app = TestRegistry.init();
+        var stdio: zcli.Stdio = undefined;
+        stdio.init(std.testing.io);
+        var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+        defer out_aw.deinit();
+        var err_aw = std.Io.Writer.Allocating.init(testing.allocator);
+        defer err_aw.deinit();
+        stdio.stdout_override = &out_aw.writer;
+        stdio.stderr_override = &err_aw.writer;
+        const args = [_][]const u8{ "-vc", "next-value", "global-test" };
+        try app.executeWithStdio(testing.allocator, std.testing.io, &(std.process.Environ.Map.init(testing.allocator)), &args, &stdio);
+
+        try testing.expectEqual(@as(?bool, true), GlobalAttachedPlugin.verbose_seen);
+        try testing.expect(GlobalAttachedPlugin.config_seen != null);
+        try testing.expectEqualStrings("next-value", GlobalAttachedPlugin.config_seen.?);
+    }
+}
+
 // Test global option defaults: when options are omitted the pipeline accepts
 // them silently (defaults are not errors), and the handler is not invoked for
 // absent options — only explicitly supplied values flow through the handler.

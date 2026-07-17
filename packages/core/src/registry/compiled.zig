@@ -931,29 +931,71 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                         }
                     }
                 } else if (!options_ended and std.mem.startsWith(u8, arg, "-") and arg.len > 2) {
-                    // Bundled shorts (-abc): consumed as globals only when
-                    // EVERY char is a boolean global — a partial match would
-                    // silently drop the other chars, and a value-taking short
-                    // can't get a value inside a bundle. Anything else stays
-                    // in `remaining` for the command's own option parser.
+                    // Mixed short bundle (GNU getopt), mirroring the command-option
+                    // parser (options/parser.zig): consume leading boolean globals
+                    // one at a time; the first value-taking global short claims the
+                    // rest of the token as an attached value (`-cval` == `-c val`),
+                    // or the next argument when it ends the token (`-vc val`). The
+                    // whole token is consumed only when it resolves entirely to
+                    // globals — a non-global leading char aborts (the token layer
+                    // can't partially consume), leaving the token in `remaining`
+                    // for the command's own option parser.
                     const short_opts = arg[1..];
-                    var all_boolean_globals = true;
+
+                    // First pass: decide whether the token is consumable without
+                    // mutating any state. Every char up to (and including) the first
+                    // value-taking global must resolve to a global; a value-taking
+                    // global ends the scan since the remainder is its value.
+                    var consumable = true;
                     for (short_opts) |short_char| {
-                        var char_is_boolean_global = false;
+                        var is_bool_global = false;
+                        var is_value_global = false;
                         inline for (global_options) |global_opt| {
-                            if (global_opt.short == short_char and global_opt.type == bool) {
-                                char_is_boolean_global = true;
+                            if (global_opt.short == short_char) {
+                                if (global_opt.type == bool) {
+                                    is_bool_global = true;
+                                } else {
+                                    is_value_global = true;
+                                }
                             }
                         }
-                        if (!char_is_boolean_global) all_boolean_globals = false;
+                        if (is_value_global) break; // rest of token is this option's value
+                        if (!is_bool_global) {
+                            consumable = false;
+                            break;
+                        }
                     }
 
-                    if (all_boolean_globals) {
+                    if (consumable) {
                         try consumed.append(context.allocator, i);
-                        for (short_opts) |short_char| {
+                        var ci: usize = 0;
+                        dispatch: while (ci < short_opts.len) : (ci += 1) {
+                            const short_char = short_opts[ci];
                             inline for (global_options) |global_opt| {
                                 if (global_opt.short == short_char) {
-                                    try dispatchGlobalOption(context, global_opt, "true", true);
+                                    if (global_opt.type == bool) {
+                                        try dispatchGlobalOption(context, global_opt, "true", true);
+                                    } else {
+                                        const attached = short_opts[ci + 1 ..];
+                                        var value: []const u8 = attached;
+                                        if (attached.len == 0) {
+                                            if (i + 1 < args.len and option_utils.isValueToken(args[i + 1])) {
+                                                i += 1;
+                                                value = args[i];
+                                                try consumed.append(context.allocator, i);
+                                            } else {
+                                                context.diagnostic = .{ .OptionMissingValue = .{
+                                                    .option_name = global_opt.name,
+                                                    .is_short = true,
+                                                    .expected_type = zcli.expectedTypeName(global_opt.type),
+                                                } };
+                                                return zcli.ZcliError.OptionMissingValue;
+                                            }
+                                        }
+                                        try dispatchGlobalOption(context, global_opt, value, true);
+                                        break :dispatch; // value claimed the rest of the token
+                                    }
+                                    break;
                                 }
                             }
                         }
