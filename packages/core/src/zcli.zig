@@ -554,6 +554,22 @@ pub fn validateCommand(comptime path: []const u8, comptime Module: type) void {
                         "' both resolve to the long flag `--" ++ a_long ++ "`. Rename one, or give it a " ++
                         "distinct `meta.options.<field>.name`.");
                 }
+                // A boolean flag auto-generates a `--no-<name>` negation. If some
+                // other field's effective long name *is* that negation, `--no-<name>`
+                // is ambiguous — the parser resolves it to whichever field its
+                // `inline for` reaches first, with no diagnostic (#667). Forbid it.
+                if (option_utils.isBooleanFlag(a.type) and std.mem.eql(u8, b_long, "no-" ++ a_long)) {
+                    @compileError(loc ++ "option '" ++ b.name ++ "' resolves to flag `--" ++ b_long ++
+                        "`, which collides with the auto-generated `--no-…` negation of boolean option '" ++
+                        a.name ++ "' (`--" ++ a_long ++ "`). Rename one, or give it a distinct " ++
+                        "`meta.options.<field>.name`.");
+                }
+                if (option_utils.isBooleanFlag(b.type) and std.mem.eql(u8, a_long, "no-" ++ b_long)) {
+                    @compileError(loc ++ "option '" ++ a.name ++ "' resolves to flag `--" ++ a_long ++
+                        "`, which collides with the auto-generated `--no-…` negation of boolean option '" ++
+                        b.name ++ "' (`--" ++ b_long ++ "`). Rename one, or give it a distinct " ++
+                        "`meta.options.<field>.name`.");
+                }
                 if (option_utils.shortCharForField(opts_meta, a.name)) |a_short| {
                     if (option_utils.shortCharForField(opts_meta, b.name)) |b_short| {
                         if (a_short == b_short) {
@@ -900,6 +916,15 @@ test "validateCommand accepts a well-formed command" {
     };
     comptime validateCommand("arrays", Arrays);
 
+    // A `no-`-prefixed non-boolean option is fine on its own: it only collides
+    // when a *boolean* option derives the same `--no-…` negation (#667).
+    const LoneNegation = struct {
+        pub const Args = struct {};
+        pub const Options = struct { no_cache: []const u8 = "" };
+        pub fn execute(_: Args, _: Options, _: anytype) !void {}
+    };
+    comptime validateCommand("lone-negation", LoneNegation);
+
     try testing.expect(true);
 }
 
@@ -955,6 +980,13 @@ test "validateCommand accepts a well-formed command" {
 //
 //   command 'broken': array option 'tags' has a non-empty default. ...
 //     pub const Options = struct { tags: []const []const u8 = &.{"a"} };
+//
+//   A boolean's derived `--no-<name>` negation must not collide with another
+//   field's effective long name (#667), regardless of declaration order:
+//
+//   command 'broken': option 'no_cache' resolves to flag `--no-cache`, which collides with
+//     the auto-generated `--no-…` negation of boolean option 'cache' (`--cache`). ...
+//     pub const Options = struct { cache: bool = false, no_cache: []const u8 = "" };
 
 test "Context creation" {
     const allocator = testing.allocator;
