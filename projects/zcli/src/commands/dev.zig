@@ -237,11 +237,14 @@ fn doCycle(
     app_child: *?std.process.Child,
 ) !void {
     // Stop the previous run before rebuilding (restart-on-change). kill() blocks
-    // until the child is reaped and is idempotent.
+    // until the child is reaped and is idempotent. Untrack *before* reaping: the
+    // pid stays live (and can even be reused by an unrelated process) until the
+    // reap completes, so clearing the tracked target first ensures a signal
+    // arriving mid-kill can never end up targeting a stale/reused pid.
     if (app_child.*) |*child| {
+        reaper.track(null);
         child.kill(io);
         app_child.* = null;
-        reaper.track(null);
     }
 
     try paint(status, theme, "▸ rebuilding…", .info);
@@ -252,7 +255,6 @@ fn doCycle(
 
     if (command.len > 0) {
         app_child.* = try startApp(io, arena, status, theme, app_name, command);
-        reaper.track(app_child.*);
     }
 }
 
@@ -302,12 +304,18 @@ fn startApp(
     try status.writeByte('\n');
     try status.flush();
 
-    return try std.process.spawn(io, .{
+    const child = try std.process.spawn(io, .{
         .argv = try appArgv(arena, binary, command),
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
     });
+    // Record it for the signal handlers immediately — before any other work
+    // (including returning to the caller) — so the window in which a SIGTERM
+    // could reach dev without the reaper knowing about the just-spawned child
+    // is as small as possible.
+    reaper.track(child);
+    return child;
 }
 
 /// Picks the executable in zig-out/bin to run. A scaffolded project produces
