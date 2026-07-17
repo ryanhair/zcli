@@ -40,8 +40,17 @@ jobs:
     # deploys — a waiting run holds the cloudflare-pages concurrency group —
     # and is redundant under the release trigger above: publishing the signed
     # release IS the approval. install.sh/install.ps1 (the curl|sh trust
-    # root) still only change via reviewed PRs on protected main.
+    # root) still only change via reviewed PRs on protected main — enforced
+    # below for the workflow_dispatch path, since that trigger has no ref
+    # restriction of its own and would otherwise let anyone with write access
+    # publish installers built from an arbitrary branch.
     steps:
+      - name: Restrict manual dispatch to main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::workflow_dispatch must be run on main (got ${{ github.ref }}) — install.sh/install.ps1 are the curl|sh trust root and only publish from protected main." >&2
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
