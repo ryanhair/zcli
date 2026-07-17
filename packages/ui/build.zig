@@ -4,7 +4,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const zg = b.dependency("zg", .{ .target = target, .optimize = optimize });
     const theme_dep = b.dependency("theme", .{ .target = target, .optimize = optimize });
     const terminal_dep = b.dependency("terminal", .{ .target = target, .optimize = optimize });
 
@@ -14,7 +13,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    mod.addImport("Graphemes", zg.module("Graphemes"));
     mod.addImport("theme", theme_dep.module("theme"));
     mod.addImport("terminal", terminal_dep.module("terminal"));
 
@@ -27,7 +25,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    test_mod.addImport("Graphemes", zg.module("Graphemes"));
     test_mod.addImport("theme", theme_dep.module("theme"));
     test_mod.addImport("terminal", terminal_dep.module("terminal"));
     test_mod.addImport("vterm", vterm_dep.module("vterm"));

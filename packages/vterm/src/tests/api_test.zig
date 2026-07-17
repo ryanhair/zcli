@@ -53,6 +53,20 @@ test "getAllText" {
     try testing.expectEqualStrings("Hi    ", text); // 6 chars total (3*2)
 }
 
+test "getAllLines splits into rows and trims trailing spaces" {
+    var term = try VTerm.init(testing.allocator, 6, 4);
+    defer term.deinit();
+
+    // Two written rows plus two trailing blank rows; the blanks are kept so the
+    // frame geometry survives, and each row's trailing padding is trimmed.
+    term.write("Line1\nHi");
+
+    const lines = try term.getAllLines(testing.allocator);
+    defer testing.allocator.free(lines);
+
+    try testing.expectEqualStrings("Line1\nHi\n\n", lines);
+}
+
 test "expectOutput helper" {
     // Test the helper function from PLAN.md
     const expected = "Hello" ++ " " ** (80 * 24 - 5); // Fill with spaces to 80*24

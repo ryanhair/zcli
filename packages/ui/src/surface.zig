@@ -11,7 +11,7 @@
 //! region are dropped, not clamped into a sibling's cells.
 
 const std = @import("std");
-const Graphemes = @import("Graphemes");
+const terminal = @import("terminal");
 const theme = @import("theme");
 
 pub const Style = theme.Style;
@@ -272,21 +272,16 @@ pub const Region = struct {
         const right: u32 = @as(u32, self.rect.x) + self.rect.w;
         var col: u32 = start;
 
-        var skip_until: usize = 0;
-        var it = Graphemes.iterator(text);
+        var it = terminal.visibleGraphemes(text);
         while (it.next()) |g| {
             if (col >= right) break;
-            if (g.offset < skip_until) continue;
-            if (text[g.offset] == 0x1b) {
-                skip_until = escapeSeqEnd(text, g.offset);
-                continue;
-            }
-            if (text[g.offset] < 0x20 or text[g.offset] == 0x7f) continue;
-            const gw = g.displayWidth(text);
-            if (gw <= 0) continue;
-            const w: u8 = @intCast(@min(gw, 2));
+            // ANSI escapes are already skipped by the iterator; drop remaining
+            // control bytes (they paint nothing) and zero-width clusters.
+            if (g.bytes[0] < 0x20 or g.bytes[0] == 0x7f) continue;
+            if (g.width == 0) continue;
+            const w: u8 = @intCast(@min(g.width, 2));
             if (col + w > right) break;
-            try self.surface.put(@intCast(col), abs_y, text[g.offset..][0..g.len], w, style);
+            try self.surface.put(@intCast(col), abs_y, g.bytes, w, style);
             col += w;
         }
         return @intCast(col - start);
@@ -346,32 +341,6 @@ pub fn scrollThumb(total: usize, visible: usize, scroll: usize, h: u16) Thumb {
     const s = @min(scroll, max_scroll);
     const start: u16 = if (travel == 0) 0 else @intCast((travel * s + max_scroll / 2) / max_scroll);
     return .{ .start = start, .len = len };
-}
-
-/// Index just past the ANSI escape sequence starting at `text[i]` (an ESC the
-/// caller already saw). Same recognizer as `terminal.wrap`: CSI, OSC (BEL/ST
-/// terminated), and two-byte `ESC x` forms; a truncated sequence consumes to
-/// end of string.
-fn escapeSeqEnd(text: []const u8, i: usize) usize {
-    if (i + 1 >= text.len) return i + 1;
-    switch (text[i + 1]) {
-        '[' => {
-            var j = i + 2;
-            while (j < text.len) : (j += 1) {
-                if (text[j] >= 0x40 and text[j] <= 0x7e) return j + 1;
-            }
-            return text.len;
-        },
-        ']' => {
-            var j = i + 2;
-            while (j < text.len) : (j += 1) {
-                if (text[j] == 0x07) return j + 1;
-                if (text[j] == 0x1b and j + 1 < text.len and text[j + 1] == '\\') return j + 2;
-            }
-            return text.len;
-        },
-        else => return i + 2,
-    }
 }
 
 // ============================================================================

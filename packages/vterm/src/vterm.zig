@@ -1083,6 +1083,26 @@ pub const VTerm = struct {
         return result.toOwnedSlice(allocator);
     }
 
+    /// The full screen as text: each row's visible content (trailing spaces
+    /// trimmed) joined by '\n', with all `height` rows present so trailing
+    /// blank rows preserve the frame geometry. Unlike `getAllText`, which emits
+    /// a flat width*height run with no row breaks, this reports the grid's real
+    /// row structure — callers rendering or snapshotting a frame use it directly
+    /// instead of re-deriving row breaks from geometry.
+    pub fn getAllLines(self: *VTerm, allocator: Allocator) ![]u8 {
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
+
+        for (0..self.height) |y| {
+            if (y > 0) try result.append(allocator, '\n');
+            const line = try self.getLine(allocator, @intCast(y));
+            defer allocator.free(line);
+            try result.appendSlice(allocator, line);
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
     pub fn getLine(self: *VTerm, allocator: Allocator, line_y: u16) ![]u8 {
         if (line_y >= self.height) return allocator.alloc(u8, 0);
 

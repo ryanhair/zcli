@@ -48,21 +48,70 @@ fn graphemeCols(g: Graphemes.Grapheme, text: []const u8) usize {
     return if (w > 0) @intCast(w) else 0;
 }
 
+/// A visible grapheme cluster within some text: its byte slice, byte offset
+/// into the original text, and display width in terminal cells.
+pub const VisibleGrapheme = struct {
+    bytes: []const u8,
+    offset: usize,
+    width: usize,
+};
+
+/// Walks the visible grapheme clusters of `text`, skipping ANSI escape
+/// sequences (CSI/OSC/two-byte) entirely and reporting each cluster's display
+/// width. This is the single grapheme-walking primitive terminal owns; callers
+/// that need to place cells (the UI surface) drive it instead of importing zg's
+/// `Graphemes` directly, so all cell-width math has one owner.
+pub const VisibleIterator = struct {
+    text: []const u8,
+    it: Graphemes.Iterator,
+    skip_until: usize = 0,
+
+    pub fn next(self: *VisibleIterator) ?VisibleGrapheme {
+        while (self.it.next()) |g| {
+            if (g.offset < self.skip_until) continue;
+            if (self.text[g.offset] == 0x1b) {
+                self.skip_until = escapeSeqEnd(self.text, g.offset);
+                continue;
+            }
+            return .{
+                .bytes = self.text[g.offset..][0..g.len],
+                .offset = g.offset,
+                .width = graphemeCols(g, self.text),
+            };
+        }
+        return null;
+    }
+};
+
+/// Iterate the visible (non-ANSI) grapheme clusters of `text`.
+pub fn visibleGraphemes(text: []const u8) VisibleIterator {
+    return .{ .text = text, .it = Graphemes.iterator(text) };
+}
+
 /// Total display width of `text` in terminal cells, grapheme-aware and skipping
 /// ANSI escape sequences.
 pub fn displayWidth(text: []const u8) usize {
     var total: usize = 0;
-    var skip_until: usize = 0;
-    var it = Graphemes.iterator(text);
-    while (it.next()) |g| {
-        if (g.offset < skip_until) continue;
-        if (text[g.offset] == 0x1b) {
-            skip_until = escapeSeqEnd(text, g.offset);
-            continue;
-        }
-        total += graphemeCols(g, text);
-    }
+    var it = visibleGraphemes(text);
+    while (it.next()) |g| total += g.width;
     return total;
+}
+
+/// Byte length of the longest prefix of `text` whose visible graphemes fit in
+/// `cols` display columns. ANSI escapes are zero width and are kept when they
+/// precede retained content; grapheme clusters are never split. This is the
+/// single owner of prefix-truncation — UI truncation drives it instead of
+/// re-walking graphemes itself.
+pub fn truncateToWidth(text: []const u8, cols: usize) usize {
+    var used: usize = 0;
+    var end: usize = 0;
+    var it = visibleGraphemes(text);
+    while (it.next()) |g| {
+        if (used + g.width > cols) break;
+        used += g.width;
+        end = g.offset + g.bytes.len;
+    }
+    return end;
 }
 
 /// Byte length of the trailing grapheme cluster of `text` (0 for empty text).
@@ -275,6 +324,27 @@ test "displayWidth: emoji and combining marks" {
 test "displayWidth: skips ANSI escapes" {
     // Without skipping, zg would count the '[36m' bytes → 6.
     try testing.expectEqual(@as(usize, 2), displayWidth("\x1b[36mhi\x1b[0m"));
+}
+
+test "truncateToWidth: ascii keeps the longest fitting prefix" {
+    try testing.expectEqual(@as(usize, 5), truncateToWidth("hello", 10));
+    try testing.expectEqual(@as(usize, 3), truncateToWidth("hello", 3));
+    try testing.expectEqual(@as(usize, 0), truncateToWidth("hello", 0));
+}
+
+test "truncateToWidth: never splits a wide grapheme across the boundary" {
+    // Each CJK char is 2 cols; width 3 fits only the first (2 + 2 > 3).
+    // 你 is 3 bytes, so the kept prefix is 3 bytes long.
+    try testing.expectEqual(@as(usize, 3), truncateToWidth("你好", 3));
+    try testing.expectEqual(@as(usize, 6), truncateToWidth("你好", 4));
+    // A single wide grapheme doesn't fit in one column.
+    try testing.expectEqual(@as(usize, 0), truncateToWidth("你", 1));
+}
+
+test "truncateToWidth: ANSI escapes are zero width and ride along" {
+    // "\x1b[36m" (5 bytes, 0 cols) + "hi" (2 cols); width 2 keeps both.
+    const s = "\x1b[36mhi";
+    try testing.expectEqual(@as(usize, s.len), truncateToWidth(s, 2));
 }
 
 test "trailingGraphemeLen: ascii, CJK, combining, ZWJ emoji" {
