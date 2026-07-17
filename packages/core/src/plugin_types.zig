@@ -206,7 +206,7 @@ pub fn getPriority(comptime T: type) i32 {
 ///   preParse(context, args: []const []const u8) ![]const []const u8
 ///   postParse(context, args: zcli.ParsedArgs) !?zcli.ParsedArgs
 ///   preExecute(context, args: zcli.ParsedArgs) !?zcli.ParsedArgs
-///   postExecute(context, result: anytype) !void
+///   postExecute(context, success: bool) !void
 ///   onError(context, err: anyerror) !bool
 ///
 ///   applyConfigDefaults(context, comptime OptionsType: type,

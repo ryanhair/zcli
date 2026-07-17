@@ -139,11 +139,13 @@ Plugins can implement any of these lifecycle hooks:
 
 1. **`onStartup`** - Called once per invocation, after plugin data is captured but before argument parsing/routing (for one-time work like update checks)
 2. **`preParse`** - Called before argument parsing
-3. **`postParse`** - Called after parsing, before command execution  
-4. **`preExecute`** - Called right before command execution (can cancel)
-5. **`postExecute`** - Called after command execution
-6. **`onError`** - Called when an error occurs
-7. **`handleGlobalOption`** - Called when global options are processed
+3. **`transformArgs`** - Called after `preParse`, can rewrite/short-circuit the raw argv before parsing
+4. **`handleGlobalOption`** - Called when global options are processed
+5. **`postParse`** - Called after parsing, before command execution
+6. **`applyConfigDefaults`** - Called during option parsing to fill fields from a lower-precedence source (e.g. a config file), after CLI + env but before required/dependency/exclusive validation
+7. **`preExecute`** - Called right before command execution (can cancel)
+8. **`postExecute`** - Called after command execution, with the command's success/failure outcome
+9. **`onError`** - Called when an error occurs
 
 ### Plugin Integration
 
