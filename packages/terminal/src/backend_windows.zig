@@ -78,6 +78,10 @@ extern "kernel32" fn ReadConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT
 // against 0 like the other kernel32 externs here.
 extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) UINT;
 extern "kernel32" fn SetConsoleOutputCP(wCodePageID: UINT) callconv(.winapi) c_int;
+// Monotonic millisecond clock (milliseconds since boot), for computing wait
+// deadlines that don't drift when `WaitForSingleObject` returns early on a
+// non-key console record. Libc-free, matching the rest of this backend.
+extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 
 /// Saved console state for restoring after raw mode. Raw mode touches both the
 /// input handle (to stop line buffering/echo and turn on VT input) and the
@@ -230,12 +234,20 @@ pub const ResizeWatcher = struct {
     /// returns `.timeout`). A finite timeout lets a full-screen loop repaint
     /// on a tick with no input; the size poll runs at most one
     /// `resize_poll_ms` interval past the deadline.
+    ///
+    /// The remaining budget is recomputed from a monotonic clock rather than by
+    /// subtracting the nominal wait, so a `WaitForSingleObject` that returns
+    /// early on a non-key console record (focus/menu/buffer-size events that
+    /// `drainedToRealInput` discards) doesn't over-charge the timeout and expire
+    /// it early under a storm of such records.
     pub fn waitTimeout(self: *ResizeWatcher, handle: Handle, timeout_ms: ?u32) WaitResult {
-        var remaining: ?u32 = timeout_ms;
+        const deadline_ms: ?u64 = if (timeout_ms) |t| GetTickCount64() + t else null;
         while (true) {
-            const wait_ms: DWORD = if (remaining) |r| blk: {
-                if (r == 0) return .timeout;
-                break :blk @intCast(@min(r, @as(u32, @intCast(resize_poll_ms))));
+            const wait_ms: DWORD = if (deadline_ms) |deadline| blk: {
+                const now = GetTickCount64();
+                if (now >= deadline) return .timeout;
+                const remaining: u64 = deadline - now;
+                break :blk @intCast(@min(remaining, @as(u64, @intCast(resize_poll_ms))));
             } else @intCast(resize_poll_ms);
 
             const ready = WaitForSingleObject(handle, wait_ms) == WAIT_OBJECT_0;
@@ -245,7 +257,6 @@ pub const ResizeWatcher = struct {
                 return .resize;
             }
             if (ready and drainedToRealInput(handle)) return .input;
-            if (remaining) |*r| r.* -|= wait_ms;
         }
     }
 };
