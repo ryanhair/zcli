@@ -151,6 +151,48 @@ fn runIntoHeadViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, bin: []const u8, c
     return readFile(cwd, a, err_name);
 }
 
+/// Run `bin cmd | head -c0` through a shell: `head -c0` closes its read end
+/// immediately, without reading anything, before the CLI ever writes. Unlike
+/// `runIntoHeadViaShell`'s `flood` scenario — where the pipe fills mid-command
+/// and a *write inside `execute()`* fails — a small command's whole output
+/// fits in the framework's 4096-byte stdout buffer, so nothing hits the wire
+/// until the deferred final flush after `execute()` returns successfully.
+/// That is exactly the gap #630 covers: the mid-command broken-pipe path
+/// never fires, so the framework must still notice the flush-time EPIPE and
+/// exit 141 rather than 0. The subshell's own exit status is captured to
+/// `exit_file` (not stdout, so it doesn't confuse `head`) so the caller can
+/// assert on the CLI's real exit code rather than the pipeline's.
+///
+/// POSIX-only: exit code 141 is the SIGPIPE convention (128 + 13), which has
+/// no meaning on Windows (no SIGPIPE at all), so callers must gate on
+/// `builtin.os.tag == .windows` and skip rather than call this.
+fn runIntoHeadC0ViaShell(a: std.mem.Allocator, cwd: std.Io.Dir, bin: []const u8, cmd: []const u8, exit_file: []const u8) !u8 {
+    const argv: []const []const u8 = &.{
+        "sh", "-c",
+        try std.fmt.allocPrint(
+            a,
+            // `echo $? > file` writes to a file, not to the piped stdout stream,
+            // so it can't confuse `head`. This avoids relying on bash-only
+            // `PIPESTATUS`, which plain POSIX `sh` (e.g. dash) doesn't have.
+            "('{s}' {s}; echo $? > {s}) | head -c0",
+            .{ bin, cmd, exit_file },
+        ),
+    };
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .dir = cwd },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    _ = try child.wait(io);
+
+    const contents = try readFile(cwd, a, exit_file);
+    const trimmed = std.mem.trim(u8, contents, " \r\n\t");
+    return std.fmt.parseInt(u8, trimmed, 10);
+}
+
 fn fileExists(dir: std.Io.Dir, path: []const u8) bool {
     // Windows rejects these characters in a path at the syscall layer with
     // OBJECT_NAME_INVALID, which Zig surfaces as an unrecoverable panic rather
@@ -922,6 +964,21 @@ test "scaffolded project builds, runs, and round-trips add command" {
             std.debug.print("broken-pipe leaked a trace to stderr:\n----\n{s}\n----\n", .{cli_stderr});
             return error.BrokenPipeLeakedTrace;
         }
+    }
+
+    // Regression (#630): a command whose *entire* output fits in the
+    // framework's 4096-byte stdout buffer, piped to a reader that closes
+    // without reading anything (`demo hello World | head -c0`), never
+    // triggers the mid-command broken-pipe path — the EPIPE only surfaces on
+    // the deferred final flush after `execute()` has already returned
+    // successfully. The framework must still notice it and exit with the
+    // conventional SIGPIPE status (141), not 0.
+    //
+    // POSIX-only: 141 (128 + SIGPIPE) is a POSIX convention with no Windows
+    // analogue (no SIGPIPE at all), and `sh -c` piping isn't portable either.
+    if (builtin.os.tag != .windows) {
+        const exit_code = try runIntoHeadC0ViaShell(arena.allocator(), proj, demo_bin, "hello World", "hello.exit");
+        try testing.expectEqual(@as(u8, 141), exit_code);
     }
 
     // Help lists the discovered command. Explicitly-requested help goes to
