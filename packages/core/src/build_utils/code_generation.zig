@@ -151,8 +151,6 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
     defer allocator.free(app_version);
     const app_description = try escapeStringLiteral(allocator, config.app_description);
     defer allocator.free(app_description);
-    const build_date = try escapeStringLiteral(allocator, config.build_date);
-    defer allocator.free(build_date);
 
     // Generate the registry type (private)
     try writer.print(
@@ -180,13 +178,12 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
         \\pub const app_name = "{s}";
         \\pub const app_version = "{s}";
         \\pub const app_description = "{s}";
-        \\pub const build_date = "{s}";
         \\
         \\pub fn init() RegistryType {{
         \\    return RegistryType.init();
         \\}}
         \\
-    , .{ app_name, app_version, app_description, build_date });
+    , .{ app_name, app_version, app_description });
 }
 
 /// Generate metadata for pure command groups

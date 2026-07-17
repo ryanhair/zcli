@@ -92,11 +92,6 @@ pub const BuildConfig = struct {
     app_name: []const u8,
     app_version: []const u8,
     app_description: []const u8,
-    /// Build date stamped into the registry as `YYYY-MM-DD`, used for the man
-    /// page `.TH` date. Fixed at build time (honoring `SOURCE_DATE_EPOCH`) so
-    /// regenerating docs is reproducible. Empty only for internal test
-    /// fixtures, which never run the doc generator.
-    build_date: []const u8 = "",
 };
 
 /// The native libraries a plugin's backend needs, expressed as a hook the
