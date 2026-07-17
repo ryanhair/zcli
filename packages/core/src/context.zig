@@ -236,7 +236,7 @@ pub fn ContextFor(comptime plugins: []const type) type {
                 .capability = self.theme.capability(),
                 .unicode = zcli.ui.unicodeSupported(self.environ),
                 .interactive = self.theme.caps.is_tty,
-                .sync = options.sync,
+                .session = options,
             });
         }
 
@@ -253,12 +253,8 @@ pub fn ContextFor(comptime plugins: []const type) type {
                 .capability = self.theme.capability(),
                 .unicode = zcli.ui.unicodeSupported(self.environ),
                 .interactive = self.theme.caps.is_tty,
-                .sync = options.sync,
                 .stdin = self.stdin(),
-                .mouse = options.mouse,
-                .focus = options.focus,
-                .paste = options.paste,
-                .paste_max = options.paste_max,
+                .session = options,
             });
         }
 

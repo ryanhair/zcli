@@ -670,9 +670,11 @@ test "panel derives an opaque themed surface; every field overridable" {
     defer s.deinit();
 
     const n = try ui.panel(h.a(), .{
-        .padding = .all(1),
-        .width = .{ .fill = 1 },
-        .height = .{ .fill = 1 },
+        .box = .{
+            .padding = .all(1),
+            .width = .{ .fill = 1 },
+            .height = .{ .fill = 1 },
+        },
     }, &.{ui.text(.{}, "hi")});
     try renderInto(&h, n, &s);
 
@@ -687,9 +689,11 @@ test "panel derives an opaque themed surface; every field overridable" {
     var s2 = try ui.Surface.init(testing.allocator, 8, 4);
     defer s2.deinit();
     const n2 = try ui.panel(h.a(), .{
-        .style = .{ .reverse = true },
-        .width = .{ .fill = 1 },
-        .height = .{ .fill = 1 },
+        .box = .{
+            .style = .{ .reverse = true },
+            .width = .{ .fill = 1 },
+            .height = .{ .fill = 1 },
+        },
     }, &.{ui.text(.{}, "hi")});
     try renderInto(&h, n2, &s2);
     // A blank interior cell (text cells carry their own style, not the fill).

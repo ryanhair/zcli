@@ -234,7 +234,7 @@ fn helpModal(a: std.mem.Allocator) !ui.Node {
     // A panel's border + (opaque) fill derive from the app theme's surface
     // tokens (ADR-0020) — declare a root `zcli_theme` and every panel reskins.
     return ui.panel(a, .{
-        .padding = .symmetric(2, 1),
+        .box = .{ .padding = .symmetric(2, 1) },
     }, &.{
         ui.text(.{ .bold = true }, "Keys"),
         ui.text(.{}, ""),
@@ -320,9 +320,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try ui.App.initFullScreen(gpa, &stdout.interface, .{
         .capability = .ansi_256,
         .stdin = &stdin.interface,
-        .mouse = true,
-        .focus = true,
-        .paste = true,
+        .session = .{ .mouse = true, .focus = true, .paste = true },
     });
     defer app.deinit(); // leaves alt-screen, restores cooked mode + cursor
 

@@ -472,8 +472,7 @@ test "full_screen enables mouse + focus on enter and disables them on deinit" {
     defer aw.deinit();
     var app = try ui.App.initFullScreen(testing.allocator, &aw.writer, .{
         .term_size = .{ .w = 20, .h = 6 },
-        .mouse = true,
-        .focus = true,
+        .session = .{ .mouse = true, .focus = true },
     });
     // Enter emitted the DECSET enables (SGR mouse + drag tracking, focus).
     try testing.expect(std.mem.indexOf(u8, aw.written(), "\x1b[?1002h") != null);
@@ -503,7 +502,7 @@ test "full_screen enables paste on enter and disables it on deinit" {
     defer aw.deinit();
     var app = try ui.App.initFullScreen(testing.allocator, &aw.writer, .{
         .term_size = .{ .w = 20, .h = 6 },
-        .paste = true,
+        .session = .{ .paste = true },
     });
     try testing.expect(std.mem.indexOf(u8, aw.written(), "\x1b[?2004h") != null);
     app.deinit();

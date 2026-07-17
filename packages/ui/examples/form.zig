@@ -11,12 +11,11 @@
 //!     is form-level navigation. That one bool is the entire routing model.
 //!   - `view` passes `focused` to each widget so it draws its caret/highlight.
 //!
-//! Focus is caller-owned. Rather than hand-write a `Field` enum and a dispatch
-//! switch, this form derives both from `State` with `ui.widgets.FocusRing`
-//! (ADR-0021 incr 4): the ring is `State`'s widget fields in declaration order,
-//! `Ring.next`/`prev` walk it, and `Ring.dispatch` routes a key to the focused
-//! widget — the enum + `focusNext`/`focusPrev` + the `switch` all collapse into
-//! the struct-derived helper.
+//! Focus is caller-owned (ADR-0018): a plain `Focus` enum held in `State`.
+//! `focusNext`/`focusPrev` walk it with wrap-around, and routing a key to the
+//! focused widget is a hand-written `switch (focus)` — one arm per widget,
+//! calling its `handle`. That switch *is* the routing model; there's no ring
+//! object, registry, or framework loop.
 //!
 //! Run with: zig build run-form   (from packages/ui, needs a real TTY)
 
@@ -26,16 +25,14 @@ const terminal = @import("terminal");
 
 pub const panic = ui.panic;
 
-// The focus ring is derived from `State`'s widget fields (types with a `handle`
-// method) in declaration order — no hand-written enum. `Focus` is the reified
-// enum; its `@intFromEnum` doubles as the index into `state.rects`.
-const Ring = ui.widgets.FocusRing(State);
-const Focus = Ring.Focus;
+// The focus targets, in Tab order. `@intFromEnum` doubles as the index into
+// `state.rects` (click-to-focus) — so the enum order and the field order in
+// `State` must match.
+const Focus = enum { user, pass, role, remember, submit };
 
-// `rects` (below) parallels the ring one-to-one for click-to-focus. Its length
-// can't be `Ring.ring.len` — a `State` field whose *size* depends on the ring
-// (which reads `@typeInfo(State)`) is a dependency loop — so it's a plain
-// literal, checked against the derived ring in `main`.
+// `rects` (below) parallels `Focus` one-to-one for click-to-focus. Kept as a
+// plain literal (not `@typeInfo(Focus)...` inline) and checked against the enum
+// in `main`.
 const field_count = 5;
 
 // Descriptive roles: the longer ones wrap to two lines in the field, so the
@@ -66,11 +63,8 @@ const State = struct {
     role: ui.widgets.Select = .{},
     remember: ui.widgets.Checkbox = .{},
     submit: ui.widgets.Button = .{},
-    // Focus is held as a ring index rather than `Focus` directly: a `State`
-    // field can't be typed `FocusRing(State).Focus` (it would make
-    // `@typeInfo(State)` depend on itself), so State stores the index and the
-    // `focused()` accessor hands back the enum.
-    focus: usize = 0,
+    // Focus target, in Tab order (see `Focus`).
+    focus: Focus = .user,
     submitted: bool = false,
     // The focused text field reports its caret here during render (ADR-0019);
     // the post-frame hook places the real terminal cursor there.
@@ -86,7 +80,7 @@ const State = struct {
     }
 
     fn focused(self: *const State) Focus {
-        return @enumFromInt(self.focus);
+        return self.focus;
     }
 
     fn rect(self: *State, f: Focus) *ui.Rect {
@@ -177,7 +171,7 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
             const py = m.y -| 1;
             for (state.rects, 0..) |r, i| {
                 if (px >= r.x and px < r.x + r.w and py >= r.y and py < r.y + r.h) {
-                    state.focus = i;
+                    state.focus = @enumFromInt(i);
                     break;
                 }
             }
@@ -192,11 +186,18 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
 
     const focus = state.focused();
 
-    // The focused widget gets first crack via the ring: `dispatch` routes `key`
-    // to `state.<focused>.handle(...)` and returns *consumed*. `extras` supplies
-    // the multi-arg widgets' extra args (here just the Select's count/visible).
-    // An unconsumed key falls through to navigation below.
-    if (Ring.dispatch(state, focus, key, .{ .role = .{ roles.len, role_rows } })) {
+    // The focused widget gets first crack: route `key` to its `handle`, which
+    // returns *consumed*. One arm per widget — the Select takes its extra
+    // count/visible args, the rest just the key. An unconsumed key falls
+    // through to navigation below. This switch is the whole routing model.
+    const consumed = switch (focus) {
+        .user => state.user.handle(key),
+        .pass => state.pass.handle(key),
+        .role => state.role.handle(key, roles.len, role_rows),
+        .remember => state.remember.handle(key),
+        .submit => state.submit.handle(key),
+    };
+    if (consumed) {
         // The Button *is* the submit: `handle` now returns *consumed* like every
         // widget, and exposes firing as `submit.activated` state (ADR-0018). A
         // consumed key that activated the button signs in; every other widget
@@ -212,8 +213,8 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
         // Enter advances to the next field (it walks down to the submit button,
         // where the button consumes it and signs in). Tab does the same; the
         // button is the one place a key actually submits.
-        .tab, .enter => state.focus = @intFromEnum(Ring.next(focus)),
-        .back_tab => state.focus = @intFromEnum(Ring.prev(focus)),
+        .tab, .enter => state.focus = ui.widgets.focusNext(Focus, focus),
+        .back_tab => state.focus = ui.widgets.focusPrev(Focus, focus),
         .escape => return .quit,
         .ctrl => |c| if (c == 'c') return .quit,
         else => {},
@@ -222,7 +223,7 @@ fn update(state: *State, ev: ?ui.Event) !ui.Flow {
 }
 
 pub fn main(init: std.process.Init) !void {
-    comptime std.debug.assert(Ring.ring.len == field_count); // rects parallels the ring
+    comptime std.debug.assert(@typeInfo(Focus).@"enum".fields.len == field_count); // rects parallels Focus
     const io = init.io;
     const gpa = init.gpa;
 
@@ -242,7 +243,7 @@ pub fn main(init: std.process.Init) !void {
     var app = try ui.App.initFullScreen(gpa, &stdout.interface, .{
         .capability = .ansi_256,
         .stdin = &stdin.interface,
-        .mouse = true, // click-to-focus (ADR-0019)
+        .session = .{ .mouse = true }, // click-to-focus (ADR-0019)
     });
     defer app.deinit();
 

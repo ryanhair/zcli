@@ -185,4 +185,3 @@ pub const Button = @import("button.zig").Button;
 pub const Tabs = @import("tabs.zig").Tabs;
 pub const focusNext = @import("focus_ring.zig").focusNext;
 pub const focusPrev = @import("focus_ring.zig").focusPrev;
-pub const FocusRing = @import("focus_ring.zig").FocusRing;

@@ -84,11 +84,15 @@ pub const render = node_mod.render;
 pub const BoxOpts = struct {
     gap: u16 = 0,
     padding: Padding = .{},
-    border: BorderStyle = .none,
+    /// Border glyphs. `null` means no border for a box; `panel` defaults an
+    /// unset border to `.rounded`. Set explicitly to override either.
+    border: ?BorderStyle = null,
     /// Border color. `null` derives the theme's `surface.border` token
     /// (ADR-0020); set explicitly — including `.{}` for plain — to override.
     border_style: ?Style = null,
-    style: Style = .{},
+    /// Background fill. `null` is a style-less (transparent) box — lower stack
+    /// layers show through its gaps (ADR-0016); set it to make the box opaque.
+    style: ?Style = null,
     width: Dim = .auto,
     height: Dim = .auto,
     align_self: Align = .start,
@@ -131,9 +135,9 @@ pub fn box(a: std.mem.Allocator, dir: Direction, opts: BoxOpts, children: []cons
             .children = try a.dupe(Node, children),
             .gap = opts.gap,
             .padding = opts.padding,
-            .border = opts.border,
+            .border = opts.border orelse .none,
             .border_style = opts.border_style orelse themedBorder(),
-            .style = opts.style,
+            .style = opts.style orelse .{},
         } },
     };
 }
@@ -145,48 +149,35 @@ fn themedBorder() Style {
     return th.surface.border.resolve(th.palette);
 }
 
-/// `panel` options: `BoxOpts` with chrome that derives from the theme's
-/// surface tokens. Unlike a box, a panel's background defaults to the (opaque)
-/// `surface.panel` fill — a panel *is* the declaration of opacity, which is
-/// what keeps ADR-0016's rule crisp (style-less box = transparent layer).
+/// `panel` options: a `dir` plus the shared `BoxOpts` core, so a panel carries
+/// every box knob and a new box option flows in with no edit here. The two
+/// panel-specific defaults are applied in `panel()` through `BoxOpts`' `null`
+/// sentinels — an unset `border` becomes `.rounded`, and an unset `style`
+/// derives the opaque `surface.panel` fill. A panel *is* the declaration of
+/// opacity, which keeps ADR-0016's rule crisp (style-less box = transparent
+/// layer). Both stay overridable per call.
 pub const PanelOpts = struct {
+    /// Layout body direction (a panel can be a row).
     dir: Direction = .column,
-    gap: u16 = 0,
-    padding: Padding = .{},
-    border: BorderStyle = .rounded,
-    /// `null` derives `surface.border` (via `box`).
-    border_style: ?Style = null,
-    /// Background fill; `null` derives `surface.panel`.
-    style: ?Style = null,
-    width: Dim = .auto,
-    height: Dim = .auto,
-    align_self: Align = .start,
-    min_width: ?u16 = null,
-    max_width: ?u16 = null,
-    min_height: ?u16 = null,
-    max_height: ?u16 = null,
+    /// The shared box options; defaults exactly as `BoxOpts` does, with the two
+    /// panel defaults filled in by `panel()` (e.g. `.box = .{ .padding = .all(1) }`
+    /// still gets the rounded border and opaque fill).
+    box: BoxOpts = .{},
 };
 
 /// An opaque themed surface (ADR-0020): border and background come from the
 /// app theme's surface tokens, so a modal/dropdown/panel needs no style
-/// mentions at all — `ui.panel(a, .{ .padding = .all(1) }, children)` reskins
-/// entirely from the root `zcli_theme`. Every field remains overridable.
+/// mentions at all — `ui.panel(a, .{ .box = .{ .padding = .all(1) } }, children)`
+/// reskins entirely from the root `zcli_theme`. Every field remains overridable.
 pub fn panel(a: std.mem.Allocator, opts: PanelOpts, children: []const Node) !Node {
     const th = appTheme();
-    return box(a, opts.dir, .{
-        .gap = opts.gap,
-        .padding = opts.padding,
-        .border = opts.border,
-        .border_style = opts.border_style,
-        .style = opts.style orelse th.surface.panel.resolve(th.palette),
-        .width = opts.width,
-        .height = opts.height,
-        .align_self = opts.align_self,
-        .min_width = opts.min_width,
-        .max_width = opts.max_width,
-        .min_height = opts.min_height,
-        .max_height = opts.max_height,
-    }, children);
+    var box_opts = opts.box;
+    // Panel chrome via `BoxOpts` sentinels: an unset border is rounded, and an
+    // unset background derives the themed `surface.panel` fill — a panel is
+    // opaque, unlike a bare box, which stays transparent.
+    if (box_opts.border == null) box_opts.border = .rounded;
+    if (box_opts.style == null) box_opts.style = th.surface.panel.resolve(th.palette);
+    return box(a, opts.dir, box_opts, children);
 }
 
 /// A wrapping styled text node. `content` is borrowed, not copied — it must
