@@ -1295,13 +1295,43 @@ pub const VTerm = struct {
         }
 
         if (std.mem.indexOf(u8, text, search_pattern)) |index| {
-            // Convert linear index to x,y position
-            const y = @as(u16, @intCast(index / self.width));
-            const x = @as(u16, @intCast(index % self.width));
-            try positions.append(allocator, Position{ .x = x, .y = y });
+            // `index` is a byte offset into getAllText()'s output, which UTF-8
+            // encodes multibyte glyphs and skips wide-continuation cells. Walk
+            // the grid the same way to map the byte offset back to a cell.
+            try positions.append(allocator, self.byteOffsetToPosition(index));
         }
 
         return positions.toOwnedSlice(allocator);
+    }
+
+    /// Map a byte offset in getAllText()'s output back to the terminal cell
+    /// that produced it. Mirrors getAllText()'s per-cell byte accounting so
+    /// positions stay cell-accurate for wide (CJK/emoji) and multibyte content.
+    fn byteOffsetToPosition(self: *VTerm, target: usize) Position {
+        var offset: usize = 0;
+        for (0..self.height) |y| {
+            for (0..self.width) |x| {
+                const cell = self.getCell(@intCast(x), @intCast(y));
+                if (cell.wide_continuation) {
+                    // Skipped by getAllText — consumes no bytes.
+                    continue;
+                }
+                const byte_len: usize = if (cell.char == 0 or cell.char < 128)
+                    1
+                else
+                    std.unicode.utf8CodepointSequenceLength(cell.char) catch 1;
+
+                if (target < offset + byte_len) {
+                    return Position{ .x = @intCast(x), .y = @intCast(y) };
+                }
+                offset += byte_len;
+            }
+        }
+        // Offset past the end: report the last cell.
+        return Position{
+            .x = if (self.width > 0) self.width - 1 else 0,
+            .y = if (self.height > 0) self.height - 1 else 0,
+        };
     }
 
     pub fn containsTextIgnoreCase(self: *VTerm, text: []const u8) bool {
