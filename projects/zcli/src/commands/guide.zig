@@ -31,11 +31,9 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         return;
     };
 
-    for (topics) |t| {
-        if (std.mem.eql(u8, t.name, requested)) {
-            try stdout.writeAll(t.body);
-            return;
-        }
+    if (findTopic(requested)) |t| {
+        try stdout.writeAll(t.body);
+        return;
     }
 
     const stderr = context.stderr();
@@ -44,6 +42,15 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     // We've already printed the full topic list as guidance, so exit non-zero
     // cleanly here rather than returning an error on top of that help.
     context.exit(1);
+}
+
+/// Looks up a topic by name. Extracted from `execute` so the dispatch logic
+/// is testable without a real `Context`.
+fn findTopic(name: []const u8) ?Topic {
+    for (topics) |t| {
+        if (std.mem.eql(u8, t.name, name)) return t;
+    }
+    return null;
 }
 
 fn printOverview(w: *std.Io.Writer) !void {
@@ -461,3 +468,56 @@ const topics = [_]Topic{
         ,
     },
 };
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "findTopic finds a known topic by name" {
+    const t = findTopic("arena") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("arena", t.name);
+    try testing.expect(std.mem.startsWith(u8, t.body, "arena — the per-command allocator"));
+}
+
+test "findTopic returns null for an unknown topic" {
+    try testing.expectEqual(@as(?Topic, null), findTopic("does-not-exist"));
+}
+
+test "every topic name is unique and non-empty" {
+    for (topics, 0..) |t, i| {
+        try testing.expect(t.name.len > 0);
+        try testing.expect(t.summary.len > 0);
+        try testing.expect(t.body.len > 0);
+        for (topics[i + 1 ..]) |other| {
+            try testing.expect(!std.mem.eql(u8, t.name, other.name));
+        }
+    }
+}
+
+test "printTopicList lists every topic name and summary" {
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    try printTopicList(&out.writer);
+    const rendered = out.written();
+
+    try testing.expect(std.mem.startsWith(u8, rendered, "Topics (zcli guide <topic>):\n"));
+    for (topics) |t| {
+        try testing.expect(std.mem.indexOf(u8, rendered, t.name) != null);
+        try testing.expect(std.mem.indexOf(u8, rendered, t.summary) != null);
+    }
+}
+
+test "printOverview explains the loop and includes the topic list" {
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    try printOverview(&out.writer);
+    const rendered = out.written();
+
+    try testing.expect(std.mem.indexOf(u8, rendered, "zcli guide") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "Topics (zcli guide <topic>):") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "structure") != null);
+}
