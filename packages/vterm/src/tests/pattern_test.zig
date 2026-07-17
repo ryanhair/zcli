@@ -49,6 +49,52 @@ test "findPattern returns position of match" {
     try testing.expectEqual(@as(u16, 1), positions[0].y); // Line 2
 }
 
+test "findPattern reports cell position after wide (CJK) characters" {
+    var term = try VTerm.init(testing.allocator, 20, 3);
+    defer term.deinit();
+
+    // 你 and 好 each occupy 2 cells, so X lands at column 4, not byte offset 6.
+    term.write("你好X");
+
+    const positions = try term.findPattern(testing.allocator, "X");
+    defer testing.allocator.free(positions);
+
+    try testing.expectEqual(@as(usize, 1), positions.len);
+    try testing.expectEqual(@as(u16, 4), positions[0].x);
+    try testing.expectEqual(@as(u16, 0), positions[0].y);
+}
+
+test "findPattern reports cell position after multibyte (narrow) characters" {
+    var term = try VTerm.init(testing.allocator, 20, 3);
+    defer term.deinit();
+
+    // é is one cell wide but two UTF-8 bytes; the byte offset of X would be 4,
+    // while its cell column is 3.
+    term.write("café X");
+
+    const positions = try term.findPattern(testing.allocator, "X");
+    defer testing.allocator.free(positions);
+
+    try testing.expectEqual(@as(usize, 1), positions.len);
+    try testing.expectEqual(@as(u16, 5), positions[0].x); // c a f é <space> X
+    try testing.expectEqual(@as(u16, 0), positions[0].y);
+}
+
+test "findPattern maps wide content across rows to correct cell" {
+    var term = try VTerm.init(testing.allocator, 10, 3);
+    defer term.deinit();
+
+    term.write("你好\n");
+    term.write("abZcd");
+
+    const positions = try term.findPattern(testing.allocator, "Z");
+    defer testing.allocator.free(positions);
+
+    try testing.expectEqual(@as(usize, 1), positions.len);
+    try testing.expectEqual(@as(u16, 2), positions[0].x);
+    try testing.expectEqual(@as(u16, 1), positions[0].y);
+}
+
 test "containsTextIgnoreCase finds text case-insensitively" {
     var term = try VTerm.init(testing.allocator, 40, 5);
     defer term.deinit();
