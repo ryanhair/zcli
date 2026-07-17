@@ -244,7 +244,6 @@ pub const FieldInfo = struct {
 pub const CommandModuleInfo = struct {
     has_args: bool = false,
     has_options: bool = false,
-    raw_meta_ptr: ?*const anyopaque = null, // Points to cmd.module.meta
     args_fields: []const FieldInfo = &.{}, // Runtime-safe field info
     options_fields: []const FieldInfo = &.{}, // Runtime-safe field info
     /// The command's `meta.exclusive` mutually-exclusive sets — each a list of
