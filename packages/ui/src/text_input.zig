@@ -19,7 +19,6 @@ const Theme = theme_mod.Theme;
 
 const prevBoundary = helpers.prevBoundary;
 const nextBoundary = helpers.nextBoundary;
-const utf8Count = helpers.utf8Count;
 const byteAtColumn = helpers.byteAtColumn;
 
 /// A single-line text field over a caller-owned buffer (capacity is the
@@ -141,9 +140,9 @@ pub const TextInput = struct {
     }
 };
 
-/// One mask glyph per codepoint of `s`.
+/// One mask glyph per visible character (grapheme cluster) of `s`.
 fn maskOf(a: std.mem.Allocator, s: []const u8, m: u8) ![]const u8 {
-    const out = try a.alloc(u8, utf8Count(s));
+    const out = try a.alloc(u8, terminal.graphemeCount(s));
     @memset(out, m);
     return out;
 }

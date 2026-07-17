@@ -61,6 +61,49 @@ test "TextInput edits multibyte codepoints whole" {
     try testing.expectEqual(@as(usize, 2), ti.cursor);
 }
 
+test "TextInput edits grapheme clusters whole (combining mark)" {
+    var buf: [64]u8 = undefined;
+    var ti = TextInput{ .buffer = &buf };
+    // "e" + combining acute U+0301 render as one grapheme (é).
+    _ = ti.handle(.{ .char = 'e' });
+    _ = ti.handle(.{ .char = '\u{0301}' });
+    try testing.expectEqualStrings("e\u{0301}", ti.value());
+    try testing.expectEqual(@as(usize, 3), ti.len); // 1 + 2 bytes
+    // Arrow keys step over the whole cluster, not the combining mark alone.
+    _ = ti.handle(.left);
+    try testing.expectEqual(@as(usize, 0), ti.cursor);
+    _ = ti.handle(.right);
+    try testing.expectEqual(@as(usize, 3), ti.cursor);
+    // Backspace deletes base + mark together, never stripping the accent only.
+    _ = ti.handle(.backspace);
+    try testing.expectEqualStrings("", ti.value());
+    try testing.expectEqual(@as(usize, 0), ti.cursor);
+}
+
+test "TextInput backspace deletes a ZWJ emoji family as one unit" {
+    var buf: [64]u8 = undefined;
+    var ti = TextInput{ .buffer = &buf };
+    // 👨‍👩‍👧 = man ZWJ woman ZWJ girl — one grapheme, 18 bytes.
+    for ([_]u21{ 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467 }) |cp|
+        _ = ti.handle(.{ .char = cp });
+    try testing.expectEqual(@as(usize, 18), ti.len);
+    _ = ti.handle(.backspace); // the whole family, not just the last child
+    try testing.expectEqualStrings("", ti.value());
+    try testing.expectEqual(@as(usize, 0), ti.cursor);
+}
+
+test "TextInput delete removes the whole grapheme ahead of the cursor" {
+    var buf: [64]u8 = undefined;
+    var ti = TextInput{ .buffer = &buf };
+    _ = ti.handle(.{ .char = 'e' });
+    _ = ti.handle(.{ .char = '\u{0301}' }); // é
+    _ = ti.handle(.{ .char = 'x' });
+    _ = ti.handle(.home); // cursor at 0
+    _ = ti.handle(.delete); // removes é as a unit, leaving "x"
+    try testing.expectEqualStrings("x", ti.value());
+    try testing.expectEqual(@as(usize, 0), ti.cursor);
+}
+
 test "TextInput drops a keystroke when the buffer is full" {
     var buf: [2]u8 = undefined;
     var ti = TextInput{ .buffer = &buf };
@@ -110,6 +153,22 @@ test "TextArea edits multibyte codepoints whole" {
     try testing.expectEqual(@as(usize, 5), ta.len);
     _ = ta.handle(.backspace, ta_w, ta_h); // removes 中 whole
     try testing.expectEqualStrings("é", ta.value());
+}
+
+test "TextArea edits grapheme clusters whole (combining mark + ZWJ emoji)" {
+    var buf: [64]u8 = undefined;
+    var ta = TextArea{ .buffer = &buf };
+    _ = ta.handle(.{ .char = 'e' }, ta_w, ta_h);
+    _ = ta.handle(.{ .char = '\u{0301}' }, ta_w, ta_h); // é (base + combining)
+    // 👨‍👩‍👧 = man ZWJ woman ZWJ girl — one grapheme.
+    for ([_]u21{ 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467 }) |cp|
+        _ = ta.handle(.{ .char = cp }, ta_w, ta_h);
+    // Backspace removes the whole emoji family, then é as a unit.
+    _ = ta.handle(.backspace, ta_w, ta_h);
+    try testing.expectEqualStrings("e\u{0301}", ta.value());
+    _ = ta.handle(.backspace, ta_w, ta_h);
+    try testing.expectEqualStrings("", ta.value());
+    try testing.expectEqual(@as(usize, 0), ta.cursor);
 }
 
 test "TextArea left/right cross the newline boundary" {

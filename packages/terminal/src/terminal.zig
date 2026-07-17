@@ -37,6 +37,7 @@ pub const wrapToWidth = wrap.wrapToWidth;
 pub const wrapForEach = wrap.wrapForEach;
 pub const wrapCount = wrap.wrapCount;
 pub const trailingGraphemeLen = wrap.trailingGraphemeLen;
+pub const leadingGraphemeLen = wrap.leadingGraphemeLen;
 pub const graphemeCount = wrap.graphemeCount;
 
 // ============================================================================

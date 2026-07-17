@@ -18,29 +18,24 @@ const Region = surface_mod.Region;
 const Theme = theme_mod.Theme;
 
 // ============================================================================
-// UTF-8 helpers (codepoint boundaries; editing is codepoint-granular)
+// Grapheme helpers (editing is grapheme-cluster-granular)
 // ============================================================================
+//
+// Cursor movement and deletion step whole grapheme clusters, never codepoints:
+// backspacing `café` (base + combining U+0301) drops the whole `é`, and a ZWJ
+// emoji family moves as one unit instead of tearing into fragments. Boundaries
+// are derived from `terminal`'s zg-backed segmenter — the same source the
+// prompts package uses — so caret cells and byte cursors stay in lockstep.
 
+/// Byte offset of the grapheme boundary immediately before `i`.
 pub fn prevBoundary(s: []const u8, i: usize) usize {
-    var j = i;
-    while (j > 0) {
-        j -= 1;
-        if (s[j] & 0xc0 != 0x80) break; // not a UTF-8 continuation byte
-    }
-    return j;
+    return i - terminal.trailingGraphemeLen(s[0..i]);
 }
 
+/// Byte offset of the grapheme boundary immediately after `i`.
 pub fn nextBoundary(s: []const u8, i: usize) usize {
     if (i >= s.len) return s.len;
-    const n = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
-    return @min(i + n, s.len);
-}
-
-pub fn utf8Count(s: []const u8) usize {
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) : (n += 1) i = nextBoundary(s, i);
-    return n;
+    return i + terminal.leadingGraphemeLen(s[i..]);
 }
 
 /// The left edge of a horizontally scrolled field: the byte offset in `text` at
