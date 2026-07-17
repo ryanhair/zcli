@@ -256,7 +256,10 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     }
     const selected = if (options.plugins) |plugins_arg|
         parsePluginsFlag(allocator, plugins_arg) catch |err| switch (err) {
-            error.UnknownPlugin => return context.fail("Error: unknown plugin in --plugins '{s}'\n  Valid plugins: {s} — or 'none'", .{ plugins_arg, valid_plugin_tags },),
+            error.UnknownPlugin => return context.fail(
+                "Error: unknown plugin in --plugins '{s}'\n  Valid plugins: {s} — or 'none'",
+                .{ plugins_arg, valid_plugin_tags },
+            ),
             else => return err,
         }
     else if (use_defaults)
