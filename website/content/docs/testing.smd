@@ -29,7 +29,7 @@ The unit-testing tier ships with the `zcli` dependency itself — no separate de
 test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing_unit"));
 ```
 
-The unit tier lives in its own module (`zcli_testing_unit`) because `runCommand` runs in-process and so needs zcli + vterm; the subprocess and PTY tiers below are std-only and live in separate modules, so importing them doesn't drag those dependencies into your test build.
+The unit tier lives in its own module (`zcli_testing_unit`) because `runCommand` runs in-process and so needs zcli + vterm; the subprocess and PTY tiers below live in a separate module that stays free of zcli itself (the PTY tier does use vterm to render child output for frame assertions), so importing them doesn't drag the framework into your test build.
 
 ### Writing tests
 
@@ -93,6 +93,7 @@ test "command respects verbose mode" {
 | `config.args` | `Command.Args` | Positional arguments to pass |
 | `config.options` | `Command.Options` | Option values to pass |
 | `config.plugins` | derived from `Context` | Initial plugin state, e.g. `.{ .verbose = .{ .enabled = true } }`; defaults to each plugin's `ContextData` defaults |
+| `config.environ` | `?*const std.process.Environ.Map` | Environment variables the command sees via `context.environ`; defaults to empty |
 | `config.allocator` | `std.mem.Allocator` | Defaults to `std.testing.allocator` |
 
 **Returns `CommandResult`:**
@@ -166,7 +167,7 @@ Test your compiled CLI binary as a subprocess. This validates the full stack —
 
 ### Setup
 
-The integration tier lives in the std-only `zcli_testing` module (separate from the unit tier's `zcli_testing_unit`) — it ships with the `zcli` dependency, so the wiring is one line:
+The integration tier lives in the framework-free `zcli_testing` module (separate from the unit tier's `zcli_testing_unit`) — it ships with the `zcli` dependency, so the wiring is one line:
 
 ```zig
 // build.zig
@@ -185,6 +186,7 @@ test "help flag shows usage" {
         std.testing.io,
         "./zig-out/bin/myapp",
         &.{"--help"},
+        .{},
     );
     defer result.deinit();
 
@@ -199,6 +201,7 @@ test "version flag" {
         std.testing.io,
         "./zig-out/bin/myapp",
         &.{"--version"},
+        .{},
     );
     defer result.deinit();
 
@@ -212,6 +215,7 @@ test "unknown command shows suggestions" {
         std.testing.io,
         "./zig-out/bin/myapp",
         &.{"hlep"},
+        .{},
     );
     defer result.deinit();
 
@@ -246,6 +250,7 @@ test "help output matches snapshot" {
         std.testing.io,
         "./zig-out/bin/myapp",
         &.{"--help"},
+        .{},
     );
     defer result.deinit();
 

@@ -169,10 +169,13 @@
     zcli.<span class="fn">builtin</span>(.github_upgrade, .{
         .repo = <span class="str">"ryanhair/zcli"</span>,
         .command_name = <span class="str">"upgrade"</span>,
+        <span class="cm">// required — pin a minisign key, or opt out with .checksum_only</span>
+        .verification = .{ .minisign = <span class="str">"RWT…"</span> },
     }),
 },</pre>
           </div>
           <p>The generator introspects that config struct at comptime and folds it into the generated registry — fully compile-time, no runtime string building. Handrolled <code>.{ .name, .path }</code> entries can still pass an <code>.init</code> string for the same effect.</p>
+          <p>One extra requirement for <code>github_upgrade</code>: its <code>upgrade</code> command renders progress as live spinners on zcli's ui engine, so your root source file must declare the terminal-restoring panic handler — <code>pub const panic = zcli.ui.panic;</code> — enforced at compile time. Projects scaffolded by <code>zcli init</code> already have it. See <a href="$site.page('docs/shipping').link()">Shipping</a> for the full upgrade flow.</p>
         </section>
 
         <!-- ===== WRITING PLUGINS ===== -->

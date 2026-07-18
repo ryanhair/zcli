@@ -67,12 +67,12 @@ The context hands you each terminal package already wired to the command's strea
 
 ## Plugin data
 
-Anything a plugin stores in its `ContextData` is namespaced under `context.plugins.<plugin_id>` and fully typed:
+Anything a plugin stores in its `ContextData` is namespaced under `context.plugins.<plugin_id>` and fully typed. Say you wrote a `timing` plugin that tracks a `--time` flag:
 
 ```zig
 if (context.plugins.timing.started_ns != 0) {
-    // the --time flag was set; the timing plugin is tracking this run
+    // the --time flag was set; your timing plugin is tracking this run
 }
 ```
 
-The [secrets plugin]($link.page('docs/secrets')) is the same shape: `context.plugins.zcli_secrets.get("token")`. See [Plugins]($link.page('docs/plugins')) for the full model.
+The [secrets plugin]($link.page('docs/secrets')) is the same shape: `try context.plugins.zcli_secrets.get("token")`. See [Plugins]($link.page('docs/plugins')) for the full model.

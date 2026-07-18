@@ -163,10 +163,10 @@
           <div class="code">
             <div class="code-head"><span class="fname">a full-screen frame</span><span class="lang">zig</span></div>
 <pre><span class="cm">// A modal whose border and fill derive from the theme's surface tokens.</span>
-<span class="kw">try</span> ui.<span class="fn">panel</span>(a, .{ .padding = .<span class="fn">all</span>(<span class="num">1</span>) }, children);
+<span class="kw">try</span> ui.<span class="fn">panel</span>(a, .{ .box = .{ .padding = .<span class="fn">all</span>(<span class="num">1</span>) } }, children);
 
 <span class="cm">// ui.role pulls a palette role into any text node — one word, themed.</span>
-ui.<span class="fn">text</span>(ui.<span class="fn">role</span>(.success), <span class="str">"done"</span>);</pre>
+ui.<span class="fn">text</span>(ui.<span class="fn">role</span>(ui.<span class="fn">appTheme</span>(), .success), <span class="str">"done"</span>);</pre>
           </div>
           <div class="callout"><b>Why compile-time</b> The app theme is a comptime constant reached through the root declaration (the same <code>std_options</code> idiom), so every default resolves where it's declared — the <code>ui</code>, <code>prompts</code>, and <code>progress</code> packages read your theme with no value threaded through their APIs. Custom chrome costs nothing at runtime, and a package compiled into your app picks up <em>your</em> theme automatically.</div>
         </section>

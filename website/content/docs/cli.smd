@@ -37,7 +37,7 @@ On a TTY, init is a short wizard — every step has a sensible default:
 
 1. **Description** — one line that anchors every `--help` render.
 2. **CLI shape** — `multi` (subcommands, git style — the default) or `single` (the app itself is the command, rg style; see [single-command CLIs]($link.page('docs/commands').unsafeRef('single-command-clis'))). Asked up front because restructuring between shapes later is annoying.
-3. **Plugins** — multi-select of the built-ins (help, version, and not-found are preselected). Selecting `github_upgrade` gets a follow-up prompt for the `OWNER/REPO` it pulls releases from, defaulted from your git remote — no `TODO:` placeholders in generated code.
+3. **Plugins** — multi-select of the built-ins (help, version, and not-found are preselected). Selecting `github_upgrade` gets a follow-up prompt for the `OWNER/REPO` it pulls releases from — defaulted from your git remote when running `zcli init .` in an existing repo — no `TODO:` placeholders in generated code.
 4. **GitHub Actions** — optionally scaffold the `ci` and/or `release` workflows (release is preselected when `github_upgrade` was chosen — it completes the self-update loop).
 5. **Summary + confirm** — one block showing every decision before anything touches disk.
 
