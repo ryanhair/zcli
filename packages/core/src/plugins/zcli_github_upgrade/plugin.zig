@@ -264,6 +264,17 @@ pub fn init(config: Config) type {
         fn executeUpgrade(args: commands.upgrade.Args, options: commands.upgrade.Options, context: anytype) !void {
             const allocator = context.allocator;
             const stdout = context.stdout();
+            const progress = context.progress();
+
+            // Helper diagnostics (fetchLatestVersion / downloadAndVerify explain
+            // failures through their `err_out` writer) are buffered here instead
+            // of going straight to stderr: while a spinner animates it owns
+            // stderr from a background task, so a concurrent write would
+            // interleave bytes mid-escape-sequence. On failure the spinner is
+            // finished first (`fail`), then the buffered details are replayed
+            // onto stderr in order.
+            var diag: std.Io.Writer.Allocating = .init(allocator);
+            defer diag.deinit();
 
             // Determine target version (explicit or latest)
             const current_version = context.app_version;
@@ -282,17 +293,30 @@ pub fn init(config: Config) type {
                     );
                 }
                 break :blk try allocator.dupe(u8, v);
-            } else fetchLatestVersion(allocator, context.io, stdout, plugin_config.repo, context.app_name, api_timeout) catch |err| switch (err) {
-                // Render the two "GitHub answered, but unusably" cases here,
-                // where we have a context — selectVersion is a pure helper
-                // and must not print (its old debug-print bypassed stream
-                // overrides and violated invariant #3).
-                error.NoMatchingRelease => return context.fail("Error: No releases found with tag prefix '{s}-v'\nExpected tag format: {s}-v<version> (e.g., {s}-v1.0.0)", .{ context.app_name, context.app_name, context.app_name }),
-                error.InvalidVersionTag => return context.fail("Error: the latest release tag carries an invalid version (only letters, digits, '.', '_', and '-' are allowed) — refusing to build a download URL from it", .{}),
-                error.UnexpectedResponse => return context.fail("Error: Unexpected response from the GitHub releases API (expected a JSON array of releases)", .{}),
-                error.RateLimitExceeded => return context.fail("Error: GitHub API rate limit exceeded. Try again later.", .{}),
-                error.FailedToFetchVersion => return context.fail("Error: Could not fetch the latest version from GitHub (repo '{s}').", .{plugin_config.repo}),
-                else => return err,
+            } else blk: {
+                var sp = try progress.spinner(.{});
+                defer sp.deinit();
+                sp.start("Checking for updates...");
+                const latest = fetchLatestVersion(allocator, context.io, &diag.writer, plugin_config.repo, context.app_name, api_timeout) catch |err| {
+                    sp.fail("Could not determine the latest version");
+                    replayDiagnostics(context.stderr(), &diag);
+                    // Render the two "GitHub answered, but unusably" cases here,
+                    // where we have a context — selectVersion is a pure helper
+                    // and must not print (its old debug-print bypassed stream
+                    // overrides and violated invariant #3).
+                    switch (err) {
+                        error.NoMatchingRelease => return context.fail("Error: No releases found with tag prefix '{s}-v'\nExpected tag format: {s}-v<version> (e.g., {s}-v1.0.0)", .{ context.app_name, context.app_name, context.app_name }),
+                        error.InvalidVersionTag => return context.fail("Error: the latest release tag carries an invalid version (only letters, digits, '.', '_', and '-' are allowed) — refusing to build a download URL from it", .{}),
+                        error.UnexpectedResponse => return context.fail("Error: Unexpected response from the GitHub releases API (expected a JSON array of releases)", .{}),
+                        error.RateLimitExceeded => return context.fail("Error: GitHub API rate limit exceeded. Try again later.", .{}),
+                        error.FailedToFetchVersion => return context.fail("Error: Could not fetch the latest version from GitHub (repo '{s}').", .{plugin_config.repo}),
+                        else => return err,
+                    }
+                };
+                // Erase the spinner rather than persisting a result line — the
+                // check output or upgrade headline below reports the outcome.
+                sp.stop();
+                break :blk latest;
             };
             defer allocator.free(target_version);
 
@@ -346,14 +370,18 @@ pub fn init(config: Config) type {
                 return;
             }
 
+            // Progress narrative goes to stderr (the progress convention: it
+            // survives `myapp | tee` while keeping piped stdout clean); only
+            // answers ("already on latest", the final completion line) go to
+            // stdout. Flush so the headline reaches the terminal before the
+            // work starts — stderr is buffered and only auto-flushes at exit.
+            const stderr = context.stderr();
             if (is_downgrade) {
-                try stdout.print("Downgrading from {s} to {s}...\n", .{ current_version, target_version });
+                try stderr.print("Downgrading from {s} to {s}...\n", .{ current_version, target_version });
             } else {
-                try stdout.print("Upgrading from {s} to {s}...\n", .{ current_version, target_version });
+                try stderr.print("Upgrading from {s} to {s}...\n", .{ current_version, target_version });
             }
-            // Progress lines must reach the terminal before the slow work they
-            // announce — stdout is buffered and only auto-flushes at exit.
-            try stdout.flush();
+            try stderr.flush();
 
             // Detect platform
             const platform = try detectPlatform(allocator);
@@ -386,18 +414,28 @@ pub fn init(config: Config) type {
             var scratch_dir = try exe_dir.openDir(context.io, scratch_name, .{});
             defer scratch_dir.close(context.io);
 
-            // Download binary
-            try stdout.print("Downloading {s}...\n", .{binary_name});
-            if (pinned_public_key != null) {
-                try stdout.print("Verifying signature...\n", .{});
-            } else {
-                try stdout.print("Verifying checksum...\n", .{});
+            // Download + verify. One spinner spans both because
+            // downloadAndVerify is a single call: fetch the asset, then verify
+            // its integrity into scratch_dir. When a signing key is pinned,
+            // checksums.txt is authenticated under it (fail closed) before any
+            // digest is trusted. The spinner copies its message, so the
+            // transient allocPrint slices are safe to free right away.
+            {
+                var sp = try progress.spinner(.{});
+                defer sp.deinit();
+                const verify_kind: []const u8 = if (pinned_public_key != null) "signature" else "checksum";
+                const downloading = try std.fmt.allocPrint(allocator, "Downloading {s} ({s}-verified)...", .{ binary_name, verify_kind });
+                defer allocator.free(downloading);
+                sp.start(downloading);
+                downloadAndVerify(allocator, context.io, &diag.writer, github_download_base, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name, pinned_public_key) catch |err| {
+                    sp.fail("Download or verification failed");
+                    replayDiagnostics(context.stderr(), &diag);
+                    return err;
+                };
+                const downloaded = try std.fmt.allocPrint(allocator, "Downloaded {s} ({s} verified)", .{ binary_name, verify_kind });
+                defer allocator.free(downloaded);
+                sp.succeed(downloaded);
             }
-            try stdout.flush();
-            // Fetch the asset, then verify its integrity into scratch_dir. When a
-            // signing key is pinned, checksums.txt is authenticated under it
-            // (fail closed) before any digest is trusted.
-            try downloadAndVerify(allocator, context.io, context.stderr(), github_download_base, scratch_dir, plugin_config.repo, context.app_name, target_version, binary_name, pinned_public_key);
 
             // Make binary executable before testing (Unix only - Windows uses .exe extension)
             if (builtin.os.tag != .windows) {
@@ -406,19 +444,34 @@ pub fn init(config: Config) type {
                 try temp_file.setPermissions(context.io, .executable_file);
             }
 
-            // Test new binary
-            try stdout.print("Testing new binary...\n", .{});
-            try stdout.flush();
-            try testBinary(allocator, context.io, scratch_dir, binary_name);
+            // Smoke-test the new binary
+            {
+                var sp = try progress.spinner(.{});
+                defer sp.deinit();
+                sp.start("Testing new binary...");
+                testBinary(allocator, context.io, scratch_dir, binary_name) catch |err| {
+                    sp.fail("New binary failed to run");
+                    return err;
+                };
+                sp.succeed("New binary runs");
+            }
 
             // Replace current binary
-            try stdout.print("Installing new version...\n", .{});
-            try stdout.flush();
-            try replaceBinaryAt(allocator, context.io, scratch_dir, binary_name, exe_path);
+            {
+                var sp = try progress.spinner(.{});
+                defer sp.deinit();
+                sp.start("Installing new version...");
+                replaceBinaryAt(allocator, context.io, scratch_dir, binary_name, exe_path) catch |err| {
+                    sp.fail("Failed to install the new version");
+                    return err;
+                };
+                const action = if (is_downgrade) "downgraded" else "upgraded";
+                const done = try std.fmt.allocPrint(allocator, "Successfully {s} to {s}", .{ action, target_version });
+                defer allocator.free(done);
+                sp.succeed(done);
+            }
 
-            const action = if (is_downgrade) "downgraded" else "upgraded";
             const action_noun = if (is_downgrade) "downgrade" else "upgrade";
-            try stdout.print("✓ Successfully {s} to {s}\n", .{ action, target_version });
             try stdout.print("\nThe {s} is complete. Run '{s} --version' to verify.\n", .{ action_noun, context.app_name });
         }
 
@@ -517,6 +570,17 @@ fn emitOutOfDateMessage(
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Replay buffered helper diagnostics onto stderr, after the spinner that was
+/// animating during the failed call has been finished (writing to stderr while
+/// a spinner animates would race its background task on the buffered stream).
+/// Best-effort: this only runs on paths already returning an error.
+fn replayDiagnostics(stderr: *std.Io.Writer, diag: *std.Io.Writer.Allocating) void {
+    const text = diag.written();
+    if (text.len == 0) return;
+    stderr.writeAll(text) catch {};
+    stderr.flush() catch {};
+}
 
 /// Fetch the latest version from GitHub releases API filtered by CLI name
 /// prefix. `timeout` bounds the whole request: the upgrade command passes
