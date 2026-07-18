@@ -11,9 +11,11 @@
 //!
 //! The reference `build.zig` is written against the *local* (unreleased) zcli so
 //! it compiles here; `init` pins the released tag `context.app_version` points
-//! at, so it emits the API shape that release expects. The one call that has
-//! drifted since that release (`addCommandTests`) is adapted at emit time in
-//! `init.zig`; everything else is emitted verbatim.
+//! at, so it emits the API shape that release expects. Everything is emitted
+//! verbatim (only name/description/plugins are substituted). If the local API
+//! drifts from the pinned release between cuts, the drifted call must be
+//! adapted at emit time in `init.zig` until the next release — see the retired
+//! `addCommandTests` 3-arg pin (#709, removed in #722) for the shape of that.
 
 pub const build_zig = @embedFile("reference/build.zig");
 pub const main_zig = @embedFile("reference/main.zig");
