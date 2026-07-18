@@ -351,6 +351,9 @@ pub fn init(config: Config) type {
             } else {
                 try stdout.print("Upgrading from {s} to {s}...\n", .{ current_version, target_version });
             }
+            // Progress lines must reach the terminal before the slow work they
+            // announce — stdout is buffered and only auto-flushes at exit.
+            try stdout.flush();
 
             // Detect platform
             const platform = try detectPlatform(allocator);
@@ -390,6 +393,7 @@ pub fn init(config: Config) type {
             } else {
                 try stdout.print("Verifying checksum...\n", .{});
             }
+            try stdout.flush();
             // Fetch the asset, then verify its integrity into scratch_dir. When a
             // signing key is pinned, checksums.txt is authenticated under it
             // (fail closed) before any digest is trusted.
@@ -404,15 +408,18 @@ pub fn init(config: Config) type {
 
             // Test new binary
             try stdout.print("Testing new binary...\n", .{});
+            try stdout.flush();
             try testBinary(allocator, context.io, scratch_dir, binary_name);
 
             // Replace current binary
             try stdout.print("Installing new version...\n", .{});
+            try stdout.flush();
             try replaceBinaryAt(allocator, context.io, scratch_dir, binary_name, exe_path);
 
             const action = if (is_downgrade) "downgraded" else "upgraded";
+            const action_noun = if (is_downgrade) "downgrade" else "upgrade";
             try stdout.print("✓ Successfully {s} to {s}\n", .{ action, target_version });
-            try stdout.print("\nThe {s} is complete. Run '{s} --version' to verify.\n", .{ action, context.app_name });
+            try stdout.print("\nThe {s} is complete. Run '{s} --version' to verify.\n", .{ action_noun, context.app_name });
         }
 
         /// Startup hook to check for updates if configured
