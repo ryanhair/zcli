@@ -103,6 +103,7 @@
 <span class="c-prompt">$</span> <span class="c-cmd">zcli</span> rm command users/create</pre>
           </div>
           <p>The division of labor is the point: the agent uses <code>add</code>/<code>rm</code>/<code>mv</code> to change structure, and writes freeform code only inside <code>execute()</code> bodies — where the arena has already made it safe. Renaming a command becomes a well-defined operation instead of a multi-file refactor an agent might do halfway.</p>
+          <p>The contract starts at <code>zcli init</code>: every wizard prompt has a flag (<code>--template</code>, <code>--plugins</code>, <code>--upgrade-repo</code>, <code>--github</code>, …), <code>--defaults</code> answers every remaining prompt with its default — implied when stdin isn't a TTY — and <code>--dry-run</code> prints the plan without writing. An agent scaffolds a whole project in one non-interactive call, and init verifies its own output with a real <code>zig build</code> before reporting success.</p>
         </section>
 
         <section id="loop">

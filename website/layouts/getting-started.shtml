@@ -180,7 +180,7 @@ zcli <span :text="$site.asset('site-data.json').ziggy().get('version')"></span>
       <span class="step-n">02</span>
       <div>
         <h2>Initialize a new project</h2>
-        <p class="what"><code>zcli init</code> scaffolds a complete, buildable project: a <b>build.zig.zon</b> that pulls in zcli, a <b>build.zig</b> that wires up <code>zcli.generate</code> with the built-in plugins, an entrypoint, and one working example command. It fetches dependencies so <code>zig build</code> works immediately.</p>
+        <p class="what"><code>zcli init</code> is a short wizard that scaffolds a complete project: a <b>build.zig.zon</b> that pulls in zcli, a <b>build.zig</b> that wires up <code>zcli.generate</code> with your chosen plugins, an entrypoint, a README, and one working example command. It then initializes a git repository with an initial commit, fetches dependencies, and <b>verifies the scaffold with a real <code>zig build</code></b> — so the first command you run is your CLI, not the compiler.</p>
       </div>
     </div>
 
@@ -190,7 +190,7 @@ zcli <span :text="$site.asset('site-data.json').ziggy().get('version')"></span>
         <pre><span class="pr">$</span> zcli init myapp <span class="fl">--description</span> "My awesome CLI"</pre>
         <button onclick="cp(this,'zcli init myapp --description &quot;My awesome CLI&quot;')">copy</button>
       </div>
-      <p class="note">Pass <code>.</code> instead of a name to initialize in the current directory (it must be empty). <code>--app-version</code> sets the starting version; both options are optional.</p>
+      <p class="note">Pass <code>.</code> instead of a name to initialize in the current directory (it must be empty). Every prompt has a flag (<code>--template</code>, <code>--plugins</code>, <code>--github</code>, …) and <code>--defaults</code> answers them all — see <a href="$site.page('docs/cli').link()">the CLI reference</a> for the full surface.</p>
     </div>
 
     <div class="duo" style="margin-top:26px;">
@@ -208,13 +208,16 @@ Creating new zcli project: myapp
   Creating build.zig…
   Creating src/main.zig…
   Creating example command (hello)…
+  Creating README.md…
+  Creating AGENTS.md…
+  Initializing git repository…
   Fetching dependencies…
+<span class="c-ok">✔</span> Build verified
 
 <span class="c-ok">✓</span> Project 'myapp' created successfully!
 
 <span class="c-mut">Next steps:</span>
   cd myapp
-  zig build
   ./zig-out/bin/myapp hello World
   ./zig-out/bin/myapp --help<span class="cursor"></span></pre>
           </div>
@@ -228,6 +231,9 @@ Creating new zcli project: myapp
           <pre class="tree">myapp/
 ├── build.zig.zon     <span class="an"># project + zcli dependency</span>
 ├── build.zig         <span class="an"># zcli.generate + builtin plugins</span>
+├── README.md         <span class="an"># build/run/test instructions</span>
+├── AGENTS.md         <span class="an"># points coding agents at zcli guide</span>
+├── .gitignore        <span class="an"># zig-cache/, zig-out/ — first commit made</span>
 └── src/
     ├── main.zig      <span class="an"># generated entrypoint</span>
     └── commands/
@@ -235,20 +241,20 @@ Creating new zcli project: myapp
         </div>
         <div class="callout">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7l9-4 9 4-9 4-9-4z"/><path d="M4 12l9 4 9-4"/></svg>
-          <p><b>build.zig</b> already registers the <b>help</b>, <b>version</b>, <b>not-found</b>, and <b>completions</b> plugins — you get <code style="color:inherit;background:none;padding:0;">--help</code> and "did you mean?" for free.</p>
+          <p><b>build.zig</b> already registers the <b>help</b>, <b>version</b>, and <b>not-found</b> plugins (the wizard's defaults) — you get <code style="color:inherit;background:none;padding:0;">--help</code> and "did you mean?" for free. Toggle on <b>completions</b> and more in the plugin picker.</p>
         </div>
       </div>
     </div>
 
     <div style="margin-top:30px;">
-      <p class="col-label">Build it &amp; run the example</p>
+      <p class="col-label">Run the example — it's already built</p>
       <div class="term">
         <div class="term-bar">
           <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
           <span class="ttl">myapp — zsh</span>
         </div>
         <div class="term-body">
-<pre><span class="c-prompt">$</span> <span class="c-cmd">cd</span> myapp && zig build
+<pre><span class="c-prompt">$</span> <span class="c-cmd">cd</span> myapp
 <span class="c-prompt">$</span> <span class="c-cmd">./zig-out/bin/myapp</span> hello World
 Hello, World!
 <span class="c-prompt">$</span> <span class="c-cmd">./zig-out/bin/myapp</span> hello Alice <span class="c-flag">--loud</span>

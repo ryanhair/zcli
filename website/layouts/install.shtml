@@ -99,7 +99,7 @@
           <pre><span class="pr">$</span> myapp completions install</pre>
           <button onclick="cp(this,'myapp completions install')">copy</button>
         </div>
-        <p style="font-size:13.5px;">Detects your shell, writes the completion script to the right location, and prints the one line to add to your shell profile if it can't do it automatically. Requires the <code class="mono" style="color:var(--accent)">zcli_completions</code> plugin — on by default in a project scaffolded with <code class="mono" style="color:var(--accent)">zcli init</code>.</p>
+        <p style="font-size:13.5px;">Detects your shell, writes the completion script to the right location, and prints the one line to add to your shell profile if it can't do it automatically. Requires the <code class="mono" style="color:var(--accent)">zcli_completions</code> plugin — toggle it on in <code class="mono" style="color:var(--accent)">zcli init</code>'s plugin picker (or pass <code class="mono" style="color:var(--accent)">--plugins help,version,not_found,completions</code>).</p>
       </div>
     </div>
 

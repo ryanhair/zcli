@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Commands & structure",
-.description = "How zcli turns files into commands: file-based discovery, nested groups, index.zig landing pages, aliases, hidden commands, and the scaffolder that keeps structure changes mechanical.",
+.description = "How zcli turns files into commands: file-based discovery, nested groups, index.zig landing pages, single-command CLIs, aliases, hidden commands, and the scaffolder that keeps structure changes mechanical.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -13,6 +13,7 @@ Commands are `.zig` files in your commands directory; **the file path becomes th
 - `init.zig` → `myapp init`
 - `users/create.zig` → `myapp users create`
 - `users/index.zig` → describes the `users` group (no `execute` = shows subcommands)
+- `index.zig` at the top level → the root itself — a CLI with no subcommands at all is a [single-command CLI](#single-command-clis)
 
 Groups nest as deep as you need (`gh/add/workflow/release.zig` → `myapp gh add workflow release`). Files starting with `_` are skipped — use them for helpers shared by sibling commands.
 
@@ -54,7 +55,20 @@ pub const meta = .{
 };
 ```
 
-Without an `execute`, running `myapp users` shows the group's help and subcommands. Give `index.zig` an `execute` (plus empty `Args`/`Options`) and the group itself becomes runnable. Landing commands take no positional arguments — a positional would be ambiguous with a subcommand name.
+Without an `execute`, running `myapp users` shows the group's help and subcommands. Give `index.zig` an `execute` (plus `Args`/`Options`) and the group itself becomes runnable.
+
+A runnable landing command can even take positionals: when its `Args` declares at least one positional, a word that matches no subcommand routes to the landing command as a value — `myapp users 123` runs `users/index.zig` with `123`. Declaring root positionals trades away "did you mean?" typo suggestions for that group (the framework can no longer tell a typo from a value — real subcommand names always win, and `--` forces a colliding word to be a value); a landing command with no positionals keeps full suggestions.
+
+## [Single-command CLIs]($heading.id('single-command-clis'))
+
+The root of your commands directory is a group like any other — so a top-level `index.zig` with an `execute` and no sibling commands *is* a single-command CLI, the `rg`/`fd`/`jq` shape:
+
+```
+src/commands/
+└── index.zig    → myapp <args> [options]
+```
+
+The root index is a full command: typed `Args` and `Options`, `meta`, help (usage leads with `myapp [OPTIONS] <ARGS>`), completions, `zcli tree`, and unit-test wiring all work exactly as they do for subcommands. Bare invocation, option-first argv (`myapp --loud World`), and bare positionals (`myapp World`) all route to it by the same longest-match-then-fallback rule described above. Scaffold this shape with `zcli init --template single`.
 
 ## Aliases and hidden commands
 

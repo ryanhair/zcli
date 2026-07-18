@@ -20,7 +20,7 @@ zcli
 ├── dev          watch, rebuild, optionally re-run
 ├── guide        version-matched reference, by topic
 ├── release      version-bump, tag, and push a release
-├── gh           add workflow release — GitHub Actions scaffold
+├── gh           add workflow ci · release — GitHub Actions scaffolds
 └── upgrade      self-update from GitHub releases
 ```
 
@@ -31,9 +31,31 @@ zcli init myapp --description "My awesome CLI"
 zcli init .    # initialize the current directory
 ```
 
-Scaffolds a complete, buildable project — `build.zig.zon`, a `build.zig` wired with [`zcli.generate`]($link.page('docs/build')), `src/main.zig`, an example command — and fetches dependencies so `zig build` works immediately. Options: `-d/--description`, `--app-version` (initial version, default `0.1.0`).
+Scaffolds a complete project — `build.zig.zon`, a `build.zig` wired with [`zcli.generate`]($link.page('docs/build')), `src/main.zig`, a README, an example command — then **verifies its own output**: it fetches dependencies and runs `zig build`, so the first command you type runs *your CLI*, not the compiler. It also initializes a git repository with a Zig `.gitignore` and an initial commit (skipped when git is absent or you're already inside a work tree).
 
-On a TTY it asks which built-in plugins to enable (help, version, not-found, and completions are the defaults). It also scaffolds an `AGENTS.md` with a marker-delimited zcli section pointing coding agents at `zcli guide` — re-running `init` refreshes just that section, never clobbering the rest of the file. See [AI agents]($link.page('ai')).
+On a TTY, init is a short wizard — every step has a sensible default:
+
+1. **Description** — one line that anchors every `--help` render.
+2. **CLI shape** — `multi` (subcommands, git style — the default) or `single` (the app itself is the command, rg style; see [single-command CLIs]($link.page('docs/commands').unsafeRef('single-command-clis'))). Asked up front because restructuring between shapes later is annoying.
+3. **Plugins** — multi-select of the built-ins (help, version, and not-found are preselected). Selecting `github_upgrade` gets a follow-up prompt for the `OWNER/REPO` it pulls releases from, defaulted from your git remote — no `TODO:` placeholders in generated code.
+4. **GitHub Actions** — optionally scaffold the `ci` and/or `release` workflows (release is preselected when `github_upgrade` was chosen — it completes the self-update loop).
+5. **Summary + confirm** — one block showing every decision before anything touches disk.
+
+Every prompt has a flag, so agents and scripts get the identical surface:
+
+```
+zcli init <name|.>
+  --description <text>        --app-version <semver>
+  --template <multi|single>   --plugins <list|none>
+  --upgrade-repo <owner/repo> (github_upgrade config)
+  --no-git                    --github <ci,release|none>
+  --no-build                  --yes / --defaults
+  --dry-run                   (print the plan, write nothing)
+```
+
+Any flag answers its prompt; `--defaults` answers every remaining prompt with its default (implied when stdin isn't a TTY); `--yes` additionally skips the confirm; `--dry-run` prints the summary and file list and exits without writing.
+
+Every scaffold also includes an `AGENTS.md` with a marker-delimited zcli section pointing coding agents at `zcli guide` — re-running `init` refreshes just that section, never clobbering the rest of the file. See [AI agents]($link.page('ai')).
 
 ## zcli add / rm / mv
 
@@ -91,9 +113,12 @@ A version-matched reference: the content ships inside the binary and matches the
 The release workflow lives in the meta-CLI too — versioning, tagging, CI scaffolding:
 
 ```sh
+zcli gh add workflow ci        # once: build + test on every push/PR
 zcli gh add workflow release   # once: scaffold .github/workflows/release.yml
 zcli release patch             # bump, test, tag, push — CI builds & publishes
 ```
+
+(`zcli init` can scaffold both workflows up front — the extras step, or `--github ci,release`.)
 
 Full walkthrough, including binary signing and self-upgrade for your users: [Ship & distribute]($link.page('docs/shipping')).
 

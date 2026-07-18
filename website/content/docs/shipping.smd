@@ -10,13 +10,16 @@
 
 Building the CLI is half the job; getting binaries to users — versioned, verifiable, updatable — is the other half. zcli ships that half too: a release command, a CI workflow scaffold, a signing story with teeth, a self-upgrade plugin, and shell completions.
 
-## One-time setup: the CI workflow
+## One-time setup: the GitHub workflows
 
 ```sh
-zcli gh add workflow release
+zcli gh add workflow ci        # build + test on every push and PR
+zcli gh add workflow release   # tag-driven multi-platform releases
 ```
 
-Scaffolds `.github/workflows/release.yml`: on any `*-v*` tag it builds your app for **x86_64-linux and aarch64-linux (static musl), x86_64-macos, and aarch64-macos** with `ReleaseFast`, names each artifact `{app}-{target}`, writes a `checksums.txt`, and publishes a GitHub release with everything attached. Commit it once and releases are tag-driven from then on.
+The release workflow (`.github/workflows/release.yml`) is the one this page is about: on any `*-v*` tag it builds your app for **x86_64-linux and aarch64-linux (static musl), x86_64-macos, and aarch64-macos** with `ReleaseFast`, names each artifact `{app}-{target}`, writes a `checksums.txt`, and publishes a GitHub release with everything attached. Commit it once and releases are tag-driven from then on.
+
+Both workflows can also be scaffolded at project creation — [`zcli init`]($link.page('docs/cli')) offers them in its extras step (`--github ci,release`), and preselects the release workflow when the `github_upgrade` plugin is chosen, since it's what feeds the self-updater.
 
 ## Cutting a release
 
