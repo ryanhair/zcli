@@ -227,21 +227,11 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // entirely so a script WITH a terminal attached never blocks.
     const use_defaults = options.defaults or options.yes;
 
-    // Root index support (ADR-0029) ships in the first release AFTER 0.20.0.
-    // init pins the generated project to this CLI's own version tag, so a CLI
-    // still carrying the 0.20.0 version would scaffold an index.zig the
-    // released library silently ignores — a project that builds but routes
-    // every positional to "Unknown command". While that's the pinned release,
-    // don't offer the shape (default multi) and fail closed on an explicit
-    // --template single. The guard clears automatically when the release bump
-    // moves the version past 0.20.0.
-    const root_index_ok = rootIndexSupported(context.app_version);
-
     // Ask for the CLI shape first (ADR-0028 step 3) unless --template decided
     // it. Restructuring between shapes later is annoying, so it's asked up
     // front; non-interactive invocations default to multi (today's scaffold).
     const template: Template = options.template orelse blk: {
-        if (!root_index_ok or use_defaults) break :blk .multi;
+        if (use_defaults) break :blk .multi;
         const shape = p.select(.{
             .message = "What kind of CLI?",
             .choices = &.{
@@ -254,10 +244,6 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         };
         break :blk if (shape == 1) .single else .multi;
     };
-
-    if (template == .single and !root_index_ok) {
-        return context.fail("Error: --template single requires the zcli library released after 0.20.0 (root index support, ADR-0029)\n  This zcli pins generated projects to v{s}, which ignores a top-level index.zig.\n  Upgrade zcli, or scaffold with the default multi-command template.", .{context.app_version});
-    }
 
     // Which built-in plugins to include: --plugins decides outright,
     // --defaults/--yes takes the preselected defaults, otherwise ask (with
@@ -1103,12 +1089,9 @@ const ref_plugins_end = "            //</zcli:plugins>\n";
 ///     description.
 ///
 /// The reference is written against the *local* (unreleased) zcli so it stays
-/// compile-checked by the `examples/init-scaffold` build. `init`, though, pins
-/// the released tag `context.app_version` points at, whose `addCommandTests`
-/// still predates the `exe` parameter (#531) — so emit the 3-arg form that
-/// release expects. (The local-tree e2e build bridges it back up; the
-/// pinned-release e2e, #623, builds this unmodified against the real tag.) Drop
-/// this last rewrite once the pinned release carries the `exe` signature.
+/// compile-checked by the `examples/init-scaffold` build; the pinned-release
+/// e2e (#623) builds the emitted file unmodified against the real tag, which
+/// guards any drift between the reference and the release it pins.
 fn renderBuildZig(
     allocator: std.mem.Allocator,
     project_name: []const u8,
@@ -1132,13 +1115,10 @@ fn renderBuildZig(
     defer allocator.free(named);
     // 3) Description (name is substituted first so it can't collide with a
     //    user-supplied description, which is inserted last and never rescanned).
-    const described = try std.mem.replaceOwned(u8, allocator, named, "\"A CLI application built with zcli\"", desc_quoted);
-    defer allocator.free(described);
-    // 4) Pin `addCommandTests` down to the released 3-arg shape (see doc comment).
-    return std.mem.replaceOwned(u8, allocator, described, "zcli.addCommandTests(b, exe, zcli_dep,", "zcli.addCommandTests(b, zcli_dep,");
+    return std.mem.replaceOwned(u8, allocator, named, "\"A CLI application built with zcli\"", desc_quoted);
 }
 
-test "renderBuildZig substitutes name, description, plugins and pins addCommandTests" {
+test "renderBuildZig substitutes name, description, and plugins" {
     const allocator = std.testing.allocator;
     const plugins =
         "            zcli.builtin(.help, .{}),\n" ++
@@ -1155,31 +1135,9 @@ test "renderBuildZig substitutes name, description, plugins and pins addCommandT
     // Selected plugins are spliced in, markers removed.
     try std.testing.expect(std.mem.indexOf(u8, build, "zcli.builtin(.help, .{}),") != null);
     try std.testing.expect(std.mem.indexOf(u8, build, "//<zcli:plugins>") == null);
-    // Emitted call matches the pinned release's 3-arg signature, not the
-    // reference's local 4-arg one.
-    try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, zcli_dep,") != null);
-    try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, exe, zcli_dep,") == null);
-    // Framework-coupled call the reference compile-guards survives verbatim.
+    // Framework-coupled calls the reference compile-guards survive verbatim.
+    try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, exe, zcli_dep,") != null);
     try std.testing.expect(std.mem.indexOf(u8, build, "try zcli.generate(b, exe, zcli_dep, .{") != null);
-}
-
-/// True when the zcli release this CLI pins (its own version) contains root
-/// index support (ADR-0029) — i.e. is strictly newer than 0.20.0, the last
-/// release without it. Unparseable versions count as unsupported: fail closed
-/// rather than scaffold a silently-dead index.zig.
-fn rootIndexSupported(version_str: []const u8) bool {
-    const v = std.SemanticVersion.parse(version_str) catch return false;
-    const last_without = std.SemanticVersion{ .major = 0, .minor = 20, .patch = 0 };
-    return v.order(last_without) == .gt;
-}
-
-test "rootIndexSupported: strictly newer than 0.20.0, fail closed on junk" {
-    try std.testing.expect(!rootIndexSupported("0.20.0"));
-    try std.testing.expect(!rootIndexSupported("0.19.9"));
-    try std.testing.expect(rootIndexSupported("0.20.1"));
-    try std.testing.expect(rootIndexSupported("0.21.0"));
-    try std.testing.expect(rootIndexSupported("1.0.0"));
-    try std.testing.expect(!rootIndexSupported("not-a-version"));
 }
 
 /// True if `s` is a semantic version acceptable to Zig's build.zig.zon manifest
