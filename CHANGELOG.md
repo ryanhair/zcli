@@ -4,6 +4,11 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
+## Unreleased
+
+### Changed (breaking)
+- **`upgrade` shows live progress via spinners** — the `zcli_github_upgrade` plugin now renders its phases (checking for updates, download + verify, smoke test, install) as `context.progress()` spinners instead of buffered prints that only appeared when the command finished. Progress narrative moves to **stderr** (the progress convention — piped stdout stays clean); answers (`--check` output, "already on the latest version", the completion line) stay on stdout. Breaking: spinners run on the ui engine, so an app wiring in this plugin must declare `pub const panic = zcli.ui.panic;` in its root source file (enforced at compile time; `zcli init` scaffolds already do).
+
 ## v0.21.0 — 2026-07-18
 
 First-class single-command CLIs (ADR-0029), the `zcli init` wizard (ADR-0028), and five whole-repo hardening passes. Requires Zig 0.16.0.
