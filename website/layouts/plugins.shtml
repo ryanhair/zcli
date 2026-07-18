@@ -80,7 +80,7 @@
 
         <section id="builtin">
           <h2>Built-in defaults</h2>
-          <p>zcli ships seven plugins. A project scaffolded with <code>zcli init</code> turns on the first three (and completions); the rest you opt into when you need them.</p>
+          <p>zcli ships seven plugins. A project scaffolded with <code>zcli init</code> turns on the first three by default; the rest you toggle on in init's plugin picker (or add later) when you need them.</p>
           <div class="table-scroll">
           <table class="ptable">
             <thead><tr><th>Plugin</th><th>Provides</th><th>Default</th></tr></thead>
