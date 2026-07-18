@@ -89,7 +89,7 @@
     <p class="lead">Install the <code class="mono" style="color:var(--accent)">zcli</code> binary, scaffold a project with <code class="mono" style="color:var(--accent)">zcli&nbsp;init</code>, then grow it one file at a time with <code class="mono" style="color:var(--accent)">zcli&nbsp;add&nbsp;command</code>. Each step below shows exactly what runs and what lands on disk.</p>
     <div class="meta-row">
       <span class="chip">Requires <b>Zig 0.16+</b></span>
-      <span class="chip"><b>4</b> plugins wired in on init</span>
+      <span class="chip"><b>3</b> plugins wired in on init</span>
       <span class="chip"><b>MIT</b> licensed</span>
     </div>
   </div>
@@ -124,7 +124,7 @@
             <pre><span class="pr">$</span> curl -fsSL https://zcli.sh/install.sh | sh</pre>
             <button onclick="cp(this,'curl -fsSL https://zcli.sh/install.sh | sh')">copy</button>
           </div>
-          <p class="note">The script detects your platform, pulls the matching binary from the latest GitHub release, verifies the checksum when available, and marks it executable.</p>
+          <p class="note">The script detects your platform, pulls the matching binary from the latest GitHub release, verifies the minisign signature and SHA-256 checksum (fail-closed — it aborts rather than install unverified), and marks it executable.</p>
         </div>
 
         <div class="alt">
@@ -163,7 +163,7 @@ zcli <span :text="$site.asset('site-data.json').ziggy().get('version')"></span>
 <span class="c-mut">COMMANDS</span>
   <span class="c-cmd">init</span>   Initialize a new zcli project
   <span class="c-cmd">add</span>    Add commands and plugins
-  <span class="c-cmd">tree</span>   Visualize your command structure<span class="cursor"></span></pre>
+  <span class="c-cmd">tree</span>   Show the command tree discovered from src/commands<span class="cursor"></span></pre>
           </div>
         </div>
         <div class="callout">
@@ -233,7 +233,7 @@ Creating new zcli project: myapp
 ├── build.zig         <span class="an"># zcli.generate + builtin plugins</span>
 ├── README.md         <span class="an"># build/run/test instructions</span>
 ├── AGENTS.md         <span class="an"># points coding agents at zcli guide</span>
-├── .gitignore        <span class="an"># zig-cache/, zig-out/ — first commit made</span>
+├── .gitignore        <span class="an"># .zig-cache/, zig-out/ — first commit made</span>
 └── src/
     ├── main.zig      <span class="an"># generated entrypoint</span>
     └── commands/
@@ -271,7 +271,7 @@ HELLO, Alice!<span class="cursor"></span></pre>
       <span class="step-n">03</span>
       <div>
         <h2>Add a new command</h2>
-        <p class="what"><code>zcli add command</code> writes a ready-to-edit command file at the right path under <code>src/commands/</code> — with <b>meta</b>, <b>Args</b>, <b>Options</b>, and an <b>execute()</b> stub already filled in. Nested paths like <code>users/create</code> create the folders for you. Run it from your project root (where <code>build.zig</code> lives).</p>
+        <p class="what"><code>zcli add command</code> writes a ready-to-edit command file at the right path under <code>src/commands/</code> — with <b>meta</b>, <b>Args</b>, <b>Options</b>, and an <b>execute()</b> stub already filled in. Nested paths like <code>users/create</code> create the folders for you. Run it from your project root (where <code>build.zig</code> lives). In a terminal it opens a short wizard — add typed arguments and options interactively, review, confirm — seeded from any flags you pass; with piped input it writes the skeleton straight away.</p>
       </div>
     </div>
 
@@ -296,13 +296,15 @@ HELLO, Alice!<span class="cursor"></span></pre>
 <pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> add command deploy \
     <span class="c-flag">--description</span> "Deploy your application"
 
+<span class="c-mut">  … wizard: arguments · options · review → Create it …</span>
+
 <span class="c-ok">  ✔</span> Created src/commands/deploy.zig
 
 <span class="c-mut">  Next steps</span>
     1. Implement execute() in
        src/commands/deploy.zig
     2. zig build
-    3. ./zig-out/bin/myapp deploy <span class="c-flag">--help</span><span class="cursor"></span></pre>
+    3. ./zig-out/bin/&lt;app&gt; deploy <span class="c-flag">--help</span><span class="cursor"></span></pre>
           </div>
         </div>
         <div class="callout">
@@ -324,16 +326,21 @@ HELLO, Alice!<span class="cursor"></span></pre>
     .examples = &.{
         <span class="str">"deploy"</span>,
     },
+    <span class="cm">// .aliases = &.{"alias"}, // alternate names this command answers to</span>
+    <span class="cm">// .hidden = true,          // omit from help and tree listings</span>
 };
 
 <span class="kw">pub const</span> Args = <span class="kw">struct</span> {};
 <span class="kw">pub const</span> Options = <span class="kw">struct</span> {};
 
-<span class="kw">pub fn</span> <span class="fn">execute</span>(args: Args, options: Options, context: *Context) !<span class="kw">void</span> {
-    _ = args;
-    _ = options;
+<span class="kw">pub fn</span> <span class="fn">execute</span>(_: Args, _: Options, context: *Context) !<span class="kw">void</span> {
     <span class="kw">const</span> stdout = context.<span class="fn">stdout</span>();
     <span class="kw">try</span> stdout.<span class="fn">print</span>(<span class="str">"TODO: Implement deploy\n"</span>, .{});
+}
+
+<span class="kw">test</span> <span class="str">"deploy"</span> {
+    <span class="cm">// Scaffolded smoke test — replace with real assertions.</span>
+    _ = <span class="at">@This</span>();
 }</pre>
         </div>
         <p class="note">Fill in <code>execute()</code>, then <code>zig build</code> — routing regenerates and <code>myapp deploy</code> is live with auto-generated <code>--help</code>.</p>
@@ -379,14 +386,16 @@ HELLO, Alice!<span class="cursor"></span></pre>
           </div>
           <div class="term-body">
 <pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> tree
+<span class="c-cmd">myapp</span>
 <span class="c-mut">├──</span> <span class="c-cmd">deploy</span> <span class="c-mut">[Deploy your application]</span>
 <span class="c-mut">└──</span> <span class="c-cmd">hello</span> <span class="c-mut">[Say hello to someone]</span>
 
 <span class="c-prompt">$</span> <span class="c-cmd">zcli</span> tree <span class="c-flag">--show-options</span>
+<span class="c-cmd">myapp</span>
 <span class="c-mut">├──</span> <span class="c-cmd">deploy</span> <span class="c-mut">[Deploy your application]</span>
 <span class="c-mut">└──</span> <span class="c-cmd">hello</span> <span class="c-mut">[Say hello to someone]</span>
     <span class="c-mut">args:</span>    <span class="c-flag">&lt;name:[]const u8&gt;</span>
-    <span class="c-mut">options:</span> <span class="c-flag">--loud</span><span class="cursor"></span></pre>
+    <span class="c-mut">options:</span> <span class="c-flag">[--loud/-l]</span><span class="cursor"></span></pre>
           </div>
         </div>
       </div>

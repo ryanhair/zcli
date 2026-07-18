@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Error handling",
-.description = "How zcli reports errors: structured ZcliError unions, rich diagnostics with did-you-mean suggestions, automatic framework handling inside commands, and the parseArgs/parseOptions API for standalone parsing.",
+.description = "How zcli reports errors: structured ZcliError unions, rich diagnostics with did-you-mean suggestions, automatic framework handling inside commands, and the parseCommandLine API for standalone parsing.",
 .date = @date("2026-07-11"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -29,6 +29,7 @@ pub const ZcliError = error{
     ArgumentMissingRequired,
     ArgumentInvalidValue,
     ArgumentTooMany,
+    ArgumentValidationFailed,
 
     // Option parsing errors
     OptionUnknown,
@@ -36,6 +37,10 @@ pub const ZcliError = error{
     OptionInvalidValue,
     OptionBooleanWithValue,
     OptionDuplicate,
+    OptionMissingRequired,
+    OptionMutuallyExclusive,
+    OptionMissingDependency,
+    OptionValidationFailed,
 
     // Command routing errors
     CommandNotFound,
@@ -69,66 +74,37 @@ When errors occur, zcli provides detailed diagnostic information through the `Zc
 - **Type expectations**: What was expected vs. what was provided
 - **Suggestions**: Smart suggestions for typos and similar names
 
-## API functions
+## API: parseCommandLine
 
-### parseArgs
-
-Parse positional arguments into a struct:
+For standalone parsing outside the framework, the public entry point is `zcli.parseCommandLine`. It handles positionals and options together in a single pass — the same parser the framework runs for your commands:
 
 ```zig
-pub fn parseArgs(comptime ArgsType: type, args: []const []const u8, diag: ?*?ZcliDiagnostic) ZcliError!ArgsType
+pub fn parseCommandLine(
+    comptime ArgsType: type,
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    allocator: std.mem.Allocator,
+    environ: ?*const std.process.Environ.Map,
+    args: []const []const u8,
+    diag: ?*?ZcliDiagnostic,
+) ZcliError!CommandParseResult(ArgsType, OptionsType)
 ```
 
-The final `diag` parameter is an optional out-parameter: pass `null` if you only need the error, or a `*?ZcliDiagnostic` to capture rich context about the failure (see [Diagnostic-driven error messages](#diagnostic-driven-error-messages) below).
-
-**Example:**
+The final `diag` parameter is an optional out-parameter: pass `null` if you only need the error, or a `*?ZcliDiagnostic` to capture rich context about the failure (see [Diagnostic-driven error messages](#diagnostic-driven-error-messages) below). The result owns any parsed arrays — release everything with a single `result.deinit()`.
 
 ```zig
 const Args = struct {
     name: []const u8,
+};
+
+const Options = struct {
+    verbose: bool = false,
     count: u32 = 1,
 };
 
-const parsed = parseArgs(Args, &.{"Alice", "42"}, null) catch |err| switch (err) {
+const result = zcli.parseCommandLine(Args, Options, null, allocator, null, args, null) catch |err| switch (err) {
     error.ArgumentMissingRequired => {
         std.debug.print("Missing required argument\n", .{});
-        return;
-    },
-    error.ArgumentInvalidValue => {
-        std.debug.print("Invalid argument value\n", .{});
-        return;
-    },
-    else => return err,
-};
-
-std.debug.print("Name: {s}, Count: {}\n", .{ parsed.name, parsed.count });
-```
-
-### parseOptions
-
-Parse command-line options into a struct:
-
-```zig
-pub fn parseOptions(
-    comptime OptionsType: type,
-    allocator: std.mem.Allocator,
-    args: []const []const u8,
-    diag: ?*?ZcliDiagnostic,
-) ZcliError!OptionsResult(OptionsType)
-```
-
-**Example:**
-
-```zig
-const Options = struct {
-    verbose: bool = false,
-    output: ?[]const u8 = null,
-    files: [][]const u8 = &.{},
-};
-
-const result = parseOptions(Options, allocator, args, null) catch |err| switch (err) {
-    error.OptionUnknown => {
-        std.debug.print("Unknown option provided\n", .{});
         return;
     },
     error.OptionInvalidValue => {
@@ -137,9 +113,9 @@ const result = parseOptions(Options, allocator, args, null) catch |err| switch (
     },
     else => return err,
 };
+defer result.deinit();
 
-defer cleanupOptions(Options, result.options, allocator);
-// Use result.options and result.remaining_args
+std.debug.print("Name: {s}, Count: {}\n", .{ result.args.name, result.options.count });
 ```
 
 ## Error handling patterns
@@ -147,17 +123,17 @@ defer cleanupOptions(Options, result.options, allocator);
 ### Basic pattern
 
 ```zig
-const parsed = parseOptions(Options, allocator, args, null) catch |err| {
+const result = zcli.parseCommandLine(Args, Options, null, allocator, null, args, null) catch |err| {
     std.debug.print("Parse error: {}\n", .{err});
     std.process.exit(1);
 };
-defer cleanupOptions(Options, parsed.options, allocator);
+defer result.deinit();
 ```
 
 ### Detailed error handling
 
 ```zig
-const parsed = parseOptions(Options, allocator, args, null) catch |err| switch (err) {
+const result = zcli.parseCommandLine(Args, Options, null, allocator, null, args, null) catch |err| switch (err) {
     error.OptionUnknown => {
         std.debug.print("Unknown option. Run with --help for usage.\n", .{});
         std.process.exit(2);
@@ -176,6 +152,7 @@ const parsed = parseOptions(Options, allocator, args, null) catch |err| switch (
         std.process.exit(1);
     },
 };
+defer result.deinit();
 ```
 
 ### [Diagnostic-driven error messages]($heading.id('diagnostic-driven-error-messages'))
@@ -184,7 +161,7 @@ The `catch`-and-switch patterns above only know *which* error occurred. To tell 
 
 ```zig
 var diag: ?zcli.ZcliDiagnostic = null;
-const result = parseOptions(Options, allocator, args, &diag) catch {
+const result = zcli.parseCommandLine(Args, Options, null, allocator, null, args, &diag) catch {
     if (diag) |d| {
         const msg = try zcli.formatDiagnostic(d, allocator);
         defer allocator.free(msg);
@@ -192,14 +169,14 @@ const result = parseOptions(Options, allocator, args, &diag) catch {
     }
     std.process.exit(2);
 };
-defer cleanupOptions(Options, result.options, allocator);
+defer result.deinit();
 ```
 
 The formatted messages carry the full context, for example:
 
 ```
-Missing required argument 'name' at position 1. Expected type: []const u8
-Invalid value 'abc' for option '--count'. Expected type: u32
+Missing required argument 'name' at position 1. Expected text.
+Invalid value 'abc' for option '--count'. Expected an integer.
 Boolean option '--verbose' does not accept a value (got 'yes')
 Unknown option '--verbos'
 Did you mean:
@@ -258,13 +235,13 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 ## Memory management
 
-### Option cleanup
+### Result cleanup
 
-When using `parseOptions` directly, always clean up array options:
+When using `parseCommandLine` directly, the returned result owns any allocated values (array options, accumulated positionals) — release them with `deinit`:
 
 ```zig
-const result = try parseOptions(Options, allocator, args, null);
-defer cleanupOptions(Options, result.options, allocator);
+const result = try zcli.parseCommandLine(Args, Options, null, allocator, null, args, null);
+defer result.deinit();
 ```
 
 The framework handles this cleanup automatically for command implementations.
@@ -282,13 +259,13 @@ Error contexts are lightweight and don't require explicit cleanup.
    - `1` for general errors
    - `2` for usage errors (wrong arguments/options)
 4. **Let framework handle parsing**: Use command implementations instead of manual parsing when possible
-5. **Clean up resources**: Always use `defer` for cleanup, especially for array options
+5. **Clean up resources**: Always `defer result.deinit()` on a `parseCommandLine` result
 
 ## Examples
 
 ### Complete command-line parser
 
-For standalone parsing outside the framework, the unified entry point re-exported at the package root is `zcli.parseCommandLine` — it handles positionals and options together in a single pass:
+A full standalone program using `zcli.parseCommandLine`, wired through `std.process.Init`:
 
 ```zig
 const std = @import("std");

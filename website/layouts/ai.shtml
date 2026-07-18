@@ -81,7 +81,7 @@
     <span class="kw">try</span> context.<span class="fn">stdout</span>().<span class="fn">print</span>(<span class="str">"{s} — ★ {d}\n"</span>, .{ repo.full_name, repo.stargazers_count });
 }</pre>
           </div>
-          <div class="callout"><b>ADR-0001</b> The one advanced case — a long-running <code>watch</code>/<code>dev</code> loop — uses a child arena per iteration. Everything else just never frees.</div>
+          <div class="callout"><b>ADR-0001</b> The one advanced case — a long-running <code>watch</code>/<code>dev</code> loop — resets its arena between iterations. Everything else just never frees.</div>
         </section>
 
         <section id="contract">
@@ -136,9 +136,9 @@
 <pre><span class="c-prompt">$</span> <span class="c-cmd">zcli</span> guide arena
 arena — the per-command allocator
 
-  context.allocator is an arena, dropped when execute() returns.
-  Allocate freely; never free. For a long-running loop, use a
-  child arena per iteration.</pre>
+`context.allocator` is an arena scoped to this one command run. Allocate
+freely and NEVER free/deinit memory you take from it — the whole arena is
+reclaimed when execute() returns (ADR-0001).</pre>
           </div>
           <div class="callout"><b>ADR-0004 · ADR-0008</b> Three layers, each with the stability its content needs: a frozen spine, a version-matched guide, and the live project state (<code>zcli tree --show-options</code>). Drift-sensitive content lives only in the layer pinned to the code.</div>
         </section>

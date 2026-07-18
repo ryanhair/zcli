@@ -110,11 +110,10 @@ $ myapp export --json --yaml
 Options '--json' and '--yaml' cannot be used together.
 ```
 
-Help gets a section per set:
+Help gets a line per set:
 
 ```
-Mutually exclusive:
-  --json, --yaml, --xml (at most one)
+    Mutually exclusive: --json, --yaml, --xml
 ```
 
 `meta.exclusive` takes multiple sets. Membership is compile-checked: naming a field that doesn't exist, listing a member twice, or a set with fewer than two members is a build error. So is putting a *required* option in a set — a required option is always supplied, so "at most one of several" would be unsatisfiable; the compile error tells you to give it a default, make it optional, or drop it from the set.

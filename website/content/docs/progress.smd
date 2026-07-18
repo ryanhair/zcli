@@ -10,10 +10,10 @@
 
 The `progress` package covers the three shapes of "still working": a **spinner** when you can't measure, a **progress bar** when you can, and a **multi-bar** when several things run at once. All three render on the [UI engine]($link.page('docs/ui'))'s live region — diffed repaints, resize-aware — and animations auto-disable when output isn't a TTY.
 
-In a command, `context.progress()` returns an instance pre-wired to the command's stdout, io, arena allocator, and [theme]($link.page('docs/theming')):
+In a command, `context.progress()` returns an instance pre-wired to the command's **stderr**, io, arena allocator, and [theme]($link.page('docs/theming')) — stderr so progress survives `myapp | tee` and stdout redirection while piped output stays clean:
 
 ```zig
-// Pre-wired to the command's stdout, io, allocator, and theme.
+// Pre-wired to the command's stderr, io, allocator, and theme.
 const p = context.progress();
 
 var spinner = try p.spinner(.{ .style = .dots });

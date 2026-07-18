@@ -94,7 +94,7 @@ const store = @import("store");
 `addCommandTests` discovers every command file and compiles each one's `test` blocks against the [testing harness]($link.page('docs/testing')) — with the `zcli-testing` module, your shared modules, and an in-memory secrets stub wired in:
 
 ```zig
-_ = zcli.addCommandTests(b, zcli_dep, .{
+_ = zcli.addCommandTests(b, exe, zcli_dep, .{
     .commands_dir = "src/commands",
     .target = target,
     .optimize = optimize,

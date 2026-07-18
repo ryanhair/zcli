@@ -90,7 +90,7 @@ A mistyped command gets a "did you mean?" computed by edit distance, followed by
 
 ```sh
 $ myapp usrs list
-Unknown command 'usrs'
+Error: Unknown command 'usrs'
 Did you mean 'users'?
 ```
 

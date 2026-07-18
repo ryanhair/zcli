@@ -335,14 +335,15 @@
 
         <section id="try">
           <h2>Try it</h2>
-          <p>Five runnable examples live in the <code>ui</code> package — all want a real terminal. Resize the window while the hybrid ones run and watch the live frame re-lay-out as the visible static tail rewraps with it; press <code>?</code> in the full-screen demo, Tab through the form.</p>
+          <p>Six runnable examples live in the <code>ui</code> package — all want a real terminal. Resize the window while the hybrid ones run and watch the live frame re-lay-out as the visible static tail rewraps with it; press <code>?</code> in the full-screen demo, Tab through the form.</p>
           <div class="code">
             <div class="code-head"><span class="fname">packages/ui</span><span class="lang">sh</span></div>
 <pre>zig build run-demo        <span class="cm"># hybrid: deploy-style task frame — spinner, task list, gauges</span>
 zig build run-hybrid      <span class="cm"># hybrid: the Claude-Code shape — streaming prose + a live multi-bar</span>
 zig build run-fullscreen  <span class="cm"># full-screen: a top-style table, scrolling viewport, help overlay</span>
 zig build run-form        <span class="cm"># full-screen: a focusable form — text fields, select, checkbox, button</span>
-zig build run-popup       <span class="cm"># full-screen: anchored dropdowns that flip and clamp on screen</span></pre>
+zig build run-popup       <span class="cm"># full-screen: anchored dropdowns that flip and clamp on screen</span>
+zig build run-textarea    <span class="cm"># full-screen: a multi-line editor — soft wrap, visual-row cursor motion</span></pre>
           </div>
           <div class="nextlinks">
             <a href="https://github.com/ryanhair/zcli/blob/main/docs/adr/0013-terminal-native-layout-engine.md" target="_blank" rel="noopener"><span class="k">→ design</span><span class="t">ADR-0013: the layout engine</span></a>

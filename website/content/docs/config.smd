@@ -27,7 +27,7 @@ The first match wins:
 2. `./.{app}.config.json|toml|yaml|yml` — a project-local dotfile in the working directory
 3. `{user config dir}/{app}/config.json|toml|yaml|yml` — the user-level config (`$XDG_CONFIG_HOME` or `~/.config` on POSIX; `%APPDATA%`, else `%USERPROFILE%`, on Windows)
 
-If more than one candidate exists, the first in this order is used and the plugin prints a notice naming the file it chose.
+The first match wins outright. When the winner is the project-local dotfile, the plugin always prints a `note: applied config from ./…` naming it (the explicit `--config` file and the user-level config load silently). Separately, if one tier contains files in several formats — say both `.myapp.config.json` and `.myapp.config.toml` — the plugin warns that multiple config files were found and names the one it used.
 
 ## Global and per-command values
 
