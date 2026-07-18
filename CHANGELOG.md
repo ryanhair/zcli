@@ -4,7 +4,7 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
-## Unreleased
+## v0.21.0 — 2026-07-18
 
 First-class single-command CLIs (ADR-0029), the `zcli init` wizard (ADR-0028), and five whole-repo hardening passes. Requires Zig 0.16.0.
 
