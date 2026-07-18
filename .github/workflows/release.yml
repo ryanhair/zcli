@@ -3,8 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - "*-v*"  # CLI releases (e.g., zcli-v0.9.0)
-      - "v*"    # Library releases (e.g., v0.9.0)
+      - "*-v*" # CLI releases (e.g., zcli-v0.9.0)
+      - "v*" # Library releases (e.g., v0.9.0)
   # One-button release: pick a version, CI bumps both build.zig.zon files,
   # stages the bump on a scratch branch, runs the full test + build gate
   # against it, and only THEN commits to main and tags v<version> +
@@ -360,6 +360,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.setup.outputs.ref }}
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
           fetch-depth: 0
 
       - name: Push to main and cut tags
