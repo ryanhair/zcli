@@ -69,6 +69,8 @@ pub const meta = .{
         .dry_run = .{ .description = "Print what would be created without writing anything" },
         .git = .{ .description = "Initialize a git repository with a .gitignore and an initial commit (--no-git to skip)" },
         .build = .{ .description = "Verify the scaffold with `zig build` after fetching (--no-build to skip)" },
+        .upgrade_repo = .{ .description = "GitHub OWNER/REPO the zcli_github_upgrade plugin pulls releases from (implies selecting that plugin)" },
+        .github = .{ .description = "GitHub Actions workflows as a comma-separated list of ci,release — or 'none'" },
     },
 };
 
@@ -92,7 +94,12 @@ pub const Options = struct {
     dry_run: bool = false,
     git: bool = true,
     build: bool = true,
+    upgrade_repo: ?[]const u8 = null,
+    github: ?[]const u8 = null,
 };
+
+/// Which GitHub Actions workflows to scaffold (the extras step).
+const Workflows = struct { ci: bool = false, release: bool = false };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
     const allocator = context.allocator;
@@ -261,7 +268,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         choices[i] = choice.label;
         defaults[i] = choice.default;
     }
-    const selected = if (options.plugins) |plugins_arg|
+    var selected = if (options.plugins) |plugins_arg|
         parsePluginsFlag(allocator, plugins_arg) catch |err| switch (err) {
             error.UnknownPlugin => return context.fail(
                 "Error: unknown plugin in --plugins '{s}'\n  Valid plugins: {s} — or 'none'",
@@ -285,14 +292,90 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         };
     defer allocator.free(selected);
 
+    // The github_upgrade plugin's repo (ADR-0028 increment 4): the picker no
+    // longer has to leave an OWNER/REPO TODO in build.zig. --upgrade-repo
+    // decides outright and implies selecting the plugin (one flag, one
+    // intent); otherwise an interactive selection gets a follow-up prompt,
+    // defaulted from the destination's github remote when there is one
+    // (`init .` in an existing repo). Empty answer / --defaults keep the
+    // compiling TODO placeholder — never a broken scaffold.
+    const upgrade_idx = pluginIndex("github_upgrade").?;
+    if (options.upgrade_repo != null and std.mem.indexOfScalar(usize, selected, upgrade_idx) == null) {
+        const grown = try allocator.alloc(usize, selected.len + 1);
+        @memcpy(grown[0..selected.len], selected);
+        grown[selected.len] = upgrade_idx;
+        allocator.free(selected);
+        selected = grown;
+    }
+    const upgrade_repo: ?[]const u8 = repo: {
+        if (options.upgrade_repo) |r| {
+            if (!isValidRepoSlug(r)) {
+                return context.fail("Error: invalid --upgrade-repo '{s}'\n  Expected OWNER/REPO (letters, digits, '-', '_', '.')", .{r});
+            }
+            break :repo r;
+        }
+        if (use_defaults or std.mem.indexOfScalar(usize, selected, upgrade_idx) == null) break :repo null;
+        // The remote default only makes sense for `init .` in an existing
+        // repo — the process cwd IS the destination there. For a new
+        // subdirectory project, the enclosing directory's remote (if any)
+        // names a *different* project; suggesting it would be a trap.
+        const remote_default = if (use_current_dir) gitRemoteSlug(allocator, io) else null;
+        defer if (remote_default) |d| allocator.free(d);
+        const answer = p.text(.{
+            .message = "GitHub repo for self-update releases (OWNER/REPO, empty to fill in later):",
+            .default = remote_default,
+        }) catch |err| switch (err) {
+            error.EndOfStream => break :repo null,
+            else => return err,
+        };
+        const trimmed = std.mem.trim(u8, answer, " ");
+        if (trimmed.len == 0) break :repo null;
+        if (!isValidRepoSlug(trimmed)) {
+            return context.fail("Error: invalid repo '{s}'\n  Expected OWNER/REPO (letters, digits, '-', '_', '.')", .{trimmed});
+        }
+        break :repo trimmed;
+    };
+
+    // GitHub Actions extras (ADR-0028 step 5): --github decides outright;
+    // otherwise ask, with `release` preselected when github_upgrade was
+    // chosen — the release workflow is what feeds the self-updater.
+    // --defaults / non-TTY take the preselection, same as the plugin picker.
+    const upgrade_selected = std.mem.indexOfScalar(usize, selected, upgrade_idx) != null;
+    const workflows: Workflows = if (options.github) |github_arg|
+        parseGithubFlag(github_arg) catch {
+            return context.fail("Error: unknown workflow in --github '{s}'\n  Valid workflows: ci, release — or 'none'", .{github_arg});
+        }
+    else if (use_defaults)
+        Workflows{ .release = upgrade_selected }
+    else wf: {
+        var wf_defaults = [_]bool{ false, upgrade_selected };
+        const wf_selected = p.multiSelect(.{
+            .message = "GitHub Actions workflows to add:",
+            .choices = &.{
+                "ci — build and test on every push and PR",
+                "release — build binaries and publish a GitHub release on tag push",
+            },
+            .defaults = &wf_defaults,
+        }) catch |err| switch (err) {
+            error.EndOfStream => break :wf Workflows{ .release = upgrade_selected },
+            else => return err,
+        };
+        defer allocator.free(wf_selected);
+        var wf = Workflows{};
+        for (wf_selected) |idx| {
+            if (idx == 0) wf.ci = true else wf.release = true;
+        }
+        break :wf wf;
+    };
+
     // Build the `zcli.builtin(...)` registration lines for build.zig.
-    const plugins_block = try renderPluginsBlock(allocator, selected);
+    const plugins_block = try renderPluginsBlock(allocator, selected, upgrade_repo);
     defer allocator.free(plugins_block);
 
     // Everything is decided: one summary, shown for both the dry run and the
     // interactive confirm (ADR-0028 step 6).
     const summarize = struct {
-        fn print(w: anytype, tpl: Template, sel: []const usize, with_git: bool, with_build: bool) !void {
+        fn print(w: anytype, tpl: Template, sel: []const usize, up_repo: ?[]const u8, wf: Workflows, with_git: bool, with_build: bool) !void {
             try w.print("  template: {s}\n", .{@tagName(tpl)});
             try w.print("  plugins:  ", .{});
             if (sel.len == 0) {
@@ -301,7 +384,17 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
                 if (i > 0) try w.print(", ", .{});
                 try w.print("{s}", .{builtin_choices[idx].tag});
             }
-            try w.print("\n  git:      {s}\n", .{if (with_git) "init + .gitignore + initial commit" else "skipped (--no-git)"});
+            try w.print("\n", .{});
+            if (up_repo) |r| try w.print("  upgrades: github.com/{s} releases\n", .{r});
+            if (wf.ci or wf.release) {
+                try w.print("  github:   {s}{s}{s} workflow{s}\n", .{
+                    if (wf.ci) "ci" else "",
+                    if (wf.ci and wf.release) ", " else "",
+                    if (wf.release) "release" else "",
+                    if (wf.ci and wf.release) "s" else "",
+                });
+            }
+            try w.print("  git:      {s}\n", .{if (with_git) "init + .gitignore + initial commit" else "skipped (--no-git)"});
             try w.print("  build:    {s}\n", .{if (with_build) "verify with `zig build`" else "skipped (--no-build)"});
         }
     }.print;
@@ -312,7 +405,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
         try stdout.print("\nDry run — nothing written. Would create:\n", .{});
         const prefix: []const u8 = if (use_current_dir) "" else args.name;
         const sep: []const u8 = if (use_current_dir) "" else "/";
-        try summarize(stdout, template, selected, options.git, options.build);
+        try summarize(stdout, template, selected, upgrade_repo, workflows, options.git, options.build);
         try stdout.print("  files:\n", .{});
         try stdout.print("    {s}{s}build.zig\n", .{ prefix, sep });
         try stdout.print("    {s}{s}build.zig.zon\n", .{ prefix, sep });
@@ -322,6 +415,8 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
             .single => try stdout.print("    {s}{s}src/commands/index.zig\n", .{ prefix, sep }),
         }
         try stdout.print("    {s}{s}README.md\n", .{ prefix, sep });
+        if (workflows.ci) try stdout.print("    {s}{s}.github/workflows/ci.yml\n", .{ prefix, sep });
+        if (workflows.release) try stdout.print("    {s}{s}.github/workflows/release.yml\n", .{ prefix, sep });
         if (options.git) try stdout.print("    {s}{s}.gitignore\n", .{ prefix, sep });
         try stdout.print("    {s}{s}AGENTS.md\n", .{ prefix, sep });
         try stdout.print("  then: zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v{s}.tar.gz\n", .{context.app_version});
@@ -333,7 +428,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // scripts and CI sail through.
     if (!use_defaults) {
         try stdout.print("\nAbout to create '{s}':\n", .{project_name});
-        try summarize(stdout, template, selected, options.git, options.build);
+        try summarize(stdout, template, selected, upgrade_repo, workflows, options.git, options.build);
         try stdout.flush();
         const proceed = p.confirm(.{ .message = "Proceed?" }) catch |err| switch (err) {
             error.EndOfStream => true,
@@ -456,6 +551,26 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     var readme_file = try project_dir.createFile(io, "README.md", .{});
     defer readme_file.close(io);
     try readme_file.writeStreamingAll(io, readme_content);
+
+    // GitHub Actions workflows (extras): written with the other project files
+    // so the initial commit below captures them. The shared scaffold is the
+    // same one `gh add workflow ci|release` uses. A fresh scaffold can't hit
+    // .not_a_project (src/commands was just created) or .already_exists for a
+    // new directory; `init .` tolerates a pre-existing workflow by warning.
+    if (workflows.ci) {
+        switch (try scaffold.workflows.write(project_dir, io, "ci.yml", scaffold.workflows.ci_yml)) {
+            .created => try stdout.print("  Creating .github/workflows/ci.yml...\n", .{}),
+            .already_exists => try stderr.print("  Warning: .github/workflows/ci.yml already exists — left untouched.\n", .{}),
+            .not_a_project => unreachable,
+        }
+    }
+    if (workflows.release) {
+        switch (try scaffold.workflows.write(project_dir, io, "release.yml", scaffold.workflows.release_yml)) {
+            .created => try stdout.print("  Creating .github/workflows/release.yml...\n", .{}),
+            .already_exists => try stderr.print("  Warning: .github/workflows/release.yml already exists — left untouched.\n", .{}),
+            .not_a_project => unreachable,
+        }
+    }
 
     // Scaffold AGENTS.md — the thin, frozen, command-speaking spine that points
     // coding agents at `zcli guide` (ADR-0008). Marker-delimited so it never
@@ -710,6 +825,122 @@ const AgentsResult = enum { created, appended, refreshed };
 /// Owned slice of the indices whose `defaults` bit is set — the non-interactive
 /// fallback for the plugin picker (mirrors what `multiSelect` returns for a
 /// submitted-defaults selection).
+/// Parse the --github flag: a comma-separated subset of {ci, release}, or
+/// 'none'. Unknown names are error.UnknownWorkflow — the caller renders the
+/// message with the valid list.
+fn parseGithubFlag(arg: []const u8) !Workflows {
+    var wf = Workflows{};
+    if (std.mem.eql(u8, std.mem.trim(u8, arg, " "), "none")) return wf;
+    var it = std.mem.splitScalar(u8, arg, ',');
+    while (it.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " ");
+        if (name.len == 0) continue;
+        if (std.mem.eql(u8, name, "ci")) {
+            wf.ci = true;
+        } else if (std.mem.eql(u8, name, "release")) {
+            wf.release = true;
+        } else {
+            return error.UnknownWorkflow;
+        }
+    }
+    return wf;
+}
+
+test "parseGithubFlag: subsets, none, and unknown names" {
+    try std.testing.expectEqual(Workflows{ .ci = true, .release = true }, try parseGithubFlag("ci,release"));
+    try std.testing.expectEqual(Workflows{ .ci = true }, try parseGithubFlag("ci"));
+    try std.testing.expectEqual(Workflows{}, try parseGithubFlag("none"));
+    try std.testing.expectEqual(Workflows{ .release = true }, try parseGithubFlag("release,"));
+    try std.testing.expectError(error.UnknownWorkflow, parseGithubFlag("ci,deploy"));
+}
+
+/// Picker index of the builtin choice named `tag`, or null. Runtime lookup
+/// over the (tiny) comptime table so call sites can't drift from it.
+fn pluginIndex(tag: []const u8) ?usize {
+    for (builtin_choices, 0..) |choice, i| {
+        if (std.mem.eql(u8, choice.tag, tag)) return i;
+    }
+    return null;
+}
+
+/// True when `s` is a plausible GitHub OWNER/REPO slug: exactly one '/',
+/// nonempty halves, characters limited to [A-Za-z0-9._-]. The slug lands
+/// inside a generated string literal, so the restricted charset doubles as
+/// the injection guard (no escaping needed).
+fn isValidRepoSlug(s: []const u8) bool {
+    const slash = std.mem.indexOfScalar(u8, s, '/') orelse return false;
+    if (slash == 0 or slash == s.len - 1) return false;
+    if (std.mem.indexOfScalarPos(u8, s, slash + 1, '/') != null) return false;
+    for (s, 0..) |c, i| {
+        if (i == slash) continue;
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') return false;
+    }
+    return true;
+}
+
+test "isValidRepoSlug: OWNER/REPO shapes" {
+    try std.testing.expect(isValidRepoSlug("ryanhair/zcli"));
+    try std.testing.expect(isValidRepoSlug("a-b.c_d/e.f-g_h"));
+    try std.testing.expect(!isValidRepoSlug("noslash"));
+    try std.testing.expect(!isValidRepoSlug("/repo"));
+    try std.testing.expect(!isValidRepoSlug("owner/"));
+    try std.testing.expect(!isValidRepoSlug("o/r/extra"));
+    try std.testing.expect(!isValidRepoSlug("own er/repo"));
+    try std.testing.expect(!isValidRepoSlug("owner/re\"po"));
+}
+
+/// OWNER/REPO parsed from a github.com remote URL (https or ssh, optional
+/// trailing .git or '/'), or null when it isn't a recognizable github slug.
+/// Owned by the caller.
+fn parseGithubSlug(allocator: std.mem.Allocator, url: []const u8) ?[]u8 {
+    const host = "github.com";
+    const host_at = std.mem.indexOf(u8, url, host) orelse return null;
+    const after_host = url[host_at + host.len ..];
+    if (after_host.len < 2 or (after_host[0] != ':' and after_host[0] != '/')) return null;
+    var slug = after_host[1..];
+    if (std.mem.endsWith(u8, slug, "/")) slug = slug[0 .. slug.len - 1];
+    if (std.mem.endsWith(u8, slug, ".git")) slug = slug[0 .. slug.len - 4];
+    if (!isValidRepoSlug(slug)) return null;
+    return allocator.dupe(u8, slug) catch null;
+}
+
+test "parseGithubSlug: https, ssh, .git, and non-github forms" {
+    const a = std.testing.allocator;
+    inline for (.{
+        .{ "https://github.com/ryanhair/zcli.git", "ryanhair/zcli" },
+        .{ "https://github.com/ryanhair/zcli", "ryanhair/zcli" },
+        .{ "git@github.com:ryanhair/zcli.git", "ryanhair/zcli" },
+    }) |case| {
+        const slug = parseGithubSlug(a, case[0]).?;
+        defer a.free(slug);
+        try std.testing.expectEqualStrings(case[1], slug);
+    }
+    try std.testing.expect(parseGithubSlug(a, "https://gitlab.com/o/r.git") == null);
+    try std.testing.expect(parseGithubSlug(a, "git@github.com:only-owner") == null);
+}
+
+/// OWNER/REPO from the current directory's `origin` github remote, or null
+/// (no git, no remote, not github). Only meaningful for `init .` inside an
+/// existing repo — a fresh project directory has no remote yet. Owned by the
+/// caller.
+fn gitRemoteSlug(allocator: std.mem.Allocator, io: std.Io) ?[]u8 {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "git", "config", "--get", "remote.origin.url" },
+        .stdout = .pipe,
+        .stderr = .ignore,
+    }) catch return null;
+    var buf: [512]u8 = undefined;
+    var reader = child.stdout.?.reader(io, &buf);
+    const out = reader.interface.allocRemaining(allocator, .limited(4096)) catch {
+        _ = child.wait(io) catch {};
+        return null;
+    };
+    defer allocator.free(out);
+    const term = child.wait(io) catch return null;
+    if (!(term == .exited and term.exited == 0)) return null;
+    return parseGithubSlug(allocator, std.mem.trim(u8, out, " \r\n"));
+}
+
 /// The valid --plugins names, comma-joined for the error message. Comptime so
 /// the list can never drift from builtin_choices.
 const valid_plugin_tags = blk: {
@@ -791,21 +1022,43 @@ test "collectDefaultPlugins returns only the preselected indices" {
 
 /// Render the `zcli.builtin(...)` registration lines the generated build.zig
 /// splices into its `.plugins = &.{ ... }` list, one line per selected picker
-/// index, each with that choice's config snippet. Owned slice.
-fn renderPluginsBlock(allocator: std.mem.Allocator, selected: []const usize) ![]u8 {
+/// index, each with that choice's config snippet. When `upgrade_repo` is set
+/// (validated OWNER/REPO — the restricted charset is the literal-injection
+/// guard), github_upgrade renders it in place of the OWNER/REPO TODO; the
+/// verification TODO stays either way (pinning a key is a deliberate act).
+/// Owned slice.
+fn renderPluginsBlock(allocator: std.mem.Allocator, selected: []const usize, upgrade_repo: ?[]const u8) ![]u8 {
     var aw = std.Io.Writer.Allocating.init(allocator);
     defer aw.deinit();
     for (selected) |idx| {
+        if (upgrade_repo != null and std.mem.eql(u8, builtin_choices[idx].tag, "github_upgrade")) {
+            try aw.writer.print("            zcli.builtin(.github_upgrade, .{{\n" ++
+                "                .repo = \"{s}\",\n" ++
+                "                .verification = .checksum_only, // TODO: pin a minisign key for fail-closed signature verification (see zcli's docs/RELEASE-SIGNING.md)\n" ++
+                "            }}),\n", .{upgrade_repo.?});
+            continue;
+        }
         try aw.writer.print("            zcli.builtin(.{s}, {s}),\n", .{ builtin_choices[idx].tag, builtin_choices[idx].config });
     }
     var al = aw.toArrayList();
     return al.toOwnedSlice(allocator);
 }
 
+test "renderPluginsBlock renders a known upgrade repo instead of the TODO placeholder" {
+    const allocator = std.testing.allocator;
+    const idx = pluginIndex("github_upgrade").?;
+    const block = try renderPluginsBlock(allocator, &.{idx}, "ryanhair/zcli");
+    defer allocator.free(block);
+    try std.testing.expect(std.mem.indexOf(u8, block, ".repo = \"ryanhair/zcli\",") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block, "OWNER/REPO") == null);
+    // Verification stays an explicit TODO — key pinning is a deliberate act.
+    try std.testing.expect(std.mem.indexOf(u8, block, ".verification = .checksum_only") != null);
+}
+
 test "renderPluginsBlock renders configless plugins as .{}" {
     const allocator = std.testing.allocator;
     // help (0) and version (1) take no config.
-    const block = try renderPluginsBlock(allocator, &.{ 0, 1 });
+    const block = try renderPluginsBlock(allocator, &.{ 0, 1 }, null);
     defer allocator.free(block);
     try std.testing.expectEqualStrings(
         "            zcli.builtin(.help, .{}),\n" ++
@@ -825,7 +1078,7 @@ test "renderPluginsBlock scaffolds a compiling github_upgrade config, not an emp
         if (std.mem.eql(u8, choice.tag, "github_upgrade")) break i;
     } else return error.TestUnexpectedResult;
 
-    const block = try renderPluginsBlock(allocator, &.{idx});
+    const block = try renderPluginsBlock(allocator, &.{idx}, null);
     defer allocator.free(block);
     try std.testing.expectEqualStrings(
         "            zcli.builtin(.github_upgrade, .{\n" ++
