@@ -462,4 +462,3 @@ fn wireToolStep(
     const tool_step = b.step(tool.step, tool.description);
     tool_step.dependOn(&run.step);
 }
-
