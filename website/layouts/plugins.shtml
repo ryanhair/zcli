@@ -80,7 +80,7 @@
 
         <section id="builtin">
           <h2>Built-in defaults</h2>
-          <p>zcli ships seven plugins. A project scaffolded with <code>zcli init</code> turns on the first three by default; the rest you toggle on in init's plugin picker (or add later) when you need them.</p>
+          <p>zcli ships eight plugins. A project scaffolded with <code>zcli init</code> turns on the first three by default; the rest you toggle on in init's plugin picker (or add later in <code>build.zig</code>) when you need them.</p>
           <div class="table-scroll">
           <table class="ptable">
             <thead><tr><th>Plugin</th><th>Provides</th><th>Default</th></tr></thead>
@@ -92,6 +92,7 @@
               <tr><td class="name">zcli_config</td><td class="desc">Transparent config loading — JSON, TOML, YAML, per-command scoping</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_secrets</td><td class="desc">OS-keychain credential storage — macOS Keychain, Linux Secret Service, Windows Credential Manager</td><td><span class="badge opt">optional</span></td></tr>
               <tr><td class="name">zcli_github_upgrade</td><td class="desc"><code>upgrade</code> command via GitHub releases</td><td><span class="badge opt">optional</span></td></tr>
+              <tr><td class="name">zcli_docs</td><td class="desc"><code>zig build docs</code> step — markdown, man pages, HTML from command metadata; build-only, nothing in the binary</td><td><span class="badge opt">optional</span></td></tr>
             </tbody>
           </table>
           </div>
@@ -139,7 +140,7 @@
     .app_description = <span class="str">"My CLI application"</span>,
 });</pre>
           </div>
-          <div class="callout"><b>Note</b> <code>.plugins</code> is optional — omit it entirely and rely on <code>.plugins_dir</code>, or use only the list. Auto-discovered and listed plugins merge into one registry. The seven shipped plugins map to tags <code>.help · .version · .not_found · .completions · .config · .secrets · .github_upgrade</code>.</div>
+          <div class="callout"><b>Note</b> <code>.plugins</code> is optional — omit it entirely and rely on <code>.plugins_dir</code>, or use only the list. Auto-discovered and listed plugins merge into one registry. The eight shipped plugins map to tags <code>.help · .version · .not_found · .completions · .config · .secrets · .github_upgrade · .docs</code>.</div>
         </section>
 
         <section id="discover">

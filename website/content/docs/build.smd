@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Build integration",
-.description = "Wiring zcli in build.zig: zcli.generate and its config, shared modules across commands, per-command unit tests with addCommandTests, and docs generation to markdown, man, and HTML with generateDocs.",
+.description = "Wiring zcli in build.zig: zcli.generate and its config, shared modules across commands, per-command unit tests with addCommandTests, and docs generation to markdown, man, and HTML with the docs plugin.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -110,20 +110,20 @@ Pass `shared_modules` here too, matching what you gave `generate` — the comman
 
 ## Docs generation
 
-`generateDocs` adds a `docs` build step that renders your command metadata — descriptions, args, options, examples — as documentation:
+The `docs` plugin adds a `docs` build step that renders your command metadata — descriptions, args, options, examples — as documentation. It is build-only: it wires the step and ships nothing in your binary. Register it in the `generate()` plugins list:
 
 ```zig
-zcli.generateDocs(b, cmd_registry, zcli_dep, .{
+zcli.builtin(.docs, .{
     .formats = &.{ "markdown", "man", "html" },
     .output_dir = "docs",
-});
+}),
 ```
 
 Run it with `zig build docs` (it's off the default step, so ordinary builds stay fast). Each format gets a subdirectory: `docs/markdown/`, `docs/man/` (a section-1 page per command), and `docs/html/` — a static site styled to match this documentation, dark and terminal-native, with breadcrumb navigation. Enum-typed options and arguments list their valid choices in every format, and man-page dates honor `SOURCE_DATE_EPOCH` so the output is byte-for-byte reproducible. Because it reads the same registry your binary compiles from, generated docs can't drift from the commands they describe.
 
 ## Built-in plugin tags
 
-`zcli.builtin(tag, config)` registers a shipped plugin. Seven tags: `.help`, `.version`, `.not_found`, `.completions`, `.config`, `.secrets`, `.github_upgrade`. Most take no config (`.{}`); `github_upgrade` takes its repo and options:
+`zcli.builtin(tag, config)` registers a shipped plugin. Eight tags: `.help`, `.version`, `.not_found`, `.completions`, `.config`, `.secrets`, `.github_upgrade`, and the build-only `.docs`. Most take no config (`.{}`); `github_upgrade` takes its repo and options:
 
 ```zig
 zcli.builtin(.github_upgrade, .{

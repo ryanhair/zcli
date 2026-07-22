@@ -112,6 +112,9 @@ pub fn build(b: *std.Build) !void {
                 .verification = .{ .minisign = "RWT9gPaOm7Y4Fm5WFqqlWRpI4FgPTIjD5UhUsaZsdKHrWYuWa9jt8ESC" },
             }),
             zcli.builtin(.completions, .{}),
+            // Build-only: wires the `zig build docs` step, ships nothing in
+            // the binary.
+            zcli.builtin(.docs, .{ .formats = &.{ "markdown", "man", "html" } }),
         },
         .app_name = "zcli",
         .app_description = "Build beautiful CLIs with zcli - scaffold projects, add commands, and more",
@@ -123,10 +126,6 @@ pub fn build(b: *std.Build) !void {
     });
 
     exe.root_module.addImport("command_registry", cmd_registry);
-
-    zcli.generateDocs(b, cmd_registry, zcli_dep, .{
-        .formats = &.{ "markdown", "man", "html" },
-    });
 
     b.installArtifact(exe);
 

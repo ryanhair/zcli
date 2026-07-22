@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) void {
     const core_test_files = [_][]const u8{
         "src/zcli.zig", // Main entry point - imports args, options, errors, execution, etc.
         "src/build_utils.zig", // Standalone utility (has its own tests)
-        "src/doc_escape.zig", // Doc-generator escaping rules (std-only, unit-tested here)
+        "src/plugins/zcli_docs/doc_escape.zig", // Doc-generator escaping rules (std-only, unit-tested here)
         "src/usage.zig", // Shared usage/synopsis conventions (std-only, unit-tested here)
     };
 
@@ -294,16 +294,16 @@ fn addTestRun(
 // Re-export the build utilities that make up the consumer-facing build API
 pub const BuildConfig = types.BuildConfig;
 pub const GenerateConfig = types.GenerateConfig;
-pub const DocsConfig = types.DocsConfig;
 pub const CommandTestsConfig = types.CommandTestsConfig;
 pub const PluginConfig = types.PluginConfig;
+pub const ToolConfig = types.ToolConfig;
 pub const Builtin = types.Builtin;
 pub const builtin = types.builtin;
+pub const config = types.config;
 pub const SharedModule = types.SharedModule;
 pub const CommandConfig = types.CommandConfig;
 pub const CommandModule = types.CommandModule;
 pub const CommandModuleConfig = types.CommandModuleConfig;
 pub const GenerateError = main.GenerateError;
 pub const generate = main.generate;
-pub const generateDocs = main.generateDocs;
 pub const addCommandTests = @import("src/build_utils/command_tests.zig").addCommandTests;

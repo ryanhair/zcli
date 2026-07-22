@@ -11,7 +11,6 @@ const DiscoveredCommand = types.DiscoveredCommand;
 const BuildConfig = types.BuildConfig;
 const DiscoveredCommands = types.DiscoveredCommands;
 const GenerateConfig = types.GenerateConfig;
-const DocsConfig = types.DocsConfig;
 
 /// `generate()` failed because of a problem in the consuming project's
 /// configuration. A human-readable explanation has already been printed;
@@ -34,6 +33,12 @@ pub const GenerateError = error{
     /// A registered plugin sanitizes to a reserved generated-registry
     /// identifier (`std`, `zcli`, or a `cmd_`/`_index` affix).
     ReservedPluginIdentifier,
+    /// A plugin tool's step name is already taken — by another plugin's tool
+    /// or by a step the project registered before calling `generate()`.
+    ToolStepCollision,
+    /// A `PluginConfig` opted into `.tool` but its external package exposes no
+    /// module named `tool`.
+    ToolModuleMissing,
 };
 
 /// Re-exported so the zcli_secrets plugin's own test targets (in
@@ -45,36 +50,6 @@ pub const linkSecretsBackend = types.linkSecretsBackend;
 // ============================================================================
 // VERSION MANAGEMENT - Read version from build.zig.zon
 // ============================================================================
-
-/// Compute the build date (`YYYY-MM-DD`) used for the man page `.TH` field.
-/// Honors `SOURCE_DATE_EPOCH` (the reproducible-builds convention) when set,
-/// otherwise stamps the current build time. This is injected only into the
-/// on-demand doc generator (via a build option), never into the command
-/// registry — baking the wall-clock date into the registry source would bust
-/// the compile cache once per calendar day for every consuming project.
-fn computeBuildDate(b: *std.Build) []const u8 {
-    const epoch_secs: u64 = blk: {
-        if (b.graph.environ_map.get("SOURCE_DATE_EPOCH")) |raw| {
-            const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-            if (std.fmt.parseInt(u64, trimmed, 10)) |secs| {
-                break :blk secs;
-            } else |_| {
-                logging.logBuildWarning("SOURCE_DATE_EPOCH is not a valid integer ('{s}'); using build time", .{trimmed});
-            }
-        }
-        const ns = std.Io.Clock.real.now(b.graph.io).nanoseconds;
-        break :blk @intCast(@divTrunc(ns, std.time.ns_per_s));
-    };
-
-    const epoch_day = (std.time.epoch.EpochSeconds{ .secs = epoch_secs }).getEpochDay();
-    const year_day = epoch_day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    return std.fmt.allocPrint(b.allocator, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-        year_day.year,
-        month_day.month.numeric(),
-        month_day.day_index + 1,
-    }) catch @panic("OOM");
-}
 
 /// Read version from the project's build.zig.zon file
 fn readVersionFromZon(b: *std.Build) []const u8 {
@@ -337,6 +312,16 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
                 logging.buildError("Plugin Config Error", plugin_config.name, "External plugin name is not a valid package name", "Use letters, digits, '_' and '-' only, starting with a letter or '_' (no spaces, quotes, or path separators)");
                 return error.PluginNameInvalid;
             }
+            // A package that exposes no `plugin` module is build-only: it
+            // ships a tool and contributes nothing to the registry. Requiring
+            // `.tool` in that case keeps a do-nothing registration loud.
+            if (plugin_config.build_only or dep.builder.modules.get("plugin") == null) {
+                if (plugin_config.tool == null) {
+                    logging.buildError("Plugin Config Error", plugin_config.name, "The plugin package exposes no 'plugin' module and no '.tool' was declared, so registering it would do nothing", "Expose the plugin's runtime entry point as a module named 'plugin' in its build.zig, or opt into its build tool by setting '.tool' with a step name and description");
+                    return error.PluginConfigInvalid;
+                }
+                continue;
+            }
             // External package plugin: its module is resolved from the
             // dependency in module_creation.addPluginModulesToRegistry via
             // `dep.module("plugin")`; the registry imports it under the
@@ -346,9 +331,12 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
                 .import_name = plugin_config.name,
                 .is_local = false,
                 .dependency = dep,
-                .init = plugin_config.init,
+                .config = plugin_config.config,
             }) catch @panic("OOM");
         } else if (plugin_config.path) |path| {
+            // A build-only built-in (e.g. `.docs`) ships no runtime module —
+            // nothing to register; its tool is wired below.
+            if (plugin_config.build_only) continue;
             // Built-in: path is relative to the zcli package, e.g.
             // "packages/core/src/plugins/zcli_help"; appending "/plugin" gives
             // the import path resolved against the zcli dependency.
@@ -357,7 +345,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
                 .import_name = b.fmt("{s}/plugin", .{path}),
                 .is_local = true,
                 .dependency = null,
-                .init = plugin_config.init,
+                .config = plugin_config.config,
             }) catch @panic("OOM");
         } else {
             logging.buildError("Plugin Config Error", plugin_config.name, "A plugin sets neither '.path' nor '.dependency'", "Register a built-in with zcli.builtin(), or an external package with '.dependency = b.dependency(...)'");
@@ -376,6 +364,9 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
     // registering it is a compile error in the plugin source (no insecure file
     // fallback), and its `linkSecretsBackend` hook links nothing there.
     for (config.plugins) |plugin_config| {
+        // A build-only plugin puts nothing in the binary, so it has nothing
+        // to link into it either (its tool executable links for itself).
+        if (plugin_config.build_only) continue;
         if (plugin_config.link) |linkFn| {
             linkFn(exe.root_module, exe.rootModuleTarget());
         }
@@ -392,54 +383,83 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         .app_description = config.app_description,
     };
 
-    return buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);
-}
+    const registry_module = try buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);
 
-/// Generate documentation from command metadata during the build.
-///
-/// Docs are generated on demand via `zig build docs` (kept off the default
-/// build so ordinary builds stay quiet). Output goes to `output_dir`.
-///
-/// ```zig
-/// // Single format (default: markdown)
-/// zcli.generateDocs(b, cmd_registry, zcli_dep, .{});
-///
-/// // Multiple formats — each gets its own subdirectory
-/// zcli.generateDocs(b, cmd_registry, zcli_dep, .{
-///     .formats = &.{ "markdown", "man" },
-///     .output_dir = "docs",
-/// });
-/// ```
-pub fn generateDocs(b: *std.Build, registry_module: *std.Build.Module, zcli_dep: *std.Build.Dependency, config: DocsConfig) void {
-    const zcli_module = zcli_dep.module("zcli");
-    const doc_exe = b.addExecutable(.{
-        .name = "zcli-doc-gen",
-        .root_module = b.createModule(.{
-            .root_source_file = zcli_dep.path("packages/core/src/doc_gen_main.zig"),
-            .target = b.graph.host,
-        }),
-    });
-    doc_exe.root_module.addImport("command_registry", registry_module);
-    doc_exe.root_module.addImport("zcli", zcli_module);
-
-    // The man page `.TH` date is injected here, into the doc generator only —
-    // never into the command registry — so the wall-clock date can't bust the
-    // registry/exe compile cache once per calendar day. The doc generator is
-    // built on demand (`zig build docs`), so stamping it here is free for
-    // ordinary builds.
-    const doc_options = b.addOptions();
-    doc_options.addOption([]const u8, "build_date", computeBuildDate(b));
-    doc_exe.root_module.addOptions("build_options", doc_options);
-
-    const run = b.addRunArtifact(doc_exe);
-    run.addArg(config.output_dir);
-    for (config.formats) |fmt| {
-        run.addArg(fmt);
+    // Wire each plugin's build-time tool (see PluginConfig.tool): a host
+    // executable importing the registry just generated, registered as a
+    // top-level step. Done last so every tool sees the same registry module
+    // the app itself compiles against.
+    for (config.plugins) |plugin_config| {
+        if (plugin_config.tool != null) {
+            try wireToolStep(b, zcli_dep, zcli_module, registry_module, plugin_config);
+        }
     }
 
-    // Only run when explicitly requested via `zig build docs`. Keeping it off
-    // the default install step means an ordinary `zig build` stays quiet and
-    // fast — no doc-gen output on every build of every consuming project.
-    const docs_step = b.step("docs", "Generate documentation");
-    docs_step.dependOn(&run.step);
+    return registry_module;
 }
+
+/// Build a plugin's tool as a host executable and register its build step.
+/// The tool's root module gets three imports: `command_registry` (the
+/// consumer's generated registry — comptime command metadata), `zcli`, and
+/// `tool_config` (a generated module exposing the plugin's rendered config
+/// literal through a typed accessor). The tool is compiled for the build host
+/// and never linked into the shipped binary; its step is off the default
+/// install path, so ordinary builds don't pay for it.
+fn wireToolStep(
+    b: *std.Build,
+    zcli_dep: *std.Build.Dependency,
+    zcli_module: *std.Build.Module,
+    registry_module: *std.Build.Module,
+    plugin_config: types.PluginConfig,
+) GenerateError!void {
+    const tool = plugin_config.tool.?;
+
+    // b.step() panics on a duplicate name; catch it up front and explain.
+    if (b.top_level_steps.contains(tool.step)) {
+        const detail = b.fmt("plugin '{s}', step '{s}'", .{ plugin_config.name, tool.step });
+        logging.buildError("Plugin Tool Error", detail, "The tool's step name is already taken", "Another plugin's tool (or a step your build.zig registered before generate()) already uses this name — remove one of the two");
+        return error.ToolStepCollision;
+    }
+
+    // Resolve the tool's root module: a built-in's tool.zig lives next to its
+    // plugin source in the zcli package; an external package exposes a module
+    // named `tool` (declared without target — tools always run on the build
+    // host, so the target is resolved here).
+    const tool_module = if (plugin_config.dependency) |dep| blk: {
+        const module = dep.builder.modules.get("tool") orelse {
+            logging.buildError("Plugin Tool Error", plugin_config.name, "'.tool' is set but the plugin package exposes no 'tool' module", "Expose the tool's root source as a module named 'tool' in the plugin package's build.zig (b.addModule(\"tool\", ...)), or drop the '.tool' opt-in");
+            return error.ToolModuleMissing;
+        };
+        if (module.resolved_target == null) module.resolved_target = b.graph.host;
+        break :blk module;
+    } else b.createModule(.{
+        .root_source_file = zcli_dep.path(b.fmt("{s}/tool.zig", .{plugin_config.path.?})),
+        .target = b.graph.host,
+    });
+
+    // The rendered config literal, exposed through a typed accessor so it is
+    // evaluated with the tool's own Config type as result type — the same
+    // trick the generated registry's `.init(<literal>)` call uses.
+    const tool_config_source = if (plugin_config.config) |literal|
+        b.fmt("// Generated by zcli - DO NOT EDIT\npub fn config(comptime Config: type) Config {{\n    return {s};\n}}\n", .{literal})
+    else
+        "// Generated by zcli - DO NOT EDIT\npub fn config(comptime Config: type) Config {\n    return .{};\n}\n";
+    const write_config = b.addWriteFiles();
+    const tool_config_module = b.createModule(.{
+        .root_source_file = write_config.add("tool_config.zig", tool_config_source),
+    });
+
+    tool_module.addImport("command_registry", registry_module);
+    tool_module.addImport("zcli", zcli_module);
+    tool_module.addImport("tool_config", tool_config_module);
+
+    const tool_exe = b.addExecutable(.{
+        .name = b.fmt("{s}-tool", .{plugin_config.name}),
+        .root_module = tool_module,
+    });
+
+    const run = b.addRunArtifact(tool_exe);
+    const tool_step = b.step(tool.step, tool.description);
+    tool_step.dependOn(&run.step);
+}
+

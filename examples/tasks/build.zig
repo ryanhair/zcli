@@ -37,6 +37,9 @@ pub fn build(b: *std.Build) !void {
             zcli.builtin(.not_found, .{}),
             zcli.builtin(.completions, .{}),
             zcli.builtin(.config, .{}),
+            // Build-only: wires the `zig build docs` step, ships nothing in
+            // the binary.
+            zcli.builtin(.docs, .{ .formats = &.{ "markdown", "html" }, .output_dir = "docs" }),
         },
         .shared_modules = &[_]zcli.SharedModule{
             .{ .name = "store", .module = store_module },
@@ -46,11 +49,6 @@ pub fn build(b: *std.Build) !void {
     });
 
     exe.root_module.addImport("command_registry", cmd_registry);
-
-    zcli.generateDocs(b, cmd_registry, zcli_dep, .{
-        .formats = &.{ "markdown", "html" },
-        .output_dir = "docs",
-    });
 
     b.installArtifact(exe);
 
