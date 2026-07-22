@@ -20,11 +20,11 @@ The zcli framework itself: argument/option parsing, the command registry and exe
 
 Re-exported through the zcli package root — `const zcli = @import("zcli");`:
 
-- `generate(b, exe, zcli_dep, config: GenerateConfig) !*Module` — discover commands, generate the registry
-- `generateDocs(b, registry, zcli_dep, config: DocsConfig)` — markdown/man/html docs on every build
+- `generate(b, exe, zcli_dep, config: GenerateConfig) !*Module` — discover commands, generate the registry, wire plugin build tools
 - `addCommandTests(b, exe, zcli_dep, config: CommandTestsConfig)` — per-command unit-test wiring
-- `builtin(tag, config)` — register a shipped plugin by tag
-- Types: `GenerateConfig`, `DocsConfig`, `CommandTestsConfig`, `PluginConfig`, `SharedModule`
+- `builtin(tag, config)` — register a shipped plugin by tag (e.g. `.docs` wires the `zig build docs` step)
+- `config(cfg)` — render an external plugin's config struct for `PluginConfig.config`
+- Types: `GenerateConfig`, `CommandTestsConfig`, `PluginConfig`, `ToolConfig`, `SharedModule`
 
 The full build-system walkthrough is [docs/BUILD.md](../../docs/BUILD.md).
 

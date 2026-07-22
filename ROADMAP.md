@@ -69,9 +69,9 @@ The two lists below are ratified: this is the line 1.0 will draw.
 - **Process exit codes.** `0` success, `1` command failure (`context.fail`),
   `2` CLI misuse, `3` command not found, `141` broken pipe — scripts may depend
   on these.
-- **The `build.zig` integration API.** The `zcli.generate()`, `generateDocs()`,
-  and `addCommandTests()` signatures and their typed config structs;
-  `zcli.builtin(...)`; `zcli.option(...)`.
+- **The `build.zig` integration API.** The `zcli.generate()` and
+  `addCommandTests()` signatures and their typed config structs;
+  `zcli.builtin(...)`; `zcli.config(...)`; `zcli.option(...)`.
 - **Plugin hook signatures.** `plugin_id`, `ContextData`, `global_options`,
   `handleGlobalOption`, `preExecute`, `onError`, and the plugin-command
   convention — the contract a third-party plugin is written against.

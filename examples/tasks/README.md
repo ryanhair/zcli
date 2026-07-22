@@ -28,8 +28,8 @@ What it demonstrates:
 - **Five built-in plugins** — `zcli.builtin(.help/.version/.not_found/
   .completions/.config, .{})`, including per-command defaults from
   `.tasks.config.json`.
-- **Doc generation** — `zcli.generateDocs` writes markdown + HTML docs on
-  every build.
+- **Doc generation** — the build-only `zcli.builtin(.docs, ...)` plugin
+  writes markdown + HTML docs on demand via `zig build docs`.
 - **Per-command unit tests** — `zcli.addCommandTests` wires each command
   file's `test` blocks into `zig build test`.
 

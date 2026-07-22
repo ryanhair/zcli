@@ -316,14 +316,14 @@ test "deploy command" {
 
 ## Documentation generation
 
-Generate markdown, man pages, or HTML documentation from your command metadata, on demand via `zig build docs`:
+Generate markdown, man pages, or HTML documentation from your command metadata, on demand via `zig build docs`. The `docs` plugin is build-only — it wires the build step and ships nothing in your binary:
 
 ```zig
-// In build.zig, after generate():
-zcli.generateDocs(b, cmd_registry, zcli_dep, .{
+// In build.zig, in the generate() plugins list:
+zcli.builtin(.docs, .{
     .formats = &.{ "markdown", "man", "html" },
     .output_dir = "docs",
-});
+}),
 ```
 
 The HTML output is a styled, dark-mode-aware static site with navigation.

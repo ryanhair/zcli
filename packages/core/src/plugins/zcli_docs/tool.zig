@@ -1,6 +1,9 @@
-//! zcli documentation generator.
-//! Reads command metadata from the registry at comptime and writes
-//! markdown, man page, or HTML files. Run via `zig build docs`.
+//! zcli_docs — build-only plugin: the documentation generator tool.
+//!
+//! Compiled for the build host and run via `zig build docs` (see
+//! PluginConfig.tool); nothing from this plugin is linked into the shipped
+//! binary. Reads command metadata from the registry at comptime and writes
+//! markdown, man page, or HTML files.
 //!
 //! All free text (descriptions, examples, the app description) is routed
 //! through `doc_escape` before being written, so a command whose metadata
@@ -9,7 +12,7 @@
 
 const std = @import("std");
 const registry = @import("command_registry");
-const build_options = @import("build_options");
+const tool_config = @import("tool_config");
 const zcli = @import("zcli");
 const esc = @import("doc_escape.zig");
 
@@ -17,15 +20,20 @@ const CommandInfo = zcli.CommandInfo;
 const OptionInfo = zcli.OptionInfo;
 const ArgInfo = zcli.ArgInfo;
 
+/// The plugin's config — filled from the consumer's registration, e.g.
+/// `zcli.builtin(.docs, .{ .formats = &.{ "markdown", "man" } })`.
+const Config = struct {
+    /// Formats to generate; each gets its own subdirectory under `output_dir`
+    /// when more than one is listed.
+    formats: []const []const u8 = &.{"markdown"},
+    output_dir: []const u8 = "docs",
+};
+
+const cfg = tool_config.config(Config);
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
-
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-
-    const output_dir = if (args.len > 1) args[1] else "docs";
-    // Remaining args are formats to generate (default: markdown)
-    const formats = if (args.len > 2) args[2..] else &[_][:0]const u8{"markdown"};
 
     const commands = registry.command_info;
     const global_opts = registry.global_options_info;
@@ -36,18 +44,18 @@ pub fn main(init: std.process.Init) !void {
     var stderr = std.Io.File.stderr().writer(io, &err_buf);
     const errw = &stderr.interface;
 
-    for (formats) |format| {
-        const dir = if (formats.len > 1)
-            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ output_dir, format })
+    for (cfg.formats) |format| {
+        const dir = if (cfg.formats.len > 1)
+            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cfg.output_dir, format })
         else
-            try allocator.dupe(u8, output_dir);
+            try allocator.dupe(u8, cfg.output_dir);
         defer allocator.free(dir);
 
         // Ensure the output directory exists before writing into it.
         try std.Io.Dir.cwd().createDirPath(io, dir);
 
         if (std.mem.eql(u8, format, "man")) {
-            try writeManPages(allocator, io, dir, commands, global_opts);
+            try writeManPages(allocator, io, dir, commands, global_opts, init.environ_map, errw);
         } else if (std.mem.eql(u8, format, "html")) {
             try writeHtml(allocator, io, dir, commands, global_opts);
         } else {
@@ -212,11 +220,39 @@ fn writeCommandMarkdown(allocator: std.mem.Allocator, io: std.Io, output_dir: []
 // Man pages
 // ============================================================================
 
-fn writeManPages(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo) !void {
-    // The `.TH` date field (mandoc warns when it is empty). Injected as a build
-    // option by `generateDocs`, so it stays out of the registry source (which
-    // must not carry a wall-clock date — see computeBuildDate).
-    const date = build_options.build_date;
+/// The man page `.TH` date (`YYYY-MM-DD`). Honors `SOURCE_DATE_EPOCH` (the
+/// reproducible-builds convention) when set, otherwise stamps the current
+/// time — the tool runs at build time, so "now" IS the build date. Computing
+/// it here rather than injecting a build option keeps the tool binary
+/// byte-stable across days (no daily compile-cache bust).
+fn buildDate(buf: []u8, io: std.Io, environ: *const std.process.Environ.Map, errw: *std.Io.Writer) ![]const u8 {
+    const epoch_secs: u64 = blk: {
+        if (environ.get("SOURCE_DATE_EPOCH")) |raw| {
+            const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+            if (std.fmt.parseInt(u64, trimmed, 10)) |secs| {
+                break :blk secs;
+            } else |_| {
+                try errw.print("warning: SOURCE_DATE_EPOCH is not a valid integer ('{s}'); using current time\n", .{trimmed});
+            }
+        }
+        const ns = std.Io.Clock.real.now(io).nanoseconds;
+        break :blk @intCast(@divTrunc(ns, std.time.ns_per_s));
+    };
+
+    const epoch_day = (std.time.epoch.EpochSeconds{ .secs = epoch_secs }).getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+    });
+}
+
+fn writeManPages(allocator: std.mem.Allocator, io: std.Io, output_dir: []const u8, commands: []const CommandInfo, global_opts: []const OptionInfo, environ: *const std.process.Environ.Map, errw: *std.Io.Writer) !void {
+    // The `.TH` date field (mandoc warns when it is empty).
+    var date_buf: [16]u8 = undefined;
+    const date = try buildDate(&date_buf, io, environ, errw);
     for (commands) |cmd| {
         if (cmd.hidden) continue;
         try writeCommandManPage(allocator, io, output_dir, cmd, global_opts, date);

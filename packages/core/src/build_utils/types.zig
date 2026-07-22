@@ -20,8 +20,8 @@ pub const PluginInfo = struct {
     import_name: []const u8,
     is_local: bool,
     dependency: ?*std.Build.Dependency,
-    /// Optional initialization code (from PluginConfig)
-    init: ?[]const u8 = null,
+    /// Optional rendered config literal (from PluginConfig.config)
+    config: ?[]const u8 = null,
     /// For plugins discovered in the *consuming project* (via `plugins_dir`):
     /// the project-relative source path, resolved with `b.path`. Null for
     /// framework built-ins, which live in the zcli package (`zcli_dep.path`).
@@ -158,10 +158,36 @@ pub const PluginConfig = struct {
     /// `builtin(.secrets, ...)` sets this to `linkSecretsBackend`; an external
     /// plugin package can export its own `PluginLinkFn` and pass it here.
     link: ?PluginLinkFn = null,
-    /// Optional initialization code to call on the plugin
-    /// Example: ".init(.{ .repo = \"user/repo\", .command_name = \"upgrade\" })"
-    /// Will generate: const plugin = @import("name")<init_code>;
-    init: ?[]const u8 = null,
+    /// The plugin's config, rendered as a Zig struct-literal source string by
+    /// `config()` — always set it via that helper, never a hand-written code
+    /// string. `generate()` splices the literal where the plugin consumes it:
+    /// a runtime plugin's `@import("name").init(<literal>)` call, and/or a
+    /// build tool's generated `tool_config` module. `builtin()` fills this in.
+    config: ?[]const u8 = null,
+    /// Build-time tool: when set, `generate()` compiles the plugin's tool
+    /// source as an executable for the build host and registers it as the
+    /// named build step. The tool imports `command_registry` (the consumer's
+    /// generated registry), `zcli`, and `tool_config` (the rendered `config`
+    /// literal). It is never linked into the shipped binary. For a built-in,
+    /// `builtin()` fills this in; for an external package this field is the
+    /// explicit opt-in, and the package must expose a module named `tool`.
+    tool: ?ToolConfig = null,
+    /// True for a plugin that ships only a build tool and no runtime module —
+    /// it contributes nothing to the generated registry or the binary. Set by
+    /// `builtin()` for build-only built-ins (e.g. `.docs`); for an external
+    /// package it is inferred from the absence of a `plugin` module.
+    build_only: bool = false,
+};
+
+/// A plugin's build-time tool: an executable compiled for the build host and
+/// wired as a top-level build step (see `PluginConfig.tool`).
+pub const ToolConfig = struct {
+    /// The step name, i.e. `zig build <step>`. Collisions with another
+    /// plugin's step (or a step the project registered before `generate()`)
+    /// stop the build loudly.
+    step: []const u8,
+    /// Step description shown by `zig build --list-steps`.
+    description: []const u8,
 };
 
 /// Built-in plugins that ship with zcli. Enable one with `builtin(.help, .{})`
@@ -174,6 +200,7 @@ pub const Builtin = enum {
     config,
     secrets,
     github_upgrade,
+    docs,
 
     /// Registration name, e.g. `zcli_help`.
     pub fn pluginName(comptime self: Builtin) []const u8 {
@@ -194,6 +221,23 @@ pub const Builtin = enum {
             else => null,
         };
     }
+
+    /// The build-time tool a built-in ships, or null for runtime-only plugins.
+    /// Only `docs` is a tool today; `builtin()` copies this onto the plugin
+    /// config's `.tool` field. Step names are fixed per plugin.
+    pub fn toolConfig(comptime self: Builtin) ?ToolConfig {
+        return switch (self) {
+            .docs => .{ .step = "docs", .description = "Generate documentation" },
+            else => null,
+        };
+    }
+
+    /// Whether the built-in ships ONLY a build tool — no runtime module, so
+    /// nothing of it is registered in the generated registry or linked into
+    /// the binary. Only `docs` is build-only today.
+    pub fn buildOnly(comptime self: Builtin) bool {
+        return self == .docs;
+    }
 };
 
 /// Register a built-in plugin in a `generate()` plugins list. Pass `.{}` as the
@@ -210,35 +254,41 @@ pub const Builtin = enum {
 /// // it's auto-discovered by dropping it under `.plugins_dir` (ADR-0006).
 /// ```
 ///
-/// The config struct is rendered to the plugin's `.init(.{ ... })` call at
-/// comptime, so every plugins-list entry is a plain `PluginConfig` and the
-/// whole `generate()` config stays an ordinary typed struct.
-pub fn builtin(comptime tag: Builtin, comptime config: anytype) PluginConfig {
+/// The config struct is rendered to a struct-literal source string (see
+/// `config()`) at comptime, so every plugins-list entry is a plain
+/// `PluginConfig` and the whole `generate()` config stays an ordinary typed
+/// struct.
+pub fn builtin(comptime tag: Builtin, comptime cfg: anytype) PluginConfig {
     return .{
         .name = tag.pluginName(),
         .path = tag.pluginPath(),
         .link = tag.linkHook(),
-        .init = comptime initString(config),
+        .config = comptime config(cfg),
+        .tool = tag.toolConfig(),
+        .build_only = tag.buildOnly(),
     };
 }
 
-/// Comptime-render a plugin config struct as the `.init(.{ ... })` code the
-/// generated registry applies to the plugin. An empty config means no init
-/// call at all (null).
-fn initString(comptime config: anytype) ?[]const u8 {
-    const T = @TypeOf(config);
+/// Comptime-render a plugin config struct as Zig struct-literal source text
+/// (`.{ ... }`) for `PluginConfig.config`. An empty config renders to null.
+///
+/// This is the only supported way to fill that field: the literal is spliced
+/// into generated source, where its destination gives it a result type — a
+/// runtime plugin's `init(config: Config)` call, or the typed accessor in a
+/// build tool's generated `tool_config` module. `builtin()` calls this for
+/// you; an external-package registration with config calls it directly:
+///
+/// ```zig
+/// .{ .name = "greet", .dependency = greet_dep, .config = zcli.config(.{ .loud = true }) },
+/// ```
+pub fn config(comptime cfg: anytype) ?[]const u8 {
+    const T = @TypeOf(cfg);
     const fields = switch (@typeInfo(T)) {
         .@"struct" => |s| s.fields,
         else => @compileError("plugin config must be a struct, got: " ++ @typeName(T)),
     };
     if (fields.len == 0) return null;
-
-    comptime var out: []const u8 = ".init(.{";
-    inline for (fields, 0..) |field, i| {
-        if (i > 0) out = out ++ ", ";
-        out = out ++ "." ++ field.name ++ " = " ++ renderConfigValue(@field(config, field.name));
-    }
-    return out ++ "})";
+    return comptime renderConfigValue(cfg);
 }
 
 /// Comptime-render a single plugin config value as Zig source text.
@@ -264,24 +314,34 @@ fn renderConfigValue(comptime value: anytype) []const u8 {
                 .array => |arr_info| arr_info.child == u8,
                 else => false,
             };
-            if (!is_string) @compileError("Unsupported pointer type in plugin config: " ++ @typeName(T));
-            // Escape the value so quotes, backslashes (e.g. Windows paths), and
-            // newlines don't break out of — or inject code after — the generated
-            // string literal. Mirrors escapeStringLiteral on the app-metadata path.
-            break :blk std.fmt.comptimePrint("\"{f}\"", .{std.zig.fmtString(@as([]const u8, value))});
+            if (is_string) {
+                // Escape the value so quotes, backslashes (e.g. Windows paths), and
+                // newlines don't break out of — or inject code after — the generated
+                // string literal. Mirrors escapeStringLiteral on the app-metadata path.
+                break :blk std.fmt.comptimePrint("\"{f}\"", .{std.zig.fmtString(@as([]const u8, value))});
+            }
+            // A list value, e.g. `.formats = &.{ "markdown", "man" }` — with no
+            // destination type the literal is an anonymous tuple, so `&` yields
+            // a single-item pointer to it. Reproduce the `&` and recurse; the
+            // tuple branch below renders the elements positionally.
+            if (ptr_info.size == .one) break :blk "&" ++ renderConfigValue(value.*);
+            @compileError("Unsupported pointer type in plugin config: " ++ @typeName(T));
         },
         .bool => std.fmt.comptimePrint("{}", .{value}),
         .int, .comptime_int => std.fmt.comptimePrint("{d}", .{value}),
         // A tag with no payload, e.g. `.verification = .checksum_only`.
         .enum_literal => "." ++ @tagName(value),
-        // A tag with a payload, e.g. `.verification = .{ .minisign = "KEY" }`
-        // — inferred (with no destination type) as an anonymous struct with
-        // one field named after the active union tag.
+        // Either a tag with a payload, e.g. `.verification = .{ .minisign =
+        // "KEY" }` — inferred (with no destination type) as an anonymous
+        // struct with one field named after the active union tag — or, when
+        // `is_tuple`, a list literal reached through the `&` branch above,
+        // rendered positionally.
         .@"struct" => |s| blk: {
             comptime var out: []const u8 = ".{";
             inline for (s.fields, 0..) |field, i| {
                 if (i > 0) out = out ++ ", ";
-                out = out ++ "." ++ field.name ++ " = " ++ renderConfigValue(@field(value, field.name));
+                if (!s.is_tuple) out = out ++ "." ++ field.name ++ " = ";
+                out = out ++ renderConfigValue(@field(value, field.name));
             }
             break :blk out ++ "}";
         },
@@ -291,31 +351,31 @@ fn renderConfigValue(comptime value: anytype) []const u8 {
 
 test "builtin() renders scalar config fields" {
     const cfg = builtin(.github_upgrade, .{ .repo = "owner/app", .command_name = "up", .inform_out_of_date = true });
-    try std.testing.expect(cfg.init != null);
+    try std.testing.expect(cfg.config != null);
     try std.testing.expectEqualStrings(
-        ".init(.{.repo = \"owner/app\", .command_name = \"up\", .inform_out_of_date = true})",
-        cfg.init.?,
+        ".{.repo = \"owner/app\", .command_name = \"up\", .inform_out_of_date = true}",
+        cfg.config.?,
     );
 }
 
-test "builtin() renders no init call for an empty config" {
+test "builtin() renders no config literal for an empty config" {
     const cfg = builtin(.help, .{});
-    try std.testing.expectEqual(@as(?[]const u8, null), cfg.init);
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.config);
 }
 
 test "builtin() renders a union-payload config field (e.g. github_upgrade's verification: .{ .minisign = ... })" {
     // The config passed to builtin() is `anytype`, so `.{ .minisign = "KEY" }`
     // has no destination type and is inferred as a one-field anonymous struct,
     // not the union it will later coerce to. renderConfigValue must reproduce
-    // that literal text verbatim so the generated `init(.{ ... })` call, which
-    // DOES have the union's Config type available, coerces it correctly.
+    // that literal text verbatim so the generated splice site, which DOES have
+    // the union's Config type available, coerces it correctly.
     const cfg = builtin(.github_upgrade, .{
         .repo = "owner/app",
         .verification = .{ .minisign = "KEY" },
     });
     try std.testing.expectEqualStrings(
-        ".init(.{.repo = \"owner/app\", .verification = .{.minisign = \"KEY\"}})",
-        cfg.init.?,
+        ".{.repo = \"owner/app\", .verification = .{.minisign = \"KEY\"}}",
+        cfg.config.?,
     );
 }
 
@@ -325,8 +385,8 @@ test "builtin() renders a bare enum-literal config field (e.g. .checksum_only)" 
         .verification = .checksum_only,
     });
     try std.testing.expectEqualStrings(
-        ".init(.{.repo = \"owner/app\", .verification = .checksum_only})",
-        cfg.init.?,
+        ".{.repo = \"owner/app\", .verification = .checksum_only}",
+        cfg.config.?,
     );
 }
 
@@ -339,8 +399,19 @@ test "builtin() escapes string config values (backslash, quote, newline)" {
         .note = "he said \"hi\"\n",
     });
     try std.testing.expectEqualStrings(
-        ".init(.{.key_path = \"C:\\\\Users\\\\me\", .note = \"he said \\\"hi\\\"\\n\"})",
-        cfg.init.?,
+        ".{.key_path = \"C:\\\\Users\\\\me\", .note = \"he said \\\"hi\\\"\\n\"}",
+        cfg.config.?,
+    );
+}
+
+test "config() renders a string-list field positionally (e.g. docs' .formats = &.{ ... })" {
+    // `&.{ "a", "b" }` with no destination type is a single-item pointer to an
+    // anonymous tuple; the rendered `&.{...}` text coerces to a slice later,
+    // at the typed splice site.
+    const literal = config(.{ .formats = &.{ "markdown", "man" }, .output_dir = "out" });
+    try std.testing.expectEqualStrings(
+        ".{.formats = &.{\"markdown\", \"man\"}, .output_dir = \"out\"}",
+        literal.?,
     );
 }
 
@@ -359,13 +430,6 @@ pub const GenerateConfig = struct {
     plugins_dir: ?[]const u8 = null,
     shared_modules: ?[]const SharedModule = null,
     command_configs: ?[]const CommandConfig = null,
-};
-
-/// Configuration for `generateDocs()`.
-pub const DocsConfig = struct {
-    /// Formats to generate; each gets its own subdirectory under `output_dir`.
-    formats: []const []const u8 = &.{"markdown"},
-    output_dir: []const u8 = "docs",
 };
 
 /// Configuration for `addCommandTests()` (the scaffolded-project unit-test
@@ -414,6 +478,27 @@ test "Builtin.linkHook: only secrets declares a native-link hook" {
             try testing.expect(hook != null);
         } else {
             try testing.expectEqual(@as(?PluginLinkFn, null), hook);
+        }
+    }
+}
+
+test "builtin(.docs): build-only, wires the docs tool step" {
+    const cfg = builtin(.docs, .{ .formats = &.{"markdown"} });
+    try testing.expectEqualStrings("zcli_docs", cfg.name);
+    try testing.expect(cfg.build_only);
+    try testing.expectEqualStrings("docs", cfg.tool.?.step);
+    try testing.expectEqualStrings(".{.formats = &.{\"markdown\"}}", cfg.config.?);
+}
+
+test "Builtin: only docs is build-only / declares a tool" {
+    inline for (@typeInfo(Builtin).@"enum".fields) |field| {
+        const tag = @field(Builtin, field.name);
+        if (tag == .docs) {
+            try testing.expect(comptime tag.buildOnly());
+            try testing.expect(comptime tag.toolConfig() != null);
+        } else {
+            try testing.expect(comptime !tag.buildOnly());
+            try testing.expect(comptime tag.toolConfig() == null);
         }
     }
 }

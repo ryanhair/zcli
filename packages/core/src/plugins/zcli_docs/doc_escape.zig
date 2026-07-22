@@ -1,12 +1,12 @@
-//! Escaping helpers for the documentation generator (`doc_gen_main.zig`).
+//! Escaping helpers for the documentation generator (`tool.zig`).
 //!
 //! Each output format has characters that would otherwise corrupt the document
 //! or, in HTML, inject markup — so every piece of command metadata is routed
 //! through one of these before it is written. This lives in its own file
 //! (importing only `std`) so the rules are unit-tested by `zig build test`,
-//! which cannot compile `doc_gen_main.zig` itself: that file needs a generated
-//! `command_registry` module that only exists inside a consuming project's
-//! build.
+//! which cannot compile `tool.zig` itself: that file needs the generated
+//! `command_registry` and `tool_config` modules that only exist inside a
+//! consuming project's build.
 
 const std = @import("std");
 const Writer = std.Io.Writer;

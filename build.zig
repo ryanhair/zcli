@@ -247,13 +247,13 @@ fn expose(b: *std.Build, name: []const u8, module: *std.Build.Module) void {
 // package: a file can only belong to one module).
 const zcli_core = @import("zcli_core");
 pub const generate = zcli_core.generate;
-pub const generateDocs = zcli_core.generateDocs;
 pub const addCommandTests = zcli_core.addCommandTests;
 pub const GenerateError = zcli_core.GenerateError;
 pub const GenerateConfig = zcli_core.GenerateConfig;
-pub const DocsConfig = zcli_core.DocsConfig;
 pub const CommandTestsConfig = zcli_core.CommandTestsConfig;
 pub const PluginConfig = zcli_core.PluginConfig;
+pub const ToolConfig = zcli_core.ToolConfig;
 pub const Builtin = zcli_core.Builtin;
 pub const builtin = zcli_core.builtin;
+pub const config = zcli_core.config;
 pub const SharedModule = zcli_core.SharedModule;

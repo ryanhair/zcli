@@ -71,9 +71,10 @@ fn generatePluginImports(writer: anytype, plugins: []const PluginInfo, allocator
         const import_lit = try escapeStringLiteral(allocator, plugin_info.import_name);
         defer allocator.free(import_lit);
 
-        if (plugin_info.init) |init_code| {
-            // Plugin has initialization code - call it on import
-            try writer.print("const {s} = @import(\"{s}\"){s};\n", .{ plugin_var_name, import_lit, init_code });
+        if (plugin_info.config) |config_literal| {
+            // Plugin has config — apply it via the plugin's comptime init().
+            // The literal gets its result type from init's Config parameter.
+            try writer.print("const {s} = @import(\"{s}\").init({s});\n", .{ plugin_var_name, import_lit, config_literal });
         } else {
             // Normal plugin without config - import directly
             try writer.print("const {s} = @import(\"{s}\");\n", .{ plugin_var_name, import_lit });

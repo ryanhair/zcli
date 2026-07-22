@@ -343,48 +343,61 @@ scaffolded project; see `projects/zcli/src/commands/init.zig` for the generated
 `build.zig` template. For the testing API itself (`runCommand`, VTerm
 assertions, integration/E2E tiers), see [TESTING.md](TESTING.md).
 
-## Documentation Generation (`generateDocs`)
+## Plugin Build Tools (`PluginConfig.tool`)
 
-`zcli.generateDocs` (`packages/core/src/build_utils/main.zig`) wires a `zig
-build docs` step that renders command help (from the same `meta`/`Args`/
-`Options` data the registry uses) to files on disk. It is opt-in and kept off
-the default `install`/`test` steps, so an ordinary `zig build` produces no doc
-output.
+A plugin may ship a **build-time tool** (ADR-0030): an executable compiled for
+the build host, wired by `generate()` as a top-level build step, and never
+linked into the shipped binary. The tool's root module gets three imports:
+
+- `command_registry` — the consumer's generated registry (comptime command
+  metadata: `command_info`, `global_options_info`, `app_name`/`app_version`/
+  `app_description`),
+- `zcli` — the framework module,
+- `tool_config` — a generated module exposing the plugin's config through a
+  typed accessor: `pub fn config(comptime Config: type) Config`. The tool
+  calls it with its own `Config` type, which gives the rendered literal its
+  result type (the same trick the registry's `init(<literal>)` call uses).
+
+How a tool is declared depends on the registration model:
+
+- **Built-in:** `builtin()` fills in `PluginConfig.tool` from the `Builtin`
+  table; the tool source is `tool.zig` next to the plugin's source. Step names
+  are fixed per plugin.
+- **External package:** the consumer opts in explicitly with
+  `.tool = .{ .step = ..., .description = ... }`, and the package exposes its
+  tool's root source as a module named `tool` (declared without a target —
+  it is resolved to the build host here).
+
+A plugin can be runtime-only, build-only (`PluginConfig.build_only` — nothing
+registered in the registry, nothing in the binary), or both. Tool steps are
+kept off the default `install`/`test` steps, so an ordinary `zig build` never
+builds or runs them. A step-name collision (with another tool or a step the
+project registered before `generate()`) stops the build loudly.
+
+## Documentation Generation (the `docs` plugin)
+
+`zcli_docs` is a build-only plugin wrapping the documentation generator tool
+(`packages/core/src/plugins/zcli_docs/tool.zig`). It renders command help
+(from the same `meta`/`Args`/`Options` data the registry uses) to files on
+disk via `zig build docs`:
 
 ```zig
-pub fn generateDocs(
-    b: *std.Build,
-    registry_module: *std.Build.Module,
-    zcli_dep: *std.Build.Dependency,
-    config: zcli.DocsConfig,
-) void
+// build.zig — in the generate() plugins list
+.plugins = &.{
+    zcli.builtin(.help, .{}),
+    // Single format (default: markdown), default output_dir "docs"
+    zcli.builtin(.docs, .{}),
+    // Or: multiple formats — each gets its own subdirectory
+    zcli.builtin(.docs, .{
+        .formats = &.{ "markdown", "man" },
+        .output_dir = "docs",
+    }),
+},
 ```
 
-`DocsConfig`:
-
-```zig
-pub const DocsConfig = struct {
-    // Formats to generate; each gets its own subdirectory under output_dir.
-    formats: []const []const u8 = &.{"markdown"},
-    output_dir: []const u8 = "docs",
-};
-```
-
-```zig
-// build.zig — after cmd_registry is created by generate()
-// Single format (default: markdown)
-zcli.generateDocs(b, cmd_registry, zcli_dep, .{});
-
-// Multiple formats — each gets its own subdirectory
-zcli.generateDocs(b, cmd_registry, zcli_dep, .{
-    .formats = &.{ "markdown", "man" },
-    .output_dir = "docs",
-});
-```
-
-Run it with `zig build docs`. Under the hood this builds and runs a small
-host-target `zcli-doc-gen` executable (`packages/core/src/doc_gen_main.zig`)
-against your `cmd_registry` module.
+The man-page `.TH` date honors `SOURCE_DATE_EPOCH` (reproducible builds) and
+otherwise stamps the tool's run time — the tool runs at build time, so no
+date is ever baked into a compiled artifact.
 
 ## Registry Generation Process
 
