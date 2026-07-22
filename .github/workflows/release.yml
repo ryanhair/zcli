@@ -368,14 +368,31 @@ jobs:
         env:
           LIB_VERSION: ${{ needs.setup.outputs.lib_version }}
           STAGING_BRANCH: ${{ needs.setup.outputs.staging_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -eo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # The branch push is the ONLY operation that needs the deploy key:
+          # main is protected by the Main Protection ruleset and the deploy key
+          # is its bypass actor (`origin` is the SSH remote configured by the
+          # checkout's ssh-key). See #721.
           git push origin HEAD:main
+
+          # Push the tags via an HTTPS remote authenticated with GITHUB_TOKEN,
+          # NOT the deploy key. A deploy-key tag push re-triggers this very
+          # workflow's `on: push: tags` path — deploy-key pushes are outside
+          # GitHub's GITHUB_TOKEN recursion guard — spawning a duplicate
+          # release run per tag that then queues at the environment gate. Tags
+          # aren't ruleset-protected, so the token can push them, and
+          # token-pushed tags do NOT re-trigger workflows. See #721 / #728.
           git tag "v$LIB_VERSION"
           git tag "zcli-v$LIB_VERSION"
-          git push origin "v$LIB_VERSION" "zcli-v$LIB_VERSION"
+          git remote add token-origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git push token-origin "v$LIB_VERSION" "zcli-v$LIB_VERSION"
+
           # Clean up the scratch branch now that main + the real tags carry
           # this commit. Best-effort: a failure here shouldn't fail the run.
           git push origin --delete "$STAGING_BRANCH" || true
