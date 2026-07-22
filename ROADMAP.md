@@ -15,7 +15,7 @@ ships when the maintainer judges the frozen surfaces have settled — not before
 
 ## 1. Where zcli is today
 
-Current release: **v0.21.0** (Zig 0.16.0, Linux/macOS/Windows).
+Current release: **v0.22.0** (Zig 0.16.0, Linux/macOS/Windows).
 
 zcli is past the experimental stage. The parts an app is actually built *on* have
 been stable across several releases and are exercised by the framework's own
@@ -201,7 +201,7 @@ the remaining churn is scoped (§3). To insulate yourself pre-1.0:
 - **Pin a release tag** with its immutable hash — never track `main` in a project
   you ship:
   ```bash
-  zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.21.0.tar.gz
+  zig fetch --save https://github.com/ryanhair/zcli/archive/refs/tags/v0.22.0.tar.gz
   ```
   (`main`'s hash changes every commit; that's for trying the development branch,
   not depending on it.)

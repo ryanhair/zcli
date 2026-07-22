@@ -4,7 +4,7 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
-## Unreleased
+## v0.22.0 — 2026-07-22
 
 ### Changed (breaking)
 - **Doc generation is now a plugin; `generateDocs()`/`DocsConfig` are removed** (ADR-0030). The documentation generator moved out of the core build API into `zcli_docs`, the first **build-only** plugin: it wires the `zig build docs` step and ships nothing in your binary. Migration is one line — delete the `zcli.generateDocs(b, cmd_registry, zcli_dep, .{...})` call and add `zcli.builtin(.docs, .{ .formats = ..., .output_dir = ... })` to the `generate()` plugins list (same formats, same output layout, byte-identical output). Under the hood this ships a general capability: any plugin (built-in or external package) can declare a build-time tool via `PluginConfig.tool` — a host-compiled executable with comptime access to the generated registry, registered as a named build step and never linked into the shipped binary. Two smaller API notes: `PluginConfig.init` (a raw code-string field) is replaced by `PluginConfig.config`, filled via the new `zcli.config(...)` helper (`zcli.builtin(...)` callers are unaffected), and man-page `.TH` dates are now stamped when the tool runs — still honoring `SOURCE_DATE_EPOCH` — instead of being injected as a build option.
