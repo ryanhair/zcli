@@ -3,10 +3,12 @@
 //! Each output format has characters that would otherwise corrupt the document
 //! or, in HTML, inject markup — so every piece of command metadata is routed
 //! through one of these before it is written. This lives in its own file
-//! (importing only `std`) so the rules are unit-tested by `zig build test`,
-//! which cannot compile `tool.zig` itself: that file needs the generated
-//! `command_registry` and `tool_config` modules that only exist inside a
-//! consuming project's build.
+//! (importing only `std`) so the rules can be unit-tested character by
+//! character, independently of the generator that applies them. `tool.zig`
+//! is unit-tested too, against the hand-written `test_registry.zig` /
+//! `test_tool_config.zig` fixtures that stand in for the `command_registry` and
+//! `tool_config` modules a consuming project's build would generate — so both
+//! the rules and their application are covered by `zig build test`.
 
 const std = @import("std");
 const Writer = std.Io.Writer;

@@ -73,6 +73,13 @@ pub fn build(b: *std.Build) void {
         "src/build_utils.zig", // Standalone utility (has its own tests)
         "src/plugins/zcli_docs/doc_escape.zig", // Doc-generator escaping rules (std-only, unit-tested here)
         "src/usage.zig", // Shared usage/synopsis conventions (std-only, unit-tested here)
+        // The perf harness. Listed here purely so it is COMPILED by `zig build
+        // test`: reachable only from benchmark_runner.zig, it sat outside every
+        // aggregator and both `benchmark` and `regression` silently stopped
+        // building at the 0.16 migration without a single check going red
+        // (#738). Its own test block runs 10 iterations — negligible cost, and
+        // it is the tripwire that keeps the two perf steps honest.
+        "src/benchmark.zig",
     };
 
     // Real-socket http.Client tests live in their own binary, built ReleaseSafe.
@@ -221,6 +228,41 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // The zcli_docs generator (`zig build docs`). Its tool.zig imports two
+    // modules that normally only exist inside a CONSUMING project's build —
+    // `command_registry` (emitted by zcli.generate) and `tool_config`
+    // (emitted by wireToolStep) — which is why 704 lines of shipped,
+    // README-advertised feature code was neither compiled nor tested by CI
+    // (#739). Both are just modules with a handful of public decls, so hand
+    // written fixtures stand in for them here and the generator's real output
+    // gets asserted in-process. The `docs` CI step still runs the tool for
+    // real against examples/tasks; this is the fast half that catches format
+    // regressions, not only compile breaks.
+    {
+        const fixture_registry = b.addModule("test-docs-registry", .{
+            .root_source_file = b.path("src/plugins/zcli_docs/test_registry.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        fixture_registry.addImport("zcli", zcli_module);
+
+        const fixture_config = b.addModule("test-docs-tool-config", .{
+            .root_source_file = b.path("src/plugins/zcli_docs/test_tool_config.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const docs_tool_imports = [_]TestDep{
+            .{ .name = "zcli", .module = zcli_module },
+            .{ .name = "command_registry", .module = fixture_registry },
+            .{ .name = "tool_config", .module = fixture_config },
+        } ++ dep_imports;
+
+        const run_tests = addTestRun(b, "test-", "src/plugins/zcli_docs/tool.zig", target, optimize, &docs_tool_imports);
+        test_plugins_step.dependOn(&run_tests.step);
+        test_step.dependOn(&run_tests.step);
+    }
+
     // Sequential test execution (separate from parallel execution above)
     // This creates a completely separate dependency chain for sequential execution
     const all_test_files = core_test_files ++ integration_test_files ++ security_test_files;
@@ -238,7 +280,14 @@ pub fn build(b: *std.Build) void {
         test_sequential_step.dependOn(final_step);
     }
 
-    // Benchmark step
+    // Benchmark + regression steps. Both run the same executable
+    // (benchmark_runner.zig); `--regression` picks the gating mode. Its module
+    // needs `dep_imports` because benchmark.zig reaches command_parser.zig,
+    // which sits in the same dependency web as the rest of core — omitting them
+    // is half of why these two steps had not compiled since the 0.16 migration
+    // (#738).
+    const perf_module_imports = dep_imports;
+
     const benchmark_exe = b.addExecutable(.{
         .name = "benchmark",
         .root_module = b.createModule(.{
@@ -247,6 +296,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast, // Always optimize benchmarks
         }),
     });
+    for (perf_module_imports) |dep| benchmark_exe.root_module.addImport(dep.name, dep.module);
 
     const run_benchmark = b.addRunArtifact(benchmark_exe);
     const benchmark_step = b.step("benchmark", "Run performance benchmarks");
@@ -261,9 +311,12 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    for (perf_module_imports) |dep| regression_exe.root_module.addImport(dep.name, dep.module);
 
     const run_regression = b.addRunArtifact(regression_exe);
     run_regression.addArg("--regression");
+    // Timing measurements are the point, so never serve a cached "success".
+    run_regression.has_side_effects = true;
     const regression_step = b.step("regression", "Run performance regression tests");
     regression_step.dependOn(&run_regression.step);
 }
