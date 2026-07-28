@@ -9,6 +9,7 @@
 //! recurring — the budgets below can only gate what still builds.
 
 const std = @import("std");
+const ui = @import("ui");
 const command_parser = @import("command_parser.zig");
 const command_discovery = @import("build_utils/command_discovery.zig");
 
@@ -237,6 +238,51 @@ fn benchErrorPath(allocator: std.mem.Allocator, io: std.Io) !void {
 /// does NOT use it. Each benchmark parses with `smp_allocator` internally (see
 /// `benchmark` above) so the allocator under measurement is fixed and matches a
 /// release build's, regardless of what the caller happens to hand us.
+
+// ---------------------------------------------------------------------------
+// Layout / render (#776)
+// ---------------------------------------------------------------------------
+
+/// A table-shaped tree: `rows` rows of `cols` text cells in a bordered column.
+/// Rebuilt every iteration because that is what an immediate-mode frame does —
+/// the frame arena resets wholesale between frames, so timing a pre-built tree
+/// would measure a case the renderer never sees.
+fn buildTable(a: std.mem.Allocator, rows: usize, cols: usize) !ui.Node {
+    const row_nodes = try a.alloc(ui.Node, rows);
+    for (0..rows) |r| {
+        const cells = try a.alloc(ui.Node, cols);
+        // Deliberately multibyte on some cells: an all-ASCII table takes the
+        // fast path in `displayWidth` and hides the grapheme-walk cost.
+        for (0..cols) |c| cells[c] = ui.text(.{}, if ((r + c) % 3 == 0) "caf\u{e9}-\u{65e5}\u{672c}\u{8a9e}" else "value-1234");
+        row_nodes[r] = try ui.row(a, .{ .gap = 1 }, cells);
+    }
+    return ui.column(a, .{ .border = .rounded, .width = .{ .len = 100 } }, row_nodes);
+}
+
+fn benchLayoutTable(allocator: std.mem.Allocator, io: std.Io) !void {
+    _ = io;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rctx = ui.RenderCtx{ .allocator = a };
+    const node = try buildTable(a, 50, 4);
+    const size = ui.measure(&rctx, &node, .{ .max_w = 100, .max_h = 60 });
+    std.mem.doNotOptimizeAway(&size);
+}
+
+fn benchRenderTable(allocator: std.mem.Allocator, io: std.Io) !void {
+    _ = io;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rctx = ui.RenderCtx{ .allocator = a };
+    const node = try buildTable(a, 50, 4);
+    const size = ui.measure(&rctx, &node, .{ .max_w = 100, .max_h = 60 });
+    var surf = try ui.Surface.init(allocator, size.w, size.h);
+    defer surf.deinit();
+    try ui.render(&rctx, &node, surf.root());
+}
+
 pub fn runBenchmarks(allocator: std.mem.Allocator, io: std.Io) !void {
     var stdout_buffer: [1024]u8 = undefined;
     // Streaming, never positional — see the note on `zcli.Stdio.init`: a
@@ -268,6 +314,10 @@ pub fn runBenchmarks(allocator: std.mem.Allocator, io: std.Io) !void {
 
     // Run benchmarks
     try results.append(allocator, try benchmark(io, "Parse Simple Args", iterations, benchParseSimpleArgs));
+    // Two orders of magnitude fewer iterations: one table frame is ~1000x an
+    // arg parse, so 10k would dominate wall clock without sharpening anything.
+    try results.append(allocator, try benchmark(io, "Layout Table 50x4", 100, benchLayoutTable));
+    try results.append(allocator, try benchmark(io, "Render Table 50x4", 100, benchRenderTable));
     try results.append(allocator, try benchmark(io, "Parse Complex Args", iterations, benchParseComplexArgs));
     try results.append(allocator, try benchmark(io, "Parse Options", iterations, benchParseOptions));
     try results.append(allocator, try benchmark(io, "Parse Mixed Args/Options", iterations / 10, benchParseMixed));

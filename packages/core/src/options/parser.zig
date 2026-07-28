@@ -203,8 +203,13 @@ pub fn parseOptionsWithMeta(
     // bare `-` sentinel is left in place), the short-bundle state machine, and
     // the next-token value lookahead. This parser only resolves names to
     // fields and applies values.
-    var option_counts = std.StringHashMap(u32).init(allocator);
-    defer option_counts.deinit();
+    // One slot per option field, indexed by the field's position. The keys were
+    // always comptime-known — every lookup sits inside an `inline for` over the
+    // fields — so the hash map was hashing and probing for a value the compiler
+    // could index directly (#777). Also removes the only allocation on the
+    // duplicate-detection path, and with it the `error.OutOfMemory` that every
+    // caller had to thread through for bookkeeping that cannot fail.
+    var option_counts = [_]u32{0} ** @typeInfo(OptionsType).@"struct".fields.len;
 
     var tok = tokenizer.Tokenizer(tokenizer.OptionsSpec(OptionsType, meta)){ .args = args };
     parse: while (tok.next()) |token| {
@@ -245,8 +250,8 @@ pub fn parseOptionsWithMeta(
     // Fold CLI-set fields into `provided`. `option_counts` is keyed by field
     // name for every option the CLI touched (values, booleans, negations), so
     // its membership is exactly "the CLI set this field".
-    inline for (struct_info.fields, 0..) |field, i| {
-        if (option_counts.contains(field.name)) provided[i] = true;
+    inline for (struct_info.fields, 0..) |_, i| {
+        if (option_counts[i] > 0) provided[i] = true;
     }
 
     // Finalize array fields by converting ArrayLists to slices. If a later
@@ -422,7 +427,7 @@ fn suggestLongOptions(
     }
     if (count == 0) return .{};
 
-    std.sort.pdq(Scored, scored[0..count], {}, struct {
+    std.sort.insertion(Scored, scored[0..count], {}, struct {
         fn lessThan(_: void, a: Scored, b: Scored) bool {
             return a.distance < b.distance;
         }
@@ -460,19 +465,18 @@ fn booleanWithValueError(
 /// otherwise it sets the field's usage count to 1.
 fn markBooleanFlagOnce(
     diag: ?*?ZcliDiagnostic,
-    option_counts: *std.StringHashMap(u32),
-    field_name: []const u8,
+    count: *u32,
     option_name: []const u8,
     is_short: bool,
 ) !void {
-    if ((option_counts.get(field_name) orelse 0) >= 1) {
+    if (count.* >= 1) {
         if (diag) |d| d.* = .{ .OptionDuplicate = .{
             .option_name = option_name,
             .is_short = is_short,
         } };
         return error.DuplicateOption;
     }
-    try option_counts.put(field_name, 1);
+    count.* = 1;
 }
 
 /// Apply a tokenized long option (`--option`, `--option=value`) to the result
@@ -483,7 +487,7 @@ fn applyLongOption(
     comptime OptionsType: type,
     comptime meta: anytype,
     result: *OptionsType,
-    option_counts: *std.StringHashMap(u32),
+    option_counts: *[@typeInfo(OptionsType).@"struct".fields.len]u32,
     long: anytype,
     array_lists: anytype,
     allocator: std.mem.Allocator,
@@ -507,14 +511,14 @@ fn applyLongOption(
             // field's count — is a usage error, not last-wins).
             if (comptime utils.isBooleanFlag(field.type)) {
                 if (option_value) |val| return booleanWithValueError(diag, option_name, false, val);
-                try markBooleanFlagOnce(diag, option_counts, field.name, option_name, false);
+                try markBooleanFlagOnce(diag, &option_counts[i], option_name, false);
                 @field(result, field.name) = true;
                 return;
             }
 
             // Track usage count for duplicate detection (use field name for tracking)
-            const count = option_counts.get(field.name) orelse 0;
-            try option_counts.put(field.name, count + 1);
+            const count = option_counts[i];
+            option_counts[i] = count + 1;
 
             // The value: attached (`--opt=val`) or the next argv token the
             // tokenizer consumed under the shared lookahead rule; neither
@@ -560,7 +564,7 @@ fn applyLongOption(
             if (utils.negatedLongNameMatchesField(meta, field.name, option_name)) {
                 found = true;
                 if (option_value) |val| return booleanWithValueError(diag, option_name, false, val);
-                try markBooleanFlagOnce(diag, option_counts, field.name, option_name, false);
+                try markBooleanFlagOnce(diag, &option_counts[i], option_name, false);
                 @field(result, field.name) = false;
                 return;
             }
@@ -587,7 +591,7 @@ fn applyShortBundle(
     comptime OptionsType: type,
     comptime meta: anytype,
     result: *OptionsType,
-    option_counts: *std.StringHashMap(u32),
+    option_counts: *[@typeInfo(OptionsType).@"struct".fields.len]u32,
     shorts: anytype,
     array_lists: anytype,
     allocator: std.mem.Allocator,
@@ -610,11 +614,11 @@ fn applyShortBundle(
             // A boolean flag char: the spec classified it against the same
             // first-matching field this loop finds.
             const char = chars[ci];
-            inline for (@typeInfo(OptionsType).@"struct".fields) |field| {
+            inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, fi| {
                 if (comptime utils.isBooleanFlag(field.type)) {
                     if (comptime utils.shortCharForField(meta, field.name)) |expected_char| {
                         if (expected_char == char) {
-                            try markBooleanFlagOnce(diag, option_counts, field.name, chars[ci .. ci + 1], true);
+                            try markBooleanFlagOnce(diag, &option_counts[fi], chars[ci .. ci + 1], true);
                             @field(result, field.name) = true;
                             break;
                         }
@@ -629,8 +633,8 @@ fn applyShortBundle(
                     if (comptime utils.shortCharForField(meta, field.name)) |expected_char| {
                         if (expected_char == char) {
                             // Track usage count for duplicate detection
-                            const count = option_counts.get(field.name) orelse 0;
-                            try option_counts.put(field.name, count + 1);
+                            const count = option_counts[i];
+                            option_counts[i] = count + 1;
 
                             // The value: the rest of the token (`-ovalue`) or the
                             // next argv token the tokenizer consumed; neither
