@@ -172,6 +172,21 @@ pub const SpinnerConfig = struct {
 /// interleaves bytes mid-escape-sequence and garbles the terminal. To surface a
 /// message while a spinner runs, use `setMessage`, or finish the spinner
 /// (`succeed`/`fail`/`stop`/…) before writing to the stream yourself.
+///
+/// This is a contract, not an enforcement, and stays that way deliberately
+/// (#790, item 6). A Spinner *borrows* `*std.Io.Writer`; it does not own the
+/// stream, and that same writer is `context.stderr()` — reachable by the
+/// command, by every plugin hook, and by the framework's own diagnostic paths.
+/// Enforcing exclusivity means one of two things, both worse than the bug it
+/// prevents: put a mutex inside `std.Io.Writer` (a lock on the hot path of
+/// every write in the framework, for a hazard that exists only while a spinner
+/// is live), or have the Spinner swap the context's stderr for a trap sink
+/// while it runs (which makes a mid-spinner `context.fail(...)` — a real thing
+/// commands do — *lose* its message instead of interleaving it). A
+/// detect-and-complain variant needs the writer to carry an "owned by" flag
+/// only this package sets: the same coupling in a thinner disguise. The
+/// mitigation that actually works is the API — `setMessage` covers the case
+/// people want, and finishing the spinner is one call.
 pub const Spinner = struct {
     io: std.Io,
     theme: ThemeContext,

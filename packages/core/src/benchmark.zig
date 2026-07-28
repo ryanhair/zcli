@@ -239,7 +239,10 @@ fn benchErrorPath(allocator: std.mem.Allocator, io: std.Io) !void {
 /// release build's, regardless of what the caller happens to hand us.
 pub fn runBenchmarks(allocator: std.mem.Allocator, io: std.Io) !void {
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    // Streaming, never positional — see the note on `zcli.Stdio.init`: a
+    // positional writer pwrites from its own zero-based offset and clobbers a
+    // shared-fd append (`zig build benchmark >>run.log`) from byte 0.
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
@@ -283,7 +286,8 @@ pub fn runBenchmarks(allocator: std.mem.Allocator, io: std.Io) !void {
 /// Regression test to ensure performance doesn't degrade
 pub fn runRegressionTests(io: std.Io) !void {
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    // Streaming, never positional (see `zcli.Stdio.init`).
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 

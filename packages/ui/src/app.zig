@@ -247,6 +247,17 @@ pub const App = struct {
     /// to `ui.panic`) satisfies the check yet still strands the terminal on a
     /// panic. The error text spells that out so a hand-rolled handler doesn't
     /// silently reopen the hole.
+    ///
+    /// Deliberately not tightened (#790, item 5). The only strictly stronger
+    /// comptime check available is identity — requiring `root.panic` to *be*
+    /// `ui.panic` — and that trades a soft hole for a hard wall: it would reject
+    /// every legitimate custom handler (one that writes a crash report, reports
+    /// telemetry, or restores some other global first and then delegates), which
+    /// are exactly the handlers an app has a real reason to write. There is no
+    /// comptime predicate for "this function eventually calls
+    /// `terminal.guard.restore()`". A guarantee that actually holds has to come
+    /// from the runtime side instead — see #759 — so this stays an existence
+    /// check with an error message that tells the truth about its own limits.
     fn assertPanicInstalled() void {
         // `zig test` roots at the test runner (no panic hook) and builds Apps
         // only headlessly (fixed `term_size`, no real terminal to strand), so

@@ -187,6 +187,35 @@ jobs:
           fi
           echo "output contract holds: no raw std.debug.print/std.process.exit in runtime code"
 
+      # Shared-offset invariant (ADR-0014, originally P0 #205, regressed and
+      # re-fixed in #763): an inherited stdout/stderr/stdin is frequently a
+      # *shared* regular-file fd (`cmd >log`, `cmd 2>>build.log`, CI log
+      # capture). `File.writer()`/`File.reader()` build a POSITIONAL stream that
+      # pwrites/preads from its own offset starting at 0, ignoring the fd's
+      # shared offset — so it overwrites a concurrent appender's bytes from the
+      # top of the file, or re-reads input the parent already consumed. Only
+      # `writerStreaming`/`readerStreaming` (plain write(2)/read(2)) use the
+      # kernel's shared offset. See the long comment on `zcli.Stdio.init`.
+      #
+      # Scope is library/CLI source only — packages/*/src and projects/*/src.
+      # `packages/*/examples/` is deliberately out of scope: those are
+      # standalone demos that own their own streams, and widening this to them
+      # is a separate change.
+      - name: No positional writers/readers on inherited stdio (shared-offset contract)
+        shell: bash
+        run: |
+          offenders=$(grep -rnE '\.std(out|err|in)\(\)\.(writer|reader)\(' \
+               --include='*.zig' \
+               packages/*/src/ projects/*/src/ \
+             | grep -vE ':[0-9]+:[[:space:]]*(///?|\\\\)' \
+             || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::use writerStreaming()/readerStreaming() on inherited stdio — .writer()/.reader() are positional and corrupt a shared-fd append (see zcli.Stdio.init):"
+            echo "$offenders"
+            exit 1
+          fi
+          echo "shared-offset contract holds: no positional stdio writers/readers in library source"
+
   # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
   # ship in lockstep and MUST declare the same version — the CLI's `--version`
   # reads its own zon, the website + library tag read the root's. The README's

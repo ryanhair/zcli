@@ -142,6 +142,26 @@ fn generateNoCommandHelp(
     try printAvailableCommands(context, writer, available_commands);
 }
 
+/// Longest attempted-command echo, in bytes, before it is cut short with an
+/// ellipsis. The echo exists so the user can see *which* command wasn't found;
+/// `notes x x x …` ×500 used to join and print all 500 tokens, at which point it
+/// has stopped quoting the mistake and started reprinting the command line
+/// (#790). Comfortably longer than any real command path, short enough to stay
+/// on a line or two.
+const max_echo_bytes: usize = 96;
+
+/// `s` cut to `max_echo_bytes`, backing up to a UTF-8 boundary so a multi-byte
+/// codepoint is never split in half. The caller appends the ellipsis (it knows
+/// whether anything was dropped), which keeps this allocation-free.
+fn truncateForEcho(s: []const u8) []const u8 {
+    if (s.len <= max_echo_bytes) return s;
+    var end: usize = max_echo_bytes;
+    // Continuation bytes are 0b10xxxxxx; step back off any of them so `end`
+    // lands on a leading byte.
+    while (end > 0 and (s[end] & 0xC0) == 0x80) : (end -= 1) {}
+    return s[0..end];
+}
+
 /// Generate help text for a genuinely unknown command (case 1).
 fn generateCommandNotFoundHelp(
     context: anytype,
@@ -153,9 +173,14 @@ fn generateCommandNotFoundHelp(
     // Error header. `attempted_command` is the raw, mistyped argv joined back
     // together — sanitize it so a crafted argument carrying an ANSI/OSC
     // escape sequence (e.g. a title-bar set or clipboard write) can't reach
-    // the terminal raw.
+    // the terminal raw, and truncate it so it stays a quotation of what the
+    // user typed instead of a transcript of it (#790).
+    //
+    // Truncated only for display: suggestion matching below still sees the full
+    // string, so a long-but-genuine typo is still matched on all of its text.
     try writer.print("Error: Unknown command '", .{});
-    try zcli.writeSanitized(writer, attempted_command);
+    try zcli.writeSanitized(writer, truncateForEcho(attempted_command));
+    if (attempted_command.len > max_echo_bytes) try writer.print("...", .{});
     try writer.print("'\n\n", .{});
 
     // Safety check for available_commands
@@ -664,4 +689,61 @@ test "onError sanitizes a terminal-escape-laced attempted command" {
     const out = aw.written();
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "]0;pwned") != null); // text survives, minus the escape
+}
+
+test "onError case 1: a huge command path is truncated, not dumped whole" {
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const Ctx = zcli.TestContext(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    stdio.stderr_override = &aw.writer;
+
+    const environ = std.process.Environ.Map.init(allocator);
+    var ctx = Ctx.init(allocator, std.testing.io, &stdio, &environ);
+    defer ctx.deinit();
+
+    // 500 tokens, the shape of `notes x x x …` — the whole point of #790.
+    const many = try allocator.alloc([]const u8, 500);
+    for (many) |*seg| seg.* = "x";
+    ctx.command_path = many;
+    ctx.plugin_command_info = &.{
+        .{ .path = &.{"search"}, .description = "Search things" },
+    };
+
+    _ = try onError(&ctx, error.CommandNotFound);
+    try ctx.stderr().flush();
+
+    const out = aw.written();
+    // Cut short with an ellipsis rather than reprinting the command line.
+    try std.testing.expect(std.mem.indexOf(u8, out, "...'") != null);
+    // The echoed text is bounded even though the input was ~1000 bytes. Slack
+    // covers the framing ("Error: Unknown command '" + "...'\n\n").
+    const open = std.mem.indexOf(u8, out, "'").?;
+    const close = std.mem.indexOfPos(u8, out, open + 1, "'").?;
+    try std.testing.expect(close - open <= max_echo_bytes + 8);
+}
+
+test "truncateForEcho: leaves short input alone and never splits a codepoint" {
+    // Short enough: returned verbatim, no allocation, no ellipsis implied.
+    try std.testing.expectEqualStrings("users list", truncateForEcho("users list"));
+
+    // One ASCII byte then a run of 3-byte codepoints (\u{4e2d} = e4 b8 ad),
+    // which offsets the run so byte `max_echo_bytes` lands *inside* a codepoint
+    // — a naive cut would split it and emit a mojibake tail. (A uniform-width
+    // run would align, since 96 divides by 1, 2, 3 and 4.)
+    const wide = "a" ++ "\u{4e2d}" ** 60;
+    const cut = truncateForEcho(wide);
+    try std.testing.expect(cut.len < max_echo_bytes); // backed up off the split
+    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
+
+    // Arbitrary bytes, not just valid UTF-8, reach here from argv: a hostile
+    // all-continuation-byte string must terminate, not loop or overrun.
+    const junk = [_]u8{0x80} ** 200;
+    try std.testing.expectEqual(@as(usize, 0), truncateForEcho(&junk).len);
 }

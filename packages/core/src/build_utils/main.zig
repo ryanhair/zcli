@@ -381,6 +381,7 @@ pub fn generate(b: *std.Build, exe: *std.Build.Step.Compile, zcli_dep: *std.Buil
         .app_name = config.app_name,
         .app_version = app_version,
         .app_description = config.app_description,
+        .response_files = config.response_files,
     };
 
     const registry_module = try buildWithPlugins(b, exe, zcli_dep, zcli_module, build_config);

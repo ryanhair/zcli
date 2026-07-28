@@ -1469,3 +1469,102 @@ test "routing: a root index still receives the `--` its own parser needs (#743)"
     try testing.expect(Greet.executed);
     try testing.expect(!RootWithPositional.ran);
 }
+
+// ---------------------------------------------------------------------------
+// Response-file (@file) expansion is opt-in (#764)
+// ---------------------------------------------------------------------------
+
+/// `test_config` deliberately does not set `response_files`, so this exercises
+/// the *default* an app gets when its build.zig says nothing — the whole point
+/// of the flip.
+const rf_off_config = test_config;
+
+/// The same app with expansion turned on, so the tests below can show the gate
+/// is load-bearing in both directions. Without this pair, the off-by-default
+/// test would also pass if the flag were ignored and the feature simply
+/// deleted.
+const rf_on_config = zcli.Config{
+    .app_name = "test",
+    .app_version = "1.0.0",
+    .app_description = "Pipeline test CLI",
+    .response_files = true,
+};
+
+test "response files: a leading-@ argument is an ordinary positional by default (#764)" {
+    const App = zcli.Registry.init(rf_off_config)
+        .register("echo", Echo)
+        .build();
+
+    // The npm-scope case the default was flipped for. `@scope/pkg` is a valid
+    // response token by shape (leading `@`, length > 1), so with expansion on
+    // the framework would try to read the file `scope/pkg`, fail with ENOENT,
+    // and exit 2 — which is exactly what every zcli app used to do. Reaching
+    // `execute` with the token intact is the fix.
+    Echo.last = "";
+    const r = try runCapture(App, &.{ "echo", "@scope/pkg" });
+    defer r.deinit(testing.allocator);
+
+    try testing.expect(r.err == null);
+    try testing.expectEqualStrings("@scope/pkg", Echo.last);
+
+    // Nothing was read from disk, so nothing was reported about a response file.
+    try testing.expect(!contains(r.stderr, "response file"));
+}
+
+test "response files: an absolute @path is not a file read by default (#764)" {
+    const App = zcli.Registry.init(rf_off_config)
+        .register("echo", Echo)
+        .build();
+
+    // The security half of #764: with expansion on, this reads the file and
+    // injects its lines as arguments. Off, it is just a string.
+    //
+    // `/etc/hostname` exists on most Linux (a leaked gate would expand it to the
+    // hostname) and usually not on macOS (a leaked gate would ENOENT into
+    // `error.ResponseFileUnreadable`). Both assertions below fail either way, so
+    // this does not depend on the file being present — only the failure mode
+    // differs by platform.
+    Echo.last = "";
+    const r = try runCapture(App, &.{ "echo", "@/etc/hostname" });
+    defer r.deinit(testing.allocator);
+
+    try testing.expect(r.err == null);
+    try testing.expectEqualStrings("@/etc/hostname", Echo.last);
+}
+
+test "response files: opting in turns expansion back on, and names -- as the escape (#764)" {
+    const App = zcli.Registry.init(rf_on_config)
+        .register("echo", Echo)
+        .build();
+
+    // Same token, opted-in app: now it *is* a file reference, so a nonexistent
+    // path is reported CLI misuse instead of reaching the command. This is what
+    // proves the flag is wired through to the gate rather than merely emitted —
+    // if `response_files` were ignored, this would run `echo` and pass `@`-text
+    // through like the tests above.
+    Echo.last = "";
+    const r = try runCapture(App, &.{ "echo", "@no-such-response-file.txt" });
+    defer r.deinit(testing.allocator);
+
+    try testing.expect(r.err != null);
+    try testing.expectEqual(error.ResponseFileUnreadable, r.err.?);
+    try testing.expectEqualStrings("", Echo.last); // never executed
+    try testing.expect(contains(r.stderr, "cannot read response file '@no-such-response-file.txt'"));
+    // The acceptance criterion: the escape is discoverable from the error, not
+    // only from the source.
+    try testing.expect(contains(r.stderr, "put it after '--'"));
+}
+
+test "response files: -- passes a literal @value through even when opted in (#764)" {
+    const App = zcli.Registry.init(rf_on_config)
+        .register("echo", Echo)
+        .build();
+
+    // The escape the error message advertises has to actually work.
+    Echo.last = "";
+    const r = try runCapture(App, &.{ "echo", "--", "@scope/pkg" });
+    defer r.deinit(testing.allocator);
+
+    try testing.expect(r.err == null);
+    try testing.expectEqualStrings("@scope/pkg", Echo.last);
+}

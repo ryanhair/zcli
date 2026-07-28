@@ -50,6 +50,13 @@ pub const Config = struct {
     app_name: []const u8,
     app_version: []const u8,
     app_description: []const u8,
+    /// Whether a leading-`@` argv token is expanded as a response file
+    /// (`myapp @args.txt`). Off by default — see the header of
+    /// `response_file.zig` for why: `@` is an ordinary argument character
+    /// (`@scope/pkg`, `@handle`, `user@host`) and expansion is an
+    /// arbitrary-file-read primitive. Set from `GenerateConfig.response_files`;
+    /// the generated registry emits it as a literal.
+    response_files: bool = false,
 };
 
 /// Command entry for the registry
