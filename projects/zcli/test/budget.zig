@@ -33,26 +33,35 @@ const zcli_exe = build_options.zcli_exe;
 
 /// Ceiling on the stripped ReleaseSafe binary, in bytes.
 ///
-/// Measured: 2,030,216 bytes (macOS arm64, ReleaseSafe + strip); the static
-/// musl Linux artifact the release ships is the same order (~2 MB, see
-/// build.zig's strip comment). 4 MiB is a deliberate ~2x ceiling.
-///
 /// This is the load-bearing budget of the two, and the one to trust on a noisy
 /// machine: binary size is *deterministic*. For a given Zig version, target and
 /// optimize mode it does not vary run to run at all — no warm-up, no scheduler,
-/// no co-tenant. It can be gated far more tightly than any timing, and 2x is
-/// that tighter multiple: the only headroom it needs is for legitimate growth
-/// between the day the budget is set and the day someone revisits it.
+/// no co-tenant. It can be gated far more tightly than any timing.
 ///
 /// The regression it exists to catch is per-command binary growth (issue #730
 /// measured 8-11 KB per command) and accidental linkage of something large.
-/// Both blow past 2x long before they blow past 10x, and a 10x ceiling would
-/// let the binary quadruple in silence.
 ///
-/// Raising this is a legitimate outcome of a feature that needs the space —
-/// but it should be a deliberate edit with a reason, which is the whole point
+/// FIRST-RUN TOLERANCE — THIS NUMBER WANTS TIGHTENING.
+/// 8 MiB is not the budget this check deserves; it is a deliberately slack
+/// starting value, slack for one specific reason. The only measurement we have
+/// is 2,030,216 bytes on macOS arm64, and the `perf` job that ENFORCES this
+/// runs on x86_64 Linux. Code size is deterministic per target but not
+/// portable across targets: a different ISA, libc and Zig backend can shift it
+/// substantially, so a 2x ceiling derived from an arm64 macOS number would be
+/// derived from the wrong platform. Landing a gate that red-lines on its first
+/// CI run is how perf gates get deleted, so this errs slack on purpose.
+///
+/// The `binary size:` line the test prints on every run is what closes this
+/// out: once a few green runs establish the real Linux figure, replace 8 MiB
+/// with ~2x THAT number. 2x is the right long-term multiple precisely because
+/// size does not vary run to run — the only headroom needed is for legitimate
+/// growth between budget edits — and per-command creep blows past 2x long
+/// before it approaches the ~4x this currently sits at.
+///
+/// Raising it later is a legitimate outcome of a feature that needs the space,
+/// but it should be a deliberate edit with a reason — which is the whole point
 /// of it being a constant in a tracked file.
-const max_binary_bytes: u64 = 4 * 1024 * 1024;
+const max_binary_bytes: u64 = 8 * 1024 * 1024;
 
 /// Ceiling on process startup: spawn `zcli --version`, wait for exit.
 ///
@@ -77,6 +86,11 @@ const max_binary_bytes: u64 = 4 * 1024 * 1024;
 /// config I/O, a comptime table demoted to runtime initialization — raises the
 /// floor along with everything else, so the minimum still moves. Treat the
 /// size budget above as the primary gate and this as the coarse backstop.
+///
+/// The same "measured on macOS, enforced on Linux" caveat as the size budget
+/// applies, but it does not need its own tolerance: 25x already absorbs a
+/// platform shift, and if anything Linux spawns faster (no code-signature
+/// validation on exec).
 const max_startup_ns: u64 = 100 * std.time.ns_per_ms;
 
 /// How many spawns to take the minimum over. Enough that at least one lands in

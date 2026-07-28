@@ -536,29 +536,48 @@ jobs:
       # filter, which covers packages/** (where the generator lives) as well as
       # the examples themselves.
       #
-      # Format-level assertions live in the generator's unit tests
-      # (packages/core/src/plugins/zcli_docs/tool.zig, in `zig build test`).
-      # What this step adds is the real end-to-end path: a real generated
-      # registry, a real tool binary, real files on disk.
+      # Exhaustive format assertions — including the markdown-`|`, roff-`\&` and
+      # HTML-entity escaping, driven by a deliberately adversarial fixture
+      # registry — live in the generator's unit tests
+      # (packages/core/src/plugins/zcli_docs/tool.zig, under `zig build test`).
+      # What this step adds is the real end-to-end path those cannot reach: a
+      # real generated registry, a real tool binary, real files on disk.
       - name: Generate docs (type-checks + runs the zcli_docs build tool)
         working-directory: examples/tasks
         shell: bash
         run: |
           rm -rf docs
           zig build docs
-          # Exiting 0 is not proof it produced anything — assert the tree it
-          # claims to write. A docs step that silently emits nothing is the same
+          # Exiting 0 is not proof it produced anything, and existing is not
+          # proof it produced anything USEFUL — so assert both. A docs step that
+          # silently emits nothing (or a well-formed empty shell) is the same
           # class of failure as a test tier that silently skips, which is what
           # the ZCLI_REQUIRE_* flags elsewhere in this file exist to prevent.
-          missing=
-          for f in docs/markdown/README.md docs/markdown/sprint/create.md \
-                   docs/html/index.html docs/html/sprint/create.html; do
-            [ -s "$f" ] || missing="$missing $f"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::zig build docs exited 0 but these files are missing or empty:$missing"
-            exit 1
-          fi
+          #
+          # Each string pins one structural property a format regression would
+          # break, chosen to assert SHAPE rather than inventory so that ordinary
+          # additions to the tasks example don't churn this list:
+          #   markdown index   - GFM table row + relative link to a nested page
+          #   markdown page    - the shared `usage` synopsis convention, incl.
+          #                      `[NAME]` bracketing for an optional positional
+          #   html index       - the nested-page link the HTML index emits
+          #   html nested page - the `../` breadcrumb depth maths, the easiest
+          #                      thing here to get silently wrong
+          fail=0
+          check() { # check <file> <literal string>
+            if [ ! -s "$1" ]; then
+              echo "::error::zig build docs exited 0 but $1 is missing or empty"
+              fail=1
+            elif ! grep -qF -- "$2" "$1"; then
+              echo "::error::$1 no longer contains: $2"
+              fail=1
+            fi
+          }
+          check docs/markdown/README.md        '| [`tasks sprint create`](sprint/create.md) |'
+          check docs/markdown/sprint/create.md '    tasks sprint create [NAME]'
+          check docs/html/index.html           'href="sprint/create.html"'
+          check docs/html/sprint/create.html   '<a href="../index.html">'
+          [ "$fail" -eq 0 ] || exit 1
           echo "docs generated: $(find docs -type f | wc -l) files across markdown + html"
 
   # The registry is one comptime fold sharing one branch-quota budget, and the
@@ -673,13 +692,19 @@ jobs:
   # measure: all of packages/** plus projects/zcli/**.
   #
   # The budgets themselves (packages/core/src/benchmark.zig,
-  # projects/zcli/test/budget.zig) carry their measured baselines and the
-  # reasoning for their headroom. Timings get ~25x ceilings, binary size ~2x:
-  # size is deterministic for a given Zig version/target/optimize mode, so it is
-  # the gate that can be held tight, while any wall-clock number on a shared
-  # runner needs room for co-tenant CPU steal. Loose enough not to flake, tight
-  # enough to catch the order-of-magnitude regressions worth gating — a flaky
-  # perf gate gets disabled, and a disabled gate is worth less than none.
+  # projects/zcli/test/budget.zig) carry their measured baselines, their exact
+  # per-budget multiples, and the reasoning behind each. In short: the four
+  # sub-0.1us parse budgets share a 2.0us absolute floor (~25-33x) because at
+  # that scale the ceiling is set by measurement noise rather than by the work;
+  # `parse_options` does ~7x the work and scales with it instead (~10x); and the
+  # binary-size budget is the outlier in the other direction — size is
+  # deterministic for a given Zig version/target/optimize mode, so it is the one
+  # gate that can eventually be held near 2x. It starts slack on purpose: the
+  # baseline was taken on macOS arm64 and this job enforces it on x86_64 Linux,
+  # so it wants tightening once a few green runs print the real Linux figure.
+  # Loose enough not to flake, tight enough to catch the order-of-magnitude
+  # regressions worth gating — a flaky perf gate gets disabled, and a disabled
+  # gate is worth less than none.
   perf:
     name: performance budgets
     runs-on: ubuntu-latest

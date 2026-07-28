@@ -231,7 +231,12 @@ fn benchErrorPath(allocator: std.mem.Allocator, io: std.Io) !void {
     }
 }
 
-/// Run all benchmarks
+/// Run all benchmarks.
+///
+/// `allocator` is for the results list only — the measured code deliberately
+/// does NOT use it. Each benchmark parses with `smp_allocator` internally (see
+/// `benchmark` above) so the allocator under measurement is fixed and matches a
+/// release build's, regardless of what the caller happens to hand us.
 pub fn runBenchmarks(allocator: std.mem.Allocator, io: std.Io) !void {
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
@@ -286,9 +291,20 @@ pub fn runRegressionTests(io: std.Io) !void {
 
     // Budgets in microseconds, per parse, ReleaseFast.
     //
-    // These are CEILINGS, not targets. Observed on an M-series dev box, the
-    // five parses average roughly 0.07 / 0.08 / 0.52 / 0.06 / 0.06 μs, putting
-    // every budget below 10-30x above the measurement.
+    // These are CEILINGS, not targets. Observed on an M-series dev box:
+    //
+    //   parse_simple_args    0.07 μs  →  2.0 μs ceiling  (~28x)
+    //   parse_complex_args   0.08 μs  →  2.0 μs ceiling  (~25x)
+    //   parse_options        0.52 μs  →  5.0 μs ceiling  (~10x)
+    //   parse_enum           0.06 μs  →  2.0 μs ceiling  (~33x)
+    //   error_path           0.06 μs  →  2.0 μs ceiling  (~33x)
+    //
+    // The multiple is not uniform, and that is intentional rather than sloppy:
+    // the four sub-0.1μs cases share one absolute floor (2.0 μs) because at
+    // that scale the ceiling is set by measurement noise, not by the work —
+    // scaling a 0.06 μs baseline by a "consistent" multiple would just encode
+    // scheduler jitter as policy. `parse_options` does ~7x the work of the
+    // others, so its budget scales with the work instead and lands at ~10x.
     //
     // PROVISIONAL BASELINE: those figures were taken on a machine under heavy
     // load (several parallel builds, plus a wedged system daemon pinning a
@@ -298,25 +314,26 @@ pub fn runRegressionTests(io: std.Io) !void {
     // that account — a degraded machine can only have made the baseline look
     // worse than it is.
     //
-    // The generous multiple is the point, because the noisy case is what
-    // decides whether a perf gate survives. Timing these same parses while the
-    // machine was busy compiling took "Parse Complex Args" from 0.08μs to
-    // 0.91μs — an 11x swing from CPU contention alone, with no code change. A
-    // shared GitHub runner is exactly that environment (co-tenant steal, no
-    // thermal guarantee), so every sub-0.1μs budget is set to 2.0μs: ~2x above
-    // the worst contention figure actually observed, and still ~25x the
-    // baseline. The build serializes the two halves of `zig build regression`
-    // so that contention is at least not self-inflicted (see build.zig), but
-    // the budget has to survive a runner we do not control either way.
+    // The 2.0μs floor is where it is because the noisy case, not the slow case,
+    // is what decides whether a perf gate survives. Timing these same parses
+    // while the machine was busy compiling took "Parse Complex Args" from
+    // 0.08μs to 0.91μs — an 11x swing from CPU contention alone, with no code
+    // change. A shared GitHub runner is exactly that environment (co-tenant
+    // steal, no thermal guarantee), so 2.0μs sits ~2x above the worst
+    // contention figure actually observed. The build serializes the two halves
+    // of `zig build regression` so that contention is at least not
+    // self-inflicted (see build.zig), but the budget has to survive a runner we
+    // do not control either way.
     //
-    // A ceiling this loose still catches everything worth gating: an accidental
+    // Ceilings this loose still catch everything worth gating: an accidental
     // O(n²) scan, an allocation added to the per-parse path, a comptime table
     // demoted to a runtime loop. Those move these numbers by two orders of
     // magnitude, not by 30% — and a gate that flakes gets deleted, at which
     // point it catches nothing at all.
     //
-    // Adding one: measure locally with `zig build benchmark`, then set the
-    // budget to ~25x the reported average, rounded to something legible.
+    // Adding one: measure locally with `zig build benchmark`, then take
+    // whichever is larger of the 2.0μs noise floor and ~10x the reported
+    // average, rounded to something legible.
     const thresholds = .{
         .parse_simple_args = 2.0,
         .parse_complex_args = 2.0,
