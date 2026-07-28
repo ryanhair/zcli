@@ -59,6 +59,14 @@ pub const widgets = @import("widgets.zig");
 /// `context.uiFullScreen` (enforced at compile time); optional for hybrid.
 pub const panic = App.panic;
 
+/// The process-global terminal restore guard (re-exported from `terminal`).
+/// A session arms it on takeover; `restore()` replays the registered blob —
+/// show cursor, leave the alt-screen, undo raw mode — and is a no-op when
+/// nothing armed it. Every exit path that skips `defer app.deinit()` must call
+/// it, and `std.process.exit` always skips defers: that is how
+/// `context.exit()` avoids stranding the shell in the alt-screen (#732).
+pub const guard = terminal.guard;
+
 /// Whether the terminal supports unicode glyphs (re-exported from `terminal`
 /// for App/RenderCtx configuration — `App.Options.unicode`).
 pub const unicodeSupported = terminal.unicodeSupported;
