@@ -165,20 +165,12 @@ fn generateCommandNotFoundHelp(
         return;
     }
 
-    // Convert hierarchical commands to flat strings for suggestion processing.
-    // Both the suggestion list and the returned strings live in the arena-per-
-    // command allocator, so nothing here needs an explicit free.
-    var flat_commands = std.ArrayList([]const u8).empty;
-    defer flat_commands.deinit(context.allocator);
-    for (available_commands) |cmd_parts| {
-        const joined_cmd = try std.mem.join(context.allocator, " ", cmd_parts);
-        try flat_commands.append(context.allocator, joined_cmd);
-    }
-
-    // Find similar commands.
+    // Find similar commands. The hierarchical paths are scored as-is —
+    // `findBestSuggestions` flattens each candidate through one reused
+    // scratch buffer and only allocates the handful it actually returns.
     const suggestions = try findBestSuggestions(
         attempted_command,
-        flat_commands.items,
+        available_commands,
         context.allocator,
         3, // max suggestions
         3, // max edit distance
@@ -212,8 +204,14 @@ fn printAvailableCommands(
 ) !void {
     try writer.print("Available commands:\n", .{});
     for (available_commands) |cmd_parts| {
-        const joined = try std.mem.join(context.allocator, " ", cmd_parts);
-        try writer.print("    {s}\n", .{joined});
+        // Written segment-by-segment rather than joined into the arena first:
+        // the joined form existed only to be printed immediately.
+        try writer.writeAll("    ");
+        for (cmd_parts, 0..) |part, i| {
+            if (i != 0) try writer.writeAll(" ");
+            try writer.writeAll(part);
+        }
+        try writer.writeAll("\n");
     }
     try writer.print("\nRun '{s} --help' to see all available commands.\n", .{context.app_name});
 }
@@ -229,7 +227,7 @@ fn printAvailableCommands(
 /// noise, so neither is offered.
 fn findBestSuggestions(
     input: []const u8,
-    commands: []const []const u8,
+    commands: []const []const []const u8,
     allocator: std.mem.Allocator,
     max_suggestions: usize,
     max_distance: usize,
@@ -238,8 +236,18 @@ fn findBestSuggestions(
         return allocator.alloc([]const u8, 0);
     }
 
+    // A candidate is scored against its flattened form, but that form is only
+    // ever read by `editDistance` — so every candidate is flattened through
+    // one scratch buffer sized to the longest, instead of one allocation per
+    // candidate. Only the few suggestions actually returned get their own
+    // storage, below.
+    var scratch_len: usize = 0;
+    for (commands) |cmd_parts| scratch_len = @max(scratch_len, joinedLen(cmd_parts));
+    const scratch = try allocator.alloc(u8, scratch_len);
+    defer allocator.free(scratch);
+
     const ScoredCommand = struct {
-        command: []const u8,
+        index: usize,
         distance: usize,
 
         fn lessThan(_: void, a: @This(), b: @This()) bool {
@@ -251,7 +259,8 @@ fn findBestSuggestions(
     defer allocator.free(scored);
 
     var valid_count: usize = 0;
-    for (commands) |cmd| {
+    for (commands, 0..) |cmd_parts, cmd_index| {
+        const cmd = joinInto(scratch, cmd_parts);
         if (cmd.len == 0) continue;
 
         const distance = levenshtein.editDistance(input, cmd);
@@ -261,7 +270,7 @@ fn findBestSuggestions(
         // is Levenshtein-close but semantically irrelevant — `tre` suggests
         // `tree` (1 edit), not also `rm` (2 edits on a 3-char input) (#402).
         if (distance <= max_distance and distance < input.len and distance * 2 < input.len + 1) {
-            scored[valid_count] = .{ .command = cmd, .distance = distance };
+            scored[valid_count] = .{ .index = cmd_index, .distance = distance };
             valid_count += 1;
         }
     }
@@ -275,13 +284,38 @@ fn findBestSuggestions(
     const result_count = @min(valid_count, max_suggestions);
     var result = try allocator.alloc([]const u8, result_count);
     for (0..result_count) |i| {
-        // Dupe: the source strings live in a caller buffer (`flat_commands`)
-        // that may outlive this call only by statement ordering. Copying into
-        // the arena makes the returned slice self-owning.
-        result[i] = try allocator.dupe(u8, scored[i].command);
+        // Flattened into the caller's allocator only here, for the handful
+        // that are actually returned — the scratch buffer above is reused and
+        // freed, so the returned slice has to own its storage.
+        result[i] = try std.mem.join(allocator, " ", commands[scored[i].index]);
     }
 
     return result;
+}
+
+/// Byte length of `joinInto(_, parts)`: every part plus one separator between
+/// each adjacent pair. Matches `std.mem.join(_, " ", parts).len`.
+fn joinedLen(parts: []const []const u8) usize {
+    if (parts.len == 0) return 0;
+    var n: usize = parts.len - 1;
+    for (parts) |part| n += part.len;
+    return n;
+}
+
+/// Join `parts` with single spaces into `buf`, returning the filled prefix.
+/// `buf` must hold at least `joinedLen(parts)` bytes. Byte-for-byte identical
+/// to `std.mem.join(_, " ", parts)`, without the allocation.
+fn joinInto(buf: []u8, parts: []const []const u8) []const u8 {
+    var n: usize = 0;
+    for (parts, 0..) |part, i| {
+        if (i != 0) {
+            buf[n] = ' ';
+            n += 1;
+        }
+        @memcpy(buf[n..][0..part.len], part);
+        n += part.len;
+    }
+    return buf[0..n];
 }
 
 // Tests
@@ -291,14 +325,14 @@ test "findBestSuggestions: drops candidates needing more than half the input rew
     const a = arena.allocator();
 
     // `tre` → `tree` is 1 edit; `rm` is 2 edits on a 3-char input — noise.
-    const commands = [_][]const u8{ "tree", "rm", "init" };
+    const commands = [_][]const []const u8{ &.{"tree"}, &.{"rm"}, &.{"init"} };
     const suggestions = try findBestSuggestions("tre", &commands, a, 3, 3);
     try std.testing.expectEqual(@as(usize, 1), suggestions.len);
     try std.testing.expectEqualStrings("tree", suggestions[0]);
 
     // Genuine ambiguity survives: `stat` → `start` (1) and `status` (2) both
     // clear the half-input bar on a 4-char input.
-    const commands2 = [_][]const u8{ "start", "status" };
+    const commands2 = [_][]const []const u8{ &.{"start"}, &.{"status"} };
     const suggestions2 = try findBestSuggestions("stat", &commands2, a, 3, 3);
     try std.testing.expectEqual(@as(usize, 2), suggestions2.len);
 }
@@ -310,7 +344,7 @@ test "not-found plugin structure" {
 test "find best suggestions" {
     const allocator = std.testing.allocator;
 
-    const commands = [_][]const u8{ "list", "search", "create", "delete", "status" };
+    const commands = [_][]const []const u8{ &.{"list"}, &.{"search"}, &.{"create"}, &.{"delete"}, &.{"status"} };
 
     // Test with typo "serach" -> should suggest "search"
     const suggestions = try findBestSuggestions("serach", &commands, allocator, 3, 3);
@@ -323,7 +357,7 @@ test "find best suggestions" {
 test "find best suggestions with empty input" {
     const allocator = std.testing.allocator;
 
-    const commands = [_][]const u8{ "list", "search", "create" };
+    const commands = [_][]const []const u8{ &.{"list"}, &.{"search"}, &.{"create"} };
 
     const suggestions = try findBestSuggestions("", &commands, allocator, 3, 3);
     defer freeSuggestions(allocator, suggestions);
@@ -334,7 +368,7 @@ test "find best suggestions with empty input" {
 test "find best suggestions with no commands" {
     const allocator = std.testing.allocator;
 
-    const commands = [_][]const u8{};
+    const commands = [_][]const []const u8{};
 
     const suggestions = try findBestSuggestions("test", &commands, allocator, 3, 3);
     defer freeSuggestions(allocator, suggestions);
@@ -348,11 +382,60 @@ test "find best suggestions guards short inputs against noise" {
     // `i` is edit-distance 3 from both "init" and "run", but the
     // `distance < input.len` guard rejects both — a single letter should not
     // suggest anything. Without the guard this returned two false positives.
-    const commands = [_][]const u8{ "init", "run" };
+    const commands = [_][]const []const u8{ &.{"init"}, &.{"run"} };
     const suggestions = try findBestSuggestions("i", &commands, allocator, 3, 3);
     defer freeSuggestions(allocator, suggestions);
 
     try std.testing.expect(suggestions.len == 0);
+}
+
+test "findBestSuggestions: scores a nested path by its flattened form" {
+    const allocator = std.testing.allocator;
+
+    // The candidates arrive as path segments now; `remote ad` must still match
+    // `remote add` across the segment boundary, and the returned string is the
+    // flattened command the user can actually retype.
+    const commands = [_][]const []const u8{ &.{ "remote", "add" }, &.{ "remote", "remove" }, &.{"status"} };
+    const suggestions = try findBestSuggestions("remote ad", &commands, allocator, 3, 3);
+    defer freeSuggestions(allocator, suggestions);
+
+    try std.testing.expectEqual(@as(usize, 1), suggestions.len);
+    try std.testing.expectEqualStrings("remote add", suggestions[0]);
+}
+
+test "joinInto/joinedLen match std.mem.join" {
+    // The comptime block is the load-bearing half: it is evaluated inside the
+    // compiler, so the flattening stays verified even on a host where the test
+    // binary itself cannot be executed.
+    comptime {
+        var buf: [32]u8 = undefined;
+        std.debug.assert(std.mem.eql(u8, joinInto(&buf, &.{ "remote", "add" }), "remote add"));
+        std.debug.assert(std.mem.eql(u8, joinInto(&buf, &.{"status"}), "status"));
+        std.debug.assert(std.mem.eql(u8, joinInto(&buf, &.{}), ""));
+        std.debug.assert(std.mem.eql(u8, joinInto(&buf, &.{ "a", "", "b" }), "a  b"));
+        std.debug.assert(joinedLen(&.{ "remote", "add" }) == 10);
+        std.debug.assert(joinedLen(&.{"status"}) == 6);
+        std.debug.assert(joinedLen(&.{}) == 0);
+        std.debug.assert(joinedLen(&.{ "a", "", "b" }) == 4);
+    }
+
+    // And cross-checked against the allocating original at runtime.
+    const allocator = std.testing.allocator;
+    const cases = [_][]const []const u8{
+        &.{ "remote", "add" },
+        &.{"status"},
+        &.{},
+        &.{ "a", "", "b" },
+        &.{ "one", "two", "three" },
+    };
+    for (cases) |parts| {
+        const expected = try std.mem.join(allocator, " ", parts);
+        defer allocator.free(expected);
+        const buf = try allocator.alloc(u8, joinedLen(parts));
+        defer allocator.free(buf);
+        try std.testing.expectEqualStrings(expected, joinInto(buf, parts));
+        try std.testing.expectEqual(expected.len, joinedLen(parts));
+    }
 }
 
 test "isCommandGroup detects prefixes but not leaves or unknowns" {
