@@ -36,6 +36,7 @@ const plugin_types = @import("../plugin_types.zig");
 const option_utils = @import("../options/utils.zig");
 const paths = @import("paths.zig");
 const builder = @import("builder.zig");
+const quota = @import("quota.zig");
 
 const CommandEntry = builder.CommandEntry;
 const comptimeJoinPath = paths.comptimeJoinPath;
@@ -51,9 +52,10 @@ pub fn validateComposition(
 ) void {
     comptime {
         // The pass is O(commands × options) with pairwise path comparisons on
-        // top; give it headroom well above the 1000 default so growing an app
-        // never trips the quota inside a validation loop.
-        @setEvalBranchQuota(1_000_000);
+        // top, so the budget is sized from the composition it is about to walk
+        // rather than from a flat constant that a big-enough app outgrows
+        // (#730).
+        @setEvalBranchQuota(quota.forCommands(cmd_entries.len + plugin_cmd_entries.len));
 
         // ── Per-module contract, over the WHOLE composition ─────────────────
         // File-based and plugin commands get the identical contract check, so
@@ -232,7 +234,9 @@ test "validateComposition accepts a well-formed composition" {
 // whole composition can reveal.)
 //
 //   Duplicate command path: users add
-//     two entries registered at the same path
+//     two entries registered at the same path — including an alias that
+//     collides with another command (alias entries are ordinary entries in
+//     `cmd_entries`; the builder no longer duplicates this scan, #730)
 //
 //   Plugin command conflicts with existing command: version
 //     a plugin `commands.version` while src/commands/version.zig exists

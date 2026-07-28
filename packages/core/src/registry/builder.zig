@@ -2,9 +2,9 @@ const std = @import("std");
 
 const paths = @import("paths.zig");
 const compiled = @import("compiled.zig");
+const quota = @import("quota.zig");
 const splitPath = paths.splitPath;
 const buildAliasPath = paths.buildAliasPath;
-const pathsEqual = paths.pathsEqual;
 const CompiledRegistry = compiled.CompiledRegistry;
 
 /// Compute command entries including aliases
@@ -14,25 +14,30 @@ pub fn computeEntriesWithAliases(
     comptime Module: type,
 ) []const CommandEntry {
     comptime {
+        // The whole `init().register()…build()` chain in zcli_generated.zig is
+        // ONE comptime evaluation sharing ONE branch budget, and this is the
+        // only framework code every link of the fold runs through. Raising the
+        // ceiling here — sized to the composition accumulated so far — is what
+        // keeps the fold from dying partway down the chain (#730).
+        // `@setEvalBranchQuota` takes the maximum, so each successive
+        // `register` widens the budget as the app grows.
+        @setEvalBranchQuota(quota.forCommands(existing.len + 1));
+
         const path_components = splitPath(path);
         var result: []const CommandEntry = existing ++ [_]CommandEntry{
             .{ .path = path_components, .module = Module },
         };
 
-        // Add alias entries if the module has aliases in meta
+        // Add alias entries if the module has aliases in meta. No conflict
+        // check here: alias entries land in the same `commands` slice as
+        // canonical ones, and the single registry-level pass
+        // (registry/validation.zig) already rejects duplicate paths over the
+        // whole composition — with a message naming the path. Re-scanning the
+        // accumulated entries on every register was the fold's O(N²) term.
         if (@hasDecl(Module, "meta") and @hasField(@TypeOf(Module.meta), "aliases")) {
             for (Module.meta.aliases) |alias| {
-                const alias_path = buildAliasPath(path_components, alias);
-
-                // Check for conflicts with existing entries
-                for (result) |entry| {
-                    if (pathsEqual(entry.path, alias_path)) {
-                        @compileError("Alias '" ++ alias ++ "' conflicts with existing command at path");
-                    }
-                }
-
                 result = result ++ [_]CommandEntry{
-                    .{ .path = alias_path, .module = Module },
+                    .{ .path = buildAliasPath(path_components, alias), .module = Module },
                 };
             }
         }
@@ -104,11 +109,14 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
             // (registry/validation.zig), which `build()` runs over the whole
             // composition — file-based commands, plugin commands, and global
             // options together.
-            return RegistryBuilder(
-                config,
-                computeEntriesWithAliases(commands, path, Module),
-                new_plugins,
-            ).init();
+            //
+            // `.{}` rather than naming the return type again: every builder
+            // state is a zero-field struct, so the empty literal coerces. The
+            // body used to re-spell `RegistryBuilder(config,
+            // computeEntriesWithAliases(...), new_plugins).init()`, which
+            // evaluated the entry fold a SECOND time per registered command
+            // (#730).
+            return .{};
         }
 
         pub fn registerPlugin(comptime self: @This(), comptime Plugin: type) RegistryBuilder(
@@ -119,12 +127,10 @@ fn RegistryBuilder(comptime config: Config, comptime commands: []const CommandEn
             _ = self;
             // No validation here either — the plugin contract (misspelled
             // hooks, ContextData) is checked by the registry-level pass in
-            // registry/validation.zig when `build()` runs.
-            return RegistryBuilder(
-                config,
-                commands,
-                new_plugins ++ [_]type{Plugin},
-            ).init();
+            // registry/validation.zig when `build()` runs. Same `.{}` as
+            // `register`: naming the type again would re-evaluate the
+            // `new_plugins ++ …` concatenation.
+            return .{};
         }
 
         pub fn build(comptime self: @This()) type {
@@ -144,14 +150,17 @@ fn isCommandDecl(comptime name: []const u8) bool {
 
 /// Recursively discover plugin commands from a struct type
 pub fn discoverPluginCommands(comptime CommandsStruct: type, comptime path_prefix: []const []const u8) []const CommandEntry {
+    const info = @typeInfo(CommandsStruct);
+    if (info != .@"struct") return &.{};
+
     // Discovery walks every decl of every plugin's `commands` struct with
     // comptime string comparisons; the default 1000-branch quota is too small
     // for a real plugin set. (validateCommand used to raise it as a side
     // effect of being called here; validation now lives in the registry-level
-    // pass, so discovery sets its own headroom.)
-    @setEvalBranchQuota(100_000);
-    const info = @typeInfo(CommandsStruct);
-    if (info != .@"struct") return &.{};
+    // pass, so discovery sets its own headroom.) Sized from the decl count
+    // rather than a flat constant (#730) — recursion into a nested group
+    // raises the shared ceiling again for that subtree.
+    @setEvalBranchQuota(quota.forCommands(info.@"struct".decls.len));
 
     var entries: []const CommandEntry = &.{};
 
