@@ -367,10 +367,29 @@ jobs:
       # Invoked as a child process (not `shell: pwsh`) so the harness's exit
       # code is the step's, unambiguously. Every GitHub-hosted runner image
       # ships pwsh, so a missing interpreter fails the step outright.
+      #
+      # Split per-OS with `if:` rather than selecting the ZCLI_REQUIRE_* values
+      # inside one step with a `${{ cond && 'a' || 'b' }}` expression. That
+      # idiom is a trap when either branch is the empty string: '' is FALSY in
+      # GitHub's expression language, so `runner.os == 'Windows' && '' || '1'`
+      # evaluates to '1' on Windows — the `&&` yields '', then the `||` falls
+      # through to the right operand. The harness treats any non-empty value as
+      # "required" (`if ($env:ZCLI_REQUIRE_MINISIGN)`), so the Windows leg
+      # demanded the very binary it was meant to skip. Two steps, each with a
+      # literal value, cannot express that bug.
       - name: install.ps1 signature + version binding
+        if: runner.os != 'Windows'
         env:
-          ZCLI_REQUIRE_MINISIGN: ${{ runner.os == 'Windows' && '' || '1' }}
-          ZCLI_REQUIRE_REGISTRY: ${{ runner.os == 'Windows' && '1' || '' }}
+          ZCLI_REQUIRE_MINISIGN: "1"
+        run: pwsh -NoProfile -File scripts/test-install-signature.ps1
+
+      # Windows runs the same harness for its registry half only: minisign is
+      # not packaged on the runner image, and the signature section it would
+      # gate is the identical PowerShell exercised on the two legs above.
+      - name: install.ps1 registry + PATH contract
+        if: runner.os == 'Windows'
+        env:
+          ZCLI_REQUIRE_REGISTRY: "1"
         run: pwsh -NoProfile -File scripts/test-install-signature.ps1
 
   windows-release-build:
