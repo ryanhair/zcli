@@ -23,6 +23,49 @@ error()   { echo -e "${RED}✗ $1${NC}" >&2; exit 1; }
 success() { echo -e "${GREEN}✓ $1${NC}"; }
 info()    { echo -e "${YELLOW}→ $1${NC}"; }
 
+# True when the trusted comment in $1 (a .minisig file) names $2 as a whole
+# whitespace-delimited token.
+#
+# Token-exact, not substring, so `zcli-v0.2` cannot satisfy `zcli-v0.20.0` nor
+# the reverse. Behaviorally identical to install.sh's verify_signature,
+# install.ps1's Test-Signature, and verifyTrustedComment in
+# packages/core/src/plugins/zcli_github_upgrade/minisign.zig. The four copies
+# exist only because sh, PowerShell and Zig share no runtime — keep them in step.
+#
+# Only meaningful AFTER `minisign -V` has succeeded on the same file: that is
+# what authenticates line 3 via minisign's global signature. Reading the comment
+# unverified would prove nothing.
+#
+# Written in POSIX sh (not bash) so scripts/test-install-signature.sh can extract
+# this function by name and hold it to the same case matrix as the installers.
+# Keep the `name() {` ... `}` shape at column 0 or that extraction breaks loudly.
+trusted_comment_binds_tag() {
+    _sig_file="$1"
+    _expected_tag="$2"
+
+    [ -n "$_expected_tag" ] || return 1
+
+    _comment_line=$(sed -n '3p' "$_sig_file" | tr -d '\r')
+    case "$_comment_line" in
+        "trusted comment: "*) ;;
+        *) return 1 ;;
+    esac
+    _trusted_comment="${_comment_line#"trusted comment: "}"
+
+    # `set -f` disables globbing so a `*` in the comment cannot expand against
+    # the working directory during word splitting.
+    set -f
+    _bound=1
+    for _token in ${_trusted_comment}; do
+        if [ "$_token" = "$_expected_tag" ]; then
+            _bound=0
+            break
+        fi
+    done
+    set +f
+    return $_bound
+}
+
 # Default signing key location; override with MINISIGN_SECRET_KEY or -s.
 SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.minisign/minisign.key}"
 # Committed public key, used to self-verify the signature we just produced.
@@ -85,15 +128,28 @@ minisign -S -s "$SECRET_KEY" \
 success "Signature created"
 
 # Self-verify against the committed public key before publishing anything —
-# catches signing with the wrong key.
-if [ -f "$PUBKEY_FILE" ]; then
-    info "Verifying signature against $PUBKEY_FILE..."
-    minisign -Vm "$WORK_DIR/checksums.txt" -p "$PUBKEY_FILE" >/dev/null \
-        || error "Self-verification failed — signed with the wrong key?"
-    success "Signature verifies against the pinned public key"
-else
-    info "No $PUBKEY_FILE found — skipping self-verify (add it during the keygen ceremony)"
+# catches signing with the wrong key. Unconditional: keygen is long past, so a
+# missing pubkey file means a broken checkout, not a first run. Skipping the
+# self-verify would be fail-open in the one ceremony still able to fix a bad
+# signature — after publish, every consumer fails closed instead.
+[ -f "$PUBKEY_FILE" ] || error "Pinned public key not found: $PUBKEY_FILE (it is committed at docs/zcli-minisign.pub — broken checkout?)"
+
+info "Verifying signature against $PUBKEY_FILE..."
+minisign -Vm "$WORK_DIR/checksums.txt" -p "$PUBKEY_FILE" >/dev/null \
+    || error "Self-verification failed — signed with the wrong key?"
+success "Signature verifies against the pinned public key"
+
+# `minisign -V` authenticates the trusted comment but asserts nothing about its
+# contents, so check that the comment we just wrote actually names this tag.
+# Both installers and the in-binary upgrade path now REQUIRE that binding, so a
+# typo'd `-t` argument above would not surface until every consumer's install
+# fails closed — after publish, with the artifacts already signed. Catch it here,
+# while the release is still a draft and re-signing costs nothing.
+if ! trusted_comment_binds_tag "$WORK_DIR/checksums.txt.minisig" "$TAG"; then
+    echo "  trusted comment: $(sed -n '3p' "$WORK_DIR/checksums.txt.minisig")" >&2
+    error "Trusted comment does not name $TAG as a whole token — refusing to publish a release every consumer would reject"
 fi
+success "Trusted comment binds $TAG"
 
 info "Uploading checksums.txt.minisig to $TAG..."
 gh release upload "$TAG" "$WORK_DIR/checksums.txt.minisig" --clobber \

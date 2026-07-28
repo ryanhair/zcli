@@ -132,11 +132,25 @@ passphrase), self-verifies against `docs/zcli-minisign.pub`, uploads
 `checksums.txt.minisig`, and flips the release to published. Never publish a CLI
 release draft by hand — that would ship it unsigned.
 
+Both self-verify steps are unconditional and abort the ceremony on failure:
+
+1. **Signature** — the signature must verify under the committed public key.
+   Catches signing with the wrong key. A missing `docs/zcli-minisign.pub` is an
+   error (a broken checkout), not a reason to skip.
+2. **Tag binding** — the trusted comment must name the tag being signed, as a
+   whole whitespace-delimited token. The `-t "zcli $TAG — signed release
+   checksums"` argument is what every client checks; a typo there would not
+   surface until after publish, when *every* user's install fails closed. This
+   catches it while the release is still a draft.
+
 ### How a user verifies (for the docs / the paranoid)
 
 ```sh
 gh release download zcli-v0.20.0 -p 'checksums.txt*'
 minisign -Vm checksums.txt -p docs/zcli-minisign.pub
+# minisign prints the trusted comment on success — confirm it names the tag you
+# downloaded (zcli-v0.20.0). That binding is what makes replaying an older,
+# genuinely-signed release under a newer tag fail.
 # then check a binary's line in the (now-trusted) checksums.txt
 ```
 

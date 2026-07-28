@@ -42,6 +42,7 @@ jobs:
       cli: ${{ steps.resolve.outputs.cli }}
       secrets: ${{ steps.resolve.outputs.secrets }}
       examples: ${{ steps.resolve.outputs.examples }}
+      installers: ${{ steps.resolve.outputs.installers }}
     steps:
       # Only needed for push events (PR events use the API), but checking out
       # unconditionally keeps the job shape simple.
@@ -60,6 +61,10 @@ jobs:
       #             live-keychain job, which otherwise ran on every PR for
       #             code that changes rarely.
       #   examples: the canonical examples or anything they compile against.
+      #   installers: install.sh / install.ps1 (the curl|sh + irm|iex trust
+      #             root) and the release-signing ceremony → the installer
+      #             signature/version-binding suite. No Zig involved, so
+      #             nothing else in this workflow covers them.
       - name: Classify diff
         uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
@@ -91,6 +96,13 @@ jobs:
               - 'build.zig'
               - 'build.zig.zon'
               - '.github/workflows/ci.yml'
+            installers:
+              - 'install.sh'
+              - 'install.ps1'
+              - 'scripts/sign-release.sh'
+              - 'scripts/test-install-signature.sh'
+              - 'scripts/test-install-signature.ps1'
+              - '.github/workflows/ci.yml'
 
       - name: Resolve gates (full run on main push or the ci-full label)
         id: resolve
@@ -101,6 +113,7 @@ jobs:
           CLI: ${{ steps.filter.outputs.cli }}
           SECRETS: ${{ steps.filter.outputs.secrets }}
           EXAMPLES: ${{ steps.filter.outputs.examples }}
+          INSTALLERS: ${{ steps.filter.outputs.installers }}
         run: |
           gate() {
             local v=false
@@ -112,6 +125,7 @@ jobs:
           gate cli "$CLI"
           gate secrets "$SECRETS"
           gate examples "$EXAMPLES"
+          gate installers "$INSTALLERS"
 
   fmt:
     name: zig fmt check
@@ -303,6 +317,61 @@ jobs:
           ZCLI_REQUIRE_FISH: ${{ runner.os == 'Linux' && '1' || '' }}
           ZCLI_REQUIRE_PWSH: "1"
         run: zig build test
+
+  # install.sh and install.ps1 are the `curl | sh` / `irm | iex` trust root, and
+  # they carry the only release-signature validation most users ever run — yet
+  # no Zig test can reach them (there is no Zig involved). This job IS that
+  # coverage: it mints a throwaway minisign keypair, signs fixtures under two
+  # different tags, and asserts the installers reject a genuinely-signed OLDER
+  # release replayed under a newer tag, along with prefix and case-only near
+  # misses. Case matrix and rationale: scripts/test-install-signature.sh.
+  #
+  # Both harnesses run on Linux and macOS, where minisign is one package away.
+  # Windows deliberately runs only the PowerShell one, for the registry
+  # value-kind contract that install.ps1's %VAR%-preserving PATH handling rests
+  # on and that cannot be observed on any other OS; its signature section skips
+  # there because the identical PowerShell code is already exercised on two
+  # other legs. So no leg silently runs nothing, each sets a ZCLI_REQUIRE_*
+  # flag that turns its own missing prerequisite into a hard failure.
+  installers:
+    name: installer signature binding (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.installers == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install minisign (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+
+      - name: Install minisign (macOS)
+        if: runner.os == 'macOS'
+        run: brew install minisign
+
+      # Run with `sh`, which is dash on the Linux runner: install.sh must stay
+      # POSIX (it is piped straight into /bin/sh on user machines), so a bashism
+      # in verify_signature fails this step as well as the assertions.
+      - name: install.sh signature + version binding
+        if: runner.os != 'Windows'
+        env:
+          ZCLI_REQUIRE_MINISIGN: "1"
+        run: sh scripts/test-install-signature.sh
+
+      # Invoked as a child process (not `shell: pwsh`) so the harness's exit
+      # code is the step's, unambiguously. Every GitHub-hosted runner image
+      # ships pwsh, so a missing interpreter fails the step outright.
+      - name: install.ps1 signature + version binding
+        env:
+          ZCLI_REQUIRE_MINISIGN: ${{ runner.os == 'Windows' && '' || '1' }}
+          ZCLI_REQUIRE_REGISTRY: ${{ runner.os == 'Windows' && '1' || '' }}
+        run: pwsh -NoProfile -File scripts/test-install-signature.ps1
 
   windows-release-build:
     name: windows release build
@@ -589,6 +658,7 @@ jobs:
       - fmt
       - version-sync
       - test
+      - installers
       - windows-release-build
       - linux-musl-release-build
       - secrets

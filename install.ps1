@@ -8,6 +8,9 @@
 #   - exact filename-field match against checksums.txt (no shadow-entry match)
 #   - fail-closed minisign signature verification: if a public key is pinned
 #     but minisign is unavailable, abort rather than degrade to checksum-only
+#   - the signature must name the release tag being installed, as a whole
+#     token, so a genuinely-signed OLDER release cannot be replayed under a
+#     newer tag (downgrade/replay — CWE-294)
 #   - latest-version resolution via the GitHub Releases API (install.sh has
 #     no pinned-version mode to mirror; both always install latest)
 
@@ -23,14 +26,19 @@ $BinaryName = 'zcli.exe'
 
 # zcli's pinned minisign public key. Kept in sync with install.sh's
 # MINISIGN_PUBKEY. The installer verifies checksums.txt against its detached
-# signature (checksums.txt.minisig) under this key when the `minisign` tool
-# is available — closing the gap that checksums alone cannot: a compromised
-# release can swap the binary AND its checksum, but not forge a signature
-# under a key that never lived in the release pipeline (see ADR-0023).
+# signature (checksums.txt.minisig) under this key — closing the gap that
+# checksums alone cannot: a compromised release can swap the binary AND its
+# checksum, but not forge a signature under a key that never lived in the
+# release pipeline (see ADR-0023).
 #
-# Key id 1638B69B8EF680FD. The full key lives at docs/zcli-minisign.pub; if
-# empty, signature verification is skipped and the fail-closed SHA-256
-# checksum check below still applies. Rotation/compromise: docs/RELEASE-SIGNING.md.
+# Verification is REQUIRED, never best-effort: while this key is set, a missing
+# `minisign` tool aborts the install rather than degrading to checksum-only, and
+# the signature must also name the exact release tag being installed (see
+# Test-Signature below). Only an empty key — signing not enabled for a project —
+# skips verification, leaving the fail-closed SHA-256 checksum check.
+#
+# Key id 1638B69B8EF680FD. The full key lives at docs/zcli-minisign.pub.
+# Rotation/compromise: docs/RELEASE-SIGNING.md.
 $MinisignPubkey = 'RWT9gPaOm7Y4Fm5WFqqlWRpI4FgPTIjD5UhUsaZsdKHrWYuWa9jt8ESC'
 
 function Write-Info    { param([string]$Message) Write-Host "==> $Message" -ForegroundColor Blue }
@@ -48,7 +56,8 @@ function Get-Arch {
     }
 }
 
-# Verify checksums.txt against its detached minisign signature.
+# Verify checksums.txt against its detached minisign signature, and bind that
+# signature to the exact release tag being installed.
 #
 # Fail closed: returns $true only when the signature actually verified (or
 # signing is not enabled for this project). Signature verification is
@@ -59,7 +68,8 @@ function Get-Arch {
 function Test-Signature {
     param(
         [string]$ChecksumsPath,
-        [string]$ChecksumUrl
+        [string]$ChecksumUrl,
+        [string]$ExpectedTag
     )
 
     # Signing not yet enabled for this project — nothing to verify.
@@ -93,7 +103,64 @@ function Test-Signature {
         return $false
     }
 
-    Write-Success 'Signature verified'
+    # Bind the signature to THIS release. The check above only authenticates
+    # checksums.txt, which names artifacts but carries no version — so a
+    # compromised publisher could serve an OLDER release's binary, checksums.txt
+    # and its genuine .minisig under a newer tag and pass every check so far,
+    # silently rolling the user back to a previously-signed (possibly vulnerable)
+    # build (a downgrade/replay — CWE-294).
+    #
+    # The signing ceremony defends against this by embedding the release tag in
+    # minisign's *trusted* comment (scripts/sign-release.sh: `-t "zcli $TAG —
+    # signed release checksums"`). That comment is line 3 of the .minisig and is
+    # covered by minisign's second, "global" signature on line 4 — the `-V` above
+    # verifies it and exits nonzero ("Comment signature verification failed")
+    # when it does not match, so by this point line 3 is authenticated and its
+    # tag can be trusted. Reading it unverified would defeat the point.
+    #
+    # Kept in step with install.sh's verify_signature and with
+    # verifyTrustedComment in
+    # packages/core/src/plugins/zcli_github_upgrade/minisign.zig.
+    $sigLines = @(Get-Content -Path $sigPath)
+    if ($sigLines.Count -lt 3) {
+        Write-ErrorMsg "Signature carries no trusted comment to bind $ExpectedTag."
+        Write-ErrorMsg 'Refusing to install a release whose version cannot be verified.'
+        return $false
+    }
+
+    $commentPrefix = 'trusted comment: '
+    $commentLine = $sigLines[2].TrimEnd("`r")
+    if (-not $commentLine.StartsWith($commentPrefix, [StringComparison]::Ordinal)) {
+        Write-ErrorMsg "Signature carries no trusted comment to bind $ExpectedTag."
+        Write-ErrorMsg 'Refusing to install a release whose version cannot be verified.'
+        return $false
+    }
+    $trustedComment = $commentLine.Substring($commentPrefix.Length)
+
+    # Whole-token match, not substring, so a shorter tag can never be satisfied
+    # by a longer one (`zcli-v0.2` must not match `zcli-v0.20.0`, nor the
+    # reverse). `-ceq` is the case-sensitive comparison — PowerShell's `-eq`
+    # ignores case, which would not match the byte equality the Zig verifier and
+    # install.sh both use.
+    $tagBound = $false
+    if (-not [string]::IsNullOrEmpty($ExpectedTag)) {
+        foreach ($token in ($trustedComment -split '\s+')) {
+            if ($token -ceq $ExpectedTag) {
+                $tagBound = $true
+                break
+            }
+        }
+    }
+
+    if (-not $tagBound) {
+        Write-ErrorMsg "Signature does not name $ExpectedTag."
+        Write-ErrorMsg "Trusted comment: $trustedComment"
+        Write-ErrorMsg 'This looks like an older, genuinely-signed release replayed'
+        Write-ErrorMsg 'under a newer tag. Refusing a possible downgrade. Aborting.'
+        return $false
+    }
+
+    Write-Success "Signature verified (binds $ExpectedTag)"
     return $true
 }
 
@@ -154,10 +221,11 @@ function Get-ZcliBinary {
         exit 1
     }
 
-    # Authenticate checksums.txt against its signature before trusting it.
-    # Fail closed: a signature failure, or a missing minisign tool when a
-    # key is pinned, aborts the install.
-    if (-not (Test-Signature -ChecksumsPath $checksumsPath -ChecksumUrl $checksumUrl)) {
+    # Authenticate checksums.txt against its signature before trusting it, and
+    # require that signature to name the tag we are installing. Fail closed: a
+    # signature failure, a version mismatch, or a missing minisign tool when a
+    # key is pinned all abort the install.
+    if (-not (Test-Signature -ChecksumsPath $checksumsPath -ChecksumUrl $checksumUrl -ExpectedTag "zcli-v$Version")) {
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         exit 1
     }
@@ -220,26 +288,84 @@ function Test-InPath {
     return $false
 }
 
-# Add a directory to the persistent per-user PATH (if not already present)
+# Tell the shell (and Explorer) that the environment block changed.
+#
+# DO NOT DELETE THIS AS REDUNDANT. It is not belt-and-braces; it repairs a
+# regression that Add-ToUserPath's registry fix would otherwise introduce.
+# [Environment]::SetEnvironmentVariable used to broadcast WM_SETTINGCHANGE for us
+# as a side effect. Add-ToUserPath no longer calls it (see the comment there: that
+# API flattens %VAR% references), and a raw registry write broadcasts nothing — so
+# without this, a terminal started from the running Explorer session inherits a
+# stale environment block and keeps the old PATH until the user logs out, making
+# this script's own "restart your terminal, then run zcli --help" advice wrong.
+#
+# Best effort: PATH is already persisted by the time this runs, so a failure here
+# is a warning, not an aborted install.
+function Send-EnvironmentChange {
+    try {
+        if (-not ('ZcliNative.Win32' -as [type])) {
+            Add-Type -Namespace 'ZcliNative' -Name 'Win32' -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(
+    IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+        }
+        $result = [UIntPtr]::Zero
+        # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG, 5s timeout.
+        [void][ZcliNative.Win32]::SendMessageTimeout(
+            [IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 0x2, 5000, [ref]$result)
+    } catch {
+        Write-WarnMsg 'Could not notify running programs of the PATH change; log out and back in if a new terminal cannot find zcli.'
+    }
+}
+
+# Add a directory to the persistent per-user PATH (if not already present).
+#
+# This goes through the registry rather than [Environment]::GetEnvironmentVariable
+# / SetEnvironmentVariable on purpose: the getter EXPANDS %VAR% references and the
+# setter writes the result back as REG_SZ, so a user PATH containing (say)
+# `%USERPROFILE%\bin` would be permanently flattened to today's literal path and
+# stop tracking the variable. Reading with DoNotExpandEnvironmentNames and writing
+# RegistryValueKind.ExpandString leaves those references exactly as the user wrote
+# them.
 function Add-ToUserPath {
     param([string]$Dir)
 
     $normalized = $Dir.TrimEnd('\')
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = @()
-    if (-not [string]::IsNullOrEmpty($current)) {
-        $entries = $current -split ';'
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if ($null -eq $key) {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     }
 
-    foreach ($entry in $entries) {
-        if ($entry.TrimEnd('\') -ieq $normalized) {
-            Write-Success 'PATH already configured for future sessions'
-            return
+    try {
+        $current = $key.GetValue(
+            'Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $entries = @()
+        if (-not [string]::IsNullOrEmpty($current)) {
+            $entries = $current -split ';'
         }
+
+        # Entries are raw now, so compare both the literal text and its expansion —
+        # otherwise an existing `%LOCALAPPDATA%\Programs\zcli` would no longer be
+        # recognized and we would append a duplicate.
+        foreach ($entry in $entries) {
+            if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+            $expanded = [Environment]::ExpandEnvironmentVariables($entry)
+            if (($entry.TrimEnd('\') -ieq $normalized) -or ($expanded.TrimEnd('\') -ieq $normalized)) {
+                Write-Success 'PATH already configured for future sessions'
+                return
+            }
+        }
+
+        $new = if ($entries.Length -eq 0) { $Dir } else { "$current;$Dir" }
+        $key.SetValue('Path', $new, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    } finally {
+        if ($null -ne $key) { $key.Dispose() }
     }
 
-    $new = if ($entries.Length -eq 0) { $Dir } else { "$current;$Dir" }
-    [Environment]::SetEnvironmentVariable('Path', $new, 'User')
+    Send-EnvironmentChange
     Write-Success "Added $Dir to your user PATH"
 }
 

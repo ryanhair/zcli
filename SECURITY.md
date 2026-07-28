@@ -42,11 +42,21 @@ are signed with [minisign](https://jedisct1.github.io/minisign/) (Ed25519):
   `scripts/sign-release.sh` and then publishes it. This means a compromised
   GitHub account or CI workflow can swap binaries and rewrite checksums, but
   cannot forge a valid signature.
-- The **public** key is pinned in the clients: `install.sh` requires `minisign`
-  and verifies the signature before installing anything (fail closed — it does
-  not fall back to checksum-only verification if `minisign` is missing), and
-  `zcli upgrade` verifies it natively in pure Zig (no external tool, no libc
-  dependency) before trusting any checksum.
+- The **public** key is pinned in the clients: `install.sh` and `install.ps1`
+  require `minisign` and verify the signature before installing anything (fail
+  closed — neither falls back to checksum-only verification if `minisign` is
+  missing), and `zcli upgrade` verifies it natively in pure Zig (no external
+  tool, no libc dependency) before trusting any checksum.
+- The signature is **bound to its release tag**. `checksums.txt` names artifacts
+  but carries no version, so an authentic signature alone cannot distinguish a
+  current release from an older one — an actor able to influence which release
+  `releases/latest` resolves to could otherwise replay a genuinely-signed older,
+  vulnerable build. The signing ceremony writes the tag into minisign's trusted
+  comment (covered by minisign's second, "global" signature), and every client
+  requires that comment to name the exact tag being installed as a whole token,
+  refusing the install otherwise (CWE-294). `scripts/sign-release.sh` checks the
+  same binding before publishing, so a mistyped tag fails at signing time rather
+  than for every user afterwards.
 - Apps built with zcli's `zcli_github_upgrade` plugin must explicitly choose a
   verification mode — `.{ .minisign = "<public key>" }` or the explicit opt-out
   `.checksum_only` — there is no silent default that skips verification.

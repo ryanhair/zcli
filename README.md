@@ -392,11 +392,18 @@ Each release is tagged twice: `vX.Y.Z` is the framework library — the tag for 
 
 ### Verifying a release
 
-CLI releases are signed. `checksums.txt` carries a SHA-256 for every binary and is itself signed with a [minisign](https://jedisct1.github.io/minisign/) key held offline — so a compromised release cannot forge a matching signature, not just a matching checksum. `install.sh` **requires `minisign`** and verifies the signature before installing (fail closed); `zcli upgrade` verifies it natively with no external tools. To check by hand:
+CLI releases are signed. `checksums.txt` carries a SHA-256 for every binary and is itself signed with a [minisign](https://jedisct1.github.io/minisign/) key held offline — so a compromised release cannot forge a matching signature, not just a matching checksum.
+
+The signature is also **bound to its release tag**. `checksums.txt` names artifacts but carries no version, so a signature alone cannot tell a current release from an older one; the signing ceremony therefore writes the tag into minisign's trusted comment, which minisign's second signature covers. Every client requires that comment to name the exact tag being installed, as a whole token — so a genuinely-signed *older* release replayed under a newer tag is refused rather than silently installed (a downgrade/replay, CWE-294). `install.sh` and `install.ps1` both **require `minisign`** and verify signature and tag before installing (fail closed); `zcli upgrade` verifies both natively with no external tools.
+
+To check by hand:
 
 ```bash
 gh release download zcli-vX.Y.Z -p 'checksums.txt*'
-minisign -Vm checksums.txt -p docs/zcli-minisign.pub   # verifies the signature
+minisign -Vm checksums.txt -p docs/zcli-minisign.pub   # verifies the signature,
+                                                       # and prints the trusted
+                                                       # comment — confirm it
+                                                       # names zcli-vX.Y.Z
 sha256sum -c checksums.txt                              # then the binaries
 ```
 

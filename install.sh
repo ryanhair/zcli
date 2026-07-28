@@ -17,14 +17,19 @@ INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="zcli"
 
 # zcli's pinned minisign public key. The installer verifies checksums.txt against
-# its detached signature (checksums.txt.minisig) under this key when the
-# `minisign` tool is available — closing the gap that checksums alone cannot: a
-# compromised release can swap the binary AND its checksum, but not forge a
-# signature under a key that never lived in the release pipeline (see ADR-0023).
+# its detached signature (checksums.txt.minisig) under this key — closing the gap
+# that checksums alone cannot: a compromised release can swap the binary AND its
+# checksum, but not forge a signature under a key that never lived in the release
+# pipeline (see ADR-0023).
 #
-# Key id 1638B69B8EF680FD. The full key lives at docs/zcli-minisign.pub; if
-# empty, signature verification is skipped and the fail-closed SHA-256 checksum
-# check below still applies. Rotation/compromise: docs/RELEASE-SIGNING.md.
+# Verification is REQUIRED, never best-effort: while this key is set, a missing
+# `minisign` tool aborts the install rather than degrading to checksum-only, and
+# the signature must also name the exact release tag being installed (see
+# verify_signature below). Only an empty key — signing not enabled for a project
+# — skips verification, leaving the fail-closed SHA-256 checksum check.
+#
+# Key id 1638B69B8EF680FD. The full key lives at docs/zcli-minisign.pub.
+# Rotation/compromise: docs/RELEASE-SIGNING.md.
 MINISIGN_PUBKEY="RWT9gPaOm7Y4Fm5WFqqlWRpI4FgPTIjD5UhUsaZsdKHrWYuWa9jt8ESC"
 
 # Print functions
@@ -75,7 +80,8 @@ sha256_digest() {
     fi
 }
 
-# Verify checksums.txt against its detached minisign signature.
+# Verify checksums.txt against its detached minisign signature, and bind that
+# signature to the exact release tag being installed.
 #
 # Fail closed: returns 0 only when the signature actually verified (or signing is
 # not enabled for this project). Signature verification is REQUIRED when a key is
@@ -86,6 +92,7 @@ verify_signature() {
     checksums="$1"
     checksum_url="$2"
     tmp_dir="$3"
+    expected_tag="$4"
 
     # Signing not yet enabled for this project — nothing to verify.
     if [ -z "${MINISIGN_PUBKEY}" ]; then
@@ -115,7 +122,58 @@ verify_signature() {
         return 1
     fi
 
-    print_success "Signature verified"
+    # Bind the signature to THIS release. The check above only authenticates
+    # checksums.txt, which names artifacts but carries no version — so a
+    # compromised publisher could serve an OLDER release's binary, checksums.txt
+    # and its genuine .minisig under a newer tag and pass every check so far,
+    # silently rolling the user back to a previously-signed (possibly vulnerable)
+    # build (a downgrade/replay — CWE-294).
+    #
+    # The signing ceremony defends against this by embedding the release tag in
+    # minisign's *trusted* comment (scripts/sign-release.sh: `-t "zcli $TAG —
+    # signed release checksums"`). That comment is line 3 of the .minisig and is
+    # covered by minisign's second, "global" signature on line 4 — the `-V` above
+    # verifies it and exits nonzero ("Comment signature verification failed")
+    # when it does not match, so by this point line 3 is authenticated and its
+    # tag can be trusted. Reading it unverified would defeat the point.
+    #
+    # This mirrors verifyTrustedComment in
+    # packages/core/src/plugins/zcli_github_upgrade/minisign.zig, which gives
+    # `zcli upgrade` the same guarantee.
+    comment_line=$(sed -n '3p' "${sig}" | tr -d '\r')
+    case "${comment_line}" in
+        "trusted comment: "*) ;;
+        *)
+            print_error "Signature carries no trusted comment to bind ${expected_tag}."
+            print_error "Refusing to install a release whose version cannot be verified."
+            return 1
+            ;;
+    esac
+    trusted_comment="${comment_line#"trusted comment: "}"
+
+    # Whole-token match, not substring, so a shorter tag can never be satisfied
+    # by a longer one (`zcli-v0.2` must not match `zcli-v0.20.0`). Unquoted
+    # expansion does the whitespace tokenization; `set -f` disables globbing so
+    # a `*` planted in the comment cannot expand against the working directory.
+    set -f
+    tag_bound=0
+    for token in ${trusted_comment}; do
+        if [ "${token}" = "${expected_tag}" ]; then
+            tag_bound=1
+            break
+        fi
+    done
+    set +f
+
+    if [ "${tag_bound}" -ne 1 ]; then
+        print_error "Signature does not name ${expected_tag}."
+        print_error "Trusted comment: ${trusted_comment}"
+        print_error "This looks like an older, genuinely-signed release replayed"
+        print_error "under a newer tag. Refusing a possible downgrade. Aborting."
+        return 1
+    fi
+
+    print_success "Signature verified (binds ${expected_tag})"
     return 0
 }
 
@@ -171,10 +229,11 @@ download_binary() {
         exit 1
     fi
 
-    # Authenticate checksums.txt against its signature before trusting it. Fail
-    # closed: a signature failure, or a missing minisign tool when a key is
-    # pinned, aborts the install.
-    if ! verify_signature "${checksums}" "${checksum_url}" "${tmp_dir}"; then
+    # Authenticate checksums.txt against its signature before trusting it, and
+    # require that signature to name the tag we are installing. Fail closed: a
+    # signature failure, a version mismatch, or a missing minisign tool when a
+    # key is pinned all abort the install.
+    if ! verify_signature "${checksums}" "${checksum_url}" "${tmp_dir}" "zcli-v${version}"; then
         rm -rf "${tmp_dir}"
         exit 1
     fi
