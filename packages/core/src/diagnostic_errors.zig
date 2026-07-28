@@ -359,15 +359,36 @@ fn humanType(type_name: []const u8) []const u8 {
 /// before it reaches the terminal. Without it, a crafted value containing an
 /// ESC byte can smuggle a raw ANSI/OSC escape sequence — e.g. a window-title
 /// set or an OSC 52 clipboard write — straight through to the user's
-/// terminal. UTF-8 multibyte sequences pass through untouched: both
-/// continuation bytes (0x80-0xBF) and lead bytes (0xC0 and up) fall outside
-/// the stripped range.
+/// terminal. Well-formed UTF-8 multibyte sequences pass through untouched;
+/// a byte that is not part of one is replaced with U+FFFD, so the rendered
+/// message is always valid UTF-8 (#766). argv is a byte string on POSIX, so an
+/// unknown command name or a rejected value can carry arbitrary bytes, and a
+/// lone continuation byte reaching the terminal is garbage a strict consumer of
+/// our output can choke on.
 pub fn writeSanitized(w: *Writer, s: []const u8) Writer.Error!void {
-    for (s) |c| {
-        switch (c) {
-            0x00...0x08, 0x0B...0x1F, 0x7F => {}, // drop control bytes, incl. ESC (0x1b); \t/\n fall through below
-            else => try w.writeByte(c),
+    var i: usize = 0;
+    while (i < s.len) {
+        const c = s[i];
+        if (c < 0x80) {
+            switch (c) {
+                0x00...0x08, 0x0B...0x1F, 0x7F => {}, // drop control bytes, incl. ESC (0x1b); \t/\n fall through below
+                else => try w.writeByte(c),
+            }
+            i += 1;
+            continue;
         }
+        const len: usize = std.unicode.utf8ByteSequenceLength(c) catch {
+            try w.writeAll("\u{FFFD}");
+            i += 1;
+            continue;
+        };
+        if (i + len > s.len or !std.unicode.utf8ValidateSlice(s[i .. i + len])) {
+            try w.writeAll("\u{FFFD}");
+            i += 1;
+            continue;
+        }
+        try w.writeAll(s[i .. i + len]);
+        i += len;
     }
 }
 
@@ -701,6 +722,25 @@ test "writeSanitized leaves plain UTF-8 (including multibyte) untouched" {
     const s = "caf\xc3\xa9 \xe4\xbd\xa0\xe5\xa5\xbd \xf0\x9f\x9a\x80"; // "café 你好 🚀"
     try writeSanitized(&aw.writer, s);
     try std.testing.expectEqualStrings(s, aw.written());
+}
+
+test "writeSanitized replaces bytes that are not valid UTF-8 (#766)" {
+    // A lone continuation byte, a truncated sequence, and an overlong/illegal
+    // lead byte each become U+FFFD; the valid text around them survives.
+    const cases = [_]struct { in: []const u8, want: []const u8 }{
+        .{ .in = "a\x80b", .want = "a\u{FFFD}b" }, // stray continuation byte
+        .{ .in = "a\xc3", .want = "a\u{FFFD}" }, // sequence truncated by end of input
+        .{ .in = "a\xc3z", .want = "a\u{FFFD}z" }, // lead byte with no continuation
+        .{ .in = "\xff\xfe", .want = "\u{FFFD}\u{FFFD}" }, // never-valid lead bytes
+        .{ .in = "\xe4\xbd\xa0", .want = "\xe4\xbd\xa0" }, // well-formed, untouched
+    };
+    for (cases) |c| {
+        var aw: Writer.Allocating = .init(std.testing.allocator);
+        defer aw.deinit();
+        try writeSanitized(&aw.writer, c.in);
+        try std.testing.expectEqualStrings(c.want, aw.written());
+        try std.testing.expect(std.unicode.utf8ValidateSlice(aw.written()));
+    }
 }
 
 test "expectedTypeName lists enum variants" {

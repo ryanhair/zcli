@@ -358,13 +358,15 @@ fn applyEnvValue(comptime T: type, target: *T, env_value: []const u8) bool {
         return false;
     }
 
+    // Numbers from the environment are spelled exactly like numbers on the
+    // command line — the one decimal-only grammar (#767).
     if (type_info == .int) {
-        target.* = std.fmt.parseInt(T, env_value, 10) catch return false;
+        target.* = utils.parseInt(T, env_value) catch return false;
         return true;
     }
 
     if (type_info == .float) {
-        target.* = std.fmt.parseFloat(T, env_value) catch return false;
+        target.* = utils.parseFloat(T, env_value) catch return false;
         return true;
     }
 
@@ -594,9 +596,12 @@ fn applyShortBundle(
     const chars = shorts.chars;
     var walk = shorts.walk();
     while (walk.next()) |step| switch (step) {
-        .unknown => |ci| {
+        .unknown => |u| {
+            // The step spans a whole codepoint, so the reported name is a
+            // valid sequence even for `-é` (#766) — a declared short is ASCII,
+            // so any multibyte char in a bundle lands here.
             if (diag) |d| d.* = .{ .OptionUnknown = .{
-                .option_name = chars[ci .. ci + 1],
+                .option_name = chars[u.index..][0..u.len],
                 .is_short = true,
             } };
             return error.UnknownOption;
@@ -1456,6 +1461,121 @@ test "parseOptions bundled short options with trailing value-taker (GNU getopt)"
         const args = [_][]const u8{"-vf"};
         const result = parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
         try std.testing.expectError(error.OptionMissingValue, result);
+    }
+
+    // A bundle containing a value-taking short is accepted, not rejected as
+    // ambiguous: this is the `tar -czf archive.tgz` idiom every conventional
+    // CLI supports, and docs/DESIGN.md used to claim we errored on it (#785).
+    {
+        const args = [_][]const u8{ "-vqf", "archive.tgz" };
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
+
+        try std.testing.expect(parsed.options.verbose);
+        try std.testing.expect(parsed.options.quiet);
+        try std.testing.expectEqualStrings("archive.tgz", parsed.options.file);
+    }
+
+    // -f=out.txt: the `=` belongs to the syntax, not the value (#767). These
+    // all spell what the long `--file=out.txt` spells.
+    {
+        inline for ([_][]const u8{ "-f=out.txt", "-fout.txt", "-vf=out.txt" }) |arg| {
+            const args = [_][]const u8{arg};
+            const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
+            try std.testing.expectEqualStrings("out.txt", parsed.options.file);
+        }
+    }
+
+    // Bundling and `=` compose (#767 × #785): booleans first, then the
+    // value-taker takes `=value` — the `=` sits mid-token, not after the
+    // token's first char, which is the interaction of the two changes.
+    {
+        const args = [_][]const u8{"-vqf=archive.tgz"};
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
+
+        try std.testing.expect(parsed.options.verbose);
+        try std.testing.expect(parsed.options.quiet);
+        try std.testing.expectEqualStrings("archive.tgz", parsed.options.file);
+    }
+
+    // A value that really starts with `=` is written by doubling it, exactly
+    // as the escape hatch is documented.
+    {
+        const args = [_][]const u8{"-f==out.txt"};
+        const parsed = try parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, null);
+        try std.testing.expectEqualStrings("=out.txt", parsed.options.file);
+    }
+}
+
+test "unknown multibyte short reports the whole codepoint, valid UTF-8 (#766)" {
+    const TestOptions = struct {
+        verbose: bool = false,
+    };
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' } } };
+
+    const allocator = std.testing.allocator;
+    var diag: ?ZcliDiagnostic = null;
+
+    // `é` is two bytes; a short is always ASCII, so this is an unknown option.
+    // The name in the diagnostic must be the codepoint, not its lead byte.
+    const args = [_][]const u8{"-é"};
+    try std.testing.expectError(
+        error.OptionUnknown,
+        parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, &diag),
+    );
+
+    const name = diag.?.OptionUnknown.option_name;
+    try std.testing.expectEqualStrings("é", name);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(name));
+
+    // Same for a codepoint in the middle of a bundle: the leading boolean is
+    // walked, then the whole multibyte char is reported.
+    diag = null;
+    const bundled = [_][]const u8{"-vé"};
+    try std.testing.expectError(
+        error.OptionUnknown,
+        parseOptionsWithMeta(TestOptions, meta, allocator, null, &bundled, &diag),
+    );
+    try std.testing.expectEqualStrings("é", diag.?.OptionUnknown.option_name);
+}
+
+test "an unknown short reaches the terminal as valid UTF-8, end to end (#766)" {
+    // The claim of #766 is about what a user sees, so drive the whole path
+    // `reportParseError` composes: parse → formatDiagnostic → writeSanitized.
+    // The walk fix carries the first two cases (report the codepoint, not its
+    // lead byte); the sanitizer carries the rest (argv is a byte string on
+    // POSIX, so bytes that are no codepoint at all can arrive and must not be
+    // forwarded raw).
+    const TestOptions = struct {
+        verbose: bool = false,
+    };
+    const meta = .{ .options = .{ .verbose = .{ .short = 'v' } } };
+    const allocator = std.testing.allocator;
+
+    const cases = [_]struct { argv: []const u8, expect: []const u8 }{
+        .{ .argv = "-é", .expect = "'-é'" }, // whole codepoint, not byte 0xC3
+        .{ .argv = "-vé", .expect = "'-é'" }, // ... and after a leading flag
+        .{ .argv = "-\x80", .expect = "'-\u{FFFD}'" }, // lone continuation byte
+        .{ .argv = "-\xC3", .expect = "'-\u{FFFD}'" }, // truncated sequence
+    };
+
+    for (cases) |c| {
+        var diag: ?ZcliDiagnostic = null;
+        const args = [_][]const u8{c.argv};
+        try std.testing.expectError(
+            error.OptionUnknown,
+            parseOptionsWithMeta(TestOptions, meta, allocator, null, &args, &diag),
+        );
+
+        const message = try diagnostic_errors.formatDiagnostic(diag.?, allocator);
+        defer allocator.free(message);
+
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try diagnostic_errors.writeSanitized(&out.writer, message);
+
+        // Whatever the user typed, what lands on the terminal is well-formed.
+        try std.testing.expect(std.unicode.utf8ValidateSlice(out.written()));
+        try std.testing.expect(std.mem.indexOf(u8, out.written(), c.expect) != null);
     }
 }
 

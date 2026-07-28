@@ -535,17 +535,37 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
   `--output-dir`); the field name in `Options`/`execute` is unaffected — only
   the flag text on the command line, and in generated help/completions,
   changes.
-- Short options: `-o value` or `-ovalue` (no space). A short exists **only** when
+- Short options: `-o value`, `-ovalue`, or `-o=value` — all three spell the same
+  thing, mirroring the long form's `--out value` / `--out=value`. The `=` is
+  syntax, not data: exactly one leading `=` is stripped, so `-c=out.txt` names
+  the file `out.txt`, never `=out.txt`. (GNU getopt keeps the `=` and hands the
+  program `=out.txt`; docker/pflag and cargo/clap strip it. We strip it — the
+  getopt spelling is a silent footgun, and it made our own short form disagree
+  with our long form.) A value that genuinely starts with `=` is written by
+  doubling it (`-o==v`) or as a separate token (`-o =v`).
+  A short exists **only** when
   explicitly declared via `meta.options.<field>.short` — a field never derives a
   short from the first letter of its name. An undeclared short is an unknown
-  option (this mirrors global options, which are also explicit-only).
+  option (this mirrors global options, which are also explicit-only). A short is
+  one ASCII character, so any multibyte character in a short token is simply an
+  unknown option; it is reported whole rather than split mid-codepoint.
 - Boolean flags: `--verbose` (presence = true), `--no-verbose` (= false).
   Negation is long-form only; short flags have no negation.
 
-**Short Option Bundling:**
+**Short Option Bundling (GNU getopt):**
 
-- Allow: `-abc` equals `-a -b -c` (for boolean flags only)
-- Error if bundled with value-taking option: `-abf file` is ambiguous
+- `-abc` equals `-a -b -c` while every char is a boolean flag.
+- The **first value-taking char ends the bundle** and takes the rest of the
+  token as its value, or — if it is the last char — the next argv token:
+  `-vf out.txt` == `-v -f out.txt`, `-vfout.txt` == `-v -fout.txt`. This is the
+  `tar -czf archive.tgz` idiom; it is accepted, not rejected as ambiguous.
+- Because the value-taker consumes the remainder, chars after it are never
+  option chars: in `-fv X` (with `-f` value-taking) the value is `v`, and `X`
+  stays a positional.
+- The next token is only taken as a value when it is not itself an option — a
+  bare word, a negative number, or the lone `-` sentinel. `-f --verbose` is a
+  missing value, not `--verbose` swallowed.
+- An unknown char before the value-taker is a runtime unknown-option error.
 
 **Special Handling:**
 
@@ -599,6 +619,36 @@ format: enum { json, yaml, toml }
 // Array: --file a.txt --file b.txt
 files: [][]const u8
 ```
+
+**Numeric value grammar:**
+
+One grammar for every number the CLI surface accepts — integer fields and float
+fields, option values and positional args, CLI values and `.env` values alike:
+
+```
+number   := sign? ( digits ( '.' digits? )? exponent? | '.' digits exponent? | special )
+sign     := '+' | '-'
+digits   := '0'..'9' +
+exponent := ('e' | 'E') sign? digits
+special  := 'inf' | 'infinity' | 'nan'   (case-insensitive, float fields only)
+```
+
+Deliberately **not** Zig literal syntax:
+
+- **Base 10 only.** `0x10`, `0b101`, `0o17` and the hex float `0x1p4` are
+  errors, and a leading zero is not octal — `--port 010` is ten. Zig's
+  `parseFloat` would accept hex floats and Zig's `parseInt` with base 0 would
+  accept prefixes; both are screened out first, so `--count 0x10` and
+  `--scale 0x10` fail the same way instead of one erroring and the other
+  yielding 16.
+- **No `_` digit separators.** `--count 1_000` is an error. Zig literals allow
+  them; no CLI does, and letting them through leaked a language affordance onto
+  the command line.
+- `inf`/`nan` are float-only spellings; an integer field rejects them.
+
+The same predicate decides whether a `-`-leading token reads as a negative
+number rather than an option (`-5`, `-.5`, `-1e9` are values; `-x` is a flag),
+so a token can never be classified as a number and then fail to parse as one.
 
 **Option Conflicts:**
 
