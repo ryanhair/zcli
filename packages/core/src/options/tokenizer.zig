@@ -47,23 +47,60 @@ pub fn OptionsSpec(comptime OptionsType: type, comptime meta: anytype) type {
 
 /// One step of the short-bundle state machine. Indices point into the bundle's
 /// `chars` (the token without its leading `-`), so consumers can slice the
-/// exact one-char spelling for diagnostics (`chars[i .. i + 1]`).
+/// exact spelling for diagnostics.
 pub const ShortStep = union(enum) {
-    /// A boolean flag char — consumes nothing, the walk continues.
+    /// A boolean flag char — consumes nothing, the walk continues. Always one
+    /// byte (`chars[i .. i + 1]`): a declared short is an ASCII `u8`.
     flag: usize,
     /// A char the spec doesn't know. Emitted mid-walk; whether the walk was
     /// worth continuing is the consumer's policy (the options parser errors
     /// here, the pre-split keeps classifying, the global layer never sees one
     /// because `unknown_short_aborts` already marked the bundle unconsumable).
-    unknown: usize,
+    ///
+    /// This is the only step that can span more than one byte: a declared
+    /// short is ASCII, so a multibyte codepoint in a bundle is always unknown,
+    /// and it must be reported whole. Slice it as `chars[index..][0..len]` —
+    /// taking a single byte out of `-é` puts a lone continuation byte in a
+    /// diagnostic, i.e. invalid UTF-8 on the user's terminal (#766).
+    unknown: struct {
+        index: usize,
+        /// Byte length of the codepoint at `index`: 1 for ASCII, and 1 for a
+        /// byte that starts no valid UTF-8 sequence (that byte is reported as
+        /// its own step; the rendering layer replaces it with U+FFFD).
+        len: usize,
+    },
     /// The first value-taking char — always the last step. `attached` is the
     /// rest of the token when the char isn't last (`-ovalue`), else null and
     /// the value must come from the next argv token (`Shorts.next_value`).
+    /// One leading `=` is stripped, so `-o=value` == `-ovalue` (see
+    /// `stripValueEq`).
     value: struct {
         index: usize,
         attached: ?[]const u8,
     },
 };
+
+/// `-o=value` → `value`. Exactly one leading `=` is dropped from an attached
+/// short value, so the short form spells its value the three ways the long form
+/// does: `-oV` / `-o=V` / `-o V` all mean what `--out=V` / `--out V` mean
+/// (#767). GNU getopt would keep the `=` and hand the program `=V`, which is
+/// how `mycli -c=out.txt` silently writes a file named `=out.txt`; docker
+/// (pflag) and cargo (clap) both strip it, and that is what users expect.
+/// A value that genuinely starts with `=` is still writable: double it
+/// (`-o==V` → `=V`) or pass it as the next token (`-o =V`).
+fn stripValueEq(rest: []const u8) []const u8 {
+    return if (rest.len > 0 and rest[0] == '=') rest[1..] else rest;
+}
+
+/// Byte length of the codepoint starting at `bytes[0]`, or 1 when that byte
+/// starts no valid UTF-8 sequence (truncated or malformed). Never returns more
+/// bytes than `bytes` holds, so callers can slice with it unconditionally.
+fn codepointLen(bytes: []const u8) usize {
+    const len = std.unicode.utf8ByteSequenceLength(bytes[0]) catch return 1;
+    if (len > bytes.len) return 1;
+    if (!std.unicode.utf8ValidateSlice(bytes[0..len])) return 1;
+    return len;
+}
 
 /// The short-bundle walk over `chars`, shared by the tokenizer's own
 /// lookahead decision and by consumers that mutate per-char state. GNU getopt
@@ -84,11 +121,22 @@ pub fn ShortWalk(comptime Spec: type) type {
                 self.done = true;
                 return .{ .value = .{
                     .index = idx,
-                    .attached = if (idx + 1 < self.chars.len) self.chars[idx + 1 ..] else null,
+                    .attached = if (idx + 1 < self.chars.len)
+                        stripValueEq(self.chars[idx + 1 ..])
+                    else
+                        null,
                 } };
             }
+            if (takes_value == null) {
+                // Unknown: advance a whole codepoint. A declared short is
+                // ASCII, so a multibyte lead byte can only land here, and the
+                // consumer must be able to report the codepoint intact (#766).
+                const len = codepointLen(self.chars[idx..]);
+                self.i += len;
+                return .{ .unknown = .{ .index = idx, .len = len } };
+            }
             self.i += 1;
-            return if (takes_value == null) .{ .unknown = idx } else .{ .flag = idx };
+            return .{ .flag = idx };
         }
     };
 }
@@ -376,8 +424,80 @@ test "shorts: unknown char — command policy keeps walking and looking ahead" {
     try std.testing.expect(t.consumable);
     try std.testing.expectEqualStrings("out.txt", t.next_value.?);
     var walk = t.walk();
-    try std.testing.expectEqual(@as(usize, 0), walk.next().?.unknown);
+    try std.testing.expectEqual(@as(usize, 0), walk.next().?.unknown.index);
     try std.testing.expectEqual(@as(usize, 1), walk.next().?.value.index);
+}
+
+test "shorts: an unknown multibyte char is one step, sliceable as valid UTF-8 (#766)" {
+    // `-éf out.txt`: `é` is two bytes and can never be a declared short (those
+    // are ASCII), so it is one unknown step spanning the whole codepoint — not
+    // two steps splitting it into a lead byte and a continuation byte.
+    var tok = Tokenizer(TestSpec){ .args = &.{ "-éf", "out.txt" } };
+    const t = tok.next().?.shorts;
+    var walk = t.walk();
+    const u = walk.next().?.unknown;
+    try std.testing.expectEqual(@as(usize, 0), u.index);
+    try std.testing.expectEqual(@as(usize, 2), u.len);
+    const spelling = t.chars[u.index..][0..u.len];
+    try std.testing.expectEqualStrings("é", spelling);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(spelling));
+    // The walk resumed at the next codepoint, not mid-sequence.
+    try std.testing.expectEqual(@as(usize, 2), walk.next().?.value.index);
+}
+
+test "shorts: an unknown step's len never runs past the bundle" {
+    // The boundary on `codepointLen`: a lead byte announcing a longer sequence
+    // than the token actually holds must not hand back a `len` that slices out
+    // of bounds. `chars[index..][0..len]` is what every consumer writes, so
+    // assert on that slice rather than only on the number.
+    const cases = [_]struct { arg: []const u8, spelling: []const u8 }{
+        .{ .arg = "-\xC3", .spelling = "\xC3" }, // 2-byte lead, 1 byte present
+        .{ .arg = "-\xF0\x9F", .spelling = "\xF0" }, // 4-byte lead, 2 bytes present
+        .{ .arg = "-\x80v", .spelling = "\x80" }, // continuation byte, no lead
+        .{ .arg = "-\xC3v", .spelling = "\xC3" }, // lead byte, invalid continuation
+    };
+    for (cases) |c| {
+        const argv = [_][]const u8{c.arg};
+        var tok = Tokenizer(TestSpec){ .args = &argv };
+        const t = tok.next().?.shorts;
+        var walk = t.walk();
+        const u = walk.next().?.unknown;
+        try std.testing.expect(u.index + u.len <= t.chars.len);
+        try std.testing.expectEqualStrings(c.spelling, t.chars[u.index..][0..u.len]);
+    }
+    // Such a byte is still not valid UTF-8 — `writeSanitized` is what makes it
+    // printable, asserted end to end in options/parser.zig.
+}
+
+test "shorts: -o=value strips exactly one '=' (#767)" {
+    {
+        var tok = Tokenizer(TestSpec){ .args = &.{"-f=out.txt"} };
+        var walk = tok.next().?.shorts.walk();
+        try std.testing.expectEqualStrings("out.txt", walk.next().?.value.attached.?);
+    }
+    // Only one: a value that really starts with '=' is spelled by doubling.
+    {
+        var tok = Tokenizer(TestSpec){ .args = &.{"-f==out.txt"} };
+        var walk = tok.next().?.shorts.walk();
+        try std.testing.expectEqualStrings("=out.txt", walk.next().?.value.attached.?);
+    }
+    // `-f=` is an attached empty value, exactly like `--file=`; it does not
+    // fall through to a lookahead.
+    {
+        var tok = Tokenizer(TestSpec){ .args = &.{ "-f=", "word" } };
+        const t = tok.next().?.shorts;
+        try std.testing.expect(t.next_value == null);
+        var walk = t.walk();
+        try std.testing.expectEqualStrings("", walk.next().?.value.attached.?);
+        try std.testing.expectEqualStrings("word", tok.next().?.positional.raw);
+    }
+    // The `=` is only special immediately after the value-taker: mid-value it
+    // is an ordinary character (`--url=a=b` keeps `a=b` too).
+    {
+        var tok = Tokenizer(TestSpec){ .args = &.{"-fa=b"} };
+        var walk = tok.next().?.shorts.walk();
+        try std.testing.expectEqualStrings("a=b", walk.next().?.value.attached.?);
+    }
 }
 
 test "shorts: unknown char — abort policy marks unconsumable, no lookahead" {

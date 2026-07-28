@@ -2,6 +2,7 @@ const std = @import("std");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 const type_utils = @import("type_utils.zig");
 const custom_type = @import("custom_type.zig");
+const option_utils = @import("options/utils.zig");
 
 pub const ZcliError = diagnostic_errors.ZcliError;
 pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
@@ -261,12 +262,15 @@ fn parseValue(comptime T: type, value: []const u8) ZcliError!T {
             }
         },
         .int => {
-            return std.fmt.parseInt(T, value, 10) catch {
+            // The one CLI numeric grammar (options/utils.zig): decimal only,
+            // no base prefixes, no `_` separators — a positional number is
+            // spelled exactly like an option value (#767).
+            return option_utils.parseInt(T, value) catch {
                 return ZcliError.ArgumentInvalidValue;
             };
         },
         .float => {
-            return std.fmt.parseFloat(T, value) catch {
+            return option_utils.parseFloat(T, value) catch {
                 return ZcliError.ArgumentInvalidValue;
             };
         },
@@ -503,6 +507,30 @@ test "parseArgs float types" {
 
     try std.testing.expectApproxEqAbs(@as(f32, 3.14), parsed.ratio, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 2.718281828), parsed.precision, 0.000000001);
+}
+
+test "parseArgs numbers use the one CLI numeric grammar (#767)" {
+    const IntArg = struct { n: u32 };
+    const FloatArg = struct { x: f64 };
+
+    // Decimal only, for positionals exactly as for option values: no base
+    // prefixes and no `_` separators, whichever numeric type the field has.
+    inline for ([_][]const u8{ "0x10", "0b101", "0o17", "1_000", "0x1p4" }) |bad| {
+        const args = [_][]const u8{bad};
+        try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(IntArg, &args, null));
+        try std.testing.expectError(ZcliError.ArgumentInvalidValue, parseArgs(FloatArg, &args, null));
+    }
+
+    // Leading zeros stay decimal, and the ordinary spellings still parse.
+    {
+        const args = [_][]const u8{"010"};
+        try std.testing.expectEqual(@as(u32, 10), (try parseArgs(IntArg, &args, null)).n);
+        try std.testing.expectApproxEqAbs(@as(f64, 10.0), (try parseArgs(FloatArg, &args, null)).x, 0.0001);
+    }
+    {
+        const args = [_][]const u8{"-1.5e3"};
+        try std.testing.expectApproxEqAbs(@as(f64, -1500.0), (try parseArgs(FloatArg, &args, null)).x, 0.0001);
+    }
 }
 
 test "parseArgs optional types" {

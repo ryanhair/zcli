@@ -22,24 +22,41 @@ pub fn isNegativeNumber(arg: []const u8) bool {
     if (arg.len < 2 or arg[0] != '-') {
         return false;
     }
+    return isNumberSpelling(arg[1..]);
+}
 
-    const number_part = arg[1..];
+/// The one numeric spelling the CLI surface accepts, sign already stripped:
+/// decimal digits with an optional `.` fraction and an optional `e`/`E`
+/// exponent, or the IEEE 754 words `inf` / `infinity` / `nan`.
+///
+/// Deliberately *not* Zig-literal syntax: no `_` digit separators and no base
+/// prefixes (`0x10`, `0b1`, `0o7`, or the hex float `0x1p4`). This predicate
+/// decides both whether a `-`-leading token reads as a number instead of an
+/// option (`isNegativeNumber`) and whether a value parses as one
+/// (`parseInt` / `parseFloat`), so a CLI can never classify a token one way and
+/// parse it the other (#767). Documented in docs/DESIGN.md, "Numeric value
+/// grammar".
+pub fn isNumberSpelling(s: []const u8) bool {
+    if (s.len == 0) return false;
 
     // Fast path: check for simple cases first (most common)
-    // Check if the second character is a digit (common integer case)
-    if (number_part[0] >= '0' and number_part[0] <= '9') {
-        return isSimpleNumber(number_part);
+    // Check if the first character is a digit (common integer case)
+    if (s[0] >= '0' and s[0] <= '9') {
+        return isSimpleNumber(s);
     }
 
-    // Fast path: check for decimal starting with dot (e.g., "-.5")
-    if (number_part[0] == '.' and number_part.len > 1 and
-        number_part[1] >= '0' and number_part[1] <= '9')
-    {
-        return isSimpleDecimal(number_part);
+    // Fast path: check for decimal starting with dot (e.g., ".5")
+    if (s[0] == '.' and s.len > 1 and s[1] >= '0' and s[1] <= '9') {
+        return isSimpleDecimal(s);
     }
 
     // Slow path: complex patterns
-    return isComplexNumber(number_part);
+    return isComplexNumber(s);
+}
+
+/// Drop one leading `+`/`-` sign, leaving the part `isNumberSpelling` grades.
+fn withoutSign(value: []const u8) []const u8 {
+    return if (value.len > 0 and (value[0] == '+' or value[0] == '-')) value[1..] else value;
 }
 
 /// Fast validation for simple numbers (digits with optional decimal point)
@@ -251,7 +268,20 @@ pub fn requiredPlaceholder(comptime T: type) T {
     };
 }
 
-/// Enhanced float parsing with IEEE 754 special values support
+/// Which float-format error a rejected spelling reports: the common
+/// double-decimal typo gets named, everything else is a generic format error.
+fn floatFormatError(value: []const u8) error{ MultipleDecimalPoints, InvalidFloatFormat } {
+    if (std.mem.count(u8, value, ".") > 1) return error.MultipleDecimalPoints;
+    return error.InvalidFloatFormat;
+}
+
+/// Parse a float in the CLI numeric grammar (`isNumberSpelling`), with IEEE 754
+/// special values.
+///
+/// The spelling is screened *before* `std.fmt.parseFloat`, which is a Zig
+/// literal parser and would otherwise accept `1_000` and the hex float `0x1p4`
+/// — spellings `parseInt` rejects for the same command line, and that
+/// `isNegativeNumber` already refuses to read as numbers (#767).
 pub fn parseFloat(comptime T: type, value: []const u8) !T {
     // Handle special IEEE 754 values
     if (std.ascii.eqlIgnoreCase(value, "inf") or
@@ -270,14 +300,21 @@ pub fn parseFloat(comptime T: type, value: []const u8) !T {
         return std.math.nan(T);
     }
 
-    // Use standard parsing with better error handling
-    return std.fmt.parseFloat(T, value) catch {
-        // Check for specific common mistakes
-        if (std.mem.count(u8, value, ".") > 1) {
-            return error.MultipleDecimalPoints;
-        }
-        return error.InvalidFloatFormat;
-    };
+    if (!isNumberSpelling(withoutSign(value))) return floatFormatError(value);
+
+    return std.fmt.parseFloat(T, value) catch return floatFormatError(value);
+}
+
+/// Parse an integer in the CLI numeric grammar: an optional sign then decimal
+/// digits, nothing else.
+///
+/// Base 10 is explicit so `010` is ten rather than octal eight, and the
+/// spelling screen additionally rejects `1_000` — which `std.fmt.parseInt`
+/// accepts as a Zig literal but no CLI does (#767). Overflow for `T` is still
+/// `error.Overflow` from the standard parser.
+pub fn parseInt(comptime T: type, value: []const u8) !T {
+    if (!isValidInteger(withoutSign(value))) return error.InvalidIntegerFormat;
+    return std.fmt.parseInt(T, value, 10);
 }
 
 /// Parse a value for an option
@@ -293,8 +330,9 @@ pub fn parseOptionValue(comptime T: type, value: []const u8) !T {
             }
         },
         .int => {
-            // Use base 10 exclusively to avoid ambiguity with octal (010) or hex (0x10)
-            return std.fmt.parseInt(T, value, 10) catch {
+            // One decimal-only grammar for ints and floats alike: no base
+            // prefixes (`010` is ten, `0x10` is an error) and no `_` separators.
+            return parseInt(T, value) catch {
                 return error.InvalidOptionValue;
             };
         },
@@ -458,6 +496,46 @@ test "parseFloat function - error cases" {
     try std.testing.expectError(error.InvalidFloatFormat, parseFloat(f64, "not_a_number"));
     try std.testing.expectError(error.InvalidFloatFormat, parseFloat(f64, "1e"));
     try std.testing.expectError(error.InvalidFloatFormat, parseFloat(f64, "e5"));
+}
+
+test "numeric grammar: ints and floats agree on base and separators (#767)" {
+    // No base prefixes, for either type. `--count 0x10` and `--scale 0x10` are
+    // both errors; neither is 16.
+    inline for ([_][]const u8{ "0x10", "0X10", "0b101", "0o17", "0x1p4" }) |v| {
+        try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(i32, v));
+        try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(f64, v));
+    }
+
+    // No `_` digit separators — a Zig literal affordance, not a CLI one.
+    inline for ([_][]const u8{ "1_000", "1_000.5", "1_0e3" }) |v| {
+        try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(u32, v));
+        try std.testing.expectError(error.InvalidOptionValue, parseOptionValue(f64, v));
+    }
+
+    // A leading zero stays decimal for both, and the ordinary spellings work.
+    try std.testing.expectEqual(@as(i32, 10), try parseOptionValue(i32, "010"));
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), try parseOptionValue(f64, "010"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), try parseOptionValue(f64, "1.5"), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1500.0), try parseOptionValue(f64, "1.5e3"), 0.0001);
+    try std.testing.expectEqual(@as(i32, 5), try parseOptionValue(i32, "+5"));
+
+    // The parse grammar and the token classifier are the same grammar: a token
+    // this parser rejects is not read as a negative number either.
+    try std.testing.expect(!isNegativeNumber("-0x10"));
+    try std.testing.expect(!isNegativeNumber("-1_000"));
+    try std.testing.expect(isNegativeNumber("-1.5e3"));
+}
+
+test "parseInt rejects non-decimal spellings before std.fmt sees them" {
+    try std.testing.expectEqual(@as(u32, 1000), try parseInt(u32, "1000"));
+    try std.testing.expectEqual(@as(i32, -7), try parseInt(i32, "-7"));
+    try std.testing.expectError(error.InvalidIntegerFormat, parseInt(u32, "1_000"));
+    try std.testing.expectError(error.InvalidIntegerFormat, parseInt(u32, "0x10"));
+    try std.testing.expectError(error.InvalidIntegerFormat, parseInt(u32, "1.5"));
+    try std.testing.expectError(error.InvalidIntegerFormat, parseInt(u32, ""));
+    try std.testing.expectError(error.InvalidIntegerFormat, parseInt(u32, "-"));
+    // Range failures still come from the standard parser.
+    try std.testing.expectError(error.Overflow, parseInt(u8, "256"));
 }
 
 test "parseFloat function - edge cases" {

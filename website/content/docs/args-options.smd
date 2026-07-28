@@ -34,6 +34,42 @@ pub const Options = struct {
 
 Parsing is GNU-style: options and positionals interleave freely, `--option value` and `--option=value` both work, and `--` ends option parsing so everything after it is positional.
 
+## Option syntax
+
+A short option spells its value the same three ways the long form does, and the `=` is syntax rather than data — exactly one leading `=` is stripped:
+
+```sh
+myapp deploy --output json      # long, separate token
+myapp deploy --output=json      # long, attached
+myapp deploy -o json            # short, separate token
+myapp deploy -ojson             # short, attached
+myapp deploy -o=json            # short, attached with '=' — same thing
+```
+
+(`-o=json` sets `json`, never `=json`. A value that really starts with `=` is written `-o==json` or `-o "=json"`.)
+
+Short flags **bundle**, GNU-style — `tar -czf archive.tgz` works here too:
+
+```sh
+myapp deploy -vq                # -v -q
+myapp deploy -vqf out.txt       # -v -q -f out.txt
+myapp deploy -vqfout.txt        # same
+```
+
+The first value-taking char ends the bundle and claims the rest of the token — or the next token, if it's last. So chars after a value-taking short are its value, not more flags: with a value-taking `-f`, `-fv x` sets `f` to `v` and leaves `x` a positional. A following token is only taken as a value if it isn't itself an option: `-f --verbose` is a missing value, not a swallowed flag.
+
+Shorts are single ASCII characters and exist only where `meta.options.<field>.short` declares one — no flag is derived from a field's first letter.
+
+## Numbers
+
+Numbers use one grammar everywhere — integer fields and float fields, options and positionals, CLI values and env values:
+
+- **Decimal only.** `--port 010` is ten (not octal), and `0x10` / `0b101` / `0o17` are errors for every numeric field. No hex floats either.
+- **No `_` separators.** `--count 1_000` is an error; that's Zig literal syntax, not CLI syntax.
+- Floats additionally accept `1.5e3` exponents and the case-insensitive `inf` / `infinity` / `nan`.
+
+The same grammar decides whether a `-`-leading token is a negative number or a flag, so `--offset -5` and a positional `-1.5e3` are values, while `-x` is an option.
+
 `--` ends the option namespace it appears in. Before the command name it is consumed by routing — `myapp -- deploy` runs `deploy`, so the `myapp -- "$@"` wrapper idiom is safe for user data that starts with a dash. After the command name it reaches that command's own parser: `myapp add -- --weird` stores `--weird` as a positional. (A single-command app shares the top-level namespace, so `myapp -- -x` hands its root command `-x` as a positional.)
 
 ## Positional args
