@@ -288,11 +288,16 @@ pub const App = struct {
                 "next to `pub const panic`:\n\n" ++
                 "    pub const debug = zcli.ui.debug;\n\n" ++
                 "(standalone ui users: `pub const debug = ui.debug;`)\n\n" ++
+                "Required in EVERY build mode, including the ones that never call it. std only " ++
+                "installs the fault handler that reaches this hook when " ++
+                "`std.options.enable_segfault_handler` is on, and that follows `runtime_safety` " ++
+                "— so Debug and ReleaseSafe call it, ReleaseFast and ReleaseSmall do not. In " ++
+                "those last two `terminal.guard` catches the four signals itself and this decl " ++
+                "goes unused. It is still required there, because the requirement is on your " ++
+                "source and not on your `-Doptimize`: one program must not compile in one mode " ++
+                "and fail to compile in another.\n\n" ++
                 "Same caveat as the panic check: this can only see that the decl exists, not " ++
-                "that it calls `terminal.guard.restore()`. And it covers only the builds where " ++
-                "std installs its fault handler at all (`std.options.enable_segfault_handler`, " ++
-                "on by default in Debug/ReleaseSafe) — in ReleaseFast std installs nothing, and " ++
-                "`terminal.guard` catches the four signals itself instead.",
+                "that it calls `terminal.guard.restore()`.",
         );
     }
 

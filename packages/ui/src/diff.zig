@@ -61,6 +61,26 @@ pub const Renderer = struct {
         // and with `?2026h` still in effect leaves the display frozen until the
         // terminal's own BSU timeout (#760). `finish` is idempotent, so the
         // success path's `try st.finish()` below does not double-emit.
+        //
+        // Best-effort, and worth being precise about what that means, since the
+        // only way to reach it is a writer error. `std.Io.Writer` keeps no
+        // sticky error flag — `error.WriteFailed` is per call, and `File.Writer`
+        // records the errno but retries the syscall on the next drain — so these
+        // bytes are not dead on arrival by construction. Three outcomes:
+        //
+        //   - The usual one: the paint failed on a *drain*, and `finish`'s
+        //     handful of bytes fit in the writer's buffer. They reach the
+        //     terminal on the next successful flush, which `App.deinit` always
+        //     attempts. This is the case the fix is for.
+        //   - The sink is genuinely dead (EPIPE on a closed pipe): nothing gets
+        //     out — but then the sink was never a terminal, so there is no
+        //     terminal state stranded to care about.
+        //   - The writer is a fixed buffer with no room left: dropped. Only
+        //     tests paint into one of those.
+        //
+        // So this closes the real case and cannot make any case worse. It is NOT
+        // a guarantee that the terminal is restored; `terminal.guard` is what
+        // covers the paths where no writer survives at all.
         errdefer st.finish() catch {};
 
         var row: u16 = 0;
@@ -247,6 +267,115 @@ fn paintToString(
     defer aw.deinit();
     try r.paint(&aw.writer, prev, next);
     return allocator.dupe(u8, aw.written());
+}
+
+/// A writer that logs everything it drains, except for one nominated drain call
+/// which fails instead — the shape of a real mid-paint failure, where a buffered
+/// writer takes most writes into its buffer and only the occasional drain
+/// touches the sink.
+///
+/// The failure is deliberately NOT sticky, because `std.Io.Writer` isn't: a
+/// `File.Writer` records the errno and retries on the next drain. That is what
+/// makes `paint`'s `errdefer` worth having — the restore bytes still have a
+/// route out — and a permanently-failing writer would test the opposite
+/// assumption.
+const FlakyWriter = struct {
+    /// Small on purpose: a big buffer would swallow the whole frame and never
+    /// drain, so the failure could never land mid-paint.
+    buf: [8]u8 = undefined,
+    interface: std.Io.Writer = undefined,
+    log: std.ArrayList(u8) = .empty,
+    gpa: std.mem.Allocator,
+    calls: usize = 0,
+    fail_at: usize,
+
+    /// Initialized in place: `interface.buffer` points into `self`, so the
+    /// struct can't be returned by value.
+    fn init(self: *FlakyWriter, gpa: std.mem.Allocator, fail_at: usize) void {
+        self.* = .{ .gpa = gpa, .fail_at = fail_at };
+        self.interface = .{ .vtable = &vtable, .buffer = &self.buf };
+    }
+
+    fn deinit(self: *FlakyWriter) void {
+        self.log.deinit(self.gpa);
+    }
+
+    const vtable: std.Io.Writer.VTable = .{ .drain = drain };
+
+    fn drain(io_w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *FlakyWriter = @alignCast(@fieldParentPtr("interface", io_w));
+        const call = self.calls;
+        self.calls += 1;
+        // Fail before consuming anything, the way a failed `write(2)` does.
+        if (call == self.fail_at) return error.WriteFailed;
+
+        // Contract: buffered bytes first, then each slice of `data`, with the
+        // last one repeated `splat` times. Only `data` counts toward the return.
+        self.log.appendSlice(self.gpa, io_w.buffered()) catch return error.WriteFailed;
+        io_w.end = 0;
+
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            self.log.appendSlice(self.gpa, bytes) catch return error.WriteFailed;
+            n += bytes.len;
+        }
+        const pattern = data[data.len - 1];
+        for (0..splat) |_| {
+            self.log.appendSlice(self.gpa, pattern) catch return error.WriteFailed;
+            n += pattern.len;
+        }
+        return n;
+    }
+};
+
+// The #760 error-path regression test. `start` turns autowrap off and opens the
+// sync guard for the paint's duration; before the `errdefer`, a paint that threw
+// between those and `finish` left both set on a terminal it no longer owned.
+//
+// Swept over every drain index rather than pinned to one, so the test doesn't
+// encode the exact byte arithmetic of a frame (which any renderer change would
+// shift). The invariant is unconditional: if the paint got far enough to turn
+// the modes ON, the bytes that turn them OFF are on their way out too.
+test "a paint that fails midway still closes the modes it opened" {
+    var next = try Surface.init(testing.allocator, 12, 3);
+    defer next.deinit();
+    _ = try next.root().writeText(0, 0, "hello there", .{});
+    _ = try next.root().writeText(0, 1, "second row", .{});
+
+    var saw_interrupted_paint = false;
+    for (0..24) |fail_at| {
+        var fw: FlakyWriter = undefined;
+        fw.init(testing.allocator, fail_at);
+        defer fw.deinit();
+
+        const r = Renderer{ .capability = .ansi_16, .sync = true };
+        const result = r.paint(&fw.interface, null, &next);
+        // The restore bytes land in the writer's buffer; a later flush is what
+        // puts them on the wire. `App.deinit` always attempts one — this is that
+        // flush, and by now the flaky drain has moved past `fail_at`.
+        fw.interface.flush() catch {};
+
+        const opened = std.mem.indexOf(u8, fw.log.items, wrap_off) != null;
+        if (result) |_| {
+            // Completed frames are covered by the other tests here; nothing to
+            // prove on the success path.
+            continue;
+        } else |_| {
+            if (!opened) continue; // failed before `start` — nothing was opened
+            saw_interrupted_paint = true;
+            try testing.expect(std.mem.lastIndexOf(u8, fw.log.items, wrap_on) != null);
+            try testing.expect(std.mem.lastIndexOf(u8, fw.log.items, sync_off) != null);
+            // Ordering, not just presence: the close has to come after the open.
+            try testing.expect(
+                std.mem.lastIndexOf(u8, fw.log.items, wrap_on).? >
+                    std.mem.lastIndexOf(u8, fw.log.items, wrap_off).?,
+            );
+        }
+    }
+    // Guards the test itself: if a renderer change made the frame small enough
+    // to never drain, every iteration would `continue` and this would assert
+    // nothing at all.
+    try testing.expect(saw_interrupted_paint);
 }
 
 test "unchanged frame emits zero bytes" {

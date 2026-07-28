@@ -29,6 +29,13 @@
 //! instance — the same one-active-takeover assumption the SIGWINCH watcher already
 //! makes. Takeovers *nest*, though (a `prompts` prompt opened inside a full-screen
 //! App), so the registration is a stack rather than a single slot: see `stack`.
+//!
+//! The one race to know about, since it is deliberate and not a bug: `arm`,
+//! `rearm` and `disarm` withdraw the guard (`active` → 0) for the few stores it
+//! takes to rewrite the stack, so a signal that lands in that window restores
+//! *nothing*. That is the chosen trade — restoring nothing beats a handler
+//! reading a half-written entry — and it is why the App arms BEFORE it writes
+//! any takeover bytes rather than after. `restore` documents the reader's half.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -223,6 +230,18 @@ pub fn disarm() void {
 /// the alt-screen-less blob and an already-raw "original" termios, so stopping
 /// there would leave the alt-screen up and the terminal raw. The outermost entry
 /// is written last and therefore wins (#761).
+///
+/// Two consequences of that walk, worth knowing before touching this:
+///
+///  - It is up to `max_depth` `write`s AND up to `max_depth` `tcsetattr`s, not
+///    one of each. All of them are async-signal-safe, so this is a cost question
+///    and not a correctness one — but do not assume "the handler makes a single
+///    syscall". In practice the stack is one deep, two while a prompt is open.
+///  - It replays NOTHING if it interleaves with an `arm`/`rearm`/`disarm` on the
+///    main thread: those withdraw `active` to 0 for the duration of their writes
+///    (see `set`). That window is a few stores wide and is the deliberate price
+///    of never letting a handler observe a half-written entry — a signal landing
+///    inside it restores nothing rather than restoring garbage.
 pub fn restore() void {
     var i = active.load(.acquire);
     while (i > 0) {
