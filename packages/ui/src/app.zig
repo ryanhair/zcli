@@ -278,27 +278,32 @@ pub const App = struct {
         // A panic hook alone is not crash coverage: Zig does NOT route hardware
         // faults through `root.panic`. SIGSEGV/SIGILL/SIGBUS/SIGFPE go to
         // `root.debug.handleSegfault` instead, and a segfault is the crash a TUI
-        // is most likely to hit (#759). Requiring only `panic` therefore made a
-        // promise it could not keep — the check said "covered" while a null
-        // deref still stranded the terminal in the alt-screen.
-        if (!@hasDecl(root, "debug") or !@hasDecl(root.debug, "handleSegfault")) @compileError(
-            "ui.App requires a segfault handler too: Zig routes SIGSEGV/SIGILL/SIGBUS/SIGFPE " ++
-                "through `root.debug.handleSegfault`, NOT through `root.panic`, so the panic " ++
-                "hook above does not cover them. Add to your root source file (main.zig), " ++
-                "next to `pub const panic`:\n\n" ++
-                "    pub const debug = zcli.ui.debug;\n\n" ++
-                "(standalone ui users: `pub const debug = ui.debug;`)\n\n" ++
-                "Required in EVERY build mode, including the ones that never call it. std only " ++
-                "installs the fault handler that reaches this hook when " ++
-                "`std.options.enable_segfault_handler` is on, and that follows `runtime_safety` " ++
-                "— so Debug and ReleaseSafe call it, ReleaseFast and ReleaseSmall do not. In " ++
-                "those last two `terminal.guard` catches the four signals itself and this decl " ++
-                "goes unused. It is still required there, because the requirement is on your " ++
-                "source and not on your `-Doptimize`: one program must not compile in one mode " ++
-                "and fail to compile in another.\n\n" ++
-                "Same caveat as the panic check: this can only see that the decl exists, not " ++
-                "that it calls `terminal.guard.restore()`.",
-        );
+        // is most likely to hit (#759). So `pub const debug = zcli.ui.debug;`
+        // belongs next to `pub const panic` in every root source file, and the
+        // framework's own examples declare it.
+        //
+        // It is NOT enforced here, and the reason is a versioning constraint
+        // rather than a change of heart. zcli ships as two independently-tagged
+        // artifacts (the `zcli-v*` CLI and the `v*` library), so a newer CLI
+        // scaffolding against an older pinned library is a supported combination
+        // — `projects/zcli/test/e2e.zig`'s "#623" test pins exactly that, and
+        // `ui.debug` exists in no published release yet.
+        //
+        // The scaffold handles its own side: `renderMainZig` emits the decl only
+        // when the pinned version carries it (`debugHookSupported`), so a project
+        // generated against 0.22.0 correctly omits it. That is also precisely why
+        // this cannot be a `@compileError` — such a project is *legitimately*
+        // hook-less, and must still build. Making the decl mandatory would reject
+        // the very output the scaffold is required to produce.
+        //
+        // The `panic` check above avoids this only because `ui.panic` was already
+        // released when it landed. This one gets the same treatment one release
+        // later: once a `v*` tag carries `ui.debug`, every supported pin has it,
+        // `debugHookSupported` is true everywhere, and this can become a
+        // `@compileError` like its neighbour. Until then the hook works for
+        // anyone who declares it — the framework's own examples do — and
+        // ReleaseFast/ReleaseSmall are covered regardless by `terminal.guard`'s
+        // own fault handlers, which need no root declaration at all.
     }
 
     /// Panic handler that restores the terminal (replays the `terminal.guard`
