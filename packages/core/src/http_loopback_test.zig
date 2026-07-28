@@ -301,6 +301,36 @@ test "a redirect to a non-https remote host fails with InsecureRedirect" {
     try testing.expectError(Error.InsecureRedirect, client.get(url));
 }
 
+test "a credentialed request refuses the same redirect, with the token in flight" {
+    const io = testing.io;
+
+    var addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    // Same downgrade, but the request carries `authorization`: the first hop is
+    // loopback (the carve-out, so the header legitimately goes out) and the
+    // server then points at plain http on a remote host. The guard must fire on
+    // the redirect *target*, before the client dials it — the case that matters
+    // most, since the destination is entirely server-controlled and a bearer
+    // token is in flight.
+    const http_remote = "http://cdn.example.com/file";
+    var future = try io.concurrent(serveOneRedirect, .{ io, &server, @as([]const u8, http_remote) });
+    defer future.await(io);
+
+    var client = Client.init(testing.allocator, io, .{});
+    defer client.deinit();
+
+    const url = try loopbackUrl(port);
+    defer testing.allocator.free(url);
+
+    try testing.expectError(
+        Error.InsecureRedirect,
+        client.request(.GET, url, .{ .headers = &redirect_test_headers }),
+    );
+}
+
 test "a request that outlives its timeout fails with error.Timeout" {
     const io = testing.io;
 

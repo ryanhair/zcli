@@ -1,6 +1,6 @@
 ---
 .title = "zcli — HTTP client",
-.description = "zcli.http.Client — an HTTP client with safe defaults baked in: enforced TLS verification, request timeouts, bounded response bodies, redirect limits, and credential stripping on cross-origin redirects.",
+.description = "zcli.http.Client — an HTTP client with safe defaults baked in: HTTPS-only requests, enforced TLS verification, request timeouts, bounded response bodies, redirect limits, and credential stripping on cross-origin redirects.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -11,6 +11,7 @@
 CLIs talk to APIs, and hand-rolled HTTP code tends to skip the unglamorous parts — timeouts, response limits, redirect hygiene. `zcli.http.Client` wraps `std.http` with **safe defaults you can't accidentally lose**:
 
 - **TLS verification is mandatory.** There is no knob to disable it.
+- **Every request is HTTPS.** A plain `http://` URL is refused before a connection is opened (`error.InsecureTransport`, or `error.InsecureCredentialTransport` when the request carried a credential header), and a redirect to one is refused too (`error.InsecureRedirect`). Loopback (`127.0.0.0/8`, `::1`, `localhost`) is the sole carve-out, so local dev servers still work.
 - **Requests time out** — 30 seconds by default, configurable per client or per request.
 - **Response bodies are bounded** — 10 MiB by default (`error.ResponseTooLarge` beyond it), so a misbehaving server can't balloon your process.
 - **Redirects are bounded** (3) and only followed for bodyless requests — and `Authorization`, `Cookie`, and `Proxy-Authorization` headers are **stripped on cross-origin redirects**, so a redirect can't exfiltrate a token.

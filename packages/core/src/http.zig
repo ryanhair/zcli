@@ -28,13 +28,16 @@
 //!   are kept across all redirects. (This is why the wrapper follows redirects
 //!   itself: as of 0.16, `std.http.Client`'s auto-follow re-sends every extra
 //!   header to the redirect target regardless of origin.)
-//! - **Credential headers never ride cleartext to a remote host.** A request
-//!   that carries one of those credential headers over a non-`https` scheme
-//!   fails with `error.InsecureCredentialTransport` — checked on every hop, so a
-//!   same-origin `http`→`http` redirect cannot smuggle a token onto the wire
-//!   either. The sole carve-out is loopback (`127.0.0.0/8`, `::1`, `localhost`),
-//!   which is a secure transport in practice (nothing on the wire) and is what
-//!   the loopback integration tests exercise; every real caller uses `https`.
+//! - **Every request is HTTPS.** A request to a non-`https` URL fails with
+//!   `error.InsecureTransport` before a connection is opened, and a redirect to
+//!   one fails with `error.InsecureRedirect` — one rule checked on every hop, so
+//!   the client never *starts* from a destination it would refuse to follow to.
+//!   A hop that would have carried a credential header gets the more specific
+//!   `error.InsecureCredentialTransport`, because a token about to go on the
+//!   wire in cleartext is worth naming. The sole carve-out is loopback
+//!   (`127.0.0.0/8`, `::1`, `localhost`), which is a secure transport in
+//!   practice (nothing on the wire) and is what the loopback integration tests
+//!   exercise; every real caller uses `https`.
 //! - **Each request has an overall timeout** (default `default_timeout`) so a
 //!   hung or dead server cannot make a command hang forever. See "Timeouts".
 //!
@@ -89,10 +92,14 @@ pub const Error = error{
     Timeout,
     /// A redirect chain exceeded `max_redirects`.
     TooManyRedirects,
-    /// A request carrying a credential header (`authorization`, `cookie`, or
-    /// `proxy-authorization`) targeted a non-`https` origin that is not
-    /// loopback. Refused fail-closed so a bearer token / cookie is never put on
-    /// the wire in cleartext to a remote host.
+    /// A request targeted a non-`https` origin that is not loopback. This client
+    /// is HTTPS-only: refused fail-closed, before a connection is opened, rather
+    /// than putting the request on the wire in cleartext.
+    InsecureTransport,
+    /// The same refusal as `InsecureTransport`, for a request that was also
+    /// carrying a credential header (`authorization`, `cookie`, or
+    /// `proxy-authorization`). Reported distinctly because the cleartext hop
+    /// would have leaked a bearer token / cookie, not just the request.
     InsecureCredentialTransport,
     /// A redirect pointed to a non-`https` URL. This client is HTTPS-only at
     /// request time, and redirects must stay on HTTPS. Loopback is the sole
@@ -137,8 +144,8 @@ fn sameOrigin(a: std.Uri, b: std.Uri) bool {
     return (a.port orelse defaultPort(a.scheme)) == (b.port orelse defaultPort(b.scheme));
 }
 
-/// True when `host` is a loopback address — the one carve-out where a credential
-/// header may travel over cleartext `http`, because nothing leaves the machine.
+/// True when `host` is a loopback address — the one carve-out where this client
+/// speaks cleartext `http` at all, because nothing leaves the machine.
 /// Covers the IPv4 loopback block `127.0.0.0/8`, the IPv6 loopback `::1` (with or
 /// without brackets), and the literal name `localhost`.
 fn isLoopbackHost(host: []const u8) bool {
@@ -153,10 +160,12 @@ fn isLoopbackHost(host: []const u8) bool {
     } else |_| return false;
 }
 
-/// A credential-bearing request may go out only over `https`, or to a loopback
-/// host over any scheme. Returns false for anything else (cleartext to a remote
-/// host), which the request loop turns into `error.InsecureCredentialTransport`.
-fn credentialTransportOk(uri: std.Uri) bool {
+/// A request may go out only over `https`, or to a loopback host over any
+/// scheme. Returns false for anything else (cleartext to a remote host), which
+/// the request loop turns into `error.InsecureTransport` — or
+/// `error.InsecureCredentialTransport` when the hop carried a credential header,
+/// and `error.InsecureRedirect` when it was a redirect target.
+fn transportOk(uri: std.Uri) bool {
     if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) return true;
     var host_buf: [256]u8 = undefined;
     const host = (uri.host orelse return false).toRaw(&host_buf) catch return false;
@@ -412,13 +421,19 @@ pub const Client = struct {
         while (true) {
             const uri = try std.Uri.parse(current_url);
 
-            // Fail closed before opening the connection: a credential header must
-            // never travel in cleartext to a remote host. This covers the initial
-            // request and every same-origin `http`→`http` redirect hop (a hop that
-            // leaves the origin has already cleared `send_credentials`). `https`
-            // and loopback are the only origins allowed to carry credentials.
-            if (send_credentials and has_credentials and !credentialTransportOk(uri)) {
-                return Error.InsecureCredentialTransport;
+            // Fail closed before opening the connection: this client is
+            // HTTPS-only, so nothing goes out in cleartext to a remote host —
+            // the same rule the redirect check below applies, held here too so
+            // the client cannot start from a destination it would refuse to
+            // follow to. `https` and loopback are the only origins allowed.
+            // A hop that would have carried a credential header says so
+            // specifically (a hop that left the origin has already cleared
+            // `send_credentials`, so its token is gone by then).
+            if (!transportOk(uri)) {
+                return if (has_credentials and send_credentials)
+                    Error.InsecureCredentialTransport
+                else
+                    Error.InsecureTransport;
             }
 
             const hop_headers = headers.items[0..if (send_credentials)
@@ -470,7 +485,7 @@ pub const Client = struct {
                     // host. Integrity is already protected by minisign + checksum,
                     // but belt-and-suspenders: a server-controlled redirect must
                     // never silently move a connection off TLS.
-                    if (!credentialTransportOk(next_uri)) return Error.InsecureRedirect;
+                    if (!transportOk(next_uri)) return Error.InsecureRedirect;
 
                     if (!sameOrigin(uri, next_uri)) send_credentials = false;
                     // A 303 means "GET the result of what you sent".
@@ -679,18 +694,43 @@ test "isLoopbackHost recognizes loopback names and addresses only" {
     try testing.expect(!isLoopbackHost("::2"));
 }
 
-test "credentialTransportOk allows https and loopback, refuses cleartext to a remote host" {
+test "transportOk allows https and loopback, refuses cleartext to a remote host" {
     const parse = std.Uri.parse;
     // https anywhere is fine.
-    try testing.expect(credentialTransportOk(try parse("https://api.example.com/")));
-    try testing.expect(credentialTransportOk(try parse("https://127.0.0.1:8443/")));
+    try testing.expect(transportOk(try parse("https://api.example.com/")));
+    try testing.expect(transportOk(try parse("https://127.0.0.1:8443/")));
     // http only on loopback.
-    try testing.expect(credentialTransportOk(try parse("http://127.0.0.1:8080/")));
-    try testing.expect(credentialTransportOk(try parse("http://localhost:8080/")));
-    try testing.expect(credentialTransportOk(try parse("http://[::1]:8080/")));
+    try testing.expect(transportOk(try parse("http://127.0.0.1:8080/")));
+    try testing.expect(transportOk(try parse("http://localhost:8080/")));
+    try testing.expect(transportOk(try parse("http://[::1]:8080/")));
     // http to a remote host is refused — this is the leak the guard closes.
-    try testing.expect(!credentialTransportOk(try parse("http://api.example.com/")));
-    try testing.expect(!credentialTransportOk(try parse("http://10.0.0.5/")));
+    try testing.expect(!transportOk(try parse("http://api.example.com/")));
+    try testing.expect(!transportOk(try parse("http://10.0.0.5/")));
+    try testing.expect(!transportOk(try parse("http://192.168.1.1/file")));
+    try testing.expect(!transportOk(try parse("http://cdn.example.com/file")));
+}
+
+test "a plain-http request to a remote host is refused before connecting" {
+    var client = Client.init(testing.allocator, testing.io, .{});
+    defer client.deinit();
+
+    // No credential header anywhere: the HTTPS-only rule still fires, so the
+    // client never opens a cleartext connection to these hosts (nothing here
+    // touches the network).
+    try testing.expectError(
+        Error.InsecureTransport,
+        client.get("http://api.example.com/data"),
+    );
+    try testing.expectError(
+        Error.InsecureTransport,
+        client.post("http://10.0.0.5/ingest", .{ .body = "payload", .content_type = "text/plain" }),
+    );
+    // A non-credential header does not change the verdict.
+    const plain = [_]Header{.{ .name = "accept", .value = "application/json" }};
+    try testing.expectError(
+        Error.InsecureTransport,
+        client.request(.GET, "http://api.example.com/", .{ .headers = &plain }),
+    );
 }
 
 test "a credentialed request over cleartext to a remote host is refused before connecting" {
@@ -698,7 +738,7 @@ test "a credentialed request over cleartext to a remote host is refused before c
     defer client.deinit();
 
     // An authorization header over plain http to a non-loopback host must fail
-    // closed with InsecureCredentialTransport, without any network work.
+    // closed with the credential-specific error, without any network work.
     const creds = [_]Header{.{ .name = "authorization", .value = "Bearer secret-token" }};
     try testing.expectError(
         Error.InsecureCredentialTransport,
@@ -721,20 +761,10 @@ test "redirectTarget follows only real redirect statuses" {
     try testing.expect(redirectTarget(.found, null) == null);
 }
 
-test "a credentialed request with an https-to-http redirect to a remote host is refused" {
-    // credentialTransportOk is already unit-tested above; this test proves the
-    // same guard fires on redirect targets that are not HTTPS and not loopback,
-    // without opening a real connection.
-    const parse = std.Uri.parse;
-    // HTTPS is allowed.
-    try testing.expect(credentialTransportOk(try parse("https://cdn.example.com/file")));
-    // HTTP on loopback is the test carve-out.
-    try testing.expect(credentialTransportOk(try parse("http://127.0.0.1:8080/file")));
-    try testing.expect(credentialTransportOk(try parse("http://localhost/file")));
-    // HTTP to a remote host is the downgrade we block.
-    try testing.expect(!credentialTransportOk(try parse("http://cdn.example.com/file")));
-    try testing.expect(!credentialTransportOk(try parse("http://192.168.1.1/file")));
-}
+// The redirect guard itself is exercised end-to-end, against a real loopback
+// server, by http_loopback_test.zig ("a redirect to a non-https remote host…"
+// and its credentialed sibling) — a predicate re-assertion here would only
+// restate the `transportOk` test above without touching the redirect path.
 
 test "an invalid URL fails before any network work" {
     var client = Client.init(testing.allocator, testing.io, .{});
