@@ -11,18 +11,45 @@
 #   - the signature must name the release tag being installed, as a whole
 #     token, so a genuinely-signed OLDER release cannot be replayed under a
 #     newer tag (downgrade/replay — CWE-294)
-#   - latest-version resolution via the GitHub Releases API (install.sh has
-#     no pinned-version mode to mirror; both always install latest)
+#   - latest-version resolution from the GitHub release LIST, taking the newest
+#     `zcli-v*` tag, so the library tag that publishes ahead of the still-draft
+#     CLI tag cannot derail an install (install.sh has no pinned-version mode to
+#     mirror; both always install latest)
 
 $ErrorActionPreference = 'Stop'
 
 # Require TLS 1.2 or newer for every request this script makes.
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+#
+# ASSIGN the protocol set; do not -bor into whatever was already there. OR-ing
+# only *permits* TLS 1.2, leaving SSL 3.0 / TLS 1.0 / TLS 1.1 enabled and still
+# negotiable — which is not what "require" means, and left the comment on this
+# line describing something the code did not do.
+#
+# The set is computed from the enum rather than written as `Tls12 -bor Tls13`
+# because `Tls13` does not exist on older .NET Framework, where naming it would
+# throw. Everything at or above Tls12 is allowed in, so a future protocol the
+# runtime knows about is picked up without another edit.
+#
+# Windows PowerShell 5.1 is where this matters: it defaults to SSL3|TLS1.0.
+# PowerShell 6+ (.NET Core) ignores the property in favour of the OS defaults,
+# so setting it there is harmless and inert.
+$tls12 = [int][Net.SecurityProtocolType]::Tls12
+$modernProtocols = 0
+foreach ($protocol in [Enum]::GetValues([Net.SecurityProtocolType])) {
+    if ([int]$protocol -ge $tls12) { $modernProtocols = $modernProtocols -bor [int]$protocol }
+}
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]$modernProtocols
 
 # Configuration
 $Repo = 'ryanhair/zcli'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\zcli'
 $BinaryName = 'zcli.exe'
+
+# How many releases Get-LatestVersion asks the API for in one page. Named
+# because it appears three times: in the request, in the "did we see every
+# release?" test, and in the message that test produces. Kept in step with
+# install.sh's RELEASES_PAGE_SIZE.
+$ReleasesPageSize = 100
 
 # zcli's pinned minisign public key. Kept in sync with install.sh's
 # MINISIGN_PUBKEY. The installer verifies checksums.txt against its detached
@@ -77,7 +104,19 @@ function Test-Signature {
         return $true
     }
 
-    if (-not (Get-Command minisign -ErrorAction SilentlyContinue)) {
+    # -CommandType Application: only a real executable counts. A bare
+    # `Get-Command minisign` also resolves aliases, functions and cmdlets, and
+    # `& minisign` would then prefer the alias or function over the binary —
+    # so a hostile PowerShell profile could define `function minisign {}`,
+    # satisfy this presence check, and have the "verification" below run its
+    # own no-op. A function sets no exit code, so $LASTEXITCODE would still
+    # hold whatever an earlier command left there (a 0, most likely) and an
+    # unverified release would pass.
+    #
+    # Keep the resolved path and invoke THAT, not the bare name: resolving and
+    # invoking by name separately would just reopen the same hole.
+    $minisign = @(Get-Command minisign -CommandType Application -ErrorAction SilentlyContinue)[0]
+    if (-not $minisign) {
         Write-ErrorMsg 'minisign is required to verify this release but was not found.'
         Write-ErrorMsg 'Install it and re-run:'
         Write-ErrorMsg '  winget:        winget install minisign'
@@ -96,8 +135,15 @@ function Test-Signature {
         return $false
     }
 
-    & minisign -Vm $ChecksumsPath -x $sigPath -P $MinisignPubkey *> $null
-    if ($LASTEXITCODE -ne 0) {
+    # Decide on THIS invocation's exit code. $LASTEXITCODE is ambient and
+    # sticky — nothing clears it, and it is only written by external processes
+    # — so clear it to a sentinel first and capture it immediately after. If
+    # the call somehow does not run a process, the sentinel ($null, which is
+    # -ne 0) fails closed instead of a stale 0 passing verification.
+    $global:LASTEXITCODE = $null
+    & $minisign.Source -Vm $ChecksumsPath -x $sigPath -P $MinisignPubkey *> $null
+    $verifyExit = $LASTEXITCODE
+    if ($verifyExit -ne 0) {
         Write-ErrorMsg 'Signature verification FAILED for checksums.txt'
         Write-ErrorMsg 'The release may have been tampered with. Aborting.'
         return $false
@@ -164,25 +210,85 @@ function Test-Signature {
     return $true
 }
 
-# Get latest release version from GitHub
+# Resolve the newest installable CLI release. Mirrors install.sh's
+# get_latest_version, including why it reads the release LIST rather than
+# /releases/latest: this repo publishes library tags (`v0.22.0`, immediately)
+# and CLI tags (`zcli-v0.22.0`, draft until their checksums are signed offline)
+# from one workflow, so between those two moments — every release — `latest`
+# is the library tag and an installer trusting it fails on an unparseable tag.
+#
+# The list is newest-first and hides drafts from anonymous callers, so the first
+# `zcli-v*` entry is the newest CLI release a user can actually install. Same
+# rule as selectVersion in
+# packages/core/src/plugins/zcli_github_upgrade/plugin.zig.
 function Get-LatestVersion {
     $headers = @{ 'User-Agent' = 'zcli-installer' }
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $headers
+        # Assign, do NOT `@(...)`. Invoke-RestMethod emits a JSON array as ONE
+        # pipeline object, so `@(Invoke-RestMethod …)` yields a one-element array
+        # whose single element is the whole release list — and `$releases[0].tag_name`
+        # then member-enumerates into every tag at once. Plain assignment binds
+        # the array itself, which `foreach` iterates correctly.
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=$ReleasesPageSize" -Headers $headers
     } catch {
-        Write-ErrorMsg "Failed to get latest version: $($_.Exception.Message)"
+        Write-ErrorMsg "Could not fetch the release list for $Repo from the GitHub API: $($_.Exception.Message)"
+        Write-ErrorMsg "Check your network connection (or GitHub's status) and try again."
+        exit 1
+    }
+
+    # StartsWith(..., Ordinal) rather than -like/-eq: PowerShell's string
+    # comparisons are case-INSENSITIVE by default, and the tag family is
+    # literally `zcli-v`.
+    #
+    # $scanned is counted here rather than via `@($releases).Count` afterwards:
+    # `@(…)` on some collection types throws "Argument types do not match", and
+    # `foreach` already visits exactly what needs counting. It is only read on
+    # the no-tag path below, where the loop necessarily ran to completion, so
+    # the early `break` cannot leave it short.
+    $tag = $null
+    $scanned = 0
+    foreach ($release in $releases) {
+        $scanned++
+        if (($release.tag_name -is [string]) -and
+            $release.tag_name.StartsWith('zcli-v', [StringComparison]::Ordinal)) {
+            $tag = $release.tag_name
+            break
+        }
+    }
+
+    if ($null -eq $tag) {
+        # One page holds $ReleasesPageSize releases. A short page means we saw
+        # every release there is, so no CLI tag really does mean "none published
+        # yet" — the mid-publish window, which clears on its own. A FULL page
+        # means we may simply not have looked far enough back; telling that user
+        # to wait would send them off after something that will never happen.
+        if ($scanned -ge $ReleasesPageSize) {
+            Write-ErrorMsg "No zcli-v* tag in the newest $ReleasesPageSize releases of $Repo."
+            Write-ErrorMsg 'The CLI release is older than one page of the API, so this installer'
+            Write-ErrorMsg 'cannot find it. Download the binary for your platform directly from'
+            Write-ErrorMsg "  https://github.com/$Repo/releases"
+            exit 1
+        }
+
+        Write-ErrorMsg "No published zcli-v* release found for $Repo."
+        Write-ErrorMsg 'A release may be mid-publish: CLI releases stay drafts until their'
+        Write-ErrorMsg 'checksums are signed offline, so there is a short window with nothing'
+        Write-ErrorMsg 'installable. Wait a few minutes and re-run, or pick a release from'
+        Write-ErrorMsg "  https://github.com/$Repo/releases"
         exit 1
     }
 
     # Defense-in-depth: validate the version against a strict charset before it
     # is interpolated into download URLs, mirroring the in-binary isValidVersionArg
-    # check. Rejects '/', '..' and other path-traversal characters.
-    if ($release.tag_name -notmatch '^zcli-v([A-Za-z0-9._-]+)$') {
-        Write-ErrorMsg "Unexpected release tag format: $($release.tag_name)"
-        exit 1
+    # check. Rejects '/', '..' and other path-traversal characters. Fail closed
+    # rather than skipping to an older release — a malformed newest tag is an
+    # anomaly worth surfacing, which is also what the Zig verifier does.
+    if ($tag -cmatch '^zcli-v([A-Za-z0-9._-]+)$') {
+        return $Matches[1]
     }
 
-    return $Matches[1]
+    Write-ErrorMsg "Unexpected release tag format: $tag"
+    exit 1
 }
 
 # Download binary, verify it, and return the local path to the verified file.
