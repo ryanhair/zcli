@@ -182,7 +182,7 @@ pub const App = struct {
     /// live region pinned above it. Shares the screen, stays in cooked mode,
     /// input ownership is the caller's.
     pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
-        comptime assertCrashHooksInstalled();
+        comptime assertPanicInstalled();
         var self: App = .{
             .writer = writer,
             .gpa = gpa,
@@ -220,7 +220,7 @@ pub const App = struct {
     /// A distinct constructor, not a `mode` option, because full-screen hands the
     /// terminal to the alt-screen in raw mode and drives input itself. The panic
     /// hook a panic needs to un-strand the terminal is required for every App and
-    /// enforced in `init` (see `assertCrashHooksInstalled`); full-screen just raises
+    /// enforced in `init` (see `assertPanicInstalled`); full-screen just raises
     /// the stakes — a wedged alt-screen needs `reset`, not merely a lost cursor.
     pub fn initFullScreen(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
         var self = try init(gpa, writer, options);
@@ -258,7 +258,7 @@ pub const App = struct {
     /// `terminal.guard.restore()`". A guarantee that actually holds has to come
     /// from the runtime side instead — see #759 — so this stays an existence
     /// check with an error message that tells the truth about its own limits.
-    fn assertCrashHooksInstalled() void {
+    fn assertPanicInstalled() void {
         // `zig test` roots at the test runner (no panic hook) and builds Apps
         // only headlessly (fixed `term_size`, no real terminal to strand), so
         // the requirement doesn't apply there.
@@ -310,7 +310,7 @@ pub const App = struct {
     /// blob) *before* the default handler prints — so the stack trace lands on
     /// the shell's real screen, not the discarded alt-screen. Install in your
     /// root source file: `pub const panic = zcli.ui.panic;`. Required for every
-    /// `ui.App` (enforced at construction by `assertCrashHooksInstalled`): full-screen
+    /// `ui.App` (enforced at construction by `assertPanicInstalled`): full-screen
     /// leaves the alt-screen; hybrid re-shows the hidden cursor and restores the
     /// caller's raw mode.
     pub const panic = std.debug.FullPanic(struct {
@@ -328,7 +328,7 @@ pub const App = struct {
     ///
     /// Install in your root source file next to the panic hook:
     /// `pub const debug = zcli.ui.debug;` (standalone: `= ui.debug;`). Required
-    /// for every `ui.App`, enforced by `assertCrashHooksInstalled`.
+    /// for every `ui.App`, enforced by `assertPanicInstalled`.
     ///
     /// Restoring first is what puts the trace on the shell's real screen, and it
     /// is safe to do from here: `guard.restore` is a raw `write` loop with no
