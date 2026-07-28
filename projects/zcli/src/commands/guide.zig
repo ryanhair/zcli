@@ -304,8 +304,10 @@ const topics = [_]Topic{
         \\`app.run` owns the loop for you (tick delivered as a null event,
         \\deadline-scheduled); `update` returns `.keep` or `.quit`:
         \\
-        \\  // main.zig — required, else a panic strands the alt-screen:
+        \\  // main.zig — required, else a crash strands the alt-screen
+        \\  // (segfaults bypass `panic`, hence both hooks):
         \\  pub const panic = zcli.ui.panic;
+        \\  pub const debug = zcli.ui.debug;
         \\
         \\  var app = try context.uiFullScreen(.{});
         \\  defer app.deinit();

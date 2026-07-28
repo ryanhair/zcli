@@ -17,6 +17,8 @@ const common = @import("common.zig");
 
 // Prompts hide the cursor and drive raw mode, so a panic must restore the terminal.
 pub const panic = Prompts.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = Prompts.debug;
 
 pub fn main(init: std.process.Init) !void {
     var t: common.Io = .{};

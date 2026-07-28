@@ -182,7 +182,7 @@ pub const App = struct {
     /// live region pinned above it. Shares the screen, stays in cooked mode,
     /// input ownership is the caller's.
     pub fn init(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
-        comptime assertPanicInstalled();
+        comptime assertCrashHooksInstalled();
         var self: App = .{
             .writer = writer,
             .gpa = gpa,
@@ -208,7 +208,7 @@ pub const App = struct {
         // once it hides the cursor. The blob is empty here — nothing on screen to
         // undo yet, only the termios carried in `hybrid_raw`.
         if (options.term_size == null and options.hybrid_raw != null) {
-            self.session.arm("", options.hybrid_raw);
+            self.session.arm("", "", options.hybrid_raw);
         }
         return self;
     }
@@ -220,7 +220,7 @@ pub const App = struct {
     /// A distinct constructor, not a `mode` option, because full-screen hands the
     /// terminal to the alt-screen in raw mode and drives input itself. The panic
     /// hook a panic needs to un-strand the terminal is required for every App and
-    /// enforced in `init` (see `assertPanicInstalled`); full-screen just raises
+    /// enforced in `init` (see `assertCrashHooksInstalled`); full-screen just raises
     /// the stakes — a wedged alt-screen needs `reset`, not merely a lost cursor.
     pub fn initFullScreen(gpa: std.mem.Allocator, writer: *std.Io.Writer, options: Options) !App {
         var self = try init(gpa, writer, options);
@@ -258,12 +258,13 @@ pub const App = struct {
     /// `terminal.guard.restore()`". A guarantee that actually holds has to come
     /// from the runtime side instead — see #759 — so this stays an existence
     /// check with an error message that tells the truth about its own limits.
-    fn assertPanicInstalled() void {
+    fn assertCrashHooksInstalled() void {
         // `zig test` roots at the test runner (no panic hook) and builds Apps
         // only headlessly (fixed `term_size`, no real terminal to strand), so
         // the requirement doesn't apply there.
         if (@import("builtin").is_test) return;
-        if (!@hasDecl(@import("root"), "panic")) @compileError(
+        const root = @import("root");
+        if (!@hasDecl(root, "panic")) @compileError(
             "ui.App requires a panic handler, so a panic can't strand the terminal " ++
                 "(the alt-screen in full-screen; raw mode with a hidden cursor in hybrid — " ++
                 "every prompt and progress indicator). Add to your root source file (main.zig):\n\n" ++
@@ -274,13 +275,32 @@ pub const App = struct {
                 "default handler) — this check can't verify that, only that some " ++
                 "`panic` decl exists.",
         );
+        // A panic hook alone is not crash coverage: Zig does NOT route hardware
+        // faults through `root.panic`. SIGSEGV/SIGILL/SIGBUS/SIGFPE go to
+        // `root.debug.handleSegfault` instead, and a segfault is the crash a TUI
+        // is most likely to hit (#759). Requiring only `panic` therefore made a
+        // promise it could not keep — the check said "covered" while a null
+        // deref still stranded the terminal in the alt-screen.
+        if (!@hasDecl(root, "debug") or !@hasDecl(root.debug, "handleSegfault")) @compileError(
+            "ui.App requires a segfault handler too: Zig routes SIGSEGV/SIGILL/SIGBUS/SIGFPE " ++
+                "through `root.debug.handleSegfault`, NOT through `root.panic`, so the panic " ++
+                "hook above does not cover them. Add to your root source file (main.zig), " ++
+                "next to `pub const panic`:\n\n" ++
+                "    pub const debug = zcli.ui.debug;\n\n" ++
+                "(standalone ui users: `pub const debug = ui.debug;`)\n\n" ++
+                "Same caveat as the panic check: this can only see that the decl exists, not " ++
+                "that it calls `terminal.guard.restore()`. And it covers only the builds where " ++
+                "std installs its fault handler at all (`std.options.enable_segfault_handler`, " ++
+                "on by default in Debug/ReleaseSafe) — in ReleaseFast std installs nothing, and " ++
+                "`terminal.guard` catches the four signals itself instead.",
+        );
     }
 
     /// Panic handler that restores the terminal (replays the `terminal.guard`
     /// blob) *before* the default handler prints — so the stack trace lands on
     /// the shell's real screen, not the discarded alt-screen. Install in your
     /// root source file: `pub const panic = zcli.ui.panic;`. Required for every
-    /// `ui.App` (enforced at construction by `assertPanicInstalled`): full-screen
+    /// `ui.App` (enforced at construction by `assertCrashHooksInstalled`): full-screen
     /// leaves the alt-screen; hybrid re-shows the hidden cursor and restores the
     /// caller's raw mode.
     pub const panic = std.debug.FullPanic(struct {
@@ -289,6 +309,36 @@ pub const App = struct {
             std.debug.defaultPanic(msg, first_trace_addr);
         }
     }.call);
+
+    /// The fault-handling twin of `panic`, for the crash class the panic hook
+    /// cannot see (#759). Zig's segfault handler ends in `std.debug` looking up
+    /// `root.debug.handleSegfault`; without it a SIGSEGV in a full-screen App
+    /// printed its stack trace *into the alternate screen*, which is then thrown
+    /// away — the user got a wedged terminal and no diagnosis at all.
+    ///
+    /// Install in your root source file next to the panic hook:
+    /// `pub const debug = zcli.ui.debug;` (standalone: `= ui.debug;`). Required
+    /// for every `ui.App`, enforced by `assertCrashHooksInstalled`.
+    ///
+    /// Restoring first is what puts the trace on the shell's real screen, and it
+    /// is safe to do from here: `guard.restore` is a raw `write` loop with no
+    /// allocator and no buffered writer, i.e. async-signal-safe, which is the
+    /// standard this hook runs under (it is called from the SIGSEGV handler).
+    ///
+    /// Reached only when std installed its fault handler —
+    /// `std.options.enable_segfault_handler`, which defaults to `runtime_safety`
+    /// and is therefore OFF in ReleaseFast. `terminal.guard` installs its own
+    /// handlers for exactly that case, so the two together cover every mode.
+    pub const debug = struct {
+        pub fn handleSegfault(
+            addr: ?usize,
+            name: []const u8,
+            opt_ctx: ?std.debug.CpuContextPtr,
+        ) noreturn {
+            terminal.guard.restore();
+            std.debug.defaultHandleSegfault(addr, name, opt_ctx);
+        }
+    };
 
     /// Take the terminal over (ADR-0015): the session enables raw mode,
     /// starts the resize watcher, arms the guard, and writes the takeover
@@ -336,7 +386,9 @@ pub const App = struct {
                 self.writer.print("\x1b[{d}B", .{self.live_rows - 1}) catch {};
             }
             if (self.live_rows > 0) self.writer.writeAll("\r\n") catch {};
-            self.writer.writeAll("\x1b[?25h") catch {};
+            // Byte-for-byte the blob the guard would have replayed, so the two
+            // teardown paths can't drift (#760).
+            self.writer.writeAll(session_mod.hybrid_restore) catch {};
             self.writer.flush() catch {};
         } else {
             self.writer.flush() catch {};
@@ -706,9 +758,16 @@ pub const App = struct {
     fn start(self: *App) !void {
         if (self.started) return;
         self.started = true;
-        try self.writer.writeAll("\x1b[?25l");
+        try self.writer.writeAll(session_mod.hybrid_enter);
         if (self.options.term_size == null) {
-            self.session.arm("\x1b[?25h", self.options.hybrid_raw);
+            // The blob also undoes the paint modes (`?7l`/`?2026h`), which the
+            // diff renderer turns on for the duration of a frame: a signal that
+            // lands mid-paint would otherwise leave autowrap off (#760).
+            self.session.arm(
+                session_mod.hybrid_restore,
+                session_mod.hybrid_enter,
+                self.options.hybrid_raw,
+            );
         }
     }
 

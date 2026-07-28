@@ -21,6 +21,8 @@ const ui = @import("ui");
 const terminal = @import("terminal");
 
 pub const panic = ui.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = ui.debug;
 
 // The field's fixed content geometry. `handle` needs the same width/height the
 // render is granted, so pinning them keeps the two in step without threading the

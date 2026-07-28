@@ -13,6 +13,8 @@ const common = @import("common.zig");
 
 // Prompts hide the cursor and drive raw mode, so a panic must restore the terminal.
 pub const panic = Prompts.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = Prompts.debug;
 
 const min_len = 8;
 

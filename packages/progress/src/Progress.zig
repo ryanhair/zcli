@@ -71,6 +71,13 @@ const Progress = @This();
 /// `pub const panic = Progress.panic;` (zcli apps use `zcli.ui.panic`).
 pub const panic = ui.panic;
 
+/// The terminal-restore segfault handler, the fault-handling twin of `panic`.
+/// Zig routes SIGSEGV/SIGILL/SIGBUS/SIGFPE through `root.debug.handleSegfault`
+/// rather than `root.panic`, so the panic hook alone does not cover them (#759).
+/// Install it alongside: `pub const debug = Progress.debug;` (zcli apps use
+/// `zcli.ui.debug`). Also enforced at compile time by the App.
+pub const debug = ui.debug;
+
 /// Theming re-export, so standalone users can build a custom style context
 /// without depending on the `theme` package directly (it's transitive here).
 pub const ThemeContext = theme_pkg.ThemeContext;

@@ -18,6 +18,18 @@ const Cell = surface_mod.Cell;
 const Style = surface_mod.Style;
 const styleEql = surface_mod.styleEql;
 
+/// The two terminal modes a paint holds open for its own duration, and their
+/// undo. Named (rather than spelled inline in `EmitState`) because they are
+/// *terminal-global* state that outlives the frame if a paint is interrupted:
+/// `terminal_session` folds `wrap_on ++ sync_off` into every guard restore blob
+/// so a signal, a panic, or a Ctrl-Z landing mid-frame can put them back (#760).
+/// Adding a mode here means adding its undo to `terminal_session.paint_off` —
+/// the test there asserts every one of these is covered.
+pub const sync_on = "\x1b[?2026h"; // DECSET 2026: synchronized output (BSU)
+pub const sync_off = "\x1b[?2026l";
+pub const wrap_off = "\x1b[?7l"; // DECRST 7: autowrap OFF
+pub const wrap_on = "\x1b[?7h";
+
 pub const Renderer = struct {
     capability: theme.TerminalCapability,
     /// Wrap paints in synchronized output (DECSET 2026) so the terminal
@@ -43,6 +55,13 @@ pub const Renderer = struct {
             .capability = self.capability,
             .sync = self.sync,
         };
+        // A mid-paint failure must still close what `start` opened. Autowrap and
+        // the sync guard are terminal-global, not frame-local: bailing out with
+        // `?7l` still in effect leaves the shell overwriting its last column,
+        // and with `?2026h` still in effect leaves the display frozen until the
+        // terminal's own BSU timeout (#760). `finish` is idempotent, so the
+        // success path's `try st.finish()` below does not double-emit.
+        errdefer st.finish() catch {};
 
         var row: u16 = 0;
         while (row < next.height) : (row += 1) {
@@ -145,20 +164,26 @@ const EmitState = struct {
     fn start(self: *EmitState) !void {
         if (self.started) return;
         self.started = true;
-        if (self.sync) try self.writer.writeAll("\x1b[?2026h");
-        try self.writer.writeAll("\x1b[?7l");
+        if (self.sync) try self.writer.writeAll(sync_on);
+        try self.writer.writeAll(wrap_off);
         if (self.capability != .no_color) try self.writer.writeAll("\x1b[0m");
     }
 
     /// Return the cursor to the region's top-left, restore default SGR and
     /// autowrap, and close the sync guard.
+    ///
+    /// Idempotent by clearing `started`: `paint` closes on both the success and
+    /// the error path (an `errdefer`), and a failing `finish` would otherwise
+    /// run twice — the second pass emitting a bogus second cursor-up against a
+    /// writer that is already erroring.
     fn finish(self: *EmitState) !void {
         if (!self.started) return;
+        self.started = false;
         try self.setStyle(.{});
         try self.writer.writeByte('\r');
         if (self.cur_row > 0) try self.writer.print("\x1b[{d}A", .{self.cur_row});
-        try self.writer.writeAll("\x1b[?7h");
-        if (self.sync) try self.writer.writeAll("\x1b[?2026l");
+        try self.writer.writeAll(wrap_on);
+        if (self.sync) try self.writer.writeAll(sync_off);
     }
 
     /// Move to (row, col) in region coordinates. Rows are visited in order,

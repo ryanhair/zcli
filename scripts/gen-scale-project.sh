@@ -104,6 +104,7 @@ const registry = @import("command_registry");
 
 pub const std_options: std.Options = .{ .log_level = .warn };
 pub const panic = zcli.ui.panic;
+pub const debug = zcli.ui.debug;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());

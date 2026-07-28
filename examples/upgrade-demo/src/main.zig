@@ -6,6 +6,9 @@ const registry = @import("command_registry");
 /// hides the cursor mid-frame — a panic must restore the terminal, so every
 /// app wiring in the plugin needs this handler (enforced at compile time).
 pub const panic = zcli.ui.panic;
+/// Segfaults do not route through `panic` — they go to
+/// `root.debug.handleSegfault` — so a crash needs this hook too (#759).
+pub const debug = zcli.ui.debug;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());

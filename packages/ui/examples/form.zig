@@ -24,6 +24,8 @@ const ui = @import("ui");
 const terminal = @import("terminal");
 
 pub const panic = ui.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = ui.debug;
 
 // The focus targets, in Tab order. `@intFromEnum` doubles as the index into
 // `state.rects` (click-to-focus) — so the enum order and the field order in
