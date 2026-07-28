@@ -44,8 +44,11 @@ Checksums alone can't survive a compromised publisher — `checksums.txt` ships 
 - Generate the keypair **offline**, once: `minisign -G`. The secret key lives in a password manager — never a CI secret.
 - Pin the public key where verification happens: your install script and your `github_upgrade` plugin config.
 - Sign each release locally: the release is created as a draft, you sign its `checksums.txt`, upload `checksums.txt.minisig`, and publish.
+- Put the release tag in minisign's **trusted comment** when you sign (`minisign -S -t "myapp $TAG — signed release checksums"`). That comment is covered by a second signature, so it can't be edited after the fact.
 
-Verification is **fail-closed**: when a public key is pinned, a missing or invalid signature aborts the install or upgrade — it never falls back to "unsigned but probably fine". zcli's own releases work exactly this way, and `install.sh` verifies both the minisign signature and the SHA-256 checksum before moving a binary into place.
+Verification is **fail-closed**: when a public key is pinned, a missing or invalid signature aborts the install or upgrade — it never falls back to "unsigned but probably fine". zcli's own releases work exactly this way, and `install.sh` and `install.ps1` verify the minisign signature and the SHA-256 checksum before moving a binary into place.
+
+Signatures are also **bound to their release tag**. `checksums.txt` lists artifacts but no version, so an authentic signature alone can't tell a current release from an old one — anyone able to influence what `releases/latest` returns could serve a genuinely-signed *older* build and downgrade your users onto a vulnerable version. Requiring the trusted comment to name the exact tag being installed, as a whole token, closes that (`zcli-v0.2` must not satisfy `zcli-v0.20.0`). zcli's installers, `zcli upgrade`, and the signing script itself all enforce it.
 
 ## Self-upgrade for your users
 

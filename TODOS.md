@@ -134,8 +134,9 @@ then the context tail `examples → guide → AGENTS.md`. **Parallelizable early
 
 Implemented via [ADR-0023](docs/adr/0023-release-signing-minisign.md): `checksums.txt` is
 signed with a minisign (Ed25519) key held offline (never in CI), verified against a pinned
-public key in both `install.sh` (verify-if-able, checksum fail-closed) and the
-`zcli_github_upgrade` plugin (pure-Zig `std.crypto` verify, fail closed). Ceremony, custody,
+public key in both `install.sh` (fail closed: `minisign` is required, and the signature must
+name the tag being installed) and the `zcli_github_upgrade` plugin (pure-Zig `std.crypto`
+verify, fail closed). Ceremony, custody,
 rotation, and compromise procedure: `docs/RELEASE-SIGNING.md`. The production key has been
 minted and pinned (key id 1638B69B8EF680FD): `projects/zcli/build.zig` (upgrade plugin) and
 `install.sh` both carry the real public key, and `docs/zcli-minisign.pub` holds the full key.
