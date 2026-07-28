@@ -148,23 +148,41 @@ pub fn hasHandleGlobalOption(comptime T: type) bool {
     return @hasDecl(T, "handleGlobalOption");
 }
 
-/// Check if a type has lifecycle hooks
+/// Does plugin `T` implement a given lifecycle hook?
+///
+/// Every hook is optional, so the generated registry asks before it calls: each
+/// of these is one `@hasDecl`, folded at comptime, and a plugin that declares
+/// nothing costs nothing at every stage it sits out. `hook_names` below is the
+/// authoritative list, with each hook's signature and contract — a hook is
+/// detected by *exact name*, which is why `validatePlugin` flags near-misses
+/// (`applyConfigDefualts`) rather than letting them silently never run.
+///
+/// Plugin authors do not call these; they exist for the registry and for the
+/// build-time validator.
 pub fn hasPreParse(comptime T: type) bool {
     return @hasDecl(T, "preParse");
 }
 
+/// See `hasPreParse`. `postParse` runs after routing, and may replace the
+/// `ParsedArgs` threaded to the next plugin.
 pub fn hasPostParse(comptime T: type) bool {
     return @hasDecl(T, "postParse");
 }
 
+/// See `hasPreParse`. `preExecute` runs immediately before the command body,
+/// and may cancel execution by returning null.
 pub fn hasPreExecute(comptime T: type) bool {
     return @hasDecl(T, "preExecute");
 }
 
+/// See `hasPreParse`. `postExecute` runs after the command body, on success and
+/// on a handled failure alike.
 pub fn hasPostExecute(comptime T: type) bool {
     return @hasDecl(T, "postExecute");
 }
 
+/// See `hasPreParse`. `onError` runs on a failure at any stage, until one
+/// plugin reports the error handled.
 pub fn hasOnError(comptime T: type) bool {
     return @hasDecl(T, "onError");
 }
@@ -181,12 +199,20 @@ pub fn hasApplyConfigDefaults(comptime T: type) bool {
     return @hasDecl(T, "applyConfigDefaults");
 }
 
-/// Check if a type has command extensions
+/// Does the plugin contribute commands of its own (`pub const commands`)? This
+/// is how `zcli_help` supplies `help` and `zcli_completions` supplies
+/// `__complete` without the app author creating a file for them — plugin
+/// commands merge into the same comptime registry as `commands_dir` ones, and a
+/// real command file always wins the name.
 pub fn hasCommands(comptime T: type) bool {
     return @hasDecl(T, "commands");
 }
 
-/// Get plugin priority (default 50)
+/// The plugin's execution priority (`pub const priority: i32`, default 50).
+/// Higher runs first at every hook; ties keep registration order, so the
+/// declared list is the tiebreak and ordering is fully determined at compile
+/// time. The default sits mid-range on purpose — a plugin that must wrap the
+/// others can go either side without renumbering anything.
 pub fn getPriority(comptime T: type) i32 {
     if (@hasDecl(T, "priority")) {
         return T.priority;

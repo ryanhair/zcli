@@ -49,7 +49,7 @@ zig build test
 | job | what it covers |
 | --- | --- |
 | `classify changed paths` | Path filters that gate the jobs below. PR-only: pushes to `main` always run everything, and the `ci-full` label forces the full matrix. |
-| `zig fmt check` | `zig fmt --check packages projects examples build.zig`, plus the output-contract grep (no `std.debug.print` / `std.process.exit` outside the command context). |
+| `zig fmt check` | `zig fmt --check packages projects examples build.zig`, the output-contract grep (no `std.debug.print` / `std.process.exit` outside the command context), and a doc-comment gate on `packages/vterm/src/vterm.zig` (every `pub` declaration needs a `///`). |
 | `version consistency` | The three `build.zig.zon` versions and the README dependency tag agree; the website transcript injects its version instead of hardcoding one; install URLs use the branded host. |
 | `unit tests` | `zig build test` — the whole battery, on **ubuntu, macos and windows**. |
 | `zcli end-to-end tests` | `zig build e2e` on **ubuntu, macos and windows**. |

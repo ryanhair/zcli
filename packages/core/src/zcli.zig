@@ -106,10 +106,18 @@ pub const plugin_abi = struct {
         /// Dynamic (untyped) YAML value; a document root is the `.mapping` variant.
         pub const YamlValue = serde.yaml.Value;
 
+        /// Parse TOML into a dynamic table. Every string in the result borrows
+        /// from `content` and from `allocator`, so both must outlive the tree —
+        /// the config plugin parses into an arena it keeps on its ContextData
+        /// for exactly that reason. Errors are serde's; the plugin turns any of
+        /// them into one warning-and-skip, since a config typo must not brick
+        /// every command.
         pub fn parseToml(allocator: std.mem.Allocator, content: []const u8) !TomlTable {
             return serde.toml.parse(allocator, content);
         }
 
+        /// Parse YAML into a dynamic value; a document root is the `.mapping`
+        /// variant. Same lifetime and error contract as `parseToml`.
         pub fn parseYaml(allocator: std.mem.Allocator, content: []const u8) !YamlValue {
             return serde.yaml.parseValue(allocator, content);
         }

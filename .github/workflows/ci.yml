@@ -216,6 +216,36 @@ jobs:
           fi
           echo "shared-offset contract holds: no positional stdio writers/readers in library source"
 
+      # vterm's public API is what every consumer test assertion is written
+      # against (`result.term.hasAttribute(...)`), and it sat at 1 of 50
+      # declarations documented until #786 — a package README mitigates that but
+      # does not replace it. Now that the file is at 100%, this keeps it there:
+      # the failure mode being guarded is not "someone documents nothing", it is
+      # the slow slide back as declarations get added one at a time.
+      #
+      # Scoped to this one file deliberately. The repo-wide number (56%) is not a
+      # target to enforce — a doc comment written to satisfy a gate is worse than
+      # none — so the gate covers only the surface where the value per word is
+      # highest and the file is already clean. Widening it means bringing another
+      # file to 100% first, on purpose, not padding one to clear a bar.
+      #
+      # A declaration counts as documented when the nearest preceding non-blank
+      # line is a `///` comment, which is exactly what `zig fmt` produces.
+      - name: vterm's public API is documented
+        shell: bash
+        run: |
+          file=packages/vterm/src/vterm.zig
+          bare=$(awk '
+            /^ *pub (fn|const) / { if (prev !~ /^ *\/\/\//) print FILENAME":"NR": "$0 }
+            { if ($0 ~ /^[ \t]*$/) next; prev=$0 }
+          ' "$file")
+          if [ -n "$bare" ]; then
+            echo "::error::public declarations in $file must carry a /// doc comment — explain WHY it exists or what it costs, not just what it does:"
+            echo "$bare"
+            exit 1
+          fi
+          echo "$file: every public declaration is documented"
+
   # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
   # ship in lockstep and MUST declare the same version — the CLI's `--version`
   # reads its own zon, the website + library tag read the root's. The README's
