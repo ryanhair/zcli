@@ -1385,12 +1385,27 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             }
 
             // Plugin commands: find the longest matching path, then execute it.
+            //
+            // Only the dispatch below has to be unrolled — each arm passes a
+            // different comptime `module` type to `executeResolvedCommand`.
+            // The search does not: it reads nothing but `path`, so it runs as
+            // an ordinary runtime loop over a comptime-built table of paths
+            // (a plain `[]const []const u8` array, no `type` field, hence
+            // runtime-representable). That keeps one unrolled pass over the
+            // entries instead of two.
+            const plugin_paths = comptime blk: {
+                // Not `paths` — that name is the module-level `paths.zig`
+                // import at the top of this file.
+                var entry_paths: [plugin_command_entries.len][]const []const u8 = undefined;
+                for (plugin_command_entries, 0..) |entry, i| entry_paths[i] = entry.path;
+                break :blk entry_paths;
+            };
             var best_match_idx: ?usize = null;
             var best_match_len: usize = 0;
-            inline for (plugin_command_entries, 0..) |plugin_cmd, idx| {
-                if (route_args.len >= plugin_cmd.path.len and plugin_cmd.path.len > best_match_len) {
+            for (plugin_paths, 0..) |path, idx| {
+                if (route_args.len >= path.len and path.len > best_match_len) {
                     var matches = true;
-                    for (plugin_cmd.path, 0..) |path_part, i| {
+                    for (path, 0..) |path_part, i| {
                         if (!std.mem.eql(u8, path_part, route_args[i])) {
                             matches = false;
                             break;
@@ -1398,7 +1413,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                     }
                     if (matches) {
                         best_match_idx = idx;
-                        best_match_len = plugin_cmd.path.len;
+                        best_match_len = path.len;
                     }
                 }
             }
