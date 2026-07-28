@@ -701,3 +701,191 @@ fn htmlFoot(w: *std.Io.Writer) !void {
     try w.print(" {s}</footer>\n", .{registry.app_version});
     try w.writeAll("</body>\n</html>\n");
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+//
+// These run under `zig build test` against the hand-written `test_registry.zig`
+// / `test_tool_config.zig` modules that packages/core/build.zig substitutes for
+// the generated ones (#739 — before this, nothing in CI so much as compiled
+// this file). They assert on generated CONTENT, not just that the generator
+// runs: a doc generator's failure mode is silently producing the wrong shape,
+// and the escaping rules in particular are invisible until a description with a
+// `|` or a `<` reaches a real project's docs.
+
+const testing = std.testing;
+
+/// Generate one format into a fresh temp directory and hand the caller its
+/// absolute path plus the open dir. Caller cleans up via `TmpDocs.deinit`.
+const TmpDocs = struct {
+    tmp: testing.TmpDir,
+    dir: std.Io.Dir,
+
+    fn deinit(self: *TmpDocs) void {
+        self.tmp.cleanup();
+    }
+
+    /// Assert `sub_path` exists and contains `needle`.
+    fn expectContains(self: *TmpDocs, sub_path: []const u8, needle: []const u8) !void {
+        const content = try self.dir.readFileAlloc(testing.io, sub_path, testing.allocator, .limited(1 << 20));
+        defer testing.allocator.free(content);
+        if (std.mem.indexOf(u8, content, needle) != null) return;
+        // Missing. Hand both sides to expectEqualStrings purely for its diff
+        // rendering — it necessarily fails here, which is the point. This file
+        // lives under packages/core/src, where ci.yml's output-contract check
+        // forbids std.debug.print, so this is how a mismatch stays debuggable.
+        try testing.expectEqualStrings(needle, content);
+        return error.MissingExpectedOutput; // not reached
+    }
+
+    /// Assert `sub_path` exists and does NOT contain `needle`. No diff is
+    /// rendered: the needle is the assertion, and the stack trace names the
+    /// line it came from.
+    fn expectLacks(self: *TmpDocs, sub_path: []const u8, needle: []const u8) !void {
+        const content = try self.dir.readFileAlloc(testing.io, sub_path, testing.allocator, .limited(1 << 20));
+        defer testing.allocator.free(content);
+        if (std.mem.indexOf(u8, content, needle) != null) return error.UnexpectedOutput;
+    }
+};
+
+/// The write* functions resolve `output_dir` against the process cwd, so an
+/// ABSOLUTE temp path keeps the fixture independent of where the test binary
+/// happens to be run from.
+fn tmpDocs(allocator: std.mem.Allocator) !struct { docs: TmpDocs, path: []u8 } {
+    var tmp = testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(testing.io, &buf);
+    return .{
+        .docs = .{ .tmp = tmp, .dir = tmp.dir },
+        .path = try allocator.dupe(u8, buf[0..len]),
+    };
+}
+
+test "descText appends enum choices" {
+    const a = testing.allocator;
+
+    const with_enum = try descText(a, "Output format", &.{ "text", "json" });
+    defer a.free(with_enum);
+    try testing.expectEqualStrings("Output format (one of: text, json)", with_enum);
+
+    // No description, only choices — no stray leading space.
+    const only_enum = try descText(a, null, &.{"json"});
+    defer a.free(only_enum);
+    try testing.expectEqualStrings("(one of: json)", only_enum);
+
+    const plain = try descText(a, "Just words", null);
+    defer a.free(plain);
+    try testing.expectEqualStrings("Just words", plain);
+}
+
+test "markdown: index, command pages, escaping, hidden commands" {
+    const a = testing.allocator;
+    var t = try tmpDocs(a);
+    defer a.free(t.path);
+    defer t.docs.deinit();
+
+    try writeMarkdown(a, testing.io, t.path, registry.command_info, registry.global_options_info);
+
+    // Index: app header, version, one linked row per visible command.
+    try t.docs.expectContains("README.md", "# fixture\n");
+    try t.docs.expectContains("README.md", "**Version:** 9.9.9");
+    try t.docs.expectContains("README.md", "| [`fixture greet`](greet.md) |");
+    try t.docs.expectContains("README.md", "| [`fixture container ls`](container/ls.md) |");
+    // A `|` inside a description must be escaped or it closes the cell.
+    try t.docs.expectContains("README.md", "Say hello \\| politely");
+    // Global options table, with enum choices folded into the description.
+    try t.docs.expectContains("README.md", "| `--format` |");
+    try t.docs.expectContains("README.md", "Output format (one of: text, json)");
+    // `hidden = true` means absent from every format, not merely unlinked.
+    try t.docs.expectLacks("README.md", "internal");
+
+    // Command page: shared synopsis conventions — `[OPTIONS]` before args,
+    // `<REQUIRED>` / `[OPTIONAL]...` bracketing.
+    try t.docs.expectContains("greet.md", "# fixture greet\n");
+    try t.docs.expectContains("greet.md", "    fixture greet [OPTIONS] <NAME> [REST]...");
+    try t.docs.expectContains("greet.md", "| name | yes |");
+    try t.docs.expectContains("greet.md", "| rest | no |");
+    try t.docs.expectContains("greet.md", "| `--loud` | `-l` |");
+    try t.docs.expectContains("greet.md", "## Aliases\n\n- `hi`\n");
+    try t.docs.expectContains("greet.md", "## Examples\n\n    fixture greet world\n");
+
+    // Nested command: written into its own directory.
+    try t.docs.expectContains("container/ls.md", "# fixture container ls\n");
+}
+
+test "man: header, roff escaping, hidden commands" {
+    const a = testing.allocator;
+    var t = try tmpDocs(a);
+    defer a.free(t.path);
+    defer t.docs.deinit();
+
+    // SOURCE_DATE_EPOCH pins the `.TH` date, so the assertion below is stable
+    // rather than "whatever today is" (and it covers the reproducible-builds
+    // path at the same time). 1700000000 = 2023-11-14 UTC.
+    var environ: std.process.Environ.Map = .init(a);
+    defer environ.deinit();
+    try environ.put("SOURCE_DATE_EPOCH", "1700000000");
+
+    var err_buf: [512]u8 = undefined;
+    var errw: std.Io.Writer = .fixed(&err_buf);
+
+    try writeManPages(a, testing.io, t.path, registry.command_info, registry.global_options_info, &environ, &errw);
+
+    try t.docs.expectContains("fixture-greet.1", ".TH FIXTURE 1 \"2023-11-14\" \"fixture 9.9.9\"\n");
+    // `\&` is roff's zero-width escape: doc_escape prefixes every free-text run
+    // with it so a leading `.` or `'` can never be read as a request.
+    try t.docs.expectContains("fixture-greet.1", ".SH NAME\nfixture-greet \\- \\&Say hello | politely\n");
+    try t.docs.expectContains("fixture-greet.1", ".SH SYNOPSIS\n.B fixture greet\n");
+    try t.docs.expectContains("fixture-greet.1", "\\fB\\-\\-loud\\fR, \\fB\\-l\\fR");
+    // Global options are repeated on every page under their own subsection.
+    try t.docs.expectContains("fixture-greet.1", ".SS Global Options");
+
+    // A description starting with `.` would be read as a roff request; the
+    // escaper must neutralize it.
+    try t.docs.expectLacks("fixture-container-ls.1", "\n.List");
+
+    // Hidden commands get no page at all.
+    try testing.expectError(error.FileNotFound, t.docs.dir.statFile(testing.io, "fixture-internal.1", .{}));
+}
+
+test "html: escaping, breadcrumbs, subcommand links, hidden commands" {
+    const a = testing.allocator;
+    var t = try tmpDocs(a);
+    defer a.free(t.path);
+    defer t.docs.deinit();
+
+    try writeHtml(a, testing.io, t.path, registry.command_info, registry.global_options_info);
+
+    try t.docs.expectContains("index.html", "<title>fixture</title>");
+    // Markup characters in the app description must not reach the document raw.
+    try t.docs.expectContains("index.html", "Fixture CLI for &lt;docs&gt; &amp; escaping");
+    try t.docs.expectContains("index.html", "<a href=\"container/ls.html\">");
+    try t.docs.expectLacks("index.html", "internal");
+
+    // A nested page is one directory deep, so every link back out is `../`.
+    try t.docs.expectContains("container/ls.html", "<a href=\"../index.html\">");
+    try t.docs.expectContains("container/ls.html", "&rsaquo; <a href=\"../container.html\">");
+    try t.docs.expectContains("container/ls.html", ".List &lt;all&gt; containers &amp; more");
+
+    // A parent command lists its descendants; it sits at the root, so the link
+    // carries no `../` prefix.
+    try t.docs.expectContains("container.html", "<h2>Subcommands</h2>");
+    try t.docs.expectContains("container.html", "<a href=\"container/ls.html\">");
+
+    // `<`/`>` in the synopsis are required characters, so they must arrive
+    // entity-encoded rather than being dropped.
+    try t.docs.expectContains("greet.html", "fixture greet [OPTIONS] &lt;NAME&gt; [REST]...");
+}
+
+// `main` is the tool's entry point and is referenced by nothing else in a test
+// build, so without this it would go unanalyzed — and `cfg`, the typed config
+// accessor wired up by `wireToolStep`, with it. Referencing it type-checks both
+// against the fixture `tool_config` module.
+test "main and the config accessor type-check" {
+    _ = &main;
+    try testing.expectEqual(@as(usize, 3), cfg.formats.len);
+    try testing.expectEqualStrings("docs", cfg.output_dir);
+}

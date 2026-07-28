@@ -84,11 +84,46 @@ pub fn build(b: *std.Build) void {
     // They are deliberately NOT part of the aggregate `test`: the secrets
     // steps link native libraries / touch the OS keychain (ADR-0003), and the
     // performance runs build ReleaseFast.
+    var regression_step: *std.Build.Step = undefined;
+    var core_regression_step: *std.Build.Step = undefined;
     for ([_][]const u8{ "test-secrets", "test-secrets-live", "benchmark", "regression" }) |name| {
         const core_step = core_dep.builder.top_level_steps.get(name) orelse
             std.debug.panic("core package does not define a '{s}' step", .{name});
-        b.step(name, core_step.description).dependOn(&core_step.step);
+        const forwarded = b.step(name, core_step.description);
+        forwarded.dependOn(&core_step.step);
+        if (std.mem.eql(u8, name, "regression")) {
+            regression_step = forwarded;
+            core_regression_step = &core_step.step;
+        }
     }
+
+    // The perf gate has two halves, and only the root can hold both. Core's
+    // half measures the parsing hot path in-process; this half measures the
+    // properties that only a linked artifact has — process startup time and
+    // binary size (`projects/zcli`'s `budget` step, see its test/budget.zig).
+    // Neither is observable from inside packages/core, and packages/core cannot
+    // reach projects/zcli anyway: it depends on this root package, so
+    // b.dependency'ing it back would be a cycle — the same constraint that
+    // makes `e2e` above a subprocess. Forward it the same way, pinned to the
+    // optimize/strip combination release.yml publishes so the numbers gated
+    // here are the numbers users get.
+    const budget_run = b.addSystemCommand(&.{b.graph.zig_exe});
+    budget_run.addArgs(&.{ "build", "budget", "-Doptimize=ReleaseSafe", "-Dstrip=true" });
+    budget_run.setCwd(b.path("projects/zcli"));
+    // Inherit stdio so the measured numbers reach the terminal (and the CI log)
+    // rather than being swallowed on success like an ordinary system command's
+    // output. For a perf gate the numbers ARE the artifact: "passed" tells you
+    // nothing about how much headroom is left before it stops passing.
+    budget_run.stdio = .inherit;
+    // Serialize the two halves behind core's. Zig runs independent steps in
+    // parallel, and a ReleaseSafe build of the whole CLI saturating every core
+    // while the micro-budgets are timing sub-microsecond parses is precisely
+    // how a perf gate earns its reputation for flaking — measured here, "Parse
+    // Complex Args" went from 0.08μs to 0.91μs against a 1.0μs budget purely
+    // from that contention. Depending on core's step makes the micro-budgets
+    // run to completion in a quiet process first.
+    budget_run.step.dependOn(core_regression_step);
+    regression_step.dependOn(&budget_run.step);
 
     const ProjectInfo = struct {
         name: []const u8,

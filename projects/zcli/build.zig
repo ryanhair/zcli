@@ -231,4 +231,30 @@ pub fn build(b: *std.Build) !void {
 
     const e2e_step = b.step("e2e", "Run end-to-end tests (builds scaffolded projects; slow)");
     e2e_step.dependOn(&run_e2e.step);
+
+    // Startup-time and binary-size budgets for the shipped binary (see
+    // test/budget.zig). Kept out of `test` for the same reason as `e2e` — it
+    // needs the installed artifact — and out of `e2e` because it is a
+    // performance gate, not a behaviour one: the root build wires it into
+    // `zig build regression` alongside core's parse budgets, which is where the
+    // rest of the perf story lives. Run it the way the release builds the
+    // binary (`-Doptimize=ReleaseSafe -Dstrip=true`); measuring a Debug build
+    // would gate a number nobody ships.
+    const budget_options = b.addOptions();
+    budget_options.addOption([]const u8, "zcli_exe", b.getInstallPath(.bin, "zcli"));
+
+    const budget_mod = b.addModule("zcli-budget", .{
+        .root_source_file = b.path("test/budget.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    budget_mod.addOptions("build_options", budget_options);
+
+    const budget_tests = b.addTest(.{ .root_module = budget_mod });
+    const run_budget = b.addRunArtifact(budget_tests);
+    run_budget.has_side_effects = true; // spawns and measures; never serve a cached pass
+    run_budget.step.dependOn(b.getInstallStep()); // the binary must exist before it is measured
+
+    const budget_step = b.step("budget", "Check the built binary against its startup-time and size budgets");
+    budget_step.dependOn(&run_budget.step);
 }

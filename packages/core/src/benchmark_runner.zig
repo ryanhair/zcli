@@ -1,37 +1,43 @@
+//! Entry point for `zig build benchmark` (report) and `zig build regression`
+//! (gate). Both run this one executable; `--regression` selects the gating
+//! mode. See benchmark.zig for the measurements and their budgets.
+
 const std = @import("std");
 const benchmark = @import("benchmark.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+    const stderr = &stderr_writer.interface;
+    // Buffered output is dropped if the process exits without flushing, so every
+    // path below flushes before returning (0.16's explicit-IO contract).
+    defer stderr.flush() catch {};
+
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     // Check command line arguments
     if (args.len > 1) {
         if (std.mem.eql(u8, args[1], "--regression")) {
-            try benchmark.runRegressionTests();
+            try benchmark.runRegressionTests(io);
         } else if (std.mem.eql(u8, args[1], "--help")) {
-            try printHelp();
+            try printHelp(io);
         } else {
             try stderr.print("Unknown option: {s}\n", .{args[1]});
-            try printHelp();
+            try printHelp(io);
             return error.InvalidArgument;
         }
     } else {
         // Run standard benchmarks
-        try benchmark.runBenchmarks(allocator);
+        try benchmark.runBenchmarks(allocator, io);
     }
 }
 
-fn printHelp() !void {
+fn printHelp(io: std.Io) !void {
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     try stdout.print(
         \\zcli Benchmark Runner
@@ -45,4 +51,6 @@ fn printHelp() !void {
         \\Without options, runs full performance benchmark suite.
         \\
     , .{});
+    // The original never flushed this writer, so `--help` printed nothing.
+    try stdout.flush();
 }
