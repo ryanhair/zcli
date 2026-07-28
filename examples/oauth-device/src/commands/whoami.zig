@@ -20,18 +20,23 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const arena = context.allocator;
     const io = context.io;
 
-    // The stored bytes are owned by the arena, so no free is needed. The token
-    // got here via the `login` device flow — but `whoami` neither knows nor
-    // cares how it was minted; it just reads the opaque credential back.
-    const token = (try context.plugins.zcli_secrets.get("token")) orelse
+    // The token got here via the `login` device flow — but `whoami` neither knows
+    // nor cares how it was minted; it just reads the opaque credential back.
+    // `get` hands back a scoped `Secret`: `deinit` wipes the plaintext rather
+    // than leaving it legible in the arena's reclaimed pages.
+    var token = (try context.plugins.zcli_secrets.get("token")) orelse
         return context.fail("Not logged in. Run `oauth-device login` first.", .{});
+    defer token.deinit();
 
     var client = zcli.http.Client.init(arena, io, .{});
     defer client.deinit();
 
     // The Authorization header carries the credential; zcli.http drops it if a
     // redirect ever leaves GitHub's origin, so a token can't leak to another host.
-    const auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{token});
+    // This header is a second copy of the plaintext that the `Secret` knows
+    // nothing about, so scrub it on the way out too.
+    const auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{token.bytes});
+    defer std.crypto.secureZero(u8, auth);
     var response = client.request(.GET, "https://api.github.com/user", .{
         .headers = &.{
             .{ .name = "User-Agent", .value = "zcli-oauth-device" },

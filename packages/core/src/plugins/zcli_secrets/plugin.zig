@@ -44,6 +44,8 @@
 //!
 //! - `InvalidSecretName` — the `name` is not valid UTF-8, or contains a NUL.
 //!   Validated up front (see below), before any backend is touched.
+//! - `InvalidAppName` — the *app name* fails the same check. That is a developer
+//!   mistake, not user input, so it is reported separately from a bad `name`.
 //! - `SecretTooLarge` — the value exceeds what the backend can store (Windows'
 //!   2560-byte blob cap; the Linux Secret Service backend's ~6 KiB stdin cap).
 //! - `BackendUnavailable` — no usable secure store on this system (Linux only:
@@ -56,8 +58,11 @@
 //!
 //! ## Key and value constraints
 //!
-//! A secret `name` is validated **once, here**, before any backend call, so a
-//! name either works on every OS or is rejected on every OS:
+//! A key is the pair `(app name, secret name)` — `zcli/<app>/<name>` in the
+//! `pass` backend, `(service, account)` in the Secret Service and the macOS
+//! Keychain, a length-prefixed `(service, name)` on Windows. **Both halves** are
+//! validated **once, here**, by the same rules, before any backend call, so a key
+//! either works on every OS or is rejected on every OS:
 //!
 //! - It must be valid UTF-8. Windows stores the target name as UTF-16, so an
 //!   invalid-UTF-8 name that "works" on macOS/Linux would fail only on Windows;
@@ -71,6 +76,17 @@
 //!   Linux backends pass the name as a subprocess argument, where a leading dash
 //!   could be misread as an option flag. These are rejected on every OS so the
 //!   contract stays uniform, not just where the concern bites.
+//!
+//! The app name is developer-controlled rather than user-controlled, so it is not
+//! an attack surface today — but it is half of the key path, and an unguarded
+//! half is a structural hole waiting for the day an app name is derived from
+//! something less trusted. An app name with a `/` or a `..` would compose a
+//! `zcli/{app}/{name}` path nobody intended, and nothing would catch it. It
+//! therefore gets the identical check, reported as `InvalidAppName` so the
+//! message points at the app, not at the caller's key. (It is validated at
+//! runtime rather than comptime: the app name reaches the plugin as a plain
+//! slice captured off the context in `initContextData`, not as a comptime value.
+//! It costs a few byte scans on an operation that then talks to a keychain.)
 //!
 //! Beyond the name, backends differ on how large a value they accept, and each
 //! that has a cap fails with `SecretTooLarge` above it:
@@ -86,6 +102,17 @@
 //!   which has no such cap.
 //! - **macOS** (Keychain) and the Linux **`pass`** backend have no practical cap.
 //!
+//! ## Retrieved plaintext is wiped, not just freed
+//!
+//! `get` hands back a `Secret`, not a bare slice. The backends already scrub
+//! every intermediate copy of a decrypted value they make — subprocess stdin and
+//! stdout buffers, the base64 form, the Windows OS-heap blob — and `Secret`
+//! extends that discipline to the last hop, the one the command author holds:
+//! `deinit` zeroes the plaintext before releasing it. That matters most under the
+//! framework's per-command arena, which is *released* rather than scrubbed, so a
+//! bare slice would leave a decrypted token legible in reclaimable pages for the
+//! rest of the process. See `Secret.zig`.
+//!
 //! ## Usage from command code
 //!
 //! Because the plugin is registered, its data is reachable on the context and
@@ -96,16 +123,20 @@
 //! try context.plugins.zcli_secrets.set("token", token);
 //!
 //! // In a later command:
-//! if (try context.plugins.zcli_secrets.get("token")) |token| {
-//!     defer context.allocator.free(token);
-//!     // ... use token ...
-//! }
+//! var token = (try context.plugins.zcli_secrets.get("token")) orelse
+//!     return context.fail("not logged in — run `login` first", .{});
+//! defer token.deinit(); // wipes the plaintext, not just frees it
+//! // ... use token.bytes ...
 //! ```
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 pub const plugin_id = "zcli_secrets";
+
+/// A retrieved credential, scoped so `deinit` wipes the plaintext rather than
+/// merely freeing it. This is what `get` returns — see `Secret.zig`.
+pub const Secret = @import("Secret.zig");
 
 /// Which secure store backend this target uses.
 const Backend = enum { keychain, linux, credential_manager };
@@ -153,6 +184,10 @@ pub const Error = error{
     /// A secret name is unsafe: not valid UTF-8, or it contains a NUL, a `/`,
     /// a `..`, or begins with `-`. Rejected up front, before any backend call.
     InvalidSecretName,
+    /// The *app name* — the other half of the key — fails that same check. It is
+    /// developer-controlled, so this is a build-your-app bug rather than bad user
+    /// input, and it is reported apart from `InvalidSecretName` to say so.
+    InvalidAppName,
     /// The value exceeds what the active backend can store.
     SecretTooLarge,
     /// No usable secure store is available (Linux: no Secret Service and no
@@ -164,29 +199,52 @@ pub const Error = error{
     OutOfMemory,
 };
 
-/// Validate a secret `name` at the plugin boundary — once, for every backend —
-/// so a name either works on every OS or is rejected on every OS, and so no
-/// backend ever receives a name that could escape its intended key space or its
+/// True when `s` is safe to use as one half of a storage key — the app name or
+/// the secret name. Checked at the plugin boundary, once, for every backend, so
+/// a key either works on every OS or is rejected on every OS, and so no backend
+/// ever receives a component that could escape its intended key space or its
 /// subprocess argv.
 ///
 /// Rejected:
 ///   - an embedded NUL — the macOS/Linux backends key on C strings, where a NUL
 ///     silently truncates the key (and it is invalid UTF-16 target material);
-///   - invalid UTF-8 — Windows stores the name as UTF-16, so a name that
+///   - invalid UTF-8 — Windows stores the key as UTF-16, so a component that
 ///     "works" on macOS/Linux would fail only there;
 ///   - a `/` — the `pass` backend builds a filesystem path `zcli/<app>/<name>`,
-///     so a slash would let a name write outside its per-app namespace;
+///     so a slash in either half would compose a path outside the intended
+///     per-app namespace;
 ///   - `..` anywhere — same path-traversal concern for the `pass` backend, and
 ///     meaningless to the keychain backends;
-///   - a leading `-` — the Linux backends pass the name as a subprocess
-///     argument, where a leading dash could be parsed as an option flag by
+///   - a leading `-` — the Linux backends pass these as subprocess arguments,
+///     where a leading dash could be parsed as an option flag by
 ///     `pass`/`secret-tool` (defense in depth alongside the `--` terminator).
+///
+/// An empty component is allowed: odd, but unambiguous in every backend's key
+/// encoding, and rejecting it would fail an app that has simply not set a name.
+fn isSafeKeyComponent(s: []const u8) bool {
+    if (std.mem.indexOfScalar(u8, s, 0) != null) return false;
+    if (!std.unicode.utf8ValidateSlice(s)) return false;
+    if (std.mem.indexOfScalar(u8, s, '/') != null) return false;
+    if (std.mem.indexOf(u8, s, "..") != null) return false;
+    if (s.len > 0 and s[0] == '-') return false;
+    return true;
+}
+
+/// Validate the caller-supplied secret `name`.
 fn validateName(name: []const u8) Error!void {
-    if (std.mem.indexOfScalar(u8, name, 0) != null) return Error.InvalidSecretName;
-    if (!std.unicode.utf8ValidateSlice(name)) return Error.InvalidSecretName;
-    if (std.mem.indexOfScalar(u8, name, '/') != null) return Error.InvalidSecretName;
-    if (std.mem.indexOf(u8, name, "..") != null) return Error.InvalidSecretName;
-    if (name.len > 0 and name[0] == '-') return Error.InvalidSecretName;
+    if (!isSafeKeyComponent(name)) return Error.InvalidSecretName;
+}
+
+/// Validate the app name — the namespace half of every key.
+///
+/// It is developer-controlled, not user-controlled, so this is not an
+/// exploitable path today. It is checked anyway because leaving half of
+/// `zcli/{app}/{name}` unguarded is structural: an app name carrying a `/` or a
+/// `..` composes a key path nobody intended and nothing else in the stack would
+/// notice. Distinguished from `InvalidSecretName` so the failure names the real
+/// culprit — the app's own name — rather than blaming the key the caller passed.
+fn validateService(service: []const u8) Error!void {
+    if (!isSafeKeyComponent(service)) return Error.InvalidAppName;
 }
 
 /// Surface a native backend's raised error to the user, then collapse it into
@@ -247,18 +305,25 @@ pub const ContextData = struct {
     app_name: ?[]const u8 = null,
     stderr: ?*std.Io.Writer = null,
 
-    /// Retrieve a secret by name. Returns `null` if it was never stored. The
-    /// returned bytes are owned by `context.allocator` (the per-command arena),
-    /// so they are freed when the command returns; free earlier if desired.
-    pub fn get(self: *ContextData, name: []const u8) Error!?[]const u8 {
+    /// Retrieve a secret by name. Returns `null` if it was never stored.
+    ///
+    /// The returned `Secret` owns bytes allocated from `context.allocator` (the
+    /// per-command arena). Call `deinit` on it: that **wipes** the plaintext,
+    /// which the arena's own release does not do. See `Secret.zig`.
+    pub fn get(self: *ContextData, name: []const u8) Error!?Secret {
+        try validateService(self.app_name.?);
         try validateName(name);
-        return native.get(self.allocator.?, self.io.?, self.environ.?, self.app_name.?, name) catch |e|
+        const bytes = native.get(self.allocator.?, self.io.?, self.environ.?, self.app_name.?, name) catch |e|
             return reportAndMap(self, e);
+        if (bytes) |b| return Secret{ .bytes = b, .allocator = self.allocator.? };
+        return null;
     }
 
     /// Store (or overwrite) a secret. The value is copied; the caller retains
-    /// ownership of the passed slice.
+    /// ownership of the passed slice (including wiping it, if it is plaintext
+    /// the caller minted).
     pub fn set(self: *ContextData, name: []const u8, value: []const u8) Error!void {
+        try validateService(self.app_name.?);
         try validateName(name);
         return native.set(self.allocator.?, self.io.?, self.environ.?, self.app_name.?, name, value) catch |e|
             return reportAndMap(self, e);
@@ -266,6 +331,7 @@ pub const ContextData = struct {
 
     /// Remove a secret. A no-op (success) if it does not exist.
     pub fn delete(self: *ContextData, name: []const u8) Error!void {
+        try validateService(self.app_name.?);
         try validateName(name);
         return native.delete(self.allocator.?, self.io.?, self.environ.?, self.app_name.?, name) catch |e|
             return reportAndMap(self, e);
@@ -288,6 +354,12 @@ pub fn initContextData(data: *ContextData, context: anytype) !void {
 
 const testing = std.testing;
 
+// `Secret` is the plugin's public return type, so its wipe-on-release tests run
+// wherever the plugin surface itself is tested — i.e. on every supported OS.
+test {
+    _ = @import("Secret.zig");
+}
+
 test "plugin exposes the storage surface" {
     try testing.expect(@hasDecl(@This(), "plugin_id"));
     try testing.expect(@hasDecl(@This(), "ContextData"));
@@ -295,6 +367,13 @@ test "plugin exposes the storage surface" {
     try testing.expect(@hasDecl(ContextData, "set"));
     try testing.expect(@hasDecl(ContextData, "delete"));
     try testing.expectEqualStrings("zcli_secrets", plugin_id);
+    // `get` hands back a scoped, self-wiping value rather than a bare slice —
+    // the wipe of the last hop is not something a caller can opt out of by
+    // forgetting a convention.
+    try testing.expect(@hasDecl(@This(), "Secret"));
+    try testing.expect(@hasDecl(Secret, "deinit"));
+    const get_return = @typeInfo(@TypeOf(ContextData.get)).@"fn".return_type.?;
+    try testing.expectEqual(?Secret, @typeInfo(get_return).error_union.payload);
 }
 
 test "validateName rejects an embedded NUL and invalid UTF-8" {
@@ -322,6 +401,43 @@ test "validateName rejects path-escape and option-flag names" {
     // backends (`pass`/`secret-tool`).
     try testing.expectError(Error.InvalidSecretName, validateName("-rf"));
     try testing.expectError(Error.InvalidSecretName, validateName("--force"));
+}
+
+test "the app name is validated on the same path as the secret name" {
+    // The ordinary case: a normal app name passes.
+    try validateService("myapp");
+    try validateService("my-cli-tool"); // an interior dash is fine
+    try validateService(""); // empty is odd but unambiguous in every key encoding
+
+    // A `/` or a `..` in the app name would compose a `zcli/<app>/<name>` path
+    // outside the namespace the plugin means to own — the structural hole this
+    // closes, even though the app name is developer-controlled.
+    try testing.expectError(Error.InvalidAppName, validateService("my/app"));
+    try testing.expectError(Error.InvalidAppName, validateService("../../etc"));
+    try testing.expectError(Error.InvalidAppName, validateService(".."));
+    try testing.expectError(Error.InvalidAppName, validateService("a..b"));
+
+    // The rest of the name rules apply identically.
+    try testing.expectError(Error.InvalidAppName, validateService("my\x00app"));
+    try testing.expectError(Error.InvalidAppName, validateService("bad\xffapp"));
+    try testing.expectError(Error.InvalidAppName, validateService("-app"));
+}
+
+test "both key halves share one rule, reported under distinct errors" {
+    // Whatever is rejected as a secret name is rejected as an app name and vice
+    // versa — the point is that neither half can drift into being the lax one.
+    const rejected = [_][]const u8{ "a/b", "..", "a..b", "-x", "x\x00y", "\xff" };
+    for (rejected) |s| {
+        try testing.expect(!isSafeKeyComponent(s));
+        try testing.expectError(Error.InvalidSecretName, validateName(s));
+        try testing.expectError(Error.InvalidAppName, validateService(s));
+    }
+    const accepted = [_][]const u8{ "", "token", "my.token", "has-dash", "café-ключ-名前" };
+    for (accepted) |s| {
+        try testing.expect(isSafeKeyComponent(s));
+        try validateName(s);
+        try validateService(s);
+    }
 }
 
 test "mapBackendError collapses every backend taxonomy into the shared set" {

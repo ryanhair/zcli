@@ -27,8 +27,12 @@ fn completeName(req: *zcli.completion.Request) !zcli.completion.Result {
 }
 
 pub fn execute(args: Args, _: Options, context: *Context) !void {
-    const value = (try context.plugins.zcli_secrets.get(args.name)) orelse {
+    // `get` returns a scoped `Secret`: `deinit` wipes the plaintext instead of
+    // leaving it legible in the per-command arena's reclaimed pages.
+    var value = (try context.plugins.zcli_secrets.get(args.name)) orelse {
         return context.fail("no secret stored under '{s}'. Run `vault set {s}` first.", .{ args.name, args.name });
     };
-    try context.stdout().print("{s}\n", .{value});
+    defer value.deinit();
+
+    try context.stdout().print("{s}\n", .{value.bytes});
 }

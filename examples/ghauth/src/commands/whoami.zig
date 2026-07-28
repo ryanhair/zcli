@@ -21,18 +21,23 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
     const io = context.io;
     const stderr = context.stderr();
 
-    // The stored bytes are owned by the arena, so no free is needed.
-    const token = (try context.plugins.zcli_secrets.get("token")) orelse {
+    // `get` hands back a scoped `Secret`, not a bare slice: `deinit` wipes the
+    // plaintext instead of leaving it legible in the arena's reclaimed pages.
+    var token = (try context.plugins.zcli_secrets.get("token")) orelse {
         try stderr.print("Not logged in. Run `ghauth login` first.\n", .{});
         return error.NotLoggedIn;
     };
+    defer token.deinit();
 
     var client = zcli.http.Client.init(arena, io, .{});
     defer client.deinit();
 
     // The Authorization header carries the credential; zcli.http drops it if a
     // redirect ever leaves GitHub's origin, so a token can't leak to another host.
-    const auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{token});
+    // This header is a second copy of the plaintext that the `Secret` knows
+    // nothing about, so scrub it on the way out too.
+    const auth = try std.fmt.allocPrint(arena, "Bearer {s}", .{token.bytes});
+    defer std.crypto.secureZero(u8, auth);
     var response = client.request(.GET, "https://api.github.com/user", .{
         .headers = &.{
             .{ .name = "User-Agent", .value = "zcli-ghauth" },

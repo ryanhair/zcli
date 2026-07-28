@@ -10,8 +10,63 @@
 //! `getenv` — so `secret-tool` / `pass` / `gpg` see `HOME`,
 //! `DBUS_SESSION_BUS_ADDRESS`, `GNUPGHOME`, `PASSWORD_STORE_DIR`, `GPG_TTY`, and
 //! the rest of the ambient environment they rely on.
+//!
+//! ## Which binary gets executed
+//!
+//! `std.process.spawn` documents that an `argv[0]` which is not already a file
+//! path "is resolved into a file path based on PATH from the **parent**
+//! environment". Spawning the bare names `pass` / `secret-tool` therefore let any
+//! PATH entry that sorts ahead of the real install decide who receives the secret
+//! on stdin. `resolveHelper` closes that: it picks the binary itself, from a
+//! fixed list of absolute directories, and every argv this module is handed for a
+//! helper starts with that absolute path — which `spawn` then executes directly,
+//! consulting no PATH at all.
+//!
+//! Note what that does *not* cover, so the guarantee is not overstated: `pass` is
+//! a shell script. Once it is running it resolves its own `gpg`, `tree`,
+//! `base64`, `getopt` — and its `#!/usr/bin/env bash` interpreter — through PATH,
+//! and nothing here can change that. It is inherent to shelling out to a script,
+//! and it is the reason the ambient environment is still forwarded whole rather
+//! than trimmed to an allowlist: a trimmed environment would have to carry PATH
+//! anyway for `pass` to function, so trimming buys little while risking a broken
+//! pinentry, session bus, GnuPG home or locale. Passing a curated PATH was
+//! considered and rejected for the same reason in reverse — it breaks Nix,
+//! Homebrew and other non-standard toolchain layouts far more often than it
+//! helps. (Trimming would not have addressed this issue in any case: `spawn`
+//! resolves `argv[0]` against the *parent* environment, never `environ_map`.)
 
 const std = @import("std");
+
+/// The absolute directories searched, in order, for a helper binary.
+///
+/// Deliberately a fixed list rather than the inherited PATH — the whole point is
+/// that the environment does not get to choose which binary is fed a decrypted
+/// credential. The system directories come first so that a per-user prefix can
+/// never shadow a system install, and no relative or `.`-like entry can appear at
+/// all. Coverage is the standard layouts plus the two package managers that
+/// routinely install outside them (NixOS's system profile and Homebrew on Linux).
+///
+/// There is intentionally no environment-variable override. One would reopen
+/// exactly the environment-controlled binary selection this list exists to
+/// remove, for the benefit of installs the list already covers; if a real layout
+/// is missing it belongs here, as a reviewable code change. A helper installed
+/// somewhere exotic is reachable by symlinking it into `/usr/local/bin`.
+const trusted_dirs = [_][]const u8{
+    "/usr/bin",
+    "/bin",
+    "/usr/local/bin",
+    "/run/current-system/sw/bin",
+    "/home/linuxbrew/.linuxbrew/bin",
+};
+
+/// Searched after `trusted_dirs`, relative to `$HOME`. An attacker who can write
+/// to these already owns the session (they could edit the user's shell rc), so
+/// they add reach for per-user installs without widening the real threat — and
+/// being last, they cannot shadow a system binary.
+const trusted_home_dirs = [_][]const u8{
+    ".nix-profile/bin",
+    ".local/bin",
+};
 
 pub const Output = struct {
     term: std.process.Child.Term,
@@ -38,10 +93,54 @@ pub const Output = struct {
 
 pub const Error = error{
     /// The helper binary could not be executed at all — typically it is not
-    /// installed / not on `PATH`. Deliberately distinct from "the command ran
-    /// and exited nonzero", which surfaces as a non-`ok` `Output`.
+    /// installed. Deliberately distinct from "the command ran and exited
+    /// nonzero", which surfaces as a non-`ok` `Output`.
     SpawnFailed,
+    /// No executable by that name exists in any trusted directory. Distinct from
+    /// `SpawnFailed` at the point of failure, though both mean "this helper is
+    /// not usable here" and backends collapse them the same way.
+    HelperNotFound,
 };
+
+/// Resolve a helper binary name to an absolute path, searching only
+/// `trusted_dirs` then `trusted_home_dirs` — never the inherited PATH. The
+/// result is written into `buf` and the returned slice borrows it, so it stays
+/// valid for as long as `buf` is in scope (no allocation, matching how
+/// `passStoreInitialized` handles paths).
+///
+/// A candidate qualifies when it exists and is executable for this process; the
+/// check follows symlinks, so the usual `/usr/bin/pass -> /nix/store/…` shape
+/// resolves normally.
+///
+/// This is a check-then-exec, so it is a TOCTOU in the strict sense: a candidate
+/// could be replaced between the `access` and the `spawn`. That race needs write
+/// access to a trusted directory, which is already game over — and the property
+/// being bought is not "this exact inode", it is "not whatever an inherited PATH
+/// pointed at".
+pub fn resolveHelper(
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+    helper: []const u8,
+    buf: *[std.fs.max_path_bytes]u8,
+) Error![]const u8 {
+    for (trusted_dirs) |dir| {
+        const path = std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, helper }) catch continue;
+        std.Io.Dir.accessAbsolute(io, path, .{ .execute = true }) catch continue;
+        return path;
+    }
+    if (environ.get("HOME")) |home| {
+        // A relative (or empty) HOME would break `accessAbsolute`'s precondition
+        // and is meaningless here anyway.
+        if (std.fs.path.isAbsolute(home)) {
+            for (trusted_home_dirs) |sub| {
+                const path = std.fmt.bufPrint(buf, "{s}/{s}/{s}", .{ home, sub, helper }) catch continue;
+                std.Io.Dir.accessAbsolute(io, path, .{ .execute = true }) catch continue;
+                return path;
+            }
+        }
+    }
+    return Error.HelperNotFound;
+}
 
 /// A single output stream to drain, plus where the drained bytes land. Passed to
 /// `drain` (run concurrently) so stdout and stderr are read *while* stdin is
@@ -74,6 +173,12 @@ fn drain(d: Drainer) void {
 /// Run `argv`, optionally writing `stdin_bytes` (then EOF) to the child's
 /// stdin, and capture stdout+stderr. The caller owns the returned `Output`
 /// (call `deinit`).
+///
+/// For any helper that will be handed a credential, `argv[0]` must be an
+/// absolute path from `resolveHelper` — a bare name would be resolved by `spawn`
+/// against the inherited PATH. This function does not enforce that (its unit
+/// tests below drive a plain POSIX filter); the backends do, at their entry
+/// points, which is where the helper is chosen.
 ///
 /// stdout and stderr are drained *concurrently* with the stdin write, so a
 /// payload larger than the OS pipe buffer (~64 KiB) cannot deadlock the parent
@@ -164,6 +269,143 @@ pub fn run(
         .stderr = err_bytes.?,
         .allocator = allocator,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Helper resolution
+// ---------------------------------------------------------------------------
+
+/// Index of `needle` in `trusted_dirs`, or `null`.
+fn trustedDirIndex(needle: []const u8) ?usize {
+    for (trusted_dirs, 0..) |d, i| {
+        if (std.mem.eql(u8, d, needle)) return i;
+    }
+    return null;
+}
+
+test "the trusted directory list is absolute and orders system paths first" {
+    // Every searched directory is absolute — no relative entry, no `.`, nothing
+    // whose meaning depends on the working directory.
+    for (trusted_dirs) |d| try std.testing.expect(std.fs.path.isAbsolute(d));
+    // The HOME-relative entries are, by construction, not absolute; they are only
+    // ever joined onto an absolute HOME.
+    for (trusted_home_dirs) |d| try std.testing.expect(!std.fs.path.isAbsolute(d));
+
+    // A prefix that is user-writable on some systems must never be able to
+    // shadow the system install of a helper that is about to be fed a secret.
+    const usr_bin = trustedDirIndex("/usr/bin").?;
+    const bin = trustedDirIndex("/bin").?;
+    for ([_][]const u8{ "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin" }) |writable| {
+        const i = trustedDirIndex(writable).?;
+        try std.testing.expect(i > usr_bin);
+        try std.testing.expect(i > bin);
+    }
+}
+
+test "resolveHelper pins an absolute path inside a trusted directory" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    // `sh` is required at `/bin/sh` by POSIX, and `/bin` is on the list.
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = resolveHelper(std.testing.io, &env, "sh", &buf) catch return error.SkipZigTest;
+
+    try std.testing.expect(std.fs.path.isAbsolute(path));
+    try std.testing.expect(std.mem.endsWith(u8, path, "/sh"));
+    // Whatever matched, it came from the list — not from wherever a PATH said.
+    try std.testing.expect(trustedDirIndex(std.fs.path.dirname(path).?) != null);
+}
+
+test "resolveHelper does not consult PATH, and reports a missing helper" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    // A PATH (and a HOME) that a bare-name spawn would happily search are simply
+    // not part of the search. `/bin` holds `sh` on every POSIX host, so were PATH
+    // consulted at all this name is exactly what it would resolve.
+    try env.put("PATH", "/bin:/usr/bin");
+    try env.put("HOME", "/nonexistent-home-for-zcli-secrets-test");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    try std.testing.expectError(
+        Error.HelperNotFound,
+        resolveHelper(std.testing.io, &env, "zcli-secrets-no-such-helper", &buf),
+    );
+}
+
+test "resolveHelper ignores a non-absolute HOME rather than joining onto it" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    // A relative HOME would make the joined candidate relative to the working
+    // directory — precisely the class of path this resolution refuses to touch.
+    try env.put("HOME", "relative/home");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    try std.testing.expectError(
+        Error.HelperNotFound,
+        resolveHelper(std.testing.io, &env, "zcli-secrets-no-such-helper", &buf),
+    );
+}
+
+// The end-to-end claim of the pinning: a decoy that a bare-name spawn *would*
+// have run is not the process that runs. The two halves are asserted separately
+// above (resolution ignores PATH; the argv builders put the resolved path in
+// `argv[0]`), but only actually spawning closes the loop — `std.process.spawn`
+// is what decides whether `argv[0]` is a path or a PATH lookup, and this is the
+// assertion that the composition never hands it a bare name.
+test "the pinned binary is the one spawned, not a decoy earlier on PATH" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A decoy named `sh`, executable, that announces itself whatever it is given.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "sh",
+        .data = "#!/bin/sh\nprintf DECOY\n",
+        .flags = .{ .permissions = .executable_file },
+    });
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = tmp.dir.realPath(io, &dir_buf) catch return error.SkipZigTest;
+    const decoy_dir = dir_buf[0..dir_len];
+
+    // Prove the decoy is a viable hijack *before* asserting that it loses — if it
+    // were not executable this test would pass for the wrong reason.
+    var decoy_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const decoy = std.fmt.bufPrint(&decoy_buf, "{s}/sh", .{decoy_dir}) catch return error.SkipZigTest;
+    std.Io.Dir.accessAbsolute(io, decoy, .{ .execute = true }) catch return error.SkipZigTest;
+
+    // A PATH and a HOME that point at nothing but the decoy: #768, staged.
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("PATH", decoy_dir);
+    try env.put("HOME", decoy_dir);
+
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin = resolveHelper(io, &env, "sh", &bin_buf) catch return error.SkipZigTest;
+    try std.testing.expect(!std.mem.eql(u8, bin, decoy));
+    try std.testing.expect(trustedDirIndex(std.fs.path.dirname(bin).?) != null);
+
+    // Spawn through the resolved path and let the child identify itself: the
+    // decoy prints DECOY, the real shell runs the script. Anything but "real"
+    // means PATH decided who ran.
+    var out = run(a, io, &env, &.{ bin, "-c", "printf real" }, null) catch |e| switch (e) {
+        Error.SpawnFailed => return error.SkipZigTest,
+        else => return e,
+    };
+    defer out.deinit();
+
+    try std.testing.expect(out.ok());
+    try std.testing.expectEqualStrings("real", out.stdout);
 }
 
 // ---------------------------------------------------------------------------
