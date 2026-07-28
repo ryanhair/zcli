@@ -65,6 +65,8 @@ pub fn arm(out: Handle, blob: []const u8, raw: ?RawMode) void {
     @memcpy(g.blob[0..blob.len], blob);
     g.blob_len = blob.len;
     g.raw = raw;
+    // Idempotent, and it has to be: this is also the re-arm path, and installing
+    // twice would capture the guard's *own* handlers as the saved originals.
     impl.install();
     // Republish as a unit: the acquire load in `restore` pairs with this release
     // store, so a handler that sees `true` sees every `g` write above.
@@ -114,11 +116,22 @@ const impl = if (builtin.os.tag == .windows) struct {
         return 0; // FALSE
     }
 
+    /// See the POSIX `installed` comment — same reentrancy problem, different
+    /// symptom. `SetConsoleCtrlHandler(h, TRUE)` *appends* to the console's
+    /// handler list, so a re-arm registers `ctrlHandler` twice, while `disarm`'s
+    /// single remove pops only one entry: the guard stays wired to the console
+    /// after the App is gone, replaying a stale `g` on the next Ctrl-C.
+    var installed = false;
+
     fn install() void {
+        if (installed) return;
         _ = SetConsoleCtrlHandler(ctrlHandler, 1);
+        installed = true;
     }
     fn remove() void {
+        if (!installed) return;
         _ = SetConsoleCtrlHandler(ctrlHandler, 0);
+        installed = false;
     }
     fn writeRaw(h: Handle, bytes: []const u8) void {
         var written: DWORD = 0;
@@ -132,7 +145,25 @@ const impl = if (builtin.os.tag == .windows) struct {
     const sigs = .{ posix.SIG.INT, posix.SIG.TERM, posix.SIG.HUP };
     var old: [sigs.len]posix.Sigaction = undefined;
 
+    /// Whether `old` currently holds the *process's* dispositions rather than the
+    /// guard's own. `arm` is called over an already-armed guard on every hybrid
+    /// prompt (`App.init` arms with the empty blob, then `App.start` re-arms with
+    /// the cursor-show blob) against a single `disarm` — and a second `sigaction`
+    /// would write our own handler into `old`, so `disarm` would install the guard
+    /// handler *permanently*. That silently rewrites inherited dispositions: a
+    /// `nohup`'d CLI inherits `SIG_IGN` for SIGHUP, and one `confirm()` prompt
+    /// later SIGHUP is the guard handler, whose re-raise finds SIG_DFL and kills
+    /// the job on terminal close. Same for a consumer's own SIGTERM cleanup
+    /// handler. So only the *first* install captures, and only a matching remove
+    /// gives the capture back.
+    ///
+    /// A plain `bool`, deliberately not an atomic: it is touched only by
+    /// `install`/`remove`, i.e. only from `arm`/`disarm` on the main thread, and
+    /// never by the async restore path — which reads `armed`/`g` and nothing here.
+    var installed = false;
+
     fn install() void {
+        if (installed) return;
         inline for (sigs, 0..) |signo, i| {
             var act = posix.Sigaction{
                 .handler = .{ .handler = handlerFor(signo) },
@@ -146,9 +177,12 @@ const impl = if (builtin.os.tag == .windows) struct {
             };
             posix.sigaction(signo, &act, &old[i]);
         }
+        installed = true;
     }
     fn remove() void {
+        if (!installed) return;
         inline for (sigs, 0..) |signo, i| posix.sigaction(signo, &old[i], null);
+        installed = false;
     }
     /// The raw `write(2)` syscall — `std.posix.write` is gone in 0.16's IO model,
     /// and a signal handler can't use a buffered writer anyway. Best-effort: a
@@ -243,6 +277,104 @@ test "re-arm over an armed guard replaces the blob and raw mode" {
     // The re-arm's fields fully replaced the prior arm's — no stale raw mode.
     try std.testing.expect(g.raw == null);
 }
+
+// Deliberately narrow name. This asserts the `installed` *flag* transitions and
+// nothing else — it does NOT prove the registration is idempotent, and it would
+// still pass if someone dropped the `if (installed) return;` early-outs while
+// leaving the assignments. That gap is on purpose, and it is split by platform:
+//
+// - POSIX: the effect is directly observable, so it is tested for real in
+//   "double arm then disarm restores the true process dispositions" below. That
+//   is the regression test for #733; this one is only a cheap guard on the
+//   arm/disarm gating around it.
+// - Windows: `SetConsoleCtrlHandler` is add/remove only — the console exposes no
+//   way to read the handler list or its length back, and the duplicate
+//   registration is invisible in-process until a real Ctrl-C arrives on a
+//   console this test doesn't have. So the flag is the only observable there and
+//   the effect is untestable by construction, not by omission.
+//
+// Assert on the bookkeeping only where the bookkeeping is all you can reach —
+// the pre-existing re-arm test above asserted on the blob alone and that is
+// exactly how #733 got in.
+test "arm/disarm track the install flag across a re-arm" {
+    defer disarm();
+    try std.testing.expect(!impl.installed);
+
+    arm(test_handle, "", test_raw);
+    try std.testing.expect(impl.installed);
+    arm(test_handle, "\x1b[?25h", null);
+    try std.testing.expect(impl.installed);
+
+    // One disarm against two arms still fully unwinds — arm/disarm are gated on
+    // `armed`, not counted.
+    disarm();
+    try std.testing.expect(!impl.installed);
+}
+
+// The #733 regression test: asserts the *effect* — real `sigaction` state read
+// back from the kernel — not the flag that produces it.
+test "double arm then disarm restores the true process dispositions" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const posix = std.posix;
+    defer disarm();
+
+    var saved_hup: posix.Sigaction = undefined;
+    var saved_term: posix.Sigaction = undefined;
+    posix.sigaction(posix.SIG.HUP, null, &saved_hup);
+    posix.sigaction(posix.SIG.TERM, null, &saved_term);
+    defer {
+        posix.sigaction(posix.SIG.HUP, &saved_hup, null);
+        posix.sigaction(posix.SIG.TERM, &saved_term, null);
+    }
+
+    // Non-default dispositions on purpose: SIG_DFL restores look correct even
+    // when the bookkeeping is broken, because the guard's own handler and the
+    // process default both "work" for a naive check. These are the two real
+    // cases — an inherited `SIG_IGN` for SIGHUP (`nohup mycli deploy &`) and a
+    // consumer's own SIGTERM cleanup handler.
+    var want_hup = posix.Sigaction{
+        .handler = .{ .handler = posix.SIG.IGN },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    var want_term = posix.Sigaction{
+        .handler = .{ .handler = consumerTermHandler },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.HUP, &want_hup, null);
+    posix.sigaction(posix.SIG.TERM, &want_term, null);
+
+    // Exactly the hybrid-prompt sequence: `App.init` arms with the empty blob,
+    // `App.start` re-arms with the cursor-show blob, a single `App.deinit`
+    // disarms (app.zig:211 / app.zig:700 / app.zig:312).
+    arm(test_handle, "", test_raw);
+    var during: posix.Sigaction = undefined;
+    posix.sigaction(posix.SIG.HUP, null, &during);
+    // Sanity: the guard really did take SIGHUP over, so the assertions below are
+    // testing a restore and not an install that never happened.
+    try std.testing.expect(during.handler.handler != posix.SIG.IGN);
+
+    arm(test_handle, "\x1b[?25h", null);
+    disarm();
+
+    var after_hup: posix.Sigaction = undefined;
+    var after_term: posix.Sigaction = undefined;
+    posix.sigaction(posix.SIG.HUP, null, &after_hup);
+    posix.sigaction(posix.SIG.TERM, null, &after_term);
+    // The process's dispositions, not the guard's own handlers. Before the
+    // idempotence fix both of these came back as the guard handler, so a
+    // `nohup`'d run died on terminal close and the consumer's cleanup never ran.
+    try std.testing.expectEqual(posix.SIG.IGN, after_hup.handler.handler);
+    try std.testing.expectEqual(
+        @as(?@TypeOf(want_term).handler_fn, consumerTermHandler),
+        after_term.handler.handler,
+    );
+}
+
+/// Stands in for a consumer-installed SIGTERM cleanup handler. Never runs — the
+/// test only ever reads the disposition back, it does not raise anything.
+fn consumerTermHandler(_: std.posix.SIG) callconv(.c) void {}
 
 test "disarm is idempotent when never armed" {
     // No prior arm — disarm must be a safe no-op (the headless/never-armed path).
