@@ -60,7 +60,10 @@ pub const Renderer = struct {
         // `?7l` still in effect leaves the shell overwriting its last column,
         // and with `?2026h` still in effect leaves the display frozen until the
         // terminal's own BSU timeout (#760). `finish` is idempotent, so the
-        // success path's `try st.finish()` below does not double-emit.
+        // success path's `try st.finish()` below does not double-emit — and
+        // `finish` attempts every step even after one fails, so the case where
+        // `finish` ITSELF is what threw is already fully handled by the time
+        // this fires (see its doc comment; that interaction was a live bug).
         //
         // Best-effort, and worth being precise about what that means, since the
         // only way to reach it is a writer error. `std.Io.Writer` keeps no
@@ -196,14 +199,40 @@ const EmitState = struct {
     /// the error path (an `errdefer`), and a failing `finish` would otherwise
     /// run twice — the second pass emitting a bogus second cursor-up against a
     /// writer that is already erroring.
+    ///
+    /// Every step is ATTEMPTED even when an earlier one failed, and that is not
+    /// belt-and-braces — it is what makes the idempotence above safe. Written
+    /// the obvious way, with `try` on each line, a writer that failed on the
+    /// cursor-park would return early with `started` already false, so `paint`'s
+    /// `errdefer` retry would hit the `!self.started` guard and do nothing at
+    /// all: the modes stay open in precisely the case the errdefer exists for.
+    /// (Caught by "a paint that fails midway still closes the modes it opened" —
+    /// it was a live bug in the first cut of #760.) The park is cosmetic and the
+    /// mode close is terminal-global, so the two must not share a fate. The
+    /// first error is remembered and returned, so `paint` still reports the
+    /// frame as failed rather than silently swallowing a dead writer.
     fn finish(self: *EmitState) !void {
         if (!self.started) return;
         self.started = false;
-        try self.setStyle(.{});
-        try self.writer.writeByte('\r');
-        if (self.cur_row > 0) try self.writer.print("\x1b[{d}A", .{self.cur_row});
-        try self.writer.writeAll(wrap_on);
-        if (self.sync) try self.writer.writeAll(sync_off);
+
+        var first_err: ?anyerror = null;
+        const keep = struct {
+            fn f(slot: *?anyerror, e: anyerror) void {
+                if (slot.* == null) slot.* = e;
+            }
+        }.f;
+
+        // Cosmetic: park the cursor at the region's top-left with default SGR.
+        self.setStyle(.{}) catch |e| keep(&first_err, e);
+        self.writer.writeByte('\r') catch |e| keep(&first_err, e);
+        if (self.cur_row > 0) {
+            self.writer.print("\x1b[{d}A", .{self.cur_row}) catch |e| keep(&first_err, e);
+        }
+        // Terminal-global: these outlive the frame, so they go out regardless.
+        self.writer.writeAll(wrap_on) catch |e| keep(&first_err, e);
+        if (self.sync) self.writer.writeAll(sync_off) catch |e| keep(&first_err, e);
+
+        if (first_err) |e| return e;
     }
 
     /// Move to (row, col) in region coordinates. Rows are visited in order,
@@ -333,16 +362,30 @@ const FlakyWriter = struct {
 // between those and `finish` left both set on a terminal it no longer owned.
 //
 // Swept over every drain index rather than pinned to one, so the test doesn't
-// encode the exact byte arithmetic of a frame (which any renderer change would
-// shift). The invariant is unconditional: if the paint got far enough to turn
-// the modes ON, the bytes that turn them OFF are on their way out too.
-test "a paint that fails midway still closes the modes it opened" {
+// encode the byte arithmetic of a frame (which any renderer change would shift).
+//
+// What is asserted is COMPLETION, not the presence of any particular sequence,
+// and the difference matters. Neither `wrap_on` nor `sync_off` can be demanded
+// per-case: for one position in the sweep the failing drain is the one carrying
+// that very sequence, and nothing can push bytes through a writer that rejects
+// them. What CAN be demanded is that a single failure costs a single sequence —
+// `finish` attempts every step, so at most the one whose own write failed is
+// lost.
+//
+// That bound is exactly what separates the bug from the fix, and it holds
+// regardless of buffer size or frame contents. The first cut of #760 used `try`
+// on every line of `finish`: a writer that failed on the cursor-park returned
+// early with `started` already cleared, so `paint`'s `errdefer` retry hit the
+// `!started` guard and did nothing — losing BOTH sequences. Two missing is the
+// bug; one is the writer.
+test "a paint that fails midway still runs the whole close-out" {
     var next = try Surface.init(testing.allocator, 12, 3);
     defer next.deinit();
     _ = try next.root().writeText(0, 0, "hello there", .{});
     _ = try next.root().writeText(0, 1, "second row", .{});
 
     var saw_interrupted_paint = false;
+    var saw_full_close = false;
     for (0..24) |fail_at| {
         var fw: FlakyWriter = undefined;
         fw.init(testing.allocator, fail_at);
@@ -350,7 +393,7 @@ test "a paint that fails midway still closes the modes it opened" {
 
         const r = Renderer{ .capability = .ansi_16, .sync = true };
         const result = r.paint(&fw.interface, null, &next);
-        // The restore bytes land in the writer's buffer; a later flush is what
+        // The close-out bytes land in the writer's buffer; a later flush is what
         // puts them on the wire. `App.deinit` always attempts one — this is that
         // flush, and by now the flaky drain has moved past `fail_at`.
         fw.interface.flush() catch {};
@@ -363,19 +406,31 @@ test "a paint that fails midway still closes the modes it opened" {
         } else |_| {
             if (!opened) continue; // failed before `start` — nothing was opened
             saw_interrupted_paint = true;
-            try testing.expect(std.mem.lastIndexOf(u8, fw.log.items, wrap_on) != null);
-            try testing.expect(std.mem.lastIndexOf(u8, fw.log.items, sync_off) != null);
-            // Ordering, not just presence: the close has to come after the open.
-            try testing.expect(
-                std.mem.lastIndexOf(u8, fw.log.items, wrap_on).? >
-                    std.mem.lastIndexOf(u8, fw.log.items, wrap_off).?,
-            );
+            const closed_wrap = std.mem.lastIndexOf(u8, fw.log.items, wrap_on);
+            const closed_sync = std.mem.lastIndexOf(u8, fw.log.items, sync_off);
+
+            // The invariant: one failed write costs at most one sequence. Two
+            // missing means `finish` stopped at the first error instead of
+            // attempting the rest.
+            var missing: usize = 0;
+            if (closed_wrap == null) missing += 1;
+            if (closed_sync == null) missing += 1;
+            try testing.expect(missing <= 1);
+
+            if (closed_wrap) |w| {
+                if (closed_sync != null) saw_full_close = true;
+                // Ordering, not just presence: the close has to come after the open.
+                try testing.expect(w > std.mem.lastIndexOf(u8, fw.log.items, wrap_off).?);
+            }
         }
     }
     // Guards the test itself: if a renderer change made the frame small enough
     // to never drain, every iteration would `continue` and this would assert
     // nothing at all.
     try testing.expect(saw_interrupted_paint);
+    // And guards the assertion above from passing on a `finish` that only ever
+    // gets its tail out: at least one interrupted paint must close BOTH modes.
+    try testing.expect(saw_full_close);
 }
 
 test "unchanged frame emits zero bytes" {
