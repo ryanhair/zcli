@@ -6,6 +6,11 @@
 //! Unlike the Secret Service, `pass` needs no desktop session — it works over
 //! SSH / on a headless server — which is why it exists as a second Linux backend
 //! (see ADR-0010). The value is base64-encoded (see `subprocess.encodeValue`).
+//!
+//! The `pass` binary is resolved to an absolute path in a trusted directory
+//! before every operation (`subprocess.resolveHelper`) rather than spawned as the
+//! bare name `pass`, so the inherited PATH cannot decide who is handed the secret
+//! on stdin.
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
@@ -26,10 +31,13 @@ pub fn get(
     service: []const u8,
     name: []const u8,
 ) !?[]const u8 {
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin = subprocess.resolveHelper(io, environ, "pass", &bin_buf) catch |e| return mapError(e);
+
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
 
-    var out = subprocess.run(allocator, io, environ, &showArgv(path), null) catch |e|
+    var out = subprocess.run(allocator, io, environ, &showArgv(bin, path), null) catch |e|
         return mapError(e);
     defer out.deinit();
 
@@ -53,6 +61,9 @@ pub fn set(
     name: []const u8,
     value: []const u8,
 ) !void {
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin = subprocess.resolveHelper(io, environ, "pass", &bin_buf) catch |e| return mapError(e);
+
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
     const encoded = try subprocess.encodeValue(allocator, value);
@@ -84,7 +95,7 @@ pub fn set(
     const store_attempts = 8;
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        var out = subprocess.run(allocator, io, environ, &insertArgv(path), encoded) catch |e| return mapError(e);
+        var out = subprocess.run(allocator, io, environ, &insertArgv(bin, path), encoded) catch |e| return mapError(e);
         defer out.deinit();
 
         if (out.ok()) return;
@@ -102,10 +113,13 @@ pub fn delete(
     service: []const u8,
     name: []const u8,
 ) !void {
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin = subprocess.resolveHelper(io, environ, "pass", &bin_buf) catch |e| return mapError(e);
+
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
 
-    var out = subprocess.run(allocator, io, environ, &rmArgv(path), null) catch |e|
+    var out = subprocess.run(allocator, io, environ, &rmArgv(bin, path), null) catch |e|
         return mapError(e);
     defer out.deinit();
 
@@ -120,20 +134,24 @@ fn entryPath(allocator: std.mem.Allocator, service: []const u8, name: []const u8
     return std.fmt.allocPrint(allocator, "zcli/{s}/{s}", .{ service, name });
 }
 
-// argv builders. `--` terminates `pass`'s option parsing so the entry path is
-// always taken as a positional, never as a flag — belt-and-suspenders alongside
-// the plugin boundary already rejecting a leading-dash name, and the path being
-// prefixed `zcli/`. `pass` is a bash script that passes its args through
-// `getopt`, which honours `--`. Isolating the argv here keeps the terminator's
-// placement (immediately before `path`) unit-testable without spawning `pass`.
-fn showArgv(path: []const u8) [4][]const u8 {
-    return .{ "pass", "show", "--", path };
+// argv builders. `bin` is the absolute path `resolveHelper` pinned, never the
+// bare name `pass` — `std.process.spawn` resolves a bare `argv[0]` against the
+// inherited PATH, which would let a PATH entry choose who receives the secret.
+//
+// `--` terminates `pass`'s option parsing so the entry path is always taken as a
+// positional, never as a flag — belt-and-suspenders alongside the plugin boundary
+// already rejecting a leading-dash name, and the path being prefixed `zcli/`.
+// `pass` is a bash script that passes its args through `getopt`, which honours
+// `--`. Isolating the argv here keeps the terminator's placement (immediately
+// before `path`) unit-testable without spawning `pass`.
+fn showArgv(bin: []const u8, path: []const u8) [4][]const u8 {
+    return .{ bin, "show", "--", path };
 }
-fn insertArgv(path: []const u8) [6][]const u8 {
-    return .{ "pass", "insert", "--multiline", "--force", "--", path };
+fn insertArgv(bin: []const u8, path: []const u8) [6][]const u8 {
+    return .{ bin, "insert", "--multiline", "--force", "--", path };
 }
-fn rmArgv(path: []const u8) [5][]const u8 {
-    return .{ "pass", "rm", "--force", "--", path };
+fn rmArgv(bin: []const u8, path: []const u8) [5][]const u8 {
+    return .{ bin, "rm", "--force", "--", path };
 }
 
 /// `pass` reports a missing entry as "Error: <path> is not in the password
@@ -157,8 +175,9 @@ fn logStderr(stderr: []const u8) void {
     log.debug("pass: {s}", .{std.mem.trim(u8, stderr, " \t\r\n")});
 }
 
-/// Collapse a launch failure (`pass` uninstalled) or a corrupt-value decode into
-/// a backend failure — but never swallow `OutOfMemory`.
+/// Collapse a launch failure (`pass` uninstalled, or not in a trusted directory)
+/// or a corrupt-value decode into a backend failure — but never swallow
+/// `OutOfMemory`.
 fn mapError(e: anyerror) anyerror {
     return if (e == error.OutOfMemory) error.OutOfMemory else Error.SecretBackendFailure;
 }
@@ -170,20 +189,23 @@ test "entry path is namespaced under zcli/" {
     try std.testing.expectEqualStrings("zcli/myapp/token", p);
 }
 
-test "pass argv places `--` immediately before the entry path" {
+test "pass argv places `--` immediately before the entry path, behind a pinned binary" {
     const path = "zcli/app/token";
+    const bin = "/usr/bin/pass";
     // Each `pass` subcommand must terminate options with `--` right before the
-    // path, so a path is never re-interpreted as a flag.
-    inline for (.{ showArgv(path), insertArgv(path), rmArgv(path) }) |argv| {
+    // path, so a path is never re-interpreted as a flag — and must invoke the
+    // resolved absolute binary, never a PATH-resolved bare name.
+    inline for (.{ showArgv(bin, path), insertArgv(bin, path), rmArgv(bin, path) }) |argv| {
         const last = argv.len - 1;
         try std.testing.expectEqualStrings("--", argv[last - 1]);
         try std.testing.expectEqualStrings(path, argv[last]);
-        try std.testing.expectEqualStrings("pass", argv[0]);
+        try std.testing.expectEqualStrings(bin, argv[0]);
+        try std.testing.expect(std.fs.path.isAbsolute(argv[0]));
     }
     // Full spellings, so an accidental flag reorder is caught.
-    try std.testing.expectEqualSlices([]const u8, &.{ "pass", "show", "--", path }, &showArgv(path));
-    try std.testing.expectEqualSlices([]const u8, &.{ "pass", "insert", "--multiline", "--force", "--", path }, &insertArgv(path));
-    try std.testing.expectEqualSlices([]const u8, &.{ "pass", "rm", "--force", "--", path }, &rmArgv(path));
+    try std.testing.expectEqualSlices([]const u8, &.{ bin, "show", "--", path }, &showArgv(bin, path));
+    try std.testing.expectEqualSlices([]const u8, &.{ bin, "insert", "--multiline", "--force", "--", path }, &insertArgv(bin, path));
+    try std.testing.expectEqualSlices([]const u8, &.{ bin, "rm", "--force", "--", path }, &rmArgv(bin, path));
 }
 
 test "isNotFound matches pass's missing-entry message" {

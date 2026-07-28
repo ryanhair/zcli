@@ -111,20 +111,21 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
     try data.delete(name);
     try std.testing.expect((try data.get(name)) == null);
 
-    // Store and read back.
+    // Store and read back. `get` returns a `Secret`; `deinit` wipes the
+    // plaintext and releases it, which is what a caller is meant to write.
     try data.set(name, "first-value");
     {
-        const v = (try data.get(name)).?;
-        defer a.free(v);
-        try std.testing.expectEqualStrings("first-value", v);
+        var v = (try data.get(name)).?;
+        defer v.deinit();
+        try std.testing.expectEqualStrings("first-value", v.bytes);
     }
 
     // Overwrite an existing entry.
     try data.set(name, "second-value");
     {
-        const v = (try data.get(name)).?;
-        defer a.free(v);
-        try std.testing.expectEqualStrings("second-value", v);
+        var v = (try data.get(name)).?;
+        defer v.deinit();
+        try std.testing.expectEqualStrings("second-value", v.bytes);
     }
 
     // A value with an embedded NUL and a high byte — the reason the shell-out
@@ -132,17 +133,17 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
     const binary = [_]u8{ 'a', 0x00, 'b', 0xff, 0x0a };
     try data.set(name, &binary);
     {
-        const v = (try data.get(name)).?;
-        defer a.free(v);
-        try std.testing.expectEqualSlices(u8, &binary, v);
+        var v = (try data.get(name)).?;
+        defer v.deinit();
+        try std.testing.expectEqualSlices(u8, &binary, v.bytes);
     }
 
     // An empty value must round-trip (a distinct edge from "key absent" → null).
     try data.set(name, "");
     {
-        const v = (try data.get(name)).?;
-        defer a.free(v);
-        try std.testing.expectEqualStrings("", v);
+        var v = (try data.get(name)).?;
+        defer v.deinit();
+        try std.testing.expectEqualStrings("", v.bytes);
     }
 
     // Large-value behavior is backend-specific, so assert per backend:
@@ -175,15 +176,15 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
             defer a.free(under);
             for (under, 0..) |*b, i| b.* = @intCast('A' + (i % 26));
             try data.set(name, under);
-            const v = (try data.get(name)).?;
-            defer a.free(v);
-            try std.testing.expectEqualSlices(u8, under, v);
+            var v = (try data.get(name)).?;
+            defer v.deinit();
+            try std.testing.expectEqualSlices(u8, under, v.bytes);
         } else {
             // macOS Keychain / Linux `pass`: no cap, round-trips the large value.
             try data.set(name, big);
-            const v = (try data.get(name)).?;
-            defer a.free(v);
-            try std.testing.expectEqualSlices(u8, big, v);
+            var v = (try data.get(name)).?;
+            defer v.deinit();
+            try std.testing.expectEqualSlices(u8, big, v.bytes);
         }
     }
 
@@ -194,6 +195,21 @@ test "public API round-trips set / get / overwrite / delete via ContextData" {
 
     // A NUL in the *name* is rejected before any backend call.
     try std.testing.expectError(plugin.Error.InvalidSecretName, data.get("bad\x00name"));
+
+    // So is a bad *app name* — the other half of the key — reported distinctly so
+    // the failure names the app rather than blaming the caller's key.
+    {
+        var bad_ctx = MockContext{ .allocator = a, .io = std.testing.io, .environ = &env, .app_name = "esc/aped", .err_writer = &discard.writer };
+        var bad: plugin.ContextData = .{};
+        try plugin.initContextData(&bad, &bad_ctx);
+        try std.testing.expectError(plugin.Error.InvalidAppName, bad.get(name));
+        try std.testing.expectError(plugin.Error.InvalidAppName, bad.set(name, "x"));
+        try std.testing.expectError(plugin.Error.InvalidAppName, bad.delete(name));
+
+        bad_ctx.app_name = "..";
+        try plugin.initContextData(&bad, &bad_ctx);
+        try std.testing.expectError(plugin.Error.InvalidAppName, bad.get(name));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +451,8 @@ test "concurrent set / delete race is benign and leaves the store usable" {
     // The final state must be one of the two acceptable outcomes: the key is
     // present and readable, or absent. Reading it back (whatever it is) must not
     // fail — anything else means the store is wedged.
-    if (try data.get(race_name)) |v| a.free(v);
+    var after_race = try data.get(race_name);
+    if (after_race) |*v| v.deinit();
 
     // Deterministic cleanup, then a full round-trip proving the store still works
     // (not wedged/locked by the racing): set a sentinel, read it back, delete it,
@@ -445,9 +462,9 @@ test "concurrent set / delete race is benign and leaves the store usable" {
 
     try data.set(race_name, "post-race-sentinel");
     {
-        const v = (try data.get(race_name)).?;
-        defer a.free(v);
-        try std.testing.expectEqualStrings("post-race-sentinel", v);
+        var v = (try data.get(race_name)).?;
+        defer v.deinit();
+        try std.testing.expectEqualStrings("post-race-sentinel", v.bytes);
     }
     try data.delete(race_name);
     try std.testing.expect((try data.get(race_name)) == null);

@@ -7,6 +7,9 @@
 //! are rare and user-triggered):
 //!
 //!   1. `ZCLI_SECRETS_BACKEND` — an explicit `secret-service` / `pass` override.
+//!      Its store's readiness is never second-guessed, but its helper binary
+//!      must still resolve, so a missing one is an actionable "install it"
+//!      rather than an opaque failure at the first operation.
 //!   2. Secret Service — when `secret-tool` is present *and* a session bus is
 //!      reachable (`DBUS_SESSION_BUS_ADDRESS`); the bus check is what lets a
 //!      headless box fall through instead of blocking on a dead daemon.
@@ -23,6 +26,12 @@
 //! `ServiceUnavailable` signal (see `linux_secret_service.noServiceSignal`)
 //! triggers it — a real error such as a locked or access-denied keyring is
 //! surfaced, never masked by silently trying a different store.
+//!
+//! "Present", throughout, means *resolvable to an absolute path in one of the
+//! trusted directories* `subprocess.resolveHelper` searches — not "found on the
+//! inherited PATH". The probe and the operation therefore agree on exactly which
+//! binary is at stake, which is the point: the environment does not get to pick
+//! the process that receives a decrypted credential on stdin.
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
@@ -48,14 +57,30 @@ const Selection = struct { backend: Backend, from_override: bool };
 /// Probe seam. Real code uses `real_probes`; tests inject deterministic answers
 /// to exercise the full resolve matrix without a live D-Bus / `pass` store.
 pub const Probes = struct {
+    /// Autodetection: is this store usable *end to end* — helper present, and
+    /// the store itself plausibly reachable (a session bus; an initialized
+    /// `pass`)?
     secretServiceAvailable: *const fn (std.mem.Allocator, std.Io, *const std.process.Environ.Map) bool,
     passAvailable: *const fn (std.mem.Allocator, std.Io, *const std.process.Environ.Map) bool,
+    /// Narrower: does this backend's helper *binary* resolve in a trusted
+    /// directory? This alone is what the override path checks — see `resolve`.
+    helperPresent: *const fn (std.Io, *const std.process.Environ.Map, []const u8) bool,
 };
 
 const real_probes = Probes{
     .secretServiceAvailable = secretServiceAvailable,
     .passAvailable = passAvailable,
+    .helperPresent = toolPresent,
 };
+
+/// The helper binary a backend shells out to, spelled as
+/// `subprocess.resolveHelper` expects it.
+fn helperName(backend: Backend) []const u8 {
+    return switch (backend) {
+        .secret_service => "secret-tool",
+        .pass => "pass",
+    };
+}
 
 /// Retrieve a secret. Returns `null` if it was never stored. The returned bytes
 /// are owned by `allocator`.
@@ -146,10 +171,21 @@ fn resolve(
     probes: Probes,
 ) Error!Selection {
     if (environ.get("ZCLI_SECRETS_BACKEND")) |choice| {
-        // An explicit override is honored as-is (even if the store turns out to
-        // be unusable — the operation then fails with the store's own error,
-        // which is clearer than silently picking a different one).
         const backend = parseOverride(choice) orelse return Error.InvalidBackendOverride;
+
+        // The override says *which store*, not that its helper is installed. The
+        // store's own readiness is still never second-guessed — a dead session
+        // bus, a locked keyring, an uninitialized `pass` all surface as that
+        // store's own error, which is clearer than silently picking another.
+        // But a missing *binary* is not a store error at all; it has an exact,
+        // actionable diagnostic, and pinning the helper to trusted directories
+        // makes "installed, just not where we look" a real way to hit it. Left
+        // unchecked it reached the caller as an opaque BackendFailure from the
+        // first operation — worst on the one path where the user has told us
+        // exactly what they want.
+        if (!probes.helperPresent(io, environ, helperName(backend)))
+            return Error.SecretBackendUnavailable;
+
         return .{ .backend = backend, .from_override = true };
     }
     if (probes.secretServiceAvailable(allocator, io, environ))
@@ -180,11 +216,32 @@ pub fn diagnostic(w: *std.Io.Writer, e: anyerror, environ: *const std.process.En
             return true;
         },
         Error.SecretBackendUnavailable => {
+            // A user who set the override has already answered "which store?",
+            // so "force one with ZCLI_SECRETS_BACKEND" is not the advice they
+            // need. Name the binary that is missing and where it is looked for.
+            if (environ.get("ZCLI_SECRETS_BACKEND")) |choice| {
+                if (parseOverride(choice)) |backend| {
+                    try w.print(
+                        "ZCLI_SECRETS_BACKEND='{s}' selects that backend, but its helper `{s}` was " ++
+                            "not found in any standard location (/usr/bin, /bin, /usr/local/bin, " ++
+                            "~/.nix-profile/bin, ~/.local/bin, ...). zcli_secrets resolves the helper " ++
+                            "itself instead of trusting PATH, so a decrypted credential is never handed " ++
+                            "to whichever binary the environment happened to name. Install it, or " ++
+                            "symlink it into /usr/local/bin.\n",
+                        .{ choice, helperName(backend) },
+                    );
+                    return true;
+                }
+            }
             try w.writeAll(
                 "no secret backend available. zcli_secrets needs either a running freedesktop " ++
                     "Secret Service (a desktop keyring such as gnome-keyring or KWallet on the " ++
                     "session D-Bus, with `secret-tool` installed) or `pass` with an initialized " ++
-                    "store (`pass init <gpg-id>`). Force one with ZCLI_SECRETS_BACKEND=secret-service|pass.\n",
+                    "store (`pass init <gpg-id>`). Force one with ZCLI_SECRETS_BACKEND=secret-service|pass. " ++
+                    "The helper is looked up in standard locations (/usr/bin, /bin, /usr/local/bin, " ++
+                    "~/.local/bin, ...) rather than on PATH, so that a decrypted credential is never " ++
+                    "handed to whichever binary the environment happened to name; if yours is installed " ++
+                    "elsewhere, symlink it into /usr/local/bin.\n",
             );
             return true;
         },
@@ -201,26 +258,37 @@ pub fn diagnostic(w: *std.Io.Writer, e: anyerror, environ: *const std.process.En
     }
 }
 
-fn secretServiceAvailable(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) bool {
+// The two probes no longer allocate: presence is now decided by resolving the
+// helper's absolute path rather than by spawning it (see `toolPresent`). The
+// allocator stays in the `Probes` signature so the seam keeps one uniform shape
+// for the injected test doubles.
+
+fn secretServiceAvailable(_: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) bool {
     // Without a session bus the Secret Service daemon is unreachable — the
     // common headless / SSH case — so skip it and let `pass` be tried. Even with
     // a bus present the service may still be absent; that case is caught at
     // operation time and falls through to `pass` (see `canFallThrough`).
     if (environ.get("DBUS_SESSION_BUS_ADDRESS") == null) return false;
-    return toolPresent(allocator, io, environ, &.{ "secret-tool", "--version" });
+    return toolPresent(io, environ, "secret-tool");
 }
 
-fn passAvailable(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) bool {
-    if (!toolPresent(allocator, io, environ, &.{ "pass", "version" })) return false;
+fn passAvailable(_: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map) bool {
+    if (!toolPresent(io, environ, "pass")) return false;
     return passStoreInitialized(io, environ);
 }
 
-/// True when the helper binary can be executed at all — regardless of its exit
-/// code. (`secret-tool` has no `--version` subcommand, but attempting it still
-/// proves the binary resolves on PATH; only a spawn failure means "absent".)
-fn toolPresent(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, argv: []const []const u8) bool {
-    var out = subprocess.run(allocator, io, environ, argv, null) catch return false;
-    out.deinit();
+/// True when the helper binary exists, and is executable, in one of the trusted
+/// directories `subprocess.resolveHelper` searches.
+///
+/// This used to *spawn* the tool (`secret-tool --version`, `pass version`) purely
+/// to prove it could be launched. That is no longer the right question: the
+/// backends do not launch whatever the inherited PATH resolves, they launch the
+/// binary this resolution pins, so "is it present" and "which one would we run"
+/// have to be the same lookup. It is also strictly cheaper — two `faccessat`
+/// calls in the common case instead of a fork+exec.
+fn toolPresent(io: std.Io, environ: *const std.process.Environ.Map, helper: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    _ = subprocess.resolveHelper(io, environ, helper, &buf) catch return false;
     return true;
 }
 
@@ -258,7 +326,9 @@ test "backend override parsing" {
 // resolve matrix — driven through the probe seam so no live store is needed.
 // ---------------------------------------------------------------------------
 
-fn probesReturning(comptime ss: bool, comptime ps: bool) Probes {
+/// Probes whose autodetect answers are fixed at comptime. `helperPresent`
+/// answers `helper` for every binary, so the override path can be driven too.
+fn probesReturning(comptime ss: bool, comptime ps: bool, comptime helper: bool) Probes {
     const S = struct {
         fn secretService(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
             return ss;
@@ -266,16 +336,25 @@ fn probesReturning(comptime ss: bool, comptime ps: bool) Probes {
         fn passAvail(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
             return ps;
         }
+        fn helperFound(_: std.Io, _: *const std.process.Environ.Map, _: []const u8) bool {
+            return helper;
+        }
     };
-    return .{ .secretServiceAvailable = S.secretService, .passAvailable = S.passAvail };
+    return .{
+        .secretServiceAvailable = S.secretService,
+        .passAvailable = S.passAvail,
+        .helperPresent = S.helperFound,
+    };
 }
 
-test "resolve: explicit override wins and is marked from_override (no probing)" {
+test "resolve: explicit override wins and is marked from_override (no store probing)" {
     const a = std.testing.allocator;
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
 
-    // Probes that would panic if consulted — an override must not probe.
+    // Store-availability probes that would panic if consulted: an override must
+    // never be talked out of its choice by autodetection. It *does* consult
+    // `helperPresent`, which is the one thing it checks — see `resolve`.
     const trap = Probes{
         .secretServiceAvailable = struct {
             fn f(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
@@ -285,6 +364,11 @@ test "resolve: explicit override wins and is marked from_override (no probing)" 
         .passAvailable = struct {
             fn f(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map) bool {
                 unreachable;
+            }
+        }.f,
+        .helperPresent = struct {
+            fn f(_: std.Io, _: *const std.process.Environ.Map, _: []const u8) bool {
+                return true;
             }
         }.f,
     };
@@ -298,6 +382,39 @@ test "resolve: explicit override wins and is marked from_override (no probing)" 
     const s = try resolve(a, std.testing.io, &env, trap);
     try std.testing.expectEqual(Backend.secret_service, s.backend);
     try std.testing.expect(s.from_override);
+}
+
+test "resolve: an override whose helper is missing is BackendUnavailable, not a later BackendFailure" {
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    // Autodetect says both stores are fine; only the helper binary is absent.
+    // Before this check the override skipped resolution entirely and the caller
+    // met an opaque BackendFailure at the first get/set/delete instead of the
+    // actionable "install it / symlink it" line.
+    const no_helper = probesReturning(true, true, false);
+
+    for ([_][]const u8{ "pass", "secret-service" }) |choice| {
+        try env.put("ZCLI_SECRETS_BACKEND", choice);
+        try std.testing.expectError(
+            Error.SecretBackendUnavailable,
+            resolve(a, std.testing.io, &env, no_helper),
+        );
+    }
+
+    // The helper check is the *only* thing gating the override: with the binary
+    // present it is honored even though neither store probe says it is usable.
+    const helper_only = probesReturning(false, false, true);
+    try env.put("ZCLI_SECRETS_BACKEND", "pass");
+    const sel = try resolve(a, std.testing.io, &env, helper_only);
+    try std.testing.expectEqual(Backend.pass, sel.backend);
+    try std.testing.expect(sel.from_override);
+}
+
+test "helperName maps each backend to the binary it shells out to" {
+    try std.testing.expectEqualStrings("secret-tool", helperName(.secret_service));
+    try std.testing.expectEqualStrings("pass", helperName(.pass));
 }
 
 test "resolve: an unrecognized override is a hard error" {
@@ -357,7 +474,7 @@ test "resolve: autodetect prefers Secret Service when available" {
     const a = std.testing.allocator;
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
-    const sel = try resolve(a, std.testing.io, &env, probesReturning(true, true));
+    const sel = try resolve(a, std.testing.io, &env, probesReturning(true, true, true));
     try std.testing.expectEqual(Backend.secret_service, sel.backend);
     try std.testing.expect(!sel.from_override);
 }
@@ -366,7 +483,7 @@ test "resolve: autodetect falls to pass when Secret Service is absent" {
     const a = std.testing.allocator;
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
-    const sel = try resolve(a, std.testing.io, &env, probesReturning(false, true));
+    const sel = try resolve(a, std.testing.io, &env, probesReturning(false, true, true));
     try std.testing.expectEqual(Backend.pass, sel.backend);
     try std.testing.expect(!sel.from_override);
 }
@@ -377,7 +494,7 @@ test "resolve: neither store available is a clear error" {
     defer env.deinit();
     try std.testing.expectError(
         Error.SecretBackendUnavailable,
-        resolve(a, std.testing.io, &env, probesReturning(false, false)),
+        resolve(a, std.testing.io, &env, probesReturning(false, false, true)),
     );
 }
 

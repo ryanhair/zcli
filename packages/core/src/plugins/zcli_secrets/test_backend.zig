@@ -14,6 +14,12 @@ const std = @import("std");
 
 pub const plugin_id = "zcli_secrets";
 
+/// The same `Secret` the real plugin returns — imported from the shared file
+/// rather than redeclared, so a command written against `get` compiles and
+/// behaves identically under `runCommand` and against the real keychain. (The
+/// file is std-only; importing it pulls in no backend and no native link.)
+pub const Secret = @import("Secret.zig");
+
 const Entry = struct { service: []const u8, name: []const u8, value: []const u8 };
 var entries: std.ArrayListUnmanaged(Entry) = .empty;
 const store_alloc = std.heap.page_allocator;
@@ -31,9 +37,11 @@ pub const ContextData = struct {
     allocator: ?std.mem.Allocator = null,
     app_name: ?[]const u8 = null,
 
-    pub fn get(self: *ContextData, name: []const u8) !?[]const u8 {
-        if (find(self.app_name.?, name)) |i|
-            return try self.allocator.?.dupe(u8, entries.items[i].value);
+    pub fn get(self: *ContextData, name: []const u8) !?Secret {
+        if (find(self.app_name.?, name)) |i| return Secret{
+            .bytes = try self.allocator.?.dupe(u8, entries.items[i].value),
+            .allocator = self.allocator.?,
+        };
         return null;
     }
 

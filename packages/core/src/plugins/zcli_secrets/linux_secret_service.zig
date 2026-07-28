@@ -17,6 +17,11 @@
 //! rejection already prevents a `name` from being read as a flag, so no `--` is
 //! needed — and none is added rather than one whose placement GOption may not
 //! honour.
+//!
+//! `argv[0]` is always the absolute path `subprocess.resolveHelper` pinned from a
+//! trusted directory, never the bare name `secret-tool`: `std.process.spawn`
+//! resolves a bare `argv[0]` against the inherited PATH, which would let a PATH
+//! entry decide which binary is handed the secret on stdin.
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
@@ -145,8 +150,11 @@ pub fn get(
     service: []const u8,
     name: []const u8,
 ) !?[]const u8 {
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin = subprocess.resolveHelper(io, environ, "secret-tool", &bin_buf) catch |e| return mapError(e);
+
     var out = subprocess.run(allocator, io, environ, &.{
-        "secret-tool", "lookup", "service", service, "account", name,
+        bin, "lookup", "service", service, "account", name,
     }, null) catch |e| return mapError(e);
     defer out.deinit();
 
@@ -184,6 +192,9 @@ pub fn set(
     name: []const u8,
     value: []const u8,
 ) !void {
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin = subprocess.resolveHelper(io, environ, "secret-tool", &bin_buf) catch |e| return mapError(e);
+
     const encoded = try subprocess.encodeValue(allocator, value);
     // `encoded` is base64 of the secret — wipe it before the allocator reclaims
     // the pages, not just free it.
@@ -212,7 +223,7 @@ pub fn set(
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
         var out = subprocess.run(allocator, io, environ, &.{
-            "secret-tool", "store", "--label", label, "service", service, "account", name,
+            bin, "store", "--label", label, "service", service, "account", name,
         }, encoded) catch |e| return mapError(e);
         defer out.deinit();
 
@@ -312,10 +323,13 @@ pub fn delete(
     service: []const u8,
     name: []const u8,
 ) !void {
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin = subprocess.resolveHelper(io, environ, "secret-tool", &bin_buf) catch |e| return mapError(e);
+
     // `secret-tool clear` exits 0 whether or not anything matched; only a
     // nonzero exit with a message on stderr is a real failure.
     var out = subprocess.run(allocator, io, environ, &.{
-        "secret-tool", "clear", "service", service, "account", name,
+        bin, "clear", "service", service, "account", name,
     }, null) catch |e| return mapError(e);
     defer out.deinit();
 
@@ -341,8 +355,9 @@ fn logStderr(stderr: []const u8) void {
     log.debug("secret-tool: {s}", .{trimmed(stderr)});
 }
 
-/// Collapse a launch failure (`secret-tool` uninstalled) or a corrupt-value
-/// decode into a backend failure — but never swallow `OutOfMemory`.
+/// Collapse a launch failure (`secret-tool` uninstalled, or not in a trusted
+/// directory) or a corrupt-value decode into a backend failure — but never
+/// swallow `OutOfMemory`.
 fn mapError(e: anyerror) anyerror {
     return if (e == error.OutOfMemory) error.OutOfMemory else Error.SecretBackendFailure;
 }

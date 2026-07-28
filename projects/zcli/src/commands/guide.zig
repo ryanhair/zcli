@@ -370,9 +370,12 @@ const topics = [_]Topic{
         \\the context, no import:
         \\
         \\  try context.plugins.zcli_secrets.set("token", token);
-        \\  if (try context.plugins.zcli_secrets.get("token")) |token| {
-        \\      // token is arena-owned — no free
-        \\  }
+        \\
+        \\  var token = (try context.plugins.zcli_secrets.get("token")) orelse
+        \\      return context.fail("not logged in", .{});
+        \\  defer token.deinit();   // wipes the plaintext, not just frees it
+        \\  // ... use token.bytes ...
+        \\
         \\  try context.plugins.zcli_secrets.delete("token"); // no-op if absent
         \\
         \\The plugin only stores/reads the credential. The auth FLOW that produces it
