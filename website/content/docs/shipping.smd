@@ -64,7 +64,7 @@ zcli.builtin(.github_upgrade, .{
 }),
 ```
 
-The plugin renders its progress (download, verify, smoke test, install) as live spinners, which ride zcli's ui engine — so your root source file needs the two terminal-restoring crash hooks, both enforced at compile time: `pub const panic = zcli.ui.panic;` and `pub const debug = zcli.ui.debug;` (segfaults are routed through `root.debug.handleSegfault`, not `root.panic`). Projects scaffolded by `zcli init` already have them.
+The plugin renders its progress (download, verify, smoke test, install) as live spinners, which ride zcli's ui engine — so your root source file needs the two terminal-restoring crash hooks, both enforced at compile time: `pub const panic = zcli.ui.panic;` and `pub const debug = zcli.ui.debug;` (segfaults are routed through `root.debug.handleSegfault`, not `root.panic`). Projects scaffolded by `zcli init` already declare whatever their pinned zcli requires — the `debug` hook joins the scaffold in the first release that carries it.
 
 `verification` has no default — you must pick one. Pin a minisign key (recommended: fail-closed signature verification, see [Release signing](https://github.com/ryanhair/zcli/blob/main/docs/RELEASE-SIGNING.md)) or opt out explicitly with `.checksum_only`, which still verifies the SHA-256 digest but warns loudly on every real upgrade that the release could be forged by whoever can publish to your GitHub repo.
 

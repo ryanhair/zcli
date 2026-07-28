@@ -176,7 +176,7 @@
 },</pre>
           </div>
           <p>The generator introspects that config struct at comptime and folds it into the generated registry — fully compile-time, no runtime string building. Handrolled <code>.{ .name, .path }</code> entries can still pass an <code>.init</code> string for the same effect.</p>
-          <p>One extra requirement for <code>github_upgrade</code>: its <code>upgrade</code> command renders progress as live spinners on zcli's ui engine, so your root source file must declare the two terminal-restoring crash hooks — <code>pub const panic = zcli.ui.panic;</code> and <code>pub const debug = zcli.ui.debug;</code> — both enforced at compile time (segfaults are routed through <code>root.debug.handleSegfault</code>, not <code>root.panic</code>). Projects scaffolded by <code>zcli init</code> already have them. See <a href="$site.page('docs/shipping').link()">Shipping</a> for the full upgrade flow.</p>
+          <p>One extra requirement for <code>github_upgrade</code>: its <code>upgrade</code> command renders progress as live spinners on zcli's ui engine, so your root source file must declare the two terminal-restoring crash hooks — <code>pub const panic = zcli.ui.panic;</code> and <code>pub const debug = zcli.ui.debug;</code> — both enforced at compile time (segfaults are routed through <code>root.debug.handleSegfault</code>, not <code>root.panic</code>). Projects scaffolded by <code>zcli init</code> already declare whatever their pinned zcli requires. See <a href="$site.page('docs/shipping').link()">Shipping</a> for the full upgrade flow.</p>
         </section>
 
         <!-- ===== WRITING PLUGINS ===== -->

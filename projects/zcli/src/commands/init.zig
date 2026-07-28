@@ -498,15 +498,19 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     defer build_file.close(io);
     try build_file.writeStreamingAll(io, build_content);
 
-    // Generate src/main.zig — emitted verbatim from the compiled reference.
+    // Generate src/main.zig from the compiled reference, minus any decl the
+    // pinned release is too old to compile (see renderMainZig).
     try stdout.print("  Creating src/main.zig...\n", .{});
 
     var src_dir = try project_dir.openDir(io, "src", .{});
     defer src_dir.close(io);
 
+    const main_content = try renderMainZig(allocator, zcli_version);
+    defer allocator.free(main_content);
+
     var main_file = try src_dir.createFile(io, "main.zig", .{});
     defer main_file.close(io);
-    try main_file.writeStreamingAll(io, scaffold.reference.main_zig);
+    try main_file.writeStreamingAll(io, main_content);
 
     // Seed the chosen shape's starting command — verbatim from the compiled
     // reference. multi: an example `hello` subcommand. single: a root
@@ -1138,6 +1142,108 @@ test "renderBuildZig substitutes name, description, and plugins" {
     // Framework-coupled calls the reference compile-guards survive verbatim.
     try std.testing.expect(std.mem.indexOf(u8, build, "zcli.addCommandTests(b, exe, zcli_dep,") != null);
     try std.testing.expect(std.mem.indexOf(u8, build, "try zcli.generate(b, exe, zcli_dep, .{") != null);
+}
+
+// The segfault-hook region in the reference main.zig, delimited so init can drop
+// it for releases that predate `zcli.ui.debug`. Same marker idiom as the plugins
+// region above, and for the same reason: the reference keeps compiling (with the
+// hook present) against the local tree.
+const ref_debug_hook_begin = "//<zcli:debug-hook>\n";
+const ref_debug_hook_end = "//</zcli:debug-hook>\n";
+
+/// The last zcli release without `ui.debug` (the segfault hook, #759). A project
+/// scaffolded against this release or older must not mention `zcli.ui.debug` —
+/// the decl does not exist there, and merely naming it is a compile error in the
+/// user's very first `zig build`.
+const last_release_without_debug_hook = std.SemanticVersion{ .major = 0, .minor = 22, .patch = 0 };
+
+/// Whether the zcli release this CLI pins (its own version) carries
+/// `ui.debug`. Mirrors the retired `rootIndexSupported` gate (#709/#722): the
+/// point of testing the version rather than hard-coding the rewrite is that it
+/// clears ITSELF at the next release bump. The unconditional `addCommandTests`
+/// pin did not, and that is precisely how it came to emit non-compiling
+/// scaffolds the moment 0.21.0 landed — the failure this gate exists to avoid
+/// repeating.
+///
+/// Unparseable versions count as unsupported: emit the shape every *published*
+/// zcli accepts. `context.app_version` comes from a build.zig.zon `.version`,
+/// which Zig's manifest parser already requires to be semver, so this is
+/// belt-and-braces rather than a live path.
+fn debugHookSupported(version_str: []const u8) bool {
+    const v = std.SemanticVersion.parse(version_str) catch return false;
+    return v.order(last_release_without_debug_hook) == .gt;
+}
+
+test "debugHookSupported: strictly newer than 0.22.0, fail closed on junk" {
+    try std.testing.expect(!debugHookSupported("0.22.0"));
+    try std.testing.expect(!debugHookSupported("0.21.0"));
+    try std.testing.expect(debugHookSupported("0.22.1"));
+    try std.testing.expect(debugHookSupported("0.23.0"));
+    try std.testing.expect(debugHookSupported("1.0.0"));
+    try std.testing.expect(!debugHookSupported("not-a-version"));
+}
+
+/// Assemble the project's `src/main.zig` from the embedded reference source.
+///
+/// Nothing is substituted — main.zig carries no project-specific values — but it
+/// is not emitted verbatim either. `ui.App` requires BOTH crash hooks as of
+/// #759, so the reference declares both, which is what keeps the local
+/// `examples/init-scaffold` build honest. `init`, though, pins generated
+/// projects to the released tag `context.app_version` names, and `zcli.ui.debug`
+/// does not exist in 0.22.0 or earlier — emitting it there produces a project
+/// whose first `zig build` fails with "struct 'ui' has no member named 'debug'".
+/// So the marked region is dropped while the pinned release predates it.
+///
+/// This is safe in both directions rather than a lesser-evil tradeoff. Dropping
+/// it cannot under-protect a scaffolded project against the LOCAL tree either,
+/// because the compile-time requirement only fires when something constructs a
+/// `ui.App`, and the default scaffold's plugins (help/version/not_found) do not.
+/// A user who later adds a prompt, a progress indicator, or the github_upgrade
+/// plugin gets the framework's own error message telling them the exact line to
+/// add — which is the correct moment to learn it, and the only moment at which
+/// the pinned release could possibly support it.
+///
+/// Delete this function and its markers at the first release cut after #759
+/// lands, exactly as #722 retired the `addCommandTests` pin — though unlike that
+/// one, leaving it in place is harmless: the gate simply stops firing.
+fn renderMainZig(allocator: std.mem.Allocator, zcli_version: []const u8) ![]u8 {
+    const ref = scaffold.reference.main_zig;
+    const begin = std.mem.indexOf(u8, ref, ref_debug_hook_begin) orelse return error.MalformedReference;
+    const end = (std.mem.indexOf(u8, ref, ref_debug_hook_end) orelse return error.MalformedReference) +
+        ref_debug_hook_end.len;
+    // The markers themselves are zcli's bookkeeping and never reach the user's
+    // file: either the region's body replaces them, or nothing does.
+    const body = ref[begin + ref_debug_hook_begin.len .. end - ref_debug_hook_end.len];
+    const kept: []const u8 = if (debugHookSupported(zcli_version)) body else "";
+    return std.mem.concat(allocator, u8, &.{ ref[0..begin], kept, ref[end..] });
+}
+
+test "renderMainZig drops the segfault hook for a release that predates it" {
+    const allocator = std.testing.allocator;
+    const main = try renderMainZig(allocator, "0.22.0");
+    defer allocator.free(main);
+
+    // The whole point: the emitted file must not NAME `zcli.ui.debug`, because
+    // 0.22.0's ui module has no such decl (#623 builds this against the real tag).
+    try std.testing.expect(std.mem.indexOf(u8, main, "zcli.ui.debug") == null);
+    try std.testing.expect(std.mem.indexOf(u8, main, "pub const debug") == null);
+    // Markers go with it — a scaffold must never ship zcli's own bookkeeping.
+    try std.testing.expect(std.mem.indexOf(u8, main, "zcli:debug-hook") == null);
+    // Everything else survives, panic hook included.
+    try std.testing.expect(std.mem.indexOf(u8, main, "pub const panic = zcli.ui.panic;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main, "pub fn main(init: std.process.Init) !void {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main, "registry.init()") != null);
+}
+
+test "renderMainZig emits the segfault hook once the pinned release carries it" {
+    const allocator = std.testing.allocator;
+    const main = try renderMainZig(allocator, "0.23.0");
+    defer allocator.free(main);
+
+    try std.testing.expect(std.mem.indexOf(u8, main, "pub const debug = zcli.ui.debug;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, main, "pub const panic = zcli.ui.panic;") != null);
+    // Markers are zcli's bookkeeping, not the user's — stripped on this path too.
+    try std.testing.expect(std.mem.indexOf(u8, main, "zcli:debug-hook") == null);
 }
 
 /// True if `s` is a semantic version acceptable to Zig's build.zig.zon manifest
