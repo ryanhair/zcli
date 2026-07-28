@@ -10,6 +10,7 @@ const response_file = @import("../response_file.zig");
 const paths = @import("paths.zig");
 const builder = @import("builder.zig");
 const validation = @import("validation.zig");
+const quota = @import("quota.zig");
 const comptimeJoinPath = paths.comptimeJoinPath;
 const sortedByPathLengthDesc = paths.sortedByPathLengthDesc;
 const Config = builder.Config;
@@ -420,7 +421,10 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         }
 
         fn buildCommandInfo() []const zcli.CommandInfo {
-            @setEvalBranchQuota(10000);
+            // Per-command `meta` walks plus the comptimePrint that renders each
+            // usage line — the single costliest per-command comptime pass, and
+            // the second wall a growing app used to hit (#730).
+            @setEvalBranchQuota(comptime quota.forCommands(cmd_entries.len + plugin_command_entries.len));
             return buildCommandInfoFromEntries(cmd_entries) ++ buildCommandInfoFromEntries(plugin_command_entries);
         }
 
@@ -1084,7 +1088,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         /// argv, execute, and dispatch errors/postExecute. `command_parts` is
         /// the matched command path; `remaining_args` the argv after it.
         fn executeResolvedCommand(comptime Module: type, comptime kind: CommandKind, context: *Context, command_parts: []const []const u8, remaining_args: []const []const u8) !void {
-            @setEvalBranchQuota(10000);
+            @setEvalBranchQuota(comptime quota.forCommands(cmd_entries.len + plugin_command_entries.len));
             try setCommandPath(context, command_parts);
             try setCommandInfo(Module, context);
 
@@ -1249,7 +1253,10 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         }
 
         fn executeCommand(_: *Self, context: *Context, args: []const []const u8) !void {
-            @setEvalBranchQuota(10000);
+            // `inline for` over every command entry to find the longest match:
+            // the routing loop is unrolled once per command, so the budget
+            // scales with the registry (#730).
+            @setEvalBranchQuota(comptime quota.forCommands(cmd_entries.len + plugin_command_entries.len));
 
             // A leading bare `--` is the conventional "nothing after this is an
             // option" terminator, not a command name (#743). `parseGlobalOptions`
