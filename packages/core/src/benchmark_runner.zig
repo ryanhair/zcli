@@ -10,7 +10,10 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+    // Streaming, never positional — see the note on `zcli.Stdio.init`: a
+    // positional writer pwrites from its own zero-based offset and clobbers a
+    // shared-fd append (`zig build benchmark >>run.log`) from byte 0.
+    var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
     // Buffered output is dropped if the process exits without flushing, so every
     // path below flushes before returning (0.16's explicit-IO contract).
@@ -37,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
 
 fn printHelp(io: std.Io) !void {
     var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     try stdout.print(
         \\zcli Benchmark Runner

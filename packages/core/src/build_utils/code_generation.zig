@@ -106,14 +106,17 @@ fn generateSimpleRegistry(writer: anytype, commands: DiscoveredCommands, config:
     const app_description = try escapeStringLiteral(allocator, config.app_description);
     defer allocator.free(app_description);
 
-    // Generate the registry type (private)
+    // Generate the registry type (private). `response_files` is emitted as a
+    // literal so the opt-in (#764) is comptime-known at the registry front and
+    // the whole expansion stage compiles out when it is false.
     try writer.print(
         \\const RegistryType = zcli.Registry.init(.{{
         \\    .app_name = "{s}",
         \\    .app_version = "{s}",
         \\    .app_description = "{s}",
+        \\    .response_files = {},
         \\}})
-    , .{ app_name, app_version, app_description });
+    , .{ app_name, app_version, app_description, config.response_files });
 
     // Register commands
     try generateCommandRegistrations(writer, commands, allocator);
@@ -705,4 +708,55 @@ test "generated code structure validation" {
 
     // Validate plugin is referenced
     try std.testing.expect(std.mem.indexOf(u8, source, "test_plugin") != null);
+}
+
+test "response_files: the build-side default is off and both values reach the registry (#764)" {
+    // Scope note: this pins the *build-side wiring only* — that the value a user
+    // writes in build.zig survives into the generated `Registry.init(...)`
+    // literal. It deliberately does not claim the registry honours the flag,
+    // because a substring in generated source cannot show that: honouring it is
+    // behaviour, and it is covered where it can actually be executed, in
+    // plugin_pipeline_test.zig ("response files: ..."), which runs a
+    // default-configured app against `@scope/pkg` and an opted-in one against a
+    // missing `@file`.
+
+    // The user-facing default, asserted at the layer users actually touch. If
+    // this ever flips back, every app the framework builds silently regains an
+    // arbitrary-file-read primitive — worth pinning on its own.
+    const user_default = types.GenerateConfig{
+        .commands_dir = "src/commands",
+        .app_name = "app",
+        .app_description = "app",
+    };
+    try std.testing.expect(!user_default.response_files);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // `.init(allocator)` rather than a bare struct literal: the literal form
+    // silently rots when the struct gains a required field, which is exactly
+    // how this fixture first shipped (it omitted `.allocator`).
+    var commands = DiscoveredCommands.init(allocator);
+    defer commands.deinit();
+
+    const off = BuildConfig{
+        .commands_dir = "src/commands",
+        .plugins_dir = null,
+        .plugins = &.{},
+        .app_name = "app",
+        .app_version = "1.0.0",
+        .app_description = "app",
+    };
+    const off_source = try generateComptimeRegistrySource(allocator, commands, off, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, off_source, ".response_files = false,") != null);
+
+    // Both values must round-trip, not just the default: an emitter that
+    // hardcoded `false` would sail through a default-only check while making
+    // every opt-in silently do nothing.
+    var on = off;
+    on.response_files = true;
+    const on_source = try generateComptimeRegistrySource(allocator, commands, on, &.{});
+    try std.testing.expect(std.mem.indexOf(u8, on_source, ".response_files = true,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, on_source, ".response_files = false,") == null);
 }

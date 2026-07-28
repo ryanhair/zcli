@@ -1,13 +1,36 @@
 //! `@file` response-file argument expansion.
 //!
-//! Many CLIs (Cobra, clap-rs, GCC/clang, .NET) let you replace a long or
+//! Some CLIs (GCC/clang, .NET, MSVC-style linkers) let you replace a long or
 //! awkward argument list with `myapp @args.txt`, where the `@file` token is
 //! substituted by arguments read from a file. This is handy for very long
 //! invocations and for working around OS `argv` length limits.
 //!
-//! Expansion happens exactly once, at the very front of parsing (before global
-//! options, arg transforms, and command routing), so a response file may
-//! contribute the command name, options, and positionals alike.
+//! **Opt-in — off by default** (`GenerateConfig.response_files`, #764). Two
+//! reasons, in order:
+//!
+//!   1. `@` is an ordinary argument character. npm/deno scopes (`@scope/pkg`),
+//!      social handles (`@ryanhair`), and `user@host` all appear as real
+//!      positional values. With expansion always on, `myapp install @scope/pkg`
+//!      dies with `error.ResponseFileUnreadable` and exit 2 for every app the
+//!      framework builds, and its author has no switch to turn off. Response
+//!      files are a niche need of compiler-shaped tools; `@` arguments are not
+//!      niche at all, so the common case must be the default.
+//!   2. It is an arbitrary-file-read primitive. `myapp @/etc/passwd` reads any
+//!      file the process can read and injects its lines as arguments, and that
+//!      content resurfaces in diagnostics (`ArgumentInvalidValue` prints
+//!      `provided_value`). Whenever any argv token is attacker-influenced —
+//!      a wrapper script, a CI job interpolating a webhook field, an agent
+//!      shelling out — that is a file-disclosure gadget. A capability nobody
+//!      asked for should not be reachable; off by default removes it from every
+//!      app that never wanted it, and the app author opting in is the one
+//!      person positioned to weigh it.
+//!
+//! Backwards compatibility is deliberately not a consideration here: an app
+//! that wants response files sets `.response_files = true` in its `build.zig`.
+//!
+//! When enabled, expansion happens exactly once, at the very front of parsing
+//! (before global options, arg transforms, and command routing), so a response
+//! file may contribute the command name, options, and positionals alike.
 //!
 //! Semantics (see `expandArgs`):
 //!   * A token `@PATH` (leading `@`, length > 1) is replaced by the arguments
@@ -27,13 +50,24 @@
 //!   * A bare `@` (no path) is a literal argument.
 //!
 //! A missing or unreadable response file is a reported CLI misuse error
-//! (`error.ResponseFileUnreadable`, exit code 2 at the registry front).
+//! (`error.ResponseFileUnreadable`, exit code 2 at the registry front); a file
+//! past `max_file_bytes` is `error.ResponseFileTooLarge`, reported the same way
+//! but named and worded distinctly, because "the file isn't there" and "the
+//! file is too big" want completely different fixes from the user.
 
 const std = @import("std");
 
-/// Errors specific to response-file expansion. `error.ResponseFileUnreadable`
-/// is treated as a reported CLI misuse error by the registry entry point.
-pub const Error = error{ResponseFileUnreadable};
+/// Errors specific to response-file expansion. Both are treated as reported CLI
+/// misuse errors by the registry entry point (exit 2).
+pub const Error = error{
+    /// The `@PATH` file could not be opened or read at all (typically ENOENT,
+    /// but also EACCES, EISDIR, …).
+    ResponseFileUnreadable,
+    /// The `@PATH` file exists and is readable but reaches or exceeds
+    /// `max_file_bytes`. Distinct from `ResponseFileUnreadable` so the user is
+    /// told to shrink the file rather than sent hunting for a missing path.
+    ResponseFileTooLarge,
+};
 
 /// Upper bound on the bytes read from a single response file. Generous enough
 /// for any realistic argument list while bounding memory from a pathological or
@@ -48,6 +82,11 @@ pub const Diagnostic = struct {
 
 /// Expand `@file` response-file tokens in `argv`.
 ///
+/// Only called when the app opted in (`GenerateConfig.response_files`); the
+/// gate lives at the single call site in `registry/compiled.zig`, not in here,
+/// so this function stays a pure argv → argv transform that tests can drive
+/// directly.
+///
 /// When `argv` contains no expandable token this returns `argv` itself — no
 /// allocation, and every argument keeps its original (caller-owned) lifetime.
 /// This matters: plugins and diagnostics may hold argv slices beyond the parse,
@@ -61,7 +100,8 @@ pub const Diagnostic = struct {
 ///
 /// `dir` is the directory `@PATH` is resolved against (normally
 /// `std.Io.Dir.cwd()`); `io` threads file I/O. On a missing/unreadable file,
-/// sets `diag` and returns `error.ResponseFileUnreadable`.
+/// sets `diag` and returns `error.ResponseFileUnreadable`; on one at or past
+/// `max_file_bytes`, `error.ResponseFileTooLarge`.
 pub fn expandArgs(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -84,9 +124,17 @@ pub fn expandArgs(
                 passthrough = true;
             } else if (isResponseToken(arg)) {
                 const path = arg[1..];
-                const content = dir.readFileAlloc(io, path, allocator, .limited(max_file_bytes)) catch {
+                const content = dir.readFileAlloc(io, path, allocator, .limited(max_file_bytes)) catch |err| {
                     diag.* = .{ .path = path };
-                    return Error.ResponseFileUnreadable;
+                    // `readFileAlloc` reports the size cap as `StreamTooLong`;
+                    // everything else (ENOENT, EACCES, EISDIR, a read fault) is
+                    // "couldn't read it". Keeping them apart is the whole point
+                    // of the split error (#764) — a 2 MiB response file and a
+                    // typo'd path used to produce the identical message.
+                    return switch (err) {
+                        error.StreamTooLong => Error.ResponseFileTooLarge,
+                        else => Error.ResponseFileUnreadable,
+                    };
                 };
                 // Not freed: the file-derived argument slices point into it
                 // (arena-owned, reclaimed with everything else).
@@ -253,6 +301,31 @@ test "expandArgs: a missing response file is a reported error naming the path" {
     try testing.expectError(Error.ResponseFileUnreadable, expandArgs(testing.allocator, testing.io, std.Io.Dir.cwd(), &argv, &diag));
     try testing.expect(diag != null);
     try testing.expectEqualStrings("does-not-exist.txt", diag.?.path);
+}
+
+test "expandArgs: an oversize response file is its own error, not 'unreadable'" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // One byte over the cap is enough — `readFileAlloc`'s limit errors when
+    // reached *or* exceeded.
+    const big = try testing.allocator.alloc(u8, max_file_bytes + 1);
+    defer testing.allocator.free(big);
+    @memset(big, 'x');
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "huge.txt", .data = big });
+
+    var diag: ?Diagnostic = null;
+    const argv = [_][]const u8{ "cmd", "@huge.txt" };
+    try testing.expectError(
+        Error.ResponseFileTooLarge,
+        expandArgs(arena.allocator(), testing.io, tmp.dir, &argv, &diag),
+    );
+    // The path is still named, so the message can point at the right file.
+    try testing.expect(diag != null);
+    try testing.expectEqualStrings("huge.txt", diag.?.path);
 }
 
 test "expandArgs into parseCommandLine: file-supplied options and positionals parse" {

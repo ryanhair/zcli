@@ -40,8 +40,13 @@ pub fn main(init: std.process.Init) !void {
 
     // Route progress through the io model, not std.debug.print — buffered here
     // and flushed at the end, consistent with the framework's output contract.
+    //
+    // Streaming (plain write(2)), never `.writer()` — see the long note on
+    // `zcli.Stdio.init`. A positional writer pwrites from its own offset
+    // starting at 0 and ignores the fd's shared offset, so `zig build docs
+    // 2>>build.log` would clobber the log from byte 0 instead of appending.
     var err_buf: [512]u8 = undefined;
-    var stderr = std.Io.File.stderr().writer(io, &err_buf);
+    var stderr = std.Io.File.stderr().writerStreaming(io, &err_buf);
     const errw = &stderr.interface;
 
     for (cfg.formats) |format| {

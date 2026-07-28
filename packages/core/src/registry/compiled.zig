@@ -92,9 +92,10 @@ fn isReportedCliError(err: anyerror) bool {
         // A command that failed via context.fail() already printed its own
         // user-facing message; exit non-zero without the name/trace.
         error.CommandFailed,
-        // A `@file` response file that couldn't be read is CLI misuse: the
+        // A `@file` response file that couldn't be used is CLI misuse: the
         // message (naming the file) was already printed at the parse front.
         error.ResponseFileUnreadable,
+        error.ResponseFileTooLarge,
         => true,
         else => false,
     };
@@ -131,13 +132,32 @@ fn exitCodeForReportedError(err: anyerror) u8 {
 /// exited 0 having written nothing at all: silent data loss reported as
 /// success.
 ///
-/// Zig's start code ignores SIGPIPE, so a write to a pipe whose reader has
-/// closed returns EPIPE — the same mechanism as on Windows, where there is no
-/// SIGPIPE at all and a broken pipe only ever appears as a write error, so one
-/// check covers both platforms with no signal handling required. A closed pipe
-/// keeps its established treatment: no diagnostic, the conventional SIGPIPE
-/// status. Anything else gets a one-line diagnostic and a general-failure
-/// status.
+/// For this to see a broken pipe at all, a write to a pipe whose reader has
+/// closed must *return* EPIPE rather than kill the process. On POSIX that is
+/// not something Zig's start code arranges — `std/start.zig` never touches
+/// SIGPIPE. It comes from the `std.Io` implementation: `std.Io.Threaded.init`
+/// installs a do-nothing `SIG.PIPE` handler (alongside the `SIG.IO` one it
+/// needs for cancellation), and a *handled* signal doesn't terminate, so the
+/// `write` returns EPIPE. `start.zig` builds exactly such a `Threaded` for the
+/// `io` it hands `main(init: std.process.Init)`, which is the entry point every
+/// scaffolded app uses — so the default path is covered. On Windows there is no
+/// SIGPIPE at all and a broken pipe is only ever a write error, so the one
+/// check covers both platforms.
+///
+/// The guarantee is therefore the *caller's*, not ours: `run()` takes `io` as a
+/// parameter, and an app that builds its own — `Threaded.init_single_threaded`
+/// in particular, which leaves `have_signal_handler = false` and installs
+/// nothing — keeps the process default disposition and dies by signal on the
+/// first write into a closed pipe, skipping every deferred flush and this
+/// function with it. Nothing in `std.Io`'s interface lets us detect or repair
+/// that from here, and a framework has no business rewriting process-global
+/// signal disposition behind the app's back, so it is stated rather than
+/// enforced: if you hand `run()` an io that does not neutralise SIGPIPE, EPIPE
+/// handling is off and `myapp | head` is a signal death.
+///
+/// Given EPIPE does arrive, a closed pipe keeps its established treatment: no
+/// diagnostic, the conventional SIGPIPE status. Anything else gets a one-line
+/// diagnostic and a general-failure status.
 ///
 /// This is the *last* word, never the first — see `run()` for why a classified
 /// CLI error outranks it.
@@ -596,24 +616,51 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // their original lifetime (plugins and diagnostics may hold argv
             // slices past this call); only file-derived arguments and the
             // rebuilt outer slice land in the arena.
-            var rf_diag: ?response_file.Diagnostic = null;
-            const expanded_args = response_file.expandArgs(context.allocator, io, std.Io.Dir.cwd(), args, &rf_diag) catch |err| {
-                // A missing/unreadable response file is reported CLI misuse:
-                // print the offending path (sanitized — it comes from argv) and
-                // a usage pointer, then let run() map it to exit code 2.
-                // Best-effort writes, never `try`: same reasoning as
-                // reportParseError (#740) — a stderr that can't be written must
-                // not turn this classified misuse into `error.WriteFailed` and
-                // demote its exit status from 2 to 1.
-                if (rf_diag) |d| {
-                    var stderr = context.stderr();
-                    stderr.print("Error: cannot read response file '", .{}) catch {};
-                    zcli.writeSanitized(stderr, d.path) catch {};
-                    stderr.print("'\n", .{}) catch {};
-                    stderr.print("Run '{s} --help' for usage.\n", .{context.app_name}) catch {};
-                    stderr.flush() catch {};
-                }
-                return err;
+            //
+            // Opt-in per app (#764). When `response_files` is false — the
+            // default — this whole stage compiles out and a leading `@` is just
+            // a character, so `myapp install @scope/pkg` reaches the command as
+            // written and no argv token can name a file to read.
+            const expanded_args = if (comptime !config.response_files) args else expand: {
+                var rf_diag: ?response_file.Diagnostic = null;
+                break :expand response_file.expandArgs(context.allocator, io, std.Io.Dir.cwd(), args, &rf_diag) catch |err| {
+                    // A response file we couldn't use is reported CLI misuse:
+                    // print the offending path (sanitized — it comes from argv)
+                    // and a usage pointer, then let run() map it to exit code 2.
+                    // Best-effort writes, never `try`: same reasoning as
+                    // reportParseError (#740) — a stderr that can't be written
+                    // must not turn this classified misuse into
+                    // `error.WriteFailed` and demote its exit status from 2 to 1.
+                    if (rf_diag) |d| {
+                        var stderr = context.stderr();
+                        switch (err) {
+                            // Distinct wording for a distinct fix: shrink or
+                            // split the file, don't go hunting for a bad path.
+                            error.ResponseFileTooLarge => {
+                                stderr.print("Error: response file '@", .{}) catch {};
+                                zcli.writeSanitized(stderr, d.path) catch {};
+                                stderr.print("' is too large (limit {d} bytes)\n", .{response_file.max_file_bytes}) catch {};
+                            },
+                            else => {
+                                stderr.print("Error: cannot read response file '@", .{}) catch {};
+                                zcli.writeSanitized(stderr, d.path) catch {};
+                                stderr.print("'\n", .{}) catch {};
+                                // The likeliest cause by far is that the user
+                                // meant a literal `@` value (`@scope/pkg`, a
+                                // handle, `user@host`) and never wanted a file.
+                                // `--` is the escape, and it was previously
+                                // documented only in the source — where nobody
+                                // hitting this error would ever find it (#764).
+                                stderr.print("If you meant a literal '@' argument, put it after '--': {s} -- @", .{context.app_name}) catch {};
+                                zcli.writeSanitized(stderr, d.path) catch {};
+                                stderr.print("\n", .{}) catch {};
+                            },
+                        }
+                        stderr.print("Run '{s} --help' for usage.\n", .{context.app_name}) catch {};
+                        stderr.flush() catch {};
+                    }
+                    return err;
+                };
             };
 
             // 1. Run preParse hooks

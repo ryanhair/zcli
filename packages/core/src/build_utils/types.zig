@@ -92,6 +92,9 @@ pub const BuildConfig = struct {
     app_name: []const u8,
     app_version: []const u8,
     app_description: []const u8,
+    /// Mirrors `GenerateConfig.response_files`; emitted as a literal into the
+    /// generated registry's `Config` (#764).
+    response_files: bool = false,
 };
 
 /// The native libraries a plugin's backend needs, expressed as a hook the
@@ -430,6 +433,22 @@ pub const GenerateConfig = struct {
     plugins_dir: ?[]const u8 = null,
     shared_modules: ?[]const SharedModule = null,
     command_configs: ?[]const CommandConfig = null,
+    /// Expand a leading-`@` argv token as a response file (`myapp @args.txt`),
+    /// substituting the file's lines as arguments.
+    ///
+    /// **Off by default.** `@` is an ordinary argument character — npm/deno
+    /// scopes (`@scope/pkg`), social handles, `user@host` — so with expansion
+    /// always on, `myapp install @scope/pkg` fails with exit 2 and the app
+    /// author has no switch to fix it. It is also an arbitrary-file-read
+    /// primitive: `myapp @/etc/passwd` injects any readable file's lines as
+    /// arguments, and they resurface in value-rejection diagnostics. That is a
+    /// capability no app should carry unasked, and only the app author can
+    /// judge whether it is worth having.
+    ///
+    /// Turn it on if your CLI genuinely takes compiler-style argument files.
+    /// The `--` terminator stays the per-invocation escape for a literal `@`
+    /// value either way. See `response_file.zig` for the full semantics (#764).
+    response_files: bool = false,
 };
 
 /// Configuration for `addCommandTests()` (the scaffolded-project unit-test

@@ -185,6 +185,33 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// A `Prompts` instance pre-wired to this command's environment:
         /// stdout, stdin, the arena-per-command allocator, and the app theme.
         /// Override a field before use if you need to (e.g. a scratch allocator).
+        ///
+        /// **Why stdout, when `progress()` deliberately uses stderr** (#790).
+        /// The two are different kinds of output and the split is intentional:
+        ///
+        ///   * `prompts()` and `ui()` are the command's *foreground* output —
+        ///     the thing the user is here for. `app.emit()` lines are results,
+        ///     and a prompt's question plus its echoed answer is the interactive
+        ///     form of the same conversation. Commands narrate around their
+        ///     prompts with plain `context.stdout()` writes (`zcli init` and the
+        ///     `zcli add` wizard both do), and that narration only stays in
+        ///     order with the questions because both go through one writer. Move
+        ///     prompts to stderr and a buffered stdout heading surfaces *after*
+        ///     the self-flushing prompt it was introducing — a visible ordering
+        ///     bug traded for a redirection one.
+        ///   * `progress()` is *out-of-band status*, written from a background
+        ///     task concurrently with whatever the command is producing. It is
+        ///     never part of the result, so a redirected stdout must not receive
+        ///     it; a separate stream is the only way to keep cursor escapes out
+        ///     of piped data.
+        ///
+        /// The known cost is that `myapp interactive | tee out.txt` captures
+        /// prompt text and its escapes. A command that must keep stdout pure —
+        /// one whose result is machine-read — can retarget its own prompts,
+        /// since this returns a plain value: `var p = context.prompts();
+        /// p.writer = context.stderr();`. That is the right granularity for the
+        /// decision: it depends on what the individual command emits, which the
+        /// framework cannot know.
         pub fn prompts(self: *Self) zcli.Prompts {
             return .{
                 .writer = self.stdout(),
@@ -200,6 +227,10 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// it survives `myapp | tee` / stdout redirection while keeping piped
         /// stdout clean. Call `.spinner(...)`, `.progressBar(...)`, or
         /// `.multiBar(...)` on the result.
+        ///
+        /// This is the deliberate counterpart to `prompts()`/`ui()` living on
+        /// stdout — see the note on `prompts()` for why out-of-band status and
+        /// foreground conversation are split rather than aligned (#790).
         pub fn progress(self: *Self) zcli.Progress {
             return .{
                 .writer = self.stderr(),
@@ -222,6 +253,10 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// `app.emit()` for static lines that flow into scrollback,
         /// `app.frame()` for the diffed live region below. `defer app.deinit()`
         /// (idempotent) restores the terminal and persists the final frame.
+        ///
+        /// Stdout, not stderr, because `app.emit()` lines *are* the command's
+        /// result — `myapp list | grep` has to receive them. See the note on
+        /// `prompts()` for the full foreground-vs-out-of-band split (#790).
         ///
         /// For an opt-in alt-screen TUI, use `uiFullScreen` instead.
         /// A hybrid (shared-screen) `ui.App` pre-wired to this command's

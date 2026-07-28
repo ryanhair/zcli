@@ -118,7 +118,13 @@ pub fn run(
     if (stdin_bytes) |bytes| {
         var in_buf: [4096]u8 = undefined;
         defer std.crypto.secureZero(u8, &in_buf);
-        var in = child.stdin.?.writer(io, &in_buf);
+        // Streaming (plain write(2)), never `.writer()`. This particular fd is a
+        // pipe, so positional mode would only ever fail with `Unseekable` rather
+        // than corrupt anything — but the framework has exactly one correct
+        // idiom for writing an inherited/OS-owned fd (see `zcli.Stdio.init`), and
+        // the wrong one must not sit here waiting to be copied somewhere it does
+        // corrupt (#763).
+        var in = child.stdin.?.writerStreaming(io, &in_buf);
         // A write failure here just means the child closed stdin early; the exit
         // status read below is the authoritative signal, so it is ignored.
         in.interface.writeAll(bytes) catch {};

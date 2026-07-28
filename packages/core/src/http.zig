@@ -523,7 +523,7 @@ pub const Client = struct {
                 .limited(self.max_response_bytes),
             ) catch |err| switch (err) {
                 error.StreamTooLong => return Error.ResponseTooLarge,
-                error.ReadFailed => return response.bodyErr().?,
+                error.ReadFailed => return bodyReadError(response.bodyErr()),
                 error.OutOfMemory => return error.OutOfMemory,
             };
 
@@ -536,6 +536,25 @@ pub const Client = struct {
         }
     }
 };
+
+/// The error to report for a body read that failed, given whatever cause the
+/// response stream recorded (`Response.bodyErr()`).
+///
+/// `error.ReadFailed` is std's "the stream holds the real cause" sentinel, and
+/// `recorded` is normally that cause — a TLS failure, a reset connection, a
+/// malformed chunked body. It is *optional*, though, and nothing outside std
+/// guarantees that every path raising `ReadFailed` populated it first. This runs
+/// against the network (the upgrade plugin's release check), so the previous
+/// `.?` would have turned a std-internal edge case into a panic on the least
+/// controllable input a CLI has. Falling back to the sentinel itself is less
+/// specific but still true, and still an error the caller can handle (#765).
+///
+/// Split out as a function purely so the `null` branch is reachable from a
+/// test: through the real API it depends on std's internal bookkeeping, which
+/// is exactly why the unchecked unwrap survived as long as it did.
+fn bodyReadError(recorded: ?anyerror) anyerror {
+    return recorded orelse error.ReadFailed;
+}
 
 /// Copy every response header (name and value) into `allocator`. The slices the
 /// header iterator hands back point into the connection's read buffer, which the
@@ -781,4 +800,16 @@ test "init records the configured response-size cap" {
     var default_client = Client.init(testing.allocator, testing.io, .{});
     defer default_client.deinit();
     try testing.expectEqual(default_max_response_bytes, default_client.max_response_bytes);
+}
+
+test "bodyReadError falls back to the sentinel when the stream recorded no cause" {
+    // The regression this pins (#765): `bodyErr()` returning null used to hit
+    // `.?` and panic. It must now surface an error the caller can handle.
+    try testing.expectEqual(error.ReadFailed, bodyReadError(null));
+
+    // The normal path is unchanged — a recorded cause is passed through
+    // verbatim, so the specific failure (TLS, reset, bad framing) is not lost
+    // to the fallback.
+    try testing.expectEqual(error.TlsFailure, bodyReadError(error.TlsFailure));
+    try testing.expectEqual(error.ConnectionResetByPeer, bodyReadError(error.ConnectionResetByPeer));
 }
