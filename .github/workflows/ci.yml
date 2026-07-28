@@ -330,12 +330,21 @@ jobs:
   # misses. Case matrix and rationale: scripts/test-install-signature.sh.
   #
   # Both harnesses run on Linux and macOS, where minisign is one package away.
-  # Windows deliberately runs only the PowerShell one, for the registry
-  # value-kind contract that install.ps1's %VAR%-preserving PATH handling rests
-  # on and that cannot be observed on any other OS; its signature section skips
-  # there because the identical PowerShell code is already exercised on two
-  # other legs. So no leg silently runs nothing, each sets a ZCLI_REQUIRE_*
-  # flag that turns its own missing prerequisite into a hard failure.
+  # Windows deliberately runs only the PowerShell one, and only the parts that
+  # need no minisign: the registry value-kind contract that install.ps1's
+  # %VAR%-preserving PATH handling rests on and that cannot be observed on any
+  # other OS, plus the release-selection and TLS-floor sections, which are pure.
+  # So no leg silently runs nothing, each sets a ZCLI_REQUIRE_* flag that turns
+  # its own missing prerequisite into a hard failure.
+  #
+  # WHAT THE WINDOWS TICK DOES NOT MEAN. Everything gated on minisign is skipped
+  # there, including the whole signature/version-binding matrix and the
+  # hostile-`minisign`-function case that covers Test-Signature's tool
+  # resolution (#772). That is the identical PowerShell exercised on the Linux
+  # and macOS legs, so it IS covered — but by those two legs, not this one. A
+  # green Windows run says nothing about it. Closing that gap means packaging
+  # minisign for the Windows runner image; until then, do not read this leg as
+  # coverage it does not provide.
   installers:
     name: installer signature binding (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -386,9 +395,10 @@ jobs:
           ZCLI_REQUIRE_MINISIGN: "1"
         run: pwsh -NoProfile -File scripts/test-install-signature.ps1
 
-      # Windows runs the same harness for its registry half only: minisign is
-      # not packaged on the runner image, and the signature section it would
-      # gate is the identical PowerShell exercised on the two legs above.
+      # Windows runs the same harness minus its signature section: minisign is
+      # not packaged on the runner image, and the section it would gate is the
+      # identical PowerShell exercised on the two legs above. Everything else —
+      # registry contract, release selection, TLS floor — still runs here.
       - name: install.ps1 registry + PATH contract
         if: runner.os == 'Windows'
         env:

@@ -16,6 +16,11 @@ REPO="ryanhair/zcli"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="zcli"
 
+# How many releases get_latest_version asks the API for in one page. Named
+# because it appears three times: in the request, in the "did we see every
+# release?" test, and in the message that test produces.
+RELEASES_PAGE_SIZE=100
+
 # zcli's pinned minisign public key. The installer verifies checksums.txt against
 # its detached signature (checksums.txt.minisig) under this key — closing the gap
 # that checksums alone cannot: a compromised release can swap the binary AND its
@@ -177,16 +182,80 @@ verify_signature() {
     return 0
 }
 
-# Get latest release version from GitHub
+# Resolve the newest installable CLI release.
+#
+# This asks for the release LIST, not /releases/latest, because this repo
+# publishes two tag families from one workflow (.github/workflows/release.yml):
+# library releases tagged `v0.22.0`, published immediately, and CLI releases
+# tagged `zcli-v0.22.0`, created as drafts and published only once their
+# checksums have been signed offline. Between those two moments — a normal,
+# recurring part of every release, not an error — `/releases/latest` returns the
+# LIBRARY tag, and an installer that trusts it fails on a tag whose shape it
+# cannot parse, with a message about nothing the user did.
+#
+# The list endpoint is ordered newest-first and omits drafts for anonymous
+# callers, so the first `zcli-v*` entry is precisely "the newest CLI release a
+# user can actually install". That is the same rule selectVersion applies in
+# packages/core/src/plugins/zcli_github_upgrade/plugin.zig, so `curl | sh` and
+# `zcli upgrade` resolve identically.
 get_latest_version() {
     if ! command -v curl >/dev/null 2>&1; then
         print_error "curl is required but not found"
         exit 1
     fi
 
-    version=$(curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/${REPO}/releases/latest" | \
-        grep '"tag_name":' | \
-        sed -E 's/.*"tag_name": "zcli-v([^"]+)".*/\1/')
+    releases=$(curl -fsSL --proto '=https' --tlsv1.2 \
+        "https://api.github.com/repos/${REPO}/releases?per_page=${RELEASES_PAGE_SIZE}") || releases=''
+
+    if [ -z "${releases}" ]; then
+        print_error "Could not fetch the release list for ${REPO} from the GitHub API."
+        print_error "Check your network connection (or GitHub's status) and try again."
+        exit 1
+    fi
+
+    # Put every "tag_name" key at the start of its own line, so the extraction
+    # below can anchor at ^. Without the anchor, sed's greedy `.*` would skip
+    # past an earlier match to a later one on the same line, and the API's
+    # compact spelling puts many releases on one line.
+    #
+    # `sed`, not `grep -o`: -o is a GNU extension, and this file is piped into
+    # whatever /bin/sh the user has — busybox and the BSDs included. The literal
+    # backslash-newline in the replacement is the POSIX way to insert a newline.
+    tag_lines=$(printf '%s\n' "${releases}" | sed 's/"tag_name"/\
+&/g')
+
+    # First matching tag wins; document order is release order (newest first).
+    # Tolerates both the API's pretty-printed `"tag_name": "…"` and a compact
+    # `"tag_name":"…"`. Case-sensitive, like every other tag comparison here.
+    version=$(printf '%s\n' "${tag_lines}" \
+        | sed -n 's/^"tag_name"[[:space:]]*:[[:space:]]*"zcli-v\([^"]*\)".*/\1/p' \
+        | head -n 1)
+
+    if [ -z "${version}" ]; then
+        # One page holds RELEASES_PAGE_SIZE releases. A short page means we saw
+        # every release there is, so no CLI tag really does mean "none published
+        # yet" — the mid-publish window. A FULL page means we may simply not
+        # have looked far enough back, which is a different problem and deserves
+        # a different answer; saying "mid-publish" there would send the user off
+        # to wait for something that is never going to happen.
+        tag_count=$(printf '%s\n' "${tag_lines}" \
+            | grep -cE '^"tag_name"[[:space:]]*:') || tag_count=0
+
+        if [ "${tag_count}" -ge "${RELEASES_PAGE_SIZE}" ]; then
+            print_error "No zcli-v* tag in the newest ${RELEASES_PAGE_SIZE} releases of ${REPO}."
+            print_error "The CLI release is older than one page of the API, so this installer"
+            print_error "cannot find it. Download the binary for your platform directly from"
+            print_error "  https://github.com/${REPO}/releases"
+            exit 1
+        fi
+
+        print_error "No published zcli-v* release found for ${REPO}."
+        print_error "A release may be mid-publish: CLI releases stay drafts until their"
+        print_error "checksums are signed offline, so there is a short window with nothing"
+        print_error "installable. Wait a few minutes and re-run, or pick a release from"
+        print_error "  https://github.com/${REPO}/releases"
+        exit 1
+    fi
 
     # Defense-in-depth: validate the version against a strict charset before it
     # is interpolated into download URLs, mirroring the in-binary isValidVersionArg
@@ -358,7 +427,28 @@ get_shell_config() {
     esac
 }
 
-# Check if PATH export already exists in config file
+# Does this config file already put ${INSTALL_DIR} on PATH?
+#
+# This has to match the mechanism, not a mention of the string. The old check
+# was a bare `grep '.local/bin'`: unanchored, with `.` as a regex wildcard, so a
+# comment ("# TODO: add ~/.local/bin to PATH"), an unrelated entry
+# (`$HOME/mylocal/binaries`) or any incidental `X` + `local/bin` convinced the
+# installer PATH was already configured. It then skipped the append and printed
+# success while leaving zcli off PATH.
+#
+# The two error directions are not symmetric. A false positive is the bug above:
+# a silently broken install. A false negative just appends a second export line
+# on a repeat install. So this errs strict — three conditions, all required:
+#
+#   1. the line is not a shell comment;
+#   2. the line actually sets PATH (an assignment, or fish's fish_add_path);
+#   3. the install dir appears as a WHOLE path component — `~/.local/bin`
+#      followed by a separator or end of line, never `~/.local/binaries`.
+#
+# Spellings accepted for (3): `$HOME/.local/bin`, `${HOME}/.local/bin`,
+# `~/.local/bin`, and ${INSTALL_DIR} written out absolutely. All four are in
+# the wild — Debian's stock ~/.profile uses the first — and every one of them
+# genuinely works, so recognizing them keeps repeat installs idempotent.
 path_already_configured() {
     config_file="$1"
 
@@ -366,11 +456,41 @@ path_already_configured() {
         return 1
     fi
 
-    # Check for various patterns that would add ~/.local/bin to PATH
-    if grep -q '\$HOME/.local/bin' "${config_file}" 2>/dev/null || \
-       grep -q '~/.local/bin' "${config_file}" 2>/dev/null || \
-       grep -q '.local/bin' "${config_file}" 2>/dev/null; then
+    # (1) drop comments, using sh's own rule: `#` at the start of the line or
+    #     preceded by whitespace. `abc#def` is not a comment and is left alone.
+    # (2) keep only lines that put something on PATH:
+    #       PATH=…            sh/bash/zsh/ksh assignment, with or without export
+    #       path=(…)          zsh's lowercase array, which is tied to $PATH —
+    #       path+=(…)         and zsh is the macOS default shell, so this form
+    #                         is common enough that missing it would double-append
+    #       fish_add_path …   fish
+    #       set -gx PATH …    fish, and `setenv PATH …` in csh — PATH is a
+    #                         separate word rather than the target of an `=`
+    #     The leading `(^|[^[:alnum:]_])` guard keeps `MYPATH=` and `mypath=(`
+    #     out. Prose that merely ends in "…on your PATH" has none of these.
+    path_lines=$(sed -e 's/^#.*$//' -e 's/[[:space:]]#.*$//' "${config_file}" \
+        | grep -E '(^|[^[:alnum:]_])(PATH=|path\+?=\(|fish_add_path)|set.*[[:space:]]PATH[[:space:]]') \
+        || path_lines=''
+
+    if [ -z "${path_lines}" ]; then
+        return 1
+    fi
+
+    # (3) symbolic spellings of $HOME.
+    if printf '%s\n' "${path_lines}" \
+        | grep -qE '(\$HOME|\$\{HOME\}|~)/\.local/bin([^[:alnum:]_./-]|$)'; then
         return 0
+    fi
+
+    # (3, cont.) the same directory written out absolutely. ${INSTALL_DIR} is
+    # data, not a pattern, so escape every ERE metacharacter it could contain
+    # before splicing it in — a `+` or `(` in $HOME must match itself.
+    if [ -n "${INSTALL_DIR}" ]; then
+        install_dir_re=$(printf '%s' "${INSTALL_DIR}" | sed 's/[][\\^$.|?*+(){}]/\\&/g')
+        if printf '%s\n' "${path_lines}" \
+            | grep -qE "${install_dir_re}([^[:alnum:]_./-]|\$)"; then
+            return 0
+        fi
     fi
 
     return 1
