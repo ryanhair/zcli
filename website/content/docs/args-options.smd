@@ -34,6 +34,8 @@ pub const Options = struct {
 
 Parsing is GNU-style: options and positionals interleave freely, `--option value` and `--option=value` both work, and `--` ends option parsing so everything after it is positional.
 
+`--` ends the option namespace it appears in. Before the command name it is consumed by routing — `myapp -- deploy` runs `deploy`, so the `myapp -- "$@"` wrapper idiom is safe for user data that starts with a dash. After the command name it reaches that command's own parser: `myapp add -- --weird` stores `--weird` as a positional. (A single-command app shares the top-level namespace, so `myapp -- -x` hands its root command `-x` as a positional.)
+
 ## Positional args
 
 `Args` fields bind positionals in declaration order:
@@ -74,6 +76,8 @@ myapp deploy --tag a,b --tag c   # [a, b, c]
 ```
 
 Element types beyond strings parse too: `[]u32`, `[]f64`, and friends. Greedy space-separated lists (`--tag a b c`) are deliberately not supported — they're ambiguous with interleaved positionals. Empty segments (`--tag a,,b`) are rejected. Help marks these options `(repeatable)`.
+
+Nothing caps how many values accumulate or how often a flag repeats — a `docker run --env` or `cc -I` shaped CLI can repeat a flag as many times as the shell allows. Parsing cost is linear in the input and values are borrowed, not copied, so there is nothing to protect against. (The one parsing limit is on the *name*: an option name longer than 256 bytes is rejected before lookup, which bounds the only superlinear step — the "did you mean" scoring.)
 
 ### Enums: only valid values, helpful failures
 

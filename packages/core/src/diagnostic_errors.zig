@@ -43,6 +43,33 @@ pub const ZcliError = error{
     ResourceLimitExceeded,
 };
 
+/// Most near-miss option names an `OptionUnknown` diagnostic offers.
+pub const max_option_suggestions = 3;
+
+/// The "did you mean" list for an unknown option, stored inline.
+///
+/// The names are comptime literals with static lifetime — the same contract as
+/// `nearestEnumValue` — so a diagnostic never owns an allocation and nothing
+/// has to free it. This replaced a heap slice that had no owner: `parseOptions`
+/// allocated it and `cleanupOptions` walks only the Options struct, so every
+/// caller supplying its own (non-arena) allocator leaked it (#747).
+pub const OptionSuggestions = struct {
+    names: [max_option_suggestions][]const u8 = [_][]const u8{""} ** max_option_suggestions,
+    count: usize = 0,
+
+    pub fn fromNames(names: []const []const u8) OptionSuggestions {
+        var result: OptionSuggestions = .{};
+        result.count = @min(names.len, max_option_suggestions);
+        for (0..result.count) |i| result.names[i] = names[i];
+        return result;
+    }
+
+    /// The populated prefix. Borrows from `self`, which must outlive the slice.
+    pub fn slice(self: *const OptionSuggestions) []const []const u8 {
+        return self.names[0..self.count];
+    }
+};
+
 pub const ZcliDiagnostic = union(enum) {
     // Argument parsing errors
     ArgumentMissingRequired: struct {
@@ -86,7 +113,9 @@ pub const ZcliDiagnostic = union(enum) {
     OptionUnknown: struct {
         option_name: []const u8,
         is_short: bool,
-        suggestions: []const []const u8,
+        /// Near-miss long option names, closest first. Inline and unowned —
+        /// see `OptionSuggestions`.
+        suggestions: OptionSuggestions = .{},
     },
     OptionMissingValue: struct {
         option_name: []const u8,
@@ -360,13 +389,13 @@ pub fn formatDiagnostic(diagnostic: ZcliDiagnostic, allocator: std.mem.Allocator
         .OptionUnknown => |ctx| blk: {
             const base_msg = try std.fmt.allocPrint(allocator, "Unknown option '{s}{s}'", .{ if (ctx.is_short) "-" else "--", ctx.option_name });
 
-            if (ctx.suggestions.len > 0) {
+            if (ctx.suggestions.count > 0) {
                 var full_msg = std.ArrayList(u8).empty;
                 defer full_msg.deinit(allocator);
                 try full_msg.appendSlice(allocator, base_msg);
                 allocator.free(base_msg);
                 try full_msg.appendSlice(allocator, "\nDid you mean:\n");
-                for (ctx.suggestions) |suggestion| {
+                for (ctx.suggestions.slice()) |suggestion| {
                     const line = try std.fmt.allocPrint(allocator, "  --{s}\n", .{suggestion});
                     defer allocator.free(line);
                     try full_msg.appendSlice(allocator, line);
@@ -483,7 +512,7 @@ test "diagnostic formatting" {
     const opt_diag = ZcliDiagnostic{ .OptionUnknown = .{
         .option_name = "verbose",
         .is_short = false,
-        .suggestions = &.{ "verbosity", "version" },
+        .suggestions = OptionSuggestions.fromNames(&.{ "verbosity", "version" }),
     } };
 
     const opt_msg = try formatDiagnostic(opt_diag, allocator);

@@ -518,9 +518,34 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 **Special Handling:**
 
-- `--` stops option parsing (everything after is positional)
+- `--` stops option parsing (everything after is positional). It terminates the
+  option namespace it appears in: written before the command name it is consumed
+  by routing, so `myapp -- list` runs `list` and the `myapp -- "$@"` wrapper idiom
+  works; written after the command name it reaches that command's own parser, so
+  `myapp add -- --weird` stores `--weird` as a positional. An app with a root
+  `index.zig` shares the top-level namespace, so `myapp -- -x` hands the root
+  command `-x` as a positional.
 - Unknown options: compile-time error if possible, runtime error otherwise
 - Case sensitive (no automatic case conversion)
+
+**Parsing Limits:**
+
+There is exactly one, and it is a sanity bound rather than memory protection:
+
+- **Option name length — 256 bytes.** An option name (`--<name>`) longer than
+  this is rejected with a `ResourceLimitExceeded` diagnostic before any lookup
+  or "did you mean" scoring runs.
+
+Nothing else about a command line is capped — not how many options it carries,
+not how many times a flag repeats, not how many comma-separated values one flag
+holds. A `docker run --env` or `cc -I`/`-D` shaped CLI can repeat a flag as many
+times as the shell allows. What makes that safe is that parsing work and
+allocation are **linear** in the input, and values are borrowed slices rather
+than copies; the only superlinear step is the suggestion scoring
+(O(name × fields)), which is exactly what the name cap bounds. Note the
+reasoning deliberately does not rest on `ARG_MAX`: that bounds a real process's
+argv, but `parseOptions` is public API and a library caller can pass a slice
+built in memory, where no OS limit applies.
 
 **Value Types and Parsing:**
 

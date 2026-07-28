@@ -1384,3 +1384,88 @@ test "group index with positionals: exact subcommand wins, unmatched word is a v
     try run(App, &.{ "users", "123" });
     try testing.expectEqualStrings("123", UsersIndex.last_id.?);
 }
+
+// ---------------------------------------------------------------------------
+// The `--` terminator at the routing position (#743)
+// ---------------------------------------------------------------------------
+
+/// A command with both a positional and an option, so a test can tell a
+/// terminated `-x` (positional) from an un-terminated one (unknown option).
+const Dashy = struct {
+    var last: ?[]const u8 = null;
+    pub const meta = .{ .description = "dashy" };
+    pub const Args = struct { word: ?[]const u8 = null };
+    pub const Options = struct { loud: bool = false };
+    pub fn execute(args: Args, _: Options, _: anytype) !void {
+        last = args.word;
+    }
+};
+
+test "routing: a leading bare `--` is not a command name (#743)" {
+    const App = zcli.Registry.init(test_config)
+        .register("list", Greet)
+        .registerPlugin(NotFound)
+        .build();
+
+    // `myapp -- list` routes to `list` instead of reporting
+    // "Unknown command '-- list'".
+    Greet.executed = false;
+    try run(App, &.{ "--", "list" });
+    try testing.expect(Greet.executed);
+
+    // `myapp --` behaves exactly like a bare invocation, not
+    // "Unknown command '--'".
+    const cap = try runCapture(App, &.{"--"});
+    defer cap.deinit(testing.allocator);
+    const bare = try runCapture(App, &.{});
+    defer bare.deinit(testing.allocator);
+    try testing.expect(!contains(cap.stderr, "Unknown command"));
+    try testing.expectEqualStrings(bare.stderr, cap.stderr);
+    try testing.expectEqualStrings(bare.stdout, cap.stdout);
+    try testing.expectEqual(bare.err, cap.err);
+
+    // Only the leading one is consumed: a second `--` is an ordinary (bogus)
+    // command name again.
+    const cap2 = try runCapture(App, &.{ "--", "--", "list" });
+    defer cap2.deinit(testing.allocator);
+    try testing.expect(contains(cap2.stderr, "Unknown command"));
+}
+
+test "routing: `--` after the command name still terminates its options (#501)" {
+    const App = zcli.Registry.init(test_config)
+        .register("dashy", Dashy)
+        .build();
+
+    // The command's own parser still sees its terminator, so `-x` lands as a
+    // positional rather than as an unknown short option.
+    Dashy.last = null;
+    try run(App, &.{ "dashy", "--", "-x" });
+    try testing.expectEqualStrings("-x", Dashy.last.?);
+
+    // And the same after a leading routing `--`: that one is consumed, the
+    // command's own one is not.
+    Dashy.last = null;
+    try run(App, &.{ "--", "dashy", "--", "-x" });
+    try testing.expectEqualStrings("-x", Dashy.last.?);
+}
+
+test "routing: a root index still receives the `--` its own parser needs (#743)" {
+    const App = zcli.Registry.init(test_config)
+        .register("", RootWithPositional)
+        .register("greet", Greet)
+        .build();
+
+    // No command matched, so the whole argv — terminator included — belongs to
+    // the root command, whose option namespace is the top-level one.
+    RootWithPositional.reset();
+    try run(App, &.{ "--", "-weird-name" });
+    try testing.expect(RootWithPositional.ran);
+    try testing.expectEqualStrings("-weird-name", RootWithPositional.last_word.?);
+
+    // A named command still wins over the root's positional after a `--`.
+    RootWithPositional.reset();
+    Greet.executed = false;
+    try run(App, &.{ "--", "greet" });
+    try testing.expect(Greet.executed);
+    try testing.expect(!RootWithPositional.ran);
+}

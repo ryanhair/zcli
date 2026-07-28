@@ -4,6 +4,7 @@ const zcli = @import("zcli.zig");
 const args_parser = @import("args.zig");
 const options_parser = @import("options.zig");
 const levenshtein = @import("levenshtein.zig");
+const resource_limits = @import("resource_limits.zig");
 
 // ============================================================================
 // Security Test Framework - Corrected Version
@@ -229,48 +230,82 @@ test "security: malicious input handling - format strings" {
 // Resource Exhaustion Tests
 // ============================================================================
 
-test "security: resource limits - option count cap is enforced at the boundary" {
+test "security: option occurrences cost linear work, so they carry no policy cap (#741)" {
     const allocator = testing.allocator;
 
-    // Exactly at the default cap (100 option occurrences): parses fine, and
-    // the accumulated array holds exactly what was passed.
-    var at_cap: std.ArrayList([]const u8) = .empty;
-    defer at_cap.deinit(allocator);
+    // There is deliberately no `max_total_options`. Repeating a flag far past
+    // the old 100-occurrence cap parses fine and accumulates every value: each
+    // occurrence costs linear work and borrows its value from the input rather
+    // than copying it, and `docker run --env` / `cc -I` shaped CLIs need this.
+    // (The bound is linearity, not ARG_MAX — this test is itself a library
+    // caller handing the parser a slice it built in memory, where no OS limit
+    // applies.) See resource_limits.zig.
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
     var names: std.ArrayList([]u8) = .empty;
     defer {
         for (names.items) |n| allocator.free(n);
         names.deinit(allocator);
     }
-    for (0..100) |i| {
+    for (0..1000) |i| {
         const name = try std.fmt.allocPrint(allocator, "file{d}.txt", .{i});
         try names.append(allocator, name);
-        try at_cap.append(allocator, "--files");
-        try at_cap.append(allocator, name);
+        try argv.append(allocator, "--files");
+        try argv.append(allocator, name);
     }
 
-    const parsed = try options_parser.parseOptions(TestOptions, allocator, at_cap.items, null);
+    const parsed = try options_parser.parseOptions(TestOptions, allocator, argv.items, null);
     defer options_parser.cleanupOptions(TestOptions, parsed.options, allocator);
-    try testing.expectEqual(@as(usize, 100), parsed.options.files.len);
-
-    // One past the cap: hard failure, not a truncated success.
-    try at_cap.append(allocator, "--enabled");
-    try testing.expectError(
-        zcli.ZcliError.ResourceLimitExceeded,
-        options_parser.parseOptions(TestOptions, allocator, at_cap.items, null),
-    );
+    try testing.expectEqual(@as(usize, 1000), parsed.options.files.len);
 }
 
-test "security: resource limits - absurd option names are rejected" {
+// Names built at container scope so the `**` repeats are unambiguously comptime.
+const name_at_cap = "--" ++ ("a" ** resource_limits.max_option_name_length);
+const name_one_over_cap = "--" ++ ("a" ** (resource_limits.max_option_name_length + 1));
+const name_far_over_cap = "--" ++ ("a" ** 300);
+
+test "security: the option-name cap is a boundary, not a blanket rejection" {
     const allocator = testing.allocator;
 
-    // An option name longer than the 256-byte cap fails fast instead of
-    // being fed through lookup and suggestion machinery.
-    const long_name = "--" ++ ("a" ** 300);
-    const args = [_][]const u8{long_name};
-    try testing.expectError(
-        zcli.ZcliError.ResourceLimitExceeded,
-        options_parser.parseOptions(TestOptions, allocator, &args, null),
-    );
+    // Well past the cap: fails fast instead of being fed through lookup and
+    // the O(name x fields) suggestion scoring that the cap exists to bound.
+    {
+        const args = [_][]const u8{name_far_over_cap};
+        try testing.expectError(
+            zcli.ZcliError.ResourceLimitExceeded,
+            options_parser.parseOptions(TestOptions, allocator, &args, null),
+        );
+    }
+
+    // One byte over: the first name that trips it.
+    {
+        const args = [_][]const u8{name_one_over_cap};
+        try testing.expectError(
+            zcli.ZcliError.ResourceLimitExceeded,
+            options_parser.parseOptions(TestOptions, allocator, &args, null),
+        );
+    }
+
+    // Exactly at the cap: NOT a resource-limit failure. No field is named this,
+    // so it lands as an ordinary unknown option. This is what pins the cap as a
+    // boundary rather than just "something got rejected".
+    {
+        const args = [_][]const u8{name_at_cap};
+        try testing.expectError(
+            zcli.ZcliError.OptionUnknown,
+            options_parser.parseOptions(TestOptions, allocator, &args, null),
+        );
+    }
+
+    // And ordinary option names still parse: the cap rejects only the offending
+    // token, it does not make the parser hostile to normal input.
+    {
+        const args = [_][]const u8{ "--count", "7", "--enabled" };
+        const parsed = try options_parser.parseOptions(TestOptions, allocator, &args, null);
+        defer options_parser.cleanupOptions(TestOptions, parsed.options, allocator);
+        try testing.expectEqual(@as(u32, 7), parsed.options.count);
+        try testing.expect(parsed.options.enabled);
+    }
 }
 
 test "security: resource exhaustion - processing bounded regardless of input" {
