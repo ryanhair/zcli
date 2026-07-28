@@ -31,6 +31,7 @@ From the repo root:
 - `zig build build-examples` / `build-cli` — compile the examples / the zcli binary
 - `zig build e2e` — the meta-CLI's end-to-end suite (scaffolds real projects in temp dirs and drives the binary through a PTY; slow, not part of `test`; run it after prompt/render/help changes). Forwards to `projects/zcli`'s own `e2e` step; `cd projects/zcli && zig build e2e -De2e-filter=<substring>` to narrow it while iterating.
 - `zig build test-secrets` — compile+link the host's native secrets backend (forwarded from `packages/core`, like `benchmark`/`regression`; not part of `test`)
+- `zig build build-all` — everything above that CI also gates: `test` + `build-examples` + `build-cli` + `e2e`. Slow, by design; it is the step whose name means all of it.
 
 `-Dtarget=` and `-Doptimize=` at the root propagate into the package test builds.
 
