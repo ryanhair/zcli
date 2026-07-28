@@ -37,8 +37,17 @@ const std = @import("std");
 const log = std.log.scoped(.zcli_secrets);
 
 /// Log a failing `OSStatus` (never a secret value) and map it to `KeychainFailure`.
+///
+/// `warn`, not `debug`: the numeric status is the *only* actionable detail a
+/// keychain failure carries — `KeychainFailure` alone tells you nothing you can
+/// look up. At `debug` it was filtered out of every default build, so the
+/// information existed and never reached anyone. That was not hypothetical: the
+/// intermittent CI failure in #799 reported `BackendFailure` with no status
+/// attached, which is precisely why it stayed undiagnosed across several runs.
+/// A status is not a secret (it is a fixed Security.framework constant), so
+/// there is nothing here to leak.
 fn keychainFailure(status: OSStatus) Error {
-    log.debug("keychain call failed, OSStatus {d}", .{status});
+    log.warn("keychain call failed, OSStatus {d}", .{status});
     return Error.KeychainFailure;
 }
 
@@ -281,6 +290,12 @@ pub fn set(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, s
         if (status == errSecSuccess) return;
         // Add lost a race with a concurrent delete — loop to re-Add.
         if (status == errSecItemNotFound and attempts < max_attempts) continue;
+        // Any other non-duplicate status: retry before surfacing it. securityd
+        // reports contention on a shared item with statuses beyond the
+        // not-found pair above (#799 hit one on this very Add), and `set` is
+        // idempotent — last writer wins, so re-running it cannot corrupt the
+        // stored value. A permanent condition still fails, one loop later.
+        if (status != errSecDuplicateItem and attempts < max_attempts) continue;
         if (status != errSecDuplicateItem) return keychainFailure(status);
 
         // Item exists. An *empty* value cannot be written with SecItemUpdate:
@@ -315,6 +330,10 @@ pub fn set(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, s
         // Benign race: the item was deleted between our Add and this Update. Loop
         // to re-Add rather than surface an opaque failure.
         if (update == errSecItemNotFound and attempts < max_attempts) continue;
+        // Same reasoning as the Add above: retry a transient status rather than
+        // report it, since re-running the whole Add/Update cycle converges on
+        // the value the caller asked for.
+        if (attempts < max_attempts) continue;
         return keychainFailure(update);
     }
 }
@@ -322,16 +341,35 @@ pub fn set(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, s
 /// Remove a secret. Succeeds (no-op) if no item exists. `allocator` is unused
 /// (see `set`), present for interface parity across native backends.
 pub fn delete(_: std.mem.Allocator, _: std.Io, _: *const std.process.Environ.Map, service: []const u8, name: []const u8) !void {
-    const query = try baseQuery(service, name);
-    defer CFRelease(query);
+    // Retried on the same livelock-backstop principle as `set`, and for a
+    // stronger reason: delete is *idempotent*. `set` has to reason carefully
+    // about which statuses mean "the store was mid-mutation" versus a real
+    // failure, because re-running an Add/Update has consequences. Deleting an
+    // already-deleted item does not — the post-condition is identical whether
+    // the call ran once, twice, or not at all — so a retry can never do harm
+    // and needs no per-status theory to justify it.
+    //
+    // This is what #799 was: securityd surfaces contention on a shared item as
+    // a transient non-`errSecItemNotFound` status, and `delete` was the one
+    // mutating path with no tolerance for it, so a benign race became a hard
+    // `BackendFailure`. A genuinely permanent condition (a locked keychain,
+    // a missing entitlement) still fails — it just costs `max_attempts` cheap
+    // in-process calls first, and now names its status in the log.
+    const max_attempts = 16;
+    var attempts: u8 = 0;
+    while (true) : (attempts += 1) {
+        const query = try baseQuery(service, name);
+        defer CFRelease(query);
 
-    const status = SecItemDelete(query);
-    if (status == errSecSuccess) return;
-    // The caller asked for the item to be gone; if it was already absent (or was
-    // removed by a concurrent `delete`/`set` between a prior read and now) that is
-    // success, not a failure.
-    if (status == errSecItemNotFound) return;
-    return keychainFailure(status);
+        const status = SecItemDelete(query);
+        if (status == errSecSuccess) return;
+        // The caller asked for the item to be gone; if it was already absent (or was
+        // removed by a concurrent `delete`/`set` between a prior read and now) that is
+        // success, not a failure.
+        if (status == errSecItemNotFound) return;
+        if (attempts < max_attempts) continue;
+        return keychainFailure(status);
+    }
 }
 
 test "keychain backend compiles and links against Security.framework" {
