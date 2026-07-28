@@ -31,7 +31,10 @@ const zcli = @import("zcli");
 /// all int widths, floats, enums (incl. optionals), custom `parse` types, and
 /// arrays/multi-value (from a config list). Config stays lenient: a value that
 /// won't parse (bad format, out of range, unknown enum variant) is skipped with
-/// a warning, never injected — see docs/DESIGN.md.
+/// a warning, never injected — see docs/DESIGN.md. That warning names the field
+/// and the value's size but never the value itself: a config file is where a
+/// user puts a secret to keep it off the command line, so a rejected `api_key`
+/// must not end up echoed into CI logs or scrollback (#736).
 ///
 /// Consumer note — cwd-controlled defaults: case 2 above means anyone who can
 /// get a victim to run the CLI inside a directory they control (a cloned repo,
@@ -48,6 +51,24 @@ const zcli = @import("zcli");
 pub const plugin_id = "zcli_config";
 
 pub const Format = enum { json, toml, yaml };
+
+/// A config path rendered through the shared diagnostic sanitizer: `{f}` on this
+/// drops control bytes, so a path can never smuggle a raw ANSI/OSC sequence into
+/// a warning line. Every path this plugin prints is user-controlled — `--config`
+/// is argv, and discovery walks a cwd an attacker may own (see the note above) —
+/// and `context.fail` takes a comptime format string, so a wrapper is what makes
+/// one rule reachable from every site.
+const SafePath = struct {
+    path: []const u8,
+
+    pub fn format(self: SafePath, writer: anytype) !void {
+        try zcli.writeSanitized(writer, self.path);
+    }
+};
+
+fn safe(path: []const u8) SafePath {
+    return .{ .path = path };
+}
 
 pub const ContextData = struct {
     custom_path: ?[]const u8 = null,
@@ -94,18 +115,18 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
     var path_allocated = false;
     var is_project_local = false;
     const path = (findConfigFile(allocator, context.io, context.environ, context.app_name, data.custom_path, stderr, &path_allocated, &is_project_local) catch |err| switch (err) {
-        error.ConfigFileNotFound => return context.fail("Error: config file '{s}' not found", .{data.custom_path.?}),
+        error.ConfigFileNotFound => return context.fail("Error: config file '{f}' not found", .{safe(data.custom_path.?)}),
     }) orelse return args;
 
     const format = detectFormat(path) orelse {
         // Unrecognized extension — warn and skip
-        try stderr.print("Warning: Config file '{s}' has unrecognized extension. Use .json, .toml, .yaml, or .yml\n", .{path});
+        try stderr.print("Warning: Config file '{f}' has unrecognized extension. Use .json, .toml, .yaml, or .yml\n", .{safe(path)});
         if (path_allocated) allocator.free(path);
         return args;
     };
 
     const content = std.Io.Dir.cwd().readFileAlloc(context.io, path, allocator, .limited(1024 * 1024)) catch |err| {
-        try stderr.print("Warning: Could not read config file '{s}': {s}\n", .{ path, @errorName(err) });
+        try stderr.print("Warning: Could not read config file '{f}': {s}\n", .{ safe(path), @errorName(err) });
         if (path_allocated) allocator.free(path);
         return args;
     };
@@ -121,7 +142,7 @@ pub fn preExecute(context: anytype, args: zcli.ParsedArgs) !?zcli.ParsedArgs {
     // themselves and stays silent, as does an explicit --config (already visible
     // on the command line). One line, once per invocation — not per option.
     if (is_project_local) {
-        try stderr.print("note: applied config from ./{s}\n", .{path});
+        try stderr.print("note: applied config from ./{f}\n", .{safe(path)});
     }
 
     return args;
@@ -294,7 +315,10 @@ fn applyFromYamlScoped(comptime OptionsType: type, options: *OptionsType, conten
 }
 
 fn warnParse(ctx: ApplyCtx, err: anyerror) void {
-    ctx.stderr.print("Warning: Could not parse config file '{s}': {s}\n", .{ ctx.path, @errorName(err) }) catch {};
+    ctx.stderr.print(
+        "Warning: Could not parse config file '{f}': {s}\n",
+        .{ safe(ctx.path), @errorName(err) },
+    ) catch {};
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +451,12 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
                 for (items, 0..) |s, idx| {
                     out[idx] = zcli.plugin_abi.config_coerce.parseOptionValue(Child, s) catch {
                         warnValue(ctx, field_name, s);
-                        return false; // Lenient: one bad element skips the whole option.
+                        // Lenient: one bad element skips the whole option — and
+                        // the buffer goes back, since nothing ever sees it
+                        // (#750). Under the arena this is a no-op; on a plain
+                        // allocator it is the difference between a leak and not.
+                        ctx.allocator.free(out);
+                        return false;
                     };
                 }
                 dest.* = out;
@@ -493,17 +522,23 @@ fn applyField(comptime T: type, dest: *T, field_name: []const u8, fv: FieldVal, 
     }
 }
 
+/// A rejected value is described, never echoed (#736). A config file is exactly
+/// where a user puts a secret to keep it *off* the command line, so a typo or a
+/// field's type changing under an `api_key` must not print the token into CI
+/// logs, scrollback, or a screen share — unlike argv, which is already visible
+/// in `ps` and shell history. The field name plus the value's size is enough to
+/// find the offending entry in a file the user can just open.
 fn warnValue(ctx: ApplyCtx, field_name: []const u8, value: []const u8) void {
     ctx.stderr.print(
-        "Warning: config '{s}' has an invalid value '{s}' for '{s}' — ignoring\n",
-        .{ ctx.path, value, field_name },
+        "Warning: config '{f}' has an invalid value ({d} bytes) for '{s}' — ignoring\n",
+        .{ safe(ctx.path), value.len, field_name },
     ) catch {};
 }
 
 fn warnShape(ctx: ApplyCtx, field_name: []const u8) void {
     ctx.stderr.print(
-        "Warning: config '{s}' has an unsupported value shape for '{s}' — ignoring\n",
-        .{ ctx.path, field_name },
+        "Warning: config '{f}' has an unsupported value shape for '{s}' — ignoring\n",
+        .{ safe(ctx.path), field_name },
     ) catch {};
 }
 
@@ -610,8 +645,8 @@ fn firstExisting(
     if (chosen) |c| {
         if (extra_count > 0) {
             stderr.print(
-                "Warning: multiple config files found; using '{s}' (found {d} more)\n",
-                .{ c, extra_count },
+                "Warning: multiple config files found; using '{f}' (found {d} more)\n",
+                .{ safe(c), extra_count },
             ) catch {};
         }
         allocated.* = true;
@@ -1067,7 +1102,9 @@ test "JSON: out-of-range int is skipped (no panic), warns" {
 
     applyJson(Opts, &opts, "{\"count\": 300}", ctx, &data, &cmd_path, &provided);
     try testing.expectEqual(@as(u8, 7), opts.count); // unchanged
-    try testing.expect(std.mem.indexOf(u8, aw.written(), "invalid value") != null);
+    // Specific enough to fail if the value itself came back into the message.
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "invalid value (3 bytes) for 'count'") != null);
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "300") == null);
 }
 
 test "JSON: negative into unsigned is skipped (no panic)" {
@@ -1098,7 +1135,156 @@ test "JSON: unknown enum variant is skipped, warns" {
 
     applyJson(Opts, &opts, "{\"color\": \"purple\"}", ctx, &data, &cmd_path, &provided);
     try testing.expect(opts.color == .red);
-    try testing.expect(std.mem.indexOf(u8, aw.written(), "invalid value") != null);
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "invalid value (6 bytes) for 'color'") != null);
+    try testing.expect(std.mem.indexOf(u8, aw.written(), "purple") == null);
+}
+
+// --- A rejected value is described, never echoed (#736) ---
+
+test "JSON: a rejected value is not echoed to stderr" {
+    // The classic leak: an `api_key` the app models as an enum (or any parsed
+    // type), holding a real token. The warning must say enough to find the entry
+    // and nothing more — the secret stays in the file the user put it in.
+    const Opts = struct { api_key: Color = .red };
+    const allocator = testing.allocator;
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const provided = [_]bool{false};
+    const cmd_path = [_][]const u8{};
+
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    var ctx = testCtx(allocator);
+    ctx.stderr = &aw.writer;
+
+    const secret = "sk-live-51H9xQe3ZbTvKp";
+    applyJson(Opts, &opts, "{\"api_key\": \"" ++ secret ++ "\"}", ctx, &data, &cmd_path, &provided);
+
+    try testing.expect(opts.api_key == .red); // still skipped, as before
+    const written = aw.written();
+    try testing.expect(std.mem.indexOf(u8, written, secret) == null);
+    // Not even a prefix of it: a short secret would be mostly given away.
+    try testing.expect(std.mem.indexOf(u8, written, "sk-live") == null);
+    // What the user does get: the field, the size, and the file.
+    try testing.expect(std.mem.indexOf(u8, written, "api_key") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "(22 bytes)") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "test.cfg") != null);
+}
+
+test "TOML: a rejected value is not echoed to stderr" {
+    // Every format funnels through the same applyMap/applyField pair, but the
+    // adapters differ — so each one gets the same guarantee asserted directly.
+    const Opts = struct { api_key: Color = .red };
+    const allocator = testing.allocator;
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const provided = [_]bool{false};
+    const cmd_path = [_][]const u8{};
+
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    var ctx = testCtx(allocator);
+    ctx.stderr = &aw.writer;
+
+    const secret = "sk-live-51H9xQe3ZbTvKp";
+    applyToml(Opts, &opts, "api_key = \"" ++ secret ++ "\"\n", ctx, &data, &cmd_path, &provided);
+
+    try testing.expect(opts.api_key == .red);
+    const written = aw.written();
+    try testing.expect(std.mem.indexOf(u8, written, secret) == null);
+    try testing.expect(std.mem.indexOf(u8, written, "sk-live") == null);
+    try testing.expect(std.mem.indexOf(u8, written, "invalid value (22 bytes) for 'api_key'") != null);
+}
+
+test "YAML: a rejected value is not echoed to stderr" {
+    const Opts = struct { api_key: Color = .red };
+    const allocator = testing.allocator;
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var opts = Opts{};
+    const provided = [_]bool{false};
+    const cmd_path = [_][]const u8{};
+
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    var ctx = testCtx(allocator);
+    ctx.stderr = &aw.writer;
+
+    const secret = "sk-live-51H9xQe3ZbTvKp";
+    // Plain (unquoted) scalar, matching the YAML the other tests in this file use.
+    applyYaml(Opts, &opts, "api_key: " ++ secret ++ "\n", ctx, &data, &cmd_path, &provided);
+
+    try testing.expect(opts.api_key == .red);
+    const written = aw.written();
+    try testing.expect(std.mem.indexOf(u8, written, secret) == null);
+    try testing.expect(std.mem.indexOf(u8, written, "sk-live") == null);
+    try testing.expect(std.mem.indexOf(u8, written, "invalid value (22 bytes) for 'api_key'") != null);
+}
+
+test "a rejected element of a multi-value option is not echoed either" {
+    // The array branch of applyField has its own warnValue call site (one bad
+    // element skips the whole option), so a secret in a list is covered too.
+    const allocator = testing.allocator;
+    var ctx = testCtx(allocator);
+
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    ctx.stderr = &aw.writer;
+
+    var dest: []const Color = &.{};
+    const items = [_][]const u8{ "red", "sk-live-51H9xQe3ZbTvKp" };
+    try testing.expect(!applyField([]const Color, &dest, "keys", FieldVal{ .list = &items }, ctx));
+
+    const written = aw.written();
+    try testing.expect(std.mem.indexOf(u8, written, "sk-live") == null);
+    try testing.expect(std.mem.indexOf(u8, written, "invalid value (22 bytes) for 'keys'") != null);
+}
+
+test "applyField frees the array buffer when an element fails to coerce (#750)" {
+    // `testing.allocator` is the point of this test: under the framework's
+    // arena the leak is invisible, so the lenient-skip path is driven with a
+    // plain allocator, which fails the test if the buffer escapes.
+    const allocator = testing.allocator;
+    const ctx = testCtx(allocator);
+
+    var dest: []const Color = &.{};
+    const items = [_][]const u8{ "red", "chartreuse" };
+    try testing.expect(!applyField([]const Color, &dest, "colors", FieldVal{ .list = &items }, ctx));
+    // Nothing applied, and nothing left allocated (the leak check runs at exit).
+    try testing.expectEqual(@as(usize, 0), dest.len);
+}
+
+test "JSON: control bytes in the config path are stripped from warnings" {
+    // `--config` is argv and discovery is cwd-driven, so the path is
+    // user-controlled text reaching a terminal — an ESC byte in it must not be
+    // able to run an OSC sequence out of a warning line.
+    const Opts = struct { count: u8 = 7 };
+    const allocator = testing.allocator;
+    // One ContextData per apply: each parse installs its own arena.
+    var data = ContextData{};
+    defer deinitContextData(&data, allocator);
+    var shape_data = ContextData{};
+    defer deinitContextData(&shape_data, allocator);
+    var opts = Opts{};
+    const provided = [_]bool{false};
+    const cmd_path = [_][]const u8{};
+
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    var ctx = testCtx(allocator);
+    ctx.stderr = &aw.writer;
+    ctx.path = "co\x1b]0;pwned\x07nf.json";
+
+    // Both the invalid-value warning and the shape warning share the prefix.
+    applyJson(Opts, &opts, "{\"count\": 300}", ctx, &data, &cmd_path, &provided);
+    applyJson(Opts, &opts, "{\"count\": {\"a\": 1}}", ctx, &shape_data, &cmd_path, &provided);
+
+    const written = aw.written();
+    try testing.expect(std.mem.indexOfScalar(u8, written, 0x1b) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, written, 0x07) == null);
+    try testing.expect(std.mem.indexOf(u8, written, "co]0;pwnednf.json") != null);
 }
 
 // --- Malformed config warns (but the run continues) ---

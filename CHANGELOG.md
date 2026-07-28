@@ -4,6 +4,15 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
+## Unreleased
+
+### Changed (breaking)
+- **`zcli.http.Client` is HTTPS-only for *every* request, not just credentialed ones** (#745). A plain `http://` URL now fails with `error.InsecureTransport` before a connection is opened — the same rule the client already enforced on redirect targets (`error.InsecureRedirect`), and the one its module doc already promised. A request that also carried an `Authorization`/`Cookie`/`Proxy-Authorization` header still reports the more specific `error.InsecureCredentialTransport`. Loopback (`127.0.0.0/8`, `::1`, `localhost`) remains the sole carve-out, so local servers and test fixtures are unaffected.
+
+### Fixed
+- **`zcli_config` no longer echoes a rejected config value** (#736) — a value that fails to parse is now reported by size, not content (`config 'app.json' has an invalid value (22 bytes) for 'api_key' — ignoring`). A config file is where a user puts a secret precisely to keep it off the command line, so a typo or a field's type changing must not print the token into CI logs or scrollback. Every config path the plugin prints — the apply-pass warnings, the project-local `note:`, the unreadable/unrecognized-file warnings, the not-found error — now renders through the diagnostic control-byte sanitizer.
+- **`zcli_config` no longer leaks a multi-value option's buffer on a lenient skip** (#750) — a config list with one element that fails to coerce (`tags = ["ok", "!!bad"]` for a `[]SomeEnum`) skipped the option without freeing the buffer it had already allocated. Masked by the arena-per-command in framework use; real on any path that supplies a plain allocator.
+
 ## v0.22.0 — 2026-07-22
 
 ### Changed (breaking)
