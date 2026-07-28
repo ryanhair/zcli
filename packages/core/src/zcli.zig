@@ -56,6 +56,30 @@ pub const completion = @import("completion.zig");
 /// not consumer API; an app building a CLI never needs `plugin_abi`. Grouping
 /// these here keeps the top-level surface reading as genuine consumer API
 /// (`parseCommandLine`, `Context`, `option`, …) instead of plugin plumbing.
+///
+/// Bundled plugins live inside core but compile with the SAME single `"zcli"`
+/// import as a third-party or `plugins_dir` plugin — deliberately, so they stay
+/// copyable reference implementations and so every internal a plugin reaches
+/// for lands in this one reviewable list instead of an invisible private
+/// import. ADR-0031 records that decision and rejects the `zcli_internal`-module
+/// alternative.
+///
+/// BEFORE ADDING A SIXTH GROUP it must pass the ADR-0031 admission test — at
+/// least one of:
+///
+///   - Shared agreement: two independently-compiled units must agree on it, so
+///     a divergent private copy would be a behavioral bug rather than mere
+///     duplication (`usage`, `isNegativeNumber`, `custom_type`, `config_coerce`).
+///   - Dependency containment: a narrow shim that keeps a third-party
+///     dependency out of zcli's public contract (`config_parse`, vs. exporting
+///     serde).
+///
+/// and all of: you would fix the bundled plugins yourself when it changes, and
+/// it is grouped under a name describing the NEED rather than the internal.
+///
+/// The negative rule is the load-bearing one: this is not somewhere to put an
+/// internal because it is convenient. If one plugin wants it and nothing in
+/// core has to agree with it, copy or move the logic into the plugin.
 pub const plugin_abi = struct {
     /// Is this `-`-prefixed token actually a negative number (`-5`, `-.5`, `-1e9`,
     /// `-inf`, `-nan`) rather than an option flag? The single source of truth
