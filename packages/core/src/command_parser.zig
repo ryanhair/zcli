@@ -109,7 +109,14 @@ pub fn parseCommandLine(
     // Parse positional arguments
     // Note: We need to keep positional_args.items alive for the lifetime of the result
     // because parseArgs may create references to the input slice (for varargs)
-    const positional_slice = positional_args.toOwnedSlice(allocator) catch return ZcliError.SystemOutOfMemory;
+    const positional_slice = positional_args.toOwnedSlice(allocator) catch {
+        // Same contract as the parseArgs failure below: options were already
+        // parsed, so their accumulated arrays must be freed before bailing out
+        // — under a plain (non-arena) allocator they would otherwise leak on
+        // the out-of-memory path (#744).
+        options_parser.cleanupOptions(OptionsType, options, allocator);
+        return ZcliError.SystemOutOfMemory;
+    };
     const parsed_args = args_parser.parseArgs(ArgsType, positional_slice, diag) catch |err| {
         // parseArgs failed AFTER options were parsed: free the accumulated
         // option arrays as well as the slice we allocated — under a plain
