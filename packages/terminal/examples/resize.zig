@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const raw = try terminal.enableRawMode(stdin_handle);
-    terminal.guard.arm(stdout_handle, "\x1b[?25h", raw);
+    terminal.guard.arm(.{ .out = stdout_handle, .blob = "\x1b[?25h", .raw = raw });
 
     // The watcher installs the SIGWINCH handler on `init` and removes it on
     // `deinit`. Construct it for the lifetime of the read loop only.

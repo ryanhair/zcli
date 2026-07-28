@@ -27,6 +27,8 @@ const ui = @import("ui");
 const terminal = @import("terminal");
 
 pub const panic = ui.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = ui.debug;
 
 const options = [_][]const u8{ "Name", "Date modified", "Size", "Kind" };
 const menu_rows: u16 = options.len; // short menu — show every option, no scroll

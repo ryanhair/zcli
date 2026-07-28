@@ -76,6 +76,8 @@ fn statusFrame(a: std.mem.Allocator, frame: u32, width: u16) !ui.Node {
 
 // Even a hybrid App hides the cursor, so a panic must be able to restore it.
 pub const panic = ui.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = ui.debug;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;

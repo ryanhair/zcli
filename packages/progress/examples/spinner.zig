@@ -18,6 +18,8 @@ const common = @import("common.zig");
 
 // Indicators hide the cursor, so a panic must restore the terminal.
 pub const panic = Progress.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = Progress.debug;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;

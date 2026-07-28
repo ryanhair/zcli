@@ -3,6 +3,7 @@
 
 test {
     _ = @import("surface.zig");
+    _ = @import("terminal_session.zig");
     _ = @import("diff.zig");
     _ = @import("layout_test.zig");
     _ = @import("widgets_test.zig");

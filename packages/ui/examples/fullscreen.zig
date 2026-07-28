@@ -31,6 +31,8 @@ const terminal = @import("terminal");
 /// full-screen (a panic doesn't run `defer app.deinit()`, and would otherwise
 /// strand the alt-screen). `App.initFullScreen` won't compile without it.
 pub const panic = ui.panic;
+// Segfaults bypass `panic` entirely (#759), so install the fault hook too.
+pub const debug = ui.debug;
 
 const tick_ms: u32 = 250;
 

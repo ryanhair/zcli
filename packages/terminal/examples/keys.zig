@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     // Take over the terminal. Raw mode is restored by `raw.disable()` below; the
     // guard covers the abnormal-exit paths where that defer never fires.
     const raw = try terminal.enableRawMode(stdin_handle);
-    terminal.guard.arm(std.Io.File.stdout().handle, "\x1b[?25h", raw);
+    terminal.guard.arm(.{ .out = std.Io.File.stdout().handle, .blob = "\x1b[?25h", .raw = raw });
     defer {
         terminal.guard.disarm();
         raw.disable();

@@ -34,6 +34,7 @@ fn statusLine(a: std.mem.Allocator, s: *const State) !ui.Node {
 }
 
 pub const panic = ui.panic; // in your root source file — see below
+pub const debug = ui.debug; // ditto: segfaults bypass `panic`
 
 var app = try ui.App.init(gpa, writer, .{});
 defer app.deinit(); // cursor restored, final frame left in scrollback
@@ -60,12 +61,29 @@ significant whitespace (padded numbers, aligned columns) want `.clip` or
 `.truncate` via `ui.textOpts`.
 
 Every `App` — hybrid included — hides the cursor and, for a prompt, rides the
-caller's raw mode. A panic runs no `defer`, so `app.deinit()` never fires and
-the terminal is left stranded. Install the restore panic hook in your root
-source file: `pub const panic = zcli.ui.panic;` (standalone: `= ui.panic;`).
-It is **required** and compile-time-enforced at `App.init` — a forgotten hook
-is a build error, not a wedged terminal. zcli's `prompts` and `progress`
-re-export it (`Prompts.panic` / `Progress.panic`) for standalone use.
+caller's raw mode. A crash runs no `defer`, so `app.deinit()` never fires and
+the terminal is left stranded. Install **both** restore hooks in your root
+source file (standalone: `= ui.panic;` / `= ui.debug;`):
+
+```zig
+pub const panic = zcli.ui.panic;
+pub const debug = zcli.ui.debug;
+```
+
+Two hooks, because Zig routes crashes down two different paths: `unreachable`,
+an OOM, or an explicit `@panic` go to `root.panic`, while SIGSEGV / SIGILL /
+SIGBUS / SIGFPE go to `root.debug.handleSegfault`. A panic hook alone leaves the
+crash a TUI is most likely to hit — a segfault — printing its stack trace into
+an alternate screen that is then discarded. Both are **required** and
+compile-time-enforced at `App.init` — a forgotten hook is a build error, not a
+wedged terminal. zcli's `prompts` and `progress` re-export them
+(`Prompts.panic`/`Prompts.debug`, `Progress.panic`/`Progress.debug`) for
+standalone use.
+
+In ReleaseFast, std installs no fault handler at all
+(`std.options.enable_segfault_handler` follows `runtime_safety`), so
+`terminal.guard` catches those four signals itself — restoring the terminal and
+then dying by the signal, core dump intact.
 
 ## Widgets
 

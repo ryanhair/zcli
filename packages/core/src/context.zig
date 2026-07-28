@@ -262,10 +262,12 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// A hybrid (shared-screen) `ui.App` pre-wired to this command's
         /// environment — the substrate every prompt and progress indicator runs
         /// on. It hides the cursor and rides the caller's raw mode, so a panic
-        /// mid-frame must be able to restore the terminal. Requires a panic
-        /// handler in your root source file — enforced at compile time:
+        /// mid-frame must be able to restore the terminal. Requires the two
+        /// crash hooks in your root source file — enforced at compile time
+        /// (segfaults go to `root.debug.handleSegfault`, not `root.panic`):
         ///
         ///     pub const panic = zcli.ui.panic;
+        ///     pub const debug = zcli.ui.debug;
         pub fn ui(self: *Self, options: zcli.ui.App.SessionOptions) !zcli.ui.App {
             return zcli.ui.App.init(self.allocator, self.stdout(), .{
                 .capability = self.theme.capability(),
@@ -279,10 +281,12 @@ pub fn ContextFor(comptime plugins: []const type) type {
         /// environment, with stdin wired for input (ADR-0015): the App takes the
         /// screen over, owns raw mode, and reads input through `app.nextEvent()`.
         ///
-        /// Requires a panic handler in your root source file so a panic can't
-        /// strand the terminal in the alt-screen — enforced at compile time:
+        /// Requires the two crash hooks in your root source file so neither a
+        /// panic nor a segfault can strand the terminal in the alt-screen —
+        /// enforced at compile time:
         ///
         ///     pub const panic = zcli.ui.panic;
+        ///     pub const debug = zcli.ui.debug;
         pub fn uiFullScreen(self: *Self, options: zcli.ui.App.SessionOptions) !zcli.ui.App {
             return zcli.ui.App.initFullScreen(self.allocator, self.stdout(), .{
                 .capability = self.theme.capability(),

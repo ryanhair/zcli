@@ -55,9 +55,17 @@ pub const widgets = @import("widgets.zig");
 
 /// Root-module panic handler that restores the terminal before the default
 /// handler prints (ADR-0015). Install in your `main.zig`:
-/// `pub const panic = zcli.ui.panic;`. Required for `App.initFullScreen` /
-/// `context.uiFullScreen` (enforced at compile time); optional for hybrid.
+/// `pub const panic = zcli.ui.panic;`. Required for every `ui.App` (enforced at
+/// compile time).
 pub const panic = App.panic;
+
+/// Root-module segfault handler, the fault-handling twin of `panic` (#759).
+/// Zig routes SIGSEGV/SIGILL/SIGBUS/SIGFPE through `root.debug.handleSegfault`
+/// rather than `root.panic`, so the panic hook alone leaves a TUI's most likely
+/// crash uncovered. Install alongside it in your `main.zig`:
+/// `pub const debug = zcli.ui.debug;`. Required for every `ui.App` (enforced at
+/// compile time).
+pub const debug = App.debug;
 
 /// The process-global terminal restore guard (re-exported from `terminal`).
 /// A session arms it on takeover; `restore()` replays the registered blob —

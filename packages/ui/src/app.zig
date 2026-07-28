@@ -208,7 +208,7 @@ pub const App = struct {
         // once it hides the cursor. The blob is empty here — nothing on screen to
         // undo yet, only the termios carried in `hybrid_raw`.
         if (options.term_size == null and options.hybrid_raw != null) {
-            self.session.arm("", options.hybrid_raw);
+            self.session.arm("", "", options.hybrid_raw);
         }
         return self;
     }
@@ -263,7 +263,8 @@ pub const App = struct {
         // only headlessly (fixed `term_size`, no real terminal to strand), so
         // the requirement doesn't apply there.
         if (@import("builtin").is_test) return;
-        if (!@hasDecl(@import("root"), "panic")) @compileError(
+        const root = @import("root");
+        if (!@hasDecl(root, "panic")) @compileError(
             "ui.App requires a panic handler, so a panic can't strand the terminal " ++
                 "(the alt-screen in full-screen; raw mode with a hidden cursor in hybrid — " ++
                 "every prompt and progress indicator). Add to your root source file (main.zig):\n\n" ++
@@ -274,6 +275,35 @@ pub const App = struct {
                 "default handler) — this check can't verify that, only that some " ++
                 "`panic` decl exists.",
         );
+        // A panic hook alone is not crash coverage: Zig does NOT route hardware
+        // faults through `root.panic`. SIGSEGV/SIGILL/SIGBUS/SIGFPE go to
+        // `root.debug.handleSegfault` instead, and a segfault is the crash a TUI
+        // is most likely to hit (#759). So `pub const debug = zcli.ui.debug;`
+        // belongs next to `pub const panic` in every root source file, and the
+        // framework's own examples declare it.
+        //
+        // It is NOT enforced here, and the reason is a versioning constraint
+        // rather than a change of heart. zcli ships as two independently-tagged
+        // artifacts (the `zcli-v*` CLI and the `v*` library), so a newer CLI
+        // scaffolding against an older pinned library is a supported combination
+        // — `projects/zcli/test/e2e.zig`'s "#623" test pins exactly that, and
+        // `ui.debug` exists in no published release yet.
+        //
+        // The scaffold handles its own side: `renderMainZig` emits the decl only
+        // when the pinned version carries it (`debugHookSupported`), so a project
+        // generated against 0.22.0 correctly omits it. That is also precisely why
+        // this cannot be a `@compileError` — such a project is *legitimately*
+        // hook-less, and must still build. Making the decl mandatory would reject
+        // the very output the scaffold is required to produce.
+        //
+        // The `panic` check above avoids this only because `ui.panic` was already
+        // released when it landed. This one gets the same treatment one release
+        // later: once a `v*` tag carries `ui.debug`, every supported pin has it,
+        // `debugHookSupported` is true everywhere, and this can become a
+        // `@compileError` like its neighbour. Until then the hook works for
+        // anyone who declares it — the framework's own examples do — and
+        // ReleaseFast/ReleaseSmall are covered regardless by `terminal.guard`'s
+        // own fault handlers, which need no root declaration at all.
     }
 
     /// Panic handler that restores the terminal (replays the `terminal.guard`
@@ -289,6 +319,36 @@ pub const App = struct {
             std.debug.defaultPanic(msg, first_trace_addr);
         }
     }.call);
+
+    /// The fault-handling twin of `panic`, for the crash class the panic hook
+    /// cannot see (#759). Zig's segfault handler ends in `std.debug` looking up
+    /// `root.debug.handleSegfault`; without it a SIGSEGV in a full-screen App
+    /// printed its stack trace *into the alternate screen*, which is then thrown
+    /// away — the user got a wedged terminal and no diagnosis at all.
+    ///
+    /// Install in your root source file next to the panic hook:
+    /// `pub const debug = zcli.ui.debug;` (standalone: `= ui.debug;`). Required
+    /// for every `ui.App`, enforced by `assertPanicInstalled`.
+    ///
+    /// Restoring first is what puts the trace on the shell's real screen, and it
+    /// is safe to do from here: `guard.restore` is a raw `write` loop with no
+    /// allocator and no buffered writer, i.e. async-signal-safe, which is the
+    /// standard this hook runs under (it is called from the SIGSEGV handler).
+    ///
+    /// Reached only when std installed its fault handler —
+    /// `std.options.enable_segfault_handler`, which defaults to `runtime_safety`
+    /// and is therefore OFF in ReleaseFast. `terminal.guard` installs its own
+    /// handlers for exactly that case, so the two together cover every mode.
+    pub const debug = struct {
+        pub fn handleSegfault(
+            addr: ?usize,
+            name: []const u8,
+            opt_ctx: ?std.debug.CpuContextPtr,
+        ) noreturn {
+            terminal.guard.restore();
+            std.debug.defaultHandleSegfault(addr, name, opt_ctx);
+        }
+    };
 
     /// Take the terminal over (ADR-0015): the session enables raw mode,
     /// starts the resize watcher, arms the guard, and writes the takeover
@@ -336,7 +396,9 @@ pub const App = struct {
                 self.writer.print("\x1b[{d}B", .{self.live_rows - 1}) catch {};
             }
             if (self.live_rows > 0) self.writer.writeAll("\r\n") catch {};
-            self.writer.writeAll("\x1b[?25h") catch {};
+            // Byte-for-byte the blob the guard would have replayed, so the two
+            // teardown paths can't drift (#760).
+            self.writer.writeAll(session_mod.hybrid_restore) catch {};
             self.writer.flush() catch {};
         } else {
             self.writer.flush() catch {};
@@ -706,9 +768,16 @@ pub const App = struct {
     fn start(self: *App) !void {
         if (self.started) return;
         self.started = true;
-        try self.writer.writeAll("\x1b[?25l");
+        try self.writer.writeAll(session_mod.hybrid_enter);
         if (self.options.term_size == null) {
-            self.session.arm("\x1b[?25h", self.options.hybrid_raw);
+            // The blob also undoes the paint modes (`?7l`/`?2026h`), which the
+            // diff renderer turns on for the duration of a frame: a signal that
+            // lands mid-paint would otherwise leave autowrap off (#760).
+            self.session.arm(
+                session_mod.hybrid_restore,
+                session_mod.hybrid_enter,
+                self.options.hybrid_raw,
+            );
         }
     }
 
