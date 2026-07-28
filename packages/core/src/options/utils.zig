@@ -787,6 +787,25 @@ pub fn hasValidate(comptime meta: anytype, comptime field_name: []const u8) bool
     return @hasField(@TypeOf(field_meta), "validate");
 }
 
+/// Whether `meta.options.<field>.no_config` locks this field against config
+/// files (ADR-0032): a marked field is never filled by an `applyConfigDefaults`
+/// hook, so its value can only come from the CLI, the env, or the struct
+/// default. Exists because project-local config is discovered from cwd, which an
+/// attacker may control — a field whose value is a trust decision must not be
+/// settable by a file that arrives with a cloned repo.
+///
+/// `validateCommand` checks the marker is a bool. Only `true` locks: `false`
+/// means "no policy", so a comptime-computed marker reads the way it looks.
+pub fn isNoConfig(comptime meta: anytype, comptime field_name: []const u8) bool {
+    if (@TypeOf(meta) == @TypeOf(null)) return false;
+    if (!@hasField(@TypeOf(meta), "options")) return false;
+    if (!@hasField(@TypeOf(meta.options), field_name)) return false;
+    const field_meta = @field(meta.options, field_name);
+    if (@typeInfo(@TypeOf(field_meta)) != .@"struct") return false;
+    if (!@hasField(@TypeOf(field_meta), "no_config")) return false;
+    return field_meta.no_config;
+}
+
 /// Whether `meta.args.<field>` declares a `validate` hook. The struct form of
 /// args metadata (a bare string carries none) may carry the same `fn(Base)
 /// ?[]const u8` hook as options; `validateCommand` verifies its signature.

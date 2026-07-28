@@ -255,11 +255,23 @@ pub fn build(b: *std.Build) void {
     e2e_run.setCwd(b.path("projects/zcli"));
     e2e_step.dependOn(&e2e_run.step);
 
-    // Create a comprehensive build step that builds and tests everything
-    const build_all_step = b.step("build-all", "Build and test all subprojects");
+    // The pre-push step: everything a PR is gated on that also runs locally.
+    // Its name promises "all", so it has to mean it — `e2e` was omitted (#789),
+    // which made this a trap rather than a convenience. Nothing was actually
+    // ungated (CI runs `e2e` on all three OSes), but a contributor running
+    // `build-all` before pushing reasonably believed they had run it, and the
+    // suite it silently skipped is the one that catches prompt/render/help
+    // regressions no unit test can see.
+    //
+    // The description names the cost, so nobody reaches for this expecting
+    // `test`'s runtime. Deliberately still out: `test-secrets` (touches the
+    // host keychain) and `benchmark`/`regression` (build ReleaseFast) — the
+    // same reasons they are excluded from the aggregate `test` step above.
+    const build_all_step = b.step("build-all", "Build and test everything: unit suites, examples, the CLI, and the end-to-end suite (slow — e2e scaffolds real projects and drives a PTY)");
     build_all_step.dependOn(test_step);
     build_all_step.dependOn(build_examples_step);
     build_all_step.dependOn(build_cli_step);
+    build_all_step.dependOn(e2e_step);
 
     // Make the default install step build everything important
     const install_step = b.getInstallStep();

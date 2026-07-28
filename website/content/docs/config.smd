@@ -59,6 +59,32 @@ A value set on the command line — or read from an option's `env` fallback — 
 
 Config can satisfy a [required option]($link.page('docs/args-options')) and participates in [validation and constraints]($link.page('docs/validation')) like any other source — a `validate` hook runs on the final value wherever it came from, and a config value counts as "supplied" for `exclusive`/`requires` checks.
 
+## Locking a field against config
+
+Discovery tier 2 reads from the **working directory**, which the person running your CLI does not always control — a cloned repo, an extracted archive, or a shared build dir can ship a `.myapp.config.toml`. That is bounded: values still go through the typed parser (no code execution), the file is size-capped, a CLI flag or env var always wins, and the plugin prints a `note:` naming the file it applied. But it does mean a directory can set the *default* for any option, for that invocation.
+
+So for anything whose value is a **trust decision** — skipping a verification step, disabling a safety check, naming a trusted URL, path, or repo — say so on the field:
+
+```zig
+pub const Options = struct {
+    skip_verification: bool = false,
+    registry: []const u8 = "https://registry.example",
+};
+
+pub const meta = .{
+    .options = .{
+        .skip_verification = .{ .no_config = true },
+        .registry = .{ .no_config = true },
+    },
+};
+```
+
+`.no_config = true` means the field is **never filled from a config file**. The CLI flag, the `env` fallback, and the struct default all keep working — it locks only the source the user may not control. The marker is checked at compile time (a typo, or a non-bool value, is a build error), and it is enforced by the framework rather than by the plugin, so no config source can opt out of it.
+
+If a marked field is also required, a config file naming it does *not* satisfy it: the CLI or env has to. That is the safe outcome — the user gets a "missing required option" error instead of a value chosen by a directory.
+
+Stronger still, where it fits: keep the switch out of `Options` entirely and make it build-time config. The bundled upgrade plugin does that for its repo and signing key — values no single invocation should be able to choose at all.
+
 ## Next
 
 - [Args & options]($link.page('docs/args-options')) — the full value cascade

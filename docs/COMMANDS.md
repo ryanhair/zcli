@@ -52,9 +52,14 @@ pub fn execute(args: Args, options: Options, context: anytype) !void {
   [ADR-0026](adr/0026-dynamic-shell-completion.md)). Options additionally
   accept `short` (single-char flag alias), `name` (override the flag's long
   name — e.g. `.output_dir = .{ .name = "out" }` makes the flag `--out`
-  instead of `--output-dir`), `env` (fallback environment variable), and
+  instead of `--output-dir`), `env` (fallback environment variable),
   `requires` (this option, if supplied, requires another option to also be
-  supplied; see ADR-0022). For values that don't map onto a plain scalar
+  supplied; see ADR-0022), and `no_config` (`.no_config = true` — the field is
+  never filled from a config file, only from the CLI, `env`, or its default;
+  use it for anything a config file discovered in the current directory must
+  not be able to decide, such as skipping a verification step or naming a
+  trusted URL — [ADR-0032](adr/0032-no-config-field-marker.md)).
+  For values that don't map onto a plain scalar
   (`u16`, `enum`, `[]const u8`, …), a field's type can itself declare
   `pub fn parse(s: []const u8) E!@This()` instead of relying on `validate` —
   see ADR-0025.

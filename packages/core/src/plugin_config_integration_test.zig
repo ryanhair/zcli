@@ -9,6 +9,20 @@ const zcli = @import("zcli");
 const config = @import("plugins/zcli_config/plugin.zig");
 const testing = std.testing;
 
+// NOTE on module boundaries: this file may NOT relatively import framework
+// internals (`command_parser.zig`, …). It imports the config plugin's source,
+// which imports the "zcli" MODULE, so this test target is built with that module
+// — and `zcli.zig` already contains `command_parser.zig`. Reaching it relatively
+// as well puts one file in two modules, which Zig rejects outright:
+// "file exists in modules 'root' and 'zcli'".
+//
+// That is why the `no_config` split below is what it is: the ADR-0032 helpers
+// (`noConfigMask`/`maskNoConfig`/`captureNoConfig`/`restoreNoConfig`, and their
+// interaction with `firstMissingRequiredOption`) are unit-tested next to their
+// implementation in command_parser.zig, where no plugin — and so no "zcli"
+// module — is needed. What belongs HERE is the other half: the real plugin,
+// reading a real file, honoring the masked bitset the registry hands it.
+
 /// The slice of `context` the config plugin reads. `plugins.zcli_config` is the
 /// per-command ContextData the framework threads; the rest are plain accessors.
 const FakeContext = struct {
@@ -174,6 +188,220 @@ test "integration: required option satisfied by config (through parseCommandLine
     // registry's required-option check treats as "supplied".
     try testing.expectEqualStrings("secret123", opts.token);
     try testing.expect(applied[0]);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: a no_config field is not set from a config file that supplies it (ADR-0032)" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // The threat this marker exists for: a config file that arrived with a
+    // cloned repo tries to turn off signature verification, and to prove the
+    // lock is per-field rather than per-file, sets an ordinary option too.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "myapp.toml",
+        .data = "skip_verification = true\nregistry = \"https://evil.example\"\ncount = 9\n",
+    });
+    const abs = try tmp.dir.realPathFileAlloc(io, "myapp.toml", alloc);
+
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    const Opts = struct {
+        skip_verification: bool = false,
+        registry: []const u8 = "https://trusted.example",
+        count: u32 = 1,
+    };
+    const meta = .{ .options = .{
+        .skip_verification = .{ .no_config = true },
+        .registry = .{ .no_config = true },
+    } };
+
+    const result = try zcli.parseCommandLine(struct {}, Opts, meta, alloc, &environ, &.{}, null);
+    defer result.deinit();
+
+    var opts = result.options;
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+
+    // The bitset the registry hands the hook: nothing was supplied by CLI/env,
+    // but the two marked fields read as provided. This is precisely what
+    // `command_parser.maskNoConfig(Opts, meta, result.options_provided)` returns
+    // — asserted against the real helper in command_parser.zig's own tests (see
+    // the module-boundary note at the top of this file for why it cannot be
+    // called from here). What this test pins is the half that is genuinely the
+    // plugin's: given that bitset, and a file that names all three keys, the
+    // real plugin must not write the marked fields.
+    for (result.options_provided) |p| try testing.expect(!p);
+    const hook_provided = [_]bool{ true, true, false };
+
+    config.applyConfigDefaults(&ctx, Opts, &opts, &hook_provided, &applied);
+
+    // Both marked fields keep their struct defaults even though the file names
+    // them, and neither counts as supplied — so a marked *required* option would
+    // correctly report "missing" rather than silently take the file's value
+    // (pinned in command_parser.zig against firstMissingRequiredOption).
+    try testing.expectEqual(false, opts.skip_verification);
+    try testing.expectEqualStrings("https://trusted.example", opts.registry);
+    try testing.expect(!applied[0]);
+    try testing.expect(!applied[1]);
+
+    // The lock is per-field: the unmarked option still loads normally, so this
+    // is a targeted policy rather than "ignore the config file".
+    try testing.expectEqual(@as(u32, 9), opts.count);
+    try testing.expect(applied[2]);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: no_config does not block the CLI or env from setting the field" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+
+    var environ = std.process.Environ.Map.init(alloc);
+    try environ.put("MYAPP_REGISTRY", "https://from-env.example");
+
+    const Opts = struct {
+        skip_verification: bool = false,
+        registry: []const u8 = "https://trusted.example",
+    };
+    const meta = .{ .options = .{
+        .skip_verification = .{ .no_config = true },
+        .registry = .{ .no_config = true, .env = "MYAPP_REGISTRY" },
+    } };
+
+    // No config plugin in play at all — the marker governs file-sourced values
+    // only, and must leave the two sources the user genuinely controls alone.
+    const result = try zcli.parseCommandLine(struct {}, Opts, meta, alloc, &environ, &.{"--skip-verification"}, null);
+    defer result.deinit();
+
+    const opts = result.options;
+
+    // Both marked, both still set — from the CLI and from env respectively — and
+    // both flagged provided, which is what makes them satisfy a required option
+    // and what makes config skip them.
+    try testing.expectEqual(true, opts.skip_verification);
+    try testing.expectEqualStrings("https://from-env.example", opts.registry);
+    try testing.expect(result.options_provided[0]);
+    try testing.expect(result.options_provided[1]);
+}
+
+test "integration: a no_config REQUIRED option is left unset by the real plugin" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // The subtlest interaction in the feature: config supplies the required
+    // option, and must NOT count. Two required options so the "unmarked one is
+    // still satisfied" half is proven by the same run. That the registry then
+    // REPORTS it missing is pinned against firstMissingRequiredOption in
+    // command_parser.zig; what this proves is that the plugin leaves it unset
+    // and, crucially, does not mark it applied.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "myapp.yaml",
+        .data = "signing_key: attacker-key\nproject: acme\n",
+    });
+    const abs = try tmp.dir.realPathFileAlloc(io, "myapp.yaml", alloc);
+
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    // Both required (no default, non-optional, non-bool, non-array).
+    const Opts = struct {
+        signing_key: []const u8,
+        project: []const u8,
+    };
+    const meta = .{ .options = .{ .signing_key = .{ .no_config = true } } };
+
+    const result = try zcli.parseCommandLine(struct {}, Opts, meta, alloc, &environ, &.{}, null);
+    defer result.deinit();
+
+    var opts = result.options;
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+
+    const hook_provided = [_]bool{ true, false }; // signing_key masked by the registry
+    config.applyConfigDefaults(&ctx, Opts, &opts, &hook_provided, &applied);
+
+    // The unmarked required option is satisfied by the file, as always.
+    try testing.expectEqualStrings("acme", opts.project);
+    try testing.expect(applied[1]);
+
+    // The marked one is not, and is not marked applied — which is exactly the
+    // input that makes the registry's required-option check report it missing
+    // rather than silently running with a value a directory chose.
+    try testing.expect(!applied[0]);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: a no_config multi-value option is not filled from a config list" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "myapp.json",
+        .data = "{\"trusted_hosts\": [\"evil.example\", \"evil2.example\"], \"tags\": [\"a\", \"b\"]}",
+    });
+    const abs = try tmp.dir.realPathFileAlloc(io, "myapp.json", alloc);
+
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    // Arrays are the case where a config write ALLOCATES, so they are where the
+    // marker has to hold at the coercion path rather than at a scalar store.
+    const Opts = struct {
+        trusted_hosts: []const []const u8 = &.{},
+        tags: []const []const u8 = &.{},
+    };
+    const meta = .{ .options = .{ .trusted_hosts = .{ .no_config = true } } };
+
+    // Routed through the real parser so the marker itself is exercised: an
+    // unknown key in `meta.options.<field>` is a @compileError, so this failing
+    // to build is how a renamed or dropped marker would surface here.
+    const result = try zcli.parseCommandLine(struct {}, Opts, meta, alloc, &environ, &.{}, null);
+    defer result.deinit();
+
+    var opts = result.options;
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    const hook_provided = [_]bool{ true, false }; // trusted_hosts masked by the registry
+
+    config.applyConfigDefaults(&ctx, Opts, &opts, &hook_provided, &applied);
+
+    // Marked: still the empty default. Because the mask made the plugin skip the
+    // field, the element buffer is never allocated in the first place — there is
+    // nothing for the registry's restore to undo, which is the cheap path by
+    // construction and the reason a locked array cannot leak.
+    try testing.expectEqual(@as(usize, 0), opts.trusted_hosts.len);
+    try testing.expect(!applied[0]);
+
+    // Unmarked: the list loads normally, so the lock is per-field here too.
+    try testing.expectEqual(@as(usize, 2), opts.tags.len);
+    try testing.expectEqualStrings("a", opts.tags[0]);
+    try testing.expect(applied[1]);
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }

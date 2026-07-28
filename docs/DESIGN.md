@@ -276,6 +276,37 @@ Exactly-one-of-a-mode needs no constraint: an enum with no default
 (`format: enum { json, yaml, xml }`) is already exactly-one, and `?enum … = null`
 is at-most-one.
 
+**Locking a field against config files:**
+
+`zcli_config` discovers project-local config from the process's cwd, so a
+directory an attacker controls (a cloned repo, an extracted archive) can set the
+*default* for any option — bounded (typed parsing, size-capped, CLI/env always
+win) but attacker-influenced. A field whose value is a trust decision says so in
+its metadata (ADR-0032):
+
+```zig
+pub const Options = struct { skip_verification: bool = false };
+
+pub const meta = .{
+    .options = .{ .skip_verification = .{ .no_config = true } },
+};
+```
+
+`.no_config = true` means the field is never filled from a config file. The CLI,
+the `env` fallback and the struct default are unaffected — it locks the one
+source the user does not necessarily control. The marker joins the same
+comptime-checked metadata allowlist as `requires`/`validate` (a typo is a build
+error, and a non-bool value is rejected with a message).
+
+Enforcement lives in the registry rather than in `zcli_config`, so it covers
+*any* `applyConfigDefaults` hook: the registry forces the field's `provided` flag
+true in the view it hands the hooks — so they skip it through the same check that
+already enforces CLI > env > config — and restores the pre-config value
+afterwards, so a hook that ignores `provided` cannot defeat the marker. The real
+`options_provided` bitset is untouched, so a locked *required* option that only a
+config file supplied still reports as missing rather than silently taking the
+file's value.
+
 **Per-field validation:**
 
 A field whose *type* is right but whose *value* needs a further rule declares a
@@ -885,7 +916,7 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 5. Command resolution routes to the matched command, then all `postParse` hooks called, threading each plugin's replacement `ParsedArgs`
 6. All `preExecute` hooks called before command execution (a plugin may cancel execution by returning `null`)
 7. Argv is parsed into the command's `Args`/`Options`
-8. All `applyConfigDefaults` hooks called after CLI/env parse — filling options no higher-precedence source set — then required/dependency/exclusive/per-field validation runs
+8. All `applyConfigDefaults` hooks called after CLI/env parse — filling options no higher-precedence source set, and skipping any field marked `.no_config` (ADR-0032; the registry masks it into the `provided` view the hooks see, and restores it afterwards) — then required/dependency/exclusive/per-field validation runs
 9. Command executes
 10. All `postExecute` hooks called after execution (success or a handled failure)
 11. On error at any stage above, `onError` hooks called until one handles the error

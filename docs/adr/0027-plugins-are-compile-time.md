@@ -63,7 +63,10 @@ plugins usually serve are covered another way:
   enough (`build_utils/plugin_system.zig` `scanLocalPlugins`, ADR-0006). No
   `build.zig` array to splice.
 - **`zcli add plugin <name>` scaffolds one** as a guided skeleton, auto-discovered
-  on the next build (ADR-0006).
+  on the next build (ADR-0006). The framework's own bundled plugins compile under
+  the same single-`"zcli"`-import rule as a local or third-party one, so they stay
+  readable as worked examples — ADR-0031 records why, and what may be exported
+  through `zcli.plugin_abi` to serve them.
 - **Rebuilds are fast**, and `zcli dev` watches and rebuilds on change — the
   edit-plugin/see-result loop is measured in the same seconds as editing a command.
 - **The single static binary is the distribution advantage.** The thing you ship
