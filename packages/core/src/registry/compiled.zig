@@ -769,6 +769,12 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // lookahead the command parsers share. This layer only filters:
             // tokens that resolve to globals are consumed and dispatched,
             // everything else passes through verbatim.
+            //
+            // No resource limit is applied here, and none is missing (#741):
+            // option occurrences are no longer capped anywhere, and the option
+            // name-length cap is a guard for the O(name x fields) suggestion
+            // scoring that only the command parser runs — this layer does exact
+            // memcmp against a fixed global list and then hands the token on.
             var tok = tokenizer.Tokenizer(GlobalSpec){ .args = args };
             while (tok.next()) |token| {
                 switch (token) {
@@ -1245,6 +1251,24 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
         fn executeCommand(_: *Self, context: *Context, args: []const []const u8) !void {
             @setEvalBranchQuota(10000);
 
+            // A leading bare `--` is the conventional "nothing after this is an
+            // option" terminator, not a command name (#743). `parseGlobalOptions`
+            // deliberately forwards it (#501) so a command's own parser still
+            // sees its own terminator, but nothing consumed it at the routing
+            // layer, so `myapp -- list` reported "Unknown command '-- list'" and
+            // the `myapp -- "$@"` wrapper idiom failed unconditionally.
+            //
+            // Only the *leading* one is a routing artifact: once a command name
+            // has been matched, everything after it is passed through untouched,
+            // so `myapp cmd -- -x` still terminates `cmd`'s options. A second
+            // `--` (`myapp -- -- x`) is likewise left alone.
+            //
+            // The root-index fallback below is deliberately handed the untrimmed
+            // argv: the root command shares the top-level option namespace, so
+            // `myapp -- -x` must reach its parser with the terminator intact for
+            // `-x` to land as a positional.
+            const route_args = if (args.len > 0 and std.mem.eql(u8, args[0], "--")) args[1..] else args;
+
             // The root group's index (a top-level index.zig) registers at the
             // empty path (ADR-0029). It is deliberately NOT matched by the
             // longest-path loop below — an empty path matches any argv, which
@@ -1261,7 +1285,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // help plugin answers a bare --help here), then route through
             // CommandNotFound. With a root index, bare invocation falls
             // through to it below.
-            if (!root_index_exists and args.len == 0) {
+            if (!root_index_exists and route_args.len == 0) {
                 const parsed_args = try runPostParseHooks(context, zcli.ParsedArgs.init(context.allocator));
                 _ = (try runPreExecuteHooks(context, parsed_args)) orelse return; // plugin cancelled execution
                 if (try runOnErrorHooks(context, error.CommandNotFound)) return;
@@ -1272,16 +1296,16 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // Regular commands, longest path first so the longest match wins.
             const sorted_commands = comptime sortedByPathLengthDesc(cmd_entries);
             inline for (sorted_commands) |cmd| {
-                if (cmd.path.len > 0 and cmd.path.len <= args.len) {
+                if (cmd.path.len > 0 and cmd.path.len <= route_args.len) {
                     var parts_match = true;
                     for (cmd.path, 0..) |part, i| {
-                        if (!std.mem.eql(u8, part, args[i])) {
+                        if (!std.mem.eql(u8, part, route_args[i])) {
                             parts_match = false;
                             break;
                         }
                     }
                     if (parts_match) {
-                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, args[cmd.path.len..]);
+                        return executeResolvedCommand(cmd.module, .regular, context, cmd.path, route_args[cmd.path.len..]);
                     }
                 }
             }
@@ -1290,10 +1314,10 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             var best_match_idx: ?usize = null;
             var best_match_len: usize = 0;
             inline for (plugin_command_entries, 0..) |plugin_cmd, idx| {
-                if (args.len >= plugin_cmd.path.len and plugin_cmd.path.len > best_match_len) {
+                if (route_args.len >= plugin_cmd.path.len and plugin_cmd.path.len > best_match_len) {
                     var matches = true;
                     for (plugin_cmd.path, 0..) |path_part, i| {
-                        if (!std.mem.eql(u8, path_part, args[i])) {
+                        if (!std.mem.eql(u8, path_part, route_args[i])) {
                             matches = false;
                             break;
                         }
@@ -1307,7 +1331,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             if (best_match_idx) |match_idx| {
                 inline for (plugin_command_entries, 0..) |plugin_cmd, idx| {
                     if (idx == match_idx) {
-                        return executeResolvedCommand(plugin_cmd.module, .plugin, context, plugin_cmd.path, args[plugin_cmd.path.len..]);
+                        return executeResolvedCommand(plugin_cmd.module, .plugin, context, plugin_cmd.path, route_args[plugin_cmd.path.len..]);
                     }
                 }
             }
@@ -1332,7 +1356,7 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // A plugin that fully handles the error suppresses it (returns true);
             // otherwise the error propagates so the entry point exits non-zero.
             // No bare fallback line here: it would double-report over that block.
-            try setCommandPath(context, args);
+            try setCommandPath(context, route_args);
             if (try runOnErrorHooks(context, error.CommandNotFound)) return;
             return error.CommandNotFound;
         }
