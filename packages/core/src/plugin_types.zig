@@ -218,7 +218,14 @@ pub fn getPriority(comptime T: type) i32 {
 ///     declaration order, true when the CLI or the field's env fallback already
 ///     set it. The precedence obligation: the hook MUST skip any field whose
 ///     `provided` flag is true — this single check is what makes
-///     CLI > env > hook hold. `applied` (same keying, caller-zeroed) is the
+///     CLI > env > hook hold. It also carries the `no_config` marker
+///     (ADR-0032): the registry forces the flag true for any field marked
+///     `meta.options.<field>.no_config`, so honoring `provided` is the whole of
+///     what a hook must do to respect a field the app author put off-limits to
+///     file-sourced values. (A hook that ignores `provided` has its writes to
+///     those fields undone afterwards — the marker is a guarantee to the app
+///     author, not a request to the hook.)
+///     `applied` (same keying, caller-zeroed) is the
 ///     hook's report back: it MUST mark every field it fills — the registry's
 ///     required-option and constraint checks treat `provided[i] or applied[i]`
 ///     as "supplied", with no value diffing (#388). `options` is mutated in

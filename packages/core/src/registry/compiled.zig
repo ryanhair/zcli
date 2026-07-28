@@ -1219,12 +1219,37 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             // in `config_applied` — an explicit report, not a value diff, so a
             // config value equal to a field's placeholder still counts as
             // supplied (#388).
+            //
+            // `meta.options.<field>.no_config` (ADR-0032) rides on exactly that
+            // mechanism: `maskNoConfig` forces a locked field's flag true in the
+            // view the hooks see, so they skip it via the check they already
+            // make. The REAL bitset is what the required/constraint checks below
+            // read, so a locked field still reads as unsupplied unless CLI or env
+            // truly supplied it. `restoreNoConfig` afterwards is the backstop
+            // that keeps the marker from being advisory: a hook that ignores
+            // `provided` gets its write undone rather than quietly winning.
+            //
+            // Both are enforced here rather than inside zcli_config so the
+            // guarantee covers ANY applyConfigDefaults hook — a third-party
+            // config source cannot opt out of a security marker — and so the
+            // hook signature stays free of a policy argument every implementer
+            // would have to remember to honor. When no field is marked the mask
+            // is all-false at comptime, every branch here folds away, and
+            // `before_config` is a ZERO-SIZED `void` — the snapshot is not a
+            // struct copy that a dead branch later ignores, it is not taken at
+            // all. That distinction is the difference between "free" and "one
+            // struct copy per invocation" on a path gated by a startup-time and
+            // binary-size budget.
+            const hook_provided = command_parser.maskNoConfig(OptionsType, cmd_meta, parse_result.options_provided);
+            const before_config = command_parser.captureNoConfig(OptionsType, cmd_meta, options_instance);
+
             var config_applied = [_]bool{false} ** command_parser.optionFieldCount(OptionsType);
             inline for (sorted_plugins) |Plugin| {
                 if (@hasDecl(Plugin, "applyConfigDefaults")) {
-                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance, &parse_result.options_provided, &config_applied);
+                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance, &hook_provided, &config_applied);
                 }
             }
+            command_parser.restoreNoConfig(OptionsType, cmd_meta, &options_instance, before_config, &config_applied);
 
             // Required options: a non-optional, defaultless, non-bool, non-array
             // Options field must be supplied by SOME source — CLI, env, or config.

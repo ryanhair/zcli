@@ -873,7 +873,7 @@ pub fn validateMeta(
             const option_meta_info = @typeInfo(@TypeOf(option_meta));
 
             if (option_meta_info == .@"struct") {
-                const valid_option_fields = .{ "description", "short", "name", "env", "requires", "validate", "complete" };
+                const valid_option_fields = .{ "description", "short", "name", "env", "requires", "validate", "complete", "no_config" };
 
                 inline for (option_meta_info.@"struct".fields) |opt_field| {
                     const opt_is_valid = comptime blk: {
@@ -885,7 +885,23 @@ pub fn validateMeta(
                         break :blk false;
                     };
                     if (!opt_is_valid) {
-                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires, validate, complete");
+                        @compileError(loc ++ "unknown option metadata field '" ++ opt_field.name ++ "' in option '" ++ field.name ++ "'. Valid fields are: description, short, name, env, requires, validate, complete, no_config");
+                    }
+                }
+
+                // `no_config`: the config opt-out marker (ADR-0032). A field
+                // carrying `.no_config = true` is never filled from a config
+                // file — the registry masks it out of the `provided` view it
+                // hands every applyConfigDefaults hook and restores it after.
+                // Must be a bool, so a typo'd value is a build error rather than
+                // a marker that silently means nothing; `false` is a legitimate
+                // no-op ("no policy") so a comptime-computed marker reads the
+                // way it looks.
+                if (@hasField(@TypeOf(option_meta), "no_config")) {
+                    if (@TypeOf(option_meta.no_config) != bool) {
+                        @compileError(loc ++ "option '" ++ field.name ++ "' declares `no_config` as " ++
+                            @typeName(@TypeOf(option_meta.no_config)) ++ ", but it must be a bool — " ++
+                            "`.no_config = true` blocks config files from setting the field (CLI and env still work)");
                     }
                 }
 

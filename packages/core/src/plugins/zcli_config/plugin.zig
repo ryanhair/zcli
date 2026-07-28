@@ -45,9 +45,26 @@ const zcli = @import("zcli");
 /// but it is still an attacker-influenced default. Consequently: do not model
 /// security-sensitive behavior (e.g. "skip verification", "disable a safety
 /// check", a trusted path/URL/repo) as a plain config-overridable Option field.
-/// Either keep it out of Options entirely (comptime/build-time config, as the
-/// upgrade plugin does for its repo and signing key), or gate it so config
-/// alone cannot flip it.
+///
+/// Say that in the type rather than remembering it (ADR-0032):
+///
+///     pub const Options = struct { skip_verification: bool = false };
+///     pub const meta = .{
+///         .options = .{ .skip_verification = .{ .no_config = true } },
+///     };
+///
+/// A field marked `.no_config = true` is never filled from a config file. The
+/// registry forces its `provided` flag true in the view it hands this plugin —
+/// so the skip runs through the very check that already enforces CLI > env >
+/// config — and restores the pre-config value afterwards, so no
+/// `applyConfigDefaults` hook can populate it whatever it does. CLI and env
+/// still set it normally, and the marker is comptime-validated, so it cannot rot
+/// into a silently-meaningless typo.
+///
+/// The stronger option remains available and is still better where it fits:
+/// keep the switch out of Options entirely as comptime/build-time config, as the
+/// upgrade plugin does for its repo and signing key — things no invocation
+/// should be able to choose at all.
 pub const plugin_id = "zcli_config";
 
 pub const Format = enum { json, toml, yaml };

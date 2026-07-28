@@ -6,6 +6,9 @@ All notable changes to zcli are documented here.
 
 ## Unreleased
 
+### Added
+- **`meta.options.<field>.no_config` — lock a field against config files** (#788, [ADR-0032](docs/adr/0032-no-config-field-marker.md)). `zcli_config` discovers project-local config from the working directory, so a cloned repo or extracted archive can set the *default* for any option. For fields whose value is a trust decision — skipping a verification step, naming a trusted URL or repo — declare `.no_config = true` and the field is never filled from a config file; the CLI flag, the `env` fallback and the struct default are unaffected. The marker is comptime-checked (a typo or a non-bool value is a build error) and enforced in the registry rather than in the plugin, so no `applyConfigDefaults` hook — bundled or third-party — can populate a marked field. A marked *required* option is not satisfied by a config file naming it: the user gets "missing required option", which is the safe answer. This replaces guidance that previously lived only in a doc comment.
+
 ### Changed (breaking)
 - **`zcli.http.Client` is HTTPS-only for *every* request, not just credentialed ones** (#745). A plain `http://` URL now fails with `error.InsecureTransport` before a connection is opened — the same rule the client already enforced on redirect targets (`error.InsecureRedirect`), and the one its module doc already promised. A request that also carried an `Authorization`/`Cookie`/`Proxy-Authorization` header still reports the more specific `error.InsecureCredentialTransport`. Loopback (`127.0.0.0/8`, `::1`, `localhost`) remains the sole carve-out, so local servers and test fixtures are unaffected.
 
