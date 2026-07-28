@@ -4,7 +4,9 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
-## Unreleased
+## v0.23.0 — 2026-07-28
+
+Two whole-repo hardening passes (the thirteenth grade and its follow-up), closing 53 issues across correctness, security, and the build's own gates. The headline fixes: a registry that could not compile past 27 commands, write failures that exited 0 having written nothing, a terminal left stranded by segfaults and Ctrl-Z, signed-downgrade replay in both installers, and a benchmark harness that had not compiled since the Zig 0.16 migration. Several parsing and API changes are breaking — see below. Requires Zig 0.16.0.
 
 ### Added
 - **`meta.options.<field>.no_config` — lock a field against config files** (#788, [ADR-0032](docs/adr/0032-no-config-field-marker.md)). `zcli_config` discovers project-local config from the working directory, so a cloned repo or extracted archive can set the *default* for any option. For fields whose value is a trust decision — skipping a verification step, naming a trusted URL or repo — declare `.no_config = true` and the field is never filled from a config file; the CLI flag, the `env` fallback and the struct default are unaffected. The marker is comptime-checked (a typo or a non-bool value is a build error) and enforced in the registry rather than in the plugin, so no `applyConfigDefaults` hook — bundled or third-party — can populate a marked field. A marked *required* option is not satisfied by a config file naming it: the user gets "missing required option", which is the safe answer. This replaces guidance that previously lived only in a doc comment.
