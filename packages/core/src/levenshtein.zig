@@ -59,8 +59,12 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
     const shorter = if (a_len <= b_len) a_buf[0..a_len] else b_buf[0..b_len];
     const longer = if (a_len <= b_len) b_buf[0..b_len] else a_buf[0..a_len];
 
-    var prev_row: [max_practical_len + 1]usize = undefined; // +1 for initialization
-    var curr_row: [max_practical_len + 1]usize = undefined;
+    // Two DP rows held in one backing array so the per-row swap below is a
+    // pointer swap. Swapping the arrays by value would memcpy 2 KB per row
+    // regardless of how short the real strings are (#742).
+    var rows: [2][max_practical_len + 1]usize = undefined; // +1 for initialization
+    var prev_row: *[max_practical_len + 1]usize = &rows[0];
+    var curr_row: *[max_practical_len + 1]usize = &rows[1];
 
     // Initialize first row
     for (0..shorter_len + 1) |j| {
@@ -80,10 +84,8 @@ pub fn editDistance(a: []const u8, b: []const u8) usize {
             );
         }
 
-        // Swap rows
-        const temp = prev_row;
-        prev_row = curr_row;
-        curr_row = temp;
+        // Swap rows (by pointer — see the `rows` declaration above)
+        std.mem.swap(*[max_practical_len + 1]usize, &prev_row, &curr_row);
     }
 
     return prev_row[shorter_len];
