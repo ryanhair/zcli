@@ -1132,6 +1132,48 @@ test "reportParseError sanitizes a terminal-escape-laced option value" {
     try testing.expect(std.mem.indexOf(u8, err_text, "Invalid value") != null);
 }
 
+test "reportParseError's own write failure can't replace the classified parse error" {
+    // Regression for #740. `myapp --bogus 2>&-` must exit 2 (misuse), not 1
+    // (general failure): scripts key on 2 to tell "you used it wrong" apart
+    // from "it failed". A `try` on any write in reportParseError — the
+    // trailing flush above all, since a sub-4KB diagnostic only touches the
+    // fd there — swapped the caller's `error.OptionInvalidValue` for
+    // `error.WriteFailed` before exitCodeForReportedError ever saw it.
+    const TestApp = Registry.init(.{
+        .app_name = "diag-test",
+        .app_version = "1.0.0",
+        .app_description = "diagnostic pipeline test",
+    })
+        .register("ping", EscValueCommand)
+        .build();
+
+    var app = TestApp.init();
+    const test_environ = std.process.Environ.Map.init(testing.allocator);
+
+    var out_aw = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out_aw.deinit();
+    // A zero-capacity fixed writer stands in for a closed stderr: every write
+    // fails immediately with WriteFailed, exactly like `2>&-`.
+    var dead_stderr = std.Io.Writer.fixed(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    stdio.stdout_override = &out_aw.writer;
+    stdio.stderr_override = &dead_stderr;
+
+    // The error that comes back is still the classified one, which is what
+    // lets run() map it to 2 (`exitCodeForReportedError`, pinned by its own
+    // test in compiled.zig). The status itself is asserted end-to-end against
+    // a real `2>&-` in examples/testing-demo's integration tier — this tier
+    // owns the half that can be checked in-process: the error identity
+    // survives a stderr that cannot be written.
+    try testing.expectError(error.OptionInvalidValue, app.executeWithStdio(testing.allocator, std.testing.io, &test_environ, &.{ "ping", "--count", "lots" }, &stdio));
+
+    // Same for an unknown command, whose status is 3 rather than 2 — the
+    // not-found plugin isn't registered here, so this is the bare routing
+    // error taking the same path.
+    try testing.expectError(error.CommandNotFound, app.executeWithStdio(testing.allocator, std.testing.io, &test_environ, &.{"nosuch"}, &stdio));
+}
+
 // Fixture for the typed-global-options pipeline: declares one global of each
 // supported category (also exercising declaration-time type validation),
 // records what handleGlobalOption receives, and captures parse failures.

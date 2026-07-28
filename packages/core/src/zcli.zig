@@ -345,11 +345,150 @@ pub const Stdio = struct {
 
     /// Flush stdout and stderr writers. Must be called before exit
     /// to ensure buffered output reaches the terminal.
+    ///
+    /// The write error is swallowed *here* and surfaced through `writeError()`
+    /// instead — not dropped (#731). Every caller is either a `defer` (the
+    /// registry's final drain) or a `noreturn` exit (`context.exit`), and
+    /// neither can propagate an error; the writers record the concrete cause
+    /// on themselves, so the caller reads it back afterwards and classifies it
+    /// there. Both streams are flushed even when the first fails: a dead
+    /// stdout must not strand buffered stderr, which is where the diagnostic
+    /// about the dead stdout is going to land.
     pub fn flush(self: *@This()) void {
         self.stdout().flush() catch {};
         self.stderr().flush() catch {};
     }
+
+    /// The write error recorded by the framework-owned stdout/stderr writers,
+    /// or null when every byte — including the final `flush()` — reached its
+    /// fd.
+    ///
+    /// The buffered `std.Io.Writer` reports failures as the opaque
+    /// `error.WriteFailed`; the concrete cause is stored on the underlying
+    /// `std.Io.File.Writer.err` field, which survives `flush()`'s `catch {}`.
+    /// That is what makes a swallowed deferred flush recoverable at all.
+    ///
+    /// Only the framework's own file writers can carry this state; a
+    /// test-provided `stdout_override`/`stderr_override` is an in-memory
+    /// writer that has no `err` field to consult, so those are skipped (their
+    /// backing `*_writer` is `undefined`).
+    ///
+    /// When both streams failed, a `BrokenPipe` on *either* one outranks the
+    /// other's error: a closed reader ends the pipeline normally and the
+    /// framework's documented answer for that is 141, whatever else went wrong
+    /// on the way out.
+    pub fn writeError(self: *@This()) ?std.Io.File.Writer.Error {
+        const out: ?std.Io.File.Writer.Error = if (self.stdout_override == null) self.stdout_writer.err else null;
+        const err: ?std.Io.File.Writer.Error = if (self.stderr_override == null) self.stderr_writer.err else null;
+        if (out) |e| if (e == error.BrokenPipe) return error.BrokenPipe;
+        if (err) |e| if (e == error.BrokenPipe) return error.BrokenPipe;
+        return out orelse err;
+    }
+
+    /// Tell the user their output was lost, best-effort. A closed pipe gets no
+    /// diagnostic at all — a well-mannered unix program is silent when its
+    /// reader walks away (`yourcli cmd | head`) — but a full disk, a closed
+    /// fd, or an I/O error must not be silent, which is exactly the hole #731
+    /// closed. Written to stderr, which may itself be the stream that failed;
+    /// nothing more can be done in that case, and the non-zero exit status
+    /// still carries the signal.
+    pub fn reportWriteFailure(self: *@This(), err: std.Io.File.Writer.Error) void {
+        if (err == error.BrokenPipe) return;
+        const w = self.stderr();
+        w.print("Error: failed to write output: {s}\n", .{@errorName(err)}) catch {};
+        w.flush() catch {};
+    }
 };
+
+/// Conventional exit status for a process terminated by SIGPIPE (128 + 13).
+/// A zcli CLI whose stdout/stderr pipe is closed by a downstream reader (the
+/// classic `yourcli cmd | head` case) mimics that status so shell pipelines
+/// and `set -o pipefail` see the same result they would from `grep | head`.
+pub const broken_pipe_status: u8 = 141;
+
+/// Exit status for output that could not be written for any reason other than
+/// a closed pipe — a full filesystem, a closed descriptor, an I/O error. The
+/// command was well-formed and did its work, but the result never reached the
+/// consumer, so this is a general failure (1), not CLI misuse.
+pub const write_failure_status: u8 = 1;
+
+/// The exit status a recorded write failure forces on the process. Shared by
+/// the registry's `run()` and by `context.exit()` (#731/#732) so an early exit
+/// and a normal return can never disagree about what a lost write means.
+pub fn statusForWriteError(err: std.Io.File.Writer.Error) u8 {
+    return if (err == error.BrokenPipe) broken_pipe_status else write_failure_status;
+}
+
+test "statusForWriteError: a closed pipe is 141, lost output is a general failure" {
+    // A downstream reader that walked away is the conventional SIGPIPE status.
+    try std.testing.expectEqual(broken_pipe_status, statusForWriteError(error.BrokenPipe));
+    // Everything else means bytes the caller promised never landed (#731):
+    // a full disk, a closed fd, a hardware error. Never exit 0 for these.
+    try std.testing.expectEqual(write_failure_status, statusForWriteError(error.NoSpaceLeft));
+    try std.testing.expectEqual(write_failure_status, statusForWriteError(error.NotOpenForWriting));
+    try std.testing.expectEqual(write_failure_status, statusForWriteError(error.InputOutput));
+    try std.testing.expectEqual(write_failure_status, statusForWriteError(error.DiskQuota));
+}
+
+test "Stdio.writeError: reports a recorded failure, ignores in-memory overrides" {
+    var stdio: Stdio = .{ .io = std.testing.io };
+
+    // A test's in-memory writers cannot fail a real write, and the file
+    // writers behind them are `undefined` — never inspect them.
+    var buf: [16]u8 = undefined;
+    var out_aw = std.Io.Writer.fixed(&buf);
+    var err_aw = std.Io.Writer.fixed(&buf);
+    stdio.stdout_override = &out_aw;
+    stdio.stderr_override = &err_aw;
+    try std.testing.expect(stdio.writeError() == null);
+
+    // A sub-4KB run whose only write attempt is the deferred final flush: the
+    // flush swallows the error but the writer keeps it, which is the whole
+    // recovery mechanism behind #731.
+    stdio.stdout_override = null;
+    stdio.stdout_writer.err = error.NoSpaceLeft;
+    stdio.stderr_override = null;
+    stdio.stderr_writer.err = null;
+    try std.testing.expectEqual(@as(?std.Io.File.Writer.Error, error.NoSpaceLeft), stdio.writeError());
+
+    // A failure on stderr alone counts too — the diagnostic never landed.
+    stdio.stdout_writer.err = null;
+    stdio.stderr_writer.err = error.BrokenPipe;
+    try std.testing.expectEqual(@as(?std.Io.File.Writer.Error, error.BrokenPipe), stdio.writeError());
+
+    // Both failed: a closed pipe on either stream wins, so `yourcli cmd |
+    // head` keeps reporting 141 rather than a general write failure.
+    stdio.stdout_writer.err = error.NoSpaceLeft;
+    stdio.stderr_writer.err = error.BrokenPipe;
+    try std.testing.expectEqual(@as(?std.Io.File.Writer.Error, error.BrokenPipe), stdio.writeError());
+    stdio.stdout_writer.err = error.BrokenPipe;
+    stdio.stderr_writer.err = error.NoSpaceLeft;
+    try std.testing.expectEqual(@as(?std.Io.File.Writer.Error, error.BrokenPipe), stdio.writeError());
+
+    stdio.stdout_writer.err = null;
+    stdio.stderr_writer.err = null;
+    try std.testing.expect(stdio.writeError() == null);
+}
+
+test "Stdio.reportWriteFailure: diagnoses lost output, stays silent on a closed pipe" {
+    var stdio: Stdio = .{ .io = std.testing.io };
+    var out_buf: [64]u8 = undefined;
+    var out_aw = std.Io.Writer.fixed(&out_buf);
+    stdio.stdout_override = &out_aw;
+
+    var err_buf: [256]u8 = undefined;
+    var err_aw = std.Io.Writer.fixed(&err_buf);
+    stdio.stderr_override = &err_aw;
+
+    // A closed pipe is a normal end to a pipeline: no diagnostic (#731 must
+    // not make `yourcli cmd | head` noisy).
+    stdio.reportWriteFailure(error.BrokenPipe);
+    try std.testing.expectEqualStrings("", err_aw.buffered());
+
+    // Anything else is silent data loss unless we say so.
+    stdio.reportWriteFailure(error.NoSpaceLeft);
+    try std.testing.expectEqualStrings("Error: failed to write output: NoSpaceLeft\n", err_aw.buffered());
+}
 
 /// Environ.Map re-export for convenience.
 pub const EnvironMap = std.process.Environ.Map;
