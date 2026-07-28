@@ -197,14 +197,59 @@ pub const commands = struct {
                     return err;
                 };
 
-                // Write completion script
-                const file = std.Io.Dir.cwd().createFile(context.io, install_path, .{}) catch |err| {
+                // A symlink at the destination is plausible (a dotfiles setup
+                // that links this name elsewhere), and replacing it rather than
+                // writing through it changes the user's arrangement — so notice
+                // it now and say so below, instead of silently swapping it for a
+                // regular file. Purely informational: the safety comes from the
+                // rename, not from this check.
+                const replaced_symlink = if (std.Io.Dir.cwd().statFile(context.io, install_path, .{ .follow_symlinks = false })) |st|
+                    st.kind == .sym_link
+                else |_|
+                    false;
+
+                // Write the script into an exclusively-created temp file in the
+                // destination directory, then rename it into place.
+                //
+                // Trust assumption: HOME belongs to the user, so this is not a
+                // defence against a hostile home directory. But the destination
+                // is PREDICTABLE (`~/.zsh/completions/_myapp`), so whatever
+                // already sits at that name is something we did not put there. A
+                // plain `createFile` follows a symlink planted there and writes
+                // the script through it, into a file of the planter's choosing —
+                // `~/.zshrc`, say. `rename(2)` never follows a symlink at the
+                // destination; it replaces the link itself. So the script always
+                // lands at exactly the path we print, and the temp file it comes
+                // from is O_EXCL-created — the same rule the github-upgrade
+                // plugin applies inside its private scratch dir. The rename also
+                // makes the install atomic: a reader either sees the old script
+                // or the new one, never a half-written file.
+                //
+                // That reasoning — and the regression test behind it — are
+                // POSIX. Windows takes the same code path but nothing here
+                // verifies it: creating a symlink there needs Developer Mode or
+                // SeCreateSymbolicLinkPrivilege, so the test skips and the
+                // rename's behaviour against a reparse point at the destination
+                // stays unconfirmed. std additionally documents that the Windows
+                // rename opens a brief window in which operations on the
+                // destination return AccessDenied. So: asserted on POSIX, merely
+                // intended on Windows — where planting the symlink is itself a
+                // privileged act, which is why that gap is acceptable rather
+                // than blocking.
+                var staged = std.Io.Dir.cwd().createFileAtomic(context.io, install_path, .{ .replace = true }) catch |err| {
                     try stderr.print("Error: failed to write to '{s}': {}\n", .{ install_path, err });
                     return err;
                 };
-                defer file.close(context.io);
+                // Runs after a successful `replace` too (it becomes a no-op);
+                // on any failure below it removes the staged temp file.
+                defer staged.deinit(context.io);
 
-                try file.writeStreamingAll(context.io, script);
+                try staged.file.writeStreamingAll(context.io, script);
+
+                staged.replace(context.io) catch |err| {
+                    try stderr.print("Error: failed to install to '{s}': {}\n", .{ install_path, err });
+                    return err;
+                };
 
                 const shell_name = switch (shell_type) {
                     .bash => "bash",
@@ -212,6 +257,10 @@ pub const commands = struct {
                     .fish => "fish",
                     .powershell => "powershell",
                 };
+
+                if (replaced_symlink) {
+                    try stdout.print("Note: {s} was a symlink; it was replaced, not followed.\n", .{install_path});
+                }
 
                 try stdout.print("✓ Installed {s} completions to {s}\n\n", .{ shell_name, install_path });
 

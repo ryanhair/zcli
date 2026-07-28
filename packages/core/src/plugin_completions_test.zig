@@ -1,13 +1,22 @@
 //! Tests for the zcli_completions plugin.
 //!
-//! Three layers:
+//! Layers:
 //!   1. unit tests on the shared command-tree builder (nesting, aliases, enums),
 //!   2. escaper tests with adversarial input for each shell,
 //!   3. generated-script structural assertions (that would catch the depth
 //!      off-by-one and unescaped-quote bugs) plus real-shell validation:
 //!      `bash -n`/`zsh -n`/`fish --no-execute` syntax checks and a FUNCTIONAL
 //!      bash completion test that sources the script and asserts COMPREPLY at
-//!      the root AND at depth 2.
+//!      the root AND at depth 2,
+//!   4-5. adversarial command/option NAMES and short chars, driven through real
+//!      shells to prove no `<TAB>` executes anything,
+//!   6. the plugin module itself (`plugins/zcli_completions/plugin.zig`): the
+//!      `__complete` command, the ADR-0026 Request/Result round trip, shell
+//!      detection, and the script install/uninstall path.
+//!
+//! Every test that drives a real shell resolves it through `shellOrSkip` /
+//! `requireFound`, so `ZCLI_REQUIRE_BASH`/`_ZSH`/`_FISH` can turn a missing
+//! binary into a hard failure instead of a silent skip.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -776,65 +785,117 @@ fn runExit(a: std.mem.Allocator, argv: []const []const u8) u8 {
 ///
 /// The test root module has no direct env access under the 0.16 explicit-IO
 /// model (env arrives via `std.process.Init`, which unit tests don't get), so
-/// we read the flag the same way we reach every other shell here: by spawning
-/// one. A spawned child inherits our environment by default, so the shell
-/// echoes the value back. POSIX uses bash (guaranteed present on the CI legs
-/// that set these flags); Windows — where the POSIX probe paths don't exist —
-/// uses cmd.exe (always present, resolved via PATH). Anywhere the probe shell
-/// is missing this returns false, which only relaxes a requirement — it can
-/// never spuriously demand a shell.
+/// we read the flag the way we reach everything else here: by spawning a shell.
+/// A spawned child inherits our environment by default, so it echoes the value
+/// back. Windows — where the POSIX probe paths don't exist — uses cmd.exe
+/// (always present, resolved via PATH).
+///
+/// POSIX deliberately spawns `/bin/sh` DIRECTLY rather than the bash that
+/// `findShell` resolves. This probe decides whether a *missing* shell is fatal,
+/// so routing it through the same lookup it guards would make the guard vanish
+/// exactly when it is needed: break `findShell` and every ZCLI_REQUIRE_* flag
+/// silently reads as unset, every site skips, and CI passes green — which is
+/// precisely the mutation this guard has to survive (#783). `/bin/sh` is
+/// mandated by POSIX and present on every leg that sets these flags.
+///
+/// If even that probe cannot run, this returns false, which only relaxes a
+/// requirement — it can never spuriously demand a shell.
 fn ciEnvFlagSet(a: std.mem.Allocator, comptime flag: []const u8) bool {
     const result = if (builtin.os.tag == .windows)
         std.process.run(a, io, .{
             .argv = &.{ "cmd.exe", "/d", "/c", "echo %" ++ flag ++ "%" },
         }) catch return false
-    else blk: {
-        const bash_sh = findShell("bash") orelse return false;
-        break :blk std.process.run(a, io, .{
-            .argv = &.{ bash_sh, "-c", "printf %s \"$" ++ flag ++ "\"" },
+    else
+        std.process.run(a, io, .{
+            .argv = &.{ "/bin/sh", "-c", "printf %s \"$" ++ flag ++ "\"" },
         }) catch return false;
-    };
     return std.mem.eql(u8, std.mem.trim(u8, result.stdout, " \t\r\n"), "1");
 }
 
-/// Whether the environment demands that the fish branch actually run (i.e. fish
-/// MUST be present). Set by the CI job that installs fish so a missing binary
-/// there turns from a silent skip into a hard failure — the fish generator has
-/// never once been validated against real fish otherwise (no runner ships it).
-fn ciRequiresFish(a: std.mem.Allocator) bool {
-    return ciEnvFlagSet(a, "ZCLI_REQUIRE_FISH");
+/// The `ZCLI_REQUIRE_*` variable guarding `name`'s branch.
+fn requireFlag(comptime name: []const u8) []const u8 {
+    // A `comptime` block, so the untaken branches (including the @compileError)
+    // are never analyzed and the result is usable as a comptime argument.
+    return comptime blk: {
+        if (std.mem.eql(u8, name, "bash")) break :blk "ZCLI_REQUIRE_BASH";
+        if (std.mem.eql(u8, name, "zsh")) break :blk "ZCLI_REQUIRE_ZSH";
+        if (std.mem.eql(u8, name, "fish")) break :blk "ZCLI_REQUIRE_FISH";
+        if (std.mem.eql(u8, name, "pwsh")) break :blk "ZCLI_REQUIRE_PWSH";
+        @compileError("no ZCLI_REQUIRE_* flag defined for shell: " ++ name);
+    };
 }
 
-/// Whether the environment demands that the pwsh syntax check actually run.
-/// Every GitHub-hosted runner image ships pwsh, so CI sets this on all legs —
-/// a lookup regression there must be a hard failure, not a silent skip (the
-/// same never-validated guard as fish).
-fn ciRequiresPwsh(a: std.mem.Allocator) bool {
-    return ciEnvFlagSet(a, "ZCLI_REQUIRE_PWSH");
+/// What a missing `name` means here: `error.SkipZigTest` when the shell is
+/// genuinely optional (a dev box without zsh), or a named hard failure when the
+/// environment declared it must be present.
+///
+/// Every shell-driven test below routes its absence through this. Without it a
+/// leg that stopped shipping bash — or a `findShell` that stopped finding it —
+/// would turn the whole functional half of this suite into silent skips and
+/// still report green, which is the failure mode the sibling `_INTERACTIVE`
+/// flag was introduced to prevent (#783).
+fn missingShell(a: std.mem.Allocator, comptime name: []const u8) anyerror {
+    const flag = comptime requireFlag(name);
+    if (!ciEnvFlagSet(a, flag)) return error.SkipZigTest;
+    std.debug.print(flag ++ "=1 but no " ++ name ++ " binary was found\n", .{});
+    if (comptime std.mem.eql(u8, name, "bash")) return error.BashRequiredButMissing;
+    if (comptime std.mem.eql(u8, name, "zsh")) return error.ZshRequiredButMissing;
+    if (comptime std.mem.eql(u8, name, "fish")) return error.FishRequiredButMissing;
+    return error.PwshRequiredButMissing;
+}
+
+/// Resolve `name`, turning a miss into `missingShell`'s decision rather than an
+/// unconditional skip. The single entry point for every test that needs ONE
+/// shell — bash, zsh, fish AND pwsh, so no shell keeps its own bespoke guard;
+/// `requireFound` covers the tests that probe several at once.
+///
+/// pwsh dispatches to `findPwsh` because its lookup differs (fixed paths plus a
+/// bare-name PATH probe, which is the only way it is found on Windows); the
+/// require-flag half is identical, which is the point.
+fn shellOrSkip(a: std.mem.Allocator, comptime name: []const u8) ![]const u8 {
+    const found = if (comptime std.mem.eql(u8, name, "pwsh")) findPwsh(a) else findShell(name);
+    if (found) |path| return path;
+    return missingShell(a, name);
+}
+
+/// For the multi-shell tests, which run whichever shells are present and skip
+/// the others' branches individually: fail if any absent shell was demanded.
+fn requireFound(a: std.mem.Allocator, bash_sh: ?[]const u8, zsh_sh: ?[]const u8, fish_sh: ?[]const u8) !void {
+    if (bash_sh == null) {
+        const err = missingShell(a, "bash");
+        if (err != error.SkipZigTest) return err;
+    }
+    if (zsh_sh == null) {
+        const err = missingShell(a, "zsh");
+        if (err != error.SkipZigTest) return err;
+    }
+    if (fish_sh == null) {
+        const err = missingShell(a, "fish");
+        if (err != error.SkipZigTest) return err;
+    }
 }
 
 test "shell syntax - bash -n / zsh -n / fish --no-execute accept generated scripts" {
-    const bash_sh = findShell("bash");
-    const zsh_sh = findShell("zsh");
-    const fish_sh = findShell("fish");
-
-    // On platforms with no shell at all (e.g. Windows CI) there is nothing to
-    // check — skip cleanly before touching the filesystem so the build harness
-    // stays quiet. Per-shell absence below just skips that one shell silently.
-    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    // No CI runner ships fish, so this is the ONE job that installs it — refuse
-    // to let the fish branch skip there, or the fish generator regresses to
-    // never-validated (its only other coverage is escaping unit tests). Anywhere
-    // the flag is unset (dev machines, the other OS legs) fish stays optional.
-    if (fish_sh == null and ciRequiresFish(a)) {
-        std.debug.print("ZCLI_REQUIRE_FISH=1 but no fish binary found in the known locations\n", .{});
-        return error.FishRequiredButMissing;
-    }
+    const bash_sh = findShell("bash");
+    const zsh_sh = findShell("zsh");
+    const fish_sh = findShell("fish");
+
+    // Refuse to let a demanded shell's branch skip: the POSIX CI legs set
+    // ZCLI_REQUIRE_BASH/_ZSH/_FISH, so a shell going missing there (or a
+    // findShell regression) fails loudly instead of quietly validating nothing.
+    // Anywhere a flag is unset — dev boxes, the Windows leg — that shell stays
+    // optional. Checked BEFORE the all-missing skip below, or the one case where
+    // the suite runs no shell at all would be the one case that escapes the flags.
+    try requireFound(a, bash_sh, zsh_sh, fish_sh);
+
+    // On platforms with no shell at all (e.g. Windows CI) there is nothing to
+    // check — skip cleanly before touching the filesystem so the build harness
+    // stays quiet. Per-shell absence below just skips that one shell.
+    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -880,17 +941,11 @@ test "shell syntax - pwsh accepts the generated PowerShell script" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const pwsh = findPwsh(a) orelse {
-        // Mirror the fish guard: the CI legs set ZCLI_REQUIRE_PWSH=1 (every
-        // GitHub runner image ships pwsh), so a missing binary there is a hard
-        // failure — otherwise the PowerShell generator regresses to
-        // never-validated. Anywhere the flag is unset pwsh stays optional.
-        if (ciRequiresPwsh(a)) {
-            std.debug.print("ZCLI_REQUIRE_PWSH=1 but no pwsh binary found (fixed paths + PATH probe)\n", .{});
-            return error.PwshRequiredButMissing;
-        }
-        return error.SkipZigTest;
-    };
+    // Same guard as every other shell here: the CI legs set ZCLI_REQUIRE_PWSH=1
+    // (every GitHub runner image ships pwsh), so a missing binary there is a
+    // hard failure — otherwise the PowerShell generator regresses to
+    // never-validated. Anywhere the flag is unset pwsh stays optional.
+    const pwsh = try shellOrSkip(a, "pwsh");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -909,7 +964,7 @@ test "functional bash - COMPREPLY at root and at depth 2" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const sh = findShell("bash") orelse return error.SkipZigTest;
+    const sh = try shellOrSkip(a, "bash");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1047,7 +1102,7 @@ test "functional bash - value-taking command option preserves static positional 
     defer arena.deinit();
     const a = arena.allocator();
 
-    const sh = findShell("bash") orelse return error.SkipZigTest;
+    const sh = try shellOrSkip(a, "bash");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1129,7 +1184,7 @@ test "functional bash - value-taking global option before the command keys corre
     defer arena.deinit();
     const a = arena.allocator();
 
-    const sh = findShell("bash") orelse return error.SkipZigTest;
+    const sh = try shellOrSkip(a, "bash");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1234,11 +1289,11 @@ fn assertAdvExact(out: []const u8) !void {
 }
 
 test "functional bash - dynamic candidates survive adversarial values verbatim" {
-    const sh = findShell("bash") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "bash");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1269,11 +1324,11 @@ test "functional bash - dynamic candidates survive adversarial values verbatim" 
 }
 
 test "functional fish - dynamic candidates survive adversarial values verbatim" {
-    const sh = findShell("fish") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "fish");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1311,11 +1366,11 @@ const comb_stub =
 ;
 
 test "functional bash - also_files directive adds file completion to candidates" {
-    const sh = findShell("bash") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "bash");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1348,11 +1403,11 @@ test "functional bash - also_files directive adds file completion to candidates"
 }
 
 test "functional fish - also_files directive adds file completion to candidates" {
-    const sh = findShell("fish") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "fish");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1421,11 +1476,11 @@ test "gen - combine directive branches present in bash, zsh, fish" {
 }
 
 test "functional zsh - dynamic candidates verbatim + combine invokes _files" {
-    const sh = findShell("zsh") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "zsh");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1462,11 +1517,11 @@ test "functional zsh - dynamic candidates verbatim + combine invokes _files" {
 }
 
 test "functional bash - default directive adds NO file completion (guard, shell half)" {
-    const sh = findShell("bash") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "bash");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1496,11 +1551,11 @@ test "functional bash - default directive adds NO file completion (guard, shell 
 }
 
 test "functional fish - also_dirs directive offers directories" {
-    const sh = findShell("fish") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "fish");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1591,16 +1646,18 @@ test "gen - adversarial NAMES are escaped, never emitted raw in a case/spec" {
 }
 
 test "shell syntax - generators accept adversarial NAMES (bash -n / zsh -n / fish)" {
-    const bash_sh = findShell("bash");
-    const zsh_sh = findShell("zsh");
-    const fish_sh = findShell("fish");
-    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    if (fish_sh == null and ciRequiresFish(a)) return error.FishRequiredButMissing;
+    const bash_sh = findShell("bash");
+    const zsh_sh = findShell("zsh");
+    const fish_sh = findShell("fish");
+
+    // Same require-flag guard as the first syntax test, before the all-missing
+    // skip: a demanded shell that has gone missing must fail, not skip.
+    try requireFound(a, bash_sh, zsh_sh, fish_sh);
+    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1624,11 +1681,11 @@ test "shell syntax - generators accept adversarial NAMES (bash -n / zsh -n / fis
 }
 
 test "functional bash - adversarial command/option NAMES do NOT execute at TAB" {
-    const sh = findShell("bash") orelse return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const sh = try shellOrSkip(a, "bash");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1729,16 +1786,18 @@ test "gen - adversarial SHORT char and multi-line description are escaped everyw
 }
 
 test "shell syntax - generators accept an adversarial SHORT char (bash -n / zsh -n / fish)" {
-    const bash_sh = findShell("bash");
-    const zsh_sh = findShell("zsh");
-    const fish_sh = findShell("fish");
-    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    if (fish_sh == null and ciRequiresFish(a)) return error.FishRequiredButMissing;
+    const bash_sh = findShell("bash");
+    const zsh_sh = findShell("zsh");
+    const fish_sh = findShell("fish");
+
+    // Same require-flag guard as the first syntax test, before the all-missing
+    // skip: a demanded shell that has gone missing must fail, not skip.
+    try requireFound(a, bash_sh, zsh_sh, fish_sh);
+    if (bash_sh == null and zsh_sh == null and fish_sh == null) return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1765,10 +1824,7 @@ test "shell syntax - pwsh accepts an adversarial SHORT char and multi-line descr
     defer arena.deinit();
     const a = arena.allocator();
 
-    const pwsh = findPwsh(a) orelse {
-        if (ciRequiresPwsh(a)) return error.PwshRequiredButMissing;
-        return error.SkipZigTest;
-    };
+    const pwsh = try shellOrSkip(a, "pwsh");
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1777,4 +1833,672 @@ test "shell syntax - pwsh accepts an adversarial SHORT char and multi-line descr
     const path = try writeTemp(a, tmp.dir, "adv_short.ps1", script);
     const cmd = try std.fmt.allocPrint(a, "$null = [scriptblock]::Create((Get-Content -Raw -LiteralPath '{s}')); exit 0", .{path});
     try std.testing.expectEqual(@as(u8, 0), runExit(a, &.{ pwsh, "-NoProfile", "-NonInteractive", "-Command", cmd }));
+}
+
+// ============================================================================
+// Layer 6: the plugin shell itself — `__complete` and
+// `completions generate|install|uninstall`
+// (plugins/zcli_completions/plugin.zig).
+//
+// Everything above tests the GENERATORS. The 400-line module that wires them to
+// commands was imported by no test at all (#782): the `__complete` dispatch, the
+// ADR-0026 Request/Result round trip, `$SHELL` detection, and the script
+// install/uninstall path were compiled and never once executed. These drive the
+// real `execute` functions through a duck-typed context — the same shape the
+// registry passes — and assert emitted bytes, files on disk and error values,
+// never just "it returned".
+// ============================================================================
+
+const plugin = @import("plugins/zcli_completions/plugin.zig");
+const complete_cmd = plugin.commands.__complete;
+const generate_cmd = plugin.commands.completions.generate;
+const install_cmd = plugin.commands.completions.install;
+const uninstall_cmd = plugin.commands.completions.uninstall;
+
+/// The slice of the framework `Context` this plugin actually touches. `execute`
+/// takes `context: anytype`, so a struct with these members IS the contract —
+/// if the plugin starts reaching for something else, this stops compiling, which
+/// is the point.
+const PluginCtx = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+    app_name: []const u8,
+    command_info: []const zcli.CommandInfo = &.{},
+    globals: []const zcli.OptionInfo = &.{},
+    out: *std.Io.Writer,
+    err: *std.Io.Writer,
+
+    pub fn stdout(self: *@This()) *std.Io.Writer {
+        return self.out;
+    }
+    pub fn stderr(self: *@This()) *std.Io.Writer {
+        return self.err;
+    }
+    pub fn getAvailableCommandInfo(self: *@This()) []const zcli.CommandInfo {
+        return self.command_info;
+    }
+    pub fn getGlobalOptions(self: *@This()) []const zcli.OptionInfo {
+        return self.globals;
+    }
+};
+
+/// An environment map holding exactly `pairs`, arena-owned.
+fn envWith(a: std.mem.Allocator, pairs: []const [2][]const u8) !std.process.Environ.Map {
+    var map = std.process.Environ.Map.init(a);
+    for (pairs) |pair| try map.put(pair[0], pair[1]);
+    return map;
+}
+
+// --- What the hook was handed -----------------------------------------------
+// Recorded at file scope because a completion hook is a plain function pointer
+// with no user-data channel; the tests reset these before each run.
+
+var seen_partial: []const u8 = "";
+var seen_args: []const []const u8 = &.{};
+var seen_env: ?[]const u8 = null;
+var seen_calls: usize = 0;
+
+fn resetSeen() void {
+    seen_partial = "";
+    seen_args = &[_][]const u8{};
+    seen_env = null;
+    seen_calls = 0;
+}
+
+/// Records its `Request` and echoes the partial back as a candidate, so one
+/// assertion covers both directions of the round trip. The echo is built with
+/// `req.allocator`, which proves the arena handed over is usable.
+fn recordingHook(req: *zcli.completion.Request) anyerror!zcli.completion.Result {
+    seen_calls += 1;
+    seen_partial = req.partial;
+    seen_args = req.args;
+    seen_env = req.environ.get("ZCLI_TEST_MARK");
+
+    const echoed = try std.fmt.allocPrint(req.allocator, "got:{s}", .{req.partial});
+    const list = try req.allocator.alloc(zcli.completion.Candidate, 2);
+    list[0] = .{ .value = echoed, .description = "echo of the partial" };
+    // A tab inside a value would corrupt the value/description framing; the
+    // plugin must route through wire.writeResult (which scrubs it), not print
+    // candidates itself.
+    list[1] = .{ .value = "a b\tc", .description = "adversarial" };
+    return .{ .candidates = list };
+}
+
+fn failingHook(_: *zcli.completion.Request) anyerror!zcli.completion.Result {
+    seen_calls += 1;
+    return error.HookBlewUp;
+}
+
+const combine_candidates = [_]zcli.completion.Candidate{.{ .value = "alpha" }};
+
+fn alsoFilesHook(_: *zcli.completion.Request) anyerror!zcli.completion.Result {
+    seen_calls += 1;
+    return .{ .candidates = &combine_candidates, .directive = .also_files };
+}
+
+const pc_edit_args = [_]zcli.ArgInfo{.{ .name = "id", .complete = .{ .hook = recordingHook } }};
+const pc_move_args = [_]zcli.ArgInfo{
+    .{ .name = "id", .complete = .{ .hook = recordingHook } },
+    .{ .name = "sprint", .complete = .{ .hook = recordingHook } },
+};
+const pc_boom_args = [_]zcli.ArgInfo{.{ .name = "id", .complete = .{ .hook = failingHook } }};
+const pc_import_args = [_]zcli.ArgInfo{.{ .name = "path", .complete = .file }};
+const pc_combine_args = [_]zcli.ArgInfo{.{ .name = "id", .complete = .{ .hook = alsoFilesHook } }};
+const pc_plain_args = [_]zcli.ArgInfo{.{ .name = "status" }};
+
+const plugin_commands = [_]zcli.CommandInfo{
+    .{ .path = &.{"edit"}, .description = "Edit a task", .args = &pc_edit_args },
+    .{ .path = &.{"move"}, .description = "Move a task", .args = &pc_move_args },
+    .{ .path = &.{"boom"}, .description = "Failing hook", .args = &pc_boom_args },
+    .{ .path = &.{"import"}, .description = "Native file completion", .args = &pc_import_args },
+    .{ .path = &.{"combine"}, .description = "Combine directive", .args = &pc_combine_args },
+    .{ .path = &.{"list"}, .description = "No completion", .args = &pc_plain_args },
+};
+
+const Emitted = struct { out: []const u8, err: []const u8 };
+
+/// Run `__complete <cword> -- words…` against `plugin_commands` and return what
+/// it wrote to each stream. Buffers are arena-backed, so the slices outlive the
+/// call.
+fn runComplete(
+    a: std.mem.Allocator,
+    environ: *const std.process.Environ.Map,
+    words: []const []const u8,
+    cword: usize,
+) !Emitted {
+    var out: std.Io.Writer.Allocating = .init(a);
+    var err: std.Io.Writer.Allocating = .init(a);
+    var ctx: PluginCtx = .{
+        .allocator = a,
+        .io = io,
+        .environ = environ,
+        .app_name = app_name,
+        .command_info = &plugin_commands,
+        .globals = &global_options,
+        .out = &out.writer,
+        .err = &err.writer,
+    };
+    try complete_cmd.execute(.{ .cword = cword, .words = words }, .{}, &ctx);
+    return .{ .out = out.written(), .err = err.written() };
+}
+
+test "__complete - runs the resolved hook and emits the exact NUL wire stream" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    resetSeen();
+    var environ = try envWith(a, &.{.{ "ZCLI_TEST_MARK", "threaded" }});
+    const emitted = try runComplete(a, &environ, &.{ "tasks", "edit", "ta" }, 2);
+
+    // The hook ran exactly once, and saw the word under the cursor.
+    try std.testing.expectEqual(@as(usize, 1), seen_calls);
+    try std.testing.expectEqualStrings("ta", seen_partial);
+    // `environ` reached the hook — a hook that reads config/env would otherwise
+    // silently see an empty environment.
+    try std.testing.expectEqualStrings("threaded", seen_env orelse "");
+
+    // Directive record first, then one record per candidate; the value tab is
+    // scrubbed to a space while the description tab would have been kept.
+    try std.testing.expectEqualStrings(
+        "default\x00got:ta\techo of the partial\x00a b c\tadversarial\x00",
+        emitted.out,
+    );
+    // stdout is the protocol channel: nothing else may appear on it, and errors
+    // stay silent unless ZCLI_COMPLETE_DEBUG asks for them.
+    try std.testing.expectEqualStrings("", emitted.err);
+}
+
+test "__complete - preceding positionals reach the hook as Request.args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    resetSeen();
+    var environ = try envWith(a, &.{});
+    // `move <id> <sprint>`: the cursor is on slot 1, so slot 0's token is context.
+    const emitted = try runComplete(a, &environ, &.{ "tasks", "move", "7", "q" }, 3);
+
+    try std.testing.expectEqual(@as(usize, 1), seen_calls);
+    try std.testing.expectEqual(@as(usize, 1), seen_args.len);
+    try std.testing.expectEqualStrings("7", seen_args[0]);
+    try std.testing.expectEqualStrings("q", seen_partial);
+    try std.testing.expectEqualStrings("default\x00got:q\techo of the partial\x00a b c\tadversarial\x00", emitted.out);
+}
+
+test "__complete - a failing hook yields an empty stream and stays silent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    resetSeen();
+    var environ = try envWith(a, &.{});
+    // No `try` slip: the hook's error must be swallowed, never propagated — a
+    // returned error would make the shell print a Zig trace at <TAB>.
+    const emitted = try runComplete(a, &environ, &.{ "tasks", "boom", "x" }, 2);
+
+    try std.testing.expectEqual(@as(usize, 1), seen_calls);
+    // Not even the directive record: a broken hook produces NOTHING, so the
+    // shell falls back to its own default rather than reading a truncated frame.
+    try std.testing.expectEqualStrings("", emitted.out);
+    try std.testing.expectEqualStrings("", emitted.err);
+}
+
+test "__complete - ZCLI_COMPLETE_DEBUG surfaces the hook error on stderr only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    resetSeen();
+    var environ = try envWith(a, &.{.{ "ZCLI_COMPLETE_DEBUG", "1" }});
+    const emitted = try runComplete(a, &environ, &.{ "tasks", "boom", "x" }, 2);
+
+    // The error NAME is what makes silent-nothing debuggable (ADR-0026).
+    try std.testing.expect(contains(emitted.err, "hook error: HookBlewUp"));
+    // stderr, never stdout — stdout is the byte stream the protocol travels on.
+    try std.testing.expectEqualStrings("", emitted.out);
+}
+
+test "__complete - ZCLI_COMPLETE_DEBUG=0 and empty are off" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    for ([_][]const u8{ "0", "" }) |value| {
+        resetSeen();
+        var environ = try envWith(a, &.{.{ "ZCLI_COMPLETE_DEBUG", value }});
+        const emitted = try runComplete(a, &environ, &.{ "tasks", "boom", "x" }, 2);
+        try std.testing.expectEqualStrings("", emitted.err);
+        try std.testing.expectEqualStrings("", emitted.out);
+    }
+}
+
+test "__complete - a .file builtin never calls back (resolved at generation time)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    resetSeen();
+    var environ = try envWith(a, &.{});
+    const emitted = try runComplete(a, &environ, &.{ "tasks", "import", "x" }, 2);
+
+    // Emitting a directive here would make the script offer zero candidates
+    // INSTEAD of the shell's native file completion the generator already wired.
+    try std.testing.expectEqualStrings("", emitted.out);
+    try std.testing.expectEqual(@as(usize, 0), seen_calls);
+}
+
+test "__complete - nothing resolvable prints nothing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var environ = try envWith(a, &.{});
+    // A positional with no `complete`, an unknown command, the command name
+    // itself, and an out-of-range cursor.
+    for ([_]struct { words: []const []const u8, cword: usize }{
+        .{ .words = &.{ "tasks", "list", "x" }, .cword = 2 },
+        .{ .words = &.{ "tasks", "nope", "x" }, .cword = 2 },
+        .{ .words = &.{ "tasks", "ed" }, .cword = 1 },
+        .{ .words = &.{"tasks"}, .cword = 0 },
+    }) |case| {
+        resetSeen();
+        const emitted = try runComplete(a, &environ, case.words, case.cword);
+        try std.testing.expectEqualStrings("", emitted.out);
+        try std.testing.expectEqual(@as(usize, 0), seen_calls);
+    }
+}
+
+test "__complete - also_files rides through, and an empty partial downgrades it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var environ = try envWith(a, &.{});
+
+    // A non-empty partial keeps the combine directive.
+    const with_partial = try runComplete(a, &environ, &.{ "tasks", "combine", "al" }, 2);
+    try std.testing.expectEqualStrings("also_files\x00alpha\x00", with_partial.out);
+
+    // A bare <TAB> downgrades it to `default` — the flood guard, applied at this
+    // boundary so no script can dump the whole CWD.
+    const bare = try runComplete(a, &environ, &.{ "tasks", "combine", "" }, 2);
+    try std.testing.expectEqualStrings("default\x00alpha\x00", bare.out);
+}
+
+// --- completions generate ---------------------------------------------------
+
+const GenerateOutcome = struct {
+    out: []const u8,
+    err: []const u8,
+    /// `execute`'s own result, captured rather than propagated so a test can
+    /// assert the error value AND that stdout stayed clean.
+    result: anyerror!void,
+};
+
+/// Run `completions generate [shell]`, returning what it wrote and its result.
+fn runGenerate(
+    a: std.mem.Allocator,
+    environ: *const std.process.Environ.Map,
+    shell: ?[]const u8,
+) GenerateOutcome {
+    var out: std.Io.Writer.Allocating = .init(a);
+    var err: std.Io.Writer.Allocating = .init(a);
+    var ctx: PluginCtx = .{
+        .allocator = a,
+        .io = io,
+        .environ = environ,
+        .app_name = app_name,
+        .command_info = &commands,
+        .globals = &global_options,
+        .out = &out.writer,
+        .err = &err.writer,
+    };
+    const result = generate_cmd.execute(.{ .shell = shell }, .{}, &ctx);
+    return .{ .out = out.written(), .err = err.written(), .result = result };
+}
+
+test "generate - each shell name emits that generator's script verbatim" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var environ = try envWith(a, &.{});
+
+    // Byte-for-byte against the generator the name selects: proves the dispatch
+    // picks the right one AND that app_name/commands/globals were threaded
+    // through unchanged (a swapped argument would change the output).
+    const expected_bash = try bash.generate(a, app_name, &commands, &global_options);
+    const expected_zsh = try zsh.generate(a, app_name, &commands, &global_options);
+    const expected_fish = try fish.generate(a, app_name, &commands, &global_options);
+    const expected_ps = try powershell.generate(a, app_name, &commands, &global_options);
+
+    for ([_]struct { name: []const u8, want: []const u8 }{
+        .{ .name = "bash", .want = expected_bash },
+        .{ .name = "zsh", .want = expected_zsh },
+        .{ .name = "fish", .want = expected_fish },
+        // Every spelling PowerShell is invoked under maps to the one generator.
+        .{ .name = "powershell", .want = expected_ps },
+        .{ .name = "pwsh", .want = expected_ps },
+        .{ .name = "powershell.exe", .want = expected_ps },
+        .{ .name = "pwsh.exe", .want = expected_ps },
+    }) |case| {
+        const emitted = runGenerate(a, &environ, case.name);
+        try emitted.result;
+        try std.testing.expectEqualStrings(case.want, emitted.out);
+        try std.testing.expectEqualStrings("", emitted.err);
+    }
+}
+
+test "generate - no argument detects the shell from $SHELL's basename" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const expected_bash = try bash.generate(a, app_name, &commands, &global_options);
+    const expected_zsh = try zsh.generate(a, app_name, &commands, &global_options);
+    const expected_fish = try fish.generate(a, app_name, &commands, &global_options);
+    const expected_ps = try powershell.generate(a, app_name, &commands, &global_options);
+
+    // Every supported shell, each as a PATH — detection has to take the
+    // basename, so a bare-name-only implementation fails here. bash first: it is
+    // the overwhelmingly common value of $SHELL and the one whose regression
+    // would be felt widest.
+    for ([_]struct { shell_env: []const u8, want: []const u8 }{
+        .{ .shell_env = "/bin/bash", .want = expected_bash },
+        .{ .shell_env = "/usr/local/bin/bash", .want = expected_bash },
+        .{ .shell_env = "/usr/local/bin/zsh", .want = expected_zsh },
+        .{ .shell_env = "/opt/homebrew/bin/fish", .want = expected_fish },
+        // A pwsh login shell is unusual but legal, and it exercises the alias
+        // table through the detection path rather than the explicit-name path.
+        .{ .shell_env = "/usr/bin/pwsh", .want = expected_ps },
+    }) |case| {
+        var environ = try envWith(a, &.{.{ "SHELL", case.shell_env }});
+        const emitted = runGenerate(a, &environ, null);
+        try emitted.result;
+        try std.testing.expectEqualStrings(case.want, emitted.out);
+        try std.testing.expectEqualStrings("", emitted.err);
+    }
+}
+
+test "generate - unsupported and undetectable shells fail without writing stdout" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // An explicit but unknown name.
+    var environ = try envWith(a, &.{});
+    const bad = runGenerate(a, &environ, "tcsh");
+    try std.testing.expectError(error.UnsupportedShell, bad.result);
+    try std.testing.expect(contains(bad.err, "unsupported shell 'tcsh'"));
+    try std.testing.expect(contains(bad.err, "bash, zsh, fish, powershell"));
+    // Nothing partial on stdout: a caller redirecting to a file gets an empty
+    // file, not half a script.
+    try std.testing.expectEqualStrings("", bad.out);
+
+    // No $SHELL at all.
+    const undetectable = runGenerate(a, &environ, null);
+    try std.testing.expectError(error.ShellNotDetected, undetectable.result);
+    try std.testing.expect(contains(undetectable.err, "could not detect shell"));
+    try std.testing.expectEqualStrings("", undetectable.out);
+
+    // A $SHELL naming something we don't generate for is the same failure.
+    var tcsh_env = try envWith(a, &.{.{ "SHELL", "/bin/tcsh" }});
+    const unknown_env = runGenerate(a, &tcsh_env, null);
+    try std.testing.expectError(error.ShellNotDetected, unknown_env.result);
+    try std.testing.expectEqualStrings("", unknown_env.out);
+}
+
+// --- completions install / uninstall ----------------------------------------
+
+/// A throwaway `$HOME` plus the environment pointing at it.
+const FakeHome = struct {
+    tmp: std.testing.TmpDir,
+    path: []const u8,
+    environ: std.process.Environ.Map,
+
+    fn init(a: std.mem.Allocator) !FakeHome {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        // realpath via a throwaway file: the plugin builds an ABSOLUTE install
+        // path from $HOME, so a relative temp dir would not do.
+        const anchor = try writeTemp(a, tmp.dir, "anchor", "");
+        const home = std.fs.path.dirname(anchor).?;
+        return .{ .tmp = tmp, .path = home, .environ = try envWith(a, &.{.{ "HOME", home }}) };
+    }
+
+    fn deinit(self: *FakeHome) void {
+        self.tmp.cleanup();
+    }
+};
+
+fn runInstall(a: std.mem.Allocator, home: *FakeHome, shell: ?[]const u8) !Emitted {
+    var out: std.Io.Writer.Allocating = .init(a);
+    var err: std.Io.Writer.Allocating = .init(a);
+    var ctx: PluginCtx = .{
+        .allocator = a,
+        .io = io,
+        .environ = &home.environ,
+        .app_name = app_name,
+        .command_info = &commands,
+        .globals = &global_options,
+        .out = &out.writer,
+        .err = &err.writer,
+    };
+    try install_cmd.execute(.{ .shell = shell }, .{}, &ctx);
+    return .{ .out = out.written(), .err = err.written() };
+}
+
+fn runUninstall(a: std.mem.Allocator, home: *FakeHome, shell: ?[]const u8) !Emitted {
+    var out: std.Io.Writer.Allocating = .init(a);
+    var err: std.Io.Writer.Allocating = .init(a);
+    var ctx: PluginCtx = .{
+        .allocator = a,
+        .io = io,
+        .environ = &home.environ,
+        .app_name = app_name,
+        .command_info = &commands,
+        .globals = &global_options,
+        .out = &out.writer,
+        .err = &err.writer,
+    };
+    try uninstall_cmd.execute(.{ .shell = shell }, .{}, &ctx);
+    return .{ .out = out.written(), .err = err.written() };
+}
+
+/// Where each shell's script is expected to land under `home`.
+fn installedPath(a: std.mem.Allocator, home: []const u8, shell: []const u8) ![]const u8 {
+    const tail = if (std.mem.eql(u8, shell, "bash"))
+        ".local/share/bash-completion/completions/" ++ app_name
+    else if (std.mem.eql(u8, shell, "zsh"))
+        ".zsh/completions/_" ++ app_name
+    else if (std.mem.eql(u8, shell, "fish"))
+        ".config/fish/completions/" ++ app_name ++ ".fish"
+    else
+        ".config/powershell/completions/" ++ app_name ++ ".ps1";
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ home, tail });
+}
+
+// NOTE: this is #782 wiring coverage ONLY — it passes just as well against the
+// old `createFile(.{})` write, because it never puts anything at the
+// destination beforehand. The #775 guarantee (a planted symlink is replaced,
+// not followed) is asserted solely by the dedicated regression test below;
+// don't read this one as covering it.
+test "install - each shell's script lands at its documented path, byte-for-byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    for ([_][]const u8{ "bash", "zsh", "fish", "powershell" }) |shell| {
+        var home = try FakeHome.init(a);
+        defer home.deinit();
+
+        const emitted = try runInstall(a, &home, shell);
+
+        // The parent directories did not exist — install had to create them.
+        const path = try installedPath(a, home.path, shell);
+        const written = try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(1 << 20));
+
+        const expected = switch (shell[0]) {
+            'b' => try bash.generate(a, app_name, &commands, &global_options),
+            'z' => try zsh.generate(a, app_name, &commands, &global_options),
+            'f' => try fish.generate(a, app_name, &commands, &global_options),
+            else => try powershell.generate(a, app_name, &commands, &global_options),
+        };
+        try std.testing.expectEqualStrings(expected, written);
+
+        // The path it reports is the path it wrote, and the enable instructions
+        // are what make an installed-but-unloaded script debuggable.
+        try std.testing.expect(contains(emitted.out, path));
+        try std.testing.expect(contains(emitted.out, "✓ Installed"));
+        try std.testing.expectEqualStrings("", emitted.err);
+    }
+}
+
+test "install - a symlink at the destination is replaced, not followed (#775)" {
+    // Creating a symlink on Windows needs Developer Mode or
+    // SeCreateSymbolicLinkPrivilege, neither of which a CI test may assume — so
+    // this asserts the POSIX guarantee only. Windows runs the same code path
+    // unverified; see the trust-assumption comment in the plugin's `install`.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try FakeHome.init(a);
+    defer home.deinit();
+
+    // A file the attacker wants overwritten, and a symlink planted at the
+    // predictable install path pointing at it. This is the whole attack: the
+    // destination is derived from $HOME, so its name is known in advance.
+    const victim_rel = "precious.txt";
+    try home.tmp.dir.writeFile(io, .{ .sub_path = victim_rel, .data = "ORIGINAL" });
+    const victim_path = try std.fmt.allocPrint(a, "{s}/{s}", .{ home.path, victim_rel });
+
+    const dest = try installedPath(a, home.path, "zsh");
+    const dest_dir = std.fs.path.dirname(dest).?;
+    try std.Io.Dir.cwd().createDirPath(io, dest_dir);
+    try std.Io.Dir.cwd().symLink(io, victim_path, dest, .{});
+
+    _ = try runInstall(a, &home, "zsh");
+
+    // The victim is untouched — the write did NOT travel through the link.
+    const victim_after = try std.Io.Dir.cwd().readFileAlloc(io, victim_path, a, .limited(1 << 20));
+    try std.testing.expectEqualStrings("ORIGINAL", victim_after);
+
+    // And the link itself is gone: the destination is now a real file holding
+    // the script. (`follow_symlinks = false` — otherwise this would stat through
+    // a surviving link and pass while the bug was still present.)
+    const st = try std.Io.Dir.cwd().statFile(io, dest, .{ .follow_symlinks = false });
+    try std.testing.expect(st.kind == .file);
+
+    const expected = try zsh.generate(a, app_name, &commands, &global_options);
+    const written = try std.Io.Dir.cwd().readFileAlloc(io, dest, a, .limited(1 << 20));
+    try std.testing.expectEqualStrings(expected, written);
+}
+
+test "install - replacing a symlink is reported, replacing a regular file is not" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const marker = "was a symlink";
+
+    // Plain overwrite of a stale script: no note, because nothing about the
+    // user's arrangement changed.
+    {
+        var home = try FakeHome.init(a);
+        defer home.deinit();
+        _ = try runInstall(a, &home, "zsh");
+        const second = try runInstall(a, &home, "zsh");
+        try std.testing.expect(!contains(second.out, marker));
+        // Re-running is idempotent: the rename replaced the previous file.
+        const dest = try installedPath(a, home.path, "zsh");
+        const expected = try zsh.generate(a, app_name, &commands, &global_options);
+        const written = try std.Io.Dir.cwd().readFileAlloc(io, dest, a, .limited(1 << 20));
+        try std.testing.expectEqualStrings(expected, written);
+    }
+
+    // Replacing a symlink IS a change to the user's setup (a dotfiles link is a
+    // plausible thing to find here), so it must be visible rather than silent.
+    {
+        var home = try FakeHome.init(a);
+        defer home.deinit();
+        try home.tmp.dir.writeFile(io, .{ .sub_path = "target.zsh", .data = "x" });
+        const target = try std.fmt.allocPrint(a, "{s}/target.zsh", .{home.path});
+        const dest = try installedPath(a, home.path, "zsh");
+        try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(dest).?);
+        try std.Io.Dir.cwd().symLink(io, target, dest, .{});
+
+        const emitted = try runInstall(a, &home, "zsh");
+        try std.testing.expect(contains(emitted.out, marker));
+        try std.testing.expect(contains(emitted.out, dest));
+    }
+}
+
+test "install - no HOME is an error, and nothing is written" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var environ = try envWith(a, &.{});
+    var out: std.Io.Writer.Allocating = .init(a);
+    var err: std.Io.Writer.Allocating = .init(a);
+    var ctx: PluginCtx = .{
+        .allocator = a,
+        .io = io,
+        .environ = &environ,
+        .app_name = app_name,
+        .command_info = &commands,
+        .globals = &global_options,
+        .out = &out.writer,
+        .err = &err.writer,
+    };
+    try std.testing.expectError(error.HomeNotFound, install_cmd.execute(.{ .shell = "zsh" }, .{}, &ctx));
+    try std.testing.expectEqualStrings("", out.written());
+}
+
+test "uninstall - removes the installed script and prints the disable steps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try FakeHome.init(a);
+    defer home.deinit();
+
+    _ = try runInstall(a, &home, "zsh");
+    const dest = try installedPath(a, home.path, "zsh");
+    // Present before.
+    _ = try std.Io.Dir.cwd().statFile(io, dest, .{});
+
+    const emitted = try runUninstall(a, &home, "zsh");
+    try std.testing.expect(contains(emitted.out, "✓ Uninstalled"));
+    try std.testing.expect(contains(emitted.out, dest));
+    // The zsh disable instructions name the fpath line the enable step added.
+    try std.testing.expect(contains(emitted.out, "fpath=(~/.zsh/completions $fpath)"));
+
+    // Gone after.
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, dest, .{}));
+}
+
+test "uninstall - a script that was never installed is reported, not an error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try FakeHome.init(a);
+    defer home.deinit();
+
+    const emitted = try runUninstall(a, &home, "fish");
+    const dest = try installedPath(a, home.path, "fish");
+    try std.testing.expect(contains(emitted.out, "Completions not installed at"));
+    try std.testing.expect(contains(emitted.out, dest));
+    // A missing file is the expected state, so the disable instructions (which
+    // follow a real removal) must NOT be printed.
+    try std.testing.expect(!contains(emitted.out, "✓ Uninstalled"));
+    try std.testing.expectEqualStrings("", emitted.err);
 }
