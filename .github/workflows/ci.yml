@@ -330,9 +330,15 @@ jobs:
       # rather than a silent per-shell skip (guarding against regression to
       # never-validated). Other OS legs leave the flag unset — fish stays
       # optional there.
-      - name: Install fish (Linux — enables the completion suite's fish branch)
+      #
+      # zsh joins it here for a plainer reason: /bin/zsh is standard on macOS but
+      # is NOT guaranteed on the Ubuntu runner image, and the suite now demands
+      # zsh on every POSIX leg (ZCLI_REQUIRE_ZSH below). Installing it makes that
+      # demand true by construction instead of by hoping the image ships it.
+      # bash needs no install step — /bin/bash is present on both POSIX images.
+      - name: Install fish + zsh (Linux — enables the completion suite's fish/zsh branches)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish zsh
 
       # Runs the test suites for every package (packages/*) AND projects/zcli's
       # own unit tests on all three OSes. Windows is a first-class leg now that
@@ -344,10 +350,25 @@ jobs:
       # into a hard failure rather than a silent skip (the same
       # guard-against-never-validated as fish above, without needing an
       # install step).
+      #
+      # ZCLI_REQUIRE_BASH / ZCLI_REQUIRE_ZSH close the last hole in that scheme
+      # (#783): the completion suite drives real bash and zsh at a dozen sites,
+      # every one of which used to degrade to a silent skip if the binary went
+      # missing — the whole functional half could stop running and CI would still
+      # be green. Both shells are present on the POSIX legs (bash ships with the
+      # images; zsh is installed above on Linux), so demand them there. Windows
+      # gets the empty string: `findShell` only probes POSIX absolute paths, so
+      # neither shell is reachable on that leg and both stay optional.
+      #
+      # The `cond && '1' || ''` idiom is safe in THIS direction only — see the
+      # installers job for why the reverse (empty string in the left branch)
+      # silently evaluates to '1'.
       - name: Run tests
         env:
           ZCLI_REQUIRE_FISH: ${{ runner.os == 'Linux' && '1' || '' }}
           ZCLI_REQUIRE_PWSH: "1"
+          ZCLI_REQUIRE_BASH: ${{ runner.os != 'Windows' && '1' || '' }}
+          ZCLI_REQUIRE_ZSH: ${{ runner.os != 'Windows' && '1' || '' }}
         run: zig build test
 
   # install.sh and install.ps1 are the `curl | sh` / `irm | iex` trust root, and
