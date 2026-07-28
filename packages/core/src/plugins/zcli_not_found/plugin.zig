@@ -304,7 +304,7 @@ fn findBestSuggestions(
         return allocator.alloc([]const u8, 0);
     }
 
-    std.sort.pdq(ScoredCommand, scored[0..valid_count], {}, ScoredCommand.lessThan);
+    std.sort.insertion(ScoredCommand, scored[0..valid_count], {}, ScoredCommand.lessThan);
 
     const result_count = @min(valid_count, max_suggestions);
     var result = try allocator.alloc([]const u8, result_count);
