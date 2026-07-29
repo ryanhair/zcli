@@ -4,7 +4,7 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
-## Unreleased
+## v0.24.0 — 2026-07-29
 
 ### Added
 - **`scripts/release.sh` — one command cuts a release, end to end** (ADR-0033). Preflight, dispatch the Release workflow, surface the single approval when the gate opens (terminal bell included), sign the draft, wait for the docs deploy, then independently verify the result: the site serves the new version, `zcli.sh/install.sh` is byte-identical to the repo's, the release carries all 8 assets, the published signature verifies against the pinned key *and* binds the tag, and the library release exists. It exits non-zero if any of that is untrue, so "the release is done" stops being a thing you assume. ADR-0023's offline key means one step of every release is irreducibly local, which is exactly why the orchestrator is a local script rather than a GitHub button: the laptop is the only participant present for the whole transaction. Re-running is always safe — every phase reads remote state (is there a tag, a draft, a published release, what does the site serve) rather than local bookkeeping, so it resumes from wherever it stopped. `--sign-only` covers the recovery path, and `--verify-only` answers "did that release actually land?" read-only, without a secret key.
