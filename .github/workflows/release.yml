@@ -426,10 +426,11 @@ jobs:
           rm *.sha256
 
       # Published as a DRAFT on purpose. The release is signed offline with a key
-      # that never touches CI (ADR-0023): the maintainer runs `scripts/sign-release.sh`
-      # to sign checksums.txt, upload checksums.txt.minisig, and flip the release
-      # to published. Drafting until signed means fail-closed clients never see an
-      # unsigned release. See docs/RELEASE-SIGNING.md.
+      # that never touches CI (ADR-0023): `scripts/release.sh` — which is what
+      # dispatched this run — signs checksums.txt, uploads checksums.txt.minisig
+      # and flips the release to published. Drafting until signed means
+      # fail-closed clients never see an unsigned release. See
+      # docs/RELEASE-SIGNING.md.
       - name: Create Release (draft — sign locally to publish)
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -441,11 +442,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Only reached if someone dispatched this workflow by hand instead of
+      # running scripts/release.sh, which signs and publishes on its own.
       - name: Signing reminder
         env:
-          CLI_TAG: zcli-v${{ needs.setup.outputs.version }}
+          VERSION: ${{ needs.setup.outputs.version }}
         run: |
-          echo "::notice title=Sign this release::CLI release $CLI_TAG is a DRAFT. Run 'scripts/sign-release.sh $CLI_TAG' locally to sign checksums.txt and publish. See docs/RELEASE-SIGNING.md."
+          echo "::notice title=Sign this release::CLI release zcli-v$VERSION is a DRAFT and nobody can install it yet. Run 'scripts/release.sh $VERSION' locally to sign, publish, deploy the docs and verify the site. See docs/RELEASE-SIGNING.md."
 
   # Unlike the CLI release this publishes immediately — there is no signing
   # ceremony for a source tarball consumed by `zig fetch`, whose integrity comes

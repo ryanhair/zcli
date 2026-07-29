@@ -104,7 +104,7 @@ fn makeFixtureTagged(allocator: std.mem.Allocator, io: std.Io, tag_version: []co
     const sig_b64 = try base64Alloc(allocator, &sig_blob);
     defer allocator.free(sig_b64);
 
-    // Trusted comment binds the release tag, exactly as scripts/sign-release.sh
+    // Trusted comment binds the release tag, exactly as scripts/release.sh
     // does (`-t "zcli <tag> — signed release checksums"`). minisign's global
     // (line-4) signature covers `primary_sig_bytes || trusted_comment_text`, so
     // we sign that concatenation with the same key to produce a GENUINE global

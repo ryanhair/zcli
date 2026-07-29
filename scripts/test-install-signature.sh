@@ -11,7 +11,7 @@
 # keypair generated per run:
 #   1. install.sh's verify_signature — the whole function, sourced from the
 #      shipped file, with only the network fetch stubbed.
-#   2. scripts/sign-release.sh's trusted_comment_binds_tag — the release
+#   2. scripts/release.sh's trusted_comment_binds_tag — the release
 #      ceremony's copy of the same token-exactness rule, extracted by name.
 #   3. install.sh's get_latest_version — that it selects the newest `zcli-v*`
 #      release from the release LIST, so a library tag published ahead of the
@@ -45,7 +45,7 @@ set -e
 
 REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 INSTALL_SH="${REPO_ROOT}/install.sh"
-SIGN_RELEASE_SH="${REPO_ROOT}/scripts/sign-release.sh"
+RELEASE_SH="${REPO_ROOT}/scripts/release.sh"
 
 pass_count=0
 fail_count=0
@@ -86,9 +86,9 @@ grep -v '^main$' "${INSTALL_SH}" > "${WORK}/installer.sh"
 # ---------------------------------------------------------------------------
 # Load the release ceremony's copy of the token rule, extracted by name.
 # ---------------------------------------------------------------------------
-awk '/^trusted_comment_binds_tag\(\) \{/,/^\}/' "${SIGN_RELEASE_SH}" > "${WORK}/sign-lib.sh"
+awk '/^trusted_comment_binds_tag\(\) \{/,/^\}/' "${RELEASE_SH}" > "${WORK}/sign-lib.sh"
 if ! grep -q '^trusted_comment_binds_tag() {' "${WORK}/sign-lib.sh" || ! grep -q '^}' "${WORK}/sign-lib.sh"; then
-    bad "could not extract trusted_comment_binds_tag() from ${SIGN_RELEASE_SH} — did its shape change?"
+    bad "could not extract trusted_comment_binds_tag() from ${RELEASE_SH} — did its shape change?"
     exit 1
 fi
 # shellcheck source=/dev/null
@@ -188,7 +188,7 @@ check_ceremony() { # <label> <accept|reject> <sig> <tag>
         got=reject
     fi
 
-    report "sign-release.sh: ${label}" "${expect}" "${got}"
+    report "release.sh: ${label}" "${expect}" "${got}"
 }
 
 note "install.sh verify_signature — version binding"
@@ -209,7 +209,7 @@ check "empty pinned key skips verification"    accept sig-0.19.0.minisig   zcli-
 MINISIGN_PUBKEY="${PUBKEY}"
 
 note ""
-note "sign-release.sh trusted_comment_binds_tag — same token rule"
+note "release.sh trusted_comment_binds_tag — same token rule"
 check_ceremony "matching tag accepted"                 accept sig-0.20.0.minisig zcli-v0.20.0
 check_ceremony "wrong tag rejected"                    reject sig-0.19.0.minisig zcli-v0.20.0
 check_ceremony "prefix tag rejected"                   reject sig-0.20.0.minisig zcli-v0.2

@@ -135,7 +135,7 @@ verify_signature() {
     # build (a downgrade/replay — CWE-294).
     #
     # The signing ceremony defends against this by embedding the release tag in
-    # minisign's *trusted* comment (scripts/sign-release.sh: `-t "zcli $TAG —
+    # minisign's *trusted* comment (scripts/release.sh: `-t "zcli $TAG —
     # signed release checksums"`). That comment is line 3 of the .minisig and is
     # covered by minisign's second, "global" signature on line 4 — the `-V` above
     # verifies it and exits nonzero ("Comment signature verification failed")

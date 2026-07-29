@@ -17,7 +17,7 @@
 //! tag (a downgrade / rollback attack — CWE-294). To close that, this module
 //! also verifies minisign's second, "global" signature, which covers the
 //! trusted comment. The signing ceremony embeds the release tag in that comment
-//! (`scripts/sign-release.sh`: `-t "zcli <tag> — signed release checksums"`),
+//! (`scripts/release.sh`: `-t "zcli <tag> — signed release checksums"`),
 //! so `verifyTrustedComment` authenticates the comment under the same pinned
 //! key and asserts it binds the tag being installed. The comment is only
 //! trusted once its global signature checks out — reading it unverified would
