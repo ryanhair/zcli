@@ -91,6 +91,7 @@ zig build test
 | `linux musl release build` | Both static-musl targets, byte-for-byte the release's build command; x86_64 is smoke-run. |
 | `zcli_secrets backend` | The native secrets backend on all three OSes (ADR-0003/ADR-0010). |
 | `installer signature binding` | `install.sh` / `install.ps1` signature + version binding on all three OSes (`scripts/test-install-signature.{sh,ps1}`). |
+| `release orchestration` | Deterministic workflow dispatch correlation, resumable docs recovery, bounded workflow waiting, and tagged-installer compatibility (`scripts/test-release-orchestration.sh`) on Linux and macOS. |
 | `canonical examples compile` | `zig build build-examples` (ADR-0004), plus a real `zig build docs` run against `examples/tasks` with content assertions. |
 | `registry comptime scaling` | A generated 120-command app compiled **and run**, so the comptime branch-quota ceiling can't silently come back (#730). |
 | `performance budgets` | `zig build regression` — parsing hot path, startup time, binary size. Fail-closed: no skip path. |

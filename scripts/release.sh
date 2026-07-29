@@ -120,6 +120,29 @@ gh_mutate() {
     gh "$@"
 }
 
+# Dispatch a workflow and print the exact run ID returned by GitHub. The
+# dispatch API's return_run_details response is the correlation boundary: run
+# list timestamps, refs, actors, and workflow inputs can all be shared by two
+# concurrent dispatches, but this ID belongs to this request alone.
+dispatch_workflow_run() {
+    _workflow="$1"
+    _ref="$2"
+    shift 2
+
+    _dispatched_run_id="$(
+        gh_mutate api --method POST \
+            "repos/$REPOSITORY/actions/workflows/$_workflow/dispatches" \
+            -f "ref=$_ref" \
+            -F return_run_details=true \
+            "$@" \
+            --jq .workflow_run_id
+    )" || return 1
+    case "$_dispatched_run_id" in
+        ''|0|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$_dispatched_run_id"
+}
+
 # Poll a workflow run to completion, announcing the approval gate once when it
 # opens. Every nonterminal state, including an API failure or a status GitHub
 # adds in the future, is bounded by RUN_WAIT_TIMEOUT_SECONDS.
@@ -135,6 +158,7 @@ wait_for_run() {
     esac
     case "$_interval" in
         ''|*[!0-9]*) error "$_label has invalid poll interval '$_interval'" ;;
+        0) error "$_label poll interval must be greater than zero" ;;
     esac
 
     _start="$(release_now)"
@@ -220,8 +244,11 @@ find_release_deploy_run() {
 # The distinction is a mutation boundary: an API/network failure must not be
 # mistaken for evidence that a recovery deploy is needed.
 probe_published_docs() {
-    _probe_attempts="${DOCS_PROBE_ATTEMPTS:-3}"
-    _probe_interval="${DOCS_PROBE_INTERVAL_SECONDS:-2}"
+    # A successful Pages deploy can expose the homepage and installers at
+    # different times for about a minute. Keep this bounded and read-only so a
+    # rerun during propagation does not create a duplicate recovery deploy.
+    _probe_attempts="${DOCS_PROBE_ATTEMPTS:-7}"
+    _probe_interval="${DOCS_PROBE_INTERVAL_SECONDS:-10}"
     _probe_dir="$WORK_DIR/docs-probe"
     _observed=false
     mkdir -p "$_probe_dir"
@@ -251,24 +278,9 @@ probe_published_docs() {
 }
 
 dispatch_docs_recovery() {
-    _release_sha="$1"
-    _since=$(( $(release_now) - 60 ))
-
     warn "published docs state is incomplete; dispatching deploy-docs.yml from immutable tag $TAG"
-    gh_mutate workflow run deploy-docs.yml --ref "$TAG" \
+    _deploy_run="$(dispatch_workflow_run deploy-docs.yml "$TAG")" \
         || error "failed to dispatch docs recovery from $TAG"
-
-    _deploy_run=""
-    for _ in $(seq 1 40); do
-        release_sleep 3
-        _deploy_run="$(gh run list --workflow deploy-docs.yml --event workflow_dispatch --limit 20 \
-            --json databaseId,createdAt,event,headSha \
-            --jq "[.[] | select(.event == \"workflow_dispatch\" and .headSha == \"$_release_sha\" and (.createdAt | fromdateiso8601) >= $_since)] | sort_by(.createdAt) | last | .databaseId // empty" \
-            2>/dev/null || echo '')"
-        [ -n "$_deploy_run" ] && break
-    done
-    [ -n "$_deploy_run" ] \
-        || error "dispatched docs recovery from $TAG, but could not find its workflow run"
     wait_for_run "$_deploy_run" "Docs deploy"
 }
 
@@ -286,7 +298,7 @@ ensure_docs_deploy() {
         if [ "$_probe_status" -eq 2 ]; then
             error "could not determine whether published docs are complete; refusing to dispatch on failed remote reads"
         fi
-        dispatch_docs_recovery "$_release_sha"
+        dispatch_docs_recovery
         return 0
     fi
 
@@ -301,7 +313,7 @@ ensure_docs_deploy() {
         wait_for_run "$_deploy_run" "Docs deploy"
     else
         warn "no release-triggered deploy found for commit $_release_sha"
-        dispatch_docs_recovery "$_release_sha"
+        dispatch_docs_recovery
     fi
 }
 
@@ -320,6 +332,11 @@ resolve_live_installer_version() {
 curl() {
     command curl --connect-timeout 10 --max-time 30 "$@"
 }
+# New installers retry release-list reads themselves. The orchestrator owns the
+# retry budget here, so collapse that inner loop; these assignments are harmless
+# for older tagged installers that predate the constants.
+RELEASE_LIST_ATTEMPTS=1
+RELEASE_LIST_RETRY_DELAY_SECONDS=0
 get_latest_version
 EOF
             } | sh 2>/dev/null
@@ -484,22 +501,12 @@ elif [ "$SIGN_ONLY" = true ]; then
     [ "$RELEASE_STATE" = draft ] || error "--sign-only needs an existing draft; $TAG is '$RELEASE_STATE'"
 elif [ "$RELEASE_STATE" = none ]; then
     phase "Dispatching the Release workflow"
-    # Timestamp before dispatching so we can identify OUR run. 60s of slack
-    # absorbs clock skew between here and GitHub.
-    since=$(( $(date -u +%s) - 60 ))
-    gh_mutate workflow run release.yml -f version="$VERSION"
+    # GitHub returns this dispatch's exact run ID. Do not rediscover it from a
+    # time window: two operators can legitimately dispatch within one window,
+    # and the release concurrency queue does not make "latest" mean "ours".
+    run_id="$(dispatch_workflow_run release.yml main -f "inputs[version]=$VERSION")" \
+        || error "failed to dispatch release.yml or read its workflow run ID"
     info "dispatched release.yml with version=$VERSION"
-
-    run_id=""
-    for _ in $(seq 1 40); do
-        sleep 3
-        run_id="$(gh run list --workflow release.yml --event workflow_dispatch --limit 10 \
-            --json databaseId,createdAt \
-            --jq "[.[] | select((.createdAt | fromdateiso8601) >= $since)] | sort_by(.createdAt) | last | .databaseId // empty" \
-            2>/dev/null || echo '')"
-        [ -n "$run_id" ] && break
-    done
-    [ -n "$run_id" ] || error "dispatched, but could not find the run — check 'gh run list --workflow release.yml'"
 
     wait_for_run "$run_id" "Release workflow"
 else
