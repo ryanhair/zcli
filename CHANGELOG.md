@@ -4,6 +4,11 @@ All notable changes to zcli are documented here.
 
 **Versioning policy:** zcli follows [semver](https://semver.org). Until 1.0, breaking changes may land in minor versions and are called out below; patch versions are always safe to take. Releases target **stable Zig** — moving to a new Zig version is at least a minor bump and is stated in the entry. Each release is tagged twice in lockstep: `vX.Y.Z` is the framework library (the tag for your `build.zig.zon`), `zcli-vX.Y.Z` carries the prebuilt meta-CLI binaries.
 
+## Unreleased
+
+### Fixed
+- **`scripts/release.sh` no longer reports a complete release as INCOMPLETE.** Its final verification sampled the live site exactly once, but Cloudflare Pages propagates assets independently and eventually — for a minute or so after a deploy the homepage and `/install.sh` routinely disagree about which build they are on, in *either* direction. The 0.24.0 deploy logged `version_ok=false install_ok=true` on its first attempt; a minute later the script caught the reverse skew and failed the installer check on a release that was in fact fine. The site checks now poll both together for up to two minutes, the same way `deploy-docs.yml`'s verify step already did — a single sample is a race, not a verdict. A failure to fetch the reference `install.sh` from the release tag is also reported as its own error now, instead of being indistinguishable from a genuine mismatch.
+
 ## v0.24.0 — 2026-07-29
 
 ### Added
