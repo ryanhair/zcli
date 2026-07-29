@@ -210,30 +210,10 @@ pub const release_yml =
 
 const testing = std.testing;
 
-test "write fails outside a zcli project" {
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try testing.expectEqual(Outcome.not_a_project, try write(tmp.dir, io, "release.yml", release_yml));
-}
-
-test "write creates a pinned, version-matched release workflow" {
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.createDir(io, "src", .default_dir);
-    try tmp.dir.createDir(io, "src/commands", .default_dir);
-
-    try testing.expectEqual(Outcome.created, try write(tmp.dir, io, "release.yml", release_yml));
-
-    const content = try tmp.dir.readFileAlloc(io, ".github/workflows/release.yml", testing.allocator, .limited(1 << 20));
-    defer testing.allocator.free(content);
-
-    try testing.expect(std.mem.indexOf(u8, content, "name: Release") != null);
-    // Inspect every direct `uses:` line, rather than sampling individual
-    // actions: adding upload/download/release (or any future) action then
-    // automatically receives the same immutable-SHA requirement.
+/// Verify every direct action reference is an immutable SHA pin annotated with
+/// its human-readable version. This intentionally permits action removals, but
+/// a workflow with no actions is not a meaningful pinning test.
+fn expectAllDirectActionUsesPinned(content: []const u8) !void {
     var uses_count: usize = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -260,6 +240,30 @@ test "write creates a pinned, version-matched release workflow" {
         try testing.expect(pin_and_comment.len > comment + " # v".len);
     }
     try testing.expect(uses_count > 0);
+}
+
+test "write fails outside a zcli project" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try testing.expectEqual(Outcome.not_a_project, try write(tmp.dir, io, "release.yml", release_yml));
+}
+
+test "write creates a pinned, version-matched release workflow" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "src", .default_dir);
+    try tmp.dir.createDir(io, "src/commands", .default_dir);
+
+    try testing.expectEqual(Outcome.created, try write(tmp.dir, io, "release.yml", release_yml));
+
+    const content = try tmp.dir.readFileAlloc(io, ".github/workflows/release.yml", testing.allocator, .limited(1 << 20));
+    defer testing.allocator.free(content);
+
+    try testing.expect(std.mem.indexOf(u8, content, "name: Release") != null);
+    try expectAllDirectActionUsesPinned(content);
 
     try testing.expect(std.mem.indexOf(u8, content, "version: 0.16.0") != null);
     try testing.expect(std.mem.indexOf(u8, content, "-Dstrip=true") != null);
@@ -278,6 +282,7 @@ test "write creates the CI workflow with pinned actions" {
     defer testing.allocator.free(content);
 
     try testing.expect(std.mem.indexOf(u8, content, "name: CI") != null);
+    try expectAllDirectActionUsesPinned(content);
     try testing.expect(std.mem.indexOf(u8, content, "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1") != null);
     try testing.expect(std.mem.indexOf(u8, content, "zig build test") != null);
 }
