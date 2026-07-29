@@ -295,12 +295,14 @@ jobs:
             .id == 18284157
             and .name == "Main Protection"
             and .enforcement == "active"
+            and (.conditions.ref_name.exclude == [])
+            and (.conditions.ref_name.include | sort == ["~DEFAULT_BRANCH"])
             and ([.rules[].type] | sort == ["deletion", "non_fast_forward", "required_status_checks"])
             and ([.rules[] | select(.type == "required_status_checks") | .parameters] | length == 1)
             and ([.rules[] | select(.type == "required_status_checks") | .parameters][0].strict_required_status_checks_policy == false)
             and ([.rules[] | select(.type == "required_status_checks") | .parameters][0].required_status_checks | map(.context) | sort == ["CI OK"])
           ' <<<"$ruleset"; then
-            echo "::error::public Main Protection ruleset shape drifted (expected deletion, non_fast_forward, and non-strict CI OK)"
+            echo "::error::public Main Protection ruleset shape drifted (expected default-branch deletion, non_fast_forward, and non-strict CI OK)"
             exit 1
           fi
 

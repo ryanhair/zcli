@@ -115,9 +115,10 @@ the gap where a bypass-capable principal can land unreviewed or unchecked
 code.
 
 CI checks the publicly observable rule shape on every PR and `main` push:
-the ruleset name/id, its three rule types, `CI OK`, and the non-strict policy.
-It fails if GitHub's public API cannot be read or the shape drifts; it does
-not skip for an unavailable API. GitHub's anonymous ruleset endpoint exposes
-the rules but returns `bypass_actors: null`, so that check deliberately does
-**not** claim to validate bypass actors. Re-check bypass actors with
-authenticated administrative access when auditing this policy.
+the ruleset name/id, its default-branch target, its three rule types, `CI OK`,
+and the non-strict policy. It fails if GitHub's public API cannot be read or
+the shape drifts; it does not skip for an unavailable API. GitHub's anonymous
+ruleset endpoint exposes the rules but returns `bypass_actors: null`, so that
+check deliberately does **not** claim to validate bypass actors. Re-check
+bypass actors with authenticated administrative access when auditing this
+policy.

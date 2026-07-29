@@ -64,9 +64,6 @@ or a malicious release pipeline defeats checksum verification by construction
 
 ## Trigger to revisit
 
-Add release signing when any of these becomes true: zcli binaries are
-distributed beyond the maintainer's own projects (meaningful third-party
-install base); releases start being published by CI with long-lived
-credentials rather than an interactive maintainer session; or a package
-ecosystem (Homebrew tap, distro packaging) wants a verifiable upstream
-artifact. The deferred-work entry in `TODOS.md` carries the effort estimate.
+This trigger was later met and the decision was superseded by
+[ADR-0023](0023-release-signing-minisign.md): zcli now signs release checksums
+with an offline-custody minisign key and verifies them fail-closed.
