@@ -13,17 +13,19 @@
 #      shipped file, with only the network fetch stubbed.
 #   2. scripts/release.sh's trusted_comment_binds_tag — the release
 #      ceremony's copy of the same token-exactness rule, extracted by name.
-#   3. install.sh's get_latest_version — that it selects the newest `zcli-v*`
+#   3. scripts/release.sh's downloaded-binary execution gate — both the
+#      signature and checksums must authenticate before the binary can run.
+#   4. install.sh's get_latest_version — that it selects the newest `zcli-v*`
 #      release from the release LIST, so a library tag published ahead of the
 #      still-draft CLI tag cannot derail an install (#774), and that its two
 #      no-release outcomes (mid-publish window vs. a CLI release older than one
 #      API page) are told apart, because the advice differs.
-#   4. install.sh's path_already_configured — that it recognizes a real PATH
+#   5. install.sh's path_already_configured — that it recognizes a real PATH
 #      export and only a real one, so an incidental mention of the string
 #      cannot make the installer skip the append and report success while
 #      leaving zcli off PATH (#771). Includes a round-trip: what add_to_path
 #      writes must satisfy the check, or repeat installs double-append.
-#   5. install.sh's POSIX-ness as a static property — a deny-list for GNU-only
+#   6. install.sh's POSIX-ness as a static property — a deny-list for GNU-only
 #      options like `grep -o`, which parse everywhere and only fail at run time
 #      on the busybox/BSD systems this script most needs to work on.
 #
@@ -84,11 +86,13 @@ grep -v '^main$' "${INSTALL_SH}" > "${WORK}/installer.sh"
 . "${WORK}/installer.sh"
 
 # ---------------------------------------------------------------------------
-# Load the release ceremony's copy of the token rule, extracted by name.
+# Load the release ceremony's small security predicates, extracted by name.
 # ---------------------------------------------------------------------------
 awk '/^trusted_comment_binds_tag\(\) \{/,/^\}/' "${RELEASE_SH}" > "${WORK}/sign-lib.sh"
-if ! grep -q '^trusted_comment_binds_tag() {' "${WORK}/sign-lib.sh" || ! grep -q '^}' "${WORK}/sign-lib.sh"; then
-    bad "could not extract trusted_comment_binds_tag() from ${RELEASE_SH} — did its shape change?"
+awk '/^published_binary_is_authenticated\(\) \{/,/^\}/' "${RELEASE_SH}" >> "${WORK}/sign-lib.sh"
+if ! grep -q '^trusted_comment_binds_tag() {' "${WORK}/sign-lib.sh" \
+   || ! grep -q '^published_binary_is_authenticated() {' "${WORK}/sign-lib.sh"; then
+    bad "could not extract release.sh security predicates — did their shape change?"
     exit 1
 fi
 # shellcheck source=/dev/null
@@ -191,6 +195,16 @@ check_ceremony() { # <label> <accept|reject> <sig> <tag>
     report "release.sh: ${label}" "${expect}" "${got}"
 }
 
+check_binary_gate() { # <label> <run|refuse> <signature-ok> <checksums-ok>
+    label="$1"; expect="$2"
+    if published_binary_is_authenticated "$3" "$4"; then
+        got=run
+    else
+        got=refuse
+    fi
+    report "release.sh binary gate: ${label}" "${expect}" "${got}"
+}
+
 note "install.sh verify_signature — version binding"
 check "matching tag accepted"                  accept sig-0.20.0.minisig   zcli-v0.20.0 checksums.txt
 check "downgrade replay rejected"              reject sig-0.19.0.minisig   zcli-v0.20.0 checksums.txt
@@ -217,6 +231,13 @@ check_ceremony "inverse prefix rejected"               reject sig-0.2.minisig   
 check_ceremony "case-only mismatch rejected"           reject sig-0.20.0.minisig ZCLI-V0.20.0
 check_ceremony "missing comment prefix rejected"       reject sig-noprefix.minisig zcli-v0.20.0
 check_ceremony "empty tag rejected"                    reject sig-0.20.0.minisig ''
+
+note ""
+note "release.sh published binary — authenticate before execution"
+check_binary_gate "signature and checksums valid" run    true  true
+check_binary_gate "bad signature"                 refuse false true
+check_binary_gate "bad checksum"                  refuse true  false
+check_binary_gate "both invalid"                  refuse false false
 
 # ---------------------------------------------------------------------------
 # install.sh get_latest_version — release selection (#774).

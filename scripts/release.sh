@@ -86,9 +86,27 @@ trusted_comment_binds_tag() {
     return $_bound
 }
 
+sha256_digest() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+# Security boundary before executing a downloaded release asset. Both booleans
+# are established independently below: an authenticated checksum manifest and
+# a digest match for every expected binary.
+published_binary_is_authenticated() {
+    [ "$1" = true ] && [ "$2" = true ]
+}
+
 SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.minisign/minisign.key}"
 PUBKEY_FILE="$REPO_ROOT/docs/zcli-minisign.pub"
 SITE="https://zcli.sh"
+REPOSITORY="${ZCLI_REPOSITORY:-ryanhair/zcli}"
 SIGN_ONLY=false
 VERIFY_ONLY=false
 ASSUME_YES=false
@@ -159,7 +177,7 @@ phase "Preflight"
 echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
     || error "version must be semver like 0.24.0 (got '$VERSION')"
 
-for tool in gh git curl minisign; do
+for tool in gh git curl minisign tar; do
     command -v "$tool" >/dev/null 2>&1 || error "$tool is required but not found"
 done
 gh auth status >/dev/null 2>&1 || error "gh is not authenticated — run 'gh auth login'"
@@ -403,6 +421,23 @@ else
 fi
 fi
 
+# Download and unpack one immutable GitHub tag archive. Prints the extracted
+# tree root on success; callers treat empty output as a failed smoke check.
+extract_tag_archive() {
+    _archive_tag="$1"
+    _archive_name="$2"
+    _archive_dir="$WORK_DIR/archive-$_archive_name"
+    _archive_file="$WORK_DIR/$_archive_name.tar.gz"
+    _archive_url="https://github.com/$REPOSITORY/archive/refs/tags/$_archive_tag.tar.gz"
+
+    curl -fsSL --max-time 60 -o "$_archive_file" "$_archive_url" || return 1
+    mkdir -p "$_archive_dir"
+    tar -xzf "$_archive_file" -C "$_archive_dir" || return 1
+    _archive_top="$(tar -tzf "$_archive_file" | sed -n '1s|/.*||p')"
+    [ -n "$_archive_top" ] && [ -d "$_archive_dir/$_archive_top" ] || return 1
+    printf '%s\n' "$_archive_dir/$_archive_top"
+}
+
 # ── Phase 4: verify the end state ───────────────────────────────────────────
 # Independent of every "success" reported above. A release is done when a user
 # can install it and the site describes it — so check exactly that, from
@@ -413,16 +448,20 @@ phase "Verifying the released state"
 fail=0
 check() { if [ "$1" = true ]; then success "$2"; else echo -e "${RED}✗ $2${NC}" >&2; fail=1; fi; }
 
-# The reference copy of install.sh is the RELEASED TAG's, not the working tree's:
+# The reference installers are the RELEASED TAG's, not the working tree's:
 # the local checkout is a commit behind after a release (CI creates the bump
 # commit) and may carry unrelated edits, either of which would make a
 # working-tree comparison lie in both directions. Fetched once, since a tag is
 # immutable, and a failure to fetch it is reported as its own thing — "could not
 # read the reference" must never masquerade as "the site is wrong".
-RAW_URL="https://raw.githubusercontent.com/ryanhair/zcli/$TAG/install.sh"
-curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.sh" "$RAW_URL" 2>/dev/null || true
+RAW_BASE="https://raw.githubusercontent.com/$REPOSITORY/$TAG"
+curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.sh" "$RAW_BASE/install.sh" 2>/dev/null || true
 if [ ! -s "$WORK_DIR/tagged-install.sh" ]; then
-    check false "could not fetch $TAG's install.sh from $RAW_URL — cannot check the installer"
+    check false "could not fetch $TAG's install.sh — cannot check the installer"
+fi
+curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.ps1" "$RAW_BASE/install.ps1" 2>/dev/null || true
+if [ ! -s "$WORK_DIR/tagged-install.ps1" ]; then
+    check false "could not fetch $TAG's install.ps1 — cannot check the installer"
 fi
 
 # Cloudflare Pages propagates assets INDEPENDENTLY and eventually: for a minute
@@ -436,22 +475,27 @@ fi
 # together, because either one can be the stale side. A single sample is a race,
 # not a verdict; only a persistent disagreement is a real failure.
 site_ok=false
-install_ok=false
+install_sh_ok=false
+install_ps1_ok=false
 for attempt in 1 2 3 4 5 6; do
     [ "$attempt" -eq 1 ] || sleep 20
 
-    curl -fsS --max-time 30 -o "$WORK_DIR/home.html"       "$SITE/"           2>/dev/null || true
-    curl -fsS --max-time 30 -o "$WORK_DIR/live-install.sh" "$SITE/install.sh" 2>/dev/null || true
+    curl -fsS --max-time 30 -o "$WORK_DIR/home.html"        "$SITE/"            2>/dev/null || true
+    curl -fsS --max-time 30 -o "$WORK_DIR/live-install.sh"  "$SITE/install.sh"  2>/dev/null || true
+    curl -fsS --max-time 30 -o "$WORK_DIR/live-install.ps1" "$SITE/install.ps1" 2>/dev/null || true
 
     site_ok=false
     if grep -qF "$VERSION" "$WORK_DIR/home.html" 2>/dev/null; then site_ok=true; fi
-    install_ok=false
+    install_sh_ok=false
     if [ -s "$WORK_DIR/tagged-install.sh" ] \
-       && cmp -s "$WORK_DIR/live-install.sh" "$WORK_DIR/tagged-install.sh"; then install_ok=true; fi
+       && cmp -s "$WORK_DIR/live-install.sh" "$WORK_DIR/tagged-install.sh"; then install_sh_ok=true; fi
+    install_ps1_ok=false
+    if [ -s "$WORK_DIR/tagged-install.ps1" ] \
+       && cmp -s "$WORK_DIR/live-install.ps1" "$WORK_DIR/tagged-install.ps1"; then install_ps1_ok=true; fi
 
-    if [ "$site_ok" = true ] && [ "$install_ok" = true ]; then break; fi
+    if [ "$site_ok" = true ] && [ "$install_sh_ok" = true ] && [ "$install_ps1_ok" = true ]; then break; fi
     if [ "$attempt" -lt 6 ]; then
-        info "site not settled (serves_version=$site_ok installer_matches=$install_ok) — retrying in 20s"
+        info "site not settled (serves_version=$site_ok install_sh=$install_sh_ok install_ps1=$install_ps1_ok) — retrying in 20s"
     fi
 done
 
@@ -461,44 +505,190 @@ else
     check false "$SITE does NOT serve $VERSION"
 fi
 
-# The curl|sh trust root: what the site hands out must be the reviewed file from
-# the commit that was released. Skipped entirely if the reference could not be
-# fetched — that was already reported above.
-if [ "$install_ok" = true ]; then
+# The curl|sh and irm|iex trust roots: what the site hands out must be the
+# reviewed files from the commit that was released. Skipped if a reference
+# could not be fetched — that was already reported above.
+if [ "$install_sh_ok" = true ]; then
     check true "$SITE/install.sh is byte-identical to $TAG's"
 elif [ -s "$WORK_DIR/tagged-install.sh" ]; then
     check false "$SITE/install.sh DIFFERS from $TAG's"
 fi
+if [ "$install_ps1_ok" = true ]; then
+    check true "$SITE/install.ps1 is byte-identical to $TAG's"
+elif [ -s "$WORK_DIR/tagged-install.ps1" ]; then
+    check false "$SITE/install.ps1 DIFFERS from $TAG's"
+fi
 
-# The CLI release is published, complete, and its signature verifies the way a
-# consumer's would.
+# Both release objects must be public.
 if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo true)" = "false" ]; then
     check true "$TAG is published"
 else
     check false "$TAG is NOT published"
 fi
-
-n="$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null || echo 0)"
-if [ "$n" -eq 8 ]; then
-    check true "$TAG carries all 8 assets (6 binaries + checksums.txt + .minisig)"
+if [ "$(gh release view "$LIB_TAG" --json isDraft --jq .isDraft 2>/dev/null || echo true)" = "false" ]; then
+    check true "library release $LIB_TAG is published"
 else
-    check false "$TAG carries $n assets, expected 8"
+    check false "library release $LIB_TAG is missing or not published"
 fi
 
-rm -f "$WORK_DIR/checksums.txt" "$WORK_DIR/checksums.txt.minisig"
-if gh release download "$TAG" -p 'checksums.txt*' -D "$WORK_DIR" --clobber >/dev/null 2>&1 \
-   && minisign -Vm "$WORK_DIR/checksums.txt" -p "$PUBKEY_FILE" >/dev/null 2>&1 \
-   && trusted_comment_binds_tag "$WORK_DIR/checksums.txt.minisig" "$TAG"; then
+# The two independently-named tags are the release's join key. Existence is not
+# enough: they must resolve to the exact same commit.
+cli_tag_sha="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)"
+lib_tag_sha="$(gh api "repos/$REPOSITORY/git/ref/tags/$LIB_TAG" --jq .object.sha 2>/dev/null || true)"
+if [ -n "$cli_tag_sha" ] && [ "$cli_tag_sha" = "$lib_tag_sha" ]; then
+    check true "$TAG and $LIB_TAG resolve to the same commit ($cli_tag_sha)"
+else
+    check false "release tags are missing or disagree (cli=$cli_tag_sha library=$lib_tag_sha)"
+fi
+
+# Fetch both GitHub-generated source archives, then validate their release
+# metadata with the exact same implementation used before merge and in the
+# release build. Comparing their extracted trees additionally proves the two
+# public archive URLs expose the same tagged tree.
+cli_archive_root="$(extract_tag_archive "$TAG" cli 2>/dev/null || true)"
+lib_archive_root="$(extract_tag_archive "$LIB_TAG" library 2>/dev/null || true)"
+if [ -n "$cli_archive_root" ]; then
+    check true "$TAG source archive downloads and extracts"
+else
+    check false "$TAG source archive is unavailable or invalid"
+fi
+if [ -n "$lib_archive_root" ]; then
+    check true "$LIB_TAG source archive downloads and extracts"
+else
+    check false "$LIB_TAG source archive is unavailable or invalid"
+fi
+if [ -n "$cli_archive_root" ] && [ -n "$lib_archive_root" ] \
+   && diff -qr "$cli_archive_root" "$lib_archive_root" >/dev/null 2>&1; then
+    check true "CLI and library source archives contain the same tree"
+elif [ -n "$cli_archive_root" ] && [ -n "$lib_archive_root" ]; then
+    check false "CLI and library source archives differ"
+fi
+
+if [ -n "$cli_archive_root" ] \
+   && "$REPO_ROOT/scripts/validate-version.sh" \
+        --root "$cli_archive_root" --expected "$VERSION" --tag "$TAG"; then
+    check true "$TAG archive metadata is version-consistent"
+elif [ -n "$cli_archive_root" ]; then
+    check false "$TAG archive metadata is inconsistent"
+fi
+if [ -n "$lib_archive_root" ] \
+   && "$REPO_ROOT/scripts/validate-version.sh" \
+        --root "$lib_archive_root" --expected "$VERSION" --tag "$LIB_TAG"; then
+    check true "$LIB_TAG archive metadata is version-consistent"
+elif [ -n "$lib_archive_root" ]; then
+    check false "$LIB_TAG archive metadata is inconsistent"
+fi
+
+# Asset count alone can pass with one missing binary and one stray file. Require
+# the exact inventory, download it all, authenticate checksums.txt, and then
+# verify every binary digest named by it.
+expected_binaries="$(printf '%s\n' \
+    zcli-aarch64-linux \
+    zcli-aarch64-macos \
+    zcli-aarch64-windows.exe \
+    zcli-x86_64-linux \
+    zcli-x86_64-macos \
+    zcli-x86_64-windows.exe | sort)"
+expected_assets="$(printf '%s\n%s\n%s\n' "$expected_binaries" checksums.txt checksums.txt.minisig | sort)"
+actual_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | sort || true)"
+if [ "$actual_assets" = "$expected_assets" ]; then
+    check true "$TAG carries the exact 8-asset inventory"
+else
+    check false "$TAG asset inventory differs from the expected 6 binaries + checksums + signature"
+    echo "  expected:" >&2
+    printf '%s\n' "$expected_assets" | sed 's/^/    /' >&2
+    echo "  actual:" >&2
+    printf '%s\n' "$actual_assets" | sed 's/^/    /' >&2
+fi
+
+assets_dir="$WORK_DIR/assets"
+mkdir -p "$assets_dir"
+assets_downloaded=false
+if gh release download "$TAG" -D "$assets_dir" --clobber >/dev/null 2>&1; then
+    assets_downloaded=true
+    check true "$TAG assets download"
+else
+    check false "$TAG assets could not all be downloaded"
+fi
+
+signature_ok=false
+if [ "$assets_downloaded" = true ] \
+   && minisign -Vm "$assets_dir/checksums.txt" -p "$PUBKEY_FILE" >/dev/null 2>&1 \
+   && trusted_comment_binds_tag "$assets_dir/checksums.txt.minisig" "$TAG"; then
+    signature_ok=true
     check true "published signature verifies against the pinned key and binds $TAG"
 else
     check false "published signature does NOT verify (or does not bind $TAG)"
 fi
 
-# The library release, which consumers reference from build.zig.zon.
-if gh release view "$LIB_TAG" >/dev/null 2>&1; then
-    check true "library release $LIB_TAG exists"
+checksums_ok=true
+if [ "$assets_downloaded" = true ]; then
+    checksum_names="$(awk 'NF == 2 { print $2 }' "$assets_dir/checksums.txt" 2>/dev/null | sort || true)"
+    [ "$checksum_names" = "$expected_binaries" ] || checksums_ok=false
+    while IFS= read -r binary; do
+        [ -n "$binary" ] || continue
+        expected_digest="$(awk -v file="$binary" '$2 == file { print $1 }' "$assets_dir/checksums.txt" 2>/dev/null || true)"
+        actual_digest="$(sha256_digest "$assets_dir/$binary" 2>/dev/null || true)"
+        if [ -z "$expected_digest" ] || [ "$expected_digest" != "$actual_digest" ]; then
+            checksums_ok=false
+        fi
+    done <<EOF
+$expected_binaries
+EOF
 else
-    check false "library release $LIB_TAG is missing"
+    checksums_ok=false
+fi
+if [ "$checksums_ok" = true ]; then
+    check true "checksums.txt names and verifies exactly all 6 binaries"
+else
+    check false "checksums.txt inventory or a published binary digest is wrong"
+fi
+
+# Execute the published binary for this machine and feed its real --version
+# output through the shared validator. Cross-target startup coverage remains in
+# release.yml; this is the outside-GitHub, downloaded-asset seam.
+host_asset=
+case "$(uname -s):$(uname -m)" in
+    Darwin:x86_64) host_asset=zcli-x86_64-macos ;;
+    Darwin:arm64|Darwin:aarch64) host_asset=zcli-aarch64-macos ;;
+    Linux:x86_64) host_asset=zcli-x86_64-linux ;;
+    Linux:aarch64|Linux:arm64) host_asset=zcli-aarch64-linux ;;
+esac
+if published_binary_is_authenticated "$signature_ok" "$checksums_ok" \
+   && [ -n "$host_asset" ] && [ -n "$cli_archive_root" ] \
+   && [ -f "$assets_dir/$host_asset" ]; then
+    chmod +x "$assets_dir/$host_asset"
+    if "$REPO_ROOT/scripts/validate-version.sh" \
+        --root "$cli_archive_root" \
+        --expected "$VERSION" \
+        --tag "$TAG" \
+        --cli "$assets_dir/$host_asset"; then
+        check true "published $host_asset reports zcli v$VERSION"
+    else
+        check false "published $host_asset --version disagrees with release metadata"
+    fi
+elif [ "$signature_ok" != true ] || [ "$checksums_ok" != true ]; then
+    check false "refusing to execute an unauthenticated published binary"
+else
+    check false "no executable published asset available for this host ($(uname -s) $(uname -m))"
+fi
+
+# Exercise the tagged installer's real release-list selection against GitHub.
+# The site copy was proven byte-identical above, so this simultaneously checks
+# that the installer users fetch resolves this just-published CLI release.
+installer_version=
+if [ "$install_sh_ok" = true ]; then
+    installer_version="$(
+        {
+            sed '/^main$/d' "$WORK_DIR/tagged-install.sh"
+            printf '\nget_latest_version\n'
+        } | sh 2>/dev/null
+    )" || installer_version=
+fi
+if [ "$installer_version" = "$VERSION" ]; then
+    check true "$SITE/install.sh resolves latest CLI release to $VERSION"
+else
+    check false "$SITE/install.sh resolves '$installer_version', expected '$VERSION'"
 fi
 
 echo
@@ -508,7 +698,7 @@ fi
 
 echo -e "${GREEN}${BOLD}✓ Release $VERSION is live.${NC}"
 echo
-echo "  CLI:     https://github.com/ryanhair/zcli/releases/tag/$TAG"
-echo "  Library: https://github.com/ryanhair/zcli/releases/tag/$LIB_TAG"
+echo "  CLI:     https://github.com/$REPOSITORY/releases/tag/$TAG"
+echo "  Library: https://github.com/$REPOSITORY/releases/tag/$LIB_TAG"
 echo "  Site:    $SITE"
 echo

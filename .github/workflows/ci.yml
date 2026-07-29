@@ -308,13 +308,11 @@ jobs:
 
           echo "public Main Protection ruleset shape holds; bypass actors require authenticated administrative audit"
 
-  # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
-  # ship in lockstep and MUST declare the same version — the CLI's `--version`
-  # reads its own zon, the website + library tag read the root's. The README's
-  # Quick Start pins the dependency to the release tag, so it must carry the
-  # same version too. The release automation bumps all three together; this
-  # guards the manual path from drifting them apart, which would otherwise
-  # ship a mislabelled binary or a stale install instruction silently.
+  # The checked-in validator is the one policy implementation shared with the
+  # release workflow and post-release smoke verification. It checks all three
+  # umbrella manifests, README, ROADMAP, changelog release metadata, and the
+  # version reported by an actual built CLI. Keeping that logic out of YAML
+  # prevents the pre-merge and release gates from quietly diverging.
   version-sync:
     name: version consistency
     runs-on: ubuntu-latest
@@ -323,40 +321,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      # ROADMAP.md is checked here for the same reason the README is: release.yml
-      # rewrites both during a release (the "Current release: **vX.Y.Z**" line
-      # and the zig-fetch URL, release.yml:110-111) and, until this was added,
-      # nothing verified either ROADMAP line afterwards — so a sed that silently
-      # stopped matching would ship a roadmap advertising the previous version.
-      - name: Versions match across build.zig.zon files, README and ROADMAP
-        shell: bash
-        run: |
-          extract() { grep -m1 -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'; }
-          root=$(extract build.zig.zon)
-          cli=$(extract projects/zcli/build.zig.zon)
-          core=$(extract packages/core/build.zig.zon)
-          readme=$(grep -m1 -oE '/zcli/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          roadmap_current=$(grep -m1 -oE '^Current release: \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' ROADMAP.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          roadmap_fetch=$(grep -m1 -oE '/zcli/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' ROADMAP.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          echo "root build.zig.zon:          $root"
-          echo "projects/zcli/build.zig.zon: $cli"
-          echo "packages/core/build.zig.zon: $core"
-          echo "README.md dependency tag:    $readme"
-          echo "ROADMAP.md current release:  $roadmap_current"
-          echo "ROADMAP.md fetch URL:        $roadmap_fetch"
-          if [ -z "$root" ] || [ -z "$cli" ] || [ -z "$core" ] || [ -z "$readme" ]; then
-            echo "::error::could not read a version from one of the build.zig.zon files or the README dependency tag"
-            exit 1
-          fi
-          if [ -z "$roadmap_current" ] || [ -z "$roadmap_fetch" ]; then
-            echo "::error::could not read a version from ROADMAP.md — release.yml rewrites the 'Current release: **vX.Y.Z**' line and the archive/refs/tags URL, so both must stay in the shapes it matches"
-            exit 1
-          fi
-          if [ "$root" != "$cli" ] || [ "$root" != "$core" ] || [ "$root" != "$readme" ] \
-             || [ "$root" != "$roadmap_current" ] || [ "$root" != "$roadmap_fetch" ]; then
-            echo "::error::version drift: root=$root cli=$cli core=$core readme=$readme roadmap_current=$roadmap_current roadmap_fetch=$roadmap_fetch — the build.zig.zon files, the README dependency tag and both ROADMAP.md version lines must all declare the same version"
-            exit 1
-          fi
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      - name: Test version validation policy
+        run: sh scripts/test-validate-version.sh
+
+      - name: Build zcli for version validation
+        working-directory: projects/zcli
+        run: zig build
+
+      - name: Validate release versions and built CLI
+        run: scripts/validate-version.sh --cli projects/zcli/zig-out/bin/zcli
 
       # The website's getting-started page shows a demo `install` transcript with
       # release-version lines ("Fetching latest release… zcli vX.Y.Z" and a
