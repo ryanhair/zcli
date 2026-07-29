@@ -1,0 +1,34 @@
+name: Set up Zine
+description: >
+  Download the pinned Zine release to website/zine, verifying its SHA-256 before
+  it is ever executed.
+
+# One home for the Zine version and its hash. Two workflows build the site — CI
+# (so a broken page is a red PR check) and deploy-docs (so it reaches zcli.sh) —
+# and they must run the SAME Zine: if CI's pin drifted below the deploy's, "CI is
+# green" would stop meaning "the deploy works", which is the entire point of
+# building the site in CI. Bump the version and the hash together, here, once.
+#
+# Verify before executing: the deploy job holds the Cloudflare token and
+# publishes install.sh, and GitHub release assets are mutable — a swapped tarball
+# must fail the build, not run.
+#
+# Linux x86_64 only; both callers are ubuntu-latest runners.
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify Zine
+      shell: bash
+      env:
+        ZINE_VERSION: "0.11.3"
+        ZINE_SHA256: "c25e5372b8a5d2759f2b7e581aefb90c8019ff0056a230a97efe3c8edab3bc19"
+      run: |
+        set -euo pipefail
+        curl -fsSL -o zine.tar.xz \
+          "https://github.com/kristoff-it/zine/releases/download/v${ZINE_VERSION}/x86_64-linux-musl.tar.xz"
+        echo "${ZINE_SHA256}  zine.tar.xz" | sha256sum -c -
+        tar -xf zine.tar.xz
+        mv zine website/zine
+        chmod +x website/zine
+        echo "zine ${ZINE_VERSION} ready at website/zine"

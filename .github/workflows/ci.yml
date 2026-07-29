@@ -43,6 +43,7 @@ jobs:
       secrets: ${{ steps.resolve.outputs.secrets }}
       examples: ${{ steps.resolve.outputs.examples }}
       installers: ${{ steps.resolve.outputs.installers }}
+      website: ${{ steps.resolve.outputs.website }}
     steps:
       # Only needed for push events (PR events use the API), but checking out
       # unconditionally keeps the job shape simple.
@@ -67,6 +68,14 @@ jobs:
       #             root) and the release-signing ceremony → the installer
       #             signature/version-binding suite. No Zig involved, so
       #             nothing else in this workflow covers them.
+      #   website:  every input sync-site-data.sh reads, plus the Zine sources
+      #             themselves → the site build. CHANGELOG.md is in here because
+      #             it is a *build input*, not just prose: the script generates
+      #             content/changelog/index.smd from it, so a repo-relative
+      #             markdown link in a release entry becomes broken site markup.
+      #             build.zig.zon supplies the version and
+      #             packages/core/src/plugins the plugin count; the script hard
+      #             -fails on either being unreadable.
       - name: Classify diff
         uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
@@ -106,6 +115,13 @@ jobs:
               - 'scripts/test-install-signature.sh'
               - 'scripts/test-install-signature.ps1'
               - '.github/workflows/ci.yml'
+            website:
+              - 'website/**'
+              - 'CHANGELOG.md'
+              - 'build.zig.zon'
+              - 'packages/core/src/plugins/**'
+              - '.github/actions/setup-zine/**'
+              - '.github/workflows/ci.yml'
 
       - name: Resolve gates (full run on main push or the ci-full label)
         id: resolve
@@ -117,6 +133,7 @@ jobs:
           SECRETS: ${{ steps.filter.outputs.secrets }}
           EXAMPLES: ${{ steps.filter.outputs.examples }}
           INSTALLERS: ${{ steps.filter.outputs.installers }}
+          WEBSITE: ${{ steps.filter.outputs.website }}
         run: |
           gate() {
             local v=false
@@ -129,6 +146,7 @@ jobs:
           gate secrets "$SECRETS"
           gate examples "$EXAMPLES"
           gate installers "$INSTALLERS"
+          gate website "$WEBSITE"
 
   fmt:
     name: zig fmt check
@@ -261,7 +279,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Versions match across build.zig.zon files and README
+      # ROADMAP.md is checked here for the same reason the README is: release.yml
+      # rewrites both during a release (the "Current release: **vX.Y.Z**" line
+      # and the zig-fetch URL, release.yml:110-111) and, until this was added,
+      # nothing verified either ROADMAP line afterwards — so a sed that silently
+      # stopped matching would ship a roadmap advertising the previous version.
+      - name: Versions match across build.zig.zon files, README and ROADMAP
         shell: bash
         run: |
           extract() { grep -m1 -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'; }
@@ -269,16 +292,25 @@ jobs:
           cli=$(extract projects/zcli/build.zig.zon)
           core=$(extract packages/core/build.zig.zon)
           readme=$(grep -m1 -oE '/zcli/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          roadmap_current=$(grep -m1 -oE '^Current release: \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' ROADMAP.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          roadmap_fetch=$(grep -m1 -oE '/zcli/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' ROADMAP.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           echo "root build.zig.zon:          $root"
           echo "projects/zcli/build.zig.zon: $cli"
           echo "packages/core/build.zig.zon: $core"
           echo "README.md dependency tag:    $readme"
+          echo "ROADMAP.md current release:  $roadmap_current"
+          echo "ROADMAP.md fetch URL:        $roadmap_fetch"
           if [ -z "$root" ] || [ -z "$cli" ] || [ -z "$core" ] || [ -z "$readme" ]; then
             echo "::error::could not read a version from one of the build.zig.zon files or the README dependency tag"
             exit 1
           fi
-          if [ "$root" != "$cli" ] || [ "$root" != "$core" ] || [ "$root" != "$readme" ]; then
-            echo "::error::version drift: root=$root cli=$cli core=$core readme=$readme — the build.zig.zon files and the README dependency tag must all declare the same version"
+          if [ -z "$roadmap_current" ] || [ -z "$roadmap_fetch" ]; then
+            echo "::error::could not read a version from ROADMAP.md — release.yml rewrites the 'Current release: **vX.Y.Z**' line and the archive/refs/tags URL, so both must stay in the shapes it matches"
+            exit 1
+          fi
+          if [ "$root" != "$cli" ] || [ "$root" != "$core" ] || [ "$root" != "$readme" ] \
+             || [ "$root" != "$roadmap_current" ] || [ "$root" != "$roadmap_fetch" ]; then
+            echo "::error::version drift: root=$root cli=$cli core=$core readme=$readme roadmap_current=$roadmap_current roadmap_fetch=$roadmap_fetch — the build.zig.zon files, the README dependency tag and both ROADMAP.md version lines must all declare the same version"
             exit 1
           fi
 
@@ -323,6 +355,47 @@ jobs:
             exit 1
           fi
           echo "No raw.githubusercontent.com install URLs — all install commands use the branded zcli.sh host"
+
+  # Builds the actual website. Until this job existed, `zine release` ran in
+  # exactly one place — deploy-docs.yml, on `release: published` — so a broken
+  # page was first discovered AFTER a release had shipped, when it was already a
+  # stale-website incident rather than a red check.
+  #
+  # That is not hypothetical: the v0.23.0 docs deploy died on
+  # "content/changelog/index.smd:14:85: error: unknown page" (#805). The cause
+  # was one CHANGELOG entry written as [ADR-0032](docs/adr/0032-….md) — a
+  # repo-relative path that is not a website page. CHANGELOG.md is a *build
+  # input* (sync-site-data.sh generates the changelog page from it), so ordinary
+  # release-note prose can break the deploy, and every other ADR reference in
+  # that file is plain text. Reproduced against this job's Zine before it was
+  # written: exit 1 with the link, exit 0 without.
+  #
+  # Uses the same pinned, hash-verified Zine as the deploy, via the shared
+  # composite action — see .github/actions/setup-zine for why that matters.
+  website:
+    name: website builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: changes
+    if: needs.changes.outputs.website == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Zine
+        uses: ./.github/actions/setup-zine
+
+      # Regenerates assets/site-data.json and content/changelog/index.smd, both
+      # gitignored. Hard-fails on an unreadable version, a zero plugin count, or
+      # a CHANGELOG with no release headings.
+      - name: Sync site data from build.zig.zon and CHANGELOG.md
+        run: ./website/sync-site-data.sh
+
+      # `zine release` runs the link checker that the deploy runs. It refuses to
+      # build into a non-empty public/, which a fresh checkout never has.
+      - name: Build site
+        working-directory: website
+        run: ./zine release
 
   # Coverage instrumentation (kcov / llvm-cov) was considered here (#335) and
   # deliberately deferred rather than wired in: Zig 0.16 has no stable,
@@ -934,6 +1007,7 @@ jobs:
       - changes
       - fmt
       - version-sync
+      - website
       - test
       - installers
       - windows-release-build
