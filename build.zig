@@ -81,12 +81,14 @@ pub fn build(b: *std.Build) void {
     }
 
     // Forward core's specialized steps so they run from the repo root too.
-    // They are deliberately NOT part of the aggregate `test`: the secrets
+    // Most are deliberately NOT part of the aggregate `test`: the secrets
     // steps link native libraries / touch the OS keychain (ADR-0003), and the
-    // performance runs build ReleaseFast.
+    // performance runs build ReleaseFast. `fuzz-smoke`/`fuzz` point at a test
+    // artifact that is already in `test`; the forwarded names are the focused
+    // deterministic and coverage-guided entry points.
     var regression_step: *std.Build.Step = undefined;
     var core_regression_step: *std.Build.Step = undefined;
-    for ([_][]const u8{ "test-secrets", "test-secrets-live", "benchmark", "regression" }) |name| {
+    for ([_][]const u8{ "test-secrets", "test-secrets-live", "benchmark", "regression", "fuzz-smoke", "fuzz" }) |name| {
         const core_step = core_dep.builder.top_level_steps.get(name) orelse
             std.debug.panic("core package does not define a '{s}' step", .{name});
         const forwarded = b.step(name, core_step.description);

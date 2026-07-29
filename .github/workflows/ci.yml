@@ -397,15 +397,71 @@ jobs:
         working-directory: website
         run: ./zine release
 
-  # Coverage instrumentation (kcov / llvm-cov) was considered here (#335) and
-  # deliberately deferred rather than wired in: Zig 0.16 has no stable,
-  # first-party coverage story, and every third-party route (kcov's DWARF
-  # unwinding against Zig's codegen, llvm-cov needing a matching profile
-  # runtime bundled with this Zig's LLVM) is fragile enough on a moving Zig
-  # release to be its own maintenance burden — exactly what this repo's CI
-  # philosophy (concrete assertions over qualitative feel, see the
-  # output-contract check above) tries to avoid shipping half-working.
-  # Revisit if Zig grows a built-in `-fcoverage`-equivalent.
+  # Zig 0.16's first-party fuzzer instruments source coverage itself, avoiding
+  # the kcov/DWARF and matching-LLVM-runtime problems that previously blocked
+  # coverage reporting here (#335). The ordinary `fuzz-smoke` run executes the
+  # checked-in corpus deterministically; the second run lets the fuzzer mutate
+  # Smith decisions for a fixed iteration budget. Its built-in report records
+  # runs, unique runs, and covered/total instrumented PCs (including a
+  # percentage) in the job summary and an artifact.
+  #
+  # This is reporting, not a percentage gate. The denominator is the whole
+  # imported core test artifact and changes with Zig/codegen/source shape; no
+  # evidence supports inventing a pass number. What is fail-closed is that the
+  # fuzz targets run successfully and emit a coverage report at all.
+  #
+  # One Linux leg controls cost and matches the current toolchain constraint:
+  # Zig 0.16 reports `--fuzz not yet implemented for windows`; parser semantics
+  # still get deterministic corpus coverage on Windows through `zig build test`.
+  parser-fuzz:
+    name: parser fuzz + coverage report
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      - name: Run deterministic parser fuzz corpus
+        run: zig build fuzz-smoke
+
+      - name: Run bounded coverage-guided parser fuzzing
+        shell: bash
+        env:
+          # A clean local cache makes "0 -> N" a per-run measurement instead
+          # of silently accumulating coverage from setup-zig's shared cache.
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zcli-parser-fuzz-cache
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/parser-fuzz-report.txt"
+          zig build fuzz --fuzz=5K --summary all 2>&1 | tee "$report"
+          if ! grep -q '^======= FUZZING REPORT =======$' "$report"; then
+            echo "::error::Zig fuzzing completed without its objective coverage report"
+            exit 1
+          fi
+          {
+            echo '### Parser fuzz coverage'
+            echo '```text'
+            awk '/^======= FUZZING REPORT =======$/, /^==============================$/' "$report"
+            echo '```'
+            echo
+            echo 'Reporting only: no coverage percentage threshold is enforced.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload fuzz coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parser-fuzz-coverage
+          path: ${{ runner.temp }}/parser-fuzz-report.txt
+          retention-days: 14
+          if-no-files-found: error
+
   test:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -1008,6 +1064,7 @@ jobs:
       - fmt
       - version-sync
       - website
+      - parser-fuzz
       - test
       - installers
       - windows-release-build

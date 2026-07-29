@@ -28,12 +28,44 @@ From the repo root:
 
 - `zig build test` — the whole battery: every package's suite plus the meta-CLI's and every example's tests
 - `zig build test-<name>` — one subproject (`test-core`, `test-terminal`, `test-prompts`, `test-tasks`, …)
+- `zig build fuzz-smoke` — deterministic parser fuzz corpora (also included in `test`)
+- `zig build fuzz --fuzz=50K` — bounded coverage-guided parser fuzzing; omit `=50K` for a sustained local run you stop manually
 - `zig build build-examples` / `build-cli` — compile the examples / the zcli binary
 - `zig build e2e` — the meta-CLI's end-to-end suite (scaffolds real projects in temp dirs and drives the binary through a PTY; slow, not part of `test`; run it after prompt/render/help changes). Forwards to `projects/zcli`'s own `e2e` step; `cd projects/zcli && zig build e2e -De2e-filter=<substring>` to narrow it while iterating.
 - `zig build test-secrets` — compile+link the host's native secrets backend (forwarded from `packages/core`, like `benchmark`/`regression`; not part of `test`)
 - `zig build build-all` — everything above that CI also gates: `test` + `build-examples` + `build-cli` + `e2e`. Slow, by design; it is the step whose name means all of it.
 
 `-Dtarget=` and `-Doptimize=` at the root propagate into the package test builds.
+
+### Parser fuzzing and coverage
+
+The core fuzz target drives the public `zcli.parseCommandLine` and
+`zcli.response_file.expandArgs` seams. It checks arbitrary argv repeatability
+and borrowed lifetimes, compares equivalent long/short/attached option
+spellings, and expands generated response files through the command parser.
+These are behavioral/metamorphic properties, not a corpus that merely asserts
+its own fixtures.
+
+An ordinary `zig build fuzz-smoke` executes the fixed Smith corpus and empty
+input once. It is deterministic and runs in the default test suite on every
+supported OS. `zig build fuzz --fuzz=N` rebuilds the same target with Zig
+0.16's coverage-guided instrumentation and stops after a bounded iteration
+budget; plain `--fuzz` is the sustained local entry point and opens Zig's web
+UI. Zig 0.16 does not implement fuzz mode on Windows, so use Linux or macOS for
+the sustained run.
+
+The CI fuzz job uses a clean local cache and publishes Zig's built-in report:
+runs, unique runs, and covered/total instrumented PCs. There is deliberately no
+coverage percentage gate. The denominator is the full imported core test
+artifact and moves with compiler/codegen and source shape; the report is an
+objective snapshot and trend signal, not evidence for an arbitrary minimum.
+Response-file fuzzing performs real temporary-file I/O to stay on the public
+seam, trading some executions per second for coverage of production behavior.
+
+Zig 0.16.0's bundled fuzz test runner has an error-return stack-trace type
+mismatch when tracing is enabled. The fuzz artifact alone disables
+error-return tracing as a narrow workaround; safety checks, panic traces, leak
+checks, and all ordinary-test error traces remain enabled.
 
 Before pushing:
 
@@ -52,6 +84,7 @@ zig build test
 | `zig fmt check` | `zig fmt --check packages projects examples build.zig`, the output-contract grep (no `std.debug.print` / `std.process.exit` outside the command context), and a doc-comment gate on `packages/vterm/src/vterm.zig` (every `pub` declaration needs a `///`). |
 | `version consistency` | The three `build.zig.zon` versions and the README dependency tag agree; the website transcript injects its version instead of hardcoding one; install URLs use the branded host. |
 | `unit tests` | `zig build test` — the whole battery, on **ubuntu, macos and windows**. |
+| `parser fuzz + coverage report` | Deterministic parser fuzz corpus plus a bounded Zig 0.16 coverage-guided run on Linux; publishes covered/total instrumented PCs without a percentage gate. |
 | `zcli end-to-end tests` | `zig build e2e` on **ubuntu, macos and windows**. |
 | `windows release build` | The CLI built natively on Windows in ReleaseSafe — the only ReleaseSafe Windows coverage on PRs. |
 | `linux musl release build` | Both static-musl targets, byte-for-byte the release's build command; x86_64 is smoke-run. |
