@@ -21,9 +21,23 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: "cloudflare-pages"
-  cancel-in-progress: false
+# Deliberately NO concurrency group (2026-07-29). There used to be one
+# (`cloudflare-pages`, cancel-in-progress: false) and it silently ate five
+# consecutive deploys, including the v0.21.0 and v0.22.0 releases: GitHub allows
+# only ONE pending run per group, so each newly queued run *displaced* the
+# pending one. A single run that sat 13.9 days waiting on a since-deleted
+# environment approval held the group the whole time — and removing the
+# `environment:` key from this file did not release it, because a queued run is
+# pinned to the workflow file at its own head_sha. Every displaced run ended
+# `cancelled` with zero jobs and nothing anywhere went red.
+#
+# Serialising deploys was only ever a proxy for "the site ends up serving the
+# released version". That invariant is now asserted directly, by the verify step
+# at the end of this job — which is a real check rather than a proxy, and cannot
+# deadlock. Deploys are one per release plus the occasional manual dispatch, so
+# there is nothing left to serialise. If you ever do need a guard here, use
+# `cancel-in-progress: true`: newest-wins is the correct polarity for a site
+# deploy, and it cannot strand a pending run.
 
 jobs:
   deploy:
@@ -35,15 +49,16 @@ jobs:
     # deploy on that one, skip the library tag (deploying twice per release
     # would be harmless but pointless).
     if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'zcli-v')
-    # No environment gate (2026-07-16): the required-reviewer approval that
-    # used to live on a "docs-deploy" environment (grade6 #293/#397) stalled
-    # deploys — a waiting run holds the cloudflare-pages concurrency group —
-    # and is redundant under the release trigger above: publishing the signed
-    # release IS the approval. install.sh/install.ps1 (the curl|sh trust
-    # root) still only change via reviewed PRs on protected main — enforced
-    # below for the workflow_dispatch path, since that trigger has no ref
-    # restriction of its own and would otherwise let anyone with write access
-    # publish installers built from an arbitrary branch.
+    # No environment gate (2026-07-16), and do not reintroduce one: the
+    # required-reviewer approval that used to live on a "docs-deploy"
+    # environment (grade6 #293/#397) is what stranded the run that then ate
+    # five deploys (see the concurrency note above), and it is redundant under
+    # the release trigger — publishing the signed release IS the approval.
+    # install.sh/install.ps1 (the curl|sh trust root) still only change via
+    # reviewed PRs on protected main — enforced below for the
+    # workflow_dispatch path, since that trigger has no ref restriction of its
+    # own and would otherwise let anyone with write access publish installers
+    # built from an arbitrary branch.
     steps:
       - name: Restrict manual dispatch to main
         if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
@@ -54,19 +69,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Download Zine
-        # Verify before executing: this job holds the Cloudflare token and
-        # publishes install.sh, and GitHub release assets are mutable — a
-        # swapped tarball must fail the build, not run. Update the hash
-        # alongside the version when bumping Zine.
-        run: |
-          curl -fsSL -o zine.tar.xz https://github.com/kristoff-it/zine/releases/download/v0.11.3/x86_64-linux-musl.tar.xz
-          echo "c25e5372b8a5d2759f2b7e581aefb90c8019ff0056a230a97efe3c8edab3bc19  zine.tar.xz" | sha256sum -c -
-          tar -xf zine.tar.xz
-          mv zine website/zine
-          chmod +x website/zine
+      # Shared with ci.yml's `website` job so both build with the same pinned,
+      # hash-verified Zine — see the action for why that matters.
+      - name: Set up Zine
+        uses: ./.github/actions/setup-zine
 
-      - name: Sync site data from build.zig.zon
+      - name: Sync site data from build.zig.zon and CHANGELOG.md
         run: ./website/sync-site-data.sh
 
       - name: Build site
@@ -84,3 +92,57 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy website/public --project-name=zcli --branch=main
+
+      # A green deploy that leaves zcli.sh serving the old version is the exact
+      # failure this workflow existed to prevent and failed to: v0.21.0 and
+      # v0.22.0 never deployed at all, v0.23.0's deploy errored, and the site sat
+      # on 0.20.0 for three weeks with nothing red anywhere. A deploy is not
+      # "done" because wrangler exited 0 — it is done when the live site serves
+      # what we just built. Assert that here, so the failure has somewhere to
+      # surface.
+      #
+      # Content-based, never status-based: this site answers HTTP 200 for missing
+      # paths (verified 2026-07-29 — a nonexistent path returns 200 carrying the
+      # 404 body), so `curl -f` proves nothing at all. Both assertions compare
+      # bytes.
+      #
+      # `version` is read from the tree we just built, which is the released tag
+      # on a `release` event and main on a dispatch — either way, "the build this
+      # run produced". It appears on every page in the nav badge, injected from
+      # site-data.json; grep for the exact string rather than the surrounding
+      # markup so restyling the badge cannot turn this red.
+      - name: Verify the published site serves this build
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^[[:space:]]*\.version = "\([^"]*\)".*/\1/p' build.zig.zon | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read .version from build.zig.zon — cannot verify the deploy"
+            exit 1
+          fi
+          echo "expecting https://zcli.sh/ to serve $version and install.sh to match the repo"
+
+          for attempt in 1 2 3 4 5 6; do
+            [ "$attempt" -eq 1 ] || sleep 20
+
+            curl -fsS --max-time 30 -o /tmp/live-home.html  https://zcli.sh/           || true
+            curl -fsS --max-time 30 -o /tmp/live-install.sh https://zcli.sh/install.sh || true
+
+            version_ok=false
+            if grep -qF "$version" /tmp/live-home.html 2>/dev/null; then version_ok=true; fi
+            install_ok=false
+            if cmp -s /tmp/live-install.sh install.sh; then install_ok=true; fi
+
+            if [ "$version_ok" = true ] && [ "$install_ok" = true ]; then
+              echo "verified: zcli.sh serves $version, install.sh is byte-identical to the repo"
+              exit 0
+            fi
+            echo "attempt $attempt/6 — version_ok=$version_ok install_ok=$install_ok; Pages may still be propagating"
+          done
+
+          echo "::error::deploy did not reach the live site: zcli.sh does not serve $version and/or install.sh differs from the repo. wrangler reported success, so suspect the Pages project/branch wiring or a cached edge response — check https://dash.cloudflare.com and re-run this workflow from main."
+          echo "--- versions found on the live homepage ---"
+          grep -oE '[0-9]+\.[0-9]+\.[0-9]+' /tmp/live-home.html 2>/dev/null | sort -u | head -20 || echo "(homepage not fetched)"
+          echo "--- install.sh diff (live vs repo), first 20 lines ---"
+          diff /tmp/live-install.sh install.sh 2>&1 | head -20 || true
+          exit 1
