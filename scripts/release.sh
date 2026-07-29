@@ -103,13 +103,246 @@ published_binary_is_authenticated() {
     [ "$1" = true ] && [ "$2" = true ]
 }
 
+release_now() {
+    date -u +%s
+}
+
+release_sleep() {
+    sleep "$1"
+}
+
+# Central mutation boundary for --verify-only. Control-flow guards still skip
+# mutation phases, and this refuses any future accidental call that reaches one.
+gh_mutate() {
+    if [ "${VERIFY_ONLY:-false}" = true ]; then
+        error "--verify-only is remote-read-only; refusing: gh $*"
+    fi
+    gh "$@"
+}
+
+# Poll a workflow run to completion, announcing the approval gate once when it
+# opens. Every nonterminal state, including an API failure or a status GitHub
+# adds in the future, is bounded by RUN_WAIT_TIMEOUT_SECONDS.
+wait_for_run() {
+    _run_id="$1"
+    _label="$2"
+    _timeout="${RUN_WAIT_TIMEOUT_SECONDS:-14400}"
+    _interval="${RUN_POLL_INTERVAL_SECONDS:-10}"
+
+    case "$_timeout" in
+        ''|*[!0-9]*) error "$_label has invalid wait timeout '$_timeout'" ;;
+        0) error "$_label wait timeout must be greater than zero" ;;
+    esac
+    case "$_interval" in
+        ''|*[!0-9]*) error "$_label has invalid poll interval '$_interval'" ;;
+    esac
+
+    _start="$(release_now)"
+    _deadline=$((_start + _timeout))
+    _url="https://github.com/$REPOSITORY/actions/runs/$_run_id"
+    if _reported_url="$(gh run view "$_run_id" --json url --jq .url 2>/dev/null)" \
+       && [ -n "$_reported_url" ]; then
+        _url="$_reported_url"
+    fi
+
+    _announced=false
+    _last=""
+    info "$_label: $_url"
+    while :; do
+        if _raw_status="$(gh run view "$_run_id" --json status --jq .status 2>/dev/null)" \
+           && [ -n "$_raw_status" ]; then
+            case "$_raw_status" in
+                queued|in_progress|waiting|pending|requested|completed|unknown)
+                    _status="$_raw_status"
+                    ;;
+                *) _status="unknown($_raw_status)" ;;
+            esac
+        else
+            _status=api-error
+        fi
+
+        if [ "$_status" != "$_last" ]; then
+            echo "    status: $_status"
+            _last="$_status"
+        fi
+
+        case "$_status" in
+            completed)
+                if ! _conclusion="$(gh run view "$_run_id" --json conclusion --jq .conclusion 2>/dev/null)" \
+                   || [ -z "$_conclusion" ]; then
+                    _status=api-error
+                elif [ "$_conclusion" != success ]; then
+                    error "$_label finished '$_conclusion' — see $_url"
+                else
+                    success "$_label succeeded"
+                    return 0
+                fi
+                ;;
+            waiting)
+                if [ "$_announced" = false ]; then
+                    _announced=true
+                    printf '\a'  # the one moment this needs a human
+                    echo
+                    echo -e "${BOLD}    ▶ APPROVAL NEEDED — approve the 'release' environment:${NC}"
+                    echo -e "${BOLD}      $_url${NC}"
+                    echo
+                fi
+                ;;
+        esac
+
+        _now="$(release_now)"
+        if [ "$_now" -ge "$_deadline" ]; then
+            error "$_label timed out after ${_timeout}s (last status: $_status) — see $_url"
+        fi
+        release_sleep "$_interval"
+    done
+}
+
+# Resolve through either a lightweight or annotated tag to the immutable commit
+# SHA GitHub puts on workflow runs.
+resolve_release_tag_sha() {
+    _sha="$(gh api "repos/$REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null)" || return 1
+    printf '%s\n' "$_sha" | grep -qE '^[0-9a-fA-F]{40}$' || return 1
+    printf '%s\n' "$_sha"
+}
+
+find_release_deploy_run() {
+    _release_sha="$1"
+    _published_since="$2"
+    gh run list --workflow deploy-docs.yml --limit 20 \
+        --json databaseId,createdAt,event,headSha \
+        --jq "[.[] | select(.event == \"release\" and .headSha == \"$_release_sha\" and (.createdAt | fromdateiso8601) >= $_published_since)] | sort_by(.createdAt) | last | .databaseId // empty" \
+        2>/dev/null
+}
+
+# Return 0 when the published docs state is complete, 1 when a successful sample
+# proves it is incomplete, and 2 when remote reads never produced a full sample.
+# The distinction is a mutation boundary: an API/network failure must not be
+# mistaken for evidence that a recovery deploy is needed.
+probe_published_docs() {
+    _probe_attempts="${DOCS_PROBE_ATTEMPTS:-3}"
+    _probe_interval="${DOCS_PROBE_INTERVAL_SECONDS:-2}"
+    _probe_dir="$WORK_DIR/docs-probe"
+    _observed=false
+    mkdir -p "$_probe_dir"
+
+    for _attempt in $(seq 1 "$_probe_attempts"); do
+        _prefix="$_probe_dir/attempt-$_attempt"
+        if curl -fsSL --max-time 30 -o "$_prefix-tagged.sh" \
+                "https://raw.githubusercontent.com/$REPOSITORY/$TAG/install.sh" \
+           && curl -fsSL --max-time 30 -o "$_prefix-tagged.ps1" \
+                "https://raw.githubusercontent.com/$REPOSITORY/$TAG/install.ps1" \
+           && curl -fsS --max-time 30 -o "$_prefix-home.html" "$SITE/" \
+           && curl -fsS --max-time 30 -o "$_prefix-live.sh" "$SITE/install.sh" \
+           && curl -fsS --max-time 30 -o "$_prefix-live.ps1" "$SITE/install.ps1"; then
+            _observed=true
+            if grep -qF "$VERSION" "$_prefix-home.html" \
+               && cmp -s "$_prefix-live.sh" "$_prefix-tagged.sh" \
+               && cmp -s "$_prefix-live.ps1" "$_prefix-tagged.ps1"; then
+                return 0
+            fi
+        fi
+        [ "$_attempt" -eq "$_probe_attempts" ] \
+            || release_sleep "$_probe_interval"
+    done
+
+    [ "$_observed" = true ] && return 1
+    return 2
+}
+
+dispatch_docs_recovery() {
+    _release_sha="$1"
+    _since=$(( $(release_now) - 60 ))
+
+    warn "published docs state is incomplete; dispatching deploy-docs.yml from immutable tag $TAG"
+    gh_mutate workflow run deploy-docs.yml --ref "$TAG" \
+        || error "failed to dispatch docs recovery from $TAG"
+
+    _deploy_run=""
+    for _ in $(seq 1 40); do
+        release_sleep 3
+        _deploy_run="$(gh run list --workflow deploy-docs.yml --event workflow_dispatch --limit 20 \
+            --json databaseId,createdAt,event,headSha \
+            --jq "[.[] | select(.event == \"workflow_dispatch\" and .headSha == \"$_release_sha\" and (.createdAt | fromdateiso8601) >= $_since)] | sort_by(.createdAt) | last | .databaseId // empty" \
+            2>/dev/null || echo '')"
+        [ -n "$_deploy_run" ] && break
+    done
+    [ -n "$_deploy_run" ] \
+        || error "dispatched docs recovery from $TAG, but could not find its workflow run"
+    wait_for_run "$_deploy_run" "Docs deploy"
+}
+
+ensure_docs_deploy() {
+    _release_sha="$1"
+
+    phase "Waiting for the docs deploy"
+    if [ "$JUST_PUBLISHED" = false ]; then
+        if probe_published_docs; then
+            success "published docs state is already complete — no deploy dispatched"
+            return 0
+        else
+            _probe_status=$?
+        fi
+        if [ "$_probe_status" -eq 2 ]; then
+            error "could not determine whether published docs are complete; refusing to dispatch on failed remote reads"
+        fi
+        dispatch_docs_recovery "$_release_sha"
+        return 0
+    fi
+
+    _deploy_run=""
+    for _ in $(seq 1 40); do
+        release_sleep 5
+        _deploy_run="$(find_release_deploy_run "$_release_sha" "$PUBLISH_STARTED_AT" || echo '')"
+        [ -n "$_deploy_run" ] && break
+    done
+
+    if [ -n "$_deploy_run" ]; then
+        wait_for_run "$_deploy_run" "Docs deploy"
+    else
+        warn "no release-triggered deploy found for commit $_release_sha"
+        dispatch_docs_recovery "$_release_sha"
+    fi
+}
+
+# Exercise the tagged installer's real release-list selector, but put a timeout
+# around even old tagged installers whose curl command predates bounded reads.
+resolve_live_installer_version() {
+    _installer="$1"
+    _attempts="${LIVE_INSTALLER_ATTEMPTS:-3}"
+    _interval="${LIVE_INSTALLER_RETRY_SECONDS:-2}"
+
+    for _attempt in $(seq 1 "$_attempts"); do
+        if _version="$(
+            {
+                sed '/^main$/d' "$_installer"
+                cat <<'EOF'
+curl() {
+    command curl --connect-timeout 10 --max-time 30 "$@"
+}
+get_latest_version
+EOF
+            } | sh 2>/dev/null
+        )" && [ -n "$_version" ]; then
+            printf '%s\n' "$_version"
+            return 0
+        fi
+        [ "$_attempt" -eq "$_attempts" ] || release_sleep "$_interval"
+    done
+    return 1
+}
+
+main() {
 SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.minisign/minisign.key}"
 PUBKEY_FILE="$REPO_ROOT/docs/zcli-minisign.pub"
 SITE="https://zcli.sh"
 REPOSITORY="${ZCLI_REPOSITORY:-ryanhair/zcli}"
+RUN_WAIT_TIMEOUT_SECONDS="${ZCLI_RUN_WAIT_TIMEOUT_SECONDS:-14400}"
+RUN_POLL_INTERVAL_SECONDS="${ZCLI_RUN_POLL_INTERVAL_SECONDS:-10}"
 SIGN_ONLY=false
 VERIFY_ONLY=false
 ASSUME_YES=false
+PUBLISH_STARTED_AT=
 
 usage() {
     cat <<'USAGE'
@@ -243,45 +476,6 @@ if [ "$RELEASE_STATE" = none ] && [ "$SIGN_ONLY" = false ] && [ "$VERIFY_ONLY" =
     fi
 fi
 
-# ── helpers ─────────────────────────────────────────────────────────────────
-
-# Poll a workflow run to completion, announcing the approval gate once when it
-# opens. GitHub reports `waiting` while a job sits at an environment gate.
-wait_for_run() {
-    _run_id="$1"
-    _label="$2"
-    _url="$(gh run view "$_run_id" --json url --jq .url)"
-    _announced=false
-    _last=""
-    info "$_label: $_url"
-    while :; do
-        _status="$(gh run view "$_run_id" --json status --jq .status 2>/dev/null || echo unknown)"
-        if [ "$_status" != "$_last" ]; then
-            echo "    status: $_status"
-            _last="$_status"
-        fi
-        case "$_status" in
-            completed)
-                _conclusion="$(gh run view "$_run_id" --json conclusion --jq .conclusion)"
-                [ "$_conclusion" = success ] || error "$_label finished '$_conclusion' — see $_url"
-                success "$_label succeeded"
-                return 0
-                ;;
-            waiting)
-                if [ "$_announced" = false ]; then
-                    _announced=true
-                    printf '\a'  # the one moment this needs a human
-                    echo
-                    echo -e "${BOLD}    ▶ APPROVAL NEEDED — approve the 'release' environment:${NC}"
-                    echo -e "${BOLD}      $_url${NC}"
-                    echo
-                fi
-                ;;
-        esac
-        sleep 10
-    done
-}
-
 # ── Phase 1: build, gate, tag ───────────────────────────────────────────────
 
 if [ "$VERIFY_ONLY" = true ]; then
@@ -293,7 +487,7 @@ elif [ "$RELEASE_STATE" = none ]; then
     # Timestamp before dispatching so we can identify OUR run. 60s of slack
     # absorbs clock skew between here and GitHub.
     since=$(( $(date -u +%s) - 60 ))
-    gh workflow run release.yml -f version="$VERSION"
+    gh_mutate workflow run release.yml -f version="$VERSION"
     info "dispatched release.yml with version=$VERSION"
 
     run_id=""
@@ -360,10 +554,19 @@ if [ "$RELEASE_STATE" != published ] && [ "$VERIFY_ONLY" = false ]; then
     fi
     success "trusted comment binds $TAG"
 
-    gh release upload "$TAG" "$WORK_DIR/checksums.txt.minisig" --clobber \
+    gh_mutate release upload "$TAG" "$WORK_DIR/checksums.txt.minisig" --clobber \
         || error "failed to upload signature"
-    gh release edit "$TAG" --draft=false \
+    # Match release-triggered workflow runs by both immutable commit SHA and
+    # this publication window. The library release shares the same commit and
+    # published earlier, so SHA alone can select its all-jobs-skipped run.
+    gh_mutate release edit "$TAG" --draft=false \
         || error "failed to publish release"
+    PUBLISH_STARTED_AT="$(gh release view "$TAG" --json publishedAt \
+        --jq '.publishedAt | fromdateiso8601' 2>/dev/null)" \
+        || error "published $TAG, but could not read its publication time"
+    case "$PUBLISH_STARTED_AT" in
+        ''|*[!0-9]*) error "published $TAG returned invalid publication time '$PUBLISH_STARTED_AT'" ;;
+    esac
     success "$TAG signed and published"
     JUST_PUBLISHED=true
 else
@@ -384,41 +587,9 @@ fi
 # not run.
 
 if [ "$VERIFY_ONLY" = false ]; then
-phase "Waiting for the docs deploy"
-
-deploy_run=""
-if [ "$JUST_PUBLISHED" = true ]; then
-    for _ in $(seq 1 40); do
-        sleep 5
-        deploy_run="$(gh run list --workflow deploy-docs.yml --limit 10 \
-            --json databaseId,headBranch,event \
-            --jq "[.[] | select(.event == \"release\" and .headBranch == \"$TAG\")] | first | .databaseId // empty" \
-            2>/dev/null || echo '')"
-        [ -n "$deploy_run" ] && break
-    done
-fi
-
-if [ -n "$deploy_run" ]; then
-    wait_for_run "$deploy_run" "Docs deploy"
-else
-    # Either already published before this run, or the release event did not
-    # produce a deploy. Dispatch one from main — the documented manual override.
-    # After a successful release main IS the released commit, so this builds the
-    # right tree.
-    warn "no release-triggered deploy found; dispatching one from main"
-    since=$(( $(date -u +%s) - 60 ))
-    gh workflow run deploy-docs.yml --ref main
-    for _ in $(seq 1 40); do
-        sleep 3
-        deploy_run="$(gh run list --workflow deploy-docs.yml --event workflow_dispatch --limit 10 \
-            --json databaseId,createdAt \
-            --jq "[.[] | select((.createdAt | fromdateiso8601) >= $since)] | sort_by(.createdAt) | last | .databaseId // empty" \
-            2>/dev/null || echo '')"
-        [ -n "$deploy_run" ] && break
-    done
-    [ -n "$deploy_run" ] || error "could not find the dispatched docs deploy run"
-    wait_for_run "$deploy_run" "Docs deploy"
-fi
+    release_tag_sha="$(resolve_release_tag_sha)" \
+        || error "could not resolve immutable release tag $TAG to a commit SHA"
+    ensure_docs_deploy "$release_tag_sha"
 fi
 
 # Download and unpack one immutable GitHub tag archive. Prints the extracted
@@ -678,12 +849,8 @@ fi
 # that the installer users fetch resolves this just-published CLI release.
 installer_version=
 if [ "$install_sh_ok" = true ]; then
-    installer_version="$(
-        {
-            sed '/^main$/d' "$WORK_DIR/tagged-install.sh"
-            printf '\nget_latest_version\n'
-        } | sh 2>/dev/null
-    )" || installer_version=
+    installer_version="$(resolve_live_installer_version "$WORK_DIR/tagged-install.sh")" \
+        || installer_version=
 fi
 if [ "$installer_version" = "$VERSION" ]; then
     check true "$SITE/install.sh resolves latest CLI release to $VERSION"
@@ -702,3 +869,8 @@ echo "  CLI:     https://github.com/$REPOSITORY/releases/tag/$TAG"
 echo "  Library: https://github.com/$REPOSITORY/releases/tag/$LIB_TAG"
 echo "  Site:    $SITE"
 echo
+}
+
+if [ "${ZCLI_RELEASE_SOURCE_ONLY:-false}" != true ]; then
+    main "$@"
+fi

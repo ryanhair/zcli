@@ -49,6 +49,13 @@ make_fixture "$fixture"
 
 printf 'PASS: valid release metadata and built CLI agree\n'
 
+"$VALIDATOR" \
+    --root "$fixture" \
+    --expected 1.2.3 \
+    --tag v1.2.3
+
+printf 'PASS: library tag v1.2.3 agrees with release metadata\n'
+
 expect_reject() {
     label=$1
     needle=$2

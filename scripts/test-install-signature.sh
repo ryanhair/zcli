@@ -19,7 +19,8 @@
 #      release from the release LIST, so a library tag published ahead of the
 #      still-draft CLI tag cannot derail an install (#774), and that its two
 #      no-release outcomes (mid-publish window vs. a CLI release older than one
-#      API page) are told apart, because the advice differs.
+#      API page) are told apart, because the advice differs. API failures retry
+#      a fixed number of bounded requests rather than failing once or hanging.
 #   5. install.sh's path_already_configured — that it recognizes a real PATH
 #      export and only a real one, so an incidental mention of the string
 #      cannot make the installer skip the append and report success while
@@ -151,11 +152,28 @@ curl() {
         return 0
     fi
 
+    if [ -n "${RELEASE_CURL_CALLS_FILE:-}" ]; then
+        release_curl_calls=$(cat "${RELEASE_CURL_CALLS_FILE}")
+        printf '%s\n' $((release_curl_calls + 1)) > "${RELEASE_CURL_CALLS_FILE}"
+    fi
+
+    if [ -n "${RELEASE_CURL_FAILURES_FILE:-}" ]; then
+        release_curl_failures=$(cat "${RELEASE_CURL_FAILURES_FILE}")
+        if [ "${release_curl_failures}" -gt 0 ]; then
+            printf '%s\n' $((release_curl_failures - 1)) > "${RELEASE_CURL_FAILURES_FILE}"
+            return 22
+        fi
+    fi
+
     if [ "${SERVE_RELEASES_FAILS:-0}" = "1" ]; then
         return 22
     fi
     printf '%s\n' "${SERVE_RELEASES}"
 }
+
+# Retry tests must be deterministic and fast; get_latest_version still executes
+# its real retry loop, with only the delay replaced.
+sleep() { :; }
 
 MINISIGN_PUBKEY="${PUBKEY}"
 
@@ -334,6 +352,17 @@ check_version_message "mid-publish window explained to the user" \
     "${LIST_NO_CLI}" 'mid-publish' 'older than one page'
 check_version_message "exhausted page distinguished from mid-publish" \
     "${LIST_FULL_PAGE}" 'older than one page' 'mid-publish'
+
+SERVE_RELEASES="${LIST_BOTH}"
+printf '2\n' > "${WORK}/release-curl-failures"
+printf '0\n' > "${WORK}/release-curl-calls"
+RELEASE_CURL_FAILURES_FILE="${WORK}/release-curl-failures"
+RELEASE_CURL_CALLS_FILE="${WORK}/release-curl-calls"
+retry_version=$(get_latest_version 2>/dev/null) || retry_version=reject
+report "install.sh: transient API failures recover" 0.22.0 "${retry_version}"
+report "install.sh: release-list retries are bounded and exact" \
+    "${RELEASE_LIST_ATTEMPTS}" "$(cat "${RELEASE_CURL_CALLS_FILE}")"
+unset RELEASE_CURL_FAILURES_FILE RELEASE_CURL_CALLS_FILE
 
 SERVE_RELEASES_FAILS=1
 SERVE_RELEASES=''

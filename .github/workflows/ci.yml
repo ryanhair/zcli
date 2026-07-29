@@ -112,8 +112,10 @@ jobs:
               - 'install.sh'
               - 'install.ps1'
               - 'scripts/release.sh'
+              - 'scripts/test-release-orchestration.sh'
               - 'scripts/test-install-signature.sh'
               - 'scripts/test-install-signature.ps1'
+              - '.github/workflows/deploy-docs.yml'
               - '.github/workflows/ci.yml'
             website:
               - 'website/**'
@@ -606,6 +608,10 @@ jobs:
         env:
           ZCLI_REQUIRE_MINISIGN: "1"
         run: sh scripts/test-install-signature.sh
+
+      - name: Release rerun, recovery dispatch, and waiter bounds
+        if: runner.os != 'Windows'
+        run: bash scripts/test-release-orchestration.sh
 
       # Invoked as a child process (not `shell: pwsh`) so the harness's exit
       # code is the step's, unambiguously. Every GitHub-hosted runner image
