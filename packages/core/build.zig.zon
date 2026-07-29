@@ -70,14 +70,14 @@
         //    // actually used.
         //    .lazy = false,
         //},
-        // NOTE: serde.zig's v1.0.6 release tag ships a build.zig.zon that still
+        // NOTE: serde.zig's v1.0.4 release tag ships a build.zig.zon that still
         // declares `.version = "1.0.1"` (upstream forgot to bump it), so Zig's content
-        // hash is labeled `serde-1.0.1-…` even though the URL points at v1.0.6. This is
-        // correct and intentional — do NOT "fix" the label to 1.0.6; the hash would no
+        // hash is labeled `serde-1.0.1-…` even though the URL points at v1.0.4. This is
+        // correct and intentional — do NOT "fix" the label to 1.0.4; the hash would no
         // longer match the fetched tarball and the build would fail.
         .serde = .{
-            .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.6.tar.gz",
-            .hash = "serde-1.0.1-1DszT7B_DQByGB4OA1ofuxMNznusFipIeMMqCeXbu2cY",
+            .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.4.tar.gz",
+            .hash = "serde-1.0.1-1DszT153DAAj09Cj1NSTPQFV2E3ZxcFXN41Wn2g4Q_pV",
         },
     },
 
