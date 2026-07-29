@@ -17,11 +17,12 @@ const testing = std.testing;
 // "file exists in modules 'root' and 'zcli'".
 //
 // That is why the `no_config` split below is what it is: the ADR-0032 helpers
-// (`noConfigMask`/`maskNoConfig`/`captureNoConfig`/`restoreNoConfig`, and their
-// interaction with `firstMissingRequiredOption`) are unit-tested next to their
-// implementation in command_parser.zig, where no plugin — and so no "zcli"
-// module — is needed. What belongs HERE is the other half: the real plugin,
-// reading a real file, honoring the masked bitset the registry hands it.
+// (`noConfigMask`/`maskNoConfig`/`captureNoConfig`/`restoreNoConfig`) are
+// unit-tested next to their implementation in command_parser.zig; the
+// post-parse required check is covered in command_validation.zig. Neither needs
+// a plugin — and so no "zcli" module. What belongs HERE is the other half: the
+// real plugin, reading a real file, honoring the masked bitset the registry
+// hands it.
 
 /// The slice of `context` the config plugin reads. `plugins.zcli_config` is the
 /// per-command ContextData the framework threads; the rest are plain accessors.
@@ -438,7 +439,7 @@ test "integration: required option satisfied by a placeholder-equal config value
     try testing.expect(opts.format == .json);
     // The registry's required-option check reads exactly these flags
     // (firstMissingRequiredOption is bitset-driven — unit-tested in
-    // command_parser.zig), so both fields count as supplied.
+    // command_validation.zig), so both fields count as supplied.
     try testing.expect(applied[0]);
     try testing.expect(applied[1]);
 
