@@ -413,26 +413,60 @@ phase "Verifying the released state"
 fail=0
 check() { if [ "$1" = true ]; then success "$2"; else echo -e "${RED}✗ $2${NC}" >&2; fail=1; fi; }
 
-# The site serves this version.
-curl -fsS --max-time 30 -o "$WORK_DIR/home.html" "$SITE/" 2>/dev/null || true
-if grep -qF "$VERSION" "$WORK_DIR/home.html" 2>/dev/null; then
+# The reference copy of install.sh is the RELEASED TAG's, not the working tree's:
+# the local checkout is a commit behind after a release (CI creates the bump
+# commit) and may carry unrelated edits, either of which would make a
+# working-tree comparison lie in both directions. Fetched once, since a tag is
+# immutable, and a failure to fetch it is reported as its own thing — "could not
+# read the reference" must never masquerade as "the site is wrong".
+RAW_URL="https://raw.githubusercontent.com/ryanhair/zcli/$TAG/install.sh"
+curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.sh" "$RAW_URL" 2>/dev/null || true
+if [ ! -s "$WORK_DIR/tagged-install.sh" ]; then
+    check false "could not fetch $TAG's install.sh from $RAW_URL — cannot check the installer"
+fi
+
+# Cloudflare Pages propagates assets INDEPENDENTLY and eventually: for a minute
+# or so after a deploy the homepage and /install.sh routinely disagree about
+# which build they are on, in EITHER direction. The 0.24.0 deploy logged
+# `version_ok=false install_ok=true` on its first attempt; a minute later this
+# script sampled once, caught the reverse skew, and reported a release that was
+# in fact complete as INCOMPLETE.
+#
+# So poll, the way deploy-docs.yml's verify step already does — and poll both
+# together, because either one can be the stale side. A single sample is a race,
+# not a verdict; only a persistent disagreement is a real failure.
+site_ok=false
+install_ok=false
+for attempt in 1 2 3 4 5 6; do
+    [ "$attempt" -eq 1 ] || sleep 20
+
+    curl -fsS --max-time 30 -o "$WORK_DIR/home.html"       "$SITE/"           2>/dev/null || true
+    curl -fsS --max-time 30 -o "$WORK_DIR/live-install.sh" "$SITE/install.sh" 2>/dev/null || true
+
+    site_ok=false
+    if grep -qF "$VERSION" "$WORK_DIR/home.html" 2>/dev/null; then site_ok=true; fi
+    install_ok=false
+    if [ -s "$WORK_DIR/tagged-install.sh" ] \
+       && cmp -s "$WORK_DIR/live-install.sh" "$WORK_DIR/tagged-install.sh"; then install_ok=true; fi
+
+    if [ "$site_ok" = true ] && [ "$install_ok" = true ]; then break; fi
+    if [ "$attempt" -lt 6 ]; then
+        info "site not settled (serves_version=$site_ok installer_matches=$install_ok) — retrying in 20s"
+    fi
+done
+
+if [ "$site_ok" = true ]; then
     check true "$SITE serves $VERSION"
 else
     check false "$SITE does NOT serve $VERSION"
 fi
 
-# install.sh at the site root matches the RELEASED tag's copy — the curl|sh
-# trust root, so what the site hands out must be the reviewed file from the
-# commit that was released. Compared against the tag rather than the working
-# tree on purpose: the local checkout is a commit behind after a release (CI
-# creates the bump commit), and may carry unrelated edits, either of which would
-# make a working-tree comparison lie in both directions.
-curl -fsS --max-time 30 -o "$WORK_DIR/live-install.sh" "$SITE/install.sh" 2>/dev/null || true
-curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.sh" \
-    "https://raw.githubusercontent.com/ryanhair/zcli/$TAG/install.sh" 2>/dev/null || true
-if [ -s "$WORK_DIR/tagged-install.sh" ] && cmp -s "$WORK_DIR/live-install.sh" "$WORK_DIR/tagged-install.sh"; then
+# The curl|sh trust root: what the site hands out must be the reviewed file from
+# the commit that was released. Skipped entirely if the reference could not be
+# fetched — that was already reported above.
+if [ "$install_ok" = true ]; then
     check true "$SITE/install.sh is byte-identical to $TAG's"
-else
+elif [ -s "$WORK_DIR/tagged-install.sh" ]; then
     check false "$SITE/install.sh DIFFERS from $TAG's"
 fi
 
