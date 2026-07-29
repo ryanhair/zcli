@@ -1,0 +1,85 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "automerge": false,
+  "dependencyDashboard": true,
+  "labels": [
+    "dependencies"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)build\\.zig\\.zon$/"
+      ],
+      "matchStrings": [
+        "\\.url\\s*=\\s*\"https://github\\.com/(?<depName>[^/\\s]+/[^/\\s]+)/archive/refs/tags/(?<currentValue>v?[^\"/]+)\\.tar\\.gz\""
+      ],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)build\\.zig\\.zon$/"
+      ],
+      "matchStrings": [
+        "\\.url\\s*=\\s*\"https://codeberg\\.org/(?<depName>[^/\\s]+/[^/\\s]+)/archive/(?<currentValue>v?[^\"/]+)\\.tar\\.gz\""
+      ],
+      "datasourceTemplate": "forgejo-tags",
+      "registryUrlTemplate": "https://codeberg.org",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)build\\.zig\\.zon$/"
+      ],
+      "matchStrings": [
+        "\\.url\\s*=\\s*\"git\\+https://github\\.com/(?<depName>[^/#\\s]+/[^/#\\s]+)#(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "currentValueTemplate": "master",
+      "packageNameTemplate": "https://github.com/{{{depName}}}",
+      "datasourceTemplate": "git-refs",
+      "versioningTemplate": "git"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/actions/setup-zine/action\\.yml$/"
+      ],
+      "matchStrings": [
+        "ZINE_VERSION:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "kristoff-it/zine",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep Zig package content hashes review-gated",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchFileNames": [
+        "**/build.zig.zon"
+      ],
+      "prBodyNotes": [
+        "Zig package URL updates require a matching reviewed `.hash`: run `zig fetch <new-url>` and commit the resulting content hash before merging."
+      ]
+    },
+    {
+      "description": "Keep downloaded Zine releases checksum-verified",
+      "matchDepNames": [
+        "kristoff-it/zine"
+      ],
+      "prBodyNotes": [
+        "Update `ZINE_SHA256` from the reviewed release asset and keep the download verification step passing before merging."
+      ]
+    }
+  ]
+}

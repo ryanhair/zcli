@@ -199,6 +199,23 @@ pub fn build(b: *std.Build) !void {
         test_step.dependOn(&b.addRunArtifact(cmd_tests).step);
     }
 
+    // Nightwatch's Linux backend calls raw inotify syscalls. This executable is
+    // intentionally libc-linked so its public `watch` error path covers the
+    // errno decoding that differs from zcli's normal libc-free Linux build.
+    if (target.result.os.tag == .linux) {
+        const nightwatch_linux_libc = b.addExecutable(.{
+            .name = "test-nightwatch-linux-libc",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("test/nightwatch_linux_libc.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        nightwatch_linux_libc.root_module.addImport("nightwatch", nightwatch_module);
+        test_step.dependOn(&b.addRunArtifact(nightwatch_linux_libc).step);
+    }
+
     // The scaffold library's own unit tests (spec rendering + AST splice).
     const scaffold_tests = b.addTest(.{ .root_module = scaffold_module });
     test_step.dependOn(&b.addRunArtifact(scaffold_tests).step);

@@ -193,6 +193,46 @@ test "integration: required option satisfied by config (through parseCommandLine
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }
 
+test "integration: YAML quoted command keys decode through the config pipeline" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "myapp.yaml",
+        // serde.zig <= 1.0.3 treated a quoted scalar in a nested mapping as a
+        // value instead of recognizing the following ':' as a mapping key.
+        .data = "list:\n  \"output\": table\n  'all': true\n",
+    });
+    const abs = try tmp.dir.realPathFileAlloc(io, "myapp.yaml", alloc);
+
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{"list"};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    const Opts = struct {
+        output: []const u8 = "text",
+        all: bool = false,
+    };
+    var opts = Opts{};
+    const provided = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &provided, &applied);
+
+    try testing.expectEqualStrings("table", opts.output);
+    try testing.expect(opts.all);
+    try testing.expectEqualSlices(bool, &.{ true, true }, &applied);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
 test "integration: a no_config field is not set from a config file that supplies it (ADR-0032)" {
     var a = arena();
     defer a.deinit();
