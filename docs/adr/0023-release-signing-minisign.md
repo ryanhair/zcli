@@ -28,7 +28,7 @@ but cannot forge a signature under a key that never enters the release pipeline.
   `docs/RELEASE-SIGNING.md`). This is what makes the signature meaningful — a key
   sitting next to the release token would, as ADR-0009 warned, add ceremony
   without adding security. CI publishes the CLI release as a **draft**; the
-  maintainer signs locally with `scripts/sign-release.sh` and flips it to
+  maintainer signs locally (`scripts/release.sh`, ADR-0033) and flips it to
   published. Drafting until signed means fail-closed clients never observe an
   unsigned release, closing the verification-window race.
 

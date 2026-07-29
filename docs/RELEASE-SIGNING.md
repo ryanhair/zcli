@@ -110,29 +110,59 @@ Commit these together. Signature enforcement is now live for the **next** releas
 
 ---
 
-## Signing a release (every release)
+## Cutting a release (every release)
 
-The release workflow publishes the CLI release as a **draft** (binaries +
-`checksums.txt`, unsigned). Turn it into a published, signed release from your
-machine:
+One command, from a clean `main`:
 
 ```sh
 # Make the secret key available for the duration (from your password manager).
 # Either point at your working copy…
-scripts/sign-release.sh 0.20.0
+scripts/release.sh 0.24.0
 
 # …or export the key from your password manager to a temp file and pass it:
 #   op document get "zcli minisign key" --out ./key.sec   # example
-#   scripts/sign-release.sh -s ./key.sec 0.20.0
+#   scripts/release.sh -s ./key.sec 0.24.0
 #   rm -f ./key.sec
 ```
 
-The script downloads `checksums.txt` from the draft, signs it (prompting for your
-passphrase), self-verifies against `docs/zcli-minisign.pub`, uploads
-`checksums.txt.minisig`, and flips the release to published. Never publish a CLI
-release draft by hand — that would ship it unsigned.
+That drives the whole release and does not return success until zcli.sh serves
+the new version (ADR-0033):
 
-Both self-verify steps are unconditional and abort the ceremony on failure:
+1. **Preflight** — tools, credentials, clean tree in sync with origin, version
+   not already tagged, `## Unreleased` non-empty. It prints the commits since
+   the last tag next to the Unreleased section and asks whether the CHANGELOG
+   covers them; that judgment is yours, and this is the last cheap moment to
+   make it.
+2. **Dispatches the Release workflow**, which bumps the manifests, stages them
+   on a scratch branch, and runs the full cross-platform test + build matrix.
+3. **Surfaces the one approval.** When the `release` environment gate opens, the
+   script rings the terminal bell and prints the URL. Approving promotes the
+   staged commit to main and cuts both tags.
+4. **Signs the draft** — the ceremony below, run inline.
+5. **Waits for the docs deploy**, which fires on `release: published`.
+6. **Verifies the end state independently**: the site serves the new version,
+   `zcli.sh/install.sh` matches the repo, the release carries all 8 assets, the
+   published signature verifies against the pinned key and binds the tag, and the
+   library release exists.
+
+**Re-running it is always safe.** Every phase decides what to do from remote
+state — is there a tag, a draft, a published release, what does the site serve —
+never from local bookkeeping. If your laptop dies mid-signing, run the same
+command again and it resumes. Two narrower modes exist for when you need them:
+
+```sh
+scripts/release.sh --sign-only 0.24.0     # sign an existing draft, then stop
+scripts/release.sh --verify-only 0.23.0   # read-only: did that release land?
+```
+
+`--verify-only` checks a release against the *current* live site, so running it
+on a superseded version will correctly report that the site has moved on.
+
+Never publish a CLI release draft by hand — that would ship it unsigned.
+
+### The signing ceremony
+
+Both self-verify steps are unconditional and abort on failure:
 
 1. **Signature** — the signature must verify under the committed public key.
    Catches signing with the wrong key. A missing `docs/zcli-minisign.pub` is an

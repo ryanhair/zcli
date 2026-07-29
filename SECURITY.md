@@ -39,7 +39,7 @@ are signed with [minisign](https://jedisct1.github.io/minisign/) (Ed25519):
 - The **secret** signing key is generated and kept offline (password-manager
   custody); it never touches CI. The release workflow only publishes a
   **draft** release; the maintainer signs `checksums.txt` locally with
-  `scripts/sign-release.sh` and then publishes it. This means a compromised
+  `scripts/release.sh` and then publishes it. This means a compromised
   GitHub account or CI workflow can swap binaries and rewrite checksums, but
   cannot forge a valid signature.
 - The **public** key is pinned in the clients: `install.sh` and `install.ps1`
@@ -54,7 +54,7 @@ are signed with [minisign](https://jedisct1.github.io/minisign/) (Ed25519):
   vulnerable build. The signing ceremony writes the tag into minisign's trusted
   comment (covered by minisign's second, "global" signature), and every client
   requires that comment to name the exact tag being installed as a whole token,
-  refusing the install otherwise (CWE-294). `scripts/sign-release.sh` checks the
+  refusing the install otherwise (CWE-294). `scripts/release.sh` checks the
   same binding before publishing, so a mistyped tag fails at signing time rather
   than for every user afterwards.
 - Apps built with zcli's `zcli_github_upgrade` plugin must explicitly choose a

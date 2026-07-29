@@ -3,7 +3,7 @@ name: Deploy Documentation
 # The website deploys when a RELEASE is published, not on pushes to main:
 # docs merged between releases describe features nobody can install yet, so
 # they accumulate on main and ship the moment the version does. The
-# `published` event fires when sign-release.sh flips the drafted zcli-v*
+# `published` event fires when scripts/release.sh flips the drafted zcli-v*
 # release public (ADR-0023's offline-signing ceremony) — so the human
 # approval that used to live on a docs-deploy environment is now implicit in
 # signing the release. On this event checkout resolves to the release tag's

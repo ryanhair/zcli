@@ -111,7 +111,7 @@ jobs:
             installers:
               - 'install.sh'
               - 'install.ps1'
-              - 'scripts/sign-release.sh'
+              - 'scripts/release.sh'
               - 'scripts/test-install-signature.sh'
               - 'scripts/test-install-signature.ps1'
               - '.github/workflows/ci.yml'
