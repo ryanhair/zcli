@@ -35,14 +35,16 @@
     },
     {
       "customType": "regex",
+      "description": "Track Nightwatch's verified master tip only: a bare git commit URL has no branch metadata, so a generic git-refs manager would incorrectly assume master for unrelated dependencies.",
       "managerFilePatterns": [
-        "/(^|/)build\\.zig\\.zon$/"
+        "/^projects/zcli/build\\.zig\\.zon$/"
       ],
       "matchStrings": [
-        "\\.url\\s*=\\s*\"git\\+https://github\\.com/(?<depName>[^/#\\s]+/[^/#\\s]+)#(?<currentDigest>[a-f0-9]{40})\""
+        "\\.url\\s*=\\s*\"git\\+https://github\\.com/neurocyte/nightwatch#(?<currentDigest>[a-f0-9]{40})\""
       ],
+      "depNameTemplate": "neurocyte/nightwatch",
       "currentValueTemplate": "master",
-      "packageNameTemplate": "https://github.com/{{{depName}}}",
+      "packageNameTemplate": "https://github.com/neurocyte/nightwatch",
       "datasourceTemplate": "git-refs",
       "versioningTemplate": "git"
     },
