@@ -82,6 +82,7 @@ zig build test
 | --- | --- |
 | `classify changed paths` | Path filters that gate the jobs below. PR-only: pushes to `main` always run everything, and the `ci-full` label forces the full matrix. |
 | `zig fmt check` | `zig fmt --check packages projects examples build.zig`, the output-contract grep (no `std.debug.print` / `std.process.exit` outside the command context), and a doc-comment gate on `packages/vterm/src/vterm.zig` (every `pub` declaration needs a `///`). |
+| `main ruleset shape` | Anonymous, fail-closed assertion that the public `Main Protection` ruleset remains active with deletion, non-fast-forward, and non-strict `CI OK` requirements. It cannot observe bypass actors; those require authenticated administrative audit. |
 | `version consistency` | The three `build.zig.zon` versions and the README dependency tag agree; the website transcript injects its version instead of hardcoding one; install URLs use the branded host. |
 | `unit tests` | `zig build test` — the whole battery, on **ubuntu, macos and windows**. |
 | `parser fuzz + coverage report` | Deterministic parser fuzz corpus plus a bounded Zig 0.16 coverage-guided run on Linux; publishes covered/total instrumented PCs without a percentage gate. |
@@ -95,11 +96,12 @@ zig build test
 | `performance budgets` | `zig build regression` — parsing hot path, startup time, binary size. Fail-closed: no skip path. |
 | `CI OK` | Aggregates all of the above. This is the **only** required status check; adding a job needs no ruleset edit, only an entry in its `needs`. |
 
-Most jobs are path-gated, so a docs-only PR runs just `zig fmt check`, `version consistency` and `CI OK`.
+Most jobs are path-gated, so a docs-only PR runs `zig fmt check`, `main ruleset shape`, `version consistency`, and `CI OK`.
 
 ## Change conventions
 
 - **One focused PR per change**, branched off `main` — see [What CI runs](#what-ci-runs) for the gate it has to clear.
+- **Routine PRs squash-merge.** Use a conventional, imperative squash-commit subject such as `docs: clarify release policy` or `fix: reject invalid input`; do not rewrite shared history merely to make an existing branch conform.
 - **Tests ride with the change.** A behavioral fix wants a regression test that fails without it; if you add a command file to the meta-CLI with tests in it, wire it into `command_test_files` in `projects/zcli/build.zig` (unit tests there are opt-in per file).
 - **The examples are load-bearing** (ADR-0004): if a framework change breaks `zig build build-examples`, update the examples in the same PR — they're the canonical idiom source.
 - **Docs live next to decisions**: significant design choices get an ADR in `docs/adr/`; user-facing behavior changes update the relevant `docs/*.md` (and the scaffolding templates in `projects/zcli/src/commands/init.zig`, which generate what users see first).

@@ -264,6 +264,48 @@ jobs:
           fi
           echo "$file: every public declaration is documented"
 
+  # This intentionally uses no credential: the public ruleset endpoint exposes
+  # the rule types and required-check configuration. It exposes
+  # `bypass_actors: null` anonymously, so this assertion does not and cannot
+  # verify bypass actors; SECURITY.md records that authenticated-admin audit
+  # limitation. Unlike path-gated work, this job always runs, and an unreadable
+  # API response is a failure rather than a skipped assertion.
+  ruleset:
+    name: main ruleset shape
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Assert the public Main Protection ruleset shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruleset=$(
+            curl --fail --silent --show-error --location \
+              --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              'https://api.github.com/repos/ryanhair/zcli/rulesets/18284157'
+          ) || {
+            echo "::error::cannot read the public Main Protection ruleset; refusing to skip its drift assertion"
+            exit 1
+          }
+
+          if ! jq -e '
+            .id == 18284157
+            and .name == "Main Protection"
+            and .enforcement == "active"
+            and ([.rules[].type] | sort == ["deletion", "non_fast_forward", "required_status_checks"])
+            and ([.rules[] | select(.type == "required_status_checks") | .parameters] | length == 1)
+            and ([.rules[] | select(.type == "required_status_checks") | .parameters][0].strict_required_status_checks_policy == false)
+            and ([.rules[] | select(.type == "required_status_checks") | .parameters][0].required_status_checks | map(.context) | sort == ["CI OK"])
+          ' <<<"$ruleset"; then
+            echo "::error::public Main Protection ruleset shape drifted (expected deletion, non_fast_forward, and non-strict CI OK)"
+            exit 1
+          fi
+
+          echo "public Main Protection ruleset shape holds; bypass actors require authenticated administrative audit"
+
   # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
   # ship in lockstep and MUST declare the same version — the CLI's `--version`
   # reads its own zon, the website + library tag read the root's. The README's
@@ -1062,6 +1104,7 @@ jobs:
     needs:
       - changes
       - fmt
+      - ruleset
       - version-sync
       - website
       - parser-fuzz

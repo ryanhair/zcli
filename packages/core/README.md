@@ -9,8 +9,8 @@ The zcli framework itself: argument/option parsing, the command registry and exe
 | `src/args.zig`, `src/options/`, `src/command_parser.zig` | Positional argument parsing, option/flag parsing with validators, and the unified mixed-syntax command-line parser |
 | `src/context.zig` | The per-command `Context` (io, allocator — arena-per-command per [ADR-0001](../../docs/adr/0001-arena-per-command-allocator.md) — environ, plugin state) and `Stdio` |
 | `src/registry.zig` | The generated registry's runtime: registration, dispatch, `app.run(...)` |
-| `src/plugin_types.zig` | The plugin-authoring API: `GlobalOption`, lifecycle hooks, `PluginEntry` |
-| `src/plugins/` | The shipped plugins: `zcli_help`, `zcli_version`, `zcli_not_found`, `zcli_completions`, `zcli_config`, `zcli_secrets`, `zcli_github_upgrade` — enabled via `zcli.builtin(.tag, .{})` |
+| `src/plugin_types.zig` | The plugin-authoring API: `GlobalOption` and lifecycle hooks |
+| `src/plugins/` | Seven runtime plugins — `zcli_help`, `zcli_version`, `zcli_not_found`, `zcli_completions`, `zcli_config`, `zcli_secrets`, `zcli_github_upgrade` — plus the build-only `zcli_docs` generator; enabled via `zcli.builtin(.tag, .{})` |
 | `src/http.zig` | HTTP client with safe defaults (TLS verification, timeouts, bounded bodies, credential-header stripping on redirect) |
 | `src/build_utils/` | Build-time pipeline: command discovery, registry source generation, module wiring, `generate()` coordination, `addCommandTests` |
 | `src/diagnostic_errors.zig`, `src/logging.zig` | Error taxonomy and build/runtime logging |
@@ -49,4 +49,4 @@ All of these also run from the repo root: `zig build test-core` aggregates the `
 - [docs/DESIGN.md](../../docs/DESIGN.md) — architecture and runtime design
 - [docs/BUILD.md](../../docs/BUILD.md) — the codegen pipeline
 - [zcli.sh/testing](https://zcli.sh/testing/) — the testing tiers
-- [docs/adr/](../../docs/adr/) — the decision record (0001–0027)
+- [docs/adr/](../../docs/adr/) — the decision record (0001–0033)
