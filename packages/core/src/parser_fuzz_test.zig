@@ -7,6 +7,7 @@
 //! not terminate reliably on hosted Linux/x86_64 runners.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zcli = @import("zcli");
 const testing = std.testing;
 
@@ -75,9 +76,17 @@ test "fuzz public argv parser seams" {
                 "\x00\x00\x00\x00",
         },
     });
+
+    // A fuzz-mode artifact must expose one instrumented test on Zig 0.16:
+    // Linux/x86_64 reports a zero-PC corrupted coverage record when an
+    // ordinary second test shares that artifact. In ordinary mode this branch
+    // keeps the response-file Smith corpus in fuzz-smoke and `zig build test`;
+    // in fuzz mode it is removed at compile time, keeping guided execution
+    // pure and in-memory.
+    if (!builtin.fuzz) try runResponseFileCorpus();
 }
 
-test "response-file parser Smith corpus" {
+fn runResponseFileCorpus() !void {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var context: ResponseContext = .{ .dir = tmp.dir };
