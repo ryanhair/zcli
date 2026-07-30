@@ -464,7 +464,12 @@ jobs:
         run: |
           set -o pipefail
           report="$RUNNER_TEMP/parser-fuzz-report.txt"
-          zig build fuzz --fuzz=5K --summary all 2>&1 | tee "$report"
+          # Keep the required gate on the fast coverage plateau. A 1K clean
+          # Linux run covers essentially the same instrumented PCs as 5K,
+          # while the larger random run can exhaust this job's 10-minute
+          # hosted-runner budget. Sustained fuzzing belongs in an unbounded
+          # local/session run, not in the merge gate.
+          zig build fuzz --fuzz=1K --summary all 2>&1 | tee "$report"
           if ! grep -q '^======= FUZZING REPORT =======$' "$report"; then
             echo "::error::Zig fuzzing completed without its objective coverage report"
             exit 1

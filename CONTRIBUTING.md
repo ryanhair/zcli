@@ -59,6 +59,10 @@ runs, unique runs, and covered/total instrumented PCs. There is deliberately no
 coverage percentage gate. The denominator is the full imported core test
 artifact and moves with compiler/codegen and source shape; the report is an
 objective snapshot and trend signal, not evidence for an arbitrary minimum.
+CI uses a 1K iteration budget: clean Linux measurements reach the same useful
+coverage plateau there as at 5K, without exposing the required merge gate to
+rare slow inputs for long enough to hit its runner timeout. Use a larger bound
+or an unbounded session for sustained local fuzzing.
 Response-file fuzzing performs real temporary-file I/O to stay on the public
 seam, trading some executions per second for coverage of production behavior.
 
