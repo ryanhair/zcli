@@ -55,15 +55,17 @@ UI. Zig 0.16 does not implement fuzz mode on Windows, so use Linux or macOS for
 the sustained run.
 
 The CI fuzz job uses a clean local cache and publishes Zig's built-in report:
-runs, unique runs, and covered/total instrumented PCs. There is deliberately no
-coverage percentage gate. The denominator is the full imported core test
-artifact and moves with compiler/codegen and source shape; the report is an
-objective snapshot and trend signal, not evidence for an arbitrary minimum.
-CI uses a 1K iteration budget: clean Linux measurements reach the same useful
-in-memory coverage plateau there as at 5K, without exposing the required merge
-gate to slow inputs unnecessarily. The job retains a 20-minute hard ceiling
-for cold instrumentation and hosted-runner variance. Use a larger bound or an
-unbounded session for sustained local fuzzing.
+runs, unique runs, and covered/total instrumented PCs. It runs on macOS/ARM:
+Zig 0.16's Linux/x86_64 fuzzer emitted zero-PC corrupted coverage files on
+hosted runners, while both macOS/ARM and Linux/ARM produce valid reports. There
+is deliberately no coverage percentage gate. The denominator is the full
+imported core test artifact and moves with compiler/codegen/source shape; the
+report is an objective snapshot and trend signal, not evidence for an
+arbitrary minimum. CI uses a 1K iteration budget: clean ARM measurements reach
+the same useful in-memory coverage plateau there as at 5K, without exposing
+the required merge gate to slow inputs unnecessarily. The job retains a
+20-minute hard ceiling for cold instrumentation and hosted-runner variance.
+Use a larger bound or an unbounded session for sustained local fuzzing.
 
 Response-file fuzzing performs real temporary-file I/O to stay on the public
 seam. Its Smith corpus runs deterministically in `fuzz-smoke` and the default

@@ -437,12 +437,15 @@ jobs:
   # repeating fixed-path I/O inside Zig 0.16's Linux/x86_64 multi-instance
   # fuzzer failed to terminate even with a 1K bound.
   #
-  # One Linux leg controls cost and matches the current toolchain constraint:
-  # Zig 0.16 reports `--fuzz not yet implemented for windows`; parser semantics
-  # still get deterministic corpus coverage on Windows through `zig build test`.
+  # One macOS/ARM leg controls cost and avoids a Zig 0.16 Linux/x86_64 coverage
+  # bug (`corrupted coverage file ... pcs_len was zero`) reproduced on hosted
+  # runners even after the callback became pure and single-test. Zig 0.16 also
+  # reports `--fuzz not yet implemented for windows`; parser semantics still
+  # get deterministic corpus coverage on Linux and Windows through
+  # `zig build test`.
   parser-fuzz:
     name: parser fuzz + coverage report
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     # Keep a hard ceiling with headroom for a cold coverage-instrumented build
     # plus hosted-runner variance.
     timeout-minutes: 20
