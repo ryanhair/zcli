@@ -130,6 +130,11 @@ jobs:
           # sync-site-data.sh, and ci.yml's `website` job builds it on every PR
           # that touches CHANGELOG.md, so it needs no sweep here.)
 
+          # The same checked-in policy CI runs: prove every release metadata
+          # surface now names the requested version before committing or
+          # staging anything. The build jobs below add the executable check.
+          scripts/validate-version.sh --expected "$VERSION"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "Bump version to $VERSION"
@@ -270,8 +275,14 @@ jobs:
       - name: Smoke test the binary
         if: matrix.smoke
         working-directory: projects/zcli
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
         run: |
-          ./dist/zcli-${{ matrix.target }} --version
+          ../../scripts/validate-version.sh \
+            --root ../.. \
+            --expected "$VERSION" \
+            --tag "zcli-v$VERSION" \
+            --cli "./dist/zcli-${{ matrix.target }}"
           ./dist/zcli-${{ matrix.target }} --help
 
       - name: Generate checksum

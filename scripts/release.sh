@@ -86,12 +86,280 @@ trusted_comment_binds_tag() {
     return $_bound
 }
 
+sha256_digest() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+# Security boundary before executing a downloaded release asset. Both booleans
+# are established independently below: an authenticated checksum manifest and
+# a digest match for every expected binary.
+published_binary_is_authenticated() {
+    [ "$1" = true ] && [ "$2" = true ]
+}
+
+release_now() {
+    date -u +%s
+}
+
+release_sleep() {
+    sleep "$1"
+}
+
+# Central mutation boundary for --verify-only. Control-flow guards still skip
+# mutation phases, and this refuses any future accidental call that reaches one.
+gh_mutate() {
+    if [ "${VERIFY_ONLY:-false}" = true ]; then
+        error "--verify-only is remote-read-only; refusing: gh $*"
+    fi
+    gh "$@"
+}
+
+# Dispatch a workflow and print the exact run ID returned by GitHub. The
+# dispatch API's return_run_details response is the correlation boundary: run
+# list timestamps, refs, actors, and workflow inputs can all be shared by two
+# concurrent dispatches, but this ID belongs to this request alone.
+dispatch_workflow_run() {
+    _workflow="$1"
+    _ref="$2"
+    shift 2
+
+    _dispatched_run_id="$(
+        gh_mutate api --method POST \
+            "repos/$REPOSITORY/actions/workflows/$_workflow/dispatches" \
+            -f "ref=$_ref" \
+            -F return_run_details=true \
+            "$@" \
+            --jq .workflow_run_id
+    )" || return 1
+    case "$_dispatched_run_id" in
+        ''|0|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$_dispatched_run_id"
+}
+
+# Poll a workflow run to completion, announcing the approval gate once when it
+# opens. Every nonterminal state, including an API failure or a status GitHub
+# adds in the future, is bounded by RUN_WAIT_TIMEOUT_SECONDS.
+wait_for_run() {
+    _run_id="$1"
+    _label="$2"
+    _timeout="${RUN_WAIT_TIMEOUT_SECONDS:-14400}"
+    _interval="${RUN_POLL_INTERVAL_SECONDS:-10}"
+
+    case "$_timeout" in
+        ''|*[!0-9]*) error "$_label has invalid wait timeout '$_timeout'" ;;
+        0) error "$_label wait timeout must be greater than zero" ;;
+    esac
+    case "$_interval" in
+        ''|*[!0-9]*) error "$_label has invalid poll interval '$_interval'" ;;
+        0) error "$_label poll interval must be greater than zero" ;;
+    esac
+
+    _start="$(release_now)"
+    _deadline=$((_start + _timeout))
+    _url="https://github.com/$REPOSITORY/actions/runs/$_run_id"
+    if _reported_url="$(gh run view "$_run_id" --json url --jq .url 2>/dev/null)" \
+       && [ -n "$_reported_url" ]; then
+        _url="$_reported_url"
+    fi
+
+    _announced=false
+    _last=""
+    info "$_label: $_url"
+    while :; do
+        if _raw_status="$(gh run view "$_run_id" --json status --jq .status 2>/dev/null)" \
+           && [ -n "$_raw_status" ]; then
+            case "$_raw_status" in
+                queued|in_progress|waiting|pending|requested|completed|unknown)
+                    _status="$_raw_status"
+                    ;;
+                *) _status="unknown($_raw_status)" ;;
+            esac
+        else
+            _status=api-error
+        fi
+
+        if [ "$_status" != "$_last" ]; then
+            echo "    status: $_status"
+            _last="$_status"
+        fi
+
+        case "$_status" in
+            completed)
+                if ! _conclusion="$(gh run view "$_run_id" --json conclusion --jq .conclusion 2>/dev/null)" \
+                   || [ -z "$_conclusion" ]; then
+                    _status=api-error
+                elif [ "$_conclusion" != success ]; then
+                    error "$_label finished '$_conclusion' — see $_url"
+                else
+                    success "$_label succeeded"
+                    return 0
+                fi
+                ;;
+            waiting)
+                if [ "$_announced" = false ]; then
+                    _announced=true
+                    printf '\a'  # the one moment this needs a human
+                    echo
+                    echo -e "${BOLD}    ▶ APPROVAL NEEDED — approve the 'release' environment:${NC}"
+                    echo -e "${BOLD}      $_url${NC}"
+                    echo
+                fi
+                ;;
+        esac
+
+        _now="$(release_now)"
+        if [ "$_now" -ge "$_deadline" ]; then
+            error "$_label timed out after ${_timeout}s (last status: $_status) — see $_url"
+        fi
+        release_sleep "$_interval"
+    done
+}
+
+# Resolve through either a lightweight or annotated tag to the immutable commit
+# SHA GitHub puts on workflow runs.
+resolve_release_tag_sha() {
+    _sha="$(gh api "repos/$REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null)" || return 1
+    printf '%s\n' "$_sha" | grep -qE '^[0-9a-fA-F]{40}$' || return 1
+    printf '%s\n' "$_sha"
+}
+
+find_release_deploy_run() {
+    _release_sha="$1"
+    _published_since="$2"
+    gh run list --workflow deploy-docs.yml --limit 20 \
+        --json databaseId,createdAt,event,headSha \
+        --jq "[.[] | select(.event == \"release\" and .headSha == \"$_release_sha\" and (.createdAt | fromdateiso8601) >= $_published_since)] | sort_by(.createdAt) | last | .databaseId // empty" \
+        2>/dev/null
+}
+
+# Return 0 when the published docs state is complete, 1 when a successful sample
+# proves it is incomplete, and 2 when remote reads never produced a full sample.
+# The distinction is a mutation boundary: an API/network failure must not be
+# mistaken for evidence that a recovery deploy is needed.
+probe_published_docs() {
+    # A successful Pages deploy can expose the homepage and installers at
+    # different times for about a minute. Keep this bounded and read-only so a
+    # rerun during propagation does not create a duplicate recovery deploy.
+    _probe_attempts="${DOCS_PROBE_ATTEMPTS:-7}"
+    _probe_interval="${DOCS_PROBE_INTERVAL_SECONDS:-10}"
+    _probe_dir="$WORK_DIR/docs-probe"
+    _observed=false
+    mkdir -p "$_probe_dir"
+
+    for _attempt in $(seq 1 "$_probe_attempts"); do
+        _prefix="$_probe_dir/attempt-$_attempt"
+        if curl -fsSL --max-time 30 -o "$_prefix-tagged.sh" \
+                "https://raw.githubusercontent.com/$REPOSITORY/$TAG/install.sh" \
+           && curl -fsSL --max-time 30 -o "$_prefix-tagged.ps1" \
+                "https://raw.githubusercontent.com/$REPOSITORY/$TAG/install.ps1" \
+           && curl -fsS --max-time 30 -o "$_prefix-home.html" "$SITE/" \
+           && curl -fsS --max-time 30 -o "$_prefix-live.sh" "$SITE/install.sh" \
+           && curl -fsS --max-time 30 -o "$_prefix-live.ps1" "$SITE/install.ps1"; then
+            _observed=true
+            if grep -qF "$VERSION" "$_prefix-home.html" \
+               && cmp -s "$_prefix-live.sh" "$_prefix-tagged.sh" \
+               && cmp -s "$_prefix-live.ps1" "$_prefix-tagged.ps1"; then
+                return 0
+            fi
+        fi
+        [ "$_attempt" -eq "$_probe_attempts" ] \
+            || release_sleep "$_probe_interval"
+    done
+
+    [ "$_observed" = true ] && return 1
+    return 2
+}
+
+dispatch_docs_recovery() {
+    warn "published docs state is incomplete; dispatching deploy-docs.yml from immutable tag $TAG"
+    _deploy_run="$(dispatch_workflow_run deploy-docs.yml "$TAG")" \
+        || error "failed to dispatch docs recovery from $TAG"
+    wait_for_run "$_deploy_run" "Docs deploy"
+}
+
+ensure_docs_deploy() {
+    _release_sha="$1"
+
+    phase "Waiting for the docs deploy"
+    if [ "$JUST_PUBLISHED" = false ]; then
+        if probe_published_docs; then
+            success "published docs state is already complete — no deploy dispatched"
+            return 0
+        else
+            _probe_status=$?
+        fi
+        if [ "$_probe_status" -eq 2 ]; then
+            error "could not determine whether published docs are complete; refusing to dispatch on failed remote reads"
+        fi
+        dispatch_docs_recovery
+        return 0
+    fi
+
+    _deploy_run=""
+    for _ in $(seq 1 40); do
+        release_sleep 5
+        _deploy_run="$(find_release_deploy_run "$_release_sha" "$PUBLISH_STARTED_AT" || echo '')"
+        [ -n "$_deploy_run" ] && break
+    done
+
+    if [ -n "$_deploy_run" ]; then
+        wait_for_run "$_deploy_run" "Docs deploy"
+    else
+        warn "no release-triggered deploy found for commit $_release_sha"
+        dispatch_docs_recovery
+    fi
+}
+
+# Exercise the tagged installer's real release-list selector, but put a timeout
+# around even old tagged installers whose curl command predates bounded reads.
+resolve_live_installer_version() {
+    _installer="$1"
+    _attempts="${LIVE_INSTALLER_ATTEMPTS:-3}"
+    _interval="${LIVE_INSTALLER_RETRY_SECONDS:-2}"
+
+    for _attempt in $(seq 1 "$_attempts"); do
+        if _version="$(
+            {
+                sed '/^main$/d' "$_installer"
+                cat <<'EOF'
+curl() {
+    command curl --connect-timeout 10 --max-time 30 "$@"
+}
+# New installers retry release-list reads themselves. The orchestrator owns the
+# retry budget here, so collapse that inner loop; these assignments are harmless
+# for older tagged installers that predate the constants.
+RELEASE_LIST_ATTEMPTS=1
+RELEASE_LIST_RETRY_DELAY_SECONDS=0
+get_latest_version
+EOF
+            } | sh 2>/dev/null
+        )" && [ -n "$_version" ]; then
+            printf '%s\n' "$_version"
+            return 0
+        fi
+        [ "$_attempt" -eq "$_attempts" ] || release_sleep "$_interval"
+    done
+    return 1
+}
+
+main() {
 SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.minisign/minisign.key}"
 PUBKEY_FILE="$REPO_ROOT/docs/zcli-minisign.pub"
 SITE="https://zcli.sh"
+REPOSITORY="${ZCLI_REPOSITORY:-ryanhair/zcli}"
+RUN_WAIT_TIMEOUT_SECONDS="${ZCLI_RUN_WAIT_TIMEOUT_SECONDS:-14400}"
+RUN_POLL_INTERVAL_SECONDS="${ZCLI_RUN_POLL_INTERVAL_SECONDS:-10}"
 SIGN_ONLY=false
 VERIFY_ONLY=false
 ASSUME_YES=false
+PUBLISH_STARTED_AT=
 
 usage() {
     cat <<'USAGE'
@@ -159,7 +427,7 @@ phase "Preflight"
 echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
     || error "version must be semver like 0.24.0 (got '$VERSION')"
 
-for tool in gh git curl minisign; do
+for tool in gh git curl minisign tar; do
     command -v "$tool" >/dev/null 2>&1 || error "$tool is required but not found"
 done
 gh auth status >/dev/null 2>&1 || error "gh is not authenticated — run 'gh auth login'"
@@ -225,45 +493,6 @@ if [ "$RELEASE_STATE" = none ] && [ "$SIGN_ONLY" = false ] && [ "$VERIFY_ONLY" =
     fi
 fi
 
-# ── helpers ─────────────────────────────────────────────────────────────────
-
-# Poll a workflow run to completion, announcing the approval gate once when it
-# opens. GitHub reports `waiting` while a job sits at an environment gate.
-wait_for_run() {
-    _run_id="$1"
-    _label="$2"
-    _url="$(gh run view "$_run_id" --json url --jq .url)"
-    _announced=false
-    _last=""
-    info "$_label: $_url"
-    while :; do
-        _status="$(gh run view "$_run_id" --json status --jq .status 2>/dev/null || echo unknown)"
-        if [ "$_status" != "$_last" ]; then
-            echo "    status: $_status"
-            _last="$_status"
-        fi
-        case "$_status" in
-            completed)
-                _conclusion="$(gh run view "$_run_id" --json conclusion --jq .conclusion)"
-                [ "$_conclusion" = success ] || error "$_label finished '$_conclusion' — see $_url"
-                success "$_label succeeded"
-                return 0
-                ;;
-            waiting)
-                if [ "$_announced" = false ]; then
-                    _announced=true
-                    printf '\a'  # the one moment this needs a human
-                    echo
-                    echo -e "${BOLD}    ▶ APPROVAL NEEDED — approve the 'release' environment:${NC}"
-                    echo -e "${BOLD}      $_url${NC}"
-                    echo
-                fi
-                ;;
-        esac
-        sleep 10
-    done
-}
-
 # ── Phase 1: build, gate, tag ───────────────────────────────────────────────
 
 if [ "$VERIFY_ONLY" = true ]; then
@@ -272,22 +501,12 @@ elif [ "$SIGN_ONLY" = true ]; then
     [ "$RELEASE_STATE" = draft ] || error "--sign-only needs an existing draft; $TAG is '$RELEASE_STATE'"
 elif [ "$RELEASE_STATE" = none ]; then
     phase "Dispatching the Release workflow"
-    # Timestamp before dispatching so we can identify OUR run. 60s of slack
-    # absorbs clock skew between here and GitHub.
-    since=$(( $(date -u +%s) - 60 ))
-    gh workflow run release.yml -f version="$VERSION"
+    # GitHub returns this dispatch's exact run ID. Do not rediscover it from a
+    # time window: two operators can legitimately dispatch within one window,
+    # and the release concurrency queue does not make "latest" mean "ours".
+    run_id="$(dispatch_workflow_run release.yml main -f "inputs[version]=$VERSION")" \
+        || error "failed to dispatch release.yml or read its workflow run ID"
     info "dispatched release.yml with version=$VERSION"
-
-    run_id=""
-    for _ in $(seq 1 40); do
-        sleep 3
-        run_id="$(gh run list --workflow release.yml --event workflow_dispatch --limit 10 \
-            --json databaseId,createdAt \
-            --jq "[.[] | select((.createdAt | fromdateiso8601) >= $since)] | sort_by(.createdAt) | last | .databaseId // empty" \
-            2>/dev/null || echo '')"
-        [ -n "$run_id" ] && break
-    done
-    [ -n "$run_id" ] || error "dispatched, but could not find the run — check 'gh run list --workflow release.yml'"
 
     wait_for_run "$run_id" "Release workflow"
 else
@@ -342,10 +561,19 @@ if [ "$RELEASE_STATE" != published ] && [ "$VERIFY_ONLY" = false ]; then
     fi
     success "trusted comment binds $TAG"
 
-    gh release upload "$TAG" "$WORK_DIR/checksums.txt.minisig" --clobber \
+    gh_mutate release upload "$TAG" "$WORK_DIR/checksums.txt.minisig" --clobber \
         || error "failed to upload signature"
-    gh release edit "$TAG" --draft=false \
+    # Match release-triggered workflow runs by both immutable commit SHA and
+    # this publication window. The library release shares the same commit and
+    # published earlier, so SHA alone can select its all-jobs-skipped run.
+    gh_mutate release edit "$TAG" --draft=false \
         || error "failed to publish release"
+    PUBLISH_STARTED_AT="$(gh release view "$TAG" --json publishedAt \
+        --jq '.publishedAt | fromdateiso8601' 2>/dev/null)" \
+        || error "published $TAG, but could not read its publication time"
+    case "$PUBLISH_STARTED_AT" in
+        ''|*[!0-9]*) error "published $TAG returned invalid publication time '$PUBLISH_STARTED_AT'" ;;
+    esac
     success "$TAG signed and published"
     JUST_PUBLISHED=true
 else
@@ -366,42 +594,27 @@ fi
 # not run.
 
 if [ "$VERIFY_ONLY" = false ]; then
-phase "Waiting for the docs deploy"
-
-deploy_run=""
-if [ "$JUST_PUBLISHED" = true ]; then
-    for _ in $(seq 1 40); do
-        sleep 5
-        deploy_run="$(gh run list --workflow deploy-docs.yml --limit 10 \
-            --json databaseId,headBranch,event \
-            --jq "[.[] | select(.event == \"release\" and .headBranch == \"$TAG\")] | first | .databaseId // empty" \
-            2>/dev/null || echo '')"
-        [ -n "$deploy_run" ] && break
-    done
+    release_tag_sha="$(resolve_release_tag_sha)" \
+        || error "could not resolve immutable release tag $TAG to a commit SHA"
+    ensure_docs_deploy "$release_tag_sha"
 fi
 
-if [ -n "$deploy_run" ]; then
-    wait_for_run "$deploy_run" "Docs deploy"
-else
-    # Either already published before this run, or the release event did not
-    # produce a deploy. Dispatch one from main — the documented manual override.
-    # After a successful release main IS the released commit, so this builds the
-    # right tree.
-    warn "no release-triggered deploy found; dispatching one from main"
-    since=$(( $(date -u +%s) - 60 ))
-    gh workflow run deploy-docs.yml --ref main
-    for _ in $(seq 1 40); do
-        sleep 3
-        deploy_run="$(gh run list --workflow deploy-docs.yml --event workflow_dispatch --limit 10 \
-            --json databaseId,createdAt \
-            --jq "[.[] | select((.createdAt | fromdateiso8601) >= $since)] | sort_by(.createdAt) | last | .databaseId // empty" \
-            2>/dev/null || echo '')"
-        [ -n "$deploy_run" ] && break
-    done
-    [ -n "$deploy_run" ] || error "could not find the dispatched docs deploy run"
-    wait_for_run "$deploy_run" "Docs deploy"
-fi
-fi
+# Download and unpack one immutable GitHub tag archive. Prints the extracted
+# tree root on success; callers treat empty output as a failed smoke check.
+extract_tag_archive() {
+    _archive_tag="$1"
+    _archive_name="$2"
+    _archive_dir="$WORK_DIR/archive-$_archive_name"
+    _archive_file="$WORK_DIR/$_archive_name.tar.gz"
+    _archive_url="https://github.com/$REPOSITORY/archive/refs/tags/$_archive_tag.tar.gz"
+
+    curl -fsSL --max-time 60 -o "$_archive_file" "$_archive_url" || return 1
+    mkdir -p "$_archive_dir"
+    tar -xzf "$_archive_file" -C "$_archive_dir" || return 1
+    _archive_top="$(tar -tzf "$_archive_file" | sed -n '1s|/.*||p')"
+    [ -n "$_archive_top" ] && [ -d "$_archive_dir/$_archive_top" ] || return 1
+    printf '%s\n' "$_archive_dir/$_archive_top"
+}
 
 # ── Phase 4: verify the end state ───────────────────────────────────────────
 # Independent of every "success" reported above. A release is done when a user
@@ -413,16 +626,20 @@ phase "Verifying the released state"
 fail=0
 check() { if [ "$1" = true ]; then success "$2"; else echo -e "${RED}✗ $2${NC}" >&2; fail=1; fi; }
 
-# The reference copy of install.sh is the RELEASED TAG's, not the working tree's:
+# The reference installers are the RELEASED TAG's, not the working tree's:
 # the local checkout is a commit behind after a release (CI creates the bump
 # commit) and may carry unrelated edits, either of which would make a
 # working-tree comparison lie in both directions. Fetched once, since a tag is
 # immutable, and a failure to fetch it is reported as its own thing — "could not
 # read the reference" must never masquerade as "the site is wrong".
-RAW_URL="https://raw.githubusercontent.com/ryanhair/zcli/$TAG/install.sh"
-curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.sh" "$RAW_URL" 2>/dev/null || true
+RAW_BASE="https://raw.githubusercontent.com/$REPOSITORY/$TAG"
+curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.sh" "$RAW_BASE/install.sh" 2>/dev/null || true
 if [ ! -s "$WORK_DIR/tagged-install.sh" ]; then
-    check false "could not fetch $TAG's install.sh from $RAW_URL — cannot check the installer"
+    check false "could not fetch $TAG's install.sh — cannot check the installer"
+fi
+curl -fsSL --max-time 30 -o "$WORK_DIR/tagged-install.ps1" "$RAW_BASE/install.ps1" 2>/dev/null || true
+if [ ! -s "$WORK_DIR/tagged-install.ps1" ]; then
+    check false "could not fetch $TAG's install.ps1 — cannot check the installer"
 fi
 
 # Cloudflare Pages propagates assets INDEPENDENTLY and eventually: for a minute
@@ -436,22 +653,27 @@ fi
 # together, because either one can be the stale side. A single sample is a race,
 # not a verdict; only a persistent disagreement is a real failure.
 site_ok=false
-install_ok=false
+install_sh_ok=false
+install_ps1_ok=false
 for attempt in 1 2 3 4 5 6; do
     [ "$attempt" -eq 1 ] || sleep 20
 
-    curl -fsS --max-time 30 -o "$WORK_DIR/home.html"       "$SITE/"           2>/dev/null || true
-    curl -fsS --max-time 30 -o "$WORK_DIR/live-install.sh" "$SITE/install.sh" 2>/dev/null || true
+    curl -fsS --max-time 30 -o "$WORK_DIR/home.html"        "$SITE/"            2>/dev/null || true
+    curl -fsS --max-time 30 -o "$WORK_DIR/live-install.sh"  "$SITE/install.sh"  2>/dev/null || true
+    curl -fsS --max-time 30 -o "$WORK_DIR/live-install.ps1" "$SITE/install.ps1" 2>/dev/null || true
 
     site_ok=false
     if grep -qF "$VERSION" "$WORK_DIR/home.html" 2>/dev/null; then site_ok=true; fi
-    install_ok=false
+    install_sh_ok=false
     if [ -s "$WORK_DIR/tagged-install.sh" ] \
-       && cmp -s "$WORK_DIR/live-install.sh" "$WORK_DIR/tagged-install.sh"; then install_ok=true; fi
+       && cmp -s "$WORK_DIR/live-install.sh" "$WORK_DIR/tagged-install.sh"; then install_sh_ok=true; fi
+    install_ps1_ok=false
+    if [ -s "$WORK_DIR/tagged-install.ps1" ] \
+       && cmp -s "$WORK_DIR/live-install.ps1" "$WORK_DIR/tagged-install.ps1"; then install_ps1_ok=true; fi
 
-    if [ "$site_ok" = true ] && [ "$install_ok" = true ]; then break; fi
+    if [ "$site_ok" = true ] && [ "$install_sh_ok" = true ] && [ "$install_ps1_ok" = true ]; then break; fi
     if [ "$attempt" -lt 6 ]; then
-        info "site not settled (serves_version=$site_ok installer_matches=$install_ok) — retrying in 20s"
+        info "site not settled (serves_version=$site_ok install_sh=$install_sh_ok install_ps1=$install_ps1_ok) — retrying in 20s"
     fi
 done
 
@@ -461,44 +683,186 @@ else
     check false "$SITE does NOT serve $VERSION"
 fi
 
-# The curl|sh trust root: what the site hands out must be the reviewed file from
-# the commit that was released. Skipped entirely if the reference could not be
-# fetched — that was already reported above.
-if [ "$install_ok" = true ]; then
+# The curl|sh and irm|iex trust roots: what the site hands out must be the
+# reviewed files from the commit that was released. Skipped if a reference
+# could not be fetched — that was already reported above.
+if [ "$install_sh_ok" = true ]; then
     check true "$SITE/install.sh is byte-identical to $TAG's"
 elif [ -s "$WORK_DIR/tagged-install.sh" ]; then
     check false "$SITE/install.sh DIFFERS from $TAG's"
 fi
+if [ "$install_ps1_ok" = true ]; then
+    check true "$SITE/install.ps1 is byte-identical to $TAG's"
+elif [ -s "$WORK_DIR/tagged-install.ps1" ]; then
+    check false "$SITE/install.ps1 DIFFERS from $TAG's"
+fi
 
-# The CLI release is published, complete, and its signature verifies the way a
-# consumer's would.
+# Both release objects must be public.
 if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo true)" = "false" ]; then
     check true "$TAG is published"
 else
     check false "$TAG is NOT published"
 fi
-
-n="$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null || echo 0)"
-if [ "$n" -eq 8 ]; then
-    check true "$TAG carries all 8 assets (6 binaries + checksums.txt + .minisig)"
+if [ "$(gh release view "$LIB_TAG" --json isDraft --jq .isDraft 2>/dev/null || echo true)" = "false" ]; then
+    check true "library release $LIB_TAG is published"
 else
-    check false "$TAG carries $n assets, expected 8"
+    check false "library release $LIB_TAG is missing or not published"
 fi
 
-rm -f "$WORK_DIR/checksums.txt" "$WORK_DIR/checksums.txt.minisig"
-if gh release download "$TAG" -p 'checksums.txt*' -D "$WORK_DIR" --clobber >/dev/null 2>&1 \
-   && minisign -Vm "$WORK_DIR/checksums.txt" -p "$PUBKEY_FILE" >/dev/null 2>&1 \
-   && trusted_comment_binds_tag "$WORK_DIR/checksums.txt.minisig" "$TAG"; then
+# The two independently-named tags are the release's join key. Existence is not
+# enough: they must resolve to the exact same commit.
+cli_tag_sha="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)"
+lib_tag_sha="$(gh api "repos/$REPOSITORY/git/ref/tags/$LIB_TAG" --jq .object.sha 2>/dev/null || true)"
+if [ -n "$cli_tag_sha" ] && [ "$cli_tag_sha" = "$lib_tag_sha" ]; then
+    check true "$TAG and $LIB_TAG resolve to the same commit ($cli_tag_sha)"
+else
+    check false "release tags are missing or disagree (cli=$cli_tag_sha library=$lib_tag_sha)"
+fi
+
+# Fetch both GitHub-generated source archives, then validate their release
+# metadata with the exact same implementation used before merge and in the
+# release build. Comparing their extracted trees additionally proves the two
+# public archive URLs expose the same tagged tree.
+cli_archive_root="$(extract_tag_archive "$TAG" cli 2>/dev/null || true)"
+lib_archive_root="$(extract_tag_archive "$LIB_TAG" library 2>/dev/null || true)"
+if [ -n "$cli_archive_root" ]; then
+    check true "$TAG source archive downloads and extracts"
+else
+    check false "$TAG source archive is unavailable or invalid"
+fi
+if [ -n "$lib_archive_root" ]; then
+    check true "$LIB_TAG source archive downloads and extracts"
+else
+    check false "$LIB_TAG source archive is unavailable or invalid"
+fi
+if [ -n "$cli_archive_root" ] && [ -n "$lib_archive_root" ] \
+   && diff -qr "$cli_archive_root" "$lib_archive_root" >/dev/null 2>&1; then
+    check true "CLI and library source archives contain the same tree"
+elif [ -n "$cli_archive_root" ] && [ -n "$lib_archive_root" ]; then
+    check false "CLI and library source archives differ"
+fi
+
+if [ -n "$cli_archive_root" ] \
+   && "$REPO_ROOT/scripts/validate-version.sh" \
+        --root "$cli_archive_root" --expected "$VERSION" --tag "$TAG"; then
+    check true "$TAG archive metadata is version-consistent"
+elif [ -n "$cli_archive_root" ]; then
+    check false "$TAG archive metadata is inconsistent"
+fi
+if [ -n "$lib_archive_root" ] \
+   && "$REPO_ROOT/scripts/validate-version.sh" \
+        --root "$lib_archive_root" --expected "$VERSION" --tag "$LIB_TAG"; then
+    check true "$LIB_TAG archive metadata is version-consistent"
+elif [ -n "$lib_archive_root" ]; then
+    check false "$LIB_TAG archive metadata is inconsistent"
+fi
+
+# Asset count alone can pass with one missing binary and one stray file. Require
+# the exact inventory, download it all, authenticate checksums.txt, and then
+# verify every binary digest named by it.
+expected_binaries="$(printf '%s\n' \
+    zcli-aarch64-linux \
+    zcli-aarch64-macos \
+    zcli-aarch64-windows.exe \
+    zcli-x86_64-linux \
+    zcli-x86_64-macos \
+    zcli-x86_64-windows.exe | sort)"
+expected_assets="$(printf '%s\n%s\n%s\n' "$expected_binaries" checksums.txt checksums.txt.minisig | sort)"
+actual_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | sort || true)"
+if [ "$actual_assets" = "$expected_assets" ]; then
+    check true "$TAG carries the exact 8-asset inventory"
+else
+    check false "$TAG asset inventory differs from the expected 6 binaries + checksums + signature"
+    echo "  expected:" >&2
+    printf '%s\n' "$expected_assets" | sed 's/^/    /' >&2
+    echo "  actual:" >&2
+    printf '%s\n' "$actual_assets" | sed 's/^/    /' >&2
+fi
+
+assets_dir="$WORK_DIR/assets"
+mkdir -p "$assets_dir"
+assets_downloaded=false
+if gh release download "$TAG" -D "$assets_dir" --clobber >/dev/null 2>&1; then
+    assets_downloaded=true
+    check true "$TAG assets download"
+else
+    check false "$TAG assets could not all be downloaded"
+fi
+
+signature_ok=false
+if [ "$assets_downloaded" = true ] \
+   && minisign -Vm "$assets_dir/checksums.txt" -p "$PUBKEY_FILE" >/dev/null 2>&1 \
+   && trusted_comment_binds_tag "$assets_dir/checksums.txt.minisig" "$TAG"; then
+    signature_ok=true
     check true "published signature verifies against the pinned key and binds $TAG"
 else
     check false "published signature does NOT verify (or does not bind $TAG)"
 fi
 
-# The library release, which consumers reference from build.zig.zon.
-if gh release view "$LIB_TAG" >/dev/null 2>&1; then
-    check true "library release $LIB_TAG exists"
+checksums_ok=true
+if [ "$assets_downloaded" = true ]; then
+    checksum_names="$(awk 'NF == 2 { print $2 }' "$assets_dir/checksums.txt" 2>/dev/null | sort || true)"
+    [ "$checksum_names" = "$expected_binaries" ] || checksums_ok=false
+    while IFS= read -r binary; do
+        [ -n "$binary" ] || continue
+        expected_digest="$(awk -v file="$binary" '$2 == file { print $1 }' "$assets_dir/checksums.txt" 2>/dev/null || true)"
+        actual_digest="$(sha256_digest "$assets_dir/$binary" 2>/dev/null || true)"
+        if [ -z "$expected_digest" ] || [ "$expected_digest" != "$actual_digest" ]; then
+            checksums_ok=false
+        fi
+    done <<EOF
+$expected_binaries
+EOF
 else
-    check false "library release $LIB_TAG is missing"
+    checksums_ok=false
+fi
+if [ "$checksums_ok" = true ]; then
+    check true "checksums.txt names and verifies exactly all 6 binaries"
+else
+    check false "checksums.txt inventory or a published binary digest is wrong"
+fi
+
+# Execute the published binary for this machine and feed its real --version
+# output through the shared validator. Cross-target startup coverage remains in
+# release.yml; this is the outside-GitHub, downloaded-asset seam.
+host_asset=
+case "$(uname -s):$(uname -m)" in
+    Darwin:x86_64) host_asset=zcli-x86_64-macos ;;
+    Darwin:arm64|Darwin:aarch64) host_asset=zcli-aarch64-macos ;;
+    Linux:x86_64) host_asset=zcli-x86_64-linux ;;
+    Linux:aarch64|Linux:arm64) host_asset=zcli-aarch64-linux ;;
+esac
+if published_binary_is_authenticated "$signature_ok" "$checksums_ok" \
+   && [ -n "$host_asset" ] && [ -n "$cli_archive_root" ] \
+   && [ -f "$assets_dir/$host_asset" ]; then
+    chmod +x "$assets_dir/$host_asset"
+    if "$REPO_ROOT/scripts/validate-version.sh" \
+        --root "$cli_archive_root" \
+        --expected "$VERSION" \
+        --tag "$TAG" \
+        --cli "$assets_dir/$host_asset"; then
+        check true "published $host_asset reports zcli v$VERSION"
+    else
+        check false "published $host_asset --version disagrees with release metadata"
+    fi
+elif [ "$signature_ok" != true ] || [ "$checksums_ok" != true ]; then
+    check false "refusing to execute an unauthenticated published binary"
+else
+    check false "no executable published asset available for this host ($(uname -s) $(uname -m))"
+fi
+
+# Exercise the tagged installer's real release-list selection against GitHub.
+# The site copy was proven byte-identical above, so this simultaneously checks
+# that the installer users fetch resolves this just-published CLI release.
+installer_version=
+if [ "$install_sh_ok" = true ]; then
+    installer_version="$(resolve_live_installer_version "$WORK_DIR/tagged-install.sh")" \
+        || installer_version=
+fi
+if [ "$installer_version" = "$VERSION" ]; then
+    check true "$SITE/install.sh resolves latest CLI release to $VERSION"
+else
+    check false "$SITE/install.sh resolves '$installer_version', expected '$VERSION'"
 fi
 
 echo
@@ -508,7 +872,12 @@ fi
 
 echo -e "${GREEN}${BOLD}✓ Release $VERSION is live.${NC}"
 echo
-echo "  CLI:     https://github.com/ryanhair/zcli/releases/tag/$TAG"
-echo "  Library: https://github.com/ryanhair/zcli/releases/tag/$LIB_TAG"
+echo "  CLI:     https://github.com/$REPOSITORY/releases/tag/$TAG"
+echo "  Library: https://github.com/$REPOSITORY/releases/tag/$LIB_TAG"
 echo "  Site:    $SITE"
 echo
+}
+
+if [ "${ZCLI_RELEASE_SOURCE_ONLY:-false}" != true ]; then
+    main "$@"
+fi

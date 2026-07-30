@@ -20,6 +20,9 @@ BINARY_NAME="zcli"
 # because it appears three times: in the request, in the "did we see every
 # release?" test, and in the message that test produces.
 RELEASES_PAGE_SIZE=100
+RELEASE_LIST_ATTEMPTS=3
+RELEASE_LIST_TIMEOUT_SECONDS=30
+RELEASE_LIST_RETRY_DELAY_SECONDS=1
 
 # zcli's pinned minisign public key. The installer verifies checksums.txt against
 # its detached signature (checksums.txt.minisig) under this key — closing the gap
@@ -204,11 +207,29 @@ get_latest_version() {
         exit 1
     fi
 
-    releases=$(curl -fsSL --proto '=https' --tlsv1.2 \
-        "https://api.github.com/repos/${REPO}/releases?per_page=${RELEASES_PAGE_SIZE}") || releases=''
+    # GitHub/API/network failures are transient often enough that a one-shot
+    # lookup creates false "no release" failures. Bound every attempt and the
+    # total retry count so an installer can neither fail on one blip nor hang
+    # indefinitely on an unresponsive endpoint.
+    releases=''
+    release_attempt=1
+    while [ "${release_attempt}" -le "${RELEASE_LIST_ATTEMPTS}" ]; do
+        if releases=$(curl -fsSL --proto '=https' --tlsv1.2 \
+                --connect-timeout 10 --max-time "${RELEASE_LIST_TIMEOUT_SECONDS}" \
+                "https://api.github.com/repos/${REPO}/releases?per_page=${RELEASES_PAGE_SIZE}") \
+           && [ -n "${releases}" ]; then
+            break
+        fi
+        releases=''
+        if [ "${release_attempt}" -lt "${RELEASE_LIST_ATTEMPTS}" ]; then
+            print_warning "Could not fetch the GitHub release list (attempt ${release_attempt}/${RELEASE_LIST_ATTEMPTS}); retrying."
+            sleep "${RELEASE_LIST_RETRY_DELAY_SECONDS}"
+        fi
+        release_attempt=$((release_attempt + 1))
+    done
 
     if [ -z "${releases}" ]; then
-        print_error "Could not fetch the release list for ${REPO} from the GitHub API."
+        print_error "Could not fetch the release list for ${REPO} from the GitHub API after ${RELEASE_LIST_ATTEMPTS} bounded attempts."
         print_error "Check your network connection (or GitHub's status) and try again."
         exit 1
     fi

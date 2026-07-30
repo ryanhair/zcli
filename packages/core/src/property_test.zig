@@ -11,7 +11,8 @@ const command_parser = @import("command_parser.zig");
 // Deliberately NOT called fuzzing: every run uses a fixed seed, so these are
 // deterministic bounded-random property/stability tests — they explore the
 // same inputs every time and serve as a CI smoke over hostile input shapes.
-// Coverage-guided fuzzing via `std.testing.fuzz` is future work.
+// Coverage-guided parser fuzzing lives in parser_fuzz_test.zig and runs through
+// `zig build fuzz-smoke` / `zig build fuzz`.
 // ============================================================================
 
 /// Test structures for the randomized property tests

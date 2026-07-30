@@ -10,9 +10,8 @@ name: Deploy Documentation
 # commit, so the site is built from exactly the released tree even if main
 # has moved on.
 #
-# workflow_dispatch is the manual override for out-of-band deploys (typo
-# fixes, broken page): it builds whatever ref it's dispatched on — main by
-# default, which may be ahead of the released version.
+# workflow_dispatch is both the manual override for out-of-band deploys (main)
+# and release.sh's recovery path (the immutable, already-published CLI tag).
 on:
   release:
     types: [published]
@@ -55,16 +54,33 @@ jobs:
     # five deploys (see the concurrency note above), and it is redundant under
     # the release trigger — publishing the signed release IS the approval.
     # install.sh/install.ps1 (the curl|sh trust root) still only change via
-    # reviewed PRs on protected main — enforced below for the
-    # workflow_dispatch path, since that trigger has no ref restriction of its
-    # own and would otherwise let anyone with write access publish installers
-    # built from an arbitrary branch.
+    # reviewed PRs on protected main or from an already-published immutable CLI
+    # release tag — enforced below for workflow_dispatch, since that trigger has
+    # no ref restriction of its own and would otherwise let anyone with write
+    # access publish installers built from an arbitrary branch.
     steps:
-      - name: Restrict manual dispatch to main
-        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+      - name: Restrict manual dispatch to main or a published CLI release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          echo "::error::workflow_dispatch must be run on main (got ${{ github.ref }}) — install.sh/install.ps1 are the curl|sh trust root and only publish from protected main." >&2
-          exit 1
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/heads/main)
+              ;;
+            refs/tags/zcli-v*)
+              if ! draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .draft 2>/dev/null)" \
+                || [ "$draft" != false ]; then
+                echo "::error::$GITHUB_REF is not an already-published CLI release — refusing recovery deploy." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::workflow_dispatch must use protected main or an already-published zcli-v* tag (got $GITHUB_REF)." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -140,7 +156,7 @@ jobs:
             echo "attempt $attempt/6 — version_ok=$version_ok install_ok=$install_ok; Pages may still be propagating"
           done
 
-          echo "::error::deploy did not reach the live site: zcli.sh does not serve $version and/or install.sh differs from the repo. wrangler reported success, so suspect the Pages project/branch wiring or a cached edge response — check https://dash.cloudflare.com and re-run this workflow from main."
+          echo "::error::deploy did not reach the live site: zcli.sh does not serve $version and/or install.sh differs from the repo. wrangler reported success, so suspect the Pages project/branch wiring or a cached edge response — check https://dash.cloudflare.com and re-run from this release tag (recovery) or main (intentional out-of-band deploy)."
           echo "--- versions found on the live homepage ---"
           grep -oE '[0-9]+\.[0-9]+\.[0-9]+' /tmp/live-home.html 2>/dev/null | sort -u | head -20 || echo "(homepage not fetched)"
           echo "--- install.sh diff (live vs repo), first 20 lines ---"

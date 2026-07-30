@@ -210,6 +210,38 @@ pub const release_yml =
 
 const testing = std.testing;
 
+/// Verify every direct action reference is an immutable SHA pin annotated with
+/// its human-readable version. This intentionally permits action removals, but
+/// a workflow with no actions is not a meaningful pinning test.
+fn expectAllDirectActionUsesPinned(content: []const u8) !void {
+    var uses_count: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        const uses = "uses: ";
+        if (!std.mem.startsWith(u8, trimmed, uses)) continue;
+        uses_count += 1;
+
+        const action = trimmed[uses.len..];
+        const at = std.mem.indexOfScalar(u8, action, '@') orelse {
+            try testing.expect(false);
+            continue;
+        };
+        try testing.expect(at > 0);
+
+        const pin_and_comment = action[at + 1 ..];
+        const comment = std.mem.indexOf(u8, pin_and_comment, " # v") orelse {
+            try testing.expect(false);
+            continue;
+        };
+        const sha = pin_and_comment[0..comment];
+        try testing.expectEqual(@as(usize, 40), sha.len);
+        for (sha) |byte| try testing.expect(std.ascii.isHex(byte));
+        try testing.expect(pin_and_comment.len > comment + " # v".len);
+    }
+    try testing.expect(uses_count > 0);
+}
+
 test "write fails outside a zcli project" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
@@ -231,10 +263,8 @@ test "write creates a pinned, version-matched release workflow" {
     defer testing.allocator.free(content);
 
     try testing.expect(std.mem.indexOf(u8, content, "name: Release") != null);
-    // Every `uses:` action must be pinned to a full commit SHA (with the
-    // version as a trailing comment), never a mutable tag.
-    try testing.expect(std.mem.indexOf(u8, content, "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1") != null);
-    try testing.expect(std.mem.indexOf(u8, content, "mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1") != null);
+    try expectAllDirectActionUsesPinned(content);
+
     try testing.expect(std.mem.indexOf(u8, content, "version: 0.16.0") != null);
     try testing.expect(std.mem.indexOf(u8, content, "-Dstrip=true") != null);
 }
@@ -252,6 +282,7 @@ test "write creates the CI workflow with pinned actions" {
     defer testing.allocator.free(content);
 
     try testing.expect(std.mem.indexOf(u8, content, "name: CI") != null);
+    try expectAllDirectActionUsesPinned(content);
     try testing.expect(std.mem.indexOf(u8, content, "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1") != null);
     try testing.expect(std.mem.indexOf(u8, content, "zig build test") != null);
 }

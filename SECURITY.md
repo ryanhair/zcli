@@ -77,39 +77,48 @@ mechanism there, verified against the hash recorded in your `build.zig.zon`.
 
 ## Branch protection policy
 
-The `main` branch ruleset (`Main Protection`, id `18284157`) enforces
-deletion protection, non-fast-forward pushes, and all 15 CI status checks.
-It does **not** include a `pull_request` rule — there is no required review
-and no requirement to merge via PR — and it has one bypass actor (the
-repository-admin role) with `bypass_mode: always`.
+As verified with authenticated GitHub access on 2026-07-29, the active `main`
+ruleset is `Main Protection` (id `18284157`). It enforces exactly deletion
+protection, non-fast-forward pushes, and one required status check: `CI OK`.
+Its strict-required-status-check policy is disabled, so an up-to-date branch
+is not required when that check has already passed. It has no `pull_request`
+rule: review and PR-only merging are not required.
 
-This is intentional, not an oversight:
+The authenticated ruleset response lists two `bypass_mode: always` actors:
+the release `DeployKey` and `RepositoryRole` id `5`. The latter is an
+always-on role bypass, not a release-only exception. Either actor can bypass
+the ruleset, including its required check; possession or use of the release
+deploy key is therefore a direct-write capability for `main`, not merely
+checkout access.
 
-- zcli is a solo-maintainer project. Direct pushes to `main` by the
-  maintainer are accepted; requiring self-approved PRs for every change
-  would add process without adding safety.
-- The bypass actor exists because the release workflow's `finalize` job
-  (`.github/workflows/release.yml`, the "Push to main and cut tags" step)
-  pushes the staged release commit directly to `main` and cuts the release
-  tags, using `GITHUB_TOKEN`. That push must clear the ruleset's
-  non-fast-forward check, so *something* has to be able to bypass it — same
-  actor covers both the maintainer's direct pushes and CI's release push
-  today.
-- All CI status checks still apply to the release commit before `finalize`
-  runs (see the `setup`/`build` staging-branch dance in release.yml — the
-  commit is fully tested on a scratch branch before promotion), so the
-  absence of a `pull_request` rule does not mean untested code can land.
+The release exception and its remaining risk are:
+
+- The release deploy key exists for one operation: the
+  [`finalize` job](.github/workflows/release.yml)'s fast-forward promotion of
+  the approved, staged release commit to protected `main`. The workflow uses
+  that key only for the branch push; it pushes release tags through an HTTPS
+  remote authenticated by `GITHUB_TOKEN`. The key is the deploy-key bypass
+  actor that makes the protected-branch promotion possible.
+- The release workflow validates the staged release commit before `finalize`
+  promotes it (see the `setup`/`build` staging-branch sequence in
+  `release.yml`). That workflow validation does not remove the risk of an
+  always-bypass actor: the ruleset itself cannot require `CI OK` or review
+  from either bypass actor.
+- zcli is a solo-maintainer project, so direct pushes by the maintainer remain
+  accepted. The repository-role bypass is broader than that workflow use and
+  has no release-only scope.
 
 **Future hardening path** (not implemented, tracked as a follow-up): add a
-`pull_request` rule requiring review, and scope the bypass actor to just the
-release workflow (GitHub supports app/workflow-scoped bypass actors) instead
-of an always-on repository role. That would close the gap where any
-direct-push-capable actor — not just the release automation — can skip
-review.
+`pull_request` rule requiring review, and replace the always-on role bypass
+with the narrowest release-only mechanism GitHub supports. That would reduce
+the gap where a bypass-capable principal can land unreviewed or unchecked
+code.
 
-**Optional idea, not implemented**: a scheduled workflow step that asserts
-the ruleset shape via `gh api repos/<owner>/<repo>/rulesets/18284157` and
-fails loudly on drift, mirroring the release environment's runtime
-self-check (see "Push to main and cut tags" above, and the `#397` lesson
-that an unenforced protection rule fails silently rather than loudly). No
-such check exists yet for the ruleset itself.
+CI checks the publicly observable rule shape on every PR and `main` push:
+the ruleset name/id, its default-branch target, its three rule types, `CI OK`,
+and the non-strict policy. It fails if GitHub's public API cannot be read or
+the shape drifts; it does not skip for an unavailable API. GitHub's anonymous
+ruleset endpoint exposes the rules but returns `bypass_actors: null`, so that
+check deliberately does **not** claim to validate bypass actors. Re-check
+bypass actors with authenticated administrative access when auditing this
+policy.

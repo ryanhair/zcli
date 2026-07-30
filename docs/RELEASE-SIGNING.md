@@ -139,15 +139,24 @@ the new version (ADR-0033):
    script rings the terminal bell and prints the URL. Approving promotes the
    staged commit to main and cuts both tags.
 4. **Signs the draft** — the ceremony below, run inline.
-5. **Waits for the docs deploy**, which fires on `release: published`.
-6. **Verifies the end state independently**: the site serves the new version,
-   `zcli.sh/install.sh` matches the repo, the release carries all 8 assets, the
-   published signature verifies against the pinned key and binds the tag, and the
-   library release exists.
+5. **Converges the docs deploy.** A newly published release waits for the
+   `release: published` run identified by the release tag's commit SHA. A rerun
+   whose site and both installers are already complete dispatches nothing; an
+   incomplete published state recovers by dispatching from the immutable release
+   tag, never from a newer `main`.
+6. **Verifies the end state independently**: both tags resolve to one commit;
+   both source archives download, match, and carry consistent manifests/docs/
+   changelog metadata; the CLI release has exactly the six expected binaries,
+   checksums, and signature; every binary matches its signed checksum; the
+   published host binary reports the release version; both site installers match
+   the tagged files; the shell installer resolves the just-published CLI release;
+   and the live site serves the new version.
 
 **Re-running it is always safe.** Every phase decides what to do from remote
 state — is there a tag, a draft, a published release, what does the site serve —
-never from local bookkeeping. If your laptop dies mid-signing, run the same
+never from local bookkeeping. A complete published release is a no-op until the
+independent verification pass; failed remote reads are reported rather than
+treated as permission to deploy. If your laptop dies mid-signing, run the same
 command again and it resumes. Two narrower modes exist for when you need them:
 
 ```sh

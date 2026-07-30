@@ -1,6 +1,7 @@
 ## What & why
 
 <!-- One or two sentences: what changed, and why. Keep the PR to one logical change. -->
+<!-- Routine PRs squash-merge. Use a conventional, imperative squash-commit subject (for example, "docs: clarify release policy"). -->
 
 ## Testing
 

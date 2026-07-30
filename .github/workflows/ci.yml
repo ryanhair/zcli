@@ -112,8 +112,10 @@ jobs:
               - 'install.sh'
               - 'install.ps1'
               - 'scripts/release.sh'
+              - 'scripts/test-release-orchestration.sh'
               - 'scripts/test-install-signature.sh'
               - 'scripts/test-install-signature.ps1'
+              - '.github/workflows/deploy-docs.yml'
               - '.github/workflows/ci.yml'
             website:
               - 'website/**'
@@ -264,13 +266,55 @@ jobs:
           fi
           echo "$file: every public declaration is documented"
 
-  # The framework (root build.zig.zon) and the CLI (projects/zcli/build.zig.zon)
-  # ship in lockstep and MUST declare the same version — the CLI's `--version`
-  # reads its own zon, the website + library tag read the root's. The README's
-  # Quick Start pins the dependency to the release tag, so it must carry the
-  # same version too. The release automation bumps all three together; this
-  # guards the manual path from drifting them apart, which would otherwise
-  # ship a mislabelled binary or a stale install instruction silently.
+  # This intentionally uses no credential: the public ruleset endpoint exposes
+  # the rule types and required-check configuration. It exposes
+  # `bypass_actors: null` anonymously, so this assertion does not and cannot
+  # verify bypass actors; SECURITY.md records that authenticated-admin audit
+  # limitation. Unlike path-gated work, this job always runs, and an unreadable
+  # API response is a failure rather than a skipped assertion.
+  ruleset:
+    name: main ruleset shape
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Assert the public Main Protection ruleset shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruleset=$(
+            curl --fail --silent --show-error --location \
+              --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              'https://api.github.com/repos/ryanhair/zcli/rulesets/18284157'
+          ) || {
+            echo "::error::cannot read the public Main Protection ruleset; refusing to skip its drift assertion"
+            exit 1
+          }
+
+          if ! jq -e '
+            .id == 18284157
+            and .name == "Main Protection"
+            and .enforcement == "active"
+            and (.conditions.ref_name.exclude == [])
+            and (.conditions.ref_name.include | sort == ["~DEFAULT_BRANCH"])
+            and ([.rules[].type] | sort == ["deletion", "non_fast_forward", "required_status_checks"])
+            and ([.rules[] | select(.type == "required_status_checks") | .parameters] | length == 1)
+            and ([.rules[] | select(.type == "required_status_checks") | .parameters][0].strict_required_status_checks_policy == false)
+            and ([.rules[] | select(.type == "required_status_checks") | .parameters][0].required_status_checks | map(.context) | sort == ["CI OK"])
+          ' <<<"$ruleset"; then
+            echo "::error::public Main Protection ruleset shape drifted (expected default-branch deletion, non_fast_forward, and non-strict CI OK)"
+            exit 1
+          fi
+
+          echo "public Main Protection ruleset shape holds; bypass actors require authenticated administrative audit"
+
+  # The checked-in validator is the one policy implementation shared with the
+  # release workflow and post-release smoke verification. It checks all three
+  # umbrella manifests, README, ROADMAP, changelog release metadata, and the
+  # version reported by an actual built CLI. Keeping that logic out of YAML
+  # prevents the pre-merge and release gates from quietly diverging.
   version-sync:
     name: version consistency
     runs-on: ubuntu-latest
@@ -279,40 +323,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      # ROADMAP.md is checked here for the same reason the README is: release.yml
-      # rewrites both during a release (the "Current release: **vX.Y.Z**" line
-      # and the zig-fetch URL, release.yml:110-111) and, until this was added,
-      # nothing verified either ROADMAP line afterwards — so a sed that silently
-      # stopped matching would ship a roadmap advertising the previous version.
-      - name: Versions match across build.zig.zon files, README and ROADMAP
-        shell: bash
-        run: |
-          extract() { grep -m1 -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+"' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'; }
-          root=$(extract build.zig.zon)
-          cli=$(extract projects/zcli/build.zig.zon)
-          core=$(extract packages/core/build.zig.zon)
-          readme=$(grep -m1 -oE '/zcli/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          roadmap_current=$(grep -m1 -oE '^Current release: \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' ROADMAP.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          roadmap_fetch=$(grep -m1 -oE '/zcli/archive/refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' ROADMAP.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          echo "root build.zig.zon:          $root"
-          echo "projects/zcli/build.zig.zon: $cli"
-          echo "packages/core/build.zig.zon: $core"
-          echo "README.md dependency tag:    $readme"
-          echo "ROADMAP.md current release:  $roadmap_current"
-          echo "ROADMAP.md fetch URL:        $roadmap_fetch"
-          if [ -z "$root" ] || [ -z "$cli" ] || [ -z "$core" ] || [ -z "$readme" ]; then
-            echo "::error::could not read a version from one of the build.zig.zon files or the README dependency tag"
-            exit 1
-          fi
-          if [ -z "$roadmap_current" ] || [ -z "$roadmap_fetch" ]; then
-            echo "::error::could not read a version from ROADMAP.md — release.yml rewrites the 'Current release: **vX.Y.Z**' line and the archive/refs/tags URL, so both must stay in the shapes it matches"
-            exit 1
-          fi
-          if [ "$root" != "$cli" ] || [ "$root" != "$core" ] || [ "$root" != "$readme" ] \
-             || [ "$root" != "$roadmap_current" ] || [ "$root" != "$roadmap_fetch" ]; then
-            echo "::error::version drift: root=$root cli=$cli core=$core readme=$readme roadmap_current=$roadmap_current roadmap_fetch=$roadmap_fetch — the build.zig.zon files, the README dependency tag and both ROADMAP.md version lines must all declare the same version"
-            exit 1
-          fi
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      - name: Test version validation policy
+        run: sh scripts/test-validate-version.sh
+
+      - name: Build zcli for version validation
+        working-directory: projects/zcli
+        run: zig build
+
+      - name: Validate release versions and built CLI
+        run: scripts/validate-version.sh --cli projects/zcli/zig-out/bin/zcli
 
       # The website's getting-started page shows a demo `install` transcript with
       # release-version lines ("Fetching latest release… zcli vX.Y.Z" and a
@@ -397,15 +421,84 @@ jobs:
         working-directory: website
         run: ./zine release
 
-  # Coverage instrumentation (kcov / llvm-cov) was considered here (#335) and
-  # deliberately deferred rather than wired in: Zig 0.16 has no stable,
-  # first-party coverage story, and every third-party route (kcov's DWARF
-  # unwinding against Zig's codegen, llvm-cov needing a matching profile
-  # runtime bundled with this Zig's LLVM) is fragile enough on a moving Zig
-  # release to be its own maintenance burden — exactly what this repo's CI
-  # philosophy (concrete assertions over qualitative feel, see the
-  # output-contract check above) tries to avoid shipping half-working.
-  # Revisit if Zig grows a built-in `-fcoverage`-equivalent.
+  # Zig 0.16's first-party fuzzer instruments source coverage itself, avoiding
+  # the kcov/DWARF and matching-LLVM-runtime problems that previously blocked
+  # coverage reporting here (#335). The ordinary `fuzz-smoke` run executes the
+  # checked-in corpus deterministically; the second run lets the fuzzer mutate
+  # Smith decisions for a fixed iteration budget. Its built-in report records
+  # runs, unique runs, and covered/total instrumented PCs (including a
+  # percentage) in the job summary and an artifact.
+  #
+  # This is reporting, not a percentage gate. The denominator is the whole
+  # imported core test artifact and changes with Zig/codegen/source shape; no
+  # evidence supports inventing a pass number. What is fail-closed is that the
+  # in-memory fuzz targets run successfully and emit a coverage report at all.
+  # Response-file filesystem expansion remains in the deterministic corpus:
+  # repeating fixed-path I/O inside Zig 0.16's Linux/x86_64 multi-instance
+  # fuzzer failed to terminate even with a 1K bound.
+  #
+  # One macOS/ARM leg controls cost and avoids a Zig 0.16 Linux/x86_64 coverage
+  # bug (`corrupted coverage file ... pcs_len was zero`) reproduced on hosted
+  # runners even after the callback became pure and single-test. Zig 0.16 also
+  # reports `--fuzz not yet implemented for windows`; parser semantics still
+  # get deterministic corpus coverage on Linux and Windows through
+  # `zig build test`.
+  parser-fuzz:
+    name: parser fuzz + coverage report
+    runs-on: macos-latest
+    # Keep a hard ceiling with headroom for a cold coverage-instrumented build
+    # plus hosted-runner variance.
+    timeout-minutes: 20
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      - name: Run deterministic parser fuzz corpus
+        run: zig build fuzz-smoke
+
+      - name: Run bounded coverage-guided parser fuzzing
+        shell: bash
+        env:
+          # A clean local cache makes "0 -> N" a per-run measurement instead
+          # of silently accumulating coverage from setup-zig's shared cache.
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zcli-parser-fuzz-cache
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/parser-fuzz-report.txt"
+          # Keep the required gate on the fast coverage plateau. A 1K clean
+          # Linux run covers essentially the same instrumented PCs as 5K.
+          # Response-file I/O is covered by fuzz-smoke above, outside the
+          # coverage-guided callback. Sustained random fuzzing belongs in a
+          # local/session run, not in the merge gate.
+          zig build fuzz --fuzz=1K --summary all 2>&1 | tee "$report"
+          if ! grep -q '^======= FUZZING REPORT =======$' "$report"; then
+            echo "::error::Zig fuzzing completed without its objective coverage report"
+            exit 1
+          fi
+          {
+            echo '### Parser fuzz coverage'
+            echo '```text'
+            awk '/^======= FUZZING REPORT =======$/, /^==============================$/' "$report"
+            echo '```'
+            echo
+            echo 'Reporting only: no coverage percentage threshold is enforced.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload fuzz coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parser-fuzz-coverage
+          path: ${{ runner.temp }}/parser-fuzz-report.txt
+          retention-days: 14
+          if-no-files-found: error
+
   test:
     name: unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -528,6 +621,10 @@ jobs:
         env:
           ZCLI_REQUIRE_MINISIGN: "1"
         run: sh scripts/test-install-signature.sh
+
+      - name: Release rerun, recovery dispatch, and waiter bounds
+        if: runner.os != 'Windows'
+        run: bash scripts/test-release-orchestration.sh
 
       # Invoked as a child process (not `shell: pwsh`) so the harness's exit
       # code is the step's, unambiguously. Every GitHub-hosted runner image
@@ -1006,8 +1103,10 @@ jobs:
     needs:
       - changes
       - fmt
+      - ruleset
       - version-sync
       - website
+      - parser-fuzz
       - test
       - installers
       - windows-release-build

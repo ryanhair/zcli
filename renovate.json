@@ -1,0 +1,87 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "automerge": false,
+  "dependencyDashboard": true,
+  "labels": [
+    "dependencies"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)build\\.zig\\.zon$/"
+      ],
+      "matchStrings": [
+        "\\.url\\s*=\\s*\"https://github\\.com/(?<depName>[^/\\s]+/[^/\\s]+)/archive/refs/tags/(?<currentValue>v?[^\"/]+)\\.tar\\.gz\""
+      ],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)build\\.zig\\.zon$/"
+      ],
+      "matchStrings": [
+        "\\.url\\s*=\\s*\"https://codeberg\\.org/(?<depName>[^/\\s]+/[^/\\s]+)/archive/(?<currentValue>v?[^\"/]+)\\.tar\\.gz\""
+      ],
+      "datasourceTemplate": "forgejo-tags",
+      "registryUrlTemplate": "https://codeberg.org",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Track Nightwatch's verified master tip only: a bare git commit URL has no branch metadata, so a generic git-refs manager would incorrectly assume master for unrelated dependencies.",
+      "managerFilePatterns": [
+        "/^projects/zcli/build\\.zig\\.zon$/"
+      ],
+      "matchStrings": [
+        "\\.url\\s*=\\s*\"git\\+https://github\\.com/neurocyte/nightwatch#(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "depNameTemplate": "neurocyte/nightwatch",
+      "currentValueTemplate": "master",
+      "packageNameTemplate": "https://github.com/neurocyte/nightwatch",
+      "datasourceTemplate": "git-refs",
+      "versioningTemplate": "git"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/actions/setup-zine/action\\.yml$/"
+      ],
+      "matchStrings": [
+        "ZINE_VERSION:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "kristoff-it/zine",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep Zig package content hashes review-gated",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchFileNames": [
+        "**/build.zig.zon"
+      ],
+      "prBodyNotes": [
+        "Zig package URL updates require a matching reviewed `.hash`: run `zig fetch <new-url>` and commit the resulting content hash before merging."
+      ]
+    },
+    {
+      "description": "Keep downloaded Zine releases checksum-verified",
+      "matchDepNames": [
+        "kristoff-it/zine"
+      ],
+      "prBodyNotes": [
+        "Update `ZINE_SHA256` from the reviewed release asset and keep the download verification step passing before merging."
+      ]
+    }
+  ]
+}

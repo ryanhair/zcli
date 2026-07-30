@@ -17,11 +17,12 @@ const testing = std.testing;
 // "file exists in modules 'root' and 'zcli'".
 //
 // That is why the `no_config` split below is what it is: the ADR-0032 helpers
-// (`noConfigMask`/`maskNoConfig`/`captureNoConfig`/`restoreNoConfig`, and their
-// interaction with `firstMissingRequiredOption`) are unit-tested next to their
-// implementation in command_parser.zig, where no plugin — and so no "zcli"
-// module — is needed. What belongs HERE is the other half: the real plugin,
-// reading a real file, honoring the masked bitset the registry hands it.
+// (`noConfigMask`/`maskNoConfig`/`captureNoConfig`/`restoreNoConfig`) are
+// unit-tested next to their implementation in command_parser.zig; the
+// post-parse required check is covered in command_validation.zig. Neither needs
+// a plugin — and so no "zcli" module. What belongs HERE is the other half: the
+// real plugin, reading a real file, honoring the masked bitset the registry
+// hands it.
 
 /// The slice of `context` the config plugin reads. `plugins.zcli_config` is the
 /// per-command ContextData the framework threads; the rest are plain accessors.
@@ -188,6 +189,46 @@ test "integration: required option satisfied by config (through parseCommandLine
     // registry's required-option check treats as "supplied".
     try testing.expectEqualStrings("secret123", opts.token);
     try testing.expect(applied[0]);
+
+    config.deinitContextData(&ctx.plugins.zcli_config, alloc);
+}
+
+test "integration: YAML quoted command keys decode through the config pipeline" {
+    var a = arena();
+    defer a.deinit();
+    const alloc = a.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "myapp.yaml",
+        // serde.zig <= 1.0.3 treated a quoted scalar in a nested mapping as a
+        // value instead of recognizing the following ':' as a mapping key.
+        .data = "list:\n  \"output\": table\n  'all': true\n",
+    });
+    const abs = try tmp.dir.realPathFileAlloc(io, "myapp.yaml", alloc);
+
+    var environ = std.process.Environ.Map.init(alloc);
+    const cmd_path = [_][]const u8{"list"};
+    var ctx = makeCtx(alloc, &environ, &cmd_path, &discard.writer);
+    ctx.plugins.zcli_config.custom_path = abs;
+
+    const args = zcli.ParsedArgs.init(alloc);
+    _ = try config.preExecute(&ctx, args);
+
+    const Opts = struct {
+        output: []const u8 = "text",
+        all: bool = false,
+    };
+    var opts = Opts{};
+    const provided = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    var applied = [_]bool{false} ** @typeInfo(Opts).@"struct".fields.len;
+    config.applyConfigDefaults(&ctx, Opts, &opts, &provided, &applied);
+
+    try testing.expectEqualStrings("table", opts.output);
+    try testing.expect(opts.all);
+    try testing.expectEqualSlices(bool, &.{ true, true }, &applied);
 
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }
@@ -438,7 +479,7 @@ test "integration: required option satisfied by a placeholder-equal config value
     try testing.expect(opts.format == .json);
     // The registry's required-option check reads exactly these flags
     // (firstMissingRequiredOption is bitset-driven — unit-tested in
-    // command_parser.zig), so both fields count as supplied.
+    // command_validation.zig), so both fields count as supplied.
     try testing.expect(applied[0]);
     try testing.expect(applied[1]);
 

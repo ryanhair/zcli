@@ -63,6 +63,8 @@ pub fn build(b: *std.Build) void {
     const test_core_step = b.step("test-core", "Run core tests only");
     const test_plugins_step = b.step("test-plugins", "Run plugin tests only");
     const test_security_step = b.step("test-security", "Run security tests only");
+    const fuzz_smoke_step = b.step("fuzz-smoke", "Run deterministic parser fuzz corpora");
+    const fuzz_step = b.step("fuzz", "Run parser fuzz targets (add --fuzz[=iterations] for coverage-guided fuzzing)");
     const test_sequential_step = b.step("test-seq", "Run tests sequentially (avoids conflicts)");
     const test_secrets_step = b.step("test-secrets", "Run zcli_secrets tests (plugin surface + host backend compile/link)");
     const test_secrets_live_step = b.step("test-secrets-live", "Round-trip the host's native secrets backend against the real OS keychain (CI)");
@@ -162,6 +164,37 @@ pub fn build(b: *std.Build) void {
     for (feature_plugin_test_files) |test_file| {
         const run_tests = addTestRun(b, "test-", test_file, target, optimize, &plugin_test_imports);
         test_plugins_step.dependOn(&run_tests.step);
+        test_step.dependOn(&run_tests.step);
+    }
+
+    // Parser-focused fuzz tests use only stable public seams (`zcli`
+    // parseCommandLine and response_file.expandArgs). In an ordinary build,
+    // the fixed argv and response-file Smith corpora are deterministic,
+    // bounded, and cheap enough for every OS in the default suite. Selecting
+    // `fuzz` with Zig's build-runner `--fuzz[=N]` coverage-guides the in-memory
+    // argv properties; response-file filesystem I/O remains smoke-only because
+    // it does not terminate reliably inside Zig 0.16's hosted Linux/x86_64
+    // multi-instance fuzzer.
+    {
+        const fuzz_mod = b.addModule("test-parser-fuzz", .{
+            .root_source_file = b.path("src/parser_fuzz_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            // Zig 0.16.0's bundled compiler/test_runner.zig passes
+            // builtin.StackTrace to debug.writeStackTrace, which now expects
+            // debug.StackTrace. That dead error-reporting branch is analyzed
+            // only when error-return tracing is enabled, making every -ffuzz
+            // build fail in the toolchain itself. Disable it on this one
+            // artifact until upstream's runner is corrected. Safety checks,
+            // panic traces, leak checks, and normal-test error traces remain.
+            .error_tracing = false,
+        });
+        for (plugin_test_imports) |dep| fuzz_mod.addImport(dep.name, dep.module);
+        const fuzz_tests = b.addTest(.{ .root_module = fuzz_mod });
+        const run_tests = b.addRunArtifact(fuzz_tests);
+        fuzz_smoke_step.dependOn(&run_tests.step);
+        fuzz_step.dependOn(&run_tests.step);
+        test_security_step.dependOn(&run_tests.step);
         test_step.dependOn(&run_tests.step);
     }
 
