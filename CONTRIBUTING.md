@@ -61,8 +61,10 @@ artifact and moves with compiler/codegen and source shape; the report is an
 objective snapshot and trend signal, not evidence for an arbitrary minimum.
 CI uses a 1K iteration budget: clean Linux measurements reach the same useful
 coverage plateau there as at 5K, without exposing the required merge gate to
-rare slow inputs for long enough to hit its runner timeout. Use a larger bound
-or an unbounded session for sustained local fuzzing.
+rare slow inputs unnecessarily. The job has a 20-minute hard ceiling because
+GitHub's hosted x64 runner can spend most of the former 10-minute budget on the
+clean coverage-instrumented Zig build itself. Use a larger bound or an
+unbounded session for sustained local fuzzing.
 Response-file fuzzing performs real temporary-file I/O to stay on the public
 seam, trading some executions per second for coverage of production behavior.
 
