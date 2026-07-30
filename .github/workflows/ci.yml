@@ -432,7 +432,10 @@ jobs:
   # This is reporting, not a percentage gate. The denominator is the whole
   # imported core test artifact and changes with Zig/codegen/source shape; no
   # evidence supports inventing a pass number. What is fail-closed is that the
-  # fuzz targets run successfully and emit a coverage report at all.
+  # in-memory fuzz targets run successfully and emit a coverage report at all.
+  # Response-file filesystem expansion remains in the deterministic corpus:
+  # repeating fixed-path I/O inside Zig 0.16's Linux/x86_64 multi-instance
+  # fuzzer failed to terminate even with a 1K bound.
   #
   # One Linux leg controls cost and matches the current toolchain constraint:
   # Zig 0.16 reports `--fuzz not yet implemented for windows`; parser semantics
@@ -440,9 +443,8 @@ jobs:
   parser-fuzz:
     name: parser fuzz + coverage report
     runs-on: ubuntu-latest
-    # The clean coverage-instrumented Zig build is substantially slower than
-    # ordinary compilation on GitHub's hosted x64 runners. Keep a hard ceiling,
-    # but leave enough headroom for a cold build plus the bounded fuzz run.
+    # Keep a hard ceiling with headroom for a cold coverage-instrumented build
+    # plus hosted-runner variance.
     timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -469,9 +471,9 @@ jobs:
           report="$RUNNER_TEMP/parser-fuzz-report.txt"
           # Keep the required gate on the fast coverage plateau. A 1K clean
           # Linux run covers essentially the same instrumented PCs as 5K.
-          # The clean instrumented rebuild dominates hosted-runner time, so the
-          # job has a separate bounded timeout above; sustained random fuzzing
-          # belongs in a local/session run, not in the merge gate.
+          # Response-file I/O is covered by fuzz-smoke above, outside the
+          # coverage-guided callback. Sustained random fuzzing belongs in a
+          # local/session run, not in the merge gate.
           zig build fuzz --fuzz=1K --summary all 2>&1 | tee "$report"
           if ! grep -q '^======= FUZZING REPORT =======$' "$report"; then
             echo "::error::Zig fuzzing completed without its objective coverage report"

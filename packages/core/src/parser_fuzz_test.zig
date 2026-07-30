@@ -1,8 +1,10 @@
-//! Coverage-guided fuzz targets for zcli's public parsing seams.
+//! Fuzz targets for zcli's public parsing seams.
 //!
-//! `zig build fuzz-smoke` runs the fixed corpora below once, deterministically.
-//! `zig build fuzz --fuzz=50K` lets Zig 0.16 mutate the same Smith inputs and
-//! report source coverage. With no `--fuzz` limit it runs until interrupted.
+//! `zig build fuzz-smoke` runs both fixed corpora below deterministically.
+//! `zig build fuzz --fuzz=50K` coverage-guides the in-memory argv properties.
+//! Response-file expansion stays in the deterministic Smith corpus because
+//! repeating real filesystem I/O inside Zig 0.16's multi-instance fuzzer does
+//! not terminate reliably on hosted Linux/x86_64 runners.
 
 const std = @import("std");
 const zcli = @import("zcli");
@@ -50,21 +52,14 @@ const argv_corpus = &.{
         "\x00\x00\x00\x00",
 };
 
-const FuzzContext = struct {
-    response: ResponseContext,
-};
-
-test "fuzz public argv and response-file parser seams" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var context: FuzzContext = .{ .response = .{ .dir = tmp.dir } };
-
-    // One std.testing.fuzz call deliberately owns all three slices. Zig 0.16's
+test "fuzz public argv parser seams" {
+    // One std.testing.fuzz call deliberately owns both in-memory properties.
+    // Zig 0.16's
     // fuzzer schedules fuzz *tests*, not every call across a test artifact, so
     // separate test blocks can starve behind the first selected target during
-    // a short CI run. One callback guarantees every generated input drives the
-    // arbitrary-argv, equivalent-spelling, and response-file properties.
-    try testing.fuzz(&context, fuzzParsers, .{
+    // a short CI run. One callback guarantees every generated input drives
+    // both the arbitrary-argv and equivalent-spelling properties.
+    try testing.fuzz({}, fuzzParsers, .{
         .corpus = &.{
             argv_corpus[0],
             argv_corpus[1],
@@ -82,10 +77,28 @@ test "fuzz public argv and response-file parser seams" {
     });
 }
 
-fn fuzzParsers(context: *FuzzContext, smith: *testing.Smith) !void {
+test "response-file parser Smith corpus" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var context: ResponseContext = .{ .dir = tmp.dir };
+
+    // Keep real filesystem I/O out of the coverage-guided callback. Zig 0.16's
+    // Linux/x86_64 fuzz runner may launch multiple instances; repeatedly
+    // writing fixed paths from that callback exhausted CI timeouts even at a
+    // 1K bound. The checked-in Smith inputs still exercise arbitrary bytes,
+    // CRLF/LF trimming, comments, nested @ literals, expansion, and parsing in
+    // every ordinary test/fuzz-smoke run.
+    inline for (argv_corpus) |input| {
+        var smith: testing.Smith = .{ .in = input };
+        try fuzzResponseFile(&context, &smith);
+    }
+    var empty: testing.Smith = .{ .in = "" };
+    try fuzzResponseFile(&context, &empty);
+}
+
+fn fuzzParsers(_: void, smith: *testing.Smith) !void {
     try fuzzArgv({}, smith);
     try fuzzEquivalentSpellings({}, smith);
-    try fuzzResponseFile(&context.response, smith);
 }
 
 fn fuzzArgv(_: void, smith: *testing.Smith) !void {

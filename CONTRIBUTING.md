@@ -39,12 +39,12 @@ From the repo root:
 
 ### Parser fuzzing and coverage
 
-The core fuzz target drives the public `zcli.parseCommandLine` and
+The core fuzz artifact drives the public `zcli.parseCommandLine` and
 `zcli.response_file.expandArgs` seams. It checks arbitrary argv repeatability
 and borrowed lifetimes, compares equivalent long/short/attached option
 spellings, and expands generated response files through the command parser.
-These are behavioral/metamorphic properties, not a corpus that merely asserts
-its own fixtures.
+These are behavioral/metamorphic properties, not fixtures that merely assert
+their own contents.
 
 An ordinary `zig build fuzz-smoke` executes the fixed Smith corpus and empty
 input once. It is deterministic and runs in the default test suite on every
@@ -60,13 +60,16 @@ coverage percentage gate. The denominator is the full imported core test
 artifact and moves with compiler/codegen and source shape; the report is an
 objective snapshot and trend signal, not evidence for an arbitrary minimum.
 CI uses a 1K iteration budget: clean Linux measurements reach the same useful
-coverage plateau there as at 5K, without exposing the required merge gate to
-rare slow inputs unnecessarily. The job has a 20-minute hard ceiling because
-GitHub's hosted x64 runner can spend most of the former 10-minute budget on the
-clean coverage-instrumented Zig build itself. Use a larger bound or an
+in-memory coverage plateau there as at 5K, without exposing the required merge
+gate to slow inputs unnecessarily. The job retains a 20-minute hard ceiling
+for cold instrumentation and hosted-runner variance. Use a larger bound or an
 unbounded session for sustained local fuzzing.
+
 Response-file fuzzing performs real temporary-file I/O to stay on the public
-seam, trading some executions per second for coverage of production behavior.
+seam. Its Smith corpus runs deterministically in `fuzz-smoke` and the default
+test suite, outside the coverage-guided callback: Zig 0.16's multi-instance
+Linux/x86_64 fuzzer did not terminate reliably when that callback repeatedly
+wrote fixed paths.
 
 Zig 0.16.0's bundled fuzz test runner has an error-return stack-trace type
 mismatch when tracing is enabled. The fuzz artifact alone disables

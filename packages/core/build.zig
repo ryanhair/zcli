@@ -167,12 +167,14 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
-    // Parser-focused fuzz targets use only stable public seams (`zcli`
+    // Parser-focused fuzz tests use only stable public seams (`zcli`
     // parseCommandLine and response_file.expandArgs). In an ordinary build,
-    // std.testing.fuzz executes the fixed corpus once: deterministic, bounded,
-    // and cheap enough for every OS in the default suite. Selecting `fuzz` with
-    // Zig's build-runner `--fuzz[=N]` rebuilds this same artifact with 0.16's
-    // first-party coverage instrumentation and mutates the Smith decisions.
+    // the fixed argv and response-file Smith corpora are deterministic,
+    // bounded, and cheap enough for every OS in the default suite. Selecting
+    // `fuzz` with Zig's build-runner `--fuzz[=N]` coverage-guides the in-memory
+    // argv properties; response-file filesystem I/O remains smoke-only because
+    // it does not terminate reliably inside Zig 0.16's hosted Linux/x86_64
+    // multi-instance fuzzer.
     {
         const fuzz_mod = b.addModule("test-parser-fuzz", .{
             .root_source_file = b.path("src/parser_fuzz_test.zig"),
