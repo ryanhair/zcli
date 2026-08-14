@@ -16,12 +16,11 @@ const testing = std.testing;
 // as well puts one file in two modules, which Zig rejects outright:
 // "file exists in modules 'root' and 'zcli'".
 //
-// That is why the `no_config` split below is what it is: the ADR-0032 helpers
-// (`noConfigMask`/`maskNoConfig`/`captureNoConfig`/`restoreNoConfig`) are
-// unit-tested next to their implementation in command_parser.zig; the
-// post-parse required check is covered in command_validation.zig. Neither needs
-// a plugin — and so no "zcli" module. What belongs HERE is the other half: the
-// real plugin, reading a real file, honoring the masked bitset the registry
+// That is why the `no_config` split below is what it is: source precedence,
+// locked-field restoration, and resolved-value checks are tested through the
+// deep interfaces in command_validation.zig. They need fake adapters, not the
+// real plugin — and so no "zcli" module. What belongs HERE is the other half:
+// the real plugin, reading a real file, honoring the masked bitset the registry
 // hands it.
 
 /// The slice of `context` the config plugin reads. `plugins.zcli_config` is the
@@ -275,12 +274,12 @@ test "integration: a no_config field is not set from a config file that supplies
 
     // The bitset the registry hands the hook: nothing was supplied by CLI/env,
     // but the two marked fields read as provided. This is precisely what
-    // `command_parser.maskNoConfig(Opts, meta, result.options_provided)` returns
-    // — asserted against the real helper in command_parser.zig's own tests (see
-    // the module-boundary note at the top of this file for why it cannot be
-    // called from here). What this test pins is the half that is genuinely the
-    // plugin's: given that bitset, and a file that names all three keys, the
-    // real plugin must not write the marked fields.
+    // the resolved-input policy hands adapters — asserted through
+    // `command_validation.applyConfigAdapters` in that module's own tests (see
+    // the module note at the top of this file for why it cannot be called here).
+    // What this test pins is the half that is genuinely the plugin's: given that
+    // bitset, and a file that names all three keys, the real plugin must not
+    // write the marked fields.
     for (result.options_provided) |p| try testing.expect(!p);
     const hook_provided = [_]bool{ true, true, false };
 
@@ -289,7 +288,7 @@ test "integration: a no_config field is not set from a config file that supplies
     // Both marked fields keep their struct defaults even though the file names
     // them, and neither counts as supplied — so a marked *required* option would
     // correctly report "missing" rather than silently take the file's value
-    // (pinned in command_parser.zig against firstMissingRequiredOption).
+    // (pinned through command_validation.validateResolved).
     try testing.expectEqual(false, opts.skip_verification);
     try testing.expectEqualStrings("https://trusted.example", opts.registry);
     try testing.expect(!applied[0]);
@@ -347,8 +346,8 @@ test "integration: a no_config REQUIRED option is left unset by the real plugin"
     // The subtlest interaction in the feature: config supplies the required
     // option, and must NOT count. Two required options so the "unmarked one is
     // still satisfied" half is proven by the same run. That the registry then
-    // REPORTS it missing is pinned against firstMissingRequiredOption in
-    // command_parser.zig; what this proves is that the plugin leaves it unset
+    // REPORTS it missing is pinned through validateResolved in
+    // command_validation.zig; what this proves is that the plugin leaves it unset
     // and, crucially, does not mark it applied.
     try tmp.dir.writeFile(io, .{
         .sub_path = "myapp.yaml",
@@ -478,7 +477,7 @@ test "integration: required option satisfied by a placeholder-equal config value
     try testing.expectEqual(@as(u32, 0), opts.offset);
     try testing.expect(opts.format == .json);
     // The registry's required-option check reads exactly these flags
-    // (firstMissingRequiredOption is bitset-driven — unit-tested in
+    // (validateResolved consumes these exact bitsets — unit-tested in
     // command_validation.zig), so both fields count as supplied.
     try testing.expect(applied[0]);
     try testing.expect(applied[1]);
