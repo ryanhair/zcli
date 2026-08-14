@@ -5,15 +5,16 @@
 //! This is the honestly-untestable part of the App, isolated: enabling raw
 //! mode, watching SIGWINCH, and arming the guard all touch the real terminal
 //! or process signal state, so the headless `term_size` harness skips them
-//! (`headless` on `takeover`; the App never calls `arm` headlessly — tests
+//! (`headless` on takeover; the App never arms headlessly — tests
 //! must not grab process signals). Everything that CAN be tested headlessly
 //! lives elsewhere: the render pipeline in `RenderCore`, the parking
 //! invariant in `RegionCursor`, the scrollback reflow in `HybridScrollback`.
 //!
-//! Restore discipline: the guard blob and `writeRestore` emit the same bytes
-//! in the same order — disable input modes, undo the paint modes, show cursor,
-//! then leave the alt-screen — and restore is the strict reverse of enter
-//! (ADR-0015 choice 5). Both live here so they can never diverge.
+//! Restore discipline: `close` and the guard blob emit the same bytes in the
+//! same order — disable input modes, undo the paint modes, show cursor, then
+//! leave the alt-screen — and restore is the strict reverse of enter (ADR-0015
+//! choice 5). The session records which takeover actually began, so callers
+//! cannot accidentally select a weaker restore and strand terminal state.
 
 const std = @import("std");
 const terminal = @import("terminal");
@@ -55,14 +56,14 @@ const cursor_on = "\x1b[?25h"; // show
 
 /// What a HYBRID takeover has to undo: the paint modes plus the hidden cursor.
 /// Hybrid owns no screen state beyond that (no alt-screen, no input modes).
-pub const hybrid_restore = paint_off ++ cursor_on;
+const hybrid_restore = paint_off ++ cursor_on;
 
 /// What a HYBRID takeover turns on: just the hidden cursor. Doubles as the blob
 /// the guard replays when a SIGTSTP suspend resumes (#762) — "re-enter" is
 /// literally re-emitting the enter bytes, and the paint modes come back with the
 /// next paint. Hybrid is the only cooked mode, so it is the only one that can be
 /// suspended in the first place.
-pub const hybrid_enter = cursor_off;
+const hybrid_enter = cursor_off;
 
 const restore_tail = hybrid_restore ++ alt_off;
 
@@ -90,6 +91,8 @@ pub const TerminalSession = struct {
         paste: bool = false,
     };
 
+    const CloseKind = enum { none, hybrid, full_screen };
+
     /// The file handle output escapes actually reach — the guard's replay and
     /// size polling must hit the same tty the escapes went to (#385).
     out_handle: std.Io.File.Handle,
@@ -103,6 +106,12 @@ pub const TerminalSession = struct {
     /// disarm — arming can precede the App's `started`, so `started` alone
     /// would leak the guard on a construct-then-error path.
     guard_armed: bool = false,
+    /// The display takeover `close` must undo. Set before takeover begins so a
+    /// partial write, raw-mode failure, or headless run still selects the same
+    /// restore as a completed entry. Kept here rather than passed to `close`:
+    /// the session owns the state and a caller-selected weaker restore could
+    /// strand the alt-screen.
+    close_kind: CloseKind = .none,
 
     /// Arm the process-global restore guard: replay `restore` (and the raw
     /// termios, when given) on a signal/panic that skips deinit. The single
@@ -120,7 +129,7 @@ pub const TerminalSession = struct {
     /// `reenter` is what puts the takeover back after a SIGTSTP suspend resumes
     /// (#762); empty for full-screen, which is raw and therefore never installs
     /// a suspend handler at all.
-    pub fn arm(
+    fn armGuard(
         self: *TerminalSession,
         restore: []const u8,
         reenter: []const u8,
@@ -136,9 +145,31 @@ pub const TerminalSession = struct {
         self.guard_armed = true;
     }
 
+    /// Protect raw mode handed in by a hybrid caller before the first frame.
+    /// No display state exists yet, so `close` disarms this registration but
+    /// emits no restore bytes if the App never starts painting.
+    pub fn protectHybridRaw(self: *TerminalSession, raw: terminal.RawMode) void {
+        self.armGuard("", "", raw);
+    }
+
+    /// Hybrid takeover: arm the guard, then hide the cursor. Arming first makes
+    /// the signal window safe; replaying a restore before the cursor is hidden
+    /// is harmless, while hiding first could leave it hidden on interruption.
+    /// `headless` still emits the stream but does not touch process signal state.
+    pub fn takeoverHybrid(
+        self: *TerminalSession,
+        writer: *std.Io.Writer,
+        headless: bool,
+        raw: ?terminal.RawMode,
+    ) !void {
+        self.close_kind = .hybrid;
+        if (!headless) self.armGuard(hybrid_restore, hybrid_enter, raw);
+        try writer.writeAll(hybrid_enter);
+    }
+
     /// Disarm the guard if this session armed it — clean teardown owns the
     /// restore from here (and the old signal dispositions come back).
-    pub fn disarm(self: *TerminalSession) void {
+    fn disarm(self: *TerminalSession) void {
         if (!self.guard_armed) return;
         self.guard_armed = false;
         terminal.guard.disarm();
@@ -150,9 +181,13 @@ pub const TerminalSession = struct {
     /// harness) skips the process state but still emits the takeover bytes so
     /// the stream is exercised. The guard is armed BEFORE the bytes go out,
     /// so a signal in the gap still restores; undoing modes we haven't
-    /// entered is a harmless no-op. The caller anchors the cursor and
-    /// flushes; on a later enter failure it calls `abortEnter`.
-    pub fn takeover(self: *TerminalSession, writer: *std.Io.Writer, headless: bool) !void {
+    /// entered is a harmless no-op. The caller anchors the cursor and flushes;
+    /// its enter errdefer and normal deinit both call the same `close` interface.
+    pub fn takeoverFullScreen(self: *TerminalSession, writer: *std.Io.Writer, headless: bool) !void {
+        // Set before the first fallible operation: even a raw-mode-enable
+        // failure closes through the full-screen protocol, exactly as the old
+        // enter errdefer did. `alt_off` is harmless if `alt_on` never landed.
+        self.close_kind = .full_screen;
         if (!headless) {
             self.raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
             self.watcher = terminal.ResizeWatcher.init();
@@ -162,7 +197,7 @@ pub const TerminalSession = struct {
             // No re-enter bytes: full-screen owns raw mode, raw mode clears
             // `ISIG`, and the guard only installs SIGTSTP for cooked takeovers —
             // so nothing here can ever be suspended into a resume (#762).
-            self.arm(self.restoreBlob(&blob), "", self.raw);
+            self.armGuard(self.restoreBlob(&blob), "", self.raw);
         }
         try writer.writeAll(alt_on ++ cursor_off);
         if (self.modes.mouse) try writer.writeAll(mouse_on);
@@ -170,20 +205,10 @@ pub const TerminalSession = struct {
         if (self.modes.paste) try writer.writeAll(paste_on);
     }
 
-    /// Unwind a half-entered full-screen session (the enter path's errdefer):
-    /// same bytes and order as clean teardown, so a failure between takeover
-    /// and the first frame never strands the terminal.
-    pub fn abortEnter(self: *TerminalSession, writer: *std.Io.Writer) void {
-        self.disarm();
-        self.writeRestore(writer);
-        writer.flush() catch {};
-        self.release();
-    }
-
     /// The restore blob for the signal/panic guard: disable whichever input
     /// modes are on, then `restore_tail` (undo the paint modes + show cursor +
-    /// leave alt-screen). Same bytes `writeRestore` emits on the normal path,
-    /// packed into `buf`.
+    /// leave alt-screen). Same bytes `close` emits on the normal path, packed
+    /// into `buf`.
     fn restoreBlob(self: *const TerminalSession, buf: []u8) []const u8 {
         var n: usize = 0;
         const put = struct {
@@ -199,26 +224,58 @@ pub const TerminalSession = struct {
         return buf[0..n];
     }
 
-    /// Emit the restore sequence to the writer (normal teardown / abort):
-    /// disable input modes, undo the paint modes, then show cursor and leave the
-    /// alt-screen. Byte-for-byte what `restoreBlob` registers with the guard.
-    pub fn writeRestore(self: *const TerminalSession, writer: *std.Io.Writer) void {
-        if (self.modes.mouse) writer.writeAll(mouse_off) catch {};
-        if (self.modes.focus) writer.writeAll(focus_off) catch {};
-        if (self.modes.paste) writer.writeAll(paste_off) catch {};
-        writer.writeAll(restore_tail) catch {};
+    /// Close whichever takeover this session began. This is the sole teardown
+    /// interface: withdraw the async guard, attempt every restore sequence,
+    /// flush those bytes, then release the watcher and raw mode. The latter two
+    /// must happen after the flush so alt-screen leave reaches the terminal
+    /// while the process still owns it (ADR-0015 choice 5).
+    ///
+    /// Each sequence is an independent best-effort write. A writer failure on
+    /// (say) mouse disable must not suppress the later autowrap, cursor, or
+    /// alt-screen restores. A dead sink still cannot be repaired; the guard is
+    /// the abnormal-exit path that bypasses this buffered writer entirely.
+    pub fn close(self: *TerminalSession, writer: *std.Io.Writer) void {
+        const kind = self.close_kind;
+        self.close_kind = .none;
+        self.disarm();
+
+        switch (kind) {
+            .none => {},
+            .hybrid => writeDisplayRestore(writer, false),
+            .full_screen => {
+                if (self.modes.mouse) writeBestEffort(writer, mouse_off);
+                if (self.modes.focus) writeBestEffort(writer, focus_off);
+                if (self.modes.paste) writeBestEffort(writer, paste_off);
+                writeDisplayRestore(writer, true);
+            },
+        }
+        writer.flush() catch {};
+        self.release();
     }
 
     /// Release the process state: stop the resize watcher and restore the
     /// termios. Must come AFTER the restore bytes are flushed — the
     /// alt-screen leave has to go out while we still own the terminal.
-    pub fn release(self: *TerminalSession) void {
+    fn release(self: *TerminalSession) void {
         if (self.watcher) |*w| w.deinit();
         self.watcher = null;
         if (self.raw) |r| r.disable();
         self.raw = null;
     }
 };
+
+fn writeDisplayRestore(writer: *std.Io.Writer, leave_alt_screen: bool) void {
+    // Keep these independent: one failed writer call costs at most its own
+    // sequence instead of suppressing every terminal-global restore after it.
+    writeBestEffort(writer, diff.wrap_on);
+    writeBestEffort(writer, diff.sync_off);
+    writeBestEffort(writer, cursor_on);
+    if (leave_alt_screen) writeBestEffort(writer, alt_off);
+}
+
+fn writeBestEffort(writer: *std.Io.Writer, bytes: []const u8) void {
+    writer.writeAll(bytes) catch {};
+}
 
 /// Every terminal mode a full-screen session leaves the terminal in, paired with
 /// the bytes that undo it. The one enumeration both halves of the test below
@@ -253,7 +310,7 @@ test "the takeover stream turns on exactly the modes mode_pairs lists" {
     };
     // headless: emits the takeover bytes without touching real process state
     // (no raw mode, no resize watcher, no guard).
-    try session.takeover(&aw.writer, true);
+    try session.takeoverFullScreen(&aw.writer, true);
 
     var accounted: usize = 0;
     for (mode_pairs) |p| {
@@ -284,7 +341,7 @@ test "the guard blob undoes every mode the session and its paints turn on" {
     }
 }
 
-test "writeRestore emits byte-for-byte what the guard blob registers" {
+test "full-screen close emits byte-for-byte what the guard blob registers" {
     // The two restore paths — normal teardown and an async replay — must stay
     // identical, which is the whole reason both live in this file.
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
@@ -295,10 +352,148 @@ test "writeRestore emits byte-for-byte what the guard blob registers" {
         .{ .mouse = true },
         .{ .mouse = true, .focus = true, .paste = true },
     }) |modes| {
-        const session = TerminalSession{ .out_handle = std.Io.File.stdout().handle, .modes = modes };
+        var session = TerminalSession{ .out_handle = std.Io.File.stdout().handle, .modes = modes };
         var buf: [terminal.guard.blob_max]u8 = undefined;
+        try session.takeoverFullScreen(&aw.writer, true);
         aw.clearRetainingCapacity();
-        session.writeRestore(&aw.writer);
+        session.close(&aw.writer);
         try std.testing.expectEqualStrings(session.restoreBlob(&buf), aw.written());
     }
 }
+
+test "hybrid close preserves its final frame restore and is byte-idempotent" {
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+
+    var session = TerminalSession{ .out_handle = std.Io.File.stdout().handle };
+    try session.takeoverHybrid(&aw.writer, true, null);
+    try std.testing.expectEqualStrings(hybrid_enter, aw.written());
+
+    aw.clearRetainingCapacity();
+    session.close(&aw.writer);
+    try std.testing.expectEqualStrings(hybrid_restore, aw.written());
+
+    // The takeover state was consumed: a repeated close may flush, but cannot
+    // emit another restore or release process resources twice.
+    session.close(&aw.writer);
+    try std.testing.expectEqualStrings(hybrid_restore, aw.written());
+}
+
+test "close without a display takeover emits no restore bytes" {
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+
+    var session = TerminalSession{ .out_handle = std.Io.File.stdout().handle };
+    session.close(&aw.writer);
+    try std.testing.expectEqual(@as(usize, 0), aw.written().len);
+}
+
+test "a failed full-screen takeover still selects the full restore" {
+    var fw: FlakyWriter = undefined;
+    fw.init(std.testing.allocator, 0);
+    defer fw.deinit();
+
+    var session = TerminalSession{ .out_handle = std.Io.File.stdout().handle };
+    try std.testing.expectError(
+        error.WriteFailed,
+        session.takeoverFullScreen(&fw.interface, true),
+    );
+    session.close(&fw.interface);
+    fw.interface.flush() catch {};
+
+    try std.testing.expect(std.mem.indexOf(u8, fw.log.items, diff.wrap_on) != null);
+    try std.testing.expect(std.mem.indexOf(u8, fw.log.items, diff.sync_off) != null);
+    try std.testing.expect(std.mem.indexOf(u8, fw.log.items, cursor_on) != null);
+    try std.testing.expect(std.mem.indexOf(u8, fw.log.items, alt_off) != null);
+}
+
+test "close attempts later restores after one writer failure" {
+    const restores = [_][]const u8{
+        mouse_off,
+        focus_off,
+        paste_off,
+        diff.wrap_on,
+        diff.sync_off,
+        cursor_on,
+        alt_off,
+    };
+
+    var saw_failure = false;
+    for (0..20) |fail_at| {
+        var setup = std.Io.Writer.Allocating.init(std.testing.allocator);
+        defer setup.deinit();
+        var session = TerminalSession{
+            .out_handle = std.Io.File.stdout().handle,
+            .modes = .{ .mouse = true, .focus = true, .paste = true },
+        };
+        try session.takeoverFullScreen(&setup.writer, true);
+
+        var fw: FlakyWriter = undefined;
+        fw.init(std.testing.allocator, fail_at);
+        defer fw.deinit();
+        session.close(&fw.interface);
+        // A close sequence may be buffered after the nominated drain failed;
+        // this is the later retry App cleanup can rely on for a recoverable sink.
+        fw.interface.flush() catch {};
+        if (!fw.failed) continue;
+        saw_failure = true;
+
+        var missing: usize = 0;
+        for (restores) |bytes| {
+            if (std.mem.indexOf(u8, fw.log.items, bytes) == null) missing += 1;
+        }
+        // One failed drain may cost the sequence it was carrying, but it must
+        // not stop the independent best-effort writes that follow it.
+        try std.testing.expect(missing <= 1);
+    }
+    try std.testing.expect(saw_failure);
+}
+
+/// A buffered writer that rejects exactly one drain, then recovers. This is the
+/// real File.Writer failure shape `close` can improve: errors are per call, not
+/// sticky, so later restore writes and a later flush still have a route out.
+const FlakyWriter = struct {
+    buf: [8]u8 = undefined,
+    interface: std.Io.Writer = undefined,
+    log: std.ArrayList(u8) = .empty,
+    gpa: std.mem.Allocator,
+    calls: usize = 0,
+    fail_at: usize,
+    failed: bool = false,
+
+    fn init(self: *FlakyWriter, gpa: std.mem.Allocator, fail_at: usize) void {
+        self.* = .{ .gpa = gpa, .fail_at = fail_at };
+        self.interface = .{ .vtable = &vtable, .buffer = &self.buf };
+    }
+
+    fn deinit(self: *FlakyWriter) void {
+        self.log.deinit(self.gpa);
+    }
+
+    const vtable: std.Io.Writer.VTable = .{ .drain = drain };
+
+    fn drain(io_w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *FlakyWriter = @alignCast(@fieldParentPtr("interface", io_w));
+        const call = self.calls;
+        self.calls += 1;
+        if (call == self.fail_at) {
+            self.failed = true;
+            return error.WriteFailed;
+        }
+
+        self.log.appendSlice(self.gpa, io_w.buffered()) catch return error.WriteFailed;
+        io_w.end = 0;
+
+        var n: usize = 0;
+        for (data[0 .. data.len - 1]) |bytes| {
+            self.log.appendSlice(self.gpa, bytes) catch return error.WriteFailed;
+            n += bytes.len;
+        }
+        const pattern = data[data.len - 1];
+        for (0..splat) |_| {
+            self.log.appendSlice(self.gpa, pattern) catch return error.WriteFailed;
+            n += pattern.len;
+        }
+        return n;
+    }
+};

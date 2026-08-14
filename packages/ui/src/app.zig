@@ -205,10 +205,10 @@ pub const App = struct {
         // prompt owns its input), so a signal in the gap before the first frame
         // would otherwise strand the terminal raw (issue #322). Only on a real
         // terminal (`term_size` null); `start` re-arms with the cursor-show blob
-        // once it hides the cursor. The blob is empty here — nothing on screen to
-        // undo yet, only the termios carried in `hybrid_raw`.
+        // immediately before it hides the cursor. The blob is empty here —
+        // nothing on screen to undo yet, only the termios in `hybrid_raw`.
         if (options.term_size == null and options.hybrid_raw != null) {
-            self.session.arm("", "", options.hybrid_raw);
+            self.session.protectHybridRaw(options.hybrid_raw.?);
         }
         return self;
     }
@@ -359,14 +359,14 @@ pub const App = struct {
         if (!self.options.interactive) return error.NotATerminal;
         // Restore terminal state if any step below fails — same bytes/order as
         // deinit, so a half-entered session never strands the terminal.
-        errdefer self.session.abortEnter(self.writer);
+        errdefer self.session.close(self.writer);
         self.started = true; // cursor hidden, terminal owned
         // A fixed `term_size` is the headless-harness path (tests): there is
         // no real terminal to put in raw mode, watch for resizes, or arm the
         // restore guard against (tests must not grab process signals). The
         // alt-screen takeover bytes still go out so the stream is exercised;
         // live input (`nextEvent`) is a real-terminal-only affair.
-        try self.session.takeover(self.writer, self.options.term_size != null);
+        try self.session.takeoverFullScreen(self.writer, self.options.term_size != null);
         try self.cursor.anchor(self.writer, self.termSize().h);
         try self.writer.flush();
     }
@@ -377,32 +377,22 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         if (self.deinited) return;
         self.deinited = true;
-        // Clean teardown owns the restore from here — disarm so a racing signal
-        // doesn't also replay, and to put the old signal dispositions back.
-        // Idempotent: a no-op on the headless path that never armed.
-        self.session.disarm();
-        if (self.mode == .full_screen) {
-            // Restore in strict reverse of enter (ADR-0015 choice 5): disable
-            // input modes → show cursor → leave alt-screen (restores the shell's
-            // screen and scrollback; the final frame is discarded by design) →
-            // disable raw mode. The alt-screen leave must precede the raw-mode
-            // restore so its bytes still go out while we own the terminal.
-            if (self.started) self.session.writeRestore(self.writer);
-            self.writer.flush() catch {};
-            self.session.release();
-        } else if (self.started) {
+        if (self.mode == .hybrid and self.started) {
+            // App owns only the hybrid final-frame policy: leave the last frame
+            // visible and move to a fresh line below it. TerminalSession owns
+            // every teardown phase after this positioning — guard disarm,
+            // restore bytes, flush, and process-state release.
             self.cursor.park(self.writer) catch {};
             if (self.live_rows > 1) {
                 self.writer.print("\x1b[{d}B", .{self.live_rows - 1}) catch {};
             }
             if (self.live_rows > 0) self.writer.writeAll("\r\n") catch {};
-            // Byte-for-byte the blob the guard would have replayed, so the two
-            // teardown paths can't drift (#760).
-            self.writer.writeAll(session_mod.hybrid_restore) catch {};
-            self.writer.flush() catch {};
-        } else {
-            self.writer.flush() catch {};
         }
+        // Session-owned takeover state selects none/hybrid/full-screen, so App
+        // cannot accidentally choose a restore weaker than the one it entered.
+        // Full-screen close discards the final frame by leaving the alt-screen;
+        // a never-started hybrid emits no escapes but still disarms its guard.
+        self.session.close(self.writer);
         self.scrollback.deinit();
         self.paste_buf.deinit(self.gpa);
         self.core.deinit();
@@ -761,24 +751,21 @@ pub const App = struct {
     /// Arm the guard to re-show it — and, when the caller handed its `RawMode`
     /// in via `options.hybrid_raw`, to also restore termios — on a signal/panic
     /// that skips deinit. Input ownership stays with the caller (it enables and
-    /// `disable()`s raw mode itself), but the guard is armed here, the single
-    /// arm/disarm site, so the registered raw restore never diverges from the
+    /// `disable()`s raw mode itself), but TerminalSession remains the single
+    /// arm/disarm owner, so the registered raw restore never diverges from the
     /// cursor blob. Only on a real terminal (`term_size` null); the headless
     /// harness must not grab process signals.
     fn start(self: *App) !void {
         if (self.started) return;
         self.started = true;
-        try self.writer.writeAll(session_mod.hybrid_enter);
-        if (self.options.term_size == null) {
-            // The blob also undoes the paint modes (`?7l`/`?2026h`), which the
-            // diff renderer turns on for the duration of a frame: a signal that
-            // lands mid-paint would otherwise leave autowrap off (#760).
-            self.session.arm(
-                session_mod.hybrid_restore,
-                session_mod.hybrid_enter,
-                self.options.hybrid_raw,
-            );
-        }
+        // The session arms before hiding the cursor. Its restore also undoes
+        // the paint modes (`?7l`/`?2026h`) that diff holds during a frame, so a
+        // signal mid-paint cannot strand autowrap or synchronized output (#760).
+        try self.session.takeoverHybrid(
+            self.writer,
+            self.options.term_size != null,
+            self.options.hybrid_raw,
+        );
     }
 
     fn termSize(self: *App) Size {

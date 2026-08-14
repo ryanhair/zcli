@@ -1,5 +1,6 @@
 const std = @import("std");
 const command_parser = @import("../command_parser.zig");
+const command_validation = @import("../command_validation.zig");
 const option_utils = @import("../options/utils.zig");
 const tokenizer = @import("../options/tokenizer.zig");
 const plugin_types = @import("../plugin_types.zig");
@@ -986,6 +987,18 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
             return false;
         }
 
+        /// Finish a rejected command-input path through the one registry-owned
+        /// diagnostic seam. The context is populated before `onError`; a handled
+        /// error suppresses default rendering and propagation. Hook failures are
+        /// already contained by `runOnErrorHooks`, and rendering remains
+        /// best-effort so neither can replace the classified input error.
+        fn handleInputError(context: *Context, err: anyerror, diag: ?zcli.ZcliDiagnostic) !void {
+            context.diagnostic = diag;
+            if (try runOnErrorHooks(context, err)) return;
+            try reportParseError(context, diag);
+            return err;
+        }
+
         /// Run postParse hooks, threading each plugin's replacement ParsedArgs.
         fn runPostParseHooks(context: *Context, parsed: zcli.ParsedArgs) !zcli.ParsedArgs {
             var parsed_args = parsed;
@@ -1200,124 +1213,39 @@ pub fn CompiledRegistry(comptime config: Config, comptime cmd_entries: []const C
                 return error.CommandNotFound;
             }
 
-            var parse_diag: ?zcli.ZcliDiagnostic = null;
-            const parse_result = command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, parsed_args.positional, &parse_diag) catch |err| {
-                context.diagnostic = parse_diag;
-                if (try runOnErrorHooks(context, err)) return;
-                try reportParseError(context, parse_diag);
-                return err;
-            };
+            var input_diag: ?zcli.ZcliDiagnostic = null;
+            const parse_result = command_parser.parseCommandLine(ArgsType, OptionsType, cmd_meta, context.allocator, context.environ, parsed_args.positional, &input_diag) catch |err|
+                return handleInputError(context, err, input_diag);
             defer parse_result.deinit();
 
             const args_instance = parse_result.args;
             var options_instance = parse_result.options;
 
-            // Config defaults fill only options no higher source set. The
-            // provided bitset (CLI + env, keyed by Options field order) is the
-            // single mechanism enforcing CLI > env > config: config skips any
-            // field whose flag is true. The plugin marks every field it fills
-            // in `config_applied` — an explicit report, not a value diff, so a
-            // config value equal to a field's placeholder still counts as
-            // supplied (#388).
-            //
-            // `meta.options.<field>.no_config` (ADR-0032) rides on exactly that
-            // mechanism: `maskNoConfig` forces a locked field's flag true in the
-            // view the hooks see, so they skip it via the check they already
-            // make. The REAL bitset is what the required/constraint checks below
-            // read, so a locked field still reads as unsupplied unless CLI or env
-            // truly supplied it. `restoreNoConfig` afterwards is the backstop
-            // that keeps the marker from being advisory: a hook that ignores
-            // `provided` gets its write undone rather than quietly winning.
-            //
-            // Both are enforced here rather than inside zcli_config so the
-            // guarantee covers ANY applyConfigDefaults hook — a third-party
-            // config source cannot opt out of a security marker — and so the
-            // hook signature stays free of a policy argument every implementer
-            // would have to remember to honor. When no field is marked the mask
-            // is all-false at comptime, every branch here folds away, and
-            // `before_config` is a ZERO-SIZED `void` — the snapshot is not a
-            // struct copy that a dead branch later ignores, it is not taken at
-            // all. That distinction is the difference between "free" and "one
-            // struct copy per invocation" on a path gated by a startup-time and
-            // binary-size budget.
-            const hook_provided = command_parser.maskNoConfig(OptionsType, cmd_meta, parse_result.options_provided);
-            const before_config = command_parser.captureNoConfig(OptionsType, cmd_meta, options_instance);
+            // Resolve every lower-precedence config adapter behind one policy
+            // interface. It preserves the real CLI/env bitset, shares applied
+            // state across adapters, and enforces ADR-0032 around the whole loop.
+            const config_applied = command_validation.applyConfigAdapters(
+                OptionsType,
+                cmd_meta,
+                sorted_plugins,
+                context,
+                &options_instance,
+                parse_result.options_provided,
+            );
 
-            var config_applied = [_]bool{false} ** command_parser.optionFieldCount(OptionsType);
-            inline for (sorted_plugins) |Plugin| {
-                if (@hasDecl(Plugin, "applyConfigDefaults")) {
-                    Plugin.applyConfigDefaults(context, OptionsType, &options_instance, &hook_provided, &config_applied);
-                }
-            }
-            command_parser.restoreNoConfig(OptionsType, cmd_meta, &options_instance, before_config, &config_applied);
-
-            // Required options: a non-optional, defaultless, non-bool, non-array
-            // Options field must be supplied by SOME source — CLI, env, or config.
-            // Checked here, after every source has been applied, and reported like
-            // any other parse error (humane message + usage hint).
-            if (command_parser.firstMissingRequiredOption(OptionsType, cmd_meta, parse_result.options_provided, config_applied)) |missing| {
-                const diag: zcli.ZcliDiagnostic = .{ .OptionMissingRequired = .{
-                    .option_name = missing.name,
-                    .expected_type = missing.expected_type,
-                } };
-                context.diagnostic = diag;
-                if (try runOnErrorHooks(context, error.OptionMissingRequired)) return;
-                try reportParseError(context, diag);
-                return error.OptionMissingRequired;
-            }
-
-            // Cross-field constraints (ADR-0022), checked over the same
-            // provided + config_applied bitsets. Order per ADR: requires, then
-            // exclusive (missing-required above ran first).
-            if (command_parser.firstMissingDependency(OptionsType, cmd_meta, parse_result.options_provided, config_applied)) |dep| {
-                const diag: zcli.ZcliDiagnostic = .{ .OptionMissingDependency = .{
-                    .option_name = dep.option_name,
-                    .required_name = dep.required_name,
-                } };
-                context.diagnostic = diag;
-                if (try runOnErrorHooks(context, error.OptionMissingDependency)) return;
-                try reportParseError(context, diag);
-                return error.OptionMissingDependency;
-            }
-
-            if (command_parser.firstExclusiveViolation(OptionsType, cmd_meta, parse_result.options_provided, config_applied)) |ex| {
-                const diag: zcli.ZcliDiagnostic = .{ .OptionMutuallyExclusive = .{
-                    .first = ex.first,
-                    .second = ex.second,
-                } };
-                context.diagnostic = diag;
-                if (try runOnErrorHooks(context, error.OptionMutuallyExclusive)) return;
-                try reportParseError(context, diag);
-                return error.OptionMutuallyExclusive;
-            }
-
-            // Per-field validation (meta.args/options.<field>.validate), run last
-            // on the fully-resolved values so the hooks see every source's effect.
-            // Args first (positional), then options — mirroring their parse order.
-            if (command_parser.firstArgValidationError(context.allocator, ArgsType, cmd_meta, args_instance)) |failure| {
-                const diag: zcli.ZcliDiagnostic = .{ .ArgumentValidationFailed = .{
-                    .field_name = failure.name,
-                    .position = failure.position,
-                    .provided_value = failure.provided_value,
-                    .reason = failure.reason,
-                } };
-                context.diagnostic = diag;
-                if (try runOnErrorHooks(context, error.ArgumentValidationFailed)) return;
-                try reportParseError(context, diag);
-                return error.ArgumentValidationFailed;
-            }
-
-            if (command_parser.firstOptionValidationError(context.allocator, OptionsType, cmd_meta, options_instance)) |failure| {
-                const diag: zcli.ZcliDiagnostic = .{ .OptionValidationFailed = .{
-                    .option_name = failure.name,
-                    .provided_value = failure.provided_value,
-                    .reason = failure.reason,
-                } };
-                context.diagnostic = diag;
-                if (try runOnErrorHooks(context, error.OptionValidationFailed)) return;
-                try reportParseError(context, diag);
-                return error.OptionValidationFailed;
-            }
+            // The resolved-value policy owns the accepted order: required,
+            // requires, exclusive, Args validation, then Options validation.
+            command_validation.validateResolved(
+                context.allocator,
+                ArgsType,
+                OptionsType,
+                cmd_meta,
+                args_instance,
+                options_instance,
+                parse_result.options_provided,
+                config_applied,
+                &input_diag,
+            ) catch |err| return handleInputError(context, err, input_diag);
 
             // Execute. A handled error (onError returns true) is suppressed
             // and falls through to postExecute with success = false. An

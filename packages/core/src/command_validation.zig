@@ -1,18 +1,131 @@
-//! Post-parse command option and argument validation.
+//! Resolved command-input policy.
 //!
 //! Parsing owns token consumption, value conversion, and allocation. This
-//! module owns the ordered policy sweep over those resolved values: required
-//! options, dependencies, exclusivity, then field validation hooks.
+//! module owns config-source precedence around `applyConfigDefaults` adapters
+//! and the ordered policy sweep over the resulting values: required options,
+//! dependencies, exclusivity, then field validation hooks.
 
 const std = @import("std");
 const options_parser = @import("options.zig");
 const option_utils = @import("options/utils.zig");
 const diagnostic_errors = @import("diagnostic_errors.zig");
 
+const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
+const ZcliError = diagnostic_errors.ZcliError;
+
+/// One flag per Options field (field-declaration order — the same keying as
+/// `options_provided`), true where `meta.options.<field>.no_config` locks the
+/// field against config files (ADR-0032). Fully comptime; all false, and every
+/// branch guarded by it folded away, unless a field carries the marker.
+fn noConfigMask(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+) [options_parser.optionFieldCount(OptionsType)]bool {
+    return comptime blk: {
+        var mask = [_]bool{false} ** options_parser.optionFieldCount(OptionsType);
+        const info = @typeInfo(OptionsType);
+        if (info == .@"struct") {
+            for (info.@"struct".fields, 0..) |field, i| {
+                mask[i] = option_utils.isNoConfig(meta, field.name);
+            }
+        }
+        break :blk mask;
+    };
+}
+
+/// The `provided` view handed to config adapters: the real CLI/env bitset with
+/// every `no_config` field forced true. The real bitset stays unchanged for the
+/// required and constraint checks that follow config application.
+fn maskNoConfig(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    provided: [options_parser.optionFieldCount(OptionsType)]bool,
+) [options_parser.optionFieldCount(OptionsType)]bool {
+    const mask = comptime noConfigMask(OptionsType, meta);
+    var masked = provided;
+    inline for (mask, 0..) |locked, i| {
+        if (locked) masked[i] = true;
+    }
+    return masked;
+}
+
+fn anyNoConfig(comptime OptionsType: type, comptime meta: anytype) bool {
+    return comptime blk: {
+        for (noConfigMask(OptionsType, meta)) |locked| {
+            if (locked) break :blk true;
+        }
+        break :blk false;
+    };
+}
+
+/// The options struct when any field is locked, and `void` otherwise. Making
+/// the type zero-sized in the common case prevents an unconditional options
+/// struct copy on the registry's startup- and binary-size-budgeted path.
+fn NoConfigSnapshot(comptime OptionsType: type, comptime meta: anytype) type {
+    return if (anyNoConfig(OptionsType, meta)) OptionsType else void;
+}
+
+fn captureNoConfig(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    options: OptionsType,
+) NoConfigSnapshot(OptionsType, meta) {
+    if (comptime !anyNoConfig(OptionsType, meta)) return {};
+    return options;
+}
+
+/// Restore any `no_config` field a non-conforming adapter wrote and clear its
+/// applied flag. The overwritten value is deliberately orphaned, not freed:
+/// its ownership cannot be distinguished from a comptime default here, and the
+/// registry's command arena reclaims it wholesale (ADR-0001/ADR-0032).
+fn restoreNoConfig(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    options: *OptionsType,
+    before: NoConfigSnapshot(OptionsType, meta),
+    config_applied: *[options_parser.optionFieldCount(OptionsType)]bool,
+) void {
+    if (comptime !anyNoConfig(OptionsType, meta)) return;
+    const mask = comptime noConfigMask(OptionsType, meta);
+    inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
+        if (mask[i]) {
+            @field(options, field.name) = @field(before, field.name);
+            config_applied[i] = false;
+        }
+    }
+}
+
+/// Apply every registered config adapter in priority order under the framework's
+/// source-precedence policy. Adapters share one `config_applied` bitset, so an
+/// earlier adapter wins over a later one; CLI/env values and `no_config` fields
+/// are masked as already supplied. The restore pass makes `no_config` a
+/// guarantee even when an adapter ignores the existing `provided` contract.
+pub fn applyConfigAdapters(
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    comptime plugins: []const type,
+    context: anytype,
+    options: *OptionsType,
+    provided: [options_parser.optionFieldCount(OptionsType)]bool,
+) [options_parser.optionFieldCount(OptionsType)]bool {
+    const hook_provided = maskNoConfig(OptionsType, meta, provided);
+    const before_config = captureNoConfig(OptionsType, meta, options.*);
+    var config_applied = [_]bool{false} ** options_parser.optionFieldCount(OptionsType);
+
+    inline for (plugins) |Plugin| {
+        if (@hasDecl(Plugin, "applyConfigDefaults")) {
+            Plugin.applyConfigDefaults(context, OptionsType, options, &hook_provided, &config_applied);
+        }
+    }
+
+    restoreNoConfig(OptionsType, meta, options, before_config, &config_applied);
+    return config_applied;
+}
+
 /// A required option that no value source supplied — reported to the user via
 /// the `OptionMissingRequired` diagnostic. `name` is the option's effective long
 /// flag name (custom `meta.options.<field>.name` or dashed field name).
-pub const MissingRequiredOption = struct {
+const MissingRequiredOption = struct {
     name: []const u8,
     expected_type: []const u8,
 };
@@ -26,7 +139,7 @@ pub const MissingRequiredOption = struct {
 /// diff — a config value equal to the required-option placeholder (0, the first
 /// enum variant) is still supplied (#388). Called by the registry after the
 /// config pass.
-pub fn firstMissingRequiredOption(
+fn firstMissingRequiredOption(
     comptime OptionsType: type,
     comptime meta: anytype,
     provided: [options_parser.optionFieldCount(OptionsType)]bool,
@@ -59,7 +172,7 @@ fn fieldIndex(comptime OptionsType: type, comptime name: []const u8) usize {
 /// A supplied option whose `meta.options.<field>.requires` dependency was not
 /// supplied. Names are effective long flag names (custom `.name` or dashed
 /// field name), static lifetime.
-pub const MissingDependency = struct {
+const MissingDependency = struct {
     option_name: []const u8,
     required_name: []const u8,
 };
@@ -70,7 +183,7 @@ pub const MissingDependency = struct {
 /// Runs beside `firstMissingRequiredOption`, over the same `options_provided`
 /// and `config_applied` bitsets ("supplied" = either flag; the same explicit
 /// notion `firstMissingRequiredOption` uses).
-pub fn firstMissingDependency(
+fn firstMissingDependency(
     comptime OptionsType: type,
     comptime meta: anytype,
     provided: [options_parser.optionFieldCount(OptionsType)]bool,
@@ -98,7 +211,7 @@ pub fn firstMissingDependency(
 
 /// Two members of a `meta.exclusive` set that were both supplied. Names are
 /// effective long flag names, static lifetime.
-pub const MutuallyExclusive = struct {
+const MutuallyExclusive = struct {
     first: []const u8,
     second: []const u8,
 };
@@ -107,7 +220,7 @@ pub const MutuallyExclusive = struct {
 /// the first two in declaration order), or null. Runs beside
 /// `firstMissingRequiredOption`, after `requires`, over the same
 /// `options_provided` and `config_applied` bitsets.
-pub fn firstExclusiveViolation(
+fn firstExclusiveViolation(
     comptime OptionsType: type,
     comptime meta: anytype,
     provided: [options_parser.optionFieldCount(OptionsType)]bool,
@@ -133,7 +246,7 @@ pub fn firstExclusiveViolation(
 /// the rejected value rendered to a string (for the "Invalid value 'X'" clause);
 /// `reason` is the author's message; `position` is the 0-based positional index
 /// for args.
-pub const ValidationFailure = struct {
+const ValidationFailure = struct {
     name: []const u8,
     reason: []const u8,
     provided_value: []const u8 = "",
@@ -159,7 +272,7 @@ fn renderValidatedValue(allocator: std.mem.Allocator, comptime T: type, value: T
 /// exclusive, on the final value from any source; a `?T` field is validated
 /// only when a value is present (null is skipped, since absence is governed by
 /// required/optional, not by the value hook).
-pub fn firstOptionValidationError(
+fn firstOptionValidationError(
     allocator: std.mem.Allocator,
     comptime OptionsType: type,
     comptime meta: anytype,
@@ -193,7 +306,7 @@ pub fn firstOptionValidationError(
 /// The first positional Args field whose `meta.args.<field>.validate` rejected
 /// the parsed value (in positional order), or null. Same value-hook semantics as
 /// options; `position` is the 0-based field index for the diagnostic.
-pub fn firstArgValidationError(
+fn firstArgValidationError(
     allocator: std.mem.Allocator,
     comptime ArgsType: type,
     comptime meta: anytype,
@@ -226,152 +339,379 @@ pub fn firstArgValidationError(
     return null;
 }
 
-test "firstMissingRequiredOption: satisfied by CLI, env, or config; else reported" {
-    const Options = struct {
-        region: []const u8,
-        verbose: bool = false,
-    };
+/// Validate fully resolved command inputs and return the first failure in the
+/// ordering fixed by ADR-0022 and ADR-0025. On failure, `diag` is populated
+/// before the error is returned; the registry remains responsible for assigning
+/// it to the context, dispatching `onError`, and rendering an unhandled error.
+///
+/// Validation rendering may allocate from `allocator`. The registry passes its
+/// command arena and keeps the parsed result alive until command dispatch ends,
+/// so diagnostic payloads remain valid through error hooks and rendering. Tests
+/// may pass any allocator as long as it outlives their diagnostic assertions.
+pub fn validateResolved(
+    allocator: std.mem.Allocator,
+    comptime ArgsType: type,
+    comptime OptionsType: type,
+    comptime meta: anytype,
+    args: ArgsType,
+    options: OptionsType,
+    provided: [options_parser.optionFieldCount(OptionsType)]bool,
+    config_applied: [options_parser.optionFieldCount(OptionsType)]bool,
+    diag: *?ZcliDiagnostic,
+) ZcliError!void {
+    if (firstMissingRequiredOption(OptionsType, meta, provided, config_applied)) |missing| {
+        diag.* = .{ .OptionMissingRequired = .{
+            .option_name = missing.name,
+            .expected_type = missing.expected_type,
+        } };
+        return error.OptionMissingRequired;
+    }
 
-    const none = [_]bool{ false, false };
+    if (firstMissingDependency(OptionsType, meta, provided, config_applied)) |dep| {
+        diag.* = .{ .OptionMissingDependency = .{
+            .option_name = dep.option_name,
+            .required_name = dep.required_name,
+        } };
+        return error.OptionMissingDependency;
+    }
 
-    const miss = firstMissingRequiredOption(Options, null, none, none);
-    try std.testing.expect(miss != null);
-    try std.testing.expectEqualStrings("region", miss.?.name);
-    try std.testing.expectEqualStrings("[]const u8", miss.?.expected_type);
+    if (firstExclusiveViolation(OptionsType, meta, provided, config_applied)) |ex| {
+        diag.* = .{ .OptionMutuallyExclusive = .{
+            .first = ex.first,
+            .second = ex.second,
+        } };
+        return error.OptionMutuallyExclusive;
+    }
 
-    const provided = [_]bool{ true, false };
-    try std.testing.expect(firstMissingRequiredOption(Options, null, provided, none) == null);
+    if (firstArgValidationError(allocator, ArgsType, meta, args)) |failure| {
+        diag.* = .{ .ArgumentValidationFailed = .{
+            .field_name = failure.name,
+            .position = failure.position,
+            .provided_value = failure.provided_value,
+            .reason = failure.reason,
+        } };
+        return error.ArgumentValidationFailed;
+    }
 
-    const config_applied = [_]bool{ true, false };
-    try std.testing.expect(firstMissingRequiredOption(Options, null, none, config_applied) == null);
+    if (firstOptionValidationError(allocator, OptionsType, meta, options)) |failure| {
+        diag.* = .{ .OptionValidationFailed = .{
+            .option_name = failure.name,
+            .provided_value = failure.provided_value,
+            .reason = failure.reason,
+        } };
+        return error.OptionValidationFailed;
+    }
 }
 
-test "firstMissingRequiredOption: reports the effective name and handles no required fields" {
-    const Required = struct { output_file: []const u8 };
-    const meta = .{ .options = .{ .output_file = .{ .name = "out" } } };
-    const miss = firstMissingRequiredOption(Required, meta, .{false}, .{false});
-    try std.testing.expect(miss != null);
-    try std.testing.expectEqualStrings("out", miss.?.name);
+const FirstCountConfig = struct {
+    pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void {
+        _ = context;
+        if (!provided[0] and !applied[0]) {
+            options.count = 11;
+            applied[0] = true;
+        }
+    }
+};
 
-    const Optional = struct { verbose: bool = false, name: ?[]const u8 = null };
-    const none = [_]bool{ false, false };
-    try std.testing.expect(firstMissingRequiredOption(Optional, null, none, none) == null);
+const SecondCountConfig = struct {
+    pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void {
+        _ = context;
+        if (!provided[0] and !applied[0]) {
+            options.count = 22;
+            applied[0] = true;
+        }
+    }
+};
+
+const SecurityConfig = struct {
+    pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void {
+        _ = context;
+        if (!provided[0] and !applied[0]) {
+            options.skip_verification = true;
+            applied[0] = true;
+        }
+        if (!provided[1] and !applied[1]) {
+            options.registry = "https://evil.example";
+            applied[1] = true;
+        }
+        if (!provided[2] and !applied[2]) {
+            options.count = 9;
+            applied[2] = true;
+        }
+    }
+};
+
+const RogueConfig = struct {
+    pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void {
+        _ = context;
+        _ = provided;
+        inline for (@typeInfo(OptionsType).@"struct".fields, 0..) |field, i| {
+            if (field.type == bool) {
+                @field(options, field.name) = true;
+                applied[i] = true;
+            } else if (field.type == []const u8) {
+                @field(options, field.name) = "https://evil.example";
+                applied[i] = true;
+            } else if (field.type == u32) {
+                @field(options, field.name) = 77;
+                applied[i] = true;
+            }
+        }
+    }
+};
+
+const RequiredConfig = struct {
+    pub fn applyConfigDefaults(context: anytype, comptime OptionsType: type, options: *OptionsType, provided: []const bool, applied: []bool) void {
+        _ = context;
+        if (!provided[0] and !applied[0]) {
+            options.signing_key = "attacker-key";
+            applied[0] = true;
+        }
+        if (!provided[1] and !applied[1]) {
+            options.project = "acme";
+            applied[1] = true;
+        }
+    }
+};
+
+test "applyConfigAdapters: earlier config wins and CLI or env wins over every adapter" {
+    const Options = struct { count: u32 = 5 };
+    var context: u8 = 0;
+
+    var from_config = Options{};
+    const config_applied = applyConfigAdapters(Options, null, &.{ FirstCountConfig, SecondCountConfig }, &context, &from_config, .{false});
+    try std.testing.expectEqual(@as(u32, 11), from_config.count);
+    try std.testing.expect(config_applied[0]);
+
+    var from_higher_source = Options{ .count = 99 };
+    const skipped = applyConfigAdapters(Options, null, &.{ FirstCountConfig, SecondCountConfig }, &context, &from_higher_source, .{true});
+    try std.testing.expectEqual(@as(u32, 99), from_higher_source.count);
+    try std.testing.expect(!skipped[0]);
 }
 
-test "firstMissingDependency: source tracking and effective names" {
+test "applyConfigAdapters: no_config masks conforming adapters and restores rogue writes" {
     const Options = struct {
-        output: ?[]const u8 = null,
-        output_format: ?enum { pretty, compact } = null,
+        skip_verification: bool = false,
+        registry: []const u8 = "https://trusted.example",
+        count: u32 = 1,
     };
-    const meta = .{ .options = .{ .output_format = .{ .requires = .{.output} } } };
-    const none = [_]bool{ false, false };
-
-    const missing = firstMissingDependency(Options, meta, .{ false, true }, none);
-    try std.testing.expect(missing != null);
-    try std.testing.expectEqualStrings("output-format", missing.?.option_name);
-    try std.testing.expectEqualStrings("output", missing.?.required_name);
-    try std.testing.expect(firstMissingDependency(Options, meta, .{ true, true }, none) == null);
-    try std.testing.expect(firstMissingDependency(Options, meta, .{ true, false }, none) == null);
-    try std.testing.expect(firstMissingDependency(Options, meta, .{ false, true }, .{ true, false }) == null);
-
-    const Custom = struct {
-        out: ?[]const u8 = null,
-        fmt: ?[]const u8 = null,
-    };
-    const custom_meta = .{ .options = .{
-        .out = .{ .name = "output" },
-        .fmt = .{ .requires = .{.out} },
+    const meta = .{ .options = .{
+        .skip_verification = .{ .no_config = true },
+        .registry = .{ .no_config = true },
     } };
-    const custom_missing = firstMissingDependency(Custom, custom_meta, .{ false, true }, .{ false, false });
-    try std.testing.expectEqualStrings("fmt", custom_missing.?.option_name);
-    try std.testing.expectEqualStrings("output", custom_missing.?.required_name);
+    var context: u8 = 0;
+
+    var conforming = Options{};
+    const conforming_applied = applyConfigAdapters(Options, meta, &.{SecurityConfig}, &context, &conforming, .{ false, false, false });
+    try std.testing.expect(!conforming.skip_verification);
+    try std.testing.expectEqualStrings("https://trusted.example", conforming.registry);
+    try std.testing.expectEqual(@as(u32, 9), conforming.count);
+    try std.testing.expectEqualSlices(bool, &.{ false, false, true }, &conforming_applied);
+
+    var rogue = Options{};
+    const rogue_applied = applyConfigAdapters(Options, meta, &.{RogueConfig}, &context, &rogue, .{ false, false, false });
+    try std.testing.expect(!rogue.skip_verification);
+    try std.testing.expectEqualStrings("https://trusted.example", rogue.registry);
+    try std.testing.expectEqual(@as(u32, 77), rogue.count);
+    try std.testing.expectEqualSlices(bool, &.{ false, false, true }, &rogue_applied);
+
+    // The restore point is the already-resolved CLI/env value, not the struct
+    // default: even a rogue adapter cannot roll a trusted higher source back.
+    var rogue_after_higher_source = Options{
+        .skip_verification = true,
+        .registry = "https://from-env.example",
+    };
+    const higher_source_applied = applyConfigAdapters(Options, meta, &.{RogueConfig}, &context, &rogue_after_higher_source, .{ true, true, false });
+    try std.testing.expect(rogue_after_higher_source.skip_verification);
+    try std.testing.expectEqualStrings("https://from-env.example", rogue_after_higher_source.registry);
+    try std.testing.expectEqual(@as(u32, 77), rogue_after_higher_source.count);
+    try std.testing.expectEqualSlices(bool, &.{ false, false, true }, &higher_source_applied);
 }
 
-test "firstExclusiveViolation: declaration order and overlapping sets" {
+test "NoConfigSnapshot: unused and false markers stay zero-sized" {
+    const Options = struct { count: u32 = 1 };
+    try std.testing.expectEqual(void, NoConfigSnapshot(Options, .{}));
+    try std.testing.expectEqual(@as(usize, 0), @sizeOf(NoConfigSnapshot(Options, .{})));
+
+    const inert = .{ .options = .{ .count = .{ .no_config = false } } };
+    try std.testing.expectEqual(void, NoConfigSnapshot(Options, inert));
+
+    const active = .{ .options = .{ .count = .{ .no_config = true } } };
+    try std.testing.expectEqual(Options, NoConfigSnapshot(Options, active));
+}
+
+test "resolved policy: a locked required option ignores config but accepts CLI or env" {
+    const Options = struct {
+        signing_key: []const u8,
+        project: []const u8,
+    };
+    const meta = .{ .options = .{ .signing_key = .{ .no_config = true } } };
+    var context: u8 = 0;
+    var options: Options = .{ .signing_key = "", .project = "" };
+    const applied = applyConfigAdapters(Options, meta, &.{RequiredConfig}, &context, &options, .{ false, false });
+
+    try std.testing.expectEqualStrings("", options.signing_key);
+    try std.testing.expectEqualStrings("acme", options.project);
+    try std.testing.expectEqualSlices(bool, &.{ false, true }, &applied);
+
+    var diag: ?ZcliDiagnostic = null;
+    try std.testing.expectError(
+        error.OptionMissingRequired,
+        validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{ false, false }, applied, &diag),
+    );
+    try std.testing.expectEqualStrings("signing-key", diag.?.OptionMissingRequired.option_name);
+
+    diag = null;
+    try validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, .{ .signing_key = "trusted", .project = options.project }, .{ true, false }, applied, &diag);
+    try std.testing.expect(diag == null);
+}
+
+test "validateResolved: required uses effective name and any source satisfies it" {
+    const Options = struct { output_file: []const u8 };
+    const meta = .{ .options = .{ .output_file = .{ .name = "out" } } };
+    const options = Options{ .output_file = "" };
+    var diag: ?ZcliDiagnostic = null;
+
+    try std.testing.expectError(
+        error.OptionMissingRequired,
+        validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{false}, .{false}, &diag),
+    );
+    try std.testing.expectEqualStrings("out", diag.?.OptionMissingRequired.option_name);
+    try std.testing.expectEqualStrings("[]const u8", diag.?.OptionMissingRequired.expected_type);
+
+    diag = null;
+    try validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{true}, .{false}, &diag);
+    try validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{false}, .{true}, &diag);
+}
+
+test "validateResolved: dependency and exclusive diagnostics use declaration order" {
     const Options = struct {
         json: bool = false,
         yaml: bool = false,
-        xml: bool = false,
+        output: ?[]const u8 = null,
+        output_format: ?enum { pretty, compact } = null,
     };
-    const meta = .{ .exclusive = .{.{ .json, .yaml, .xml }} };
-    const none = [_]bool{ false, false, false };
+    const meta = .{
+        .exclusive = .{.{ .json, .yaml }},
+        .options = .{ .output_format = .{ .requires = .{.output} } },
+    };
+    const options = Options{};
+    const none = [_]bool{ false, false, false, false };
+    var diag: ?ZcliDiagnostic = null;
 
-    const violation = firstExclusiveViolation(Options, meta, .{ true, false, true }, none);
-    try std.testing.expectEqualStrings("json", violation.?.first);
-    try std.testing.expectEqualStrings("xml", violation.?.second);
-    try std.testing.expect(firstExclusiveViolation(Options, meta, .{ false, true, false }, none) == null);
-    try std.testing.expect(firstExclusiveViolation(Options, meta, none, none) == null);
+    try std.testing.expectError(
+        error.OptionMissingDependency,
+        validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{ false, false, false, true }, none, &diag),
+    );
+    try std.testing.expectEqualStrings("output-format", diag.?.OptionMissingDependency.option_name);
+    try std.testing.expectEqualStrings("output", diag.?.OptionMissingDependency.required_name);
 
-    const overlapping = .{ .exclusive = .{ .{ .json, .yaml }, .{ .yaml, .xml } } };
-    try std.testing.expect(firstExclusiveViolation(Options, overlapping, .{ true, false, true }, none) == null);
-    const second = firstExclusiveViolation(Options, overlapping, .{ false, true, true }, none);
-    try std.testing.expectEqualStrings("yaml", second.?.first);
-    try std.testing.expectEqualStrings("xml", second.?.second);
+    diag = null;
+    try std.testing.expectError(
+        error.OptionMutuallyExclusive,
+        validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{ true, true, false, false }, none, &diag),
+    );
+    try std.testing.expectEqualStrings("json", diag.?.OptionMutuallyExclusive.first);
+    try std.testing.expectEqualStrings("yaml", diag.?.OptionMutuallyExclusive.second);
 }
 
-test "firstOptionValidationError: ordering, optional fields, and effective names" {
+test "validateResolved: Args validation precedes Options validation" {
     const V = struct {
-        fn port(p: u16) ?[]const u8 {
-            return if (p == 0) "must be between 1 and 65535" else null;
-        }
-        fn nonzero(n: u32) ?[]const u8 {
-            return if (n == 0) "must not be zero" else null;
-        }
-        fn nonempty(s: []const u8) ?[]const u8 {
-            return if (s.len == 0) "must not be empty" else null;
-        }
-    };
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const PortOptions = struct { port: u16 = 8080 };
-    const port_meta = .{ .options = .{ .port = .{ .validate = V.port } } };
-    try std.testing.expect(firstOptionValidationError(allocator, PortOptions, port_meta, .{ .port = 8080 }) == null);
-    const port_failure = firstOptionValidationError(allocator, PortOptions, port_meta, .{ .port = 0 });
-    try std.testing.expectEqualStrings("port", port_failure.?.name);
-    try std.testing.expectEqualStrings("must be between 1 and 65535", port_failure.?.reason);
-    try std.testing.expectEqualStrings("0", port_failure.?.provided_value);
-
-    const Optional = struct { limit: ?u32 = null };
-    const optional_meta = .{ .options = .{ .limit = .{ .validate = V.nonzero } } };
-    try std.testing.expect(firstOptionValidationError(allocator, Optional, optional_meta, .{ .limit = null }) == null);
-    try std.testing.expect(firstOptionValidationError(allocator, Optional, optional_meta, .{ .limit = 5 }) == null);
-    try std.testing.expect(firstOptionValidationError(allocator, Optional, optional_meta, .{ .limit = 0 }) != null);
-
-    const Named = struct { output_dir: []const u8 = "" };
-    const named_meta = .{ .options = .{ .output_dir = .{ .name = "out", .validate = V.nonempty } } };
-    const named_failure = firstOptionValidationError(allocator, Named, named_meta, .{ .output_dir = "" });
-    try std.testing.expectEqualStrings("out", named_failure.?.name);
-}
-
-test "firstArgValidationError: reports the field, reason, and position" {
-    const V = struct {
-        fn nonempty(s: []const u8) ?[]const u8 {
-            return if (s.len == 0) "must not be empty" else null;
-        }
         fn small(n: u8) ?[]const u8 {
             return if (n > 10) "must be 10 or less" else null;
         }
+        fn nonzero(n: u16) ?[]const u8 {
+            return if (n == 0) "must not be zero" else null;
+        }
     };
-    const Args = struct { name: []const u8, count: u8 };
-    const meta = .{ .args = .{
-        .name = .{ .validate = V.nonempty },
-        .count = .{ .description = "how many", .validate = V.small },
-    } };
-
+    const Args = struct { count: u8 };
+    const Options = struct { port: u16 = 8080 };
+    const meta = .{
+        .args = .{ .count = .{ .validate = V.small } },
+        .options = .{ .port = .{ .name = "listen", .validate = V.nonzero } },
+    };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    var diag: ?ZcliDiagnostic = null;
 
-    try std.testing.expect(firstArgValidationError(allocator, Args, meta, .{ .name = "x", .count = 3 }) == null);
-    const failure = firstArgValidationError(allocator, Args, meta, .{ .name = "x", .count = 99 });
-    try std.testing.expectEqualStrings("count", failure.?.name);
-    try std.testing.expectEqualStrings("must be 10 or less", failure.?.reason);
-    try std.testing.expectEqualStrings("99", failure.?.provided_value);
-    try std.testing.expectEqual(@as(usize, 1), failure.?.position);
+    try std.testing.expectError(
+        error.ArgumentValidationFailed,
+        validateResolved(allocator, Args, Options, meta, .{ .count = 99 }, .{ .port = 0 }, .{false}, .{false}, &diag),
+    );
+    try std.testing.expectEqualStrings("count", diag.?.ArgumentValidationFailed.field_name);
+    try std.testing.expectEqual(@as(usize, 0), diag.?.ArgumentValidationFailed.position);
+    try std.testing.expectEqualStrings("99", diag.?.ArgumentValidationFailed.provided_value);
 
-    const bare_meta = .{ .args = .{ .name = "just a description" } };
-    try std.testing.expect(firstArgValidationError(allocator, Args, bare_meta, .{ .name = "", .count = 0 }) == null);
+    diag = null;
+    try std.testing.expectError(
+        error.OptionValidationFailed,
+        validateResolved(allocator, Args, Options, meta, .{ .count = 3 }, .{ .port = 0 }, .{false}, .{false}, &diag),
+    );
+    try std.testing.expectEqualStrings("listen", diag.?.OptionValidationFailed.option_name);
+    try std.testing.expectEqualStrings("0", diag.?.OptionValidationFailed.provided_value);
+    try std.testing.expectEqualStrings("must not be zero", diag.?.OptionValidationFailed.reason);
+}
+
+test "validateResolved: optional values are skipped only when absent" {
+    const V = struct {
+        fn nonzero(n: u32) ?[]const u8 {
+            return if (n == 0) "must not be zero" else null;
+        }
+    };
+    const Options = struct { limit: ?u32 = null };
+    const meta = .{ .options = .{ .limit = .{ .validate = V.nonzero } } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var diag: ?ZcliDiagnostic = null;
+
+    try validateResolved(allocator, struct {}, Options, meta, .{}, .{ .limit = null }, .{false}, .{false}, &diag);
+    try validateResolved(allocator, struct {}, Options, meta, .{}, .{ .limit = 5 }, .{true}, .{false}, &diag);
+    try std.testing.expectError(
+        error.OptionValidationFailed,
+        validateResolved(allocator, struct {}, Options, meta, .{}, .{ .limit = 0 }, .{true}, .{false}, &diag),
+    );
+    try std.testing.expectEqualStrings("limit", diag.?.OptionValidationFailed.option_name);
+}
+
+test "validateResolved: required, requires, and exclusive precede value hooks" {
+    const V = struct {
+        fn reject(_: bool) ?[]const u8 {
+            return "rejected";
+        }
+    };
+    const Options = struct {
+        required: []const u8,
+        left: bool = false,
+        right: bool = false,
+        dependent: bool = false,
+    };
+    const meta = .{
+        .exclusive = .{.{ .left, .right }},
+        .options = .{
+            .left = .{ .validate = V.reject },
+            .dependent = .{ .requires = .{.left} },
+        },
+    };
+    const options = Options{ .required = "" };
+    const none = [_]bool{ false, false, false, false };
+    var diag: ?ZcliDiagnostic = null;
+
+    try std.testing.expectError(
+        error.OptionMissingRequired,
+        validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{ false, true, true, true }, none, &diag),
+    );
+
+    diag = null;
+    try std.testing.expectError(
+        error.OptionMissingDependency,
+        validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{ true, false, true, true }, none, &diag),
+    );
+
+    diag = null;
+    try std.testing.expectError(
+        error.OptionMutuallyExclusive,
+        validateResolved(std.testing.allocator, struct {}, Options, meta, .{}, options, .{ true, true, true, false }, none, &diag),
+    );
 }
