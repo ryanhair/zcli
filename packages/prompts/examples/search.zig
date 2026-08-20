@@ -1,4 +1,5 @@
-//! `Prompts.search` — type to filter a list, arrow keys to pick, Enter to select.
+//! `Prompts.select` with `.search = true` — type to filter a list, arrow keys
+//! to pick, Enter to select.
 //!
 //! The filter is a case-insensitive *substring* match (not fuzzy): typing "ta"
 //! keeps "TypeScript" but not "Rust". Returns the index into the ORIGINAL
@@ -26,9 +27,10 @@ pub fn main(init: std.process.Init) !void {
         "Python", "JavaScript", "TypeScript", "Haskell", "OCaml",
     };
 
-    const idx = p.search(.{
+    const idx = p.select(.{
         .message = "Search languages (type to filter):",
         .choices = &languages,
+        .search = true,
         .unicode = true, // set false for an ASCII cursor glyph
     }) catch |err| {
         try t.w().print("\n({s})\n", .{@errorName(err)});

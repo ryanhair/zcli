@@ -174,7 +174,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
           <h2>Terminal UX</h2>
           <p>Talking to the user: prompts, progress, live layouts, full-screen TUIs — all themed from one declaration, all degrading cleanly when piped.</p>
           <div class="guides">
-            <a href="$site.page('docs/prompts').link()"><span class="k">prompts</span><span class="t">Interactive prompts</span><span class="d">Eight prompt types with automatic line-input fallback off a TTY.</span></a>
+            <a href="$site.page('docs/prompts').link()"><span class="k">prompts</span><span class="t">Interactive prompts</span><span class="d">Seven primary prompt types, with optional searchable select/multiSelect and automatic line-input fallback off a TTY.</span></a>
             <a href="$site.page('docs/progress').link()"><span class="k">progress</span><span class="t">Progress indicators</span><span class="d">Spinners in nine styles, bars with ETA, multi-bars for parallel work.</span></a>
             <a href="$site.page('docs/ui').link()"><span class="k">ui</span><span class="t">The CLI/TUI hybrid</span><span class="d">Static scrollback plus a diffed live region — and full-screen mode with widgets and overlays.</span></a>
             <a href="$site.page('docs/theming').link()"><span class="k">theming</span><span class="t">Theming</span><span class="d">A 13-role palette and component tokens; declare once, everything follows.</span></a>

@@ -1,10 +1,13 @@
 # prompts
 
-Interactive terminal prompts for Zig CLIs: eight prompt types with arrow-key navigation, live filtering, and grapheme-aware line editing — each degrading gracefully to plain line-based input when stdin is not a TTY (so scripts and pipes keep working).
+Interactive terminal prompts for Zig CLIs: seven primary prompt types with
+arrow-key navigation, optional live filtering, and grapheme-aware line editing
+— each degrading gracefully to plain line-based input when stdin is not a TTY
+(so scripts and pipes keep working).
 
 ## Features
 
-- **Eight prompt types**: `text`, `password`, `number`, `confirm`, `select`, `multiSelect`, `search`, `editor`
+- **Seven primary prompt types**: `text`, `password`, `number`, `confirm`, `select`, `multiSelect`, `editor`
 - **Non-TTY fallback**: every prompt detects a non-TTY stdin and falls back to line input (select prompts print a numbered list)
 - **Unicode-correct**: UTF-8 input assembly, wide characters, and grapheme-aware backspace via the `terminal` package
 - **Wrap- and resize-safe**: list prompts wrap long options with hang indents and re-render cleanly on terminal resize (SIGWINCH)
@@ -53,6 +56,13 @@ const priority_idx = try p.select(.{
     .choices = &.{ "low", "medium", "high", "critical" },
 });
 
+// Searchable selection (still returns the original choice index)
+const framework_idx = try p.select(.{
+    .message = "Framework:",
+    .choices = &.{ "express", "fastify", "koa" },
+    .search = true,
+});
+
 // Number with range validation (returns i64)
 const points = try p.number(.{
     .message = "Story points:",
@@ -65,11 +75,26 @@ const points = try p.number(.{
 const sure = try p.confirm(.{ .message = "Create it?" });
 ```
 
-The other prompt types follow the same shape: `password` (masked input), `multiSelect` (space toggles, returns owned indices), `search` (type-to-filter a list), and `editor` (opens `$EDITOR` for multiline text).
+The other prompt types follow the same shape: `password` (masked input),
+`multiSelect` (Space toggles and returns owned indices), and `editor` (opens
+`$EDITOR` for multiline text). Plain `select` accepts Space like Enter.
+
+## Searchable lists
+
+Set `.search = true` on either `select` or `multiSelect` to filter choices with
+a case-insensitive substring query. Printable characters other than ASCII Space
+filter, Backspace edits the query, Up/Down navigate, and the Space key selects
+or toggles the highlighted choice; Enter selects (single choice) or commits
+(multiple choices). ASCII Space is not query text. A searchable multi-select
+retains selections that become hidden by filtering.
+
+`p.search(.{ ... })` and `SearchConfig` remain available as source-compatible
+shorthand for `p.select(.{ ..., .search = true })`; they use the same changed
+ASCII-Space-to-select semantics.
 
 ## Theming
 
-The list prompts (`select`, `multiSelect`, `search`) and `editor` style their
+The list prompts (`select`, `multiSelect`) and `editor` style their
 cursor, selected row, check marker, and hint text through the theme's
 `prompts` component tokens. Set `theme` on the `Prompts` instance to follow an
 app theme and the detected terminal capabilities (including `NO_COLOR`) — every

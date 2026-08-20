@@ -9,7 +9,7 @@ idiom, this is the tour.
 $ tasks init          # interactive project wizard
 $ tasks add "My task" # add via flags, or `tasks add` for the prompt flow
 $ tasks list          # colored, themed task list (alias: ls)
-$ tasks search        # type-to-filter search prompt
+$ tasks search        # type-to-filter task selection
 $ tasks sync          # spinner + progress bar demo
 $ tasks sprint create # nested command group
 ```
@@ -18,9 +18,9 @@ What it demonstrates:
 
 - **14 commands** in `src/commands/` — args, options, aliases (`ls`, `rm`),
   and a nested `sprint` group with its own `index.zig`.
-- **Six prompt types** — text, confirm, select, number, search, and
-  editor (`init`, `add`, `edit`, `search`), each falling back to line input
-  when piped.
+- **Five primary prompt types plus searchable select** — text, confirm,
+  select, number, and editor, with `tasks search` using `select` with
+  `.search = true`; each falls back to line input when piped.
 - **progress** — spinners and progress bars in `sync` and `import`.
 - **theme** — semantic colors and status badges via `context.theme`.
 - **A shared module** — `src/store.zig` (JSON persistence to `tasks.json`)

@@ -1,14 +1,10 @@
-//! Multi-selection prompt with toggle via space key.
-//!
-//! Rendering runs on the ui engine (see select.zig); input handling stays
-//! here. Toggling a marker repaints exactly one cell — the frame diff does
-//! the rest.
+//! Multi-selection prompt with optional focusless type-to-filter search.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
-const lr = @import("list_render.zig");
-const ui = lr.ui;
+const selection = @import("selection.zig");
+const ui = @import("list_render.zig").ui;
 
 pub const MultiSelectConfig = struct {
     message: []const u8,
@@ -16,141 +12,22 @@ pub const MultiSelectConfig = struct {
     defaults: ?[]const bool = null,
     prefix: []const u8 = "? ",
     unicode: bool = true,
+    /// Enable type-to-filter. Printable characters except Space update the
+    /// query; Space toggles the highlighted result.
+    search: bool = false,
+    /// Keys the prompt should not handle itself: pressing one aborts the prompt
+    /// with `error.Interrupted`. Empty = handle/ignore all keys.
+    interrupt_keys: []const terminal.Key = &.{},
 };
 
-/// Prompt to select multiple items. Returns owned slice of selected indices,
-/// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
-/// stdin closes with no line to submit.
+/// Prompt to select multiple items. Returns an owned slice of original choice
+/// indices. Search filtering never clears selections that become hidden.
 pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
-    const writer = p.writer;
-    const reader = p.reader;
-    const allocator = p.allocator;
-    if (config.choices.len == 0) return error.NoChoices;
-    const is_tty = terminal.isInteractiveTty();
-
-    if (!is_tty) {
-        // Non-TTY: numbered list, accept comma-separated numbers
-        try writer.print("{s}{s} (space to toggle, enter to confirm)\r\n", .{ config.prefix, config.message });
-        for (config.choices, 1..) |choice, i| {
-            const is_default = if (config.defaults) |d| (i - 1 < d.len and d[i - 1]) else false;
-            const marker: []const u8 = if (is_default) "[x]" else "[ ]";
-            try writer.print("  {d}) {s} {s}\n", .{ i, marker, choice });
-        }
-        try writer.writeAll("> ");
-
-        // Flush so the prompt is visible before we block reading the reply —
-        // buffered writers otherwise strand it until after input arrives.
-        Prompts.flushWriter(writer);
-        // A submitted blank line accepts the defaults; a closed stdin errors.
-        const line = try readLine(reader, allocator);
-        defer allocator.free(line);
-        if (line.len == 0) return collectDefaults(allocator, config);
-
-        // Parse comma-separated numbers
-        var result = std.ArrayList(usize).empty;
-        var iter = std.mem.splitScalar(u8, line, ',');
-        while (iter.next()) |part| {
-            const num_str = std.mem.trim(u8, part, " ");
-            const num = std.fmt.parseInt(usize, num_str, 10) catch continue;
-            if (num >= 1 and num <= config.choices.len) {
-                try result.append(allocator, num - 1);
-            }
-        }
-        return try result.toOwnedSlice(allocator);
-    }
-
-    // TTY: interactive multi-select
-    Prompts.flushWriter(writer);
-    const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch {
-        return collectDefaults(allocator, config);
-    };
-    var watcher = terminal.ResizeWatcher.init();
-    defer {
-        watcher.deinit();
-        raw.disable();
-        Prompts.flushWriter(writer);
-    }
-    var app = try ui.App.init(p.allocator, writer, .{
-        .capability = p.theme.capability(),
-        .unicode = config.unicode,
-        .hybrid_raw = raw,
-    });
-    defer app.deinit();
-
-    var selected = try allocator.alloc(bool, config.choices.len);
-    defer allocator.free(selected);
-    if (config.defaults) |d| {
-        for (0..config.choices.len) |i| {
-            selected[i] = if (i < d.len) d[i] else false;
-        }
-    } else {
-        @memset(selected, false);
-    }
-
-    const stdin = std.Io.File.stdin().handle;
-    var cursor: usize = 0;
-    try renderFrame(&app, p.theme, config, selected, cursor);
-
-    while (true) {
-        switch (try terminal.readEvent(reader, stdin, &watcher)) {
-            .resize => try renderFrame(&app, p.theme, config, selected, cursor),
-            .key => |k| switch (k) {
-                .up => {
-                    if (cursor > 0) cursor -= 1;
-                    try renderFrame(&app, p.theme, config, selected, cursor);
-                },
-                .down => {
-                    if (cursor < config.choices.len - 1) cursor += 1;
-                    try renderFrame(&app, p.theme, config, selected, cursor);
-                },
-                .char => |c| {
-                    if (c == ' ') {
-                        selected[cursor] = !selected[cursor];
-                        try renderFrame(&app, p.theme, config, selected, cursor);
-                    }
-                },
-                .enter => {
-                    try app.clear();
-                    // Emit the summary of selected choices as a static line.
-                    var summary = std.ArrayList(u8).empty;
-                    defer summary.deinit(allocator);
-                    for (config.choices, 0..) |choice, i| {
-                        if (selected[i]) {
-                            if (summary.items.len > 0) try summary.appendSlice(allocator, ", ");
-                            try summary.appendSlice(allocator, choice);
-                        }
-                    }
-                    var obuf: [64]u8 = undefined;
-                    const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
-                    try app.emit("  {s}{s}{s}", .{ open, summary.items, Prompts.closeSeq(open) });
-
-                    // Collect selected indices
-                    var result = std.ArrayList(usize).empty;
-                    for (0..config.choices.len) |i| {
-                        if (selected[i]) try result.append(allocator, i);
-                    }
-                    return try result.toOwnedSlice(allocator);
-                },
-                .ctrl => |c| {
-                    if (c == 'c') {
-                        try app.clear();
-                        return error.UserAborted;
-                    }
-                },
-                else => {},
-            },
-            else => {}, // mouse/focus never arrive — prompts don't enable them
-        }
-    }
+    return selection.run(.many, p, selectionConfig(config));
 }
 
-fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: MultiSelectConfig, selected: []const bool, cursor: usize) !void {
-    try app.frame(try frameNode(app.arena(), ctx, config, selected, cursor, lr.windowSize()));
-}
-
-/// Build the header and (viewport-limited) choice list as one frame. Pure
-/// and size-explicit so it is deterministic and unit-testable; only the
-/// marker/cursor styling is multi-select-specific.
+/// Build the initial header and viewport-limited choice list as one frame.
+/// Search-enabled configs include the empty-query search row.
 pub fn frameNode(
     a: std.mem.Allocator,
     ctx: Prompts.ThemeContext,
@@ -159,95 +36,27 @@ pub fn frameNode(
     cursor: usize,
     ws: terminal.Winsize,
 ) !ui.Node {
-    const width = @max(@as(usize, ws.col), 1);
-    const usable: u16 = @intCast(@min(@max(width -| 1, 1), std.math.maxInt(u16)));
-    const height = @max(@as(usize, ws.row), 2);
+    const filtered = try a.alloc(usize, config.choices.len);
+    for (filtered, 0..) |*original, i| original.* = i;
+    return selection.frameNode(a, ctx, selectionConfig(config), .many, "", filtered, selected, cursor, ws);
+}
 
-    const glyphs = ctx.glyphTokens();
-    const cursor_sym = glyphs.select_cursor.pick(config.unicode);
-    const sel_sym = glyphs.selected.pick(config.unicode);
-    const unsel_sym = glyphs.unselected.pick(config.unicode);
-    // Cursor row "  <cur> <marker> " and plain row "    <marker> " are both
-    // this wide (single-column cursor glyph), so labels and their wrapped
-    // continuation lines all align.
-    const prefix_w: u16 = @intCast(5 + terminal.displayWidth(sel_sym));
-    const avail: u16 = @intCast(@max(@as(usize, usable) -| prefix_w, 1));
-
-    var rows = std.ArrayList(ui.Node).empty;
-
-    // Header (hang-indents any wrap under the message text).
-    const hprefix_w: u16 = @intCast(terminal.displayWidth(config.prefix));
-    const havail: u16 = @intCast(@max(@as(usize, usable) -| hprefix_w, 1));
-    const header = try std.fmt.allocPrint(a, "{s} (space to toggle, enter to confirm)", .{config.message});
-    try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, config.prefix), hprefix_w, header, havail, .{}));
-    const header_rows = terminal.wrapCount(header, havail);
-
-    // Viewport over choices; row counts are computed on demand (no allocation).
-    const Counter = struct {
-        choices: []const []const u8,
-        avail: usize,
-        fn at(self: *const @This(), i: usize) usize {
-            return terminal.wrapCount(self.choices[i], self.avail);
-        }
+fn selectionConfig(config: MultiSelectConfig) selection.Config {
+    return .{
+        .message = config.message,
+        .choices = config.choices,
+        .defaults = config.defaults,
+        .prefix = config.prefix,
+        .unicode = config.unicode,
+        .search = config.search,
+        .interrupt_keys = config.interrupt_keys,
     };
-    const counter = Counter{ .choices = config.choices, .avail = avail };
-    // Reserve one screen row (below the header) so trailing content never scrolls.
-    const list_budget = @max((height -| 1) -| header_rows, 1);
-    const win = lr.viewport(config.choices.len, cursor, list_budget, &counter, Counter.at);
-
-    const tokens = ctx.promptTokens();
-    const cursor_style = ctx.resolveRef(tokens.cursor);
-    const marker_style = ctx.resolveRef(tokens.marker);
-    for (win.start..win.end) |i| {
-        const marker = if (selected[i]) sel_sym else unsel_sym;
-        const prefix = if (i == cursor)
-            try ui.row(a, .{}, &.{
-                lr.prefixCell(.{}, "  "),
-                lr.prefixCell(cursor_style, cursor_sym),
-                lr.prefixCell(.{}, " "),
-                lr.prefixCell(marker_style, marker),
-            })
-        else
-            try ui.row(a, .{}, &.{
-                lr.prefixCell(.{}, "    "),
-                lr.prefixCell(.{}, marker),
-            });
-        try rows.append(a, try lr.itemRow(a, prefix, prefix_w, config.choices[i], avail, .{}));
-    }
-
-    return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
-}
-
-/// Read a line byte by byte until newline. Returns `error.EndOfStream` if the
-/// stream closes before any byte is read; a partial line terminated by EOF is
-/// returned as the submitted line.
-fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-    while (true) {
-        const byte = terminal.key.readByteFn(reader) catch {
-            if (buf.items.len == 0) return error.EndOfStream;
-            return try buf.toOwnedSlice(allocator);
-        };
-        if (byte == '\n') break;
-        if (byte != '\r') try buf.append(allocator, byte);
-    }
-    return try buf.toOwnedSlice(allocator);
-}
-
-fn collectDefaults(allocator: std.mem.Allocator, config: MultiSelectConfig) ![]usize {
-    var result = std.ArrayList(usize).empty;
-    if (config.defaults) |d| {
-        for (0..@min(d.len, config.choices.len)) |i| {
-            if (d[i]) try result.append(allocator, i);
-        }
-    }
-    return try result.toOwnedSlice(allocator);
 }
 
 test "MultiSelectConfig defaults" {
     const cfg = MultiSelectConfig{ .message = "Pick:", .choices = &.{ "a", "b" } };
     try std.testing.expect(cfg.defaults == null);
+    try std.testing.expect(!cfg.search);
 }
 
 test "non-TTY: selects by comma-separated numbers" {
@@ -260,12 +69,12 @@ test "non-TTY: selects by comma-separated numbers" {
     const result = try multiSelect(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
         .message = "Pick:",
         .choices = &.{ "a", "b", "c" },
+        .search = true,
     });
     defer allocator.free(result);
 
-    try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqual(@as(usize, 0), result[0]); // 1 => index 0
-    try std.testing.expectEqual(@as(usize, 2), result[1]); // 3 => index 2
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2 }, result);
+    try std.testing.expectEqualStrings("? Pick: (space to toggle, enter to confirm)\r\n  1) [ ] a\n  2) [ ] b\n  3) [ ] c\n> ", output_writer.buffer[0..output_writer.end]);
 }
 
 test "non-TTY: empty input returns defaults" {
@@ -282,12 +91,10 @@ test "non-TTY: empty input returns defaults" {
     });
     defer allocator.free(result);
 
-    try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqual(@as(usize, 0), result[0]);
-    try std.testing.expectEqual(@as(usize, 2), result[1]);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2 }, result);
 }
 
-test "non-TTY: no defaults returns empty" {
+test "non-TTY: no defaults returns an owned empty slice" {
     const allocator = std.testing.allocator;
     var input = "\n".*;
     var input_reader: std.Io.Reader = .fixed(&input);
@@ -304,25 +111,17 @@ test "non-TTY: no defaults returns empty" {
 }
 
 test "non-TTY: EOF errors instead of returning defaults" {
-    const allocator = std.testing.allocator;
     var input = "".*;
     var input_reader: std.Io.Reader = .fixed(&input);
     var output: [1024]u8 = undefined;
     var output_writer: std.Io.Writer = .fixed(&output);
 
-    // A blank line accepts defaults, but a closed stdin surfaces instead.
-    try std.testing.expectError(error.EndOfStream, multiSelect(.{ .writer = &output_writer, .reader = &input_reader, .allocator = allocator }, .{
+    try std.testing.expectError(error.EndOfStream, multiSelect(.{ .writer = &output_writer, .reader = &input_reader, .allocator = std.testing.allocator }, .{
         .message = "Pick:",
         .choices = &.{ "a", "b", "c" },
         .defaults = &.{ true, false, true },
     }));
 }
-
-// ---------------------------------------------------------------------------
-// Frame tests — the regression guard for the erase-count bug's modern form: a
-// wrapped option must measure its true physical rows (so the App reserves
-// enough region), and continuation lines must hang-indent under the label.
-// ---------------------------------------------------------------------------
 
 const FrameHarness = struct {
     arena: std.heap.ArenaAllocator,
@@ -347,26 +146,33 @@ test "frameNode: short options are one row each" {
     const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
-    try std.testing.expectEqual(@as(u16, 4), size.h); // header + 3
+    try std.testing.expectEqual(@as(u16, 4), size.h);
+}
+
+test "frameNode: searchable config adds the focusless query row" {
+    var h = FrameHarness.init();
+    defer h.deinit();
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, &.{ false, false }, 0, .{ .row = 24, .col = 80 });
+    const rc = h.rctx();
+    const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
+    try std.testing.expectEqual(@as(u16, 4), size.h);
 }
 
 test "frameNode: a wrapping option measures its true physical rows" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const long = "this is a fairly long option label that will certainly wrap";
+    const long = "this is a long option label that will certainly wrap at a narrow width";
     const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, .{ .row = 24, .col = 24 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expect(size.h > 3);
-    // header (wraps: it carries the toggle hint) + short(1) + the long
-    // label's wrap count at the item width (usable 23 minus the prefix).
     const header_rows = terminal.wrapCount("Pick (space to toggle, enter to confirm)", 23 - 2);
     const prefix_w = 5 + terminal.displayWidth(Prompts.default_style.glyphTokens().selected.pick(true));
     const expected = header_rows + 1 + terminal.wrapCount(long, 23 - prefix_w);
     try std.testing.expectEqual(@as(u16, @intCast(expected)), size.h);
 }
 
-test "frameNode: cursor row styles through the cursor and marker tokens" {
+test "frameNode: cursor and marker use their theme tokens" {
     var h = FrameHarness.init();
     defer h.deinit();
     const custom = Prompts.Theme{
@@ -381,36 +187,30 @@ test "frameNode: cursor row styles through the cursor and marker tokens" {
     };
     const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
 
-    var s = try ui.Surface.init(std.testing.allocator, 79, 3);
-    defer s.deinit();
+    var surface = try ui.Surface.init(std.testing.allocator, 79, 3);
+    defer surface.deinit();
     const rc = h.rctx();
-    try ui.render(&rc, &node, s.root());
+    try ui.render(&rc, &node, surface.root());
 
-    // Cursor row (row 1): glyph at col 2 wears the cursor token, the marker
-    // next to it wears the marker token; the plain row's marker is unstyled.
-    try std.testing.expect(ui.styleEql(ctx.resolveRef(ctx.promptTokens().cursor), s.cell(2, 1).style));
-    try std.testing.expect(ui.styleEql(ctx.resolveRef(ctx.promptTokens().marker), s.cell(4, 1).style));
-    try std.testing.expect(ui.styleEql(.{}, s.cell(4, 2).style));
+    try std.testing.expect(ui.styleEql(ctx.resolveRef(ctx.promptTokens().cursor), surface.cell(2, 1).style));
+    try std.testing.expect(ui.styleEql(ctx.resolveRef(ctx.promptTokens().marker), surface.cell(4, 1).style));
+    try std.testing.expect(ui.styleEql(.{}, surface.cell(4, 2).style));
 }
 
 test "frameNode: continuation lines hang-indent under the option text" {
     var h = FrameHarness.init();
     defer h.deinit();
-    // unicode=false so the prefix is "    [ ] " = 8 columns.
     const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, .{ .row = 24, .col = 20 });
 
-    var s = try ui.Surface.init(std.testing.allocator, 19, 8);
-    defer s.deinit();
+    var surface = try ui.Surface.init(std.testing.allocator, 19, 8);
+    defer surface.deinit();
     const rc = h.rctx();
-    try ui.render(&rc, &node, s.root());
+    try ui.render(&rc, &node, surface.root());
 
-    // The header (with its toggle hint) wraps at this width; the option's
-    // first line follows it: marker "[" at col 4, label from col 8.
-    const opt: u16 = @intCast(terminal.wrapCount("Pick (space to toggle, enter to confirm)", 19 - 2));
-    try std.testing.expectEqualStrings("[", s.cellText(s.cell(4, opt)));
-    try std.testing.expectEqualStrings("a", s.cellText(s.cell(8, opt)));
-    // The next row is a continuation: columns 0-7 blank (hang indent).
+    const option_row: u16 = @intCast(terminal.wrapCount("Pick (space to toggle, enter to confirm)", 19 - 2));
+    try std.testing.expectEqualStrings("[", surface.cellText(surface.cell(4, option_row)));
+    try std.testing.expectEqualStrings("a", surface.cellText(surface.cell(8, option_row)));
     var x: u16 = 0;
-    while (x < 8) : (x += 1) try std.testing.expect(s.cell(x, opt + 1).isBlank());
-    try std.testing.expect(!s.cell(8, opt + 1).isBlank());
+    while (x < 8) : (x += 1) try std.testing.expect(surface.cell(x, option_row + 1).isBlank());
+    try std.testing.expect(!surface.cell(8, option_row + 1).isBlank());
 }

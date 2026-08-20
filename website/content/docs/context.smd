@@ -57,7 +57,7 @@ The context hands you each terminal package already wired to the command's strea
 
 | Builder | Returns | Guide |
 |---|---|---|
-| `context.prompts()` | all 8 interactive prompt types | [Prompts]($link.page('docs/prompts')) |
+| `context.prompts()` | seven primary prompt types, with optional searchable select/multiSelect | [Prompts]($link.page('docs/prompts')) |
 | `context.progress()` | spinners, progress bars, multi-bars | [Progress]($link.page('docs/progress')) |
 | `context.ui(.{})` | a hybrid CLI/TUI `App` (static + live region) | [The CLI/TUI hybrid]($link.page('docs/ui')) |
 | `context.uiFullScreen(.{})` | a full-screen `App` (alt-screen, event loop) | [Full-screen mode]($link.page('docs/ui')) |
