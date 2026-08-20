@@ -1,14 +1,15 @@
 # prompts examples
 
-One runnable example per input type. Each is a self-contained `main` that wires
+One runnable example per prompt variant. Each is a self-contained `main` that wires
 a stdin reader / stdout writer (see `common.zig`) and drives a single prompt.
 Every example is compiled by `zig build test`, so they can't bitrot.
 
 Run one (they're interactive, so use a real terminal):
 
 ```sh
-zig build run-select        # or: text, confirm, multi_select,
-                            #     password, search, number, editor
+zig build run-select        # or: text, confirm, select_search, multi_select,
+                            #     multi_select_search,
+                            #     password, number, editor
 ```
 
 Build all of them at once:
@@ -17,22 +18,22 @@ Build all of them at once:
 zig build examples          # binaries land in zig-out/bin/prompts-<name>
 ```
 
-| Example        | Function              | Returns             | Options it shows                                   |
-| -------------- | --------------------- | ------------------- | -------------------------------------------------- |
-| `text`         | `prompts.text`        | entered string      | `default`, live `preview`, `interrupt_keys` (Esc)  |
-| `confirm`      | `prompts.confirm`     | `bool`              | `default` (drives `(Y/n)` hint), `interrupt_keys`  |
-| `select`       | `prompts.select`      | chosen index        | custom `.theme`, `unicode`, `interrupt_keys` (Esc) |
-| `multi_select` | `prompts.multiSelect` | chosen indices      | `defaults` (pre-checked), `unicode`, `.search`     |
-| `password`     | `prompts.password`    | masked string       | `mask`, call-site length validation + re-prompt    |
-| `search`       | `prompts.select`      | chosen index        | `.search`, case-insensitive substring filter        |
-| `number`       | `prompts.number`      | `i64`               | `default`, `min`/`max` range (re-prompts)          |
-| `editor`       | `prompts.editor`      | text from an editor | `editor_cmd` (from `$EDITOR`), `extension`, `io`   |
+| Example               | Function              | Returns             | Options it shows                                   |
+| --------------------- | --------------------- | ------------------- | -------------------------------------------------- |
+| `text`                | `prompts.text`        | entered string      | `default`, live `preview`, `interrupt_keys` (Esc)  |
+| `confirm`             | `prompts.confirm`     | `bool`              | `default` (drives `(Y/n)` hint), `interrupt_keys`  |
+| `select`              | `prompts.select`      | chosen index        | custom `.theme`, `unicode`, `interrupt_keys` (Esc) |
+| `multi_select`        | `prompts.multiSelect` | chosen indices      | `defaults` (pre-checked), `unicode`                |
+| `select_search`       | `prompts.select`      | chosen index        | `.search`, case-insensitive substring filter       |
+| `multi_select_search` | `prompts.multiSelect` | chosen indices      | `.search`, hidden choices stay selected            |
+| `password`            | `prompts.password`    | masked string       | `mask`, call-site length validation + re-prompt    |
+| `number`              | `prompts.number`      | `i64`               | `default`, `min`/`max` range (re-prompts)          |
+| `editor`              | `prompts.editor`      | text from an editor | `editor_cmd` (from `$EDITOR`), `extension`, `io`   |
 
 ## Notes
 
-- **Interrupt keys.** `text`, `confirm`, `select`, `multiSelect`, the
-  source-compatible `search`, and `number` accept `interrupt_keys` — keys the
-  prompt won't handle itself. Pressing one aborts the prompt with
+- **Interrupt keys.** `text`, `confirm`, `select`, `multiSelect`, and `number`
+  accept `interrupt_keys` — keys the prompt won't handle itself. Pressing one aborts the prompt with
   `error.Interrupted`, which the caller catches to mean "go back" / "cancel".
   The examples map Esc to that.
 - **Theming.** Every prompt instance carries a `theme` (`ThemeContext`).

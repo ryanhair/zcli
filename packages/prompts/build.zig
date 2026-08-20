@@ -49,8 +49,9 @@ pub fn build(b: *std.Build) void {
     // all; `zig build run-<name>` runs one (they're interactive, so they need a
     // real terminal). Each is also compiled by `test` so they can't bitrot.
     const example_names = [_][]const u8{
-        "text",     "confirm", "select", "multi_select",
-        "password", "search",  "number", "editor",
+        "text",         "confirm",             "select",   "select_search",
+        "multi_select", "multi_select_search", "password", "number",
+        "editor",
     };
     const examples_step = b.step("examples", "Build all interactive prompt examples");
     for (example_names) |name| {

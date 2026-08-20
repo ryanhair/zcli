@@ -88,10 +88,6 @@ or toggles the highlighted choice; Enter selects (single choice) or commits
 (multiple choices). ASCII Space is not query text. A searchable multi-select
 retains selections that become hidden by filtering.
 
-`p.search(.{ ... })` and `SearchConfig` remain available as source-compatible
-shorthand for `p.select(.{ ..., .search = true })`; they use the same changed
-ASCII-Space-to-select semantics.
-
 ## Theming
 
 The list prompts (`select`, `multiSelect`) and `editor` style their

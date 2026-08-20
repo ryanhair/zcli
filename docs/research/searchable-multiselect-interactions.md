@@ -55,9 +55,7 @@ contain spaces (`prompts`, `inquire`, TTY::Prompt, and
 
 zcli follows that focusless terminal convention. The canonical interface is
 `p.select(.{ .search = true, ... })` and
-`p.multiSelect(.{ .search = true, ... })`; `p.search` and `SearchConfig` remain
-source-compatible shorthand for searchable single select, but their ASCII Space
-key now selects rather than becoming query text.
+`p.multiSelect(.{ .search = true, ... })`.
 
 Printable characters other than ASCII Space filter case-insensitively, Backspace
 edits, Up/Down navigate, the Space key selects or toggles the highlighted

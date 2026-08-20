@@ -75,6 +75,19 @@ fn multiFrame(h: *Harness, config: Prompts.MultiSelectConfig, selected: []const 
     ));
 }
 
+fn searchableMultiFrame(h: *Harness, config: Prompts.MultiSelectConfig, query: []const u8, filtered: []const usize, selected: []const bool, cursor: usize, ws: Winsize) !void {
+    try h.app.frame(try Prompts.multi_select_prompt.frameNodeFiltered(
+        h.app.arena(),
+        Prompts.default_style,
+        config,
+        query,
+        filtered,
+        selected,
+        cursor,
+        ws,
+    ));
+}
+
 test "emulator: multi_select navigation leaves no debris when options wrap" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 30 };
@@ -132,41 +145,40 @@ test "emulator: multi_select wraps wide CJK options without debris" {
 test "emulator: searchable multi_select clears filtered, empty, and restored rows" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 34 };
-    const full = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{
+    const config = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{
         "alpha option with a label long enough to wrap",
         "beta",
         "gamma",
     }, .search = true };
-    const filtered = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{"beta"}, .search = true };
-    const no_matches = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{}, .search = true };
+    const selected = [_]bool{ true, false, true };
 
     var nav = try Harness.init(ws);
     defer nav.deinit();
 
     // These are the post-filter frames the shared selection state gives the
     // renderer. Start taller than every later state, including marker rows.
-    try multiFrame(nav, full, &.{ true, false, true }, 0, ws);
+    try searchableMultiFrame(nav, config, "", &.{ 0, 1, 2 }, &selected, 0, ws);
 
     var filtered_fresh = try Harness.init(ws);
     defer filtered_fresh.deinit();
-    try multiFrame(filtered_fresh, filtered, &.{false}, 0, ws);
+    try searchableMultiFrame(filtered_fresh, config, "be", &.{1}, &selected, 0, ws);
     const filtered_clean = try filtered_fresh.screen(alloc);
     defer alloc.free(filtered_clean);
 
-    try multiFrame(nav, filtered, &.{false}, 0, ws);
+    try searchableMultiFrame(nav, config, "be", &.{1}, &selected, 0, ws);
     const filtered_stepped = try nav.screen(alloc);
     defer alloc.free(filtered_stepped);
     try testing.expectEqualStrings(filtered_clean, filtered_stepped);
     try testing.expect(nav.vt.containsText("beta"));
-    try testing.expect(nav.vt.containsText("type to filter"));
+    try testing.expect(nav.vt.containsText("be"));
 
     var empty_fresh = try Harness.init(ws);
     defer empty_fresh.deinit();
-    try multiFrame(empty_fresh, no_matches, &.{}, 0, ws);
+    try searchableMultiFrame(empty_fresh, config, "zz", &.{}, &selected, 0, ws);
     const empty_clean = try empty_fresh.screen(alloc);
     defer alloc.free(empty_clean);
 
-    try multiFrame(nav, no_matches, &.{}, 0, ws);
+    try searchableMultiFrame(nav, config, "zz", &.{}, &selected, 0, ws);
     const empty_stepped = try nav.screen(alloc);
     defer alloc.free(empty_stepped);
     try testing.expectEqualStrings(empty_clean, empty_stepped);
@@ -174,11 +186,11 @@ test "emulator: searchable multi_select clears filtered, empty, and restored row
 
     var restored_fresh = try Harness.init(ws);
     defer restored_fresh.deinit();
-    try multiFrame(restored_fresh, full, &.{ true, false, true }, 0, ws);
+    try searchableMultiFrame(restored_fresh, config, "", &.{ 0, 1, 2 }, &selected, 0, ws);
     const restored_clean = try restored_fresh.screen(alloc);
     defer alloc.free(restored_clean);
 
-    try multiFrame(nav, full, &.{ true, false, true }, 0, ws);
+    try searchableMultiFrame(nav, config, "", &.{ 0, 1, 2 }, &selected, 0, ws);
     const restored_stepped = try nav.screen(alloc);
     defer alloc.free(restored_stepped);
     try testing.expectEqualStrings(restored_clean, restored_stepped);
@@ -271,11 +283,11 @@ test "emulator: select answer persists as one static line, region gone" {
 }
 
 // ---------------------------------------------------------------------------
-// search
+// searchable select
 // ---------------------------------------------------------------------------
 
-fn searchFrame(h: *Harness, config: Prompts.SearchConfig, query: []const u8, filtered: []const usize, cursor: usize, ws: Winsize) !void {
-    try h.app.frame(try Prompts.search_prompt.frameNode(
+fn searchableSelectFrame(h: *Harness, config: Prompts.SelectConfig, query: []const u8, filtered: []const usize, cursor: usize, ws: Winsize) !void {
+    try h.app.frame(try Prompts.select_prompt.frameNodeFiltered(
         h.app.arena(),
         Prompts.default_style,
         config,
@@ -286,53 +298,53 @@ fn searchFrame(h: *Harness, config: Prompts.SearchConfig, query: []const u8, fil
     ));
 }
 
-test "emulator: search navigation leaves no debris when results wrap" {
+test "emulator: searchable select navigation leaves no debris when results wrap" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 28 };
-    const config = Prompts.SearchConfig{ .message = "Find", .choices = &.{
+    const config = Prompts.SelectConfig{ .message = "Find", .choices = &.{
         "apple",
         "a very long result entry that will wrap across more than one row",
         "cherry",
-    } };
+    }, .search = true };
     const filtered = [_]usize{ 0, 1, 2 };
     const query = "";
 
     var fresh = try Harness.init(ws);
     defer fresh.deinit();
-    try searchFrame(fresh, config, query, &filtered, 1, ws);
+    try searchableSelectFrame(fresh, config, query, &filtered, 1, ws);
     const clean = try fresh.screen(alloc);
     defer alloc.free(clean);
 
     var nav = try Harness.init(ws);
     defer nav.deinit();
-    try searchFrame(nav, config, query, &filtered, 0, ws);
-    try searchFrame(nav, config, query, &filtered, 1, ws);
+    try searchableSelectFrame(nav, config, query, &filtered, 0, ws);
+    try searchableSelectFrame(nav, config, query, &filtered, 1, ws);
     const stepped = try nav.screen(alloc);
     defer alloc.free(stepped);
 
     try testing.expectEqualStrings(clean, stepped);
 }
 
-test "emulator: search filtering shrinks the list without debris" {
+test "emulator: searchable select filtering shrinks the list without debris" {
     const alloc = testing.allocator;
     const ws = Winsize{ .row = 24, .col = 28 };
-    const config = Prompts.SearchConfig{ .message = "Find", .choices = &.{
+    const config = Prompts.SelectConfig{ .message = "Find", .choices = &.{
         "apple",
         "a very long result entry that will wrap across more than one row",
         "cherry",
-    } };
+    }, .search = true };
 
     var fresh = try Harness.init(ws);
     defer fresh.deinit();
-    try searchFrame(fresh, config, "ap", &.{0}, 0, ws);
+    try searchableSelectFrame(fresh, config, "ap", &.{0}, 0, ws);
     const clean = try fresh.screen(alloc);
     defer alloc.free(clean);
 
     // The same screen reached by filtering down from the full (taller) list.
     var nav = try Harness.init(ws);
     defer nav.deinit();
-    try searchFrame(nav, config, "", &.{ 0, 1, 2 }, 0, ws);
-    try searchFrame(nav, config, "ap", &.{0}, 0, ws);
+    try searchableSelectFrame(nav, config, "", &.{ 0, 1, 2 }, 0, ws);
+    try searchableSelectFrame(nav, config, "ap", &.{0}, 0, ws);
     const stepped = try nav.screen(alloc);
     defer alloc.free(stepped);
 

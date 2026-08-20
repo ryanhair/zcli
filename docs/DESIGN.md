@@ -1079,9 +1079,7 @@ command reaches through its `context`:
 - **`prompts`** — seven primary interactive prompt types (`text`, `select`,
   `multiSelect`, …) with grapheme-aware line editing, falling back to line input
   when stdin is not a TTY. `select` and `multiSelect` support searchable lists
-  with `.search = true`; `search` remains a source-compatible shorthand for a
-  searchable single select, but its ASCII Space key now selects rather than
-  becoming query text. See the [searchable multi-select interaction
+  with `.search = true`. See the [searchable multi-select interaction
   research](research/searchable-multiselect-interactions.md).
 - **`progress`** — spinners for indeterminate work and progress/multi-bars for
   known totals; animations on a TTY, plain lines when piped.
