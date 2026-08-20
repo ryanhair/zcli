@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Interactive prompts",
-.description = "Eight prompt types — text, confirm, select, multiSelect, password, search, number, editor — themed, resize-aware, interrupt-friendly, and automatically degrading to line input when stdin isn't a TTY.",
+.description = "Seven primary prompt types — text, confirm, select, multiSelect, password, number, editor — themed, resize-aware, interrupt-friendly, and automatically degrading to line input when stdin isn't a TTY.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -8,7 +8,7 @@
 
 # Interactive prompts
 
-The `prompts` package is a complete question toolkit: eight prompt types that render as live, repainting lines at a terminal — and **fall back to plain line input automatically** when stdin isn't a TTY, so the same command works in a pipe, a script, or CI without a non-interactive flag.
+The `prompts` package is a complete question toolkit: seven primary prompt types that render as live, repainting lines at a terminal — and **fall back to plain line input automatically** when stdin isn't a TTY, so the same command works in a pipe, a script, or CI without a non-interactive flag.
 
 In a command, `context.prompts()` returns an instance pre-wired to the command's streams, arena allocator, and [theme]($link.page('docs/theming')):
 
@@ -23,24 +23,34 @@ const features = try p.multiSelect(.{
     .message = "Features:",
     .choices = &.{ "typescript", "eslint", "prettier" },
     .defaults = &.{ true, true, false },
+    .search = true,
 });
 const pw = try p.password(.{
     .message = "Token:",
 });
 ```
 
-## The eight types
+## The seven types
 
 | Prompt | Asks | Returns |
 |---|---|---|
 | `text` | free-form input, optional default and live preview hint | the entered string |
 | `confirm` | yes/no with a default (`Y/n` hint, single keypress) | `bool` |
-| `select` | one choice from a list — ↑/↓ to move, Enter to pick | the chosen index |
+| `select` | one choice from a list — ↑/↓ to move, Enter or Space to pick | the chosen index |
 | `multiSelect` | several choices — Space toggles, per-item defaults | the chosen indices |
 | `password` | masked input, never echoed | the entered string |
-| `search` | type-to-filter over a long list, then pick | the chosen index |
 | `number` | numeric input with optional `min`/`max`, validation inline | the parsed number |
 | `editor` | opens `$EDITOR` on a seeded temp file | the edited text |
+
+## Searchable choices
+
+Set `.search = true` on `select` or `multiSelect` for a case-insensitive
+substring filter. Printable characters other than ASCII Space filter, Backspace
+edits the query, Up/Down navigate, and the Space key selects or toggles the
+highlighted choice; Enter selects or commits. ASCII Space is not query text;
+hidden multi-select choices remain selected. `p.search(.{ ... })` and
+`SearchConfig` remain source-compatible shorthand for searchable `select` and
+use the same changed ASCII-Space-to-select semantics.
 
 ## Terminal behavior, handled
 
@@ -57,7 +67,7 @@ Every prompt degrades to a line-based equivalent with the **same return type and
 |---|---|---|
 | `text` / `password` | live editing, masked for password | reads a line |
 | `confirm` | single keypress | reads `y`/`n` from a line |
-| `select` / `search` | arrow-key highlighted list | numbered list, reads a number |
+| `select` | arrow-key highlighted list; Enter or Space selects | numbered list, reads a number |
 | `multiSelect` | Space-toggle list | prints the list, reads selections |
 | `editor` | opens `$EDITOR` | reads remaining stdin |
 

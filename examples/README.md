@@ -12,7 +12,7 @@ included (see `build.zig` at the repo root, `test_projects`).
 
 | Example | What it demonstrates |
 |---------|-----------------------|
-| [**tasks**](tasks) | The showcase app (see the demo GIF in the root README): 14 commands with nested groups and aliases, six of the eight prompt types, spinners and progress bars, themed output, JSON persistence, config files, and completions. |
+| [**tasks**](tasks) | The showcase app (see the demo GIF in the root README): 14 commands with nested groups and aliases, five primary prompt types plus searchable select, spinners and progress bars, themed output, JSON persistence, config files, and completions. |
 | [**ghauth**](ghauth) | GitHub device-flow companion: stashes an API token in the OS keychain via `zcli_secrets`, then uses `zcli.http` to call the API as `whoami`. |
 | [**oauth-device**](oauth-device) | Mints a token from scratch by running GitHub's OAuth device flow (RFC 8628), then keychains it — freeform command code, not a framework feature. |
 | [**notes**](notes) | A tiny note keeper: saves and loads a typed struct as a JSON file and shares one `store` module across three commands. |

@@ -3,12 +3,13 @@
 //! Rendering runs on the ui engine: each interaction paints one frame of a
 //! node tree (diffed in place — navigation repaints only the rows that
 //! changed), and the chosen answer is emitted as a static line that flows
-//! into scrollback. Input stays here: raw mode, key events, and resize
-//! watching are the prompt's job; the App is display-only.
+//! into scrollback. The shared selection engine handles raw mode, key events,
+//! and resize watching; the App is display-only.
 
 const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
+const selection = @import("selection.zig");
 const lr = @import("list_render.zig");
 const ui = lr.ui;
 
@@ -17,6 +18,9 @@ pub const SelectConfig = struct {
     choices: []const []const u8,
     prefix: []const u8 = "? ",
     unicode: bool = true,
+    /// Enable type-to-filter. Printable characters except Space update the
+    /// query; Space selects the highlighted result.
+    search: bool = false,
     /// Keys the prompt should not handle itself: pressing one aborts the prompt
     /// with `error.Interrupted`. Empty = handle/ignore all keys.
     interrupt_keys: []const terminal.Key = &.{},
@@ -28,98 +32,7 @@ pub const SelectConfig = struct {
 /// closes with no line to submit, or `error.InvalidSelection` if a non-TTY reply
 /// is not a number naming one of the choices.
 pub fn select(p: Prompts, config: SelectConfig) !usize {
-    const writer = p.writer;
-    const reader = p.reader;
-    if (config.choices.len == 0) return error.NoChoices;
-    const is_tty = terminal.isInteractiveTty();
-
-    if (!is_tty) {
-        // Non-TTY: numbered list
-        try writer.print("{s}{s}\r\n", .{ config.prefix, config.message });
-        for (config.choices, 1..) |choice, i| {
-            try writer.print("  {d}) {s}\n", .{ i, choice });
-        }
-        try writer.writeAll("> ");
-        // Flush so the prompt is visible before we block reading the reply —
-        // buffered writers otherwise strand it until after input arrives.
-        Prompts.flushWriter(writer);
-        const line = try readLine(reader, p.allocator);
-        defer p.allocator.free(line);
-        // Mirror the TTY path: an unparseable or out-of-range reply must not
-        // fabricate index 0 — surface it so the caller can tell a real pick from
-        // garbage piped in.
-        const num = std.fmt.parseInt(usize, line, 10) catch return error.InvalidSelection;
-        if (num >= 1 and num <= config.choices.len) return num - 1;
-        return error.InvalidSelection;
-    }
-
-    // TTY: interactive selection. A raw-mode failure must not fabricate a
-    // choice (returning 0 would "select" the first item the user never saw) —
-    // surface it instead.
-    Prompts.flushWriter(writer);
-    const raw = try terminal.enableRawMode(std.Io.File.stdin().handle);
-    var watcher = terminal.ResizeWatcher.init();
-    defer {
-        watcher.deinit();
-        raw.disable();
-        Prompts.flushWriter(writer);
-    }
-    // The App owns the cursor (hidden on first frame, restored by deinit)
-    // and the live region. Runs before the raw/watcher cleanup above (LIFO),
-    // so its restore bytes still go out under raw mode — which is why the
-    // App terminates lines with CRLF. The App is also the single guard
-    // arm/disarm site, so it registers our raw mode for the signal/panic path.
-    var app = try ui.App.init(p.allocator, writer, .{
-        .capability = p.theme.capability(),
-        .unicode = config.unicode,
-        .hybrid_raw = raw,
-    });
-    defer app.deinit();
-
-    const stdin = std.Io.File.stdin().handle;
-    var cursor: usize = 0;
-    try renderFrame(&app, p.theme, config, cursor);
-
-    while (true) {
-        switch (try terminal.readEvent(reader, stdin, &watcher)) {
-            .resize => try renderFrame(&app, p.theme, config, cursor),
-            .key => |k| {
-                if (Prompts.isInterrupt(k, config.interrupt_keys)) {
-                    try app.clear();
-                    return error.Interrupted;
-                }
-                switch (k) {
-                    .up => {
-                        if (cursor > 0) cursor -= 1;
-                        try renderFrame(&app, p.theme, config, cursor);
-                    },
-                    .down => {
-                        if (cursor < config.choices.len - 1) cursor += 1;
-                        try renderFrame(&app, p.theme, config, cursor);
-                    },
-                    .enter => {
-                        try app.clear();
-                        var obuf: [64]u8 = undefined;
-                        const open = Prompts.openSeq(&obuf, p.theme, p.theme.promptTokens().selected);
-                        try app.emit("  {s}{s}{s}", .{ open, config.choices[cursor], Prompts.closeSeq(open) });
-                        return cursor;
-                    },
-                    .ctrl => |c| {
-                        if (c == 'c') {
-                            try app.clear();
-                            return error.UserAborted;
-                        }
-                    },
-                    else => {},
-                }
-            },
-            else => {}, // mouse/focus never arrive — prompts don't enable them
-        }
-    }
-}
-
-fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: SelectConfig, cursor: usize) !void {
-    try app.frame(try frameNode(app.arena(), ctx, config, cursor, lr.windowSize()));
+    return selection.run(.one, p, selectionConfig(config));
 }
 
 /// Build the header + viewport-limited choice list as one frame. Pure and
@@ -132,64 +45,20 @@ pub fn frameNode(
     cursor: usize,
     ws: terminal.Winsize,
 ) !ui.Node {
-    const width = @max(@as(usize, ws.col), 1);
-    // Leave the last column unused, matching the historical look (and the
-    // row estimates below always agree with the painted layout).
-    const usable: u16 = @intCast(@min(@max(width -| 1, 1), std.math.maxInt(u16)));
-    const height = @max(@as(usize, ws.row), 2);
-
-    const cursor_sym = ctx.glyphTokens().select_cursor.pick(config.unicode);
-    // "  <cur> " and "    " are both 4 columns (single-column cursor glyph).
-    const prefix_w: u16 = 4;
-    const avail = @max(@as(usize, usable) -| prefix_w, 1);
-
-    var rows = std.ArrayList(ui.Node).empty;
-
-    // Header (any wrap hang-indents under the message text).
-    const hprefix_w: u16 = @intCast(terminal.displayWidth(config.prefix));
-    const havail: u16 = @intCast(@max(@as(usize, usable) -| hprefix_w, 1));
-    try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, config.prefix), hprefix_w, config.message, havail, .{}));
-    const header_rows = terminal.wrapCount(config.message, havail);
-
-    const Counter = struct {
-        choices: []const []const u8,
-        avail: usize,
-        fn at(self: *const @This(), i: usize) usize {
-            return terminal.wrapCount(self.choices[i], self.avail);
-        }
-    };
-    const counter = Counter{ .choices = config.choices, .avail = avail };
-    const list_budget = @max((height -| 1) -| header_rows, 1);
-    const win = lr.viewport(config.choices.len, cursor, list_budget, &counter, Counter.at);
-
-    const selected_style = ctx.resolveRef(ctx.promptTokens().selected);
-    for (win.start..win.end) |i| {
-        const on = i == cursor;
-        const prefix = if (on)
-            lr.prefixCell(selected_style, try std.fmt.allocPrint(a, "  {s} ", .{cursor_sym}))
-        else
-            lr.prefixCell(.{}, "");
-        try rows.append(a, try lr.itemRow(a, prefix, prefix_w, config.choices[i], @intCast(avail), if (on) selected_style else .{}));
-    }
-
-    return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
+    const filtered = try a.alloc(usize, config.choices.len);
+    for (filtered, 0..) |*original, i| original.* = i;
+    return selection.frameNode(a, ctx, selectionConfig(config), .one, "", filtered, null, cursor, ws);
 }
 
-/// Read a line byte by byte until newline. Returns `error.EndOfStream` if the
-/// stream closes before any byte is read; a partial line terminated by EOF is
-/// returned as the submitted line.
-fn readLine(reader: anytype, allocator: std.mem.Allocator) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-    while (true) {
-        const byte = terminal.key.readByteFn(reader) catch {
-            if (buf.items.len == 0) return error.EndOfStream;
-            return try buf.toOwnedSlice(allocator);
-        };
-        if (byte == '\n') break;
-        if (byte != '\r') try buf.append(allocator, byte);
-    }
-    return try buf.toOwnedSlice(allocator);
+fn selectionConfig(config: SelectConfig) selection.Config {
+    return .{
+        .message = config.message,
+        .choices = config.choices,
+        .prefix = config.prefix,
+        .unicode = config.unicode,
+        .search = config.search,
+        .interrupt_keys = config.interrupt_keys,
+    };
 }
 
 pub const SelectError = error{ NoChoices, InvalidSelection };
@@ -198,6 +67,7 @@ test "SelectConfig" {
     const cfg = SelectConfig{ .message = "Pick:", .choices = &.{ "a", "b" } };
     try std.testing.expectEqualStrings("Pick:", cfg.message);
     try std.testing.expect(cfg.choices.len == 2);
+    try std.testing.expect(!cfg.search);
 }
 
 test "non-TTY: selects by number" {
@@ -261,11 +131,7 @@ test "non-TTY: shows numbered choices" {
         .choices = &.{ "first", "second" },
     });
 
-    const written = output_writer.buffer[0..output_writer.end];
-    try std.testing.expect(std.mem.indexOf(u8, written, "1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "2)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "first") != null);
-    try std.testing.expect(std.mem.indexOf(u8, written, "second") != null);
+    try std.testing.expectEqualStrings("? Pick:\r\n  1) first\n  2) second\n> ", output_writer.buffer[0..output_writer.end]);
 }
 
 // ---------------------------------------------------------------------------

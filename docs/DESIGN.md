@@ -1076,9 +1076,13 @@ command reaches through its `context`:
   call-site style and `ui.role(r)` styles by meaning in one word. Everything
   resolves against the detected terminal capability, from true color down to
   `NO_COLOR`. See ADR-0012, ADR-0020.
-- **`prompts`** — eight interactive prompt types (`text`, `select`,
-  `multiSelect`, `search`, …) with grapheme-aware line editing, falling back to
-  line input when stdin is not a TTY.
+- **`prompts`** — seven primary interactive prompt types (`text`, `select`,
+  `multiSelect`, …) with grapheme-aware line editing, falling back to line input
+  when stdin is not a TTY. `select` and `multiSelect` support searchable lists
+  with `.search = true`; `search` remains a source-compatible shorthand for a
+  searchable single select, but its ASCII Space key now selects rather than
+  becoming query text. See the [searchable multi-select interaction
+  research](research/searchable-multiselect-interactions.md).
 - **`progress`** — spinners for indeterminate work and progress/multi-bars for
   known totals; animations on a TTY, plain lines when piped.
 - **`markdown`** — comptime-baked ANSI formatting used by the help pipeline

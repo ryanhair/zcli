@@ -1,4 +1,5 @@
-//! `Prompts.multiSelect` — toggle several items with Space, confirm with Enter.
+//! `Prompts.multiSelect` — filter with text, toggle several items with Space,
+//! and confirm with Enter.
 //!
 //! `defaults` pre-checks items (a `[]const bool` aligned with `choices`); the
 //! returned slice is the selected indices, owned by the caller. `unicode`
@@ -27,6 +28,7 @@ pub fn main(init: std.process.Init) !void {
         .choices = &toppings,
         // Pre-check "Cheese"; the rest start unchecked.
         .defaults = &.{ true, false, false, false, false },
+        .search = true,
         .unicode = true,
     }) catch |err| {
         try t.w().print("\n({s})\n", .{@errorName(err)});

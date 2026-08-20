@@ -115,7 +115,7 @@
 					runtime reflection</span>
 					<span class="chip"><b><span :text="$site.asset('site-data.json').ziggy().get('plugin_count')"></span></b>
 					built-in plugins</span>
-					<span class="chip"><b>8</b>
+					<span class="chip"><b>7</b>
 					prompt types</span>
 					<span class="chip"><b>215 KB</b>
 					hello-world (v0.19.0)</span>
@@ -298,7 +298,7 @@ Deploying api to staging<span class="cursor"></span></pre>
 				<a class="feat" href="$site.page('docs/prompts').link()">
 					<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 4v16M6 9l6-5 6 5"/><rect x="4" y="16" width="16" height="4" rx="1"/></svg>
 					<h3>Interactive prompts</h3>
-					<p>Text, confirm, select, multi-select, password, search, number, and editor — all falling back gracefully without a TTY.</p>
+					<p>Text, confirm, select, multi-select, password, number, and editor — with optionally searchable select and multi-select, all falling back gracefully without a TTY.</p>
 					<span class="goto">→ docs</span>
 				</a>
 				<a class="feat" href="$site.page('docs/progress').link()">

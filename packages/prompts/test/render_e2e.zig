@@ -129,6 +129,62 @@ test "emulator: multi_select wraps wide CJK options without debris" {
     try testing.expectEqualStrings(clean, stepped);
 }
 
+test "emulator: searchable multi_select clears filtered, empty, and restored rows" {
+    const alloc = testing.allocator;
+    const ws = Winsize{ .row = 24, .col = 34 };
+    const full = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{
+        "alpha option with a label long enough to wrap",
+        "beta",
+        "gamma",
+    }, .search = true };
+    const filtered = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{"beta"}, .search = true };
+    const no_matches = Prompts.MultiSelectConfig{ .message = "Pick", .choices = &.{}, .search = true };
+
+    var nav = try Harness.init(ws);
+    defer nav.deinit();
+
+    // These are the post-filter frames the shared selection state gives the
+    // renderer. Start taller than every later state, including marker rows.
+    try multiFrame(nav, full, &.{ true, false, true }, 0, ws);
+
+    var filtered_fresh = try Harness.init(ws);
+    defer filtered_fresh.deinit();
+    try multiFrame(filtered_fresh, filtered, &.{false}, 0, ws);
+    const filtered_clean = try filtered_fresh.screen(alloc);
+    defer alloc.free(filtered_clean);
+
+    try multiFrame(nav, filtered, &.{false}, 0, ws);
+    const filtered_stepped = try nav.screen(alloc);
+    defer alloc.free(filtered_stepped);
+    try testing.expectEqualStrings(filtered_clean, filtered_stepped);
+    try testing.expect(nav.vt.containsText("beta"));
+    try testing.expect(nav.vt.containsText("type to filter"));
+
+    var empty_fresh = try Harness.init(ws);
+    defer empty_fresh.deinit();
+    try multiFrame(empty_fresh, no_matches, &.{}, 0, ws);
+    const empty_clean = try empty_fresh.screen(alloc);
+    defer alloc.free(empty_clean);
+
+    try multiFrame(nav, no_matches, &.{}, 0, ws);
+    const empty_stepped = try nav.screen(alloc);
+    defer alloc.free(empty_stepped);
+    try testing.expectEqualStrings(empty_clean, empty_stepped);
+    try testing.expect(nav.vt.containsText("no matches"));
+
+    var restored_fresh = try Harness.init(ws);
+    defer restored_fresh.deinit();
+    try multiFrame(restored_fresh, full, &.{ true, false, true }, 0, ws);
+    const restored_clean = try restored_fresh.screen(alloc);
+    defer alloc.free(restored_clean);
+
+    try multiFrame(nav, full, &.{ true, false, true }, 0, ws);
+    const restored_stepped = try nav.screen(alloc);
+    defer alloc.free(restored_stepped);
+    try testing.expectEqualStrings(restored_clean, restored_stepped);
+    try testing.expect(nav.vt.containsText("type to filter"));
+}
+
 // ---------------------------------------------------------------------------
 // select
 // ---------------------------------------------------------------------------

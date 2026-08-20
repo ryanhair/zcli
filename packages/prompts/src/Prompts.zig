@@ -2,9 +2,10 @@
 //!
 //! This file is the type: `@import("prompts")` returns a struct bundling the
 //! environment every prompt needs — writer, reader, allocator, and theme —
-//! and each of the eight prompts is a method on it. Standalone library: no
-//! zcli dependency required; falls back to line-based input when stdin is
-//! not a TTY.
+//! and exposes seven primary prompt types as methods, with optional
+//! searchable `select` and `multiSelect`. `p.search` remains a compatibility
+//! shorthand. Standalone library: no zcli dependency required; falls back to
+//! line-based input when stdin is not a TTY.
 //!
 //! ```zig
 //! const Prompts = @import("prompts");
