@@ -162,7 +162,7 @@ Hello, world!
 
 **Files are commands.** Build-time discovery, zero-cost dispatch, comptime-checked args and options, aliases, nested groups — plus auto-generated help, version, shell completions, and "did you mean?" suggestions.
 
-**The whole terminal toolkit.** Seven primary interactive prompts (text, confirm, select, multi-select, password, number, editor), with optional searchable select and multi-select, spinners and progress bars with ETA, semantic theming that adapts to terminal capabilities, markdown-to-terminal rendering. `p.search` remains a source-compatible shorthand. Every piece is a standalone package that works without the framework.
+**The whole terminal toolkit.** Seven primary interactive prompts (text, confirm, select, multi-select, password, number, editor), with optional searchable select and multi-select, spinners and progress bars with ETA, semantic theming that adapts to terminal capabilities, markdown-to-terminal rendering. Every piece is a standalone package that works without the framework.
 
 **Production polish for free.** Config files (JSON/TOML/YAML) with per-command scoping, secrets in the OS keychain, self-upgrade from GitHub releases, man/HTML/markdown doc generation on every build, and a virtual-terminal test harness that can assert "this output is green and bold."
 
@@ -212,7 +212,7 @@ const pw = try p.password(.{
 });
 ```
 
-Also: `confirm`, `multiSelect`, `number` (range-validated), and `editor` (opens `$EDITOR`). Searchable selection is `p.select(.{ .search = true, ... })` or `p.multiSelect(.{ .search = true, ... })`; `p.search` remains source-compatible shorthand, with the same ASCII-Space-to-select semantics. Full API in [packages/prompts](packages/prompts/).
+Also: `confirm`, `multiSelect`, `number` (range-validated), and `editor` (opens `$EDITOR`). Searchable selection is `p.select(.{ .search = true, ... })` or `p.multiSelect(.{ .search = true, ... })`. Full API in [packages/prompts](packages/prompts/).
 
 ## Progress indicators
 

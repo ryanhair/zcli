@@ -48,9 +48,7 @@ Set `.search = true` on `select` or `multiSelect` for a case-insensitive
 substring filter. Printable characters other than ASCII Space filter, Backspace
 edits the query, Up/Down navigate, and the Space key selects or toggles the
 highlighted choice; Enter selects or commits. ASCII Space is not query text;
-hidden multi-select choices remain selected. `p.search(.{ ... })` and
-`SearchConfig` remain source-compatible shorthand for searchable `select` and
-use the same changed ASCII-Space-to-select semantics.
+hidden multi-select choices remain selected.
 
 ## Terminal behavior, handled
 

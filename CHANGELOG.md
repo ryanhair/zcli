@@ -11,10 +11,16 @@ All notable changes to zcli are documented here.
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
   Space key selects or toggles while Enter selects or commits. Plain `select`
-  also accepts Space like Enter. The source-compatible `p.search` and
-  `SearchConfig` shorthands now reserve ASCII Space to select rather than
-  accepting it as query text; filtered-out multi-select choices remain
+  also accepts Space like Enter; filtered-out multi-select choices remain
   selected.
+
+### Changed (breaking)
+- **The standalone `search` prompt has been removed.** Replace
+  `p.search(.{ ... })` with `p.select(.{ .search = true, ... })` and
+  `SearchConfig` with `SelectConfig`. Searchable single and multi-selection now
+  share the canonical `select` and `multiSelect` APIs. Non-TTY searchable select
+  output now uses `select`'s existing CRLF header instead of `search`'s LF-only
+  header.
 
 ### Fixed
 - **Release version policy is now one checked-in, executable contract instead of duplicated workflow snippets.** `scripts/validate-version.sh` compares the root, CLI, and core umbrella manifests; README and ROADMAP release URLs/metadata; the newest dated CHANGELOG release; an expected version or either tag shape when supplied; and an actual built `zcli --version` when supplied. CI tests that public seam against deterministic drift fixtures and runs it on a locally built CLI; the release workflow runs the same file after the staged bump and against each executable release build. The post-release phase now closes the remaining publication joins too: both tags must resolve to one commit, both source archives must download and contain the same version-consistent tree, the exact eight assets and all six signed checksums must verify, a downloaded host binary must report the release version, both site installers must match the tag, and the live shell installer must resolve the just-published CLI release.

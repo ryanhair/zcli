@@ -38,7 +38,23 @@ pub fn frameNode(
 ) !ui.Node {
     const filtered = try a.alloc(usize, config.choices.len);
     for (filtered, 0..) |*original, i| original.* = i;
-    return selection.frameNode(a, ctx, selectionConfig(config), .many, "", filtered, selected, cursor, ws);
+    return frameNodeFiltered(a, ctx, config, "", filtered, selected, cursor, ws);
+}
+
+/// Build a multi-selection frame for an explicit query and filtered
+/// original-choice index mapping. Query state is rendered when `config.search`
+/// is enabled; `selected` remains aligned with the original choices.
+pub fn frameNodeFiltered(
+    a: std.mem.Allocator,
+    ctx: Prompts.ThemeContext,
+    config: MultiSelectConfig,
+    query: []const u8,
+    filtered: []const usize,
+    selected: []const bool,
+    cursor: usize,
+    ws: terminal.Winsize,
+) !ui.Node {
+    return selection.frameNode(a, ctx, selectionConfig(config), .many, query, filtered, selected, cursor, ws);
 }
 
 fn selectionConfig(config: MultiSelectConfig) selection.Config {

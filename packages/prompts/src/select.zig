@@ -47,7 +47,22 @@ pub fn frameNode(
 ) !ui.Node {
     const filtered = try a.alloc(usize, config.choices.len);
     for (filtered, 0..) |*original, i| original.* = i;
-    return selection.frameNode(a, ctx, selectionConfig(config), .one, "", filtered, null, cursor, ws);
+    return frameNodeFiltered(a, ctx, config, "", filtered, cursor, ws);
+}
+
+/// Build a single-selection frame for an explicit query and filtered
+/// original-choice index mapping. Query state is rendered when `config.search`
+/// is enabled.
+pub fn frameNodeFiltered(
+    a: std.mem.Allocator,
+    ctx: Prompts.ThemeContext,
+    config: SelectConfig,
+    query: []const u8,
+    filtered: []const usize,
+    cursor: usize,
+    ws: terminal.Winsize,
+) !ui.Node {
+    return selection.frameNode(a, ctx, selectionConfig(config), .one, query, filtered, null, cursor, ws);
 }
 
 fn selectionConfig(config: SelectConfig) selection.Config {
@@ -200,4 +215,57 @@ test "frameNode: selected row carries the theme's selected token" {
     try std.testing.expect(ui.styleEql(selected_style, s.cell(4, 1).style));
     try std.testing.expectEqualStrings("b", s.cellText(s.cell(4, 2)));
     try std.testing.expect(ui.styleEql(.{}, s.cell(4, 2).style));
+}
+
+test "frameNodeFiltered: searchable header, query, and results measure their rows" {
+    var h = FrameHarness.init();
+    defer h.deinit();
+    const filtered = [_]usize{ 0, 1, 2 };
+    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" }, .search = true }, "a", &filtered, 0, .{ .row = 24, .col = 80 });
+    const rc = h.rctx();
+    const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
+    try std.testing.expectEqual(@as(u16, 5), size.h);
+
+    var surface = try ui.Surface.init(std.testing.allocator, 79, 5);
+    defer surface.deinit();
+    try ui.render(&rc, &node, surface.root());
+    const expected = "Pick (space/enter to select)";
+    for (expected, 0..) |byte, x| {
+        const cell = surface.cell(@intCast(x + 2), 0);
+        if (byte == ' ') {
+            try std.testing.expect(cell.isBlank());
+        } else {
+            try std.testing.expectEqualStrings(&.{byte}, surface.cellText(cell));
+        }
+    }
+}
+
+test "frameNodeFiltered: empty query uses the hint style" {
+    var h = FrameHarness.init();
+    defer h.deinit();
+    const custom = Prompts.Theme{
+        .prompts = .{ .hint = .{ .style = .{ .foreground = .{ .rgb = .{ .r = 7, .g = 7, .b = 7 } } } } },
+    };
+    const ctx = Prompts.ThemeContext{
+        .theme = &custom,
+        .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
+    };
+    const node = try frameNodeFiltered(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "", &.{ 0, 1 }, 0, .{ .row = 24, .col = 80 });
+
+    var surface = try ui.Surface.init(std.testing.allocator, 79, 4);
+    defer surface.deinit();
+    const rc = h.rctx();
+    try ui.render(&rc, &node, surface.root());
+
+    try std.testing.expectEqualStrings("t", surface.cellText(surface.cell(10, 1)));
+    try std.testing.expect(ui.styleEql(ctx.resolveRef(ctx.promptTokens().hint), surface.cell(10, 1).style));
+}
+
+test "frameNodeFiltered: no matches uses three rows" {
+    var h = FrameHarness.init();
+    defer h.deinit();
+    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "zz", &.{}, 0, .{ .row = 24, .col = 80 });
+    const rc = h.rctx();
+    const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
+    try std.testing.expectEqual(@as(u16, 3), size.h);
 }

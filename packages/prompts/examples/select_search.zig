@@ -1,5 +1,5 @@
-//! `Prompts.select` with `.search = true` — type to filter a list, arrow keys
-//! to pick, Enter to select.
+//! Searchable `Prompts.select` — type to filter a list, arrow keys to pick, and
+//! Enter or Space to select.
 //!
 //! The filter is a case-insensitive *substring* match (not fuzzy): typing "ta"
 //! keeps "TypeScript" but not "Rust". Returns the index into the ORIGINAL

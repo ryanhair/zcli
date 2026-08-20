@@ -21,7 +21,6 @@ pub const Config = struct {
     unicode: bool = true,
     search: bool = false,
     interrupt_keys: []const terminal.Key = &.{},
-    non_tty_header_newline: []const u8 = "\r\n",
 };
 
 fn Result(comptime cardinality: Cardinality) type {
@@ -287,7 +286,7 @@ fn emitMany(app: *ui.App, p: Prompts, config: Config, state: *const State) !void
 
 fn nonTty(comptime cardinality: Cardinality, p: Prompts, config: Config) !Result(cardinality) {
     if (cardinality == .one) {
-        try p.writer.print("{s}{s}{s}", .{ config.prefix, config.message, config.non_tty_header_newline });
+        try p.writer.print("{s}{s}\r\n", .{ config.prefix, config.message });
         for (config.choices, 1..) |choice, i| try p.writer.print("  {d}) {s}\n", .{ i, choice });
         try p.writer.writeAll("> ");
         Prompts.flushWriter(p.writer);
@@ -621,4 +620,29 @@ test "backspace edits one trailing grapheme and restores matches" {
     state.backspace();
     try state.settle();
     try std.testing.expectEqual(@as(usize, 3), state.filtered.len);
+}
+
+test "containsIgnoreCase matches ASCII substrings" {
+    try std.testing.expect(containsIgnoreCase("Fastify", "fast"));
+    try std.testing.expect(containsIgnoreCase("fastify", "FAST"));
+    try std.testing.expect(containsIgnoreCase("express", "press"));
+    try std.testing.expect(!containsIgnoreCase("koa", "express"));
+    try std.testing.expect(containsIgnoreCase("anything", ""));
+}
+
+test "buildFiltered preserves original indices" {
+    const result = try buildFiltered(std.testing.allocator, &.{ "express", "fastify", "koa" }, "fa");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualSlices(usize, &.{1}, result);
+}
+
+test "buildFiltered failure leaves an existing slice owned by its caller" {
+    const allocator = std.testing.allocator;
+    const choices = &[_][]const u8{ "alpha", "beta", "gamma" };
+    const filtered = try buildFiltered(allocator, choices, "");
+    defer allocator.free(filtered);
+
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, buildFiltered(failing.allocator(), choices, "a"));
+    try std.testing.expectEqual(@as(usize, 3), filtered.len);
 }
