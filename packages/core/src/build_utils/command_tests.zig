@@ -3,8 +3,10 @@
 //! `addCommandTests` discovers every command file under `commands_dir` and
 //! compiles each as its own in-process test binary, so `zig build test` runs
 //! the `test` blocks a command author writes (e.g. `zcli-testing`'s
-//! `runCommand`). This is the generated-project counterpart to the meta-CLI's
-//! hand-maintained `command_test_files` loop.
+//! `runCommand`). Every configured shared module is a test root too, so the
+//! logic commands delegate to is covered by the same step. This is the
+//! generated-project counterpart to the meta-CLI's hand-maintained
+//! `command_test_files` loop.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -29,6 +31,12 @@ const PluginInfo = types.PluginInfo;
 ///     exposed by the zcli dependency, so no extra dependency is needed. (Command
 ///     tests are in-process; the subprocess/PTY tiers live in separate modules.)
 ///   - any `shared_modules` the commands were generated with.
+///
+/// Each `shared_modules` entry is *also* compiled as a test root, so the
+/// helper logic commands delegate to is covered by the same `zig build test`
+/// without a second hand-written test target per module. The module is used
+/// exactly as the project supplied it — its imports and build configuration
+/// are the ones the commands see at runtime.
 ///
 /// `exe` is the project's real executable (the one built by `generate()`). The
 /// `test` step depends on it so that `zig build test` — which CI runs on all
@@ -116,6 +124,20 @@ pub fn addCommandTests(
         .testing_module = zcli_dep.module("zcli_testing_unit"),
         .shared_modules = shared_modules,
     };
+
+    // Shared modules are test roots in their own right. A command is usually a
+    // thin shell over a shared helper, so testing only the command files leaves
+    // the interesting logic uncovered unless the project hand-writes a second
+    // `addTest` per module. Compile the module the project handed us as-is —
+    // that keeps every import and build setting it was configured with, which
+    // is exactly what the commands compile against.
+    //
+    // Wired before command discovery so a project that has shared modules but
+    // no commands directory yet still runs them.
+    for (shared_modules) |sm| {
+        const shared_tests = b.addTest(.{ .root_module = sm.module });
+        test_step.dependOn(&b.addRunArtifact(shared_tests).step);
+    }
 
     // Discovery failures (e.g. no commands dir yet) simply yield an empty step.
     var commands = command_discovery.discoverCommands(b, config.commands_dir) catch return test_step;

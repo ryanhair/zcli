@@ -89,7 +89,7 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 const store = @import("store");
 ```
 
-## Per-command unit tests
+## Per-command and shared-module unit tests
 
 `addCommandTests` discovers every command file and compiles each one's `test` blocks against the [testing harness]($link.page('docs/testing')) — with the `zcli-testing` module, your shared modules, and an in-memory secrets stub wired in:
 
@@ -106,7 +106,7 @@ _ = zcli.addCommandTests(b, exe, zcli_dep, .{
 
 Then `zig build test` runs a test binary per command — a `test "creates a task"` block sitting right next to the `execute` it verifies.
 
-Pass `shared_modules` here too, matching what you gave `generate` — the command-test stub only wires the shared modules you hand it, so a command that imports one won't compile under `zig build test` otherwise.
+Pass `shared_modules` here too, matching what you gave `generate`. It does two jobs: the command-test stub only wires the shared modules you hand it, so a command that imports one won't compile under `zig build test` otherwise — and each module in the list is compiled as a test root of its own, so the `test` blocks inside `src/store.zig` run in the same step as the command tests. A shared module is used exactly as you created it, so its tests see the same imports and build configuration the commands do.
 
 ## Docs generation
 

@@ -19,8 +19,21 @@ pub fn build(b: *std.Build) !void {
 
     const zcli = @import("zcli");
 
+    // The greeting text, shared by every command (see src/greeting.zig). Listed
+    // once here and handed to both call sites below; `addCommandTests` compiles
+    // it as a test root, so its own `test` blocks run under `zig build test`.
+    const greeting_module = b.createModule(.{
+        .root_source_file = b.path("src/greeting.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const shared_modules = [_]zcli.SharedModule{
+        .{ .name = "greeting", .module = greeting_module },
+    };
+
     const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
+        .shared_modules = &shared_modules,
         .plugins = &.{
             zcli.builtin(.help, .{}),
             zcli.builtin(.version, .{}),
@@ -42,11 +55,14 @@ pub fn build(b: *std.Build) !void {
     // Per-command unit tests (the scaffolded-project idiom): compiles each
     // command file as its own test root, with `zcli-testing` (the unit tier,
     // `runCommand`) wired in — see `src/commands/greet.zig`'s own `test`
-    // blocks. Returns the `test` step so more tiers can attach to it below.
+    // blocks. Every shared module is a test root too, so `src/greeting.zig`'s
+    // tests run from this same list with no extra wiring. Returns the `test`
+    // step so more tiers can attach to it below.
     const test_step = zcli.addCommandTests(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,
         .optimize = optimize,
+        .shared_modules = &shared_modules,
     });
 
     // Integration/snapshot tier (`zcli_testing`'s `runSubprocess` +

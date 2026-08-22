@@ -266,7 +266,8 @@ const store = @import("store");
 
 Pass the **same** `shared_modules` list to `addCommandTests` as well. The
 command-test stub only wires the shared modules you hand it, so a command that
-imports one won't compile under `zig build test` otherwise:
+imports one won't compile under `zig build test` otherwise — and each module in
+that list is compiled as a test root too, so its own `test` blocks run:
 
 ```zig
 _ = zcli.addCommandTests(b, exe, zcli_dep, .{
@@ -290,6 +291,11 @@ project ships with. It discovers every command file under `commands_dir` and
 compiles each as its own in-process test binary, so a command's `test` blocks
 (typically using `zcli-testing`'s `runCommand`) actually run — without pulling
 in the whole generated app.
+
+Every module in `shared_modules` is compiled as a test root as well, so the
+helper logic a command delegates to is covered by the same step. Those modules
+are used exactly as you created them — the imports and build configuration
+their tests see are the ones the commands see.
 
 `exe` is the project's real executable (the same one passed to `generate()`);
 the returned `test` step depends on it so `zig build test` also proves the

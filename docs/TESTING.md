@@ -30,8 +30,14 @@ test "deploy command" {
 
 Unit tests only run under `zig build test` if `build.zig` wires
 `zcli.addCommandTests(b, exe, zcli_dep, .{ .commands_dir = "src/commands", ... })` —
-a scaffolded project (`zcli init`) already does this. See
+a scaffolded project (`zcli init`) already does this. That step covers **both**
+tiers of in-process test: every discovered command file, and every module in
+the `shared_modules` list you pass it. So the `test` blocks in a shared helper
+(`src/store.zig`, `src/greeting.zig`, …) run alongside the command tests
+without a second test target — the same list that makes a shared module
+importable from a command makes its own tests run. See
 [BUILD.md](BUILD.md#command-unit-tests-addcommandtests) for the full config
-and how commands are compiled for testing.
+and how commands are compiled for testing, and `examples/testing-demo` for a
+project with both kinds of test.
 
 For the full VTerm assertion API, the integration/E2E tiers, snapshot testing, and the recommended per-command strategy, see **[zcli.sh/testing](https://zcli.sh/testing/)**.

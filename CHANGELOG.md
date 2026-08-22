@@ -7,6 +7,14 @@ All notable changes to zcli are documented here.
 ## Unreleased
 
 ### Added
+- **`addCommandTests` runs your shared modules' tests too.** Every module in
+  the `shared_modules` list is now compiled as a test root of its own, so the
+  `test` blocks inside a helper like `src/store.zig` run under `zig build test`
+  alongside the command tests — no second `addTest` target to hand-wire, and
+  no shared logic silently uncovered because only command files were tested.
+  Shared modules are used exactly as the project created them, so their tests
+  see the same imports and build configuration the commands do. The one list
+  you already pass to both `generate()` and `addCommandTests` is all it takes.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the

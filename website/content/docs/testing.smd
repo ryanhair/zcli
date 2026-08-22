@@ -22,7 +22,7 @@ Test a single command's `execute()` function without compiling or spawning a bin
 
 ### Setup
 
-The unit-testing tier ships with the `zcli` dependency itself — no separate dependency entry. Projects scaffolded by `zcli init` are already wired: `zcli.addCommandTests(...)` in build.zig compiles each command file as its own test root with `zcli-testing` importable. For hand-rolled wiring, import the module from your existing zcli dependency:
+The unit-testing tier ships with the `zcli` dependency itself — no separate dependency entry. Projects scaffolded by `zcli init` are already wired: `zcli.addCommandTests(...)` in build.zig compiles each command file as its own test root with `zcli-testing` importable, and does the same for every module in its `shared_modules` list — so `zig build test` runs your command tests and your shared helpers' own tests together. For hand-rolled wiring, import the module from your existing zcli dependency:
 
 ```zig
 // build.zig
