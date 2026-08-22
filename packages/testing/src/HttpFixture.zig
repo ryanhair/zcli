@@ -267,17 +267,44 @@ pub fn requests(self: *HttpFixture) std.mem.Allocator.Error![]const Request {
 /// so teardown still lands promptly.
 const would_block_backoff: std.Io.Duration = .fromMilliseconds(1);
 
-/// Whether an accept failure killed one incoming dial (the listener is still
-/// good) or the serving task itself.
+/// What a serving task does about an accept failure.
+pub const AcceptDisposition = enum {
+    /// One incoming dial died; the listener is fine. Try again straight away —
+    /// a real connection arrived and went, which rate-limits this on its own.
+    retry_now,
+    /// Try again, but not immediately. Nothing necessarily arrived at all here,
+    /// so nothing rate-limits a repeat and an immediate retry could spin a core.
+    retry_after_backoff,
+    /// The serving task itself is finished.
+    fatal,
+};
+
+/// How a serving task should react to an accept failure. This classification is
+/// what keeps the fixture alive: retiring a task on a failure that only killed
+/// one dial would shrink the fixed pool one aborted connection at a time, until
+/// nothing was left to accept the next request and it hung.
 ///
-/// This classification is what keeps the fixture alive: retiring a task on a
-/// transient failure would shrink the fixed pool one aborted dial at a time,
-/// until nothing was left to accept the next request and it hung. `error.Canceled`
-/// must stay fatal — it is how `deinit` retires the pool.
-fn acceptFailureIsTransient(err: std.Io.net.Server.AcceptError) bool {
+/// Switched exhaustively, with no `else`, on purpose. A member std adds to
+/// `AcceptError` later has to be classified here deliberately — the compiler
+/// refuses to let it inherit a default, which is a guarantee no test can give
+/// (a test that names the transient members defaults new ones exactly the way
+/// the code under test does, so the two agree and prove nothing).
+fn acceptDisposition(err: std.Io.net.Server.AcceptError) AcceptDisposition {
     return switch (err) {
-        error.ConnectionAborted, error.WouldBlock => true,
-        else => false,
+        error.ConnectionAborted => .retry_now,
+        error.WouldBlock => .retry_after_backoff,
+
+        // `error.Canceled` is how `deinit` retires the pool: anything but
+        // `.fatal` here hangs teardown forever.
+        error.Canceled => .fatal,
+        error.SocketNotListening => .fatal,
+        error.ProcessFdQuotaExceeded => .fatal,
+        error.SystemFdQuotaExceeded => .fatal,
+        error.SystemResources => .fatal,
+        error.NetworkDown => .fatal,
+        error.BlockedByFirewall => .fatal,
+        error.ProtocolFailure => .fatal,
+        error.Unexpected => .fatal,
     };
 }
 
@@ -285,12 +312,16 @@ fn acceptFailureIsTransient(err: std.Io.net.Server.AcceptError) bool {
 /// `Options.concurrency`.
 fn serve(self: *HttpFixture) std.Io.Cancelable!void {
     while (!self.shutting_down.load(.acquire)) {
-        var stream = self.server.accept(self.io) catch |err| {
-            // A fatal failure — `error.Canceled` at teardown included — retires
-            // this task; there is no state left to unwind.
-            if (!acceptFailureIsTransient(err)) return;
-            if (err == error.WouldBlock) self.io.sleep(would_block_backoff, .awake) catch return;
-            continue;
+        var stream = self.server.accept(self.io) catch |err| switch (acceptDisposition(err)) {
+            .retry_now => continue,
+            // The one and only sleep in this loop, keyed off the disposition —
+            // so `.retry_after_backoff` means backoff by construction.
+            .retry_after_backoff => {
+                self.io.sleep(would_block_backoff, .awake) catch return;
+                continue;
+            },
+            // Nothing to unwind: no connection was ever handed over.
+            .fatal => return,
         };
         defer stream.close(self.io);
         self.serveConnection(&stream);
@@ -466,21 +497,102 @@ fn freeHeaderList(allocator: std.mem.Allocator, list: *std.ArrayList(std.http.He
 const testing = std.testing;
 
 test "accept failures are classified so a dead dial spares the pool but teardown doesn't" {
-    // Exhaustive over the error set, so a member std adds later has to be
-    // classified deliberately rather than inherited: anything new defaults to
-    // fatal here and this assertion is where that gets noticed.
-    inline for (@typeInfo(std.Io.net.Server.AcceptError).error_set.?) |e| {
-        const err = @field(std.Io.net.Server.AcceptError, e.name);
-        const should_be_transient = comptime std.mem.eql(u8, e.name, "ConnectionAborted") or
-            std.mem.eql(u8, e.name, "WouldBlock");
-        try testing.expectEqual(should_be_transient, acceptFailureIsTransient(err));
+    // Coverage of a *new* `AcceptError` member is the compiler's job, not this
+    // test's: `acceptDisposition` switches without an `else`, so adding one
+    // fails the build until it is classified. What is pinned here is the
+    // meaning of each of the three arms, which the compiler can't check.
+
+    // An aborted dial says nothing about the listener; retiring the task on it
+    // is what drains the pool.
+    try testing.expectEqual(AcceptDisposition.retry_now, acceptDisposition(error.ConnectionAborted));
+
+    // Nothing rate-limits a spurious `WouldBlock`, so it must take the backoff
+    // arm — the accept loop's only sleep hangs off this value.
+    try testing.expectEqual(AcceptDisposition.retry_after_backoff, acceptDisposition(error.WouldBlock));
+
+    // `deinit`'s only way to retire a serving task: anything but fatal hangs
+    // teardown forever.
+    try testing.expectEqual(AcceptDisposition.fatal, acceptDisposition(error.Canceled));
+    try testing.expectEqual(AcceptDisposition.fatal, acceptDisposition(error.SocketNotListening));
+    try testing.expectEqual(AcceptDisposition.fatal, acceptDisposition(error.Unexpected));
+}
+
+/// An `Io` that only implements what `serve`'s accept loop touches: it answers
+/// accepts from a script and counts sleeps. Everything else inherits
+/// `std.Io.failing`, so a call this test didn't anticipate fails loudly rather
+/// than quietly doing something.
+const ScriptedAccepts = struct {
+    /// Returned in order; the last one repeats if the loop asks for more.
+    script: []const std.Io.net.Server.AcceptError,
+    accepts: usize = 0,
+    sleeps: usize = 0,
+
+    fn io(self: *ScriptedAccepts) std.Io {
+        return .{ .userdata = self, .vtable = &vtable };
     }
 
-    // Spelled out because these two are the whole point: an aborted dial says
-    // nothing about the listener, while `error.Canceled` is `deinit`'s only way
-    // to retire a task — treating it as transient would hang teardown forever.
-    try testing.expect(acceptFailureIsTransient(error.ConnectionAborted));
-    try testing.expect(!acceptFailureIsTransient(error.Canceled));
+    const vtable: std.Io.VTable = blk: {
+        var v = std.Io.failing.vtable.*;
+        v.netAccept = netAccept;
+        v.sleep = sleep;
+        break :blk v;
+    };
+
+    fn netAccept(
+        userdata: ?*anyopaque,
+        server: std.Io.net.Socket.Handle,
+        options: std.Io.net.Server.AcceptOptions,
+    ) std.Io.net.Server.AcceptError!std.Io.net.Socket {
+        _ = server;
+        _ = options;
+        const self: *ScriptedAccepts = @ptrCast(@alignCast(userdata.?));
+        defer self.accepts += 1;
+        return self.script[@min(self.accepts, self.script.len - 1)];
+    }
+
+    fn sleep(userdata: ?*anyopaque, timeout: std.Io.Timeout) std.Io.Cancelable!void {
+        _ = timeout;
+        const self: *ScriptedAccepts = @ptrCast(@alignCast(userdata.?));
+        self.sleeps += 1;
+    }
+};
+
+test "an accept that would block backs off before retrying" {
+    // Removing the sleep from `serve`'s `.retry_after_backoff` arm turns a
+    // spurious `WouldBlock` into a loop that spins a core, which no socket test
+    // can observe — so drive the loop against a scripted `Io` instead: one
+    // `WouldBlock`, then a fatal error to retire the task.
+    var scripted: ScriptedAccepts = .{ .script = &.{ error.WouldBlock, error.SocketNotListening } };
+    const io = scripted.io();
+
+    // Only the fields the accept loop reads are meaningful here; it fails at the
+    // first accept, so it never reaches the allocator, the mutex, or the queue.
+    var fixture: HttpFixture = .{
+        .allocator = testing.allocator,
+        .io = io,
+        .options = .{},
+        .server = .{
+            .socket = .{
+                .handle = 0,
+                .address = std.Io.net.IpAddress.parseIp4("127.0.0.1", 0) catch unreachable,
+            },
+            .options = if (std.Io.net.Server.AcceptOptions != void) .{ .mode = .stream, .protocol = .tcp },
+        },
+        .base_url = &.{},
+        .mutex = .init,
+        .queue = .empty,
+        .queue_pos = 0,
+        .recorded = .empty,
+        .urls = .empty,
+        .snapshot = .empty,
+        .shutting_down = .init(false),
+        .tasks = .init,
+    };
+
+    try serve(&fixture);
+
+    try testing.expectEqual(@as(usize, 2), scripted.accepts);
+    try testing.expectEqual(@as(usize, 1), scripted.sleeps);
 }
 
 /// Drive `dupe` with every allocation failing in turn and prove nothing is
