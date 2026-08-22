@@ -10,10 +10,11 @@ All notable changes to zcli are documented here.
 - **`zcli guide storage` now covers safe concurrent appending.** The topic gained
   an append-log recipe — shared locks for readers, an exclusive lock for writers,
   one record flushed inside the lock, bounded reads, and a torn trailing record
-  repaired rather than propagated — with its corruption policy spelled out and
-  the line where a log stops being a substitute for a database. The worked
-  example is the new `examples/notes/src/log.zig`, whose tests spawn concurrent
-  appenders and replay a half-written final record in `zig build test`.
+  repaired rather than propagated — with its corruption policy spelled out, the
+  difference between flushing and `fsync` stated, and the line where a log stops
+  being a substitute for a database. The worked example is the new
+  `examples/notes/src/log.zig`; `zig build test` races appending threads, replays
+  a half-written final record, and repeats both against real child processes.
 
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters

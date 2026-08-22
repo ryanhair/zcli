@@ -223,23 +223,33 @@ const topics = [_]Topic{
             \\     A buffered writer that flushes after the close would hand the next
             \\     appender a file whose end is not where your record ended, and the
             \\     two would overlap. Order is: seek to end -> write -> flush -> close.
+            \\     Know what that flush is worth: it drains your buffer into the file,
+            \\     it does NOT `fsync`. It orders your record against the next
+            \\     appender's and survives a writer that dies mid-record — it does not
+            \\     survive an OS crash or a power cut. `file.sync(io)` inside the lock
+            \\     buys that, at a real cost per append.
             \\
             \\Bound everything you read: a cap per record and a cap on the whole file
             \\(`.limited(...)`), so a corrupt file can't make the reader allocate or
-            \\scan without limit. And decide, in writing, what "corrupt" means. The
-            \\example's policy: bytes after the last newline are a TORN TAIL — a
-            \\writer killed mid-record — so a reader ignores them and the next
-            \\appender truncates them away, keeping every earlier record; a
-            \\newline-terminated record that doesn't parse is real damage, so it is
-            \\reported, never silently dropped.
+            \\scan without limit. And decide, in writing, what "corrupt" means — then
+            \\make the reader and the writer agree on it, or you get a log that reads
+            \\clean and refuses every append. The example's policy: an unterminated
+            \\fragment after the last newline SHORTER than one record's cap is a TORN
+            \\TAIL — a writer killed part-way — so readers skip it and the next
+            \\appender truncates it, keeping every earlier record. A fragment that
+            \\reaches the cap can't be a record in progress, so both sides report it
+            \\and neither guesses where to cut. A newline-terminated record that
+            \\doesn't parse is real damage, reported, never silently dropped.
             \\
-            \\This is a log, not a database. It buys atomic appends, concurrent
-            \\readers, and crash tolerance at the tail — not multi-record
-            \\transactions, in-place edits, indexes, or isolation between a reader
-            \\and an in-flight writer. When you need those, use a real database.
+            \\This is a log, not a database. It buys atomic appends and concurrent
+            \\readers — not multi-record transactions, in-place edits, indexes,
+            \\durability without fsync, or isolation between a reader and an
+            \\in-flight writer. When you need those, use a real database.
             \\
-            \\Worked example — examples/notes/src/log.zig (its tests spawn concurrent
-            \\appenders and replay a half-written final record):
+            \\Worked example — examples/notes/src/log.zig. Its tests race appending
+            \\threads and replay a half-written final record; a companion test
+            \\(src/log_multiprocess_test.zig) does the same with real child
+            \\processes, which is where locks and lifetimes actually bite:
             \\
         ++ "\n" ++ examples.notes_log,
     },

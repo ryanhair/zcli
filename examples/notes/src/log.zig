@@ -11,14 +11,21 @@
 //!      other; a writer excludes everyone.
 //!   2. One record = one line, written (and flushed) as a single unit while
 //!      the exclusive lock is held. A reader only trusts bytes up to the last
-//!      newline, so a record a crashed writer left half-written is never
+//!      newline, so a record a half-written writer left behind is never
 //!      mistaken for a complete one.
 //!
-//! This is a log, not a database. It buys atomic appends, concurrent readers,
-//! and crash tolerance at the tail. It does NOT give you multi-record
-//! transactions, in-place edits, indexes, or readers that block until a writer
-//! commits. When you need those, reach for a real database — the honest
-//! failure of this recipe is that it silently does not scale to them.
+//! What that does and does not buy you. It survives a writer that dies
+//! mid-record: the next appender repairs the fragment, and readers ignore it
+//! meanwhile. It is NOT a durability guarantee — the flush below drains a
+//! buffered writer into the file, it does not `fsync`, so an OS crash or power
+//! cut can still lose or tear records the kernel had not written out. Add
+//! `file.sync(io)` inside the lock if you need that, and pay for it.
+//!
+//! This is a log, not a database. It buys atomic appends and concurrent
+//! readers. It does NOT give you multi-record transactions, in-place edits,
+//! indexes, or readers that block until a writer commits. When you need those,
+//! reach for a real database — the honest failure of this recipe is that it
+//! silently does not scale to them.
 
 const std = @import("std");
 
@@ -35,6 +42,14 @@ pub const Entry = struct {
 /// The largest a single record may be, encoded and including its newline.
 /// Every read is bounded by this too, so a corrupt file can never make the
 /// reader allocate (or scan back) without limit.
+///
+/// It also draws the line between the two kinds of damage, and `read` and
+/// `append` MUST agree on where that line is: an unterminated fragment at the
+/// end of the file shorter than this is a torn tail — some writer was killed
+/// part-way through a record it was allowed to write — which readers skip and
+/// the next appender truncates. A fragment this long or longer cannot be a
+/// record-in-progress, so both sides call it corruption and report
+/// `error.RecordTooLong` rather than guessing where to cut.
 pub const max_record_bytes = 8 * 1024;
 
 /// The largest log this reader will load into memory at once. Past this the
@@ -43,8 +58,10 @@ pub const max_record_bytes = 8 * 1024;
 pub const max_log_bytes = 4 * 1024 * 1024;
 
 pub const Error = error{
-    /// A record — the one being appended, one already on disk, or a torn tail
-    /// long enough to bury the last newline — exceeds `max_record_bytes`.
+    /// A record — the one being appended, one already in the file, or an
+    /// unterminated trailing fragment too long to be a record in progress —
+    /// reached `max_record_bytes`. Both `read` and `append` raise this on the
+    /// same input; see `max_record_bytes` for where the line sits.
     RecordTooLong,
     /// The file exceeds `max_log_bytes`.
     LogTooLarge,
@@ -57,10 +74,14 @@ pub const Error = error{
 /// Append one record.
 ///
 /// The corruption policy, in one place:
-///   - A *torn tail* (bytes after the last newline) is expected: a writer can
-///     be killed mid-record. It is repaired here — truncated away under the
-///     exclusive lock, before this record is appended — so the file never
-///     grows a record glued onto half of an older one.
+///   - A *torn tail* — an unterminated fragment after the last newline, shorter
+///     than `max_record_bytes` — is expected: a writer can be killed
+///     mid-record. It is repaired here, truncated away under the exclusive
+///     lock before this record is appended, so the file never grows a record
+///     glued onto half of an older one.
+///   - A fragment that reaches `max_record_bytes` is not a record in progress.
+///     Both this function and `read` report `error.RecordTooLong` and leave the
+///     file alone: truncating on a hunch could throw away good records.
 ///   - A *complete* record that does not parse is not expected and is never
 ///     discarded silently; `read` reports `error.CorruptRecord` and leaves the
 ///     file alone for a human to look at.
@@ -92,7 +113,10 @@ pub fn append(dir: std.Io.Dir, io: std.Io, entry: Entry) !void {
     try fw.interface.writeAll(line);
     // Flush INSIDE the lock. A buffered writer that flushes on close (or not
     // at all) would hand the next appender a file whose end-of-file is not
-    // where this record ends, and the two records would overlap.
+    // where this record ends, and the two records would overlap. Note the
+    // limit: this pushes the bytes into the file, it does not `fsync` them to
+    // the platter — enough to order this record against the next appender's,
+    // not enough to survive a power cut (see the header).
     try fw.interface.flush();
 }
 
@@ -119,12 +143,23 @@ pub fn read(dir: std.Io.Dir, io: std.Io, arena: std.mem.Allocator) ![]Entry {
         else => |e| return e,
     };
 
-    // A record counts as written only once its newline is on disk. Everything
-    // up to the last newline is complete; anything after it is a tail some
-    // writer never finished, and dropping it costs nothing — the next
-    // `append` truncates it anyway. Every earlier record is kept.
-    const last_newline = std.mem.lastIndexOfScalar(u8, bytes, '\n') orelse return &.{};
-    const complete = bytes[0..last_newline];
+    // A record counts as written only once its newline is in the file.
+    // Everything up to the last newline is complete; anything after it is a
+    // tail some writer never finished. Skipping it costs nothing — the next
+    // `append` truncates it anyway — and every earlier record is kept.
+    //
+    // `end_of_last_record` is 0 when there is no newline at all — the whole
+    // file is then one unfinished fragment.
+    const end_of_last_record = if (std.mem.lastIndexOfScalar(u8, bytes, '\n')) |i| i + 1 else 0;
+    // The one judgement call, and it has to match `repairTail` exactly (see
+    // `max_record_bytes`): a fragment that long is not a record in progress, so
+    // report it instead of quietly hiding damage the appender will refuse to
+    // repair.
+    if (bytes.len - end_of_last_record >= max_record_bytes) return Error.RecordTooLong;
+    if (end_of_last_record == 0) return &.{}; // nothing complete yet
+    // Minus the final newline, so splitting yields records and not a phantom
+    // empty one after the last of them.
+    const complete = bytes[0 .. end_of_last_record - 1];
 
     var entries: std.ArrayList(Entry) = .empty;
     var lines = std.mem.splitScalar(u8, complete, '\n');
@@ -169,35 +204,37 @@ fn openForAppend(dir: std.Io.Dir, io: std.Io) !std.Io.File {
 /// next record starts at. Call only while holding the exclusive lock.
 ///
 /// Only the tail can be torn: every earlier record was written by a lock
-/// holder that flushed before releasing. So this scans backwards at most
-/// `max_record_bytes` — a bounded read, not a whole-file one — for the last
-/// newline.
+/// holder that flushed before releasing. So this reads backwards at most
+/// `max_record_bytes` — a bounded read, not a whole-file one — looking for the
+/// last newline, and applies the same rule `read` applies to what follows it.
 fn repairTail(io: std.Io, file: std.Io.File) !u64 {
     const size = try file.length(io);
     if (size == 0) return 0;
 
+    // One record's worth of the end of the file is all a torn tail can occupy:
+    // a fragment that fills this window is already too long to be one.
     var window: [max_record_bytes]u8 = undefined;
     const want: usize = @intCast(@min(size, max_record_bytes));
     const start = size - want;
     const n = try file.readPositionalAll(io, window[0..want], start);
     const tail = window[0..n];
 
-    if (std.mem.lastIndexOfScalar(u8, tail, '\n')) |i| {
-        const valid_end = start + i + 1;
-        if (valid_end != size) try file.setLength(io, valid_end);
-        return valid_end;
-    }
-    // No newline in the whole file: it is one unterminated record, so the file
-    // is exactly the torn tail. Drop it and start over.
-    if (start == 0) {
-        try file.setLength(io, 0);
-        return 0;
-    }
-    // No newline in the last `max_record_bytes`, yet there are earlier bytes:
-    // the trailing record is longer than any record this log is allowed to
-    // hold. That is beyond the damage locking explains, so refuse rather than
-    // guess where to cut — truncating on a hunch could throw away good records.
-    return Error.RecordTooLong;
+    const fragment_len = if (std.mem.lastIndexOfScalar(u8, tail, '\n')) |i|
+        tail.len - (i + 1)
+    else
+        // No newline in the window at all: everything back to `start` is
+        // fragment, and if the file reaches past the window there is even more
+        // of it. Either way it is at least `want` bytes long.
+        want;
+
+    // Same line `read` draws (see `max_record_bytes`): too long to be a record
+    // in progress means damage, and guessing where to cut could throw away good
+    // records. Both sides refuse on exactly the same files.
+    if (fragment_len >= max_record_bytes) return Error.RecordTooLong;
+
+    const valid_end = size - fragment_len;
+    if (fragment_len != 0) try file.setLength(io, valid_end);
+    return valid_end;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +242,10 @@ fn repairTail(io: std.Io, file: std.Io.File) !u64 {
 // ---------------------------------------------------------------------------
 //
 // These run in `zig build test` — build.zig attaches this module's test binary
-// to the same step as the command tests.
+// to the same step as the command tests. The one case they cannot cover is
+// separate processes, because a lock and a process outlive each other in ways
+// threads do not: see src/log_multiprocess_test.zig, which drives real child
+// processes through the same `append`.
 
 const testing = std.testing;
 
@@ -227,7 +267,7 @@ const Appender = struct {
     }
 };
 
-test "append: concurrent writers never interleave, and every record survives" {
+test "append: concurrent threads never interleave, and every record survives" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -350,6 +390,44 @@ test "records are bounded on the way in and on the way out" {
         try file.writePositionalAll(io, "[" ++ huge ++ "]\n", 0);
     }
     try testing.expectError(Error.RecordTooLong, read(tmp.dir, io, arena));
+}
+
+test "an over-long trailing fragment is corruption to reader and writer alike" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try append(tmp.dir, io, .{ .action = "add", .title = "first" });
+
+    // A fragment this long cannot be a record someone was part-way through
+    // writing, so it is damage rather than a torn tail. `read` must not quietly
+    // skip what `append` refuses to repair — that divergence would let a reader
+    // report a healthy-looking log while every append failed.
+    {
+        const file = try tmp.dir.createFile(io, filename, .{ .truncate = false });
+        defer file.close(io);
+        const end = try file.length(io);
+        try file.writePositionalAll(io, "x" ** max_record_bytes, end);
+    }
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+
+    try testing.expectError(Error.RecordTooLong, read(tmp.dir, io, arena_state.allocator()));
+    try testing.expectError(Error.RecordTooLong, append(tmp.dir, io, .{ .action = "add", .title = "second" }));
+
+    // And one byte shorter is a torn tail again — repaired, not reported.
+    {
+        const file = try tmp.dir.openFile(io, filename, .{ .mode = .read_write });
+        defer file.close(io);
+        try file.setLength(io, (try file.length(io)) - 1);
+    }
+    try append(tmp.dir, io, .{ .action = "add", .title = "second" });
+
+    const entries = try read(tmp.dir, io, arena_state.allocator());
+    try testing.expectEqual(@as(usize, 2), entries.len);
+    try testing.expectEqualStrings("first", entries[0].title);
+    try testing.expectEqualStrings("second", entries[1].title);
 }
 
 test "read: a complete record that is not JSON is reported, not skipped" {

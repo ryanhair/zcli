@@ -77,4 +77,41 @@ pub fn build(b: *std.Build) !void {
     // tests are the whole point of that module, so they must run in CI.
     const log_tests = b.addTest(.{ .root_module = log_module });
     test_step.dependOn(&b.addRunArtifact(log_tests).step);
+
+    // The rest of log.zig's contract is between separate PROCESSES — an
+    // advisory lock belongs to an open file description and the kernel drops it
+    // when the holder exits — which no in-process test can reach. So: a tiny
+    // appender executable, and a test that spawns several of it at once.
+    const appender = b.addExecutable(.{
+        .name = "log-appender",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/log_appender.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    appender.root_module.addImport("log", log_module);
+    // Deliberately not installed: it is test scaffolding, not part of `notes`.
+
+    // Hand the test the binary's path. `addOptionPath` takes a LazyPath, so the
+    // test also gains a build-graph dependency on the appender — it cannot run
+    // before the process it spawns exists.
+    const log_test_options = b.addOptions();
+    log_test_options.addOptionPath("appender_exe", appender.getEmittedBin());
+
+    const log_multiprocess_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/log_multiprocess_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "log", .module = log_module },
+                .{ .name = "log_test_options", .module = log_test_options.createModule() },
+            },
+        }),
+    });
+    const run_log_multiprocess_tests = b.addRunArtifact(log_multiprocess_tests);
+    // Spawning children touches the filesystem, so never serve this from cache.
+    run_log_multiprocess_tests.has_side_effects = true;
+    test_step.dependOn(&run_log_multiprocess_tests.step);
 }

@@ -23,9 +23,13 @@ also recorded in an append-only `notes.log`.
 - **`src/log.zig`** — the other storage shape: an append-only log that several
   processes can read and append to at once. Shared lock to read, exclusive lock
   to append, one flushed record per append, bounded reads, and a torn trailing
-  record repaired rather than propagated. Its tests spawn concurrent appenders
-  and replay a half-written final record; `build.zig` hangs that test binary on
-  the same `test` step as the command tests. Embedded into `zcli guide storage`.
+  record repaired rather than propagated (reader and writer draw the corruption
+  line in the same place). Its own tests race appending threads and replay a
+  half-written final record; `src/log_multiprocess_test.zig` repeats both with
+  real child processes (`src/log_appender.zig`, built but never installed),
+  because an advisory lock's owner is a process, not a thread. `build.zig` hangs
+  both test binaries on the same `test` step as the command tests. Embedded into
+  `zcli guide storage`.
 - **A shared module** — `store` and `log` are imported by the commands,
   registered once in `build.zig` as `shared_modules` entries and wired into both
   `generate()` and `addCommandTests()`. See `zcli guide sharing`.
