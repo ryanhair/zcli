@@ -29,6 +29,13 @@ pub const Viewport = struct {
     /// returns the physical (wrapped) row count of item `i` — computed on
     /// demand so callers need no allocated counts array. The window holds whole
     /// items whose rows fit `budget`, always including `cursor`.
+    ///
+    /// The one case where a window exceeds `budget` is a cursor whose own item
+    /// is taller than the whole budget: it is returned alone, for the renderer
+    /// to clip. Showing the top of the highlighted item beats showing a
+    /// neighbour instead — and callers that can avoid the case do, as the
+    /// prompts reserve the highlighted choice's rows before spending any on
+    /// header and query chrome.
     pub fn window(
         self: *Viewport,
         n: usize,
@@ -123,6 +130,55 @@ test "viewport scrolls one item at a time at each edge and holds still between" 
     try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 2, 3, &cs, CountSlice.at));
     // ... and only scrolls once it passes the top edge.
     try testing.expectEqual(Window{ .start = 1, .end = 4 }, vp.window(cs.counts.len, 1, 3, &cs, CountSlice.at));
+}
+
+test "viewport reversal holds at the bottom edge too" {
+    const cs = CountSlice{ .counts = &.{ 1, 1, 1, 1, 1, 1, 1, 1 } };
+    var vp = Viewport{};
+
+    // Arrive at the end of the list, then walk up until the window scrolls.
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 7, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 6, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 5, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 4, .end = 7 }, vp.window(cs.counts.len, 4, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 3, 3, &cs, CountSlice.at));
+
+    // Reversing back down holds that window until the bottom edge gives way.
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 4, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 5, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 4, .end = 7 }, vp.window(cs.counts.len, 6, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 7, 3, &cs, CountSlice.at));
+    // ... and the last item pins the window: down is a no-op there.
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 7, 3, &cs, CountSlice.at));
+}
+
+test "viewport reversal holds around a wrapped item at the bottom edge" {
+    // Item 3 wraps to two rows, so the bottom edge moves by more than a row.
+    const cs = CountSlice{ .counts = &.{ 1, 1, 1, 2, 1, 1 } };
+    var vp = Viewport{};
+
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 5, 4, &cs, CountSlice.at));
+    // Up into the window: no scroll, wrapped item included whole.
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 4, 4, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 3, 4, &cs, CountSlice.at));
+    // Crossing the top edge scrolls by one item, not one row.
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 2, 4, &cs, CountSlice.at));
+    // Back down: the window holds, then yields at the bottom edge.
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 3, 4, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 4, 4, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 5, 4, &cs, CountSlice.at));
+}
+
+test "viewport shows an over-budget item alone, for the renderer to clip" {
+    const cs = CountSlice{ .counts = &.{ 1, 5, 1 } };
+    var vp = Viewport{};
+
+    // The tall item does not fit in three rows, so it takes the window alone
+    // rather than yielding it to a neighbour.
+    try testing.expectEqual(Window{ .start = 1, .end = 2 }, vp.window(cs.counts.len, 1, 3, &cs, CountSlice.at));
+    // Its neighbours still window normally on either side of it.
+    try testing.expectEqual(Window{ .start = 0, .end = 1 }, vp.window(cs.counts.len, 0, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 2, .end = 3 }, vp.window(cs.counts.len, 2, 3, &cs, CountSlice.at));
 }
 
 test "viewport keeps wrapped items whole within the physical row budget" {
