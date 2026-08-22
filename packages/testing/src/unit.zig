@@ -100,23 +100,43 @@ fn contextParamType(comptime Command: type) ?type {
 /// The `config` parameter type for `runCommand`, tailored to `Command`: `args`/
 /// `options` are only optional-to-pass when default-constructible, `plugins`
 /// sets the command's plugin state (`.plugins = .{ .verbose = .{ .enabled = true } }`),
-/// and `environ` injects environment variables the command reads via
-/// `context.environ` (defaults to an empty environment).
+/// `environ` injects environment variables the command reads via
+/// `context.environ` (defaults to an empty environment), `stdin` injects the
+/// bytes the command reads via `context.stdin()`/`context.prompts()`, and
+/// `app_name`/`app_version`/`app_description` set the app metadata the command
+/// and its plugins see (each null field keeps the Context's own default).
 fn RunConfig(comptime Command: type) type {
     const default_alloc: std.mem.Allocator = std.testing.allocator;
     const PluginData = @FieldType(ContextTypeFor(Command), "plugins");
     const default_plugins: PluginData = .{};
     const default_environ: ?*const std.process.Environ.Map = null;
-    const names = [_][]const u8{ "args", "options", "allocator", "plugins", "environ" };
-    const field_types = [_]type{ Command.Args, Command.Options, std.mem.Allocator, PluginData, ?*const std.process.Environ.Map };
+    const default_text: ?[]const u8 = null;
+    const names = [_][]const u8{ "args", "options", "allocator", "plugins", "environ", "stdin", "app_name", "app_version", "app_description" };
+    const field_types = [_]type{
+        Command.Args,
+        Command.Options,
+        std.mem.Allocator,
+        PluginData,
+        ?*const std.process.Environ.Map,
+        ?[]const u8,
+        ?[]const u8,
+        ?[]const u8,
+        ?[]const u8,
+    };
+    // `&default_environ`/`&default_text` are pointers *to* an optional (itself
+    // pointer-shaped); Zig won't implicitly coerce that double pointer to
+    // `?*const anyopaque`, so cast.
+    const optional_text_attr: std.builtin.Type.StructField.Attributes = .{ .default_value_ptr = @ptrCast(&default_text) };
     const attrs = [_]std.builtin.Type.StructField.Attributes{
         fieldAttrs(Command.Args),
         fieldAttrs(Command.Options),
         .{ .default_value_ptr = &default_alloc },
         .{ .default_value_ptr = &default_plugins },
-        // `&default_environ` is a pointer to an optional pointer; Zig won't
-        // implicitly coerce that double pointer to `?*const anyopaque`, so cast.
         .{ .default_value_ptr = @ptrCast(&default_environ) },
+        optional_text_attr,
+        optional_text_attr,
+        optional_text_attr,
+        optional_text_attr,
     };
     return @Struct(.auto, null, &names, &field_types, &attrs);
 }
@@ -131,6 +151,18 @@ fn RunConfig(comptime Command: type) type {
 /// when the command's Args/Options are default-constructible (every field has
 /// a default); a command with a required positional or option must be given
 /// `.args`/`.options` or the call fails to compile with "missing struct field".
+///
+/// `.stdin` feeds the command deterministic input through `context.stdin()` and
+/// `context.prompts()`. The injected stream is a plain non-TTY byte stream that
+/// hits EOF after the supplied bytes, so it exercises the *line-based* branch
+/// every prompt falls back to when stdin isn't a terminal — one line per
+/// answer. Keystroke-level interaction (raw mode, arrow keys through a select,
+/// hidden password input) is not modeled here and belongs in the PTY-backed E2E
+/// tier, which drives a real terminal.
+///
+/// `.app_name`/`.app_version`/`.app_description` set the app metadata the
+/// command and its plugins read off the context; each defaults to the Context's
+/// own default ("app" / "unknown" / "") when omitted.
 pub fn runCommand(
     comptime Command: type,
     config: RunConfig(Command),
@@ -150,6 +182,17 @@ pub fn runCommand(
     stdio.init(std.testing.io);
     stdio.stdout_override = &stdout_aw.writer;
     stdio.stderr_override = &stderr_aw.writer;
+
+    // Injected stdin: an in-memory, non-TTY byte stream that ends at EOF once
+    // the supplied bytes are consumed. This drives the line-based branch of
+    // `context.prompts()` — a real terminal session (raw mode, arrow keys,
+    // hidden input) is the PTY E2E tier's job, not this one. Omitted, stdin
+    // stays the process's own stream, exactly as before.
+    var injected_stdin: std.Io.Reader = undefined;
+    if (config.stdin) |bytes| {
+        injected_stdin = .fixed(bytes);
+        stdio.stdin_override = &injected_stdin;
+    }
 
     // Arena-per-command allocator: mirror the runtime (Registry.execute) so a
     // command written to never free is leak-free under unit tests too, not just
@@ -176,6 +219,14 @@ pub fn runCommand(
         .plugins = config.plugins,
     };
     defer context.deinit();
+
+    // App metadata, set *before* initPluginData below so a plugin whose
+    // initContextData captures `context.app_version` (the version plugin does)
+    // sees the configured value rather than the Context's "unknown" default.
+    // Each unset field keeps that default, so existing calls are unaffected.
+    if (config.app_name) |name| context.app_name = name;
+    if (config.app_version) |version| context.app_version = version;
+    if (config.app_description) |description| context.app_description = description;
 
     // Mirror production: run plugin initContextData hooks before the command so
     // `context.plugins.<id>` methods work without manual setup. This runs even
@@ -433,6 +484,168 @@ test "runCommand injects environment via .environ" {
         defer r.deinit();
         try std.testing.expectEqualStrings("plain\n", r.stdout);
     }
+}
+
+test "runCommand injects stdin via .stdin and ends it at EOF" {
+    // #817: line input is testable at the unit tier — no subprocess, no PTY.
+    // The command reads context.stdin() directly; the injected stream carries
+    // exactly the supplied bytes and then reports EndOfStream rather than
+    // blocking on the real terminal.
+    const Ctx = zcli.TestContext(&.{});
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            const reader = context.stdin();
+            while (try reader.takeDelimiter('\n')) |line| {
+                try context.stdout().print("got: {s}\n", .{line});
+            }
+            // Reached only because the injected stream ends at EOF instead of
+            // waiting on a real terminal.
+            try context.stdout().writeAll("eof\n");
+        }
+    };
+
+    var result = try runCommand(TestCommand, .{ .stdin = "alpha\nbravo\n" });
+    defer result.deinit();
+
+    try std.testing.expect(result.success);
+    try std.testing.expectEqualStrings("got: alpha\ngot: bravo\neof\n", result.stdout);
+    // Captured stderr and the vterm assertions keep working alongside it.
+    try std.testing.expect(result.stderr.len == 0);
+    try std.testing.expect(result.term.containsText("got: alpha"));
+}
+
+test "runCommand drives a line-based prompt end to end" {
+    // The payoff case for #817: a command that asks questions through
+    // context.prompts() can be driven from a test. stdin isn't a TTY here, so
+    // the prompts take their line-based branch — one line per answer. Real
+    // keystroke behavior (raw mode, arrows, hidden input) stays with the PTY
+    // E2E tier.
+    const Ctx = zcli.TestContext(&.{});
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            const p = context.prompts();
+            // Arena-allocated (context.allocator): nothing to free.
+            const name = try p.text(.{ .message = "Name:" });
+            const nickname = try p.text(.{ .message = "Nickname:", .default = "ace" });
+            try context.stdout().print("hello {s} ({s})\n", .{ name, nickname });
+        }
+    };
+
+    // Second line is empty, so the prompt's default applies.
+    var result = try runCommand(TestCommand, .{ .stdin = "Ada\n\n" });
+    defer result.deinit();
+
+    try std.testing.expect(result.success);
+    // The questions were written to the captured stdout, then the answer.
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Name:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Nickname:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "hello Ada (ace)") != null);
+    try std.testing.expect(result.term.containsText("hello Ada (ace)"));
+}
+
+test "runCommand without .stdin behaves exactly as before" {
+    // Omitting `.stdin` changes nothing about the existing surface: stdout,
+    // stderr, the captured error and the vterm all behave as before, and the
+    // command's stdin stays the process's own stream (untouched here).
+    const Ctx = zcli.TestContext(&.{});
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            try context.stdout().writeAll("no input needed\n");
+        }
+    };
+
+    var result = try runCommand(TestCommand, .{});
+    defer result.deinit();
+
+    try std.testing.expect(result.success);
+    try std.testing.expectEqualStrings("no input needed\n", result.stdout);
+}
+
+test "runCommand injects app metadata via .app_name/.app_version/.app_description" {
+    // #818: a version-bearing command asserts on the real string instead of the
+    // Context's "unknown" placeholder.
+    const Ctx = zcli.TestContext(&.{});
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            try context.stdout().print("{s} {s} — {s}\n", .{
+                context.app_name,
+                context.app_version,
+                context.app_description,
+            });
+        }
+    };
+
+    // Omitted: the Context's own defaults, unchanged.
+    {
+        var r = try runCommand(TestCommand, .{});
+        defer r.deinit();
+        try std.testing.expectEqualStrings("app unknown — \n", r.stdout);
+    }
+    // Injected: what a real registry would have filled in from its Config.
+    {
+        var r = try runCommand(TestCommand, .{
+            .app_name = "myapp",
+            .app_version = "1.2.3",
+            .app_description = "does things",
+        });
+        defer r.deinit();
+        try std.testing.expectEqualStrings("myapp 1.2.3 — does things\n", r.stdout);
+    }
+}
+
+test "runCommand app metadata is set before plugin initContextData runs" {
+    // The ordering that makes #818 useful: plugins capture app metadata off the
+    // context in their init hook (zcli_version does exactly this), so the
+    // injected values must already be in place when initPluginData runs.
+    const CapturePlugin = struct {
+        pub const plugin_id = "capture";
+        pub const ContextData = struct {
+            name: ?[]const u8 = null,
+            version: ?[]const u8 = null,
+            description: ?[]const u8 = null,
+        };
+        pub fn initContextData(data: *ContextData, context: anytype) !void {
+            data.name = context.app_name;
+            data.version = context.app_version;
+            data.description = context.app_description;
+        }
+    };
+
+    const Ctx = zcli.TestContext(&.{CapturePlugin});
+    const TestCommand = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            try context.stdout().print("{s}/{s}/{s}\n", .{
+                context.plugins.capture.name.?,
+                context.plugins.capture.version.?,
+                context.plugins.capture.description.?,
+            });
+        }
+    };
+
+    var result = try runCommand(TestCommand, .{
+        .app_name = "tasks",
+        .app_version = "0.9.0",
+        .app_description = "task runner",
+    });
+    defer result.deinit();
+
+    try std.testing.expect(result.success);
+    try std.testing.expectEqualStrings("tasks/0.9.0/task runner\n", result.stdout);
 }
 
 test "runCommand vterm contains text" {

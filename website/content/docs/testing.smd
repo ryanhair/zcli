@@ -83,6 +83,43 @@ test "command respects verbose mode" {
 }
 ```
 
+### Feeding stdin
+
+`.stdin` hands the command a deterministic input stream, reachable through `context.stdin()` and `context.prompts()`. The injected stream is an in-memory, **non-TTY** byte stream that reaches EOF once your bytes run out — so a command that asks questions can be driven end to end without a subprocess:
+
+```zig
+test "setup asks for a name" {
+    // One line per answer; an empty line takes the prompt's default.
+    var result = try testing.runCommand(setup, .{ .stdin = "Ada\n\n" });
+    defer result.deinit();
+
+    try std.testing.expect(result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "hello Ada") != null);
+}
+```
+
+Because stdin isn't a terminal here, prompts take their **line-based** fallback branch: they print the question, read one line, and echo the answer. That is the right tier for testing what a command *does* with an answer, and for the piped/CI path your CLI has to keep working (`echo Ada | myapp setup`).
+
+It is deliberately *not* a terminal session. Raw-mode keystrokes — arrow keys through a `select`, backspace editing, hidden `password` input, Ctrl-C — are not modeled by a byte stream and stay with the [E2E tier](#e2e-testing), which drives the binary through a real PTY. Omit `.stdin` and the command sees the process's own stdin, exactly as before.
+
+### Setting app metadata
+
+A real run fills `context.app_name` / `context.app_version` / `context.app_description` from the registry's `Config`; a `runCommand` context defaults them to `"app"` / `"unknown"` / `""`. Set them when the command — or a plugin it relies on — puts them in its output:
+
+```zig
+test "version command prints the app version" {
+    var result = try testing.runCommand(version, .{
+        .app_name = "myapp",
+        .app_version = "1.2.3",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("myapp 1.2.3\n", result.stdout);
+}
+```
+
+The values are in place *before* plugin `initContextData` hooks run, so a plugin that captures app metadata into its `ContextData` (the built-in version plugin does) sees them too. Omit a field and it keeps its default.
+
 ### API reference
 
 **`testing.runCommand(Command, config)`**
@@ -94,6 +131,10 @@ test "command respects verbose mode" {
 | `config.options` | `Command.Options` | Option values to pass |
 | `config.plugins` | derived from `Context` | Initial plugin state, e.g. `.{ .verbose = .{ .enabled = true } }`; defaults to each plugin's `ContextData` defaults |
 | `config.environ` | `?*const std.process.Environ.Map` | Environment variables the command sees via `context.environ`; defaults to empty |
+| `config.stdin` | `?[]const u8` | Input bytes the command reads via `context.stdin()` / `context.prompts()`, as a non-TTY stream that ends at EOF; omitted, the command sees the process's stdin |
+| `config.app_name` | `?[]const u8` | App name on the context (`context.app_name`), set before plugin `initContextData` runs; defaults to `"app"` |
+| `config.app_version` | `?[]const u8` | App version (`context.app_version`), set before plugin `initContextData` runs; defaults to `"unknown"` |
+| `config.app_description` | `?[]const u8` | App description (`context.app_description`), set before plugin `initContextData` runs; defaults to `""` |
 | `config.allocator` | `std.mem.Allocator` | Defaults to `std.testing.allocator` |
 
 **Returns `CommandResult`:**
@@ -160,6 +201,7 @@ test "status shows green checkmark" {
 - Does not test command routing or discovery
 - Does not test global option handling
 - Commands that call `std.process.exit()` will exit the test runner
+- `.stdin` covers line input only — raw-mode keystrokes (arrows, backspace, hidden input, Ctrl-C) need the PTY-backed E2E tier
 
 ## Integration testing
 
@@ -320,7 +362,7 @@ Masking prevents snapshots from breaking due to dynamic content like timestamps 
 - Cannot inspect internal state (only stdout, stderr, exit code)
 - No TTY — output is piped, so TTY-aware formatting won't activate
 
-## E2E testing
+## [E2E testing]($heading.id('e2e-testing'))
 
 Test interactive terminal behavior with a real pseudo-terminal (PTY). Use this for commands that prompt for input, handle signals, or adapt to terminal size.
 

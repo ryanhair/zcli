@@ -196,6 +196,62 @@ test "drives plugin context data" {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 6. Feeding stdin — line input, not a terminal session.
+// ---------------------------------------------------------------------------
+
+test "drives a line-based prompt with injected stdin" {
+    const Ctx = zcli.TestContext(&.{});
+    const Setup = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            const p = context.prompts();
+            // Returned strings come from the arena — nothing to free.
+            const name = try p.text(.{ .message = "Name:" });
+            const env = try p.text(.{ .message = "Env:", .default = "dev" });
+            try context.stdout().print("{s}@{s}\n", .{ name, env });
+        }
+    };
+
+    // `.stdin` is an in-memory, non-TTY stream that ends at EOF, so prompts take
+    // their line-based branch: one line per answer, an empty line accepting the
+    // default. Real keystroke behavior — arrows through a `select`, hidden
+    // password input, Ctrl-C — is the PTY E2E tier's job (see e2e_example.zig).
+    var result = try testing.runCommand(Setup, .{ .stdin = "ada\n\n" });
+    defer result.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "ada@dev") != null);
+}
+
+// ---------------------------------------------------------------------------
+// 7. App metadata — what a real run gets from the registry's Config.
+// ---------------------------------------------------------------------------
+
+test "injects app metadata" {
+    const Ctx = zcli.TestContext(&.{});
+    const Version = struct {
+        pub const Args = struct {};
+        pub const Options = struct {};
+
+        pub fn execute(_: Args, _: Options, context: *Ctx) !void {
+            try context.stdout().print("{s} {s}\n", .{ context.app_name, context.app_version });
+        }
+    };
+
+    // Without these the context carries its defaults ("app" / "unknown"). The
+    // values are set before plugin `initContextData` hooks run, so a plugin that
+    // captures app metadata sees them too.
+    var result = try testing.runCommand(Version, .{
+        .app_name = "myapp",
+        .app_version = "1.2.3",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("myapp 1.2.3\n", result.stdout);
+}
+
 // `zcli` is available in this example module because the `examples` build step
 // wires it in (the unit tier already depends on it). Real projects import their
 // own commands instead of defining them inline like these samples do.

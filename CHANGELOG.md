@@ -7,6 +7,23 @@ All notable changes to zcli are documented here.
 ## Unreleased
 
 ### Added
+- **`runCommand` can inject stdin.** Pass `.stdin = "Ada\n\n"` and the command
+  reads exactly those bytes through `context.stdin()` and `context.prompts()`,
+  reaching EOF afterwards instead of blocking on the real terminal — so a
+  command that asks questions is drivable in a plain in-process test. The
+  injected stream is non-TTY by construction, which is the line-based branch
+  every prompt already falls back to when stdin is redirected (the piped/CI path
+  a CLI has to keep working). Raw-mode keystrokes — arrows through a `select`,
+  hidden `password` input, Ctrl-C — are not modeled by a byte stream and remain
+  the PTY-backed E2E tier's job. Omitting `.stdin` leaves the process's own
+  stdin in place, as before.
+- **`runCommand` can set app metadata.** `.app_name`, `.app_version` and
+  `.app_description` fill the context fields a real run gets from the registry's
+  `Config`, so version-bearing output can be asserted against a real string
+  rather than the `"unknown"` placeholder. They are applied *before* plugin
+  `initContextData` hooks run, so a plugin that captures app metadata into its
+  `ContextData` (the built-in version plugin does) sees the configured values
+  too. Each field left unset keeps the context default.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
@@ -15,6 +32,11 @@ All notable changes to zcli are documented here.
   selected.
 
 ### Changed (breaking)
+- **`Stdio.stdinReader()` has been removed.** It handed out the raw
+  `std.Io.File.Reader` behind stdin, which bypasses the new `stdin_override`
+  and so would silently defeat injected input. Nothing in the framework or the
+  bundled plugins called it; use `context.stdin()` (or `Stdio.stdin()`), which
+  honours the override.
 - **The standalone `search` prompt has been removed.** Replace
   `p.search(.{ ... })` with `p.select(.{ .search = true, ... })` and
   `SearchConfig` with `SelectConfig`. Searchable single and multi-selection now
