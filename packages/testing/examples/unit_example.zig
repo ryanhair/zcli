@@ -215,10 +215,13 @@ test "drives a line-based prompt with injected stdin" {
         }
     };
 
-    // `.stdin` is an in-memory, non-TTY stream that ends at EOF, so prompts take
-    // their line-based branch: one line per answer, an empty line accepting the
-    // default. Real keystroke behavior — arrows through a `select`, hidden
-    // password input, Ctrl-C — is the PTY E2E tier's job (see e2e_example.zig).
+    // `.stdin` is an in-memory stream that ends at EOF. Prompts take their
+    // line-based branch — one line per answer, an empty line accepting the
+    // default — because context.prompts() reports non-interactive once a stream
+    // is captured or injected, so this passes the same way whether the test
+    // binary was launched from a terminal or a pipe. Real keystroke behavior —
+    // arrows through a `select`, hidden password input, Ctrl-C — is the PTY E2E
+    // tier's job (see e2e_example.zig).
     var result = try testing.runCommand(Setup, .{ .stdin = "ada\n\n" });
     defer result.deinit();
 

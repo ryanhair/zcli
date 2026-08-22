@@ -91,6 +91,8 @@ To branch rather than fail, ask `p.isInteractive()` — that is how `zcli add co
 
 Pick one per command: no guard means "this works piped", the guard means "this needs a terminal, and says so before asking".
 
+One case sets `.interactive` for you: an instance from `context.prompts()` reports non-interactive whenever the Context's stdout is captured or its stdin injected — which is what a [`runCommand` unit test]($link.page('docs/testing').unsafeRef('feeding-stdin')) does. The streams the prompt was handed decide, not the process's descriptors, so a test can't enter raw mode and read the real keyboard just because the test binary was started from a terminal. A command that guards therefore reports `error.NotInteractive` under `runCommand`, and belongs in the PTY-backed E2E tier.
+
 ## Prompts or widgets?
 
 Prompts are one-shot questions: they block, return a value, and move on — right for a wizard, a scaffold, a few sequential questions. For a persistent, laid-out, keyboard-driven surface — a live form, a dashboard — build a full-screen App from the interactive widgets instead: see [prompts vs widgets]($link.page('docs/ui').unsafeRef('choose')).

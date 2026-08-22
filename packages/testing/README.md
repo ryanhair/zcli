@@ -46,7 +46,7 @@ rendered-frame assertions) need vterm — the unit tier also needs zcli; the
 
 ## API surface
 
-- **Unit**: `runCommand(Command, .{ .args = ..., .options = ... })` → `CommandResult` (`.stdout`, `.stderr`, `.success`, `.err`, `.term`). Also configurable: `.plugins` (plugin `ContextData`), `.environ`, `.stdin` (non-TTY input bytes for `context.stdin()`/`context.prompts()` — line input, *not* a terminal session), `.app_name`/`.app_version`/`.app_description` (context app metadata, in place before plugin `initContextData` runs), `.allocator`
+- **Unit**: `runCommand(Command, .{ .args = ..., .options = ... })` → `CommandResult` (`.stdout`, `.stderr`, `.success`, `.err`, `.term`). Also configurable: `.plugins` (plugin `ContextData`), `.environ`, `.stdin` (input bytes for `context.stdin()`/`context.prompts()`; injecting it also puts prompts on their line-based branch, so a test never reaches the real terminal — keystroke behavior stays with the PTY tier), `.app_name`/`.app_version`/`.app_description` (context app metadata, in place before plugin `initContextData` runs), `.allocator`
 - **Integration**: `runSubprocess(allocator, io, exe_path, args)` → `Result` (`.stdout`, `.stderr`, `.exit_code`)
 - **Assertions**: `expectExitCode`, `expectExitCodeNot`, `expectContains`, `expectNotContains`, `expectEqualStrings`, `expectValidJson`, `expectStdoutEmpty`, `expectStderrEmpty`
 - **Snapshots**: `expectSnapshot(...)` against golden files, with `maskDynamicContent` (UUIDs, timestamps, addresses) and `stripAnsi`; update by threading `.update = true` from a build option (`zig build test -Dupdate-snapshots`)

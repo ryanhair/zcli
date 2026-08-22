@@ -153,12 +153,14 @@ fn RunConfig(comptime Command: type) type {
 /// `.args`/`.options` or the call fails to compile with "missing struct field".
 ///
 /// `.stdin` feeds the command deterministic input through `context.stdin()` and
-/// `context.prompts()`. The injected stream is a plain non-TTY byte stream that
-/// hits EOF after the supplied bytes, so it exercises the *line-based* branch
-/// every prompt falls back to when stdin isn't a terminal — one line per
-/// answer. Keystroke-level interaction (raw mode, arrow keys through a select,
-/// hidden password input) is not modeled here and belongs in the PTY-backed E2E
-/// tier, which drives a real terminal.
+/// `context.prompts()`: an in-memory stream that hits EOF after the supplied
+/// bytes rather than blocking on a terminal. Prompts take their *line-based*
+/// branch — one line per answer — because `context.prompts()` reports
+/// non-interactive once a stream is captured or injected, so the result does
+/// not depend on whether the test binary happens to have been launched from a
+/// terminal. Keystroke-level interaction (raw mode, arrow keys through a
+/// select, hidden password input) is not modeled here and belongs in the
+/// PTY-backed E2E tier, which drives a real terminal.
 ///
 /// `.app_name`/`.app_version`/`.app_description` set the app metadata the
 /// command and its plugins read off the context; each defaults to the Context's
@@ -183,11 +185,12 @@ pub fn runCommand(
     stdio.stdout_override = &stdout_aw.writer;
     stdio.stderr_override = &stderr_aw.writer;
 
-    // Injected stdin: an in-memory, non-TTY byte stream that ends at EOF once
-    // the supplied bytes are consumed. This drives the line-based branch of
-    // `context.prompts()` — a real terminal session (raw mode, arrow keys,
-    // hidden input) is the PTY E2E tier's job, not this one. Omitted, stdin
-    // stays the process's own stream, exactly as before.
+    // Injected stdin: an in-memory byte stream that ends at EOF once the
+    // supplied bytes are consumed. Setting the override is also what puts
+    // `context.prompts()` on its line-based branch (Context.promptInteractivity),
+    // so a prompt can't reach the terminal this test binary was launched from —
+    // a real terminal session is the PTY E2E tier's job. Omitted, stdin stays
+    // the process's own stream, exactly as before.
     var injected_stdin: std.Io.Reader = undefined;
     if (config.stdin) |bytes| {
         injected_stdin = .fixed(bytes);
@@ -221,9 +224,10 @@ pub fn runCommand(
     defer context.deinit();
 
     // App metadata, set *before* initPluginData below so a plugin whose
-    // initContextData captures `context.app_version` (the version plugin does)
-    // sees the configured value rather than the Context's "unknown" default.
-    // Each unset field keeps that default, so existing calls are unaffected.
+    // initContextData captures app metadata off the context (the bundled
+    // zcli_secrets plugin captures `app_name`, which namespaces stored secrets)
+    // sees the configured value rather than the Context's default. Each unset
+    // field keeps that default, so existing calls are unaffected.
     if (config.app_name) |name| context.app_name = name;
     if (config.app_version) |version| context.app_version = version;
     if (config.app_description) |description| context.app_description = description;
@@ -519,10 +523,12 @@ test "runCommand injects stdin via .stdin and ends it at EOF" {
 
 test "runCommand drives a line-based prompt end to end" {
     // The payoff case for #817: a command that asks questions through
-    // context.prompts() can be driven from a test. stdin isn't a TTY here, so
-    // the prompts take their line-based branch — one line per answer. Real
-    // keystroke behavior (raw mode, arrows, hidden input) stays with the PTY
-    // E2E tier.
+    // context.prompts() can be driven from a test. The prompt takes its
+    // line-based branch — one line per answer — because runCommand's captured
+    // stdout and injected stdin are in-memory streams, not because of what the
+    // *process* descriptors happen to be. That distinction is the whole point:
+    // this test must pass identically under `zig build test` and when the test
+    // binary is run straight from a terminal, where stdin/stdout are real TTYs.
     const Ctx = zcli.TestContext(&.{});
     const TestCommand = struct {
         pub const Args = struct {};
@@ -530,6 +536,11 @@ test "runCommand drives a line-based prompt end to end" {
 
         pub fn execute(_: Args, _: Options, context: *Ctx) !void {
             const p = context.prompts();
+            // The mechanism, asserted at its source: the instance a command is
+            // handed reports non-interactive, so every prompt on it takes the
+            // line path and none of them can reach a real terminal.
+            try std.testing.expect(!p.isInteractive());
+            try std.testing.expectError(error.NotInteractive, p.requireInteractive());
             // Arena-allocated (context.allocator): nothing to free.
             const name = try p.text(.{ .message = "Name:" });
             const nickname = try p.text(.{ .message = "Nickname:", .default = "ace" });
@@ -542,10 +553,18 @@ test "runCommand drives a line-based prompt end to end" {
     defer result.deinit();
 
     try std.testing.expect(result.success);
-    // The questions were written to the captured stdout, then the answer.
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Name:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Nickname:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "hello Ada (ace)") != null);
+    // The exact bytes of the line path: each question printed inline, the
+    // answer read, a newline after a submitted line (the defaulted one returns
+    // before it). The raw-mode branch renders through a `ui.App` instead, so
+    // matching this string at all means the line branch ran.
+    try std.testing.expectEqualStrings(
+        "? Name: \n? Nickname: (ace) hello Ada (ace)\n",
+        result.stdout,
+    );
+    // Belt and braces, independent of the exact prompt wording: the frame
+    // renderer cannot draw without escape sequences (cursor hide/move, style
+    // resets), and there is not one ESC byte in the capture.
+    try std.testing.expect(std.mem.indexOfScalar(u8, result.stdout, 0x1b) == null);
     try std.testing.expect(result.term.containsText("hello Ada (ace)"));
 }
 

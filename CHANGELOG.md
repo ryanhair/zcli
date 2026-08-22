@@ -10,20 +10,23 @@ All notable changes to zcli are documented here.
 - **`runCommand` can inject stdin.** Pass `.stdin = "Ada\n\n"` and the command
   reads exactly those bytes through `context.stdin()` and `context.prompts()`,
   reaching EOF afterwards instead of blocking on the real terminal — so a
-  command that asks questions is drivable in a plain in-process test. The
-  injected stream is non-TTY by construction, which is the line-based branch
-  every prompt already falls back to when stdin is redirected (the piped/CI path
-  a CLI has to keep working). Raw-mode keystrokes — arrows through a `select`,
-  hidden `password` input, Ctrl-C — are not modeled by a byte stream and remain
-  the PTY-backed E2E tier's job. Omitting `.stdin` leaves the process's own
-  stdin in place, as before.
+  command that asks questions is drivable in a plain in-process test, one line
+  per answer. Prompts take their line-based path because the streams the command
+  was *handed* decide, not the process's descriptors: `context.prompts()` now
+  reports non-interactive whenever an in-memory override has replaced stdout or
+  stdin (see below), so a test binary started from a terminal can no longer
+  enter raw mode and read the developer's real keyboard. Raw-mode keystrokes —
+  arrows through a `select`, hidden `password` input, Ctrl-C — are not modeled
+  by a byte stream and remain the PTY-backed E2E tier's job. Omitting `.stdin`
+  leaves the process's own stdin in place, as before.
 - **`runCommand` can set app metadata.** `.app_name`, `.app_version` and
   `.app_description` fill the context fields a real run gets from the registry's
   `Config`, so version-bearing output can be asserted against a real string
   rather than the `"unknown"` placeholder. They are applied *before* plugin
   `initContextData` hooks run, so a plugin that captures app metadata into its
-  `ContextData` (the built-in version plugin does) sees the configured values
-  too. Each field left unset keeps the context default.
+  `ContextData` sees the configured values too — the bundled secrets plugin
+  captures `app_name` there, and it is what namespaces stored secrets. Each
+  field left unset keeps the context default.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
@@ -47,8 +50,11 @@ All notable changes to zcli are documented here.
 - **`Stdio.stdinReader()` has been removed.** It handed out the raw
   `std.Io.File.Reader` behind stdin, which bypasses the new `stdin_override`
   and so would silently defeat injected input. Nothing in the framework or the
-  bundled plugins called it; use `context.stdin()` (or `Stdio.stdin()`), which
-  honours the override.
+  bundled plugins called it, but it was public API: **migrate any external
+  caller to `context.stdin()`** (or `Stdio.stdin()` directly), which returns the
+  same `*std.Io.Reader` interface and honours the override. Code that reached
+  past the interface for `std.Io.File.Reader`-specific state has no replacement
+  by design — that state is exactly what an injected stream does not have.
 - **The standalone `search` prompt has been removed.** Replace
   `p.search(.{ ... })` with `p.select(.{ .search = true, ... })` and
   `SearchConfig` with `SelectConfig`. Searchable single and multi-selection now
@@ -57,6 +63,17 @@ All notable changes to zcli are documented here.
   header.
 
 ### Fixed
+- **`context.prompts()` no longer trusts the process descriptors over its own
+  streams.** Prompts decided interactivity by probing the real stdin/stdout
+  descriptors, which say nothing about where a given Context's bytes actually
+  go. With stdout captured into a buffer (or stdin injected) the probe still saw
+  the terminal a test binary was launched from, so a prompt would enter raw
+  mode, read the developer's real keyboard, and paint frames into a buffer
+  nobody sees. `context.prompts()` now sets `.interactive = false` whenever an
+  in-memory override has replaced stdout or stdin, so the streams the prompt was
+  handed are the ones that decide. Captured stderr does not disqualify anything
+  — a full-frame prompt paints on stdout and reads stdin. Normal runs, which
+  have no overrides, still probe exactly as before.
 - **Release version policy is now one checked-in, executable contract instead of duplicated workflow snippets.** `scripts/validate-version.sh` compares the root, CLI, and core umbrella manifests; README and ROADMAP release URLs/metadata; the newest dated CHANGELOG release; an expected version or either tag shape when supplied; and an actual built `zcli --version` when supplied. CI tests that public seam against deterministic drift fixtures and runs it on a locally built CLI; the release workflow runs the same file after the staged bump and against each executable release build. The post-release phase now closes the remaining publication joins too: both tags must resolve to one commit, both source archives must download and contain the same version-consistent tree, the exact eight assets and all six signed checksums must verify, a downloaded host binary must report the release version, both site installers must match the tag, and the live shell installer must resolve the just-published CLI release.
 - **`scripts/release.sh` no longer reports a complete release as INCOMPLETE.** Its final verification sampled the live site exactly once, but Cloudflare Pages propagates assets independently and eventually — for a minute or so after a deploy the homepage and `/install.sh` routinely disagree about which build they are on, in *either* direction. The 0.24.0 deploy logged `version_ok=false install_ok=true` on its first attempt; a minute later the script caught the reverse skew and failed the installer check on a release that was in fact fine. The site checks now poll both together for up to two minutes, the same way `deploy-docs.yml`'s verify step already did — a single sample is a race, not a verdict. A failure to fetch the reference `install.sh` from the release tag is also reported as its own error now, instead of being indistinguishable from a genuine mismatch.
 - **Dependency hardening** — Nightwatch now includes its Linux raw-errno remediation, and serde.zig includes its YAML quoted-key fix. Renovate proposes review-gated dependency updates; Zig package hashes and downloaded-release checksums remain manually verified before merge.

@@ -83,7 +83,7 @@ test "command respects verbose mode" {
 }
 ```
 
-### Feeding stdin
+### [Feeding stdin]($heading.id('feeding-stdin'))
 
 `.stdin` hands the command a deterministic input stream, reachable through `context.stdin()` and `context.prompts()`. The injected stream is an in-memory, **non-TTY** byte stream that reaches EOF once your bytes run out — so a command that asks questions can be driven end to end without a subprocess:
 
@@ -98,7 +98,9 @@ test "setup asks for a name" {
 }
 ```
 
-Because stdin isn't a terminal here, prompts take their **line-based** fallback branch: they print the question, read one line, and echo the answer. That is the right tier for testing what a command *does* with an answer, and for the piped/CI path your CLI has to keep working (`echo Ada | myapp setup`).
+Prompts made through `context.prompts()` take their **line-based** branch here: they print the question, read one line, and return it. That is the right tier for testing what a command *does* with an answer, and for the piped/CI path your CLI has to keep working (`echo Ada | myapp setup`).
+
+The switch is decided by the streams the command was *handed*, not by the process's descriptors — `context.prompts()` reports `isInteractive() == false` whenever `runCommand`'s captured stdout or injected stdin is in play. So the test behaves identically under `zig build test` and when you run the test binary straight from a terminal; a prompt cannot quietly enter raw mode and read your real keyboard. (A command that guards with `try p.requireInteractive()` therefore fails with `error.NotInteractive` in a `runCommand` test — that is the guard working, and such a command belongs in the E2E tier.)
 
 It is deliberately *not* a terminal session. Raw-mode keystrokes — arrow keys through a `select`, backspace editing, hidden `password` input, Ctrl-C — are not modeled by a byte stream and stay with the [E2E tier](#e2e-testing), which drives the binary through a real PTY. Omit `.stdin` and the command sees the process's own stdin, exactly as before.
 
@@ -118,7 +120,7 @@ test "version command prints the app version" {
 }
 ```
 
-The values are in place *before* plugin `initContextData` hooks run, so a plugin that captures app metadata into its `ContextData` (the built-in version plugin does) sees them too. Omit a field and it keeps its default.
+The values are in place *before* plugin `initContextData` hooks run, so a plugin that captures app metadata into its `ContextData` sees them too — the bundled secrets plugin captures `app_name` there, which is what namespaces your stored secrets. Omit a field and it keeps its default.
 
 ### API reference
 
@@ -131,7 +133,7 @@ The values are in place *before* plugin `initContextData` hooks run, so a plugin
 | `config.options` | `Command.Options` | Option values to pass |
 | `config.plugins` | derived from `Context` | Initial plugin state, e.g. `.{ .verbose = .{ .enabled = true } }`; defaults to each plugin's `ContextData` defaults |
 | `config.environ` | `?*const std.process.Environ.Map` | Environment variables the command sees via `context.environ`; defaults to empty |
-| `config.stdin` | `?[]const u8` | Input bytes the command reads via `context.stdin()` / `context.prompts()`, as a non-TTY stream that ends at EOF; omitted, the command sees the process's stdin |
+| `config.stdin` | `?[]const u8` | Input bytes the command reads via `context.stdin()` / `context.prompts()`, as an in-memory stream that ends at EOF; also puts prompts on their line-based branch. Omitted, the command sees the process's stdin |
 | `config.app_name` | `?[]const u8` | App name on the context (`context.app_name`), set before plugin `initContextData` runs; defaults to `"app"` |
 | `config.app_version` | `?[]const u8` | App version (`context.app_version`), set before plugin `initContextData` runs; defaults to `"unknown"` |
 | `config.app_description` | `?[]const u8` | App description (`context.app_description`), set before plugin `initContextData` runs; defaults to `""` |

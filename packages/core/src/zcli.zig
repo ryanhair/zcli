@@ -337,11 +337,14 @@ pub const Stdio = struct {
     stdout_override: ?*std.Io.Writer = null,
     stderr_override: ?*std.Io.Writer = null,
     /// In-memory stand-in for the process's stdin, so an in-process test can
-    /// feed a command deterministic bytes (`runCommand`'s `.stdin`). Non-TTY by
-    /// construction: it is a plain byte stream that ends at EOF, which is what
-    /// the line-based branch of every prompt reads. Keystroke-level behavior
-    /// (raw mode, arrow keys) still needs the PTY E2E tier, which drives a real
-    /// terminal rather than this reader.
+    /// feed a command deterministic bytes (`runCommand`'s `.stdin`): a plain
+    /// byte stream that ends at EOF instead of blocking on a terminal.
+    ///
+    /// Setting this also takes `context.prompts()` off the interactive path
+    /// (see `Context.promptInteractivity`) — an in-memory reader can deliver
+    /// bytes but never keystrokes, whatever the process's own descriptors say.
+    /// Keystroke-level behavior (raw mode, arrow keys) therefore still needs
+    /// the PTY E2E tier, which drives a real terminal rather than this reader.
     stdin_override: ?*std.Io.Reader = null,
 
     /// Initialize in place; `self` must already be at its final address.
