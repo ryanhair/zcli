@@ -43,7 +43,11 @@ zig build examples          # binaries land in zig-out/bin/prompts-<name>
 - **Non-TTY fallback.** All prompts fall back to plain line-based input when
   stdin isn't a TTY, so the examples also work when piped
   (e.g. `printf '2\n' | zig-out/bin/prompts-select`). The live-only features
-  (`preview`, custom cursor glyphs) are simply skipped in that mode.
+  (`preview`, custom cursor glyphs) are simply skipped in that mode. A command
+  with no meaningful piped behavior opts out of the fallback with one
+  `try p.requireInteractive()` before its first question — it returns
+  `error.NotInteractive` unless stdin and stdout are both terminals. The
+  examples deliberately keep the fallback so they stay pipeable.
 - **Searchable lists.** Set `.search = true` on `select` or `multiSelect`.
   Printable characters other than ASCII Space filter case-insensitively;
   Backspace edits the query, Up/Down navigate, and the Space key selects or

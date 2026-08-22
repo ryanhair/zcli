@@ -19,6 +19,14 @@
 //!
 //! In a zcli command, `context.prompts()` returns an instance pre-wired to the
 //! command's streams, allocator, and theme.
+//!
+//! The line-based fallback is the default, so one command works both at a
+//! terminal and in a pipe. A command that has no meaningful non-interactive
+//! behavior guards once, up front, instead:
+//!
+//! ```zig
+//! try p.requireInteractive(); // error.NotInteractive off a terminal
+//! ```
 
 writer: *std.Io.Writer,
 reader: *std.Io.Reader,
@@ -28,6 +36,12 @@ allocator: std.mem.Allocator,
 /// Theme + terminal capabilities for styling; zcli commands carry this in
 /// `context.theme` (`context.prompts()` wires it up).
 theme: ThemeContext = default_style,
+/// Overrides interactive detection for every prompt on this instance and for
+/// `requireInteractive`. Left `null` (the default), the instance probes the
+/// process streams — see `isInteractive`. Set `false` to force the line-based
+/// path (a `--no-input` flag belongs here); set `true` only when you know the
+/// streams are a terminal the probe can't see.
+interactive: ?bool = null,
 
 pub const text = text_prompt.text;
 pub const confirm = confirm_prompt.confirm;
@@ -101,6 +115,34 @@ pub const editor_prompt = @import("editor.zig");
 /// the interruption means (go back, cancel, open help, …).
 pub const PromptError = error{Interrupted};
 
+/// Returned by `requireInteractive` when the streams can't drive a prompt.
+pub const GuardError = error{NotInteractive};
+
+/// Whether prompts on this instance will take the live terminal path. This is
+/// the single decision every prompt makes before it asks anything: with
+/// `interactive` unset it probes the process streams, and both ends have to be
+/// terminals — stdin to read keystrokes in raw mode, stdout so the rendered
+/// frame lands on the screen instead of a redirected file.
+pub fn isInteractive(p: Prompts) bool {
+    return p.interactive orelse terminal.isInteractiveTty();
+}
+
+/// The guard for an interactive-only command: one call before the first
+/// question, and a command that cannot work off a terminal fails cleanly with
+/// `error.NotInteractive` instead of half-asking a pipe.
+///
+///     const p = context.prompts();
+///     try p.requireInteractive();
+///     const name = try p.text(.{ .message = "Name:" });
+///
+/// Opt in only when there is no sensible non-interactive answer. Commands that
+/// intentionally support piped input skip the guard and keep the line-based
+/// fallback every prompt already provides — that fallback is the default, and
+/// this call is the one documented way to turn it off.
+pub fn requireInteractive(p: Prompts) GuardError!void {
+    if (!p.isInteractive()) return error.NotInteractive;
+}
+
 /// Whether `key` is one of the caller's interrupt keys.
 pub fn isInterrupt(key: terminal.Key, keys: []const terminal.Key) bool {
     for (keys) |k| {
@@ -172,6 +214,44 @@ pub const EditorConfig = editor_prompt.EditorConfig;
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+/// A Prompts value over dead streams — enough to answer the detection
+/// questions, which never touch the writer or the reader.
+fn testInstance(interactive: ?bool) Prompts {
+    const Streams = struct {
+        var out: [1]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&out);
+        var reader: std.Io.Reader = .fixed("");
+    };
+    return .{
+        .writer = &Streams.writer,
+        .reader = &Streams.reader,
+        .allocator = std.testing.allocator,
+        .interactive = interactive,
+    };
+}
+
+test "requireInteractive passes when the streams can drive a prompt" {
+    const p = testInstance(true);
+    try std.testing.expect(p.isInteractive());
+    try p.requireInteractive();
+}
+
+test "requireInteractive returns NotInteractive when they cannot" {
+    const p = testInstance(false);
+    try std.testing.expect(!p.isInteractive());
+    try std.testing.expectError(error.NotInteractive, p.requireInteractive());
+}
+
+test "detection probes the process streams when unset" {
+    // Both ends must be terminals; the test runner's are not, so the guard
+    // fails here exactly as it would in a pipe or in CI.
+    const p = testInstance(null);
+    try std.testing.expectEqual(terminal.isInteractiveTty(), p.isInteractive());
+    if (!terminal.isInteractiveTty()) {
+        try std.testing.expectError(error.NotInteractive, p.requireInteractive());
+    }
 }
 
 test "appendCodepoint encodes multibyte UTF-8 and returns the echo slice" {

@@ -248,8 +248,6 @@ const topics = [_]Topic{
         \\
         \\`context.prompts()` returns a `zcli.Prompts` instance pre-wired to the
         \\command's streams, allocator, and theme; every prompt is a method on it.
-        \\On non-interactive stdin, handle the piped case yourself (e.g. fall back
-        \\to a flag) rather than blocking.
         \\
         \\  const p = context.prompts();
         \\
@@ -257,6 +255,21 @@ const topics = [_]Topic{
         \\  const ok   = try p.confirm(.{ .message = "Proceed?", .default = true });
         \\  const idx  = try p.select(.{ .message = "Pick:", .choices = &.{ "a", "b" } });
         \\  const pw   = try p.password(.{ .message = "Token:" }); // hidden
+        \\
+        \\Off a terminal every prompt falls back to plain line input with the same
+        \\return value, so a piped or CI run keeps working. Decide once per command
+        \\which of the two you want:
+        \\
+        \\  // supports piped input: no guard, the fallback answers
+        \\  // needs a terminal: guard once, before asking anything
+        \\  try p.requireInteractive();   // error.NotInteractive when piped
+        \\  // want to branch instead of fail:
+        \\  if (!p.isInteractive()) return nonInteractivePath(...);
+        \\
+        \\`requireInteractive` fails unless stdin AND stdout are terminals — the
+        \\same check the prompts make. Don't hand-roll a TTY test. Setting
+        \\`.interactive = false` on the instance forces the line path for a
+        \\`--no-input` flag.
         \\
         \\Progress bars/spinners: `context.progress()` (or `zcli.Progress`).
         \\
