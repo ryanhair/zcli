@@ -50,7 +50,7 @@ test "fetchWidget sends the token" {
     var widget = try fetchWidget(allocator, std.testing.io, fixture.baseUrl(), "secret-token", 7);
     defer widget.deinit(allocator);
 
-    const sent = fixture.requests();
+    const sent = try fixture.requests();
     try std.testing.expectEqualStrings("/widgets/7", sent[0].target);
     try std.testing.expectEqualStrings("Bearer secret-token", sent[0].header("authorization").?);
 }

@@ -481,21 +481,31 @@ test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing"));
 
 ### Writing an adapter test
 
+The code below is `packages/testing/examples/http_fixture_example.zig` verbatim (minus its third test), and it runs on every `zig build test` — so it can't drift from the API it documents.
+
 ```zig
 const std = @import("std");
 const zcli = @import("zcli");
 const HttpFixture = @import("zcli-testing").HttpFixture;
 
+// ---------------------------------------------------------------------------
+// The code under test: a small adapter over an HTTP API.
+// ---------------------------------------------------------------------------
+
+/// The domain type the rest of the CLI works with. It owns its strings, so it
+/// outlives the HTTP response they were parsed out of.
 const Widget = struct {
     id: u32,
     name: []u8,
 
     fn deinit(self: *Widget, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        self.* = undefined;
     }
 };
 
-/// The code under test: it owns the URL layout and the auth header.
+/// Fetch one widget. Exactly the shape of adapter a CLI command would call:
+/// it owns the URL layout and the auth header, and it hands back a domain type.
 fn fetchWidget(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -519,16 +529,23 @@ fn fetchWidget(
 
     if (response.status != .ok) return error.WidgetFetchFailed;
 
-    // Parsed strings can point into `response.body`, so copy what the caller keeps.
+    // Parsed strings can point straight into `response.body`, so copy anything
+    // the caller keeps before the response (and its body) goes away.
     var parsed = try response.json(struct { id: u32, name: []const u8 }, allocator);
     defer parsed.deinit();
     return .{ .id = parsed.value.id, .name = try allocator.dupe(u8, parsed.value.name) };
 }
 
+// ---------------------------------------------------------------------------
+// 1. The happy path: script a response, assert on the request that produced it.
+// ---------------------------------------------------------------------------
+
 test "fetchWidget sends the token and parses the payload" {
     const allocator = std.testing.allocator;
 
-    // Binds an ephemeral loopback port and starts serving immediately.
+    // `init` binds an ephemeral loopback port and starts serving immediately.
+    // `deinit` stops the serving tasks, closes the socket, and frees every byte
+    // the fixture handed out — including the URLs from `url()`.
     var fixture = try HttpFixture.init(allocator, std.testing.io, .{});
     defer fixture.deinit();
 
@@ -541,29 +558,33 @@ test "fetchWidget sends the token and parses the payload" {
     var widget = try fetchWidget(allocator, std.testing.io, fixture.baseUrl(), "secret-token", 7);
     defer widget.deinit(allocator);
 
+    try std.testing.expectEqual(@as(u32, 7), widget.id);
     try std.testing.expectEqualStrings("sprocket", widget.name);
 
-    // Assert on what the adapter actually put on the wire.
-    const sent = fixture.requests();
+    // Now assert on what the adapter actually put on the wire.
+    const sent = try fixture.requests();
     try std.testing.expectEqual(@as(usize, 1), sent.len);
     try std.testing.expectEqual(std.http.Method.GET, sent[0].method);
     try std.testing.expectEqualStrings("/widgets/7", sent[0].target);
     try std.testing.expectEqualStrings("Bearer secret-token", sent[0].header("authorization").?);
 }
 
+// ---------------------------------------------------------------------------
+// 2. The failure path: script an error status and check the adapter's mapping.
+// ---------------------------------------------------------------------------
+
 test "fetchWidget turns a non-200 into a domain error" {
-    var fixture = try HttpFixture.init(std.testing.allocator, std.testing.io, .{});
+    const allocator = std.testing.allocator;
+
+    var fixture = try HttpFixture.init(allocator, std.testing.io, .{});
     defer fixture.deinit();
 
     try fixture.respondWith(.{ .status = .not_found, .body = "{\"error\":\"no such widget\"}" });
 
-    try std.testing.expectError(error.WidgetFetchFailed, fetchWidget(
-        std.testing.allocator,
-        std.testing.io,
-        fixture.baseUrl(),
-        "secret-token",
-        404,
-    ));
+    try std.testing.expectError(
+        error.WidgetFetchFailed,
+        fetchWidget(allocator, std.testing.io, fixture.baseUrl(), "secret-token", 404),
+    );
 }
 ```
 
@@ -576,7 +597,7 @@ test "fetchWidget turns a non-200 into a domain error" {
 | `fixture.respondWith(.{ .status, .headers, .body })` | Queue one response. All bytes are copied. |
 | `fixture.baseUrl()` | `http://127.0.0.1:<port>`, no trailing slash. Requesting it directly targets `/`. |
 | `fixture.url("/path")` | `baseUrl()` joined with `path`. Fixture-owned; freed by `deinit`. |
-| `fixture.requests()` | Every request served so far, oldest first. |
+| `try fixture.requests()` | A snapshot of every request served so far, oldest first. Fixture-owned; the *previous* call's slice is invalidated by the next one. |
 
 Each recorded request carries `method`, `target` (the request line's path and query), `headers`, `body`, `body_truncated`, and a `header(name)` lookup that is case-insensitive.
 
@@ -593,7 +614,7 @@ Queued responses are served in the order they were queued, one per request, so a
 
 - Plain HTTP only. TLS is out of scope; point the adapter at the fixture's `http://` URL.
 - The fixture answers every request from the same queue — it does not route on method or path. Assert on `requests()` instead.
-- The slice from `requests()` is invalidated when the fixture serves another request, so read it once the work under test has finished.
+- `requests()` returns a snapshot taken at the moment of the call: requests served afterwards don't appear in it, and calling it again invalidates the slice the previous call returned. Holding a snapshot across further requests is safe — the fixture's own recording growing behind it can't move it.
 - The allocator must be usable from more than one thread (`std.testing.allocator` is), because the serving tasks run concurrently with your test.
 
 ## Recommended testing strategy

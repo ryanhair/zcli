@@ -91,7 +91,7 @@ test "fetchWidget sends the token and parses the payload" {
     try std.testing.expectEqualStrings("sprocket", widget.name);
 
     // Now assert on what the adapter actually put on the wire.
-    const sent = fixture.requests();
+    const sent = try fixture.requests();
     try std.testing.expectEqual(@as(usize, 1), sent.len);
     try std.testing.expectEqual(std.http.Method.GET, sent[0].method);
     try std.testing.expectEqualStrings("/widgets/7", sent[0].target);
@@ -135,5 +135,5 @@ test "queued responses are served in order" {
         try std.testing.expectEqualStrings(name, widget.name);
     }
 
-    try std.testing.expectEqual(@as(usize, 2), fixture.requests().len);
+    try std.testing.expectEqual(@as(usize, 2), (try fixture.requests()).len);
 }

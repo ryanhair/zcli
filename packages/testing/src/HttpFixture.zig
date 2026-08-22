@@ -21,7 +21,7 @@
 //!
 //!     // ... drive the code under test against fixture.url("/widgets") ...
 //!
-//!     const sent = fixture.requests();
+//!     const sent = try fixture.requests();
 //!     try std.testing.expectEqual(@as(usize, 1), sent.len);
 //!     try std.testing.expectEqual(std.http.Method.GET, sent[0].method);
 //!     try std.testing.expectEqualStrings("/widgets", sent[0].target);
@@ -114,6 +114,11 @@ recorded: std.ArrayList(Request),
 /// Strings handed out by `url`, freed with the fixture.
 urls: std.ArrayList([]u8),
 
+/// Backing store for the slice `requests` hands out. Only the calling task ever
+/// touches it, so a serving task appending to `recorded` cannot move the
+/// caller's slice out from under it. Not guarded by `mutex` for that reason.
+snapshot: std.ArrayList(Request),
+
 /// Latched by `deinit` so a serving task whose cancelation was swallowed by a
 /// socket read still leaves its accept loop instead of blocking again.
 shutting_down: std.atomic.Value(bool),
@@ -151,6 +156,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options) InitErro
         .queue_pos = 0,
         .recorded = .empty,
         .urls = .empty,
+        .snapshot = .empty,
         .shutting_down = .init(false),
         .tasks = .init,
     };
@@ -190,6 +196,8 @@ pub fn deinit(self: *HttpFixture) void {
 
     for (self.recorded.items) |request| freeRequest(allocator, request);
     self.recorded.deinit(allocator);
+    // Snapshot entries only borrow what `recorded` owns, so just the array goes.
+    self.snapshot.deinit(allocator);
 
     for (self.urls.items) |u| allocator.free(u);
     self.urls.deinit(allocator);
@@ -229,12 +237,23 @@ pub fn respondWith(self: *HttpFixture, response: Response) std.mem.Allocator.Err
     try self.queue.append(self.allocator, owned);
 }
 
-/// Every request served so far, oldest first. The slice is invalidated when the
-/// fixture serves another request, so read it once the work under test is done.
-pub fn requests(self: *HttpFixture) []const Request {
+/// A snapshot of every request served so far, oldest first.
+///
+/// The array is fixture-owned and freed by `deinit`; the strings inside each
+/// `Request` live until `deinit` too. It is a snapshot, not a view: requests
+/// served after this call do not appear in it, and the *previous* call's slice
+/// is invalidated by this one. Returns `error.OutOfMemory` only if the snapshot
+/// array cannot grow.
+pub fn requests(self: *HttpFixture) std.mem.Allocator.Error![]const Request {
     self.mutex.lockUncancelable(self.io);
     defer self.mutex.unlock(self.io);
-    return self.recorded.items;
+
+    // Copying under the lock is what makes the result safe to hold: `recorded`
+    // can be appended to (and reallocated) by a serving task the moment the lock
+    // is dropped, but `snapshot` is the calling task's alone.
+    self.snapshot.clearRetainingCapacity();
+    try self.snapshot.appendSlice(self.allocator, self.recorded.items);
+    return self.snapshot.items;
 }
 
 // ============================================================================
@@ -245,9 +264,17 @@ pub fn requests(self: *HttpFixture) []const Request {
 /// `Options.concurrency`.
 fn serve(self: *HttpFixture) std.Io.Cancelable!void {
     while (!self.shutting_down.load(.acquire)) {
-        // Every accept failure — `error.Canceled` at teardown included — retires
-        // this task; there is no state left to unwind.
-        var stream = self.server.accept(self.io) catch return;
+        var stream = self.server.accept(self.io) catch |err| switch (err) {
+            // A peer that hung up between its SYN and this accept says nothing
+            // about the listener. Retiring the task on it would shrink the pool
+            // one aborted dial at a time until nothing was left to serve the
+            // next request, so keep going — the loop's shutdown check still
+            // bounds this.
+            error.ConnectionAborted, error.WouldBlock => continue,
+            // Anything else — `error.Canceled` at teardown included — retires
+            // this task; there is no state left to unwind.
+            else => return,
+        };
         defer stream.close(self.io);
         self.serveConnection(&stream);
     }
@@ -368,9 +395,11 @@ fn dupeHeaderSlice(
     allocator: std.mem.Allocator,
     headers: []const std.http.Header,
 ) std.mem.Allocator.Error![]const std.http.Header {
-    var out: std.ArrayList(std.http.Header) = .empty;
+    // Capacity up front, so the copy is stored by an append that cannot fail —
+    // a duplicated header is never left owned by nobody.
+    var out: std.ArrayList(std.http.Header) = try .initCapacity(allocator, headers.len);
     errdefer freeHeaderList(allocator, &out);
-    for (headers) |h| try out.append(allocator, try dupeHeader(allocator, h));
+    for (headers) |h| out.appendAssumeCapacity(try dupeHeader(allocator, h));
     return out.toOwnedSlice(allocator);
 }
 
@@ -381,7 +410,13 @@ fn dupeHeaders(
     var it = iterator;
     var out: std.ArrayList(std.http.Header) = .empty;
     errdefer freeHeaderList(allocator, &out);
-    while (it.next()) |h| try out.append(allocator, try dupeHeader(allocator, h));
+    while (it.next()) |h| {
+        // The iterator gives no count, so capacity can't be reserved: hold the
+        // copy under its own errdefer until the list has taken ownership.
+        const owned = try dupeHeader(allocator, h);
+        errdefer freeHeader(allocator, owned);
+        try out.append(allocator, owned);
+    }
     return out.toOwnedSlice(allocator);
 }
 
@@ -391,18 +426,17 @@ fn dupeHeader(allocator: std.mem.Allocator, header: std.http.Header) std.mem.All
     return .{ .name = name, .value = try allocator.dupe(u8, header.value) };
 }
 
+fn freeHeader(allocator: std.mem.Allocator, header: std.http.Header) void {
+    allocator.free(header.name);
+    allocator.free(header.value);
+}
+
 fn freeHeaders(allocator: std.mem.Allocator, headers: []const std.http.Header) void {
-    for (headers) |h| {
-        allocator.free(h.name);
-        allocator.free(h.value);
-    }
+    for (headers) |h| freeHeader(allocator, h);
     allocator.free(headers);
 }
 
 fn freeHeaderList(allocator: std.mem.Allocator, list: *std.ArrayList(std.http.Header)) void {
-    for (list.items) |h| {
-        allocator.free(h.name);
-        allocator.free(h.value);
-    }
+    for (list.items) |h| freeHeader(allocator, h);
     list.deinit(allocator);
 }

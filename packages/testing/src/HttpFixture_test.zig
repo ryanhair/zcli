@@ -94,7 +94,38 @@ test "serves queued responses in order, then reports the queue is exhausted" {
     try testing.expectEqual(HttpFixture.unscripted_status, exhausted.status);
     try testing.expectEqualStrings(HttpFixture.unscripted_body, exhausted.body);
 
-    try testing.expectEqual(@as(usize, 4), fixture.requests().len);
+    try testing.expectEqual(@as(usize, 4), (try fixture.requests()).len);
+}
+
+test "a snapshot from requests() survives later requests" {
+    var fixture = try HttpFixture.init(testing.allocator, testing.io, .{});
+    defer fixture.deinit();
+
+    for (0..8) |_| try fixture.respondWith(.{ .body = "ok" });
+
+    var client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer client.deinit();
+
+    const url = try fixture.url("/snapshot");
+    {
+        var first = try fetch(&client, url, .{});
+        defer first.deinit();
+    }
+
+    // Held across seven more requests, each of which appends to the fixture's
+    // own recording and will grow (and move) its backing array. The snapshot is
+    // the caller's, so it must neither move nor grow.
+    const held = try fixture.requests();
+    try testing.expectEqual(@as(usize, 1), held.len);
+
+    for (0..7) |_| {
+        var later = try fetch(&client, url, .{});
+        defer later.deinit();
+    }
+
+    try testing.expectEqual(@as(usize, 1), held.len);
+    try testing.expectEqualStrings("/snapshot", held[0].target);
+    try testing.expectEqual(@as(usize, 8), (try fixture.requests()).len);
 }
 
 test "records method, target, headers and body" {
@@ -118,7 +149,7 @@ test "records method, target, headers and body" {
     defer response.deinit();
     try testing.expectEqual(std.http.Status.ok, response.status);
 
-    const sent = fixture.requests();
+    const sent = try fixture.requests();
     try testing.expectEqual(@as(usize, 1), sent.len);
     try testing.expectEqual(std.http.Method.POST, sent[0].method);
     try testing.expectEqualStrings("/widgets?page=2", sent[0].target);
@@ -182,7 +213,7 @@ test "requesting the base URL directly targets /" {
     var response = try fetch(&client, fixture.baseUrl(), .{});
     defer response.deinit();
     try testing.expectEqualStrings("root", response.body);
-    try testing.expectEqualStrings("/", fixture.requests()[0].target);
+    try testing.expectEqualStrings("/", (try fixture.requests())[0].target);
 }
 
 test "a request body beyond the recording bound is truncated, not buffered whole" {
@@ -204,7 +235,7 @@ test "a request body beyond the recording bound is truncated, not buffered whole
     defer response.deinit();
     try testing.expectEqualStrings("ok", response.body);
 
-    const sent = fixture.requests();
+    const sent = try fixture.requests();
     try testing.expect(sent[0].body_truncated);
     try testing.expectEqualStrings(payload[0..16], sent[0].body);
 }
@@ -227,7 +258,7 @@ test "a request body that exactly fills the recording bound is not flagged trunc
     });
     defer response.deinit();
 
-    const sent = fixture.requests();
+    const sent = try fixture.requests();
     try testing.expect(!sent[0].body_truncated);
     try testing.expectEqualStrings(payload, sent[0].body);
 }
@@ -264,7 +295,33 @@ test "overlapping requests are served concurrently" {
 
     try testing.expectEqual(std.http.Status.ok, status_a.?);
     try testing.expectEqual(std.http.Status.ok, status_b.?);
-    try testing.expectEqual(@as(usize, 2), fixture.requests().len);
+    try testing.expectEqual(@as(usize, 2), (try fixture.requests()).len);
+}
+
+test "connections that die without sending a request don't drain the serving pool" {
+    // One serving task, so anything that retires it takes the whole fixture
+    // down with it — the failure mode this guards is a pool that shrinks one
+    // aborted dial at a time until later requests hang.
+    var fixture = try HttpFixture.init(testing.allocator, testing.io, .{ .concurrency = 1 });
+    defer fixture.deinit();
+
+    try fixture.respondWith(.{ .body = "still here" });
+
+    const uri = try std.Uri.parse(fixture.baseUrl());
+    const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", uri.port.?);
+
+    // Dial and hang up without saying a word, repeatedly.
+    for (0..16) |_| {
+        const stream = try address.connect(testing.io, .{ .mode = .stream });
+        stream.close(testing.io);
+    }
+
+    var client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer client.deinit();
+
+    var response = try fetch(&client, try fixture.url("/after"), .{});
+    defer response.deinit();
+    try testing.expectEqualStrings("still here", response.body);
 }
 
 test "a fixture that never serves a request tears down cleanly" {
