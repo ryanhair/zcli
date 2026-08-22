@@ -14,6 +14,18 @@ All notable changes to zcli are documented here.
   also accepts Space like Enter; filtered-out multi-select choices remain
   selected.
 
+- **An interactive-only prompt guard.** `try p.requireInteractive()` before a
+  prompt sequence fails with `error.NotInteractive` — before anything is asked —
+  unless stdin and stdout are both terminals, which is what a command whose
+  whole job is the conversation wants instead of a line-based fallback that
+  answers questions the user never saw. `p.isInteractive()` asks the same
+  question without erroring, for commands that branch rather than fail, and
+  setting `.interactive` on a `Prompts` instance overrides the detection for
+  every prompt made through it (wire a `--no-input` flag to `false`). The guard
+  reads the same decision the prompts themselves make, so its verdict is exactly
+  what the next prompt would have done. Prompts without the guard are unchanged:
+  the non-TTY line fallback stays the default.
+
 ### Changed (breaking)
 - **The standalone `search` prompt has been removed.** Replace
   `p.search(.{ ... })` with `p.select(.{ .search = true, ... })` and

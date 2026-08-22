@@ -1,7 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const Context = @import("command_registry").Context;
-const Prompts = zcli.Prompts;
 
 const wizard = @import("_wizard.zig");
 const generate = @import("_generate.zig");
@@ -51,7 +50,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
     // Interactive on a TTY, classic skeleton when piped. Args and options are
     // added afterward with `add arg`/`add option` (ADR-0005) or, interactively,
     // through the wizard's own prompts.
-    if (!Prompts.terminal.isStdinTty()) {
+    if (!context.prompts().isInteractive()) {
         return skeleton(arena, context, args, options);
     }
 

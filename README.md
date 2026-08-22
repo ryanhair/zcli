@@ -190,7 +190,10 @@ and unicode-correct editing. Set `.search = true` on `select` or `multiSelect`
 for a searchable list. Plain `select` accepts Space like Enter. In searchable
 lists, printable characters other than ASCII Space filter; the Space key
 selects or toggles instead of becoming query text. Every prompt falls back to
-plain line input when stdin isn't a TTY, so scripts and pipes keep working.
+plain line input when stdin isn't a TTY, so scripts and pipes keep working — and
+a command that genuinely needs a terminal opts out of that fallback with one
+`try p.requireInteractive()`, which fails with `error.NotInteractive` before any
+question is asked.
 
 ```zig
 // In a zcli command — pre-wired to the command's streams, allocator, and theme.

@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Interactive prompts",
-.description = "Seven primary prompt types — text, confirm, select, multiSelect, password, number, editor — themed, resize-aware, interrupt-friendly, and automatically degrading to line input when stdin isn't a TTY.",
+.description = "Seven primary prompt types — text, confirm, select, multiSelect, password, number, editor — themed, resize-aware, interrupt-friendly, automatically degrading to line input when stdin isn't a TTY, with a one-call guard for commands that need a terminal.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -68,6 +68,28 @@ Every prompt degrades to a line-based equivalent with the **same return type and
 | `select` | arrow-key highlighted list; Enter or Space selects | numbered list, reads a number |
 | `multiSelect` | Space-toggle list | prints the list, reads selections |
 | `editor` | opens `$EDITOR` | reads remaining stdin |
+
+## Fallback, or interactive-only
+
+The fallback above is the default, and for most commands it is the right answer: one code path serves a terminal, a pipe, and CI.
+
+Some commands have nothing sensible to do off a terminal — a wizard whose whole job is the conversation, or a prompt whose line fallback would silently accept something destructive. Those guard once, before the first question:
+
+```zig
+const p = context.prompts();
+
+// One documented call, up front — nothing is asked if this fails.
+try p.requireInteractive(); // error.NotInteractive when piped
+
+const name = try p.text(.{ .message = "Project name:" });
+const ok = try p.confirm(.{ .message = "Create it?" });
+```
+
+`requireInteractive` returns `error.NotInteractive` unless **both** stdin and stdout are terminals: stdin so keystrokes can be read in raw mode, stdout so the rendered frame lands on the screen instead of a redirected file. It is the same check each prompt makes, so the guard's verdict is exactly what the next prompt would have done — no second detection to keep in sync.
+
+To branch rather than fail, ask `p.isInteractive()` — that is how `zcli add command` scaffolds a plain skeleton when its stdin is piped and runs the wizard when it isn't. And setting `.interactive` on the instance overrides the detection for that instance, guard and prompts alike; wire a `--no-input` flag to `false` to make a whole command non-interactive.
+
+Pick one per command: no guard means "this works piped", the guard means "this needs a terminal, and says so before asking".
 
 ## Prompts or widgets?
 
