@@ -102,7 +102,9 @@ Prompts made through `context.prompts()` take their **line-based** branch here: 
 
 The switch is decided by the streams the command was *handed*, not by the process's descriptors — `context.prompts()` reports `isInteractive() == false` whenever `runCommand`'s captured stdout or injected stdin is in play. So the test behaves identically under `zig build test` and when you run the test binary straight from a terminal; a prompt cannot quietly enter raw mode and read your real keyboard. (A command that guards with `try p.requireInteractive()` therefore fails with `error.NotInteractive` in a `runCommand` test — that is the guard working, and such a command belongs in the E2E tier.)
 
-It is deliberately *not* a terminal session. Raw-mode keystrokes — arrow keys through a `select`, backspace editing, hidden `password` input, Ctrl-C — are not modeled by a byte stream and stay with the [E2E tier](#e2e-testing), which drives the binary through a real PTY. Omit `.stdin` and the command sees the process's own stdin, exactly as before.
+It is deliberately *not* a terminal session. Raw-mode keystrokes — arrow keys through a `select`, backspace editing, hidden `password` input, Ctrl-C — are not modeled by a byte stream and stay with the [E2E tier](#e2e-testing), which drives the binary through a real PTY.
+
+Omit `.stdin` and the command sees the process's own stdin, exactly as before. Prompts still take the line branch (stdout is captured either way) and still cannot enter raw mode — but the line they read comes from the real stdin, which at a terminal means the test blocks until someone types. Give any command that prompts an explicit `.stdin`.
 
 ### Setting app metadata
 

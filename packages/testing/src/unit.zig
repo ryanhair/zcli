@@ -188,9 +188,12 @@ pub fn runCommand(
     // Injected stdin: an in-memory byte stream that ends at EOF once the
     // supplied bytes are consumed. Setting the override is also what puts
     // `context.prompts()` on its line-based branch (Context.promptInteractivity),
-    // so a prompt can't reach the terminal this test binary was launched from —
-    // a real terminal session is the PTY E2E tier's job. Omitted, stdin stays
-    // the process's own stream, exactly as before.
+    // so no prompt can enter raw mode over the terminal this test binary was
+    // launched from — and with the reader injected too, the line path reads
+    // these bytes rather than that terminal. A real terminal session is the PTY
+    // E2E tier's job. Omitted, stdin stays the process's own stream, exactly as
+    // before: still no raw mode (stdout is captured), but a prompting command
+    // would then read — and block on — the real stdin, so give one `.stdin`.
     var injected_stdin: std.Io.Reader = undefined;
     if (config.stdin) |bytes| {
         injected_stdin = .fixed(bytes);
@@ -625,9 +628,10 @@ test "runCommand injects app metadata via .app_name/.app_version/.app_descriptio
 }
 
 test "runCommand app metadata is set before plugin initContextData runs" {
-    // The ordering that makes #818 useful: plugins capture app metadata off the
-    // context in their init hook (zcli_version does exactly this), so the
-    // injected values must already be in place when initPluginData runs.
+    // The ordering that makes #818 useful: a plugin can capture app metadata off
+    // the context in its init hook (the bundled zcli_secrets plugin captures
+    // `app_name` there — it is what namespaces stored secrets), so the injected
+    // values must already be in place when initPluginData runs.
     const CapturePlugin = struct {
         pub const plugin_id = "capture";
         pub const ContextData = struct {
