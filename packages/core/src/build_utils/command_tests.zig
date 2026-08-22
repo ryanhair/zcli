@@ -34,11 +34,10 @@ const PluginInfo = types.PluginInfo;
 ///
 /// Each distinct `shared_modules` module is *also* compiled as a test root, so
 /// the helper logic commands delegate to is covered by the same `zig build
-/// test` without a second hand-written test target per module. The module is
-/// used exactly as the project supplied it — its imports and build
-/// configuration are the ones the commands see at runtime — except that a
-/// target/optimize the project left unset (fine for a module that is only ever
-/// imported, illegal for a test root) is filled in from `config`. Two names
+/// test` without a second hand-written test target per module. The project's
+/// module is never modified: a mirror of it roots the test compile, carrying
+/// its imports and build configuration, with only the target/optimize a test
+/// root cannot inherit completed from `config` (see `testRootFor`). Two names
 /// pointing at one module yield one test root, not two.
 ///
 /// `exe` is the project's real executable (the one built by `generate()`). The
@@ -131,28 +130,20 @@ pub fn addCommandTests(
     // Shared modules are test roots in their own right. A command is usually a
     // thin shell over a shared helper, so testing only the command files leaves
     // the interesting logic uncovered unless the project hand-writes a second
-    // `addTest` per module. Compile the module the project handed us as-is —
-    // that keeps every import and build setting it was configured with, which
-    // is exactly what the commands compile against.
+    // `addTest` per module. Each is compiled through a mirror of the project's
+    // module (see `testRootFor`), which keeps every import and build setting it
+    // was configured with — what the commands compile against.
     //
     // Wired before command discovery so a project that has shared modules but
     // no commands directory yet still runs them.
     for (shared_modules, 0..) |sm, i| {
         // One module may be registered under several names (an alias for the
         // same helper). Every alias must stay in the command imports above, but
-        // its tests are one test root, not one per name.
+        // its tests are one test root, not one per name — so the identity this
+        // keys on is the module the project owns, never the mirror below.
         if (!isFirstAliasOf(shared_modules, i)) continue;
 
-        // A shared module is legitimately created without a target/optimize: as
-        // a non-root module it inherits both from the compilation that imports
-        // it. A test ROOT cannot inherit — `addTest` panics without a resolved
-        // target, and an absent optimize would silently mean Debug — so fill in
-        // only what the project left unset, from the same target/optimize it
-        // passed here. An explicit setting is never overwritten.
-        if (sm.module.resolved_target == null) sm.module.resolved_target = config.target;
-        if (sm.module.optimize == null) sm.module.optimize = config.optimize;
-
-        const shared_tests = b.addTest(.{ .root_module = sm.module });
+        const shared_tests = b.addTest(.{ .root_module = testRootFor(b, sm.module, config) });
         test_step.dependOn(&b.addRunArtifact(shared_tests).step);
     }
 
@@ -210,6 +201,46 @@ const Ctx = struct {
         self.test_step.dependOn(&b.addRunArtifact(t).step);
     }
 };
+
+/// A module that can serve as the *root* of a test compile for `shared`,
+/// without touching `shared` itself.
+///
+/// The project's own module must be left exactly as it configured it. A null
+/// `target`/`optimize` is not an oversight there: `std.Build.Module` treats it
+/// as "inherit from whichever compilation imports me" (see `Module.CreateOptions`),
+/// and the same pointer is read again — later, at make time — by every other
+/// compile that imports it, starting with the executable this project already
+/// configured. Filling those fields in place would pin all of them to the test
+/// configuration, silently rebuilding a module that is deliberately shared
+/// across targets or optimize modes.
+///
+/// So mirror it instead (`Module.init`'s `.existing` case is std's own copy of
+/// a module's whole configuration — imports, link objects, include paths, every
+/// per-module setting) and complete only what a test root cannot inherit,
+/// because a test root has no importer to inherit from: `addTest` panics
+/// without a resolved target, and an absent optimize would quietly mean Debug
+/// rather than the mode the project passed here. Anything set explicitly is
+/// carried over untouched.
+///
+/// The mirror is a snapshot taken at this call: it copies the import table
+/// rather than sharing it, so neither module's later `addImport` can disturb
+/// the other's, and it starts with no cached module graph of its own.
+fn testRootFor(b: *std.Build, shared: *std.Build.Module, config: types.CommandTestsConfig) *std.Build.Module {
+    const root = b.allocator.create(std.Build.Module) catch @panic("OOM");
+    root.init(b, .{ .existing = shared });
+
+    // `.existing` is a shallow copy; give the mirror its own import table and
+    // an empty graph cache so it can never write through to the original's.
+    root.import_table = .empty;
+    for (shared.import_table.keys(), shared.import_table.values()) |name, module| {
+        root.addImport(name, module);
+    }
+    root.cached_graph = .{ .modules = &.{}, .names = &.{} };
+
+    if (root.resolved_target == null) root.resolved_target = config.target;
+    if (root.optimize == null) root.optimize = config.optimize;
+    return root;
+}
 
 /// True when `entries[i]` is the first entry naming its module — the rule that
 /// turns an aliased shared module (one module registered under two names, both

@@ -25,8 +25,10 @@ pub fn build(b: *std.Build) !void {
     //
     // Deliberately created without `.target`/`.optimize`: a module that is only
     // ever imported inherits both from the compilation that pulls it in, and
-    // that stays true here — `addCommandTests` supplies the pair it was given
-    // for the test root it compiles, so the shorter spelling keeps working.
+    // that stays true here — `addCommandTests` roots its test compile on a
+    // mirror of this module and completes the pair there, so both the shorter
+    // spelling and the inheritance keep working. The assertion after that call
+    // is what holds it to that.
     const greeting_module = b.createModule(.{
         .root_source_file = b.path("src/greeting.zig"),
     });
@@ -67,6 +69,15 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .shared_modules = &shared_modules,
     });
+
+    // Wiring the tests must not reconfigure the project's own module. This one
+    // is imported by the executable above and has no target/optimize of its
+    // own, precisely so it inherits from whatever compilation pulls it in; if
+    // `addCommandTests` ever pinned it to the test configuration instead of
+    // mirroring it, every other consumer would silently follow the tests.
+    if (greeting_module.resolved_target != null or greeting_module.optimize != null) {
+        @panic("addCommandTests must not reconfigure the shared module it was handed");
+    }
 
     // Integration/snapshot tier (`zcli_testing`'s `runSubprocess` +
     // `expectSnapshot`), against the actual compiled binary — see

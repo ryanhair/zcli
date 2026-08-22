@@ -293,13 +293,17 @@ compiles each as its own in-process test binary, so a command's `test` blocks
 in the whole generated app.
 
 Every distinct module in `shared_modules` is compiled as a test root as well,
-so the helper logic a command delegates to is covered by the same step. Those
-modules are used exactly as you created them — the imports and build
-configuration their tests see are the ones the commands see. Two entries
-naming the same module produce one test root, not two. A shared module created
-without `.target`/`.optimize` (legal: an imported-only module inherits both)
-gets the pair you passed to `addCommandTests`, since a test root cannot
-inherit; anything you set explicitly is left alone.
+so the helper logic a command delegates to is covered by the same step. Two
+entries naming the same module produce one test root, not two.
+
+Your module itself is never modified: the test compile is rooted on a *mirror*
+of it, carrying its imports and build configuration, so its tests see what the
+commands see. Only what a test root cannot inherit is completed on the mirror —
+a `.target`/`.optimize` you left unset (legal, and often deliberate: an
+imported-only module inherits both from whatever compilation pulls it in) is
+taken from the pair you passed to `addCommandTests`. Anything you set
+explicitly is carried over untouched, and the module you handed in still
+inherits for every other consumer.
 
 `exe` is the project's real executable (the same one passed to `generate()`);
 the returned `test` step depends on it so `zig build test` also proves the

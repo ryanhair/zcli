@@ -19,8 +19,9 @@ pub fn render(allocator: std.mem.Allocator, name: []const u8, loud: bool) ![]con
 }
 
 // ---------------------------------------------------------------------------
-// Shared-module tier: plain `std.testing` over the helper, no CLI in sight.
-// These run because `build.zig` lists this module in `shared_modules`.
+// The unit tier's other kind of test root: plain `std.testing` over the helper,
+// no CLI in sight (the command file next door is the first kind). These run
+// because `build.zig` lists this module in `shared_modules`.
 // ---------------------------------------------------------------------------
 
 test "render greets by name" {
