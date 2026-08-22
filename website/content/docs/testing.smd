@@ -12,13 +12,13 @@ zcli provides three tiers of testing, each suited to different verification need
 
 | Tier | What it tests | Speed | Fidelity |
 |------|--------------|-------|----------|
-| **Unit** | Command logic in isolation | Fast (in-process) | Tests `execute()` only |
+| **Unit** | Command and shared-module logic in isolation | Fast (in-process) | Tests `execute()` and the helpers it calls, no binary |
 | **Integration** | Full CLI binary via subprocess | Medium | Tests arg parsing, routing, output |
 | **E2E** | Interactive terminal behavior | Slow | Tests prompts, signals, TTY output |
 
 ## Unit testing
 
-Test a single command's `execute()` function without compiling or spawning a binary. This is the fastest feedback loop — use it for command logic, output formatting, and error handling.
+Test a single command's `execute()` function — or a shared module it delegates to — without compiling or spawning a binary. This is the fastest feedback loop: use it for command logic, output formatting, error handling, and the plain helper functions underneath.
 
 ### Setup
 

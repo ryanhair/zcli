@@ -292,10 +292,14 @@ compiles each as its own in-process test binary, so a command's `test` blocks
 (typically using `zcli-testing`'s `runCommand`) actually run — without pulling
 in the whole generated app.
 
-Every module in `shared_modules` is compiled as a test root as well, so the
-helper logic a command delegates to is covered by the same step. Those modules
-are used exactly as you created them — the imports and build configuration
-their tests see are the ones the commands see.
+Every distinct module in `shared_modules` is compiled as a test root as well,
+so the helper logic a command delegates to is covered by the same step. Those
+modules are used exactly as you created them — the imports and build
+configuration their tests see are the ones the commands see. Two entries
+naming the same module produce one test root, not two. A shared module created
+without `.target`/`.optimize` (legal: an imported-only module inherits both)
+gets the pair you passed to `addCommandTests`, since a test root cannot
+inherit; anything you set explicitly is left alone.
 
 `exe` is the project's real executable (the same one passed to `generate()`);
 the returned `test` step depends on it so `zig build test` also proves the

@@ -106,7 +106,7 @@ _ = zcli.addCommandTests(b, exe, zcli_dep, .{
 
 Then `zig build test` runs a test binary per command — a `test "creates a task"` block sitting right next to the `execute` it verifies.
 
-Pass `shared_modules` here too, matching what you gave `generate`. It does two jobs: the command-test stub only wires the shared modules you hand it, so a command that imports one won't compile under `zig build test` otherwise — and each module in the list is compiled as a test root of its own, so the `test` blocks inside `src/store.zig` run in the same step as the command tests. A shared module is used exactly as you created it, so its tests see the same imports and build configuration the commands do.
+Pass `shared_modules` here too, matching what you gave `generate`. It does two jobs: the command-test stub only wires the shared modules you hand it, so a command that imports one won't compile under `zig build test` otherwise — and each module in the list is compiled as a test root of its own, so the `test` blocks inside `src/store.zig` run in the same step as the command tests. A shared module is used exactly as you created it, so its tests see the same imports and build configuration the commands do — and if you created it without `.target`/`.optimize`, which is legal for a module that is only ever imported, `addCommandTests` supplies the pair you gave it so the test root can be built.
 
 ## Docs generation
 

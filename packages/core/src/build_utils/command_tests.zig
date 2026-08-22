@@ -32,11 +32,14 @@ const PluginInfo = types.PluginInfo;
 ///     tests are in-process; the subprocess/PTY tiers live in separate modules.)
 ///   - any `shared_modules` the commands were generated with.
 ///
-/// Each `shared_modules` entry is *also* compiled as a test root, so the
-/// helper logic commands delegate to is covered by the same `zig build test`
-/// without a second hand-written test target per module. The module is used
-/// exactly as the project supplied it — its imports and build configuration
-/// are the ones the commands see at runtime.
+/// Each distinct `shared_modules` module is *also* compiled as a test root, so
+/// the helper logic commands delegate to is covered by the same `zig build
+/// test` without a second hand-written test target per module. The module is
+/// used exactly as the project supplied it — its imports and build
+/// configuration are the ones the commands see at runtime — except that a
+/// target/optimize the project left unset (fine for a module that is only ever
+/// imported, illegal for a test root) is filled in from `config`. Two names
+/// pointing at one module yield one test root, not two.
 ///
 /// `exe` is the project's real executable (the one built by `generate()`). The
 /// `test` step depends on it so that `zig build test` — which CI runs on all
@@ -134,7 +137,21 @@ pub fn addCommandTests(
     //
     // Wired before command discovery so a project that has shared modules but
     // no commands directory yet still runs them.
-    for (shared_modules) |sm| {
+    for (shared_modules, 0..) |sm, i| {
+        // One module may be registered under several names (an alias for the
+        // same helper). Every alias must stay in the command imports above, but
+        // its tests are one test root, not one per name.
+        if (!isFirstAliasOf(shared_modules, i)) continue;
+
+        // A shared module is legitimately created without a target/optimize: as
+        // a non-root module it inherits both from the compilation that imports
+        // it. A test ROOT cannot inherit — `addTest` panics without a resolved
+        // target, and an absent optimize would silently mean Debug — so fill in
+        // only what the project left unset, from the same target/optimize it
+        // passed here. An explicit setting is never overwritten.
+        if (sm.module.resolved_target == null) sm.module.resolved_target = config.target;
+        if (sm.module.optimize == null) sm.module.optimize = config.optimize;
+
         const shared_tests = b.addTest(.{ .root_module = sm.module });
         test_step.dependOn(&b.addRunArtifact(shared_tests).step);
     }
@@ -194,6 +211,18 @@ const Ctx = struct {
     }
 };
 
+/// True when `entries[i]` is the first entry naming its module — the rule that
+/// turns an aliased shared module (one module registered under two names, both
+/// of which must stay importable from commands) into ONE test root instead of
+/// two builds of the same file racing each other. Generic over the entry type
+/// so the rule can be unit-tested directly, without a `std.Build` graph.
+fn isFirstAliasOf(entries: anytype, i: usize) bool {
+    for (entries[0..i]) |earlier| {
+        if (earlier.module == entries[i].module) return false;
+    }
+    return true;
+}
+
 /// Derive the unique test-module identifier for a command from its path:
 /// `cmdtest_<parts joined by '_'>`, with '-' in each part replaced by '_' so a
 /// dash-named command file yields a valid Zig identifier. Extracted from the
@@ -223,6 +252,21 @@ fn cmdTestModuleName(allocator: std.mem.Allocator, path: []const []const u8) ![]
 // ============================================================================
 
 const testing = std.testing;
+
+test "isFirstAliasOf: each distinct module is wired once, under its first name" {
+    // Stand-ins for two *std.Build.Module values; only their identity matters.
+    const first: u8 = 1;
+    const second: u8 = 2;
+    const Entry = struct { module: *const u8 };
+    const entries = [_]Entry{
+        .{ .module = &first },
+        .{ .module = &second },
+        .{ .module = &first }, // the same module under a second name
+    };
+    try testing.expect(isFirstAliasOf(&entries, 0));
+    try testing.expect(isFirstAliasOf(&entries, 1));
+    try testing.expect(!isFirstAliasOf(&entries, 2));
+}
 
 test "cmdTestModuleName names the root index from the reserved namespace" {
     const name = try cmdTestModuleName(testing.allocator, &.{});

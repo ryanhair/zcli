@@ -22,10 +22,13 @@ pub fn build(b: *std.Build) !void {
     // The greeting text, shared by every command (see src/greeting.zig). Listed
     // once here and handed to both call sites below; `addCommandTests` compiles
     // it as a test root, so its own `test` blocks run under `zig build test`.
+    //
+    // Deliberately created without `.target`/`.optimize`: a module that is only
+    // ever imported inherits both from the compilation that pulls it in, and
+    // that stays true here — `addCommandTests` supplies the pair it was given
+    // for the test root it compiles, so the shorter spelling keeps working.
     const greeting_module = b.createModule(.{
         .root_source_file = b.path("src/greeting.zig"),
-        .target = target,
-        .optimize = optimize,
     });
     const shared_modules = [_]zcli.SharedModule{
         .{ .name = "greeting", .module = greeting_module },

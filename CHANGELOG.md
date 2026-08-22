@@ -13,8 +13,11 @@ All notable changes to zcli are documented here.
   alongside the command tests — no second `addTest` target to hand-wire, and
   no shared logic silently uncovered because only command files were tested.
   Shared modules are used exactly as the project created them, so their tests
-  see the same imports and build configuration the commands do. The one list
-  you already pass to both `generate()` and `addCommandTests` is all it takes.
+  see the same imports and build configuration the commands do; a module left
+  without a `target`/`optimize` (legal for one that is only ever imported)
+  gets the pair `addCommandTests` was given, and two names for one module
+  still produce one test root. The one list you already pass to both
+  `generate()` and `addCommandTests` is all it takes.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
