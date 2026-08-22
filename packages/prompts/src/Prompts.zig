@@ -4,8 +4,8 @@
 //! environment every prompt needs — writer, reader, allocator, and theme —
 //! and exposes seven primary prompt types as methods, with optional
 //! searchable `select` and `multiSelect`. Standalone library: no zcli
-//! dependency required; falls back to line-based input when stdin is not a
-//! TTY.
+//! dependency required; falls back to line-based input whenever stdin or
+//! stdout is not a terminal.
 //!
 //! ```zig
 //! const Prompts = @import("prompts");
@@ -25,7 +25,8 @@
 //! behavior guards once, up front, instead:
 //!
 //! ```zig
-//! try p.requireInteractive(); // error.NotInteractive off a terminal
+//! // error.NotInteractive unless stdin AND stdout are terminals
+//! try p.requireInteractive();
 //! ```
 
 writer: *std.Io.Writer,
@@ -38,9 +39,13 @@ allocator: std.mem.Allocator,
 theme: ThemeContext = default_style,
 /// Overrides interactive detection for every prompt on this instance and for
 /// `requireInteractive`. Left `null` (the default), the instance probes the
-/// process streams — see `isInteractive`. Set `false` to force the line-based
-/// path (a `--no-input` flag belongs here); set `true` only when you know the
-/// streams are a terminal the probe can't see.
+/// process streams — see `isInteractive`.
+///
+/// `false` forces *line mode*, not silence: the prompts still print their
+/// question and still read stdin, so at a terminal they wait for a typed line
+/// and on a closed stream they return `error.EndOfStream`. A `--no-input` flag
+/// is not this — it has to skip the prompt sequence itself. `true` claims the
+/// streams are a terminal the probe can't see (a harness driving a PTY).
 interactive: ?bool = null,
 
 pub const text = text_prompt.text;
@@ -232,26 +237,26 @@ fn testInstance(interactive: ?bool) Prompts {
     };
 }
 
-test "requireInteractive passes when the streams can drive a prompt" {
-    const p = testInstance(true);
-    try std.testing.expect(p.isInteractive());
-    try p.requireInteractive();
-}
-
-test "requireInteractive returns NotInteractive when they cannot" {
-    const p = testInstance(false);
+test "the guard reads real detection: a test runner's redirected streams fail it" {
+    // No override — this is the process's own stdin/stdout, which under `zig
+    // build test` are pipes. That is the piped/CI case a command guards
+    // against, so the guard must refuse. (The passing side needs actual
+    // terminals on both ends; it is proven against a real PTY in
+    // projects/zcli/test/e2e.zig, "interactive: requireInteractive passes on a
+    // PTY …", together with the two one-stream-redirected refusals.)
+    const p = testInstance(null);
     try std.testing.expect(!p.isInteractive());
     try std.testing.expectError(error.NotInteractive, p.requireInteractive());
 }
 
-test "detection probes the process streams when unset" {
-    // Both ends must be terminals; the test runner's are not, so the guard
-    // fails here exactly as it would in a pipe or in CI.
-    const p = testInstance(null);
-    try std.testing.expectEqual(terminal.isInteractiveTty(), p.isInteractive());
-    if (!terminal.isInteractiveTty()) {
-        try std.testing.expectError(error.NotInteractive, p.requireInteractive());
-    }
+test "the interactive override decides for the guard, both ways" {
+    const forced_on = testInstance(true);
+    try std.testing.expect(forced_on.isInteractive());
+    try forced_on.requireInteractive();
+
+    const forced_off = testInstance(false);
+    try std.testing.expect(!forced_off.isInteractive());
+    try std.testing.expectError(error.NotInteractive, forced_off.requireInteractive());
 }
 
 test "appendCodepoint encodes multibyte UTF-8 and returns the echo slice" {

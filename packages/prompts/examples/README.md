@@ -41,7 +41,7 @@ zig build examples          # binaries land in zig-out/bin/prompts-<name>
   pass `context.theme` instead, which also carries the detected terminal
   capabilities (colour depth, `NO_COLOR`).
 - **Non-TTY fallback.** All prompts fall back to plain line-based input when
-  stdin isn't a TTY, so the examples also work when piped
+  stdin *or* stdout isn't a terminal, so the examples also work when piped
   (e.g. `printf '2\n' | zig-out/bin/prompts-select`). The live-only features
   (`preview`, custom cursor glyphs) are simply skipped in that mode. A command
   with no meaningful piped behavior opts out of the fallback with one

@@ -1078,8 +1078,8 @@ command reaches through its `context`:
   `NO_COLOR`. See ADR-0012, ADR-0020.
 - **`prompts`** — seven primary interactive prompt types (`text`, `select`,
   `multiSelect`, …) with grapheme-aware line editing, falling back to line input
-  when stdin is not a TTY — or, for an interactive-only command, refusing up
-  front via `requireInteractive()`. `select` and `multiSelect` support searchable lists
+  when stdin or stdout is not a terminal — or, for an interactive-only command,
+  refusing up front via `requireInteractive()`. `select` and `multiSelect` support searchable lists
   with `.search = true`. See the [searchable multi-select interaction
   research](research/searchable-multiselect-interactions.md).
 - **`progress`** — spinners for indeterminate work and progress/multi-bars for

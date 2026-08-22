@@ -21,10 +21,12 @@ All notable changes to zcli are documented here.
   answers questions the user never saw. `p.isInteractive()` asks the same
   question without erroring, for commands that branch rather than fail, and
   setting `.interactive` on a `Prompts` instance overrides the detection for
-  every prompt made through it (wire a `--no-input` flag to `false`). The guard
-  reads the same decision the prompts themselves make, so its verdict is exactly
-  what the next prompt would have done. Prompts without the guard are unchanged:
-  the non-TTY line fallback stays the default.
+  every prompt made through it — `false` forces line mode (the prompts still
+  print and still read stdin; it is not a `--no-input` switch, which has to skip
+  the sequence itself). The guard reads the same decision the prompts themselves
+  make, so its verdict is exactly what the next prompt would have done. Prompts
+  without the guard are unchanged: the line fallback — taken whenever *either*
+  stdin or stdout is redirected — stays the default.
 
 ### Changed (breaking)
 - **The standalone `search` prompt has been removed.** Replace
