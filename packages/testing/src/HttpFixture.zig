@@ -260,20 +260,37 @@ pub fn requests(self: *HttpFixture) std.mem.Allocator.Error![]const Request {
 // Serving
 // ============================================================================
 
+/// How long a serving task waits before retrying an accept that reported it
+/// would have blocked. A blocking listener should never say that, but if an `Io`
+/// implementation does, retrying flat out would spin a core — and unlike an
+/// aborted dial, nothing rate-limits it. Sleeping is also a cancelation point,
+/// so teardown still lands promptly.
+const would_block_backoff: std.Io.Duration = .fromMilliseconds(1);
+
+/// Whether an accept failure killed one incoming dial (the listener is still
+/// good) or the serving task itself.
+///
+/// This classification is what keeps the fixture alive: retiring a task on a
+/// transient failure would shrink the fixed pool one aborted dial at a time,
+/// until nothing was left to accept the next request and it hung. `error.Canceled`
+/// must stay fatal — it is how `deinit` retires the pool.
+fn acceptFailureIsTransient(err: std.Io.net.Server.AcceptError) bool {
+    return switch (err) {
+        error.ConnectionAborted, error.WouldBlock => true,
+        else => false,
+    };
+}
+
 /// Accept connections until the fixture is torn down. One of these runs per
 /// `Options.concurrency`.
 fn serve(self: *HttpFixture) std.Io.Cancelable!void {
     while (!self.shutting_down.load(.acquire)) {
-        var stream = self.server.accept(self.io) catch |err| switch (err) {
-            // A peer that hung up between its SYN and this accept says nothing
-            // about the listener. Retiring the task on it would shrink the pool
-            // one aborted dial at a time until nothing was left to serve the
-            // next request, so keep going — the loop's shutdown check still
-            // bounds this.
-            error.ConnectionAborted, error.WouldBlock => continue,
-            // Anything else — `error.Canceled` at teardown included — retires
+        var stream = self.server.accept(self.io) catch |err| {
+            // A fatal failure — `error.Canceled` at teardown included — retires
             // this task; there is no state left to unwind.
-            else => return,
+            if (!acceptFailureIsTransient(err)) return;
+            if (err == error.WouldBlock) self.io.sleep(would_block_backoff, .awake) catch return;
+            continue;
         };
         defer stream.close(self.io);
         self.serveConnection(&stream);
@@ -439,4 +456,79 @@ fn freeHeaders(allocator: std.mem.Allocator, headers: []const std.http.Header) v
 fn freeHeaderList(allocator: std.mem.Allocator, list: *std.ArrayList(std.http.Header)) void {
     for (list.items) |h| freeHeader(allocator, h);
     list.deinit(allocator);
+}
+
+// ============================================================================
+// Unit tests — the pure logic that the socket tests in HttpFixture_test.zig
+// can't reach deterministically.
+// ============================================================================
+
+const testing = std.testing;
+
+test "accept failures are classified so a dead dial spares the pool but teardown doesn't" {
+    // Exhaustive over the error set, so a member std adds later has to be
+    // classified deliberately rather than inherited: anything new defaults to
+    // fatal here and this assertion is where that gets noticed.
+    inline for (@typeInfo(std.Io.net.Server.AcceptError).error_set.?) |e| {
+        const err = @field(std.Io.net.Server.AcceptError, e.name);
+        const should_be_transient = comptime std.mem.eql(u8, e.name, "ConnectionAborted") or
+            std.mem.eql(u8, e.name, "WouldBlock");
+        try testing.expectEqual(should_be_transient, acceptFailureIsTransient(err));
+    }
+
+    // Spelled out because these two are the whole point: an aborted dial says
+    // nothing about the listener, while `error.Canceled` is `deinit`'s only way
+    // to retire a task — treating it as transient would hang teardown forever.
+    try testing.expect(acceptFailureIsTransient(error.ConnectionAborted));
+    try testing.expect(!acceptFailureIsTransient(error.Canceled));
+}
+
+/// Drive `dupe` with every allocation failing in turn and prove nothing is
+/// stranded either way. `FailingAllocator`'s alloc/free counters must balance
+/// on each pass, and `testing.allocator`'s leak check underneath backs that up.
+fn expectDupeFrees(
+    comptime dupe: anytype,
+    input: anytype,
+    /// Above the helper's real allocation count, so the last passes cover the
+    /// success path too — which must also be free of leaks once released.
+    max_fail_index: usize,
+) !void {
+    var fail_index: usize = 0;
+    while (fail_index <= max_fail_index) : (fail_index += 1) {
+        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index });
+        const allocator = failing.allocator();
+
+        if (dupe(allocator, input)) |owned| {
+            freeHeaders(allocator, owned);
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+        }
+
+        try testing.expectEqual(failing.allocations, failing.deallocations);
+    }
+    // The loop has to have actually induced failures, or it proves nothing.
+    var never_fails: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = 0 });
+    try testing.expectError(error.OutOfMemory, dupe(never_fails.allocator(), input));
+}
+
+const leak_test_headers = [_]std.http.Header{
+    .{ .name = "content-type", .value = "application/json" },
+    .{ .name = "x-request-id", .value = "abc123" },
+    .{ .name = "authorization", .value = "Bearer secret-token" },
+};
+
+test "dupeHeaderSlice strands nothing when an allocation fails partway" {
+    try expectDupeFrees(dupeHeaderSlice, @as([]const std.http.Header, &leak_test_headers), 16);
+}
+
+test "dupeHeaders strands nothing when an allocation fails partway" {
+    // A request head in the shape `HeaderIterator.init` expects: request line,
+    // headers, blank line.
+    const head =
+        "GET /widgets HTTP/1.1\r\n" ++
+        "content-type: application/json\r\n" ++
+        "x-request-id: abc123\r\n" ++
+        "authorization: Bearer secret-token\r\n" ++
+        "\r\n";
+    try expectDupeFrees(dupeHeaders, std.http.HeaderIterator.init(head), 16);
 }

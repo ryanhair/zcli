@@ -481,7 +481,7 @@ test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing"));
 
 ### Writing an adapter test
 
-The code below is `packages/testing/examples/http_fixture_example.zig` verbatim (minus its third test), and it runs on every `zig build test` — so it can't drift from the API it documents.
+The code below is copied from `packages/testing/examples/http_fixture_example.zig` (minus its third test), byte-identical as of this writing. That file is compiled and run by `zig build test`, so the API used here is real and current; the copy on this page is kept in sync by hand.
 
 ```zig
 const std = @import("std");

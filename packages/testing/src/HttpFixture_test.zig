@@ -299,9 +299,20 @@ test "overlapping requests are served concurrently" {
 }
 
 test "connections that die without sending a request don't drain the serving pool" {
-    // One serving task, so anything that retires it takes the whole fixture
-    // down with it — the failure mode this guards is a pool that shrinks one
-    // aborted dial at a time until later requests hang.
+    // Smoke test, deliberately: a dial that hangs up immediately is *not* a
+    // reliable way to produce `error.ConnectionAborted`. Whether the kernel
+    // completes the handshake before the close decides it, so this usually ends
+    // as a successful accept followed by EOF in `receiveHead` — a different code
+    // path (`serveConnection` returning) that must also spare the task. Neither
+    // outcome is selectable from here, so the accept-error classification that
+    // this used to claim to cover is unit-tested directly instead, next to the
+    // function, in HttpFixture.zig. What is asserted here is the invariant both
+    // paths share, end to end over a real socket: dead connections must not
+    // retire serving tasks.
+    //
+    // `concurrency = 1` is what gives that teeth — with a single task, anything
+    // that retires it takes the whole fixture down and the request below hangs
+    // rather than merely running slower.
     var fixture = try HttpFixture.init(testing.allocator, testing.io, .{ .concurrency = 1 });
     defer fixture.deinit();
 
