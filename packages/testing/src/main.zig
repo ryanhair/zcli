@@ -12,6 +12,10 @@
 //! - **E2E testing** (`e2e`): PTY-based interactive testing — test commands that require
 //!   real terminal interaction (password prompts, signal handling, window resizing).
 //!
+//! - **HTTP fixture** (`HttpFixture`): a scripted loopback HTTP server for
+//!   adapter and client integration tests — queue canned responses, inspect the
+//!   requests the code under test actually sent.
+//!
 //! ## Quick Start
 //!
 //! ```zig
@@ -63,6 +67,12 @@ pub const expectSnapshotWithData = snapshot.expectSnapshotWithData;
 // ============================================================================
 
 pub const e2e = @import("e2e.zig");
+
+// ============================================================================
+// HTTP Fixture — scripted loopback server for adapter/client integration tests
+// ============================================================================
+
+pub const HttpFixture = @import("HttpFixture.zig");
 
 // ============================================================================
 // Build Utilities

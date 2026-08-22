@@ -7,6 +7,17 @@ All notable changes to zcli are documented here.
 ## Unreleased
 
 ### Added
+- **`zcli_testing.HttpFixture` — a scripted loopback HTTP server for adapter
+  tests.** Commands that talk to an API have a layer none of the three testing
+  tiers reaches directly: the adapter that builds the request and parses the
+  response. `HttpFixture.init` binds an ephemeral `127.0.0.1` port and starts
+  serving; queue responses with `respondWith(.{ .status, .headers, .body })`,
+  point the code under test at `baseUrl()` or `url("/path")`, then assert on
+  `requests()` — each recording carries the method, target, headers, and a
+  bounded copy of the request body. It is a real socket, so the whole client
+  path runs for real with no network access and nothing stubbed. Startup,
+  concurrent serving, and teardown are deterministic, and one `deinit()`
+  releases the socket, the serving tasks, and every byte the fixture handed out.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the

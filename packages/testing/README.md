@@ -6,6 +6,8 @@ Three tiers of testing for zcli-built CLIs, from fast in-process command tests t
 2. **Integration** — `runSubprocess` runs the compiled binary and asserts on the full stack: parsing, routing, plugin hooks, exit codes. Includes snapshot testing.
 3. **E2E (PTY)** — `e2e.runInteractive` drives the binary through a real pseudo-terminal for prompts, hidden input, signals, and TTY-dependent formatting. Assert on the raw byte stream (`.expect`) *or* on the rendered screen (`.expectFrameContains` / `.expectRow` / `.expectFrame`): the harness feeds the PTY/ConPTY output through a `vterm` sized to the session, so a frame assertion only passes if the text is actually visible where it was drawn — closing the gap where a cursor-movement regression leaves the expected bytes *somewhere* in the stream and a raw substring still matches.
 
+Alongside the tiers there is one test double: **`HttpFixture`** — a scripted loopback HTTP server for the adapter layer that talks to an API. Queue the responses, point the code under test at an ephemeral `127.0.0.1` URL, assert on the requests it actually sent. Ships in the std-only `zcli_testing` module.
+
 The complete guide with worked examples per tier is [zcli.sh/testing](https://zcli.sh/testing/).
 
 ## Runnable examples
@@ -16,6 +18,7 @@ tier under the same alias a real project uses:
 - [`examples/unit_example.zig`](examples/unit_example.zig) — `runCommand`: args/options, failure and `context.fail`, vterm rendered-output assertions, plugin state.
 - [`examples/snapshot_example.zig`](examples/snapshot_example.zig) — `runSubprocess` + assertions, and `expectSnapshot` compare/update with masking and `ansi=false`.
 - [`examples/e2e_example.zig`](examples/e2e_example.zig) — `InteractiveScript` + `runInteractive` over pipes and a real PTY (the PTY case skips gracefully where no TTY exists).
+- [`examples/http_fixture_example.zig`](examples/http_fixture_example.zig) — `HttpFixture` driving a real `zcli.http` adapter: scripted success and failure responses, and request assertions.
 
 Run them with `zig build examples` (they're also folded into `zig build test`, so
 they can't drift from the API they document).
@@ -50,6 +53,7 @@ rendered-frame assertions) need vterm — the unit tier also needs zcli; the
 - **Integration**: `runSubprocess(allocator, io, exe_path, args)` → `Result` (`.stdout`, `.stderr`, `.exit_code`)
 - **Assertions**: `expectExitCode`, `expectExitCodeNot`, `expectContains`, `expectNotContains`, `expectEqualStrings`, `expectValidJson`, `expectStdoutEmpty`, `expectStderrEmpty`
 - **Snapshots**: `expectSnapshot(...)` against golden files, with `maskDynamicContent` (UUIDs, timestamps, addresses) and `stripAnsi`; update by threading `.update = true` from a build option (`zig build test -Dupdate-snapshots`)
+- **HTTP fixture**: `HttpFixture.init(allocator, io, .{ .concurrency, .max_request_body_bytes })` → `*HttpFixture`; `respondWith(.{ .status, .headers, .body })` queues a response, `baseUrl()` / `url("/path")` give the loopback URL, `requests()` returns every recording (`.method`, `.target`, `.headers`, `.body`, `.body_truncated`, `.header(name)`), and `deinit()` releases the socket, the serving tasks, and every byte the fixture allocated. Once the queue runs dry, further requests get `unscripted_status` / `unscripted_body` instead of hanging
 - **E2E**: `e2e.InteractiveScript` builder — stream steps (`.expect`, `.send`, `.sendHidden`, `.sendControl`, `.sendSignal`, `.delay`, `.withTimeout`, `.optional`) and rendered-frame steps (`.expectFrameContains(text)`, `.expectRow(index, expected)`, `.expectFrame(snapshot_name)`) — executed by `e2e.runInteractive(...)` → `InteractiveResult` (`.exit_code`, `.output`, `.success`, `.transcript`); `runInteractiveDualMode` runs the same script with and without a PTY. Frame steps poll until the rendered screen matches or the step times out (no fixed sleeps); `.expectFrame` reuses the snapshot masking/update flow (`config.snapshot_root` + `config.update_snapshots`)
 
 ## Quick taste
@@ -94,6 +98,7 @@ test "login prompts for credentials" {
 
 - PTY allocation degrades to a skip (not a failure) on hosts without working PTYs; CI greps for the skip marker so the interactive tier can't go silently vacuous.
 - Snapshot files are masked and ANSI-stripped by default (`SnapshotOptions`), so dynamic content doesn't churn goldens.
+- `HttpFixture` serves plain HTTP and answers every request from one queue — it does not route on method or path; assert on `requests()` instead. Its serving tasks run concurrently with the test, so the allocator must be usable from more than one thread (`std.testing.allocator` is).
 
 ## Dependencies
 
