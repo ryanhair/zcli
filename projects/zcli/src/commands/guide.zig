@@ -194,7 +194,54 @@ const topics = [_]Topic{
         \\Worked example — examples/notes/src/store.zig, a persistence helper shared
         \\by every command (see `zcli guide sharing`):
         \\
-        ++ "\n" ++ examples.notes_store,
+        ++ "\n" ++ examples.notes_store ++
+            \\
+            \\
+            \\Appending, when other processes are running too
+            \\
+            \\Read-modify-rewrite (above) assumes one process owns the file. A log —
+            \\audit trail, event stream, run history — is the other shape: every run
+            \\adds a record while other runs may be reading or appending. Two rules
+            \\make that safe, and they are the whole recipe:
+            \\
+            \\  1. Lock every open — `.exclusive` to append, `.shared` to read.
+            \\     Readers run together; a writer excludes everyone:
+            \\
+            \\       const file = try dir.createFile(io, "app.log", .{
+            \\           .read = true, .truncate = false,   // append, don't recreate
+            \\       });
+            \\       defer file.close(io);   // closing RELEASES the lock — flush first
+            \\       try file.lock(io, .exclusive);   // readers: .shared
+            \\
+            \\     `createFile`/`openFile` also take a `.lock` option, but leave it
+            \\     alone here: on macOS concurrent creating opens can report
+            \\     `error.FileNotFound` for a file another one just made, and asking
+            \\     the same call to lock widens that window. Lock as its own step, and
+            \\     retry the open a bounded number of times.
+            \\
+            \\  2. One record = one line, written and FLUSHED while the lock is held.
+            \\     A buffered writer that flushes after the close would hand the next
+            \\     appender a file whose end is not where your record ended, and the
+            \\     two would overlap. Order is: seek to end -> write -> flush -> close.
+            \\
+            \\Bound everything you read: a cap per record and a cap on the whole file
+            \\(`.limited(...)`), so a corrupt file can't make the reader allocate or
+            \\scan without limit. And decide, in writing, what "corrupt" means. The
+            \\example's policy: bytes after the last newline are a TORN TAIL — a
+            \\writer killed mid-record — so a reader ignores them and the next
+            \\appender truncates them away, keeping every earlier record; a
+            \\newline-terminated record that doesn't parse is real damage, so it is
+            \\reported, never silently dropped.
+            \\
+            \\This is a log, not a database. It buys atomic appends, concurrent
+            \\readers, and crash tolerance at the tail — not multi-record
+            \\transactions, in-place edits, indexes, or isolation between a reader
+            \\and an in-flight writer. When you need those, use a real database.
+            \\
+            \\Worked example — examples/notes/src/log.zig (its tests spawn concurrent
+            \\appenders and replay a half-written final record):
+            \\
+        ++ "\n" ++ examples.notes_log,
     },
     .{
         .name = "arena",

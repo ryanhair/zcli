@@ -27,8 +27,17 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    // The append-only activity log: the same "commands persist state
+    // themselves" idea, but for a file several processes append to at once
+    // (locking + one flushed record per append). See `zcli guide storage`.
+    const log_module = b.createModule(.{
+        .root_source_file = b.path("src/log.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const shared_modules = [_]zcli.SharedModule{
         .{ .name = "store", .module = store_module },
+        .{ .name = "log", .module = log_module },
     };
 
     const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
@@ -55,10 +64,17 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
 
-    _ = zcli.addCommandTests(b, exe, zcli_dep, .{
+    const test_step = zcli.addCommandTests(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,
         .optimize = optimize,
         .shared_modules = &shared_modules,
     });
+
+    // addCommandTests compiles the command files, so a shared module's own
+    // `test` blocks need their own artifact — hang it on the step it returns
+    // and `zig build test` runs both. log.zig's concurrency and torn-record
+    // tests are the whole point of that module, so they must run in CI.
+    const log_tests = b.addTest(.{ .root_module = log_module });
+    test_step.dependOn(&b.addRunArtifact(log_tests).step);
 }

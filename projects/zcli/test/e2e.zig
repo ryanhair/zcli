@@ -1070,6 +1070,9 @@ test "guide lists topics and embeds the canonical example source" {
         try expectOk(r);
         try expectContains(r.stdout, "std.json.parseFromSlice");
         try expectContains(r.stdout, "std.json.fmt(notes");
+        // ...and examples/notes/src/log.zig, the locked append-log recipe.
+        try expectContains(r.stdout, "file.lock(io, .exclusive)");
+        try expectContains(r.stdout, "fn repairTail");
     }
 
     // And `plugins`, embedding examples/notes/src/plugins/verbose.zig — the full
