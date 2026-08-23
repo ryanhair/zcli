@@ -222,24 +222,57 @@ const Ctx = struct {
 /// rather than the mode the project passed here. Anything set explicitly is
 /// carried over untouched.
 ///
-/// The mirror is a snapshot taken at this call: it copies the import table
-/// rather than sharing it, so neither module's later `addImport` can disturb
-/// the other's, and it starts with no cached module graph of its own.
+/// **Snapshot semantics.** `.existing` is a shallow `m.* = existing.*`, so every
+/// growable container would otherwise be two views onto one backing array:
+/// `addCMacro`/`linkFramework`/`addIncludePath` on either module could write
+/// through to the other, and a reallocation by one would strand the other on
+/// stale storage. Each is therefore re-copied into fresh storage below, and the
+/// mirror starts with no cached module graph of its own. The consequence is
+/// that the mirror reflects the shared module's configuration **as of this
+/// call**: configuration a project adds to a shared module afterwards reaches
+/// its commands but not its tests, so add it before calling `addCommandTests`.
 fn testRootFor(b: *std.Build, shared: *std.Build.Module, config: types.CommandTestsConfig) *std.Build.Module {
     const root = b.allocator.create(std.Build.Module) catch @panic("OOM");
     root.init(b, .{ .existing = shared });
 
-    // `.existing` is a shallow copy; give the mirror its own import table and
-    // an empty graph cache so it can never write through to the original's.
+    // Detach every container the shallow copy left shared. `addImport` (rather
+    // than copying the table wholesale) is std's documented way to populate an
+    // import table, and it dupes the names into this module's own storage.
+    const allocator = root.owner.allocator;
     root.import_table = .empty;
     for (shared.import_table.keys(), shared.import_table.values()) |name, module| {
         root.addImport(name, module);
     }
+    root.c_macros = cloneList(allocator, shared.c_macros);
+    root.include_dirs = cloneList(allocator, shared.include_dirs);
+    root.lib_paths = cloneList(allocator, shared.lib_paths);
+    root.rpaths = cloneList(allocator, shared.rpaths);
+    root.link_objects = cloneList(allocator, shared.link_objects);
+    root.frameworks = cloneMap(allocator, shared.frameworks);
     root.cached_graph = .{ .modules = &.{}, .names = &.{} };
 
     if (root.resolved_target == null) root.resolved_target = config.target;
     if (root.optimize == null) root.optimize = config.optimize;
     return root;
+}
+
+/// An unmanaged list holding the same items as `list`, in storage of its own —
+/// so appending to either list can never disturb the other. Generic over the
+/// element type so one copy rule covers every list `std.Build.Module` carries.
+fn cloneList(allocator: std.mem.Allocator, list: anytype) @TypeOf(list) {
+    var copy: @TypeOf(list) = .empty;
+    copy.appendSlice(allocator, list.items) catch @panic("OOM");
+    return copy;
+}
+
+/// An unmanaged map holding the same entries as `map`, in storage of its own.
+/// Keys are shared as-is: they are already owned, immutable strings — it is the
+/// entry array that must not be, since both maps index into it by position.
+fn cloneMap(allocator: std.mem.Allocator, map: anytype) @TypeOf(map) {
+    var copy: @TypeOf(map) = .empty;
+    copy.ensureUnusedCapacity(allocator, map.count()) catch @panic("OOM");
+    for (map.keys(), map.values()) |key, value| copy.putAssumeCapacity(key, value);
+    return copy;
 }
 
 /// True when `entries[i]` is the first entry naming its module — the rule that
@@ -283,6 +316,45 @@ fn cmdTestModuleName(allocator: std.mem.Allocator, path: []const []const u8) ![]
 // ============================================================================
 
 const testing = std.testing;
+
+test "cloneList: copies the items into storage the original cannot reach" {
+    const allocator = testing.allocator;
+    var original: std.ArrayList([]const u8) = .empty;
+    defer original.deinit(allocator);
+    try original.appendSlice(allocator, &.{ "-DA=1", "-DB=2" });
+
+    var copy = cloneList(allocator, original);
+    defer copy.deinit(allocator);
+    try testing.expectEqualDeep(original.items, copy.items);
+    try testing.expect(original.items.ptr != copy.items.ptr);
+
+    // Appending to either side must leave the other exactly as it was — the
+    // failure mode of a shallow copy, where both are views onto one array.
+    try original.append(allocator, "-DC=3");
+    try testing.expectEqual(@as(usize, 2), copy.items.len);
+    try copy.append(allocator, "-DD=4");
+    try testing.expectEqual(@as(usize, 3), original.items.len);
+    try testing.expectEqualStrings("-DC=3", original.items[2]);
+}
+
+test "cloneMap: copies the entries into storage the original cannot reach" {
+    const allocator = testing.allocator;
+    var original: std.StringArrayHashMapUnmanaged(u8) = .empty;
+    defer original.deinit(allocator);
+    try original.put(allocator, "Security", 1);
+
+    var copy = cloneMap(allocator, original);
+    defer copy.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), copy.count());
+    try testing.expectEqual(@as(?u8, 1), copy.get("Security"));
+
+    // A framework added to either module afterwards belongs to it alone.
+    try original.put(allocator, "CoreFoundation", 2);
+    try testing.expectEqual(@as(usize, 1), copy.count());
+    try copy.put(allocator, "AppKit", 3);
+    try testing.expectEqual(@as(usize, 2), original.count());
+    try testing.expectEqual(@as(?u8, null), original.get("AppKit"));
+}
 
 test "isFirstAliasOf: each distinct module is wired once, under its first name" {
     // Stand-ins for two *std.Build.Module values; only their identity matters.

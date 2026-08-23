@@ -305,6 +305,13 @@ taken from the pair you passed to `addCommandTests`. Anything you set
 explicitly is carried over untouched, and the module you handed in still
 inherits for every other consumer.
 
+**The mirror is a snapshot taken at the call.** Its imports, C macros, include
+and library paths, rpaths, frameworks, and link objects are copied into storage
+of their own, so configuring either module afterwards never disturbs the other.
+The flip side: configuration you add to a shared module *after* calling
+`addCommandTests` reaches your commands but not that module's own tests.
+Configure shared modules first, then wire the tests.
+
 `exe` is the project's real executable (the same one passed to `generate()`);
 the returned `test` step depends on it so `zig build test` also proves the
 real registry/main.zig link — on every OS the test job runs on, not just

@@ -36,6 +36,13 @@ pub fn build(b: *std.Build) !void {
         .{ .name = "greeting", .module = greeting_module },
     };
 
+    // A piece of list-backed configuration, so the checks after
+    // `addCommandTests` below have something to watch. Nothing in this example
+    // needs it — it stands in for the include paths, link objects, or C macros
+    // a real shared module carries.
+    greeting_module.addCMacro("GREETING_EXAMPLE", "1");
+    const macros_before_wiring = greeting_module.c_macros.items;
+
     const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .shared_modules = &shared_modules,
@@ -77,6 +84,26 @@ pub fn build(b: *std.Build) !void {
     // mirroring it, every other consumer would silently follow the tests.
     if (greeting_module.resolved_target != null or greeting_module.optimize != null) {
         @panic("addCommandTests must not reconfigure the shared module it was handed");
+    }
+
+    // Same for its list-backed configuration: same list, same address, so the
+    // call neither appended to it nor moved it. (That the *mirror's* copy is
+    // storage of its own — the other half of the isolation — is unit-tested in
+    // the framework, at command_tests.zig's `cloneList`/`cloneMap`; nothing
+    // out here holds a handle on the mirror to check it from.)
+    if (greeting_module.c_macros.items.ptr != macros_before_wiring.ptr or
+        greeting_module.c_macros.items.len != macros_before_wiring.len)
+    {
+        @panic("addCommandTests must not disturb the shared module's own configuration");
+    }
+
+    // And this module stays independently configurable afterwards. What the
+    // mirror captured is a snapshot taken at the call above, so configuration
+    // added here reaches the commands but not the shared module's own tests —
+    // add it before `addCommandTests` if the tests need it too.
+    greeting_module.addCMacro("GREETING_EXAMPLE_AFTER_WIRING", "1");
+    if (greeting_module.c_macros.items.len != macros_before_wiring.len + 1) {
+        @panic("the shared module must remain the project's to configure");
     }
 
     // Integration/snapshot tier (`zcli_testing`'s `runSubprocess` +

@@ -17,9 +17,14 @@ All notable changes to zcli are documented here.
   project created is left untouched — one without a `target`/`optimize` (legal,
   and usually deliberate: an imported-only module inherits both from whatever
   compilation pulls it in) keeps inheriting for every other consumer, and only
-  the mirror takes the pair `addCommandTests` was given. Two names for one
-  module still produce one test root. The one list you already pass to both
-  `generate()` and `addCommandTests` is all it takes.
+  the mirror takes the pair `addCommandTests` was given. The mirror is a
+  snapshot: imports, macros, include/library paths, rpaths, frameworks, and
+  link objects are copied into storage of their own, so neither module can
+  disturb the other's later — configure a shared module before wiring the
+  tests, since what you add afterwards reaches the commands but not that
+  module's own tests. Two names for one module still produce one test root.
+  The one list you already pass to both `generate()` and `addCommandTests` is
+  all it takes.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
