@@ -43,12 +43,16 @@ pub const Entry = struct {
 /// Every read is bounded by this too, so a corrupt file can never make the
 /// reader allocate (or scan back) without limit.
 ///
-/// It also draws the line between the two kinds of damage, and `read` and
-/// `append` MUST agree on where that line is: an unterminated fragment at the
-/// end of the file shorter than this is a torn tail — some writer was killed
-/// part-way through a record it was allowed to write — which readers skip and
-/// the next appender truncates. A fragment this long or longer cannot be a
-/// record-in-progress, so both sides call it corruption and report
+/// A complete record may be exactly this long, newline included; one that
+/// exceeds it is rejected on the way in and reported by `read` on the way out.
+///
+/// The cap also draws the line between the two kinds of damage at the end of
+/// the file, and `read` and `append` MUST agree on where that line is — this is
+/// the one stretch of the file both of them inspect. An unterminated fragment
+/// after the last newline SHORTER than this is a torn tail: some writer was
+/// killed part-way through a record it was allowed to write, so readers skip it
+/// and the next appender truncates it. A fragment that reaches this length
+/// cannot be a record-in-progress, so both sides call it corruption and report
 /// `error.RecordTooLong` rather than guessing where to cut.
 pub const max_record_bytes = 8 * 1024;
 
@@ -58,10 +62,17 @@ pub const max_record_bytes = 8 * 1024;
 pub const max_log_bytes = 4 * 1024 * 1024;
 
 pub const Error = error{
-    /// A record — the one being appended, one already in the file, or an
-    /// unterminated trailing fragment too long to be a record in progress —
-    /// reached `max_record_bytes`. Both `read` and `append` raise this on the
-    /// same input; see `max_record_bytes` for where the line sits.
+    /// Something in the file, or on its way into it, does not fit
+    /// `max_record_bytes`. Three occasions, and they are not symmetric:
+    ///   - `append` — the record it was handed encodes to more than the cap.
+    ///   - `read` — a complete record in the file exceeds the cap. `append`
+    ///     does not raise this for such a record: it only ever inspects the
+    ///     tail, and never re-validates records written before it.
+    ///   - both — an unterminated trailing fragment that *reaches* the cap.
+    ///     This is the one case they are guaranteed to agree on, because the
+    ///     tail is the only part of the file both of them look at.
+    /// A complete record of exactly `max_record_bytes` is fine everywhere; see
+    /// `max_record_bytes` for where the fragment line sits and why.
     RecordTooLong,
     /// The file exceeds `max_log_bytes`.
     LogTooLarge,
