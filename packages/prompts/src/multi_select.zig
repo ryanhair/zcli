@@ -157,9 +157,6 @@ const FrameHarness = struct {
     fn a(self: *FrameHarness) std.mem.Allocator {
         return self.arena.allocator();
     }
-    fn vp(self: *FrameHarness) *lr.Viewport {
-        return &self.view;
-    }
     fn rctx(self: *FrameHarness) ui.RenderCtx {
         return .{ .allocator = self.a() };
     }
@@ -168,7 +165,7 @@ const FrameHarness = struct {
 test "frameNode: short options are one row each" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 4), size.h);
@@ -177,7 +174,7 @@ test "frameNode: short options are one row each" {
 test "frameNode: searchable config adds the focusless query row" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, &.{ false, false }, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, &.{ false, false }, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 4), size.h);
@@ -187,7 +184,7 @@ test "frameNode: a wrapping option measures its true physical rows" {
     var h = FrameHarness.init();
     defer h.deinit();
     const long = "this is a long option label that will certainly wrap at a narrow width";
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, h.vp(), .{ .row = 24, .col = 24 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, &h.view, .{ .row = 24, .col = 24 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expect(size.h > 3);
@@ -210,7 +207,7 @@ test "frameNode: cursor and marker use their theme tokens" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, &h.view, .{ .row = 24, .col = 80 });
 
     var surface = try ui.Surface.init(std.testing.allocator, 79, 3);
     defer surface.deinit();
@@ -225,7 +222,7 @@ test "frameNode: cursor and marker use their theme tokens" {
 test "frameNode: continuation lines hang-indent under the option text" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, h.vp(), .{ .row = 24, .col = 20 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, &h.view, .{ .row = 24, .col = 20 });
 
     var surface = try ui.Surface.init(std.testing.allocator, 19, 8);
     defer surface.deinit();

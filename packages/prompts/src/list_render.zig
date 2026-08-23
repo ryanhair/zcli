@@ -13,7 +13,9 @@ pub fn windowSize() terminal.Winsize {
 }
 
 /// A contiguous window of items to display, chosen so the cursor stays visible
-/// and the total physical rows fit within `budget`.
+/// and the total physical rows fit within `budget` — with one exception, since
+/// visible outranks small: an item taller than the whole budget is windowed
+/// alone and overspends it, for the renderer to clip (see `Viewport.window`).
 pub const Window = struct { start: usize, end: usize };
 
 /// The scroll anchor of a list, carried across frames. Keeping the anchor is

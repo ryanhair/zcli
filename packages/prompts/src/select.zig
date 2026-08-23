@@ -170,9 +170,6 @@ const FrameHarness = struct {
     fn a(self: *FrameHarness) std.mem.Allocator {
         return self.arena.allocator();
     }
-    fn vp(self: *FrameHarness) *lr.Viewport {
-        return &self.view;
-    }
     fn rctx(self: *FrameHarness) ui.RenderCtx {
         return .{ .allocator = self.a() };
     }
@@ -181,7 +178,7 @@ const FrameHarness = struct {
 test "frameNode: header plus one row per short option" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 4), size.h); // header + 3
@@ -191,7 +188,7 @@ test "frameNode: wrapped option occupies its true physical rows" {
     var h = FrameHarness.init();
     defer h.deinit();
     const long = "this is a long option label that will certainly wrap at a narrow width";
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, h.vp(), .{ .row = 24, .col = 24 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, &h.view, .{ .row = 24, .col = 24 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expect(size.h > 3);
@@ -210,7 +207,7 @@ test "frameNode: selected row carries the theme's selected token" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, &h.view, .{ .row = 24, .col = 80 });
 
     var s = try ui.Surface.init(std.testing.allocator, 79, 3);
     defer s.deinit();
@@ -229,7 +226,7 @@ test "frameNodeFiltered: searchable header, query, and results measure their row
     var h = FrameHarness.init();
     defer h.deinit();
     const filtered = [_]usize{ 0, 1, 2 };
-    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" }, .search = true }, "a", &filtered, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" }, .search = true }, "a", &filtered, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 5), size.h);
@@ -258,7 +255,7 @@ test "frameNodeFiltered: empty query uses the hint style" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const node = try frameNodeFiltered(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "", &.{ 0, 1 }, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNodeFiltered(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "", &.{ 0, 1 }, 0, &h.view, .{ .row = 24, .col = 80 });
 
     var surface = try ui.Surface.init(std.testing.allocator, 79, 4);
     defer surface.deinit();
@@ -272,7 +269,7 @@ test "frameNodeFiltered: empty query uses the hint style" {
 test "frameNodeFiltered: no matches uses three rows" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "zz", &.{}, 0, h.vp(), .{ .row = 24, .col = 80 });
+    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "zz", &.{}, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 3), size.h);

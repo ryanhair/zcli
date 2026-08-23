@@ -376,27 +376,32 @@ fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: Config, cardinal
     try app.frame(try frameNode(app.arena(), ctx, config, cardinality, state.query.items, state.filtered, state.selected, state.cursor, &state.view, lr.windowSize()));
 }
 
-/// Append a header/search row, clipped to the rows the frame can still spare
-/// above the choice list, and charge what it takes to `left`. A frame that
-/// cannot afford the row at all omits it: chrome is what a cramped terminal
-/// gives up, never the highlighted choice.
-fn chromeRow(
-    a: std.mem.Allocator,
-    rows: *std.ArrayList(ui.Node),
-    left: *usize,
+/// A header or query row, and the rows a cramped frame can spare it. Chrome is
+/// charged in priority order and appended in display order — which differ,
+/// because a frame too short for both keeps the query the user is still typing
+/// rather than the header restating the question.
+const Chrome = struct {
     prefix: []const u8,
     prefix_w: u16,
     label: []const u8,
     label_w: u16,
-    style: ui.Style,
-) !void {
-    if (left.* == 0) return;
-    var row = try lr.itemRow(a, lr.prefixCell(.{}, prefix), prefix_w, label, label_w, style);
-    const take = @min(terminal.wrapCount(label, label_w), left.*);
-    row.max_height = @intCast(take);
-    try rows.append(a, row);
-    left.* -= take;
-}
+    style: ui.Style = .{},
+    /// Rows granted by `charge`; 0 means the frame could not afford the row.
+    rows: usize = 0,
+
+    /// Take what the row wants from `left`, or as much of it as remains.
+    fn charge(self: *Chrome, left: *usize) void {
+        self.rows = @min(terminal.wrapCount(self.label, self.label_w), left.*);
+        left.* -= self.rows;
+    }
+
+    fn append(self: Chrome, a: std.mem.Allocator, rows: *std.ArrayList(ui.Node)) !void {
+        if (self.rows == 0) return;
+        var row = try lr.itemRow(a, lr.prefixCell(.{}, self.prefix), self.prefix_w, self.label, self.label_w, self.style);
+        row.max_height = @intCast(self.rows);
+        try rows.append(a, row);
+    }
+};
 
 /// Build one frame. `view` carries the scroll anchor between frames and is
 /// re-anchored here, where the row budget (the live region minus the header and
@@ -459,17 +464,27 @@ pub fn frameNode(
     const chrome_allowance = region -| focus_rows;
     var chrome_left = chrome_allowance;
 
-    try chromeRow(a, &rows, &chrome_left, config.prefix, hprefix_w, header, havail, .{});
-    if (config.search) {
-        const search_prefix = "  Search: ";
-        const search_prefix_w: u16 = @intCast(terminal.displayWidth(search_prefix));
-        const search_avail: u16 = @intCast(@max(@as(usize, usable) -| search_prefix_w, 1));
-        if (query.len > 0) {
-            try chromeRow(a, &rows, &chrome_left, search_prefix, search_prefix_w, query, search_avail, .{});
-        } else {
-            try chromeRow(a, &rows, &chrome_left, search_prefix, search_prefix_w, "type to filter", search_avail, hint_style);
-        }
-    }
+    var header_row = Chrome{ .prefix = config.prefix, .prefix_w = hprefix_w, .label = header, .label_w = havail };
+    const search_prefix = "  Search: ";
+    const search_prefix_w: u16 = @intCast(terminal.displayWidth(search_prefix));
+    const search_avail: u16 = @intCast(@max(@as(usize, usable) -| search_prefix_w, 1));
+    const typing = config.search and query.len > 0;
+    var query_row: ?Chrome = if (!config.search) null else if (typing)
+        .{ .prefix = search_prefix, .prefix_w = search_prefix_w, .label = query, .label_w = search_avail }
+    else
+        .{ .prefix = search_prefix, .prefix_w = search_prefix_w, .label = "type to filter", .label_w = search_avail, .style = hint_style };
+
+    // Charge in priority order — an active query outranks the header, since
+    // dropping it would leave the user editing state they cannot see. The empty
+    // hint has nothing to lose and goes last.
+    if (typing) query_row.?.charge(&chrome_left);
+    header_row.charge(&chrome_left);
+    if (!typing) if (query_row) |*row| row.charge(&chrome_left);
+
+    // Append in display order.
+    try header_row.append(a, &rows);
+    if (query_row) |row| try row.append(a, &rows);
+
     // Whatever the chrome did not take belongs to the list, which is therefore
     // always offered at least the highlighted choice's rows.
     const list_budget = region - (chrome_allowance - chrome_left);
@@ -780,14 +795,29 @@ test "a terminal too short for the chrome still shows the highlighted choice" {
     };
     var view = lr.Viewport{};
 
-    // Two usable rows: the header keeps one, the query row is dropped, and the
-    // highlighted choice keeps the other. Chrome yields, the choice does not.
+    // Two usable rows, and something typed: the highlighted choice keeps one and
+    // the query the other. The header is what goes — a query the user is still
+    // editing must not become invisible state.
     {
         var surface = try paintFrame(a, config, .one, "brav", &.{1}, null, &view, 0, .{ .row = 3, .col = 40 });
         defer surface.deinit();
         const screen = try frameText(a, &surface);
         try std.testing.expectEqual(@as(u16, 2), surface.height);
         try std.testing.expect(std.mem.indexOf(u8, screen, "bravo") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Search: brav") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Pick one of these") == null);
+    }
+
+    // With nothing typed the hint has nothing to lose, so the header stays.
+    {
+        var empty_view = lr.Viewport{};
+        var surface = try paintFrame(a, config, .one, "", &.{ 0, 1 }, null, &empty_view, 0, .{ .row = 3, .col = 40 });
+        defer surface.deinit();
+        const screen = try frameText(a, &surface);
+        try std.testing.expectEqual(@as(u16, 2), surface.height);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "alpha") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Pick one of these") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "type to filter") == null);
     }
 
     // One usable row leaves room for the choice alone.
@@ -814,6 +844,7 @@ test "a terminal too short for the chrome still shows the highlighted choice" {
         defer surface.deinit();
         const screen = try frameText(a, &surface);
         try std.testing.expect(std.mem.indexOf(u8, screen, "no matches") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Search: zz") != null);
     }
 }
 
