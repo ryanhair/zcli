@@ -1,5 +1,6 @@
 const std = @import("std");
 const zcli = @import("zcli");
+const greeting = @import("greeting");
 const Context = @import("command_registry").Context;
 
 pub const meta = .{
@@ -15,12 +16,10 @@ pub const Args = struct { name: []const u8 };
 pub const Options = struct { loud: bool = false };
 
 pub fn execute(args: Args, options: Options, context: *Context) !void {
-    if (options.loud) {
-        const upper = try std.ascii.allocUpperString(context.allocator, args.name);
-        try context.stdout().print("HELLO, {s}!\n", .{upper});
-    } else {
-        try context.stdout().print("Hello, {s}!\n", .{args.name});
-    }
+    // The wording lives in the `greeting` shared module, which carries its own
+    // tests — `addCommandTests` runs those alongside the command tests below.
+    const text = try greeting.render(context.allocator, args.name, options.loud);
+    try context.stdout().print("{s}\n", .{text});
 }
 
 // ---------------------------------------------------------------------------

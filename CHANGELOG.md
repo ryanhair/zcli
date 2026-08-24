@@ -27,6 +27,24 @@ All notable changes to zcli are documented here.
   `ContextData` sees the configured values too — the bundled secrets plugin
   captures `app_name` there, and it is what namespaces stored secrets. Each
   field left unset keeps the context default.
+- **`addCommandTests` runs your shared modules' tests too.** Every module in
+  the `shared_modules` list is now compiled as a test root of its own, so the
+  `test` blocks inside a helper like `src/store.zig` run under `zig build test`
+  alongside the command tests — no second `addTest` target to hand-wire, and
+  no shared logic silently uncovered because only command files were tested.
+  The test compile is rooted on a mirror of each module, so its tests see the
+  same imports and build configuration the commands do while the module the
+  project created is left untouched — one without a `target`/`optimize` (legal,
+  and usually deliberate: an imported-only module inherits both from whatever
+  compilation pulls it in) keeps inheriting for every other consumer, and only
+  the mirror takes the pair `addCommandTests` was given. The mirror is a
+  snapshot: imports, macros, include/library paths, rpaths, frameworks, and
+  link objects are copied into storage of their own, so neither module can
+  disturb the other's later — configure a shared module before wiring the
+  tests, since what you add afterwards reaches the commands but not that
+  module's own tests. Two names for one module still produce one test root.
+  The one list you already pass to both `generate()` and `addCommandTests` is
+  all it takes.
 - **`zcli guide storage` now covers safe concurrent appending.** The topic gained
   an append-log recipe — shared locks for readers, an exclusive lock for writers,
   one record flushed inside the lock, bounded reads, and a torn trailing record
