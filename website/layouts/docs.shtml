@@ -187,6 +187,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
           <p>The batteries a real CLI ends up needing — config, credentials, and the network — with safe behavior as the only behavior.</p>
           <div class="guides">
             <a href="$site.page('docs/config').link()"><span class="k">config</span><span class="t">Config files</span><span class="d">JSON, TOML, or YAML; per-command scoping; a clear precedence cascade.</span></a>
+            <a href="$site.page('docs/paths').link()"><span class="k">paths</span><span class="t">Application paths</span><span class="d">Platform-standard config, cache, and data directories — resolved, never guessed.</span></a>
             <a href="$site.page('docs/secrets').link()"><span class="k">secrets</span><span class="t">Secrets &amp; credentials</span><span class="d">OS-keychain storage on macOS, Linux, and Windows — never plaintext.</span></a>
             <a href="$site.page('docs/http').link()"><span class="k">http</span><span class="t">HTTP client</span><span class="d">Enforced TLS, timeouts, bounded responses, redirect hygiene.</span></a>
           </div>

@@ -644,8 +644,7 @@ test "integration: no notice for an explicit --config path" {
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }
 
-test "integration: no notice for a user-level (XDG) config" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // XDG_CONFIG_HOME is POSIX-only
+test "integration: no notice for a user-level (platform config dir) config" {
     var a = arena();
     defer a.deinit();
     const alloc = a.allocator();
@@ -673,7 +672,15 @@ test "integration: no notice for a user-level (XDG) config" {
 
     var aw = std.Io.Writer.Allocating.init(alloc);
     var environ = std.process.Environ.Map.init(alloc);
-    try environ.put("XDG_CONFIG_HOME", xdg_base);
+    // The user-level base comes from the platform convention: %APPDATA% on
+    // Windows, $XDG_CONFIG_HOME on POSIX. Setting whichever one this host
+    // consults lets the test assert the same behaviour everywhere instead of
+    // skipping on Windows.
+    if (@import("builtin").os.tag == .windows) {
+        try environ.put("APPDATA", xdg_base);
+    } else {
+        try environ.put("XDG_CONFIG_HOME", xdg_base);
+    }
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
 

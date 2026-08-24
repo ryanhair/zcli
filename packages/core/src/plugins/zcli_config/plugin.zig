@@ -567,30 +567,6 @@ fn detectFormat(path: []const u8) ?Format {
     return null;
 }
 
-/// Resolve the user-level config base directory per platform.
-///   - Windows: %APPDATA% (the roaming XDG-config equivalent), else %USERPROFILE%.
-///   - POSIX:   $XDG_CONFIG_HOME, else $HOME/.config.
-/// The caller owns the returned string only when `allocated` is set (the
-/// $HOME/.config fallback allocates; every other branch borrows from `environ`).
-fn userConfigDir(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map, allocated: *bool) ?[]const u8 {
-    allocated.* = false;
-    if (@import("builtin").os.tag == .windows) {
-        if (environ.get("APPDATA")) |appdata| return appdata;
-        if (environ.get("USERPROFILE")) |up| {
-            const dir = std.fmt.allocPrint(allocator, "{s}\\.config", .{up}) catch return null;
-            allocated.* = true;
-            return dir;
-        }
-        return null;
-    }
-
-    if (environ.get("XDG_CONFIG_HOME")) |xdg| return xdg;
-    const home = environ.get("HOME") orelse return null;
-    const dir = std.fmt.allocPrint(allocator, "{s}/.config", .{home}) catch return null;
-    allocated.* = true;
-    return dir;
-}
-
 /// An explicitly-requested `--config <path>` that doesn't exist is a hard
 /// error (`error.ConfigFileNotFound`) — unlike the implicit default-location
 /// search below, which stays silent when nothing is found. The caller
@@ -615,25 +591,31 @@ fn findConfigFile(allocator: std.mem.Allocator, io: std.Io, environ: *const std.
         return p;
     }
 
-    // User-level: {config dir}/{app_name}/config.{ext}
-    var base_allocated = false;
-    const base = userConfigDir(allocator, environ, &base_allocated) orelse return null;
-    defer if (base_allocated) allocator.free(base);
+    // User-level: {platform config dir}/{app_name}/config.{ext}
+    //
+    // A resolution failure — no HOME, a stripped %APPDATA%, a home we cannot
+    // safely append to — means "this environment has no user config location",
+    // which for an implicit search is silence, exactly as before.
+    const p: zcli.Paths = .{ .allocator = allocator, .environ = environ, .app_name = app_name };
+    const dir = p.dir(.config) catch return null;
+    defer allocator.free(dir);
 
-    return firstExisting(allocator, io, cwd, stderr, base, app_name, &extensions, allocated);
+    return firstExisting(allocator, io, cwd, stderr, dir, app_name, &extensions, allocated);
 }
 
 /// Return the first existing config file across the extension list, warning if
 /// more than one candidate exists (ambiguous — first-in-list wins silently
-/// otherwise). `base` empty selects the project-local `.{app}.config{ext}`
-/// naming; a non-empty base selects `{base}/{app}/config{ext}`. The returned
-/// path is always heap-allocated (`allocated` set true).
+/// otherwise). `dir` empty selects the project-local `.{app}.config{ext}`
+/// naming; a non-empty `dir` is the app's already-resolved config directory
+/// (`zcli.Paths.dir(.config)`) and selects `{dir}/config{ext}`, joined with the
+/// host separator. The returned path is always heap-allocated (`allocated` set
+/// true).
 fn firstExisting(
     allocator: std.mem.Allocator,
     io: std.Io,
     cwd: std.Io.Dir,
     stderr: *std.Io.Writer,
-    base: []const u8,
+    dir: []const u8,
     app_name: []const u8,
     extensions: []const []const u8,
     allocated: *bool,
@@ -642,10 +624,13 @@ fn firstExisting(
     var extra_count: usize = 0;
 
     for (extensions) |ext| {
-        const candidate = if (base.len == 0)
+        const candidate = if (dir.len == 0)
             std.fmt.allocPrint(allocator, ".{s}.config{s}", .{ app_name, ext }) catch continue
-        else
-            std.fmt.allocPrint(allocator, "{s}/{s}/config{s}", .{ base, app_name, ext }) catch continue;
+        else blk: {
+            var leaf_buf: [32]u8 = undefined;
+            const leaf = std.fmt.bufPrint(&leaf_buf, "config{s}", .{ext}) catch continue;
+            break :blk std.fs.path.join(allocator, &.{ dir, leaf }) catch continue;
+        };
 
         if (cwd.access(io, candidate, .{})) |_| {
             if (chosen == null) {
@@ -794,40 +779,94 @@ test "preExecute: auto-discovery with no config files stays silent" {
     try testing.expectEqualStrings("", err_aw.written());
 }
 
-test "userConfigDir: POSIX XDG_CONFIG_HOME wins" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+// The user-level config directory is now `zcli.Paths.dir(.config)`. Because
+// `convention` and `syntax` are runtime fields, these assertions run in full on
+// every host instead of skipping two thirds of the matrix on the wrong runner.
+
+test "user config dir: XDG_CONFIG_HOME wins over the HOME fallback" {
     var environ = std.process.Environ.Map.init(testing.allocator);
     defer environ.deinit();
     try environ.put("XDG_CONFIG_HOME", "/custom/xdg");
     try environ.put("HOME", "/home/u");
-    var allocated = false;
-    const dir = userConfigDir(testing.allocator, &environ, &allocated).?;
-    defer if (allocated) testing.allocator.free(dir);
-    try testing.expectEqualStrings("/custom/xdg", dir);
-    try testing.expect(!allocated);
+
+    const p: zcli.Paths = .{
+        .allocator = testing.allocator,
+        .environ = &environ,
+        .app_name = "myapp",
+        .convention = .xdg,
+        .syntax = .posix,
+    };
+    const dir = try p.dir(.config);
+    defer testing.allocator.free(dir);
+    try testing.expectEqualStrings("/custom/xdg/myapp", dir);
 }
 
-test "userConfigDir: POSIX HOME fallback allocates ~/.config" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+test "user config dir: HOME fallback is ~/.config/{app}" {
     var environ = std.process.Environ.Map.init(testing.allocator);
     defer environ.deinit();
     try environ.put("HOME", "/home/u");
-    var allocated = false;
-    const dir = userConfigDir(testing.allocator, &environ, &allocated).?;
-    defer if (allocated) testing.allocator.free(dir);
-    try testing.expect(allocated);
-    try testing.expectEqualStrings("/home/u/.config", dir);
+
+    const p: zcli.Paths = .{
+        .allocator = testing.allocator,
+        .environ = &environ,
+        .app_name = "myapp",
+        .convention = .xdg,
+        .syntax = .posix,
+    };
+    const dir = try p.dir(.config);
+    defer testing.allocator.free(dir);
+    try testing.expectEqualStrings("/home/u/.config/myapp", dir);
 }
 
-test "userConfigDir: Windows APPDATA wins" {
-    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+test "user config dir: Windows uses %APPDATA%, never a %USERPROFILE% guess" {
     var environ = std.process.Environ.Map.init(testing.allocator);
     defer environ.deinit();
+    try environ.put("USERPROFILE", "C:\\Users\\u");
+
+    const p: zcli.Paths = .{
+        .allocator = testing.allocator,
+        .environ = &environ,
+        .app_name = "myapp",
+        .convention = .windows,
+        .syntax = .windows,
+    };
+    // The old `%USERPROFILE%\.config` fallback is gone: those folders can be
+    // redirected by policy, so deriving one is a guess that scatters config
+    // outside a managed profile.
+    try testing.expectError(error.HomeNotFound, p.dir(.config));
+
     try environ.put("APPDATA", "C:\\Users\\u\\AppData\\Roaming");
-    var allocated = false;
-    const dir = userConfigDir(testing.allocator, &environ, &allocated).?;
-    defer if (allocated) testing.allocator.free(dir);
-    try testing.expectEqualStrings("C:\\Users\\u\\AppData\\Roaming", dir);
+    const dir = try p.dir(.config);
+    defer testing.allocator.free(dir);
+    try testing.expectEqualStrings("C:\\Users\\u\\AppData\\Roaming\\myapp", dir);
+}
+
+test "user config dir: a relative XDG_CONFIG_HOME is ignored, a relative %APPDATA% errors" {
+    var environ = std.process.Environ.Map.init(testing.allocator);
+    defer environ.deinit();
+    try environ.put("XDG_CONFIG_HOME", "relative/dir");
+    try environ.put("HOME", "/home/u");
+    try environ.put("APPDATA", "relative\\dir");
+
+    const posix: zcli.Paths = .{
+        .allocator = testing.allocator,
+        .environ = &environ,
+        .app_name = "myapp",
+        .convention = .xdg,
+        .syntax = .posix,
+    };
+    const dir = try posix.dir(.config);
+    defer testing.allocator.free(dir);
+    try testing.expectEqualStrings("/home/u/.config/myapp", dir);
+
+    const win: zcli.Paths = .{
+        .allocator = testing.allocator,
+        .environ = &environ,
+        .app_name = "myapp",
+        .convention = .windows,
+        .syntax = .windows,
+    };
+    try testing.expectError(error.HomeNotAbsolute, win.dir(.config));
 }
 
 test "ContextData defaults" {
