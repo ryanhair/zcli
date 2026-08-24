@@ -13,38 +13,82 @@ pub fn windowSize() terminal.Winsize {
 }
 
 /// A contiguous window of items to display, chosen so the cursor stays visible
-/// and the total physical rows fit within `budget`.
+/// and the total physical rows fit within `budget` — with one exception, since
+/// visible outranks small: an item taller than the whole budget is windowed
+/// alone and overspends it, for the renderer to clip (see `Viewport.window`).
 pub const Window = struct { start: usize, end: usize };
 
-/// Pick the visible window over `n` items. `rowCount(ctx, i)` returns the
-/// physical (wrapped) row count of item `i` — computed on demand so callers
-/// need no allocated counts array. Grows from the cursor outward (upward first,
-/// matching the existing scroll feel) until `budget` rows are used.
-pub fn viewport(
-    n: usize,
-    cursor: usize,
-    budget: usize,
-    ctx: anytype,
-    comptime rowCount: fn (@TypeOf(ctx), usize) usize,
-) Window {
-    if (n == 0) return .{ .start = 0, .end = 0 };
-    var used = rowCount(ctx, cursor);
-    var start = cursor;
-    while (start > 0) {
-        const c = rowCount(ctx, start - 1);
-        if (used + c > budget) break;
-        used += c;
-        start -= 1;
+/// The scroll anchor of a list, carried across frames. Keeping the anchor is
+/// what makes the visible window stable: the highlight moves inside the window
+/// and only crossing an edge scrolls it, so reversing direction no longer
+/// re-centers the list under the cursor.
+pub const Viewport = struct {
+    /// Index of the first visible item, written by `window` — which also
+    /// clamps it when filtering or a resize leaves it stale.
+    start: usize = 0,
+
+    /// Pick the visible window over `n` items and re-anchor. `rowCount(ctx, i)`
+    /// returns the physical (wrapped) row count of item `i` — computed on
+    /// demand so callers need no allocated counts array. The window holds whole
+    /// items whose rows fit `budget`, always including `cursor`.
+    ///
+    /// The one case where a window exceeds `budget` is a cursor whose own item
+    /// is taller than the whole budget: it is returned alone, for the renderer
+    /// to clip. Showing the top of the highlighted item beats showing a
+    /// neighbour instead — and callers that can avoid the case do, as the
+    /// prompts reserve the highlighted choice's rows before spending any on
+    /// header and query chrome.
+    pub fn window(
+        self: *Viewport,
+        n: usize,
+        cursor: usize,
+        budget: usize,
+        ctx: anytype,
+        comptime rowCount: fn (@TypeOf(ctx), usize) usize,
+    ) Window {
+        if (n == 0) {
+            self.start = 0;
+            return .{ .start = 0, .end = 0 };
+        }
+        const highlight = @min(cursor, n - 1);
+
+        // The earliest start that still leaves room for the cursor's own rows.
+        // A start before it would scroll the highlight off the bottom.
+        var lo = highlight;
+        var used = rowCount(ctx, highlight);
+        while (lo > 0) {
+            const c = rowCount(ctx, lo - 1);
+            if (used + c > budget) break;
+            used += c;
+            lo -= 1;
+        }
+
+        // Hold the anchor while the cursor is inside the window; a cursor past
+        // an edge drags it exactly as far as that edge. Clamping also repairs
+        // an anchor left stale by filtering or a resize.
+        var start = std.math.clamp(self.start, lo, highlight);
+
+        used = rowCount(ctx, start);
+        var end = start + 1;
+        while (end < n) {
+            const c = rowCount(ctx, end);
+            if (used + c > budget) break;
+            used += c;
+            end += 1;
+        }
+        // Spend leftover rows upward: the list ran out inside the window, or
+        // the next item wraps to more rows than remain.
+        while (start > 0) {
+            const c = rowCount(ctx, start - 1);
+            if (used + c > budget) break;
+            used += c;
+            start -= 1;
+        }
+
+        self.start = start;
+        return .{ .start = start, .end = end };
     }
-    var end = cursor + 1;
-    while (end < n) {
-        const c = rowCount(ctx, end);
-        if (used + c > budget) break;
-        used += c;
-        end += 1;
-    }
-    return .{ .start = start, .end = end };
-}
+};
 
 const testing = std.testing;
 
@@ -57,16 +101,127 @@ const CountSlice = struct {
 
 test "viewport keeps cursor visible within budget" {
     const cs = CountSlice{ .counts = &.{ 1, 1, 1, 1, 1, 1, 1, 1 } };
-    const win = viewport(cs.counts.len, 5, 3, &cs, CountSlice.at);
+    var vp = Viewport{};
+    const win = vp.window(cs.counts.len, 5, 3, &cs, CountSlice.at);
     try testing.expect(win.start <= 5 and 5 < win.end);
     try testing.expect(win.end - win.start <= 3);
 }
 
 test "viewport shows everything when it fits" {
     const cs = CountSlice{ .counts = &.{ 2, 1, 3 } };
-    const win = viewport(cs.counts.len, 0, 100, &cs, CountSlice.at);
+    var vp = Viewport{};
+    const win = vp.window(cs.counts.len, 0, 100, &cs, CountSlice.at);
     try testing.expectEqual(@as(usize, 0), win.start);
     try testing.expectEqual(@as(usize, 3), win.end);
+}
+
+test "viewport scrolls one item at a time at each edge and holds still between" {
+    const cs = CountSlice{ .counts = &.{ 1, 1, 1, 1, 1, 1, 1, 1 } };
+    var vp = Viewport{};
+
+    // Walking down only scrolls once the cursor passes the bottom edge.
+    for ([_]usize{ 0, 1, 2 }) |cursor| {
+        const win = vp.window(cs.counts.len, cursor, 3, &cs, CountSlice.at);
+        try testing.expectEqual(Window{ .start = 0, .end = 3 }, win);
+    }
+    try testing.expectEqual(Window{ .start = 1, .end = 4 }, vp.window(cs.counts.len, 3, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 4, 3, &cs, CountSlice.at));
+
+    // Reversing direction moves the highlight inside that same window ...
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 3, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 2, 3, &cs, CountSlice.at));
+    // ... and only scrolls once it passes the top edge.
+    try testing.expectEqual(Window{ .start = 1, .end = 4 }, vp.window(cs.counts.len, 1, 3, &cs, CountSlice.at));
+}
+
+test "viewport reversal holds at the bottom edge too" {
+    const cs = CountSlice{ .counts = &.{ 1, 1, 1, 1, 1, 1, 1, 1 } };
+    var vp = Viewport{};
+
+    // Arrive at the end of the list, then walk up until the window scrolls.
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 7, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 6, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 5, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 4, .end = 7 }, vp.window(cs.counts.len, 4, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 3, 3, &cs, CountSlice.at));
+
+    // Reversing back down holds that window until the bottom edge gives way.
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 4, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 5, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 4, .end = 7 }, vp.window(cs.counts.len, 6, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 7, 3, &cs, CountSlice.at));
+    // ... and the last item pins the window: down is a no-op there.
+    try testing.expectEqual(Window{ .start = 5, .end = 8 }, vp.window(cs.counts.len, 7, 3, &cs, CountSlice.at));
+}
+
+test "viewport reversal holds around a wrapped item at the bottom edge" {
+    // Item 3 wraps to two rows, so the bottom edge moves by more than a row.
+    const cs = CountSlice{ .counts = &.{ 1, 1, 1, 2, 1, 1 } };
+    var vp = Viewport{};
+
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 5, 4, &cs, CountSlice.at));
+    // Up into the window: no scroll, wrapped item included whole.
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 4, 4, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 3, 4, &cs, CountSlice.at));
+    // Crossing the top edge scrolls by one item, not one row.
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 2, 4, &cs, CountSlice.at));
+    // Back down: the window holds, then yields at the bottom edge.
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 3, 4, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 2, .end = 5 }, vp.window(cs.counts.len, 4, 4, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 6 }, vp.window(cs.counts.len, 5, 4, &cs, CountSlice.at));
+}
+
+test "viewport shows an over-budget item alone, for the renderer to clip" {
+    const cs = CountSlice{ .counts = &.{ 1, 5, 1 } };
+    var vp = Viewport{};
+
+    // The tall item does not fit in three rows, so it takes the window alone
+    // rather than yielding it to a neighbour.
+    try testing.expectEqual(Window{ .start = 1, .end = 2 }, vp.window(cs.counts.len, 1, 3, &cs, CountSlice.at));
+    // Its neighbours still window normally on either side of it.
+    try testing.expectEqual(Window{ .start = 0, .end = 1 }, vp.window(cs.counts.len, 0, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 2, .end = 3 }, vp.window(cs.counts.len, 2, 3, &cs, CountSlice.at));
+}
+
+test "viewport keeps wrapped items whole within the physical row budget" {
+    // Item 2 wraps to three rows: it never shares the window with a neighbour.
+    const cs = CountSlice{ .counts = &.{ 1, 1, 3, 1, 1 } };
+    var vp = Viewport{};
+
+    try testing.expectEqual(Window{ .start = 0, .end = 2 }, vp.window(cs.counts.len, 0, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 2, .end = 3 }, vp.window(cs.counts.len, 2, 3, &cs, CountSlice.at));
+    // Past the tall item the leftover budget is spent downward, not on a
+    // half-empty window.
+    try testing.expectEqual(Window{ .start = 3, .end = 5 }, vp.window(cs.counts.len, 3, 3, &cs, CountSlice.at));
+    try testing.expectEqual(Window{ .start = 3, .end = 5 }, vp.window(cs.counts.len, 4, 3, &cs, CountSlice.at));
+    // Reversing back over it re-anchors on the tall item alone.
+    try testing.expectEqual(Window{ .start = 2, .end = 3 }, vp.window(cs.counts.len, 2, 3, &cs, CountSlice.at));
+}
+
+test "viewport repairs a stale anchor after the list shrinks or the terminal resizes" {
+    const long = CountSlice{ .counts = &.{ 1, 1, 1, 1, 1, 1, 1, 1 } };
+    var vp = Viewport{};
+    _ = vp.window(long.counts.len, 7, 3, &long, CountSlice.at);
+    try testing.expectEqual(@as(usize, 5), vp.start);
+
+    // Filtering down to two items leaves the anchor past the end.
+    const short = CountSlice{ .counts = &.{ 1, 1 } };
+    const filtered = vp.window(short.counts.len, 0, 3, &short, CountSlice.at);
+    try testing.expectEqual(Window{ .start = 0, .end = 2 }, filtered);
+
+    // A taller terminal reveals more rows without losing the highlight.
+    _ = vp.window(long.counts.len, 7, 3, &long, CountSlice.at);
+    const grown = vp.window(long.counts.len, 7, 8, &long, CountSlice.at);
+    try testing.expectEqual(Window{ .start = 0, .end = 8 }, grown);
+
+    // A shorter one keeps it visible.
+    const shrunk = vp.window(long.counts.len, 7, 2, &long, CountSlice.at);
+    try testing.expectEqual(Window{ .start = 6, .end = 8 }, shrunk);
+
+    // An empty list resets the anchor.
+    const empty = CountSlice{ .counts = &.{} };
+    try testing.expectEqual(Window{ .start = 0, .end = 0 }, vp.window(0, 0, 3, &empty, CountSlice.at));
+    try testing.expectEqual(@as(usize, 0), vp.start);
 }
 
 // ---------------------------------------------------------------------------

@@ -35,19 +35,22 @@ pub fn select(p: Prompts, config: SelectConfig) !usize {
     return selection.run(.one, p, selectionConfig(config));
 }
 
-/// Build the header + viewport-limited choice list as one frame. Pure and
-/// size-explicit, so it is deterministic/testable (the emulator render tests
-/// drive it through an App with a fixed terminal size).
+/// Build the header + viewport-limited choice list as one frame. Size-explicit
+/// and free of hidden state beyond `view`'s scroll anchor, so it is
+/// deterministic/testable (the emulator render tests drive it through an App
+/// with a fixed terminal size). Pass the same `view` across the frames of one
+/// prompt so the window scrolls only when the cursor leaves it.
 pub fn frameNode(
     a: std.mem.Allocator,
     ctx: Prompts.ThemeContext,
     config: SelectConfig,
     cursor: usize,
+    view: *lr.Viewport,
     ws: terminal.Winsize,
 ) !ui.Node {
     const filtered = try a.alloc(usize, config.choices.len);
     for (filtered, 0..) |*original, i| original.* = i;
-    return frameNodeFiltered(a, ctx, config, "", filtered, cursor, ws);
+    return frameNodeFiltered(a, ctx, config, "", filtered, cursor, view, ws);
 }
 
 /// Build a single-selection frame for an explicit query and filtered
@@ -60,9 +63,10 @@ pub fn frameNodeFiltered(
     query: []const u8,
     filtered: []const usize,
     cursor: usize,
+    view: *lr.Viewport,
     ws: terminal.Winsize,
 ) !ui.Node {
-    return selection.frameNode(a, ctx, selectionConfig(config), .one, query, filtered, null, cursor, ws);
+    return selection.frameNode(a, ctx, selectionConfig(config), .one, query, filtered, null, cursor, view, ws);
 }
 
 fn selectionConfig(config: SelectConfig) selection.Config {
@@ -155,6 +159,7 @@ test "non-TTY: shows numbered choices" {
 
 const FrameHarness = struct {
     arena: std.heap.ArenaAllocator,
+    view: lr.Viewport = .{},
 
     fn init() FrameHarness {
         return .{ .arena = std.heap.ArenaAllocator.init(std.testing.allocator) };
@@ -173,7 +178,7 @@ const FrameHarness = struct {
 test "frameNode: header plus one row per short option" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 4), size.h); // header + 3
@@ -183,7 +188,7 @@ test "frameNode: wrapped option occupies its true physical rows" {
     var h = FrameHarness.init();
     defer h.deinit();
     const long = "this is a long option label that will certainly wrap at a narrow width";
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, .{ .row = 24, .col = 24 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, 0, &h.view, .{ .row = 24, .col = 24 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expect(size.h > 3);
@@ -202,7 +207,7 @@ test "frameNode: selected row carries the theme's selected token" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, 0, &h.view, .{ .row = 24, .col = 80 });
 
     var s = try ui.Surface.init(std.testing.allocator, 79, 3);
     defer s.deinit();
@@ -221,7 +226,7 @@ test "frameNodeFiltered: searchable header, query, and results measure their row
     var h = FrameHarness.init();
     defer h.deinit();
     const filtered = [_]usize{ 0, 1, 2 };
-    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" }, .search = true }, "a", &filtered, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "alpha", "beta", "gamma" }, .search = true }, "a", &filtered, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 5), size.h);
@@ -250,7 +255,7 @@ test "frameNodeFiltered: empty query uses the hint style" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const node = try frameNodeFiltered(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "", &.{ 0, 1 }, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNodeFiltered(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "", &.{ 0, 1 }, 0, &h.view, .{ .row = 24, .col = 80 });
 
     var surface = try ui.Surface.init(std.testing.allocator, 79, 4);
     defer surface.deinit();
@@ -264,7 +269,7 @@ test "frameNodeFiltered: empty query uses the hint style" {
 test "frameNodeFiltered: no matches uses three rows" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "zz", &.{}, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNodeFiltered(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, "zz", &.{}, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 3), size.h);

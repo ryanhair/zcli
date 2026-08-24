@@ -27,6 +27,9 @@ const Harness = struct {
     vt: vterm.VTerm,
     app: ui.App,
     fed: usize = 0,
+    /// One scroll anchor per harness, exactly as a live prompt keeps one across
+    /// its frames.
+    view: Prompts.list_render.Viewport = .{},
 
     fn init(ws: Winsize) !*Harness {
         const self = try testing.allocator.create(Harness);
@@ -71,6 +74,7 @@ fn multiFrame(h: *Harness, config: Prompts.MultiSelectConfig, selected: []const 
         config,
         selected,
         cursor,
+        &h.view,
         ws,
     ));
 }
@@ -84,6 +88,7 @@ fn searchableMultiFrame(h: *Harness, config: Prompts.MultiSelectConfig, query: [
         filtered,
         selected,
         cursor,
+        &h.view,
         ws,
     ));
 }
@@ -207,6 +212,7 @@ fn selectFrame(h: *Harness, config: Prompts.SelectConfig, cursor: usize, ws: Win
         Prompts.default_style,
         config,
         cursor,
+        &h.view,
         ws,
     ));
 }
@@ -294,6 +300,7 @@ fn searchableSelectFrame(h: *Harness, config: Prompts.SelectConfig, query: []con
         query,
         filtered,
         cursor,
+        &h.view,
         ws,
     ));
 }

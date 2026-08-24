@@ -268,9 +268,10 @@ const WrapCounts = struct {
     }
 };
 
-/// Grow a visible window of whole options out from `cursor` (upward first, to
-/// match the prompts' scroll feel) until `budget` physical rows are used. The
-/// ui-side mirror of `prompts`' `list_render.viewport` — kept private because
+/// Grow a visible window of whole options out from `cursor` (upward first)
+/// until `budget` physical rows are used. This widget is stateless per frame,
+/// so the window follows the cursor rather than being anchored the way
+/// `prompts`' `list_render.Viewport` now anchors it. Kept private because
 /// `Select` is its only consumer today; promote it if a second one appears.
 fn growWindow(
     n: usize,
