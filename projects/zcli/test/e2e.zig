@@ -2469,7 +2469,8 @@ test "interactive: requireInteractive passes on a PTY and fails when either stre
         testing.allocator,
         io,
         &.{
-            "sh", "-c", demo_bin ++ " guard tty-tty; echo EXIT:tty-tty:$?; " ++
+            "sh", "-c",
+            demo_bin ++ " guard tty-tty; echo EXIT:tty-tty:$?; " ++
                 demo_bin ++ " guard file-stdout >stdout_redirected.txt 2>&1; echo EXIT:file-stdout:$?; " ++
                 demo_bin ++ " guard devnull-stdin </dev/null; echo EXIT:devnull-stdin:$?; exit 0",
         },
