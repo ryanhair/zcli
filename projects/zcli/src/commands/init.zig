@@ -800,7 +800,7 @@ const agents_section = agents_begin ++
     \\   `index.zig` is the group landing; a top-level `index.zig` is the root command
     \\   (`app` itself — single-command CLIs); plugins live in `src/plugins/`.
     \\
-    \\`zcli guide` topics: structure, sharing, storage, arena, output, prompts, http, secrets, plugins, testing.
+    \\`zcli guide` topics: structure, sharing, storage, paths, arena, output, prompts, ui, http, secrets, plugins, testing.
     \\
 ++ agents_end ++ "\n";
 

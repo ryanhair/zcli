@@ -415,6 +415,35 @@ pub fn resolve(self: Paths, kind: Kind, segments: []const []const u8) ResolveErr
     return self.buildPath(kind, false, segments);
 }
 
+/// `root` joined with `segments` under this `Paths`' **syntax** rules — the
+/// same normalization `base` and `resolve` apply: the root's separators are
+/// normalized to the syntax, its trailing separators trimmed (never past the
+/// root itself), and exactly one separator inserted before each segment.
+///
+/// For a location rooted somewhere this type did not resolve — a directory
+/// another tool names through its own variable, such as
+/// `BASH_COMPLETION_USER_DIR`. `root` must already be fully qualified for this
+/// syntax (`validOverride` is the usual way to establish that), else
+/// `error.HomeNotAbsolute`.
+///
+/// Exists so such callers do not hand-roll the join. A hand-rolled one
+/// reintroduces exactly the defects these rules exist to prevent — a mixed
+/// `C:/one\completions\…` from an un-normalized base, a doubled separator from
+/// a root, and spellings of the same file that compare unequal.
+pub fn joinUnder(self: Paths, root: []const u8, segments: []const []const u8) ResolveError![]u8 {
+    if (!isValidSegment(self.app_name)) return error.InvalidAppName;
+    for (segments) |seg| {
+        if (!isValidSegment(seg)) return error.InvalidSubPath;
+    }
+    if (!self.syntax.isFullyQualified(root)) return error.HomeNotAbsolute;
+
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(self.allocator);
+    try self.appendBase(&list, root);
+    for (segments) |seg| try self.appendSegment(&list, seg);
+    return list.toOwnedSlice(self.allocator);
+}
+
 /// This app's directory for `kind`.
 /// e.g. `/home/u/.config/myapp`, `C:\Users\u\AppData\Local\myapp\cache`.
 pub fn dir(self: Paths, kind: Kind) ResolveError![]u8 {

@@ -428,7 +428,11 @@ fn getInstallPath(allocator: std.mem.Allocator, environ: *const std.process.Envi
             defer allocator.free(home);
             const leaf = try std.fmt.allocPrint(allocator, "_{s}", .{app_name});
             defer allocator.free(leaf);
-            break :blk try std.fs.path.join(allocator, &.{ home, ".zsh", "completions", leaf });
+            // `joinUnder`, not `std.fs.path.join`: the latter dispatches on the
+            // host rather than on `syntax`, and this must be spelled the same
+            // way `legacyInstallPath` spells it or the identity check there
+            // cannot recognise an unchanged destination.
+            break :blk try host_paths.joinUnder(home, &.{ ".zsh", "completions", leaf });
         },
         // PowerShell has no auto-loaded completions directory, and no XDG story
         // on Windows ($PROFILE lives under Documents, possibly OneDrive-
@@ -490,42 +494,24 @@ fn bashUserDir(p: zcli.Paths) ?[]const u8 {
 }
 
 fn bashInstallPath(p: zcli.Paths) ![]const u8 {
+    // `joinUnder` rather than a local join: separator normalization and
+    // trailing-separator trimming live in one place, next to the `base`/
+    // `resolve` rules they have to agree with. A second copy here is what
+    // produced the mixed `C:/one\completions\…` in the first place.
     if (bashUserDir(p)) |dir| {
-        // Joined the way `Paths` joins, not with `std.fs.path.join`, which
-        // dispatches on the host rather than on `syntax`.
-        var out: std.ArrayList(u8) = .empty;
-        errdefer out.deinit(p.allocator);
-        try out.appendSlice(p.allocator, dir);
-
-        // Rule 1: normalize the base to the syntax separator, so
-        // `BASH_COMPLETION_USER_DIR=C:/one` yields `C:\one\completions\…` and
-        // never the mixed `C:/one\completions\…`.
-        if (p.syntax == .windows) {
-            for (out.items) |*c| {
-                if (c.* == '/') c.* = '\\';
-            }
-        }
-        // Rules 2 and 3: trim trailing separators, then insert exactly one
-        // before each segment — so a root (`/`, `C:\`) contributes its own
-        // separator instead of a doubled one.
-        while (out.items.len > 0 and p.syntax.isSep(out.items[out.items.len - 1])) {
-            _ = out.pop();
-        }
-        const sep = p.syntax.sep();
-        try out.append(p.allocator, sep);
-        try out.appendSlice(p.allocator, "completions");
-        try out.append(p.allocator, sep);
-        try out.appendSlice(p.allocator, p.app_name);
-        return try out.toOwnedSlice(p.allocator);
+        return try p.joinUnder(dir, &.{ "completions", p.app_name });
     }
     return try p.resolve(.data, &.{ "bash-completion", "completions", p.app_name });
 }
 
-/// The pre-consolidation HOME-relative destination, always `/`-joined (which is
-/// exactly how the old code built it, on every platform). Kept so `install` can
-/// warn about a stale script that would shadow the new one, and `uninstall` can
+/// The pre-consolidation HOME-relative destination. Kept so `install` can warn
+/// about a stale script that would shadow the new one, and `uninstall` can
 /// remove it. Null when there is no usable legacy location, or when it is
 /// identical to the resolved one.
+///
+/// The old code joined these with `/` on every platform; this rebuilds them
+/// with the host separator, which names the same file (Win32 accepts both) and
+/// lets the identity check below actually work.
 ///
 /// **The root is validated before use.** `uninstall` hands this path straight to
 /// `deleteFile`, so building it from the raw environment value would make a
@@ -548,11 +534,31 @@ fn legacyInstallPath(allocator: std.mem.Allocator, environ: *const std.process.E
     // to assume its caller went through the registry.
     if (!zcli.Paths.isValidSegment(app_name)) return null;
 
+    // Built through `joinUnder`, so this spelling is normalized exactly the way
+    // `resolved` is. That matters because the comparison below is TEXTUAL, and
+    // an un-normalized spelling makes the *same file* compare unequal:
+    // `HOME=/home/u/` would yield `/home/u//.config/…` against a resolved
+    // `/home/u/.config/…`, and on Windows a `/`-joined legacy path would never
+    // equal the `\`-joined resolved one. Either way `install` would warn about
+    // the script it had just written, and `uninstall` would delete that same
+    // script in the legacy pass before reporting it removed nothing.
     const path = switch (shell_type) {
-        .bash => std.fmt.allocPrint(allocator, "{s}/.local/share/bash-completion/completions/{s}", .{ home, app_name }),
-        .zsh => std.fmt.allocPrint(allocator, "{s}/.zsh/completions/_{s}", .{ home, app_name }),
-        .fish => std.fmt.allocPrint(allocator, "{s}/.config/fish/completions/{s}.fish", .{ home, app_name }),
-        .powershell => std.fmt.allocPrint(allocator, "{s}/.config/powershell/completions/{s}.ps1", .{ home, app_name }),
+        .bash => guard.joinUnder(home, &.{ ".local", "share", "bash-completion", "completions", app_name }),
+        .zsh => blk: {
+            const leaf = std.fmt.allocPrint(allocator, "_{s}", .{app_name}) catch return null;
+            defer allocator.free(leaf);
+            break :blk guard.joinUnder(home, &.{ ".zsh", "completions", leaf });
+        },
+        .fish => blk: {
+            const leaf = std.fmt.allocPrint(allocator, "{s}.fish", .{app_name}) catch return null;
+            defer allocator.free(leaf);
+            break :blk guard.joinUnder(home, &.{ ".config", "fish", "completions", leaf });
+        },
+        .powershell => blk: {
+            const leaf = std.fmt.allocPrint(allocator, "{s}.ps1", .{app_name}) catch return null;
+            defer allocator.free(leaf);
+            break :blk guard.joinUnder(home, &.{ ".config", "powershell", "completions", leaf });
+        },
     } catch return null;
 
     if (std.mem.eql(u8, path, resolved)) {
@@ -1084,4 +1090,78 @@ test "the legacy sweep target is validated, so a malformed HOME cannot delete ou
             legacyInstallPath(testing.allocator, &env, .fish, "myapp", legacy),
         );
     }
+}
+
+test "the legacy sweep never targets the file that was just installed" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // POSIX HOME spellings
+    // With no XDG_* set, every destination is unchanged from the old layout, so
+    // the legacy path IS the resolved path and there is nothing to sweep. The
+    // comparison is textual, so an un-normalized legacy spelling would make the
+    // same file compare unequal — `install` would warn about the script it had
+    // just written, and `uninstall` would delete it in the legacy pass.
+    //
+    // A trailing separator in HOME is the spelling that used to break this.
+    for ([_][]const u8{ "/home/u", "/home/u/", "/home/u///" }) |home| {
+        var env = try envMap(&.{.{ "HOME", home }});
+        defer env.deinit();
+        for ([_]ShellType{ .bash, .zsh, .fish, .powershell }) |shell| {
+            const resolved = try getInstallPath(testing.allocator, &env, shell, "myapp");
+            defer testing.allocator.free(resolved);
+            // The resolved path itself is normalized regardless of the spelling.
+            try testing.expect(std.mem.indexOf(u8, resolved, "//") == null);
+            try testing.expectEqual(
+                @as(?[]const u8, null),
+                legacyInstallPath(testing.allocator, &env, shell, "myapp", resolved),
+            );
+        }
+    }
+}
+
+test "the legacy sweep still finds a genuinely relocated script, normalized" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // When XDG redirects the destination the legacy location is a different
+    // file and must still be found — and spelled without the doubled separator
+    // a trailing slash in HOME would otherwise introduce.
+    var env = try envMap(&.{ .{ "HOME", "/home/u/" }, .{ "XDG_CONFIG_HOME", "/custom/cfg" } });
+    defer env.deinit();
+
+    const resolved = try getInstallPath(testing.allocator, &env, .fish, "myapp");
+    defer testing.allocator.free(resolved);
+    try testing.expectEqualStrings("/custom/cfg/fish/completions/myapp.fish", resolved);
+
+    const legacy = legacyInstallPath(testing.allocator, &env, .fish, "myapp", resolved).?;
+    defer testing.allocator.free(legacy);
+    try testing.expectEqualStrings("/home/u/.config/fish/completions/myapp.fish", legacy);
+}
+
+test "joinUnder normalizes the root, so the same directory has one spelling" {
+    // The shared join `bashInstallPath` and `legacyInstallPath` both route
+    // through. Runtime `syntax` means the Windows rows are asserted here too.
+    const cases = [_]struct { zcli.Paths.Syntax, []const u8, []const u8 }{
+        // Trailing separators trimmed; a root keeps exactly its own.
+        .{ .posix, "/opt/bc", "/opt/bc/completions/myapp" },
+        .{ .posix, "/opt/bc/", "/opt/bc/completions/myapp" },
+        .{ .posix, "/opt/bc///", "/opt/bc/completions/myapp" },
+        .{ .posix, "/", "/completions/myapp" },
+        // Mixed separators normalized to the syntax.
+        .{ .windows, "C:/one", "C:\\one\\completions\\myapp" },
+        .{ .windows, "C:\\one", "C:\\one\\completions\\myapp" },
+        .{ .windows, "C:\\one\\", "C:\\one\\completions\\myapp" },
+        .{ .windows, "C:\\", "C:\\completions\\myapp" },
+        .{ .windows, "\\\\server\\share", "\\\\server\\share\\completions\\myapp" },
+        .{ .windows, "\\\\server\\share\\", "\\\\server\\share\\completions\\myapp" },
+    };
+    var env = try envMap(&.{.{ "HOME", "/home/u" }});
+    defer env.deinit();
+    for (cases) |c| {
+        const p = testPaths(&env, c[0]);
+        const got = try p.joinUnder(c[1], &.{ "completions", "myapp" });
+        defer testing.allocator.free(got);
+        try testing.expectEqualStrings(c[2], got);
+    }
+
+    // A root that is not fully qualified is refused rather than appended to.
+    const p = testPaths(&env, .posix);
+    try testing.expectError(error.HomeNotAbsolute, p.joinUnder("relative/dir", &.{"x"}));
+    try testing.expectError(error.InvalidSubPath, p.joinUnder("/opt", &.{".."}));
 }
