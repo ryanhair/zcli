@@ -34,6 +34,38 @@ All notable changes to zcli are documented here.
   Space key selects or toggles while Enter selects or commits. Plain `select`
   also accepts Space like Enter; filtered-out multi-select choices remain
   selected.
+- **`zcli.process` — running an external program, safely** (ADR-0034). Every real
+  CLI shells out, and hand-rolling it reproduces the same four bugs: a deadlock
+  once the payload outgrows a pipe buffer, unbounded capture, an ambient
+  environment, and a termination value that cannot tell `exit 1` from a SIGSEGV.
+  `context.process()` hands back a `Runner` wired to the command's allocator,
+  `io`, and — the part that matters — the threaded `environ`; there is no
+  constructor that omits it and no `getenv` inside. The stdin write and both
+  output drains make independent progress, so any payload size is safe and stdin
+  closes the instant the last byte is handed over; capture is per-stream bounded
+  with an explicit overflow policy (`.fail` stdout, `.truncate` stderr); and
+  `Program` has no implicit-PATH variant — all four variants resolve to an
+  absolute path *in the parent*, so PATH never chooses the binary. On Windows the
+  runner emits an explicit supported extension, refuses `.bat`/`.cmd` without an
+  opt-in, and refuses a target with a supported-extension sibling, closing the
+  `CreateProcessW` PATHEXT fallback. It reaps its own children by polling and
+  never calls `Child.wait`/`Child.kill`, which makes stopping race-free and lets
+  Windows report a full `NTSTATUS` instead of std's truncation to `u8`.
+  `std.process.run` could not serve: it hard-codes `.stdin = .ignore`, so it
+  cannot feed a child at all. Guide: [Running external
+  programs](https://zcli.sh/docs/subprocess/).
+
+### Changed
+- **`zcli_secrets`' Linux backends now shell out through `zcli.process`.** The
+  plugin carried the strongest of the framework's three hand-rolled subprocess
+  runners; it is now policy on top of the shared one — which trusted directories
+  a helper may come from, that the payload is a secret, and that the captured
+  output is too. Behaviour is unchanged for callers, and the helper is still
+  pinned to an absolute path in a trusted directory (now via `Program.in_dirs`)
+  so the inherited PATH cannot choose who receives a decrypted credential on
+  stdin. Internal to the plugin: `subprocess.resolveHelper` is gone, replaced by
+  `subprocess.helperAvailable`, and the `pass` argv builders no longer carry an
+  `argv[0]` — the runner supplies the path it resolved.
 
 - **An interactive-only prompt guard.** `try p.requireInteractive()` before a
   prompt sequence fails with `error.NotInteractive` — before anything is asked —

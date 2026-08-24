@@ -186,6 +186,10 @@ jobs:
       #     has fired and the console has been restored.
       #   - build_utils/: runs at build time (*std.Build) — no io, no context,
       #     no buffered stream exists; std.debug.print is the build-time channel.
+      #   - process_fixture.zig: not runtime code at all. It is the child program
+      #     process_integration_test.zig spawns, compiled only by the test build,
+      #     and its whole job is to exit with a chosen status — there is no
+      #     context to route through and the exit code IS the assertion.
       - name: No std.debug.print / std.process.exit outside the context (output contract)
         shell: bash
         run: |
@@ -197,6 +201,7 @@ jobs:
              | grep -vE 'packages/core/src/context\.zig:' \
              | grep -vE 'packages/core/src/registry/compiled\.zig:' \
              | grep -vE 'packages/core/src/build_utils/' \
+             | grep -vE 'packages/core/src/process_fixture\.zig:' \
              | grep -vE 'packages/core/src/options/array_utils\.zig:' \
              | grep -vE 'projects/zcli/src/commands/add/_generate\.zig:' \
              || true)

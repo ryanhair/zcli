@@ -45,6 +45,12 @@ pub const appTheme = theme.appTheme;
 /// over `std.http.Client`. See http.zig.
 pub const http = @import("http.zig");
 
+/// Subprocess runner with safe defaults (concurrent drains so a big payload
+/// cannot deadlock, bounded capture, no ambient environment, full termination
+/// detail). In a command, prefer `context.process()`, which returns a `Runner`
+/// pre-wired to the threaded `environ`. See process.zig.
+pub const process = @import("process.zig");
+
 /// Filesystem command discovery — the same scan the build system runs to
 /// generate the registry. Exposed so tools can determine a project's command
 /// tree without building it (e.g. the `zcli tree` command).

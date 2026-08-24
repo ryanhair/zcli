@@ -8,9 +8,9 @@
 //! (see ADR-0010). The value is base64-encoded (see `subprocess.encodeValue`).
 //!
 //! The `pass` binary is resolved to an absolute path in a trusted directory
-//! before every operation (`subprocess.resolveHelper`) rather than spawned as the
-//! bare name `pass`, so the inherited PATH cannot decide who is handed the secret
-//! on stdin.
+//! before every operation (`Program.in_dirs`, via `subprocess.run`) rather than
+//! spawned as the bare name `pass`, so the inherited PATH cannot decide who is
+//! handed the secret on stdin.
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
@@ -31,13 +31,10 @@ pub fn get(
     service: []const u8,
     name: []const u8,
 ) !?[]const u8 {
-    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const bin = subprocess.resolveHelper(io, environ, "pass", &bin_buf) catch |e| return mapError(e);
-
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
 
-    var out = subprocess.run(allocator, io, environ, &showArgv(bin, path), null) catch |e|
+    var out = subprocess.run(allocator, io, environ, "pass", &showArgv(path), null) catch |e|
         return mapError(e);
     defer out.deinit();
 
@@ -61,9 +58,6 @@ pub fn set(
     name: []const u8,
     value: []const u8,
 ) !void {
-    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const bin = subprocess.resolveHelper(io, environ, "pass", &bin_buf) catch |e| return mapError(e);
-
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
     const encoded = try subprocess.encodeValue(allocator, value);
@@ -95,7 +89,7 @@ pub fn set(
     const store_attempts = 8;
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        var out = subprocess.run(allocator, io, environ, &insertArgv(bin, path), encoded) catch |e| return mapError(e);
+        var out = subprocess.run(allocator, io, environ, "pass", &insertArgv(path), encoded) catch |e| return mapError(e);
         defer out.deinit();
 
         if (out.ok()) return;
@@ -113,13 +107,10 @@ pub fn delete(
     service: []const u8,
     name: []const u8,
 ) !void {
-    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const bin = subprocess.resolveHelper(io, environ, "pass", &bin_buf) catch |e| return mapError(e);
-
     const path = try entryPath(allocator, service, name);
     defer allocator.free(path);
 
-    var out = subprocess.run(allocator, io, environ, &rmArgv(bin, path), null) catch |e|
+    var out = subprocess.run(allocator, io, environ, "pass", &rmArgv(path), null) catch |e|
         return mapError(e);
     defer out.deinit();
 
@@ -134,9 +125,11 @@ fn entryPath(allocator: std.mem.Allocator, service: []const u8, name: []const u8
     return std.fmt.allocPrint(allocator, "zcli/{s}/{s}", .{ service, name });
 }
 
-// argv builders. `bin` is the absolute path `resolveHelper` pinned, never the
-// bare name `pass` — `std.process.spawn` resolves a bare `argv[0]` against the
-// inherited PATH, which would let a PATH entry choose who receives the secret.
+// argv builders. These carry no `argv[0]`: `zcli.process` supplies it from the
+// absolute path it resolved out of the trusted directory list, and there is no
+// way for a caller to spoof it. That is what keeps a PATH entry from choosing
+// who receives the secret — `std.process.spawn` would resolve a bare `argv[0]`
+// against the inherited PATH.
 //
 // `--` terminates `pass`'s option parsing so the entry path is always taken as a
 // positional, never as a flag — belt-and-suspenders alongside the plugin boundary
@@ -144,14 +137,14 @@ fn entryPath(allocator: std.mem.Allocator, service: []const u8, name: []const u8
 // `pass` is a bash script that passes its args through `getopt`, which honours
 // `--`. Isolating the argv here keeps the terminator's placement (immediately
 // before `path`) unit-testable without spawning `pass`.
-fn showArgv(bin: []const u8, path: []const u8) [4][]const u8 {
-    return .{ bin, "show", "--", path };
+fn showArgv(path: []const u8) [3][]const u8 {
+    return .{ "show", "--", path };
 }
-fn insertArgv(bin: []const u8, path: []const u8) [6][]const u8 {
-    return .{ bin, "insert", "--multiline", "--force", "--", path };
+fn insertArgv(path: []const u8) [5][]const u8 {
+    return .{ "insert", "--multiline", "--force", "--", path };
 }
-fn rmArgv(bin: []const u8, path: []const u8) [5][]const u8 {
-    return .{ bin, "rm", "--force", "--", path };
+fn rmArgv(path: []const u8) [4][]const u8 {
+    return .{ "rm", "--force", "--", path };
 }
 
 /// `pass` reports a missing entry as "Error: <path> is not in the password
@@ -189,23 +182,23 @@ test "entry path is namespaced under zcli/" {
     try std.testing.expectEqualStrings("zcli/myapp/token", p);
 }
 
-test "pass argv places `--` immediately before the entry path, behind a pinned binary" {
+test "pass argv places `--` immediately before the entry path and carries no argv[0]" {
     const path = "zcli/app/token";
-    const bin = "/usr/bin/pass";
     // Each `pass` subcommand must terminate options with `--` right before the
-    // path, so a path is never re-interpreted as a flag — and must invoke the
-    // resolved absolute binary, never a PATH-resolved bare name.
-    inline for (.{ showArgv(bin, path), insertArgv(bin, path), rmArgv(bin, path) }) |argv| {
+    // path, so a path is never re-interpreted as a flag.
+    inline for (.{ showArgv(path), insertArgv(path), rmArgv(path) }) |argv| {
         const last = argv.len - 1;
         try std.testing.expectEqualStrings("--", argv[last - 1]);
         try std.testing.expectEqualStrings(path, argv[last]);
-        try std.testing.expectEqualStrings(bin, argv[0]);
-        try std.testing.expect(std.fs.path.isAbsolute(argv[0]));
+        // No `argv[0]`: the runner supplies the absolute path it resolved. A
+        // builder that smuggled a program name in here would be handing
+        // `std.process.spawn` a name to resolve against the inherited PATH.
+        try std.testing.expect(!std.fs.path.isAbsolute(argv[0]));
     }
     // Full spellings, so an accidental flag reorder is caught.
-    try std.testing.expectEqualSlices([]const u8, &.{ bin, "show", "--", path }, &showArgv(bin, path));
-    try std.testing.expectEqualSlices([]const u8, &.{ bin, "insert", "--multiline", "--force", "--", path }, &insertArgv(bin, path));
-    try std.testing.expectEqualSlices([]const u8, &.{ bin, "rm", "--force", "--", path }, &rmArgv(bin, path));
+    try std.testing.expectEqualSlices([]const u8, &.{ "show", "--", path }, &showArgv(path));
+    try std.testing.expectEqualSlices([]const u8, &.{ "insert", "--multiline", "--force", "--", path }, &insertArgv(path));
+    try std.testing.expectEqualSlices([]const u8, &.{ "rm", "--force", "--", path }, &rmArgv(path));
 }
 
 test "isNotFound matches pass's missing-entry message" {
