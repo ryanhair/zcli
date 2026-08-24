@@ -40,4 +40,26 @@ module importable from a command makes its own tests run. See
 and how commands are compiled for testing, and `examples/testing-demo` for a
 project with both kinds of test.
 
-For the full VTerm assertion API, the integration/E2E tiers, snapshot testing, and the recommended per-command strategy, see **[zcli.sh/testing](https://zcli.sh/testing/)**.
+Commands that talk to an HTTP API get a fourth tool alongside the tiers: `HttpFixture`, a scripted loopback server for testing the adapter layer. Queue the responses, point the adapter at an ephemeral `127.0.0.1` URL, assert on what it sent:
+
+```zig
+const HttpFixture = @import("zcli-testing").HttpFixture;
+
+test "fetchWidget sends the token" {
+    const allocator = std.testing.allocator;
+
+    var fixture = try HttpFixture.init(allocator, std.testing.io, .{});
+    defer fixture.deinit();
+
+    try fixture.respondWith(.{ .body = "{\"id\":7,\"name\":\"sprocket\"}" });
+
+    var widget = try fetchWidget(allocator, std.testing.io, fixture.baseUrl(), "secret-token", 7);
+    defer widget.deinit(allocator);
+
+    const sent = try fixture.requests();
+    try std.testing.expectEqualStrings("/widgets/7", sent[0].target);
+    try std.testing.expectEqualStrings("Bearer secret-token", sent[0].header("authorization").?);
+}
+```
+
+For the full VTerm assertion API, the integration/E2E tiers, snapshot testing, the `HttpFixture` reference, and the recommended per-command strategy, see **[zcli.sh/testing](https://zcli.sh/testing/)**.

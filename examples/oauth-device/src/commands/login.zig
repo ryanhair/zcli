@@ -89,7 +89,7 @@ pub fn execute(_: Args, _: Options, context: *Context) !void {
 }
 
 /// POST the client_id and get back a device code, a user code, and where to
-/// enter it. Copies the fields we keep out of the response body before it's freed.
+/// enter it.
 fn requestDeviceCode(
     client: *zcli.http.Client,
     context: *Context,
@@ -116,16 +116,9 @@ fn requestDeviceCode(
         );
     }
 
-    const d = (try response.json(DeviceCode, arena)).value;
-    // `response.json` may reference `response.body`, which the defer above frees
-    // when this function returns — so copy everything that outlives it.
-    return .{
-        .device_code = try arena.dupe(u8, d.device_code),
-        .user_code = try arena.dupe(u8, d.user_code),
-        .verification_uri = try arena.dupe(u8, d.verification_uri),
-        .expires_in = d.expires_in,
-        .interval = d.interval,
-    };
+    // The parse owns its strings, so this survives the `response.deinit()` the
+    // defer above runs on the way out — no copying needed.
+    return (try response.json(DeviceCode, arena)).value;
 }
 
 /// Poll the token endpoint on the server-mandated interval until it hands back a
@@ -161,10 +154,9 @@ fn pollForToken(
         defer response.deinit();
 
         const result = (try response.json(TokenResponse, arena)).value;
-        if (result.access_token) |token| {
-            // Copy it out: the body this may reference is freed by the defer above.
-            return arena.dupe(u8, token);
-        }
+        // The parse owns its strings — they outlive the `response.deinit()`
+        // above and live as long as the arena.
+        if (result.access_token) |token| return token;
 
         const err = result.@"error" orelse
             return context.fail("The token endpoint returned neither a token nor an error.", .{});

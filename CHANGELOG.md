@@ -25,12 +25,37 @@ All notable changes to zcli are documented here.
   module's own tests. Two names for one module still produce one test root.
   The one list you already pass to both `generate()` and `addCommandTests` is
   all it takes.
+- **`zcli_testing.HttpFixture` — a scripted loopback HTTP server for adapter
+  tests.** Commands that talk to an API have a layer none of the three testing
+  tiers reaches directly: the adapter that builds the request and parses the
+  response. `HttpFixture.init` binds an ephemeral `127.0.0.1` port and starts
+  serving; queue responses with `respondWith(.{ .status, .headers, .body })`,
+  point the code under test at `baseUrl()` or `url("/path")`, then assert on
+  `requests()` — each recording carries the method, target, headers, and a
+  bounded copy of the request body. It is a real socket, so the whole client
+  path runs for real with no network access and nothing stubbed. Startup,
+  concurrent serving, and teardown are deterministic, and one `deinit()`
+  releases the socket, the serving tasks, and every byte the fixture handed out.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
   Space key selects or toggles while Enter selects or commits. Plain `select`
   also accepts Space like Enter; filtered-out multi-select choices remain
   selected.
+
+- **An interactive-only prompt guard.** `try p.requireInteractive()` before a
+  prompt sequence fails with `error.NotInteractive` — before anything is asked —
+  unless stdin and stdout are both terminals, which is what a command whose
+  whole job is the conversation wants instead of a line-based fallback that
+  answers questions the user never saw. `p.isInteractive()` asks the same
+  question without erroring, for commands that branch rather than fail, and
+  setting `.interactive` on a `Prompts` instance overrides the detection for
+  every prompt made through it — `false` forces line mode (the prompts still
+  print and still read stdin; it is not a `--no-input` switch, which has to skip
+  the sequence itself). The guard reads the same decision the prompts themselves
+  make, so its verdict is exactly what the next prompt would have done. Prompts
+  without the guard are unchanged: the line fallback — taken whenever *either*
+  stdin or stdout is redirected — stays the default.
 
 ### Changed (breaking)
 - **The standalone `search` prompt has been removed.** Replace
@@ -41,6 +66,7 @@ All notable changes to zcli are documented here.
   header.
 
 ### Fixed
+- **A value parsed by `zcli.http.Response.json` no longer dangles when the response is released** (#814). `std.json`'s slice-input default is `.alloc_if_needed`, so any string that needed no unescaping — which is most of them — came back as a slice *into* `Response.body` rather than into the parse's own arena. The `Parsed(T)` looked self-contained and the API said the arena owned it, but `response.deinit()` (or, under the per-command arena, the command returning) freed the bytes out from under `parsed.value`, and the payloads that happened to contain an escape hid it in testing. `json` now parses with `.allocate = .alloc_always`, so everything reachable from `.value` is genuinely owned by the parse and outlives the response it came from; the two lifetimes are independent, and the ownership contract in the module doc and the HTTP guide now says so. Unknown-field handling is unchanged. Callers that defensively copied strings out of a parse before the body went away (the `oauth-device` example did) can drop the copies.
 - **Release version policy is now one checked-in, executable contract instead of duplicated workflow snippets.** `scripts/validate-version.sh` compares the root, CLI, and core umbrella manifests; README and ROADMAP release URLs/metadata; the newest dated CHANGELOG release; an expected version or either tag shape when supplied; and an actual built `zcli --version` when supplied. CI tests that public seam against deterministic drift fixtures and runs it on a locally built CLI; the release workflow runs the same file after the staged bump and against each executable release build. The post-release phase now closes the remaining publication joins too: both tags must resolve to one commit, both source archives must download and contain the same version-consistent tree, the exact eight assets and all six signed checksums must verify, a downloaded host binary must report the release version, both site installers must match the tag, and the live shell installer must resolve the just-published CLI release.
 - **`scripts/release.sh` no longer reports a complete release as INCOMPLETE.** Its final verification sampled the live site exactly once, but Cloudflare Pages propagates assets independently and eventually — for a minute or so after a deploy the homepage and `/install.sh` routinely disagree about which build they are on, in *either* direction. The 0.24.0 deploy logged `version_ok=false install_ok=true` on its first attempt; a minute later the script caught the reverse skew and failed the installer check on a release that was in fact fine. The site checks now poll both together for up to two minutes, the same way `deploy-docs.yml`'s verify step already did — a single sample is a race, not a verdict. A failure to fetch the reference `install.sh` from the release tag is also reported as its own error now, instead of being indistinguishable from a genuine mismatch.
 - **Dependency hardening** — Nightwatch now includes its Linux raw-errno remediation, and serde.zig includes its YAML quoted-key fix. Renovate proposes review-gated dependency updates; Zig package hashes and downloaded-release checksums remain manually verified before merge.

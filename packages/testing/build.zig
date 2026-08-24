@@ -72,6 +72,21 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{ .root_module = unit_test_mod });
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
+    // Real-socket tests for the loopback HTTP fixture, in their own binary built
+    // ReleaseSafe. Same two reasons as core's http_loopback_test.zig: isolated,
+    // the round-trips run once instead of riding into every consumer's build of
+    // this tier; and ReleaseSafe turns off `unexpected_error_tracing`, which in
+    // Debug dumps a spurious stack trace on Windows when a loopback connect
+    // loses a concurrent dial (std 0.16 fails to map STATUS_CONNECTION_REFUSED
+    // in netConnectIpWindows). See the file header for the full story.
+    const http_fixture_test_mod = b.addModule("test-http-fixture", .{
+        .root_source_file = b.path("src/HttpFixture_test.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    const http_fixture_tests = b.addTest(.{ .root_module = http_fixture_test_mod });
+    test_step.dependOn(&b.addRunArtifact(http_fixture_tests).step);
+
     // ------------------------------------------------------------------------
     // Examples — runnable, commented sample tests, one per tier. `zig build
     // examples` compiles and runs them exactly the way a consumer would, so they
@@ -102,6 +117,20 @@ pub fn build(b: *std.Build) void {
     snapshot_example_mod.addImport("zcli-testing", testing_mod);
     const snapshot_example_tests = b.addTest(.{ .root_module = snapshot_example_mod });
     examples_step.dependOn(&b.addRunArtifact(snapshot_example_tests).step);
+
+    // HTTP fixture: `HttpFixture` driven by a real `zcli.http` adapter, which is
+    // what makes it an honest sample of the tier's intended use — so this one
+    // example imports `zcli` alongside `zcli-testing`. Built ReleaseSafe for the
+    // same Windows reason as the fixture's own tests above.
+    const http_fixture_example_mod = b.createModule(.{
+        .root_source_file = b.path("examples/http_fixture_example.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    http_fixture_example_mod.addImport("zcli-testing", testing_mod);
+    http_fixture_example_mod.addImport("zcli", zcli_dep.module("zcli"));
+    const http_fixture_example_tests = b.addTest(.{ .root_module = http_fixture_example_mod });
+    examples_step.dependOn(&b.addRunArtifact(http_fixture_example_tests).step);
 
     // E2E (PTY) tier: `InteractiveScript` + `runInteractive`. Std-only harness,
     // imported as `testing_e2e`.
