@@ -358,7 +358,7 @@ What a real zcli app looks like. The meta-CLI you install is one; the rest are t
 | [**tasks**](examples/tasks) | A full task tracker — the app in the demo GIF above. 14 commands with nested groups and aliases, five of the primary prompt types, spinners and progress bars, themed output, JSON persistence, config files, and completions. |
 | [**ghauth**](examples/ghauth) | GitHub device-flow companion: stashes an API token in the OS keychain via `zcli_secrets`, then uses `zcli.http` to call the API as `whoami`. |
 | [**oauth-device**](examples/oauth-device) | Mints a token from scratch by running GitHub's OAuth device flow (RFC 8628), then keychains it — freeform command code, not a framework feature. |
-| [**notes**](examples/notes) | A tiny note keeper: saves and loads a typed struct as a JSON file and shares one `store` module across three commands. |
+| [**notes**](examples/notes) | A tiny note keeper: saves and loads a typed struct as a JSON file, plus a lock-protected append-only log that stays safe under concurrent readers and writers, shared across its commands as modules. |
 | [**repostat**](examples/repostat) | Prints stats for a public GitHub repo — the minimal `zcli.http` + typed-JSON example, with safe client defaults out of the box. |
 | [**ext-plugin**](examples/ext-plugin) | Registers a third-party plugin shipped as its own Zig package (`.dependency = greet_plugin_dep`), contrasting the local-path and built-in plugin styles used elsewhere. |
 | [**vault**](examples/vault) | A secrets-backed CLI combining `zcli_secrets` (OS keychain), `zcli_config`, dynamic completions, and password prompts in one app. |
