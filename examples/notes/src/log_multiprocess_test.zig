@@ -153,8 +153,13 @@ test "a process that dies mid-record leaves a tail the next process repairs" {
     // no terminating newline. (Killing a child at exactly that instant is not
     // reproducible; the byte pattern it leaves is, and that is what every other
     // process has to cope with.)
+    //
+    // `.read = true` even though this only writes: asking a handle how long its
+    // file is reads the file's attributes, which a handle opened write-only is
+    // not allowed to do on Windows. Same open the recipe's `openForAppend` uses,
+    // for the same reason.
     {
-        const file = try tmp.dir.createFile(io, log.filename, .{ .truncate = false });
+        const file = try tmp.dir.createFile(io, log.filename, .{ .read = true, .truncate = false });
         defer file.close(io);
         try file.writePositionalAll(io, "{\"action\":\"add\",\"tit", try file.length(io));
     }

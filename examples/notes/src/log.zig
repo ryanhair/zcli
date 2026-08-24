@@ -190,13 +190,22 @@ const max_open_attempts = 16;
 
 /// Open the log for appending, creating it on first use.
 ///
-/// `.truncate = false` keeps what is already there. Note what this open does
-/// NOT do: ask for the lock. `createFile` and `openFile` both take a `.lock`
-/// and can acquire it atomically with the open — but on macOS two threads or
-/// processes creating the same file at the same moment can both be told
-/// `error.FileNotFound` for a file one of them just made, and asking the open
-/// to lock as well widens that window. Retry it, and take the lock as its own
-/// step: both behave the same on every platform.
+/// `.truncate = false` keeps what is already there. `.read = true` is not
+/// decoration either, even though appending only ever writes: `repairTail`
+/// reads the last record's worth of bytes back through this same handle and
+/// asks it for the file's length, and a handle opened write-only can do
+/// neither on Windows — the length query is a read of the file's attributes,
+/// and it fails with `error.AccessDenied`. One handle opened read+write keeps
+/// the whole critical section — length, tail read, truncate, append — under
+/// the one lock, which is the point; a second handle just to measure the file
+/// would sit outside it.
+///
+/// Note what this open does NOT do: ask for the lock. `createFile` and
+/// `openFile` both take a `.lock` and can acquire it atomically with the open —
+/// but on macOS two threads or processes creating the same file at the same
+/// moment can both be told `error.FileNotFound` for a file one of them just
+/// made, and asking the open to lock as well widens that window. Retry it, and
+/// take the lock as its own step: both behave the same on every platform.
 fn openForAppend(dir: std.Io.Dir, io: std.Io) !std.Io.File {
     var attempts: usize = 0;
     while (true) {
@@ -260,6 +269,20 @@ fn repairTail(io: std.Io, file: std.Io.File) !u64 {
 
 const testing = std.testing;
 
+/// Put raw bytes on the end of the log, behind `append`'s back: no lock, no
+/// encoding, no repair. This is how a test stages the damage a writer killed
+/// mid-record leaves behind, which no well-behaved appender would ever write.
+///
+/// It opens the same way `openForAppend` does, and for the same reason: asking
+/// a handle how long its file is reads the file's attributes, which a handle
+/// opened write-only is not allowed to do on Windows. Without `.read = true`
+/// this passes on POSIX and fails with `error.AccessDenied` there.
+fn writeRawTail(dir: std.Io.Dir, io: std.Io, bytes: []const u8) !void {
+    const file = try dir.createFile(io, filename, .{ .read = true, .truncate = false });
+    defer file.close(io);
+    try file.writePositionalAll(io, bytes, try file.length(io));
+}
+
 /// One concurrent appender, so a test can spawn several and join them.
 const Appender = struct {
     dir: std.Io.Dir,
@@ -322,12 +345,7 @@ test "read: a partial final record is ignored, earlier records are kept" {
     try append(tmp.dir, io, .{ .action = "add", .title = "second" });
 
     // Simulate a writer killed mid-record: bytes with no terminating newline.
-    {
-        const file = try tmp.dir.createFile(io, filename, .{ .truncate = false });
-        defer file.close(io);
-        const end = try file.length(io);
-        try file.writePositionalAll(io, "{\"action\":\"add\",\"tit", end);
-    }
+    try writeRawTail(tmp.dir, io, "{\"action\":\"add\",\"tit");
 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
@@ -345,12 +363,7 @@ test "append: repairs a partial final record instead of gluing onto it" {
     defer tmp.cleanup();
 
     try append(tmp.dir, io, .{ .action = "add", .title = "first" });
-    {
-        const file = try tmp.dir.createFile(io, filename, .{ .truncate = false });
-        defer file.close(io);
-        const end = try file.length(io);
-        try file.writePositionalAll(io, "{\"action\":\"add\",\"tit", end);
-    }
+    try writeRawTail(tmp.dir, io, "{\"action\":\"add\",\"tit");
 
     try append(tmp.dir, io, .{ .action = "remove", .title = "second" });
 
@@ -414,12 +427,7 @@ test "an over-long trailing fragment is corruption to reader and writer alike" {
     // writing, so it is damage rather than a torn tail. `read` must not quietly
     // skip what `append` refuses to repair — that divergence would let a reader
     // report a healthy-looking log while every append failed.
-    {
-        const file = try tmp.dir.createFile(io, filename, .{ .truncate = false });
-        defer file.close(io);
-        const end = try file.length(io);
-        try file.writePositionalAll(io, "x" ** max_record_bytes, end);
-    }
+    try writeRawTail(tmp.dir, io, "x" ** max_record_bytes);
 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
@@ -447,12 +455,7 @@ test "read: a complete record that is not JSON is reported, not skipped" {
     defer tmp.cleanup();
 
     try append(tmp.dir, io, .{ .action = "add", .title = "first" });
-    {
-        const file = try tmp.dir.createFile(io, filename, .{ .truncate = false });
-        defer file.close(io);
-        const end = try file.length(io);
-        try file.writePositionalAll(io, "not json at all\n", end);
-    }
+    try writeRawTail(tmp.dir, io, "not json at all\n");
 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();

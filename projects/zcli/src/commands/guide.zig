@@ -213,6 +213,15 @@ const topics = [_]Topic{
             \\       defer file.close(io);   // closing RELEASES the lock — flush first
             \\       try file.lock(io, .exclusive);   // readers: .shared
             \\
+            \\     Open it read+write even though appending only writes. Finding
+            \\     where to append means asking the handle for the file's length,
+            \\     and that is a read of its attributes: on Windows a write-only
+            \\     handle isn't allowed to, and `file.length` fails with
+            \\     `error.AccessDenied` (POSIX won't tell you — it passes). One
+            \\     read+write handle also keeps measuring, repairing and appending
+            \\     inside the one lock; a second handle opened just to stat the file
+            \\     would sit outside it.
+            \\
             \\     `createFile`/`openFile` also take a `.lock` option, but leave it
             \\     alone here: on macOS concurrent creating opens can report
             \\     `error.FileNotFound` for a file another one just made, and asking
