@@ -2,13 +2,14 @@
 
 Interactive terminal prompts for Zig CLIs: seven primary prompt types with
 arrow-key navigation, optional live filtering, and grapheme-aware line editing
-— each degrading gracefully to plain line-based input when stdin is not a TTY
-(so scripts and pipes keep working).
+— each degrading gracefully to plain line-based input when stdin or stdout is
+not a terminal (so scripts and pipes keep working).
 
 ## Features
 
 - **Seven primary prompt types**: `text`, `password`, `number`, `confirm`, `select`, `multiSelect`, `editor`
-- **Non-TTY fallback**: every prompt detects a non-TTY stdin and falls back to line input (select prompts print a numbered list)
+- **Non-TTY fallback**: redirect either stdin or stdout and every prompt falls back to line input (select prompts print a numbered list)
+- **Interactive-only guard**: `requireInteractive()` fails with `error.NotInteractive` before the first question, for commands where the fallback makes no sense
 - **Unicode-correct**: UTF-8 input assembly, wide characters, and grapheme-aware backspace via the `terminal` package
 - **Wrap- and resize-safe**: list prompts wrap long options with hang indents and re-render cleanly on terminal resize (SIGWINCH)
 - **Interruptible**: an `interrupt_keys` config aborts with `error.Interrupted` for caller-defined "go back"/"cancel" flows
@@ -88,6 +89,43 @@ or toggles the highlighted choice; Enter selects (single choice) or commits
 (multiple choices). ASCII Space is not query text. A searchable multi-select
 retains selections that become hidden by filtering.
 
+## Fallback, or interactive-only
+
+The line-based fallback is the default and covers most commands: the same code
+asks a question at a terminal and reads a line from a pipe, so scripts and CI
+keep working without a `--non-interactive` flag.
+
+Some commands have no meaningful answer off a terminal — a wizard whose whole
+job is the conversation, a prompt whose fallback would silently pick something
+destructive. Those guard once, before the first question:
+
+```zig
+const p = ...; // context.prompts() in a zcli command
+
+// One call, up front: fails before anything is asked.
+try p.requireInteractive(); // error.NotInteractive when piped
+
+const name = try p.text(.{ .message = "Project name:" });
+const ok = try p.confirm(.{ .message = "Create it?" });
+```
+
+`requireInteractive` returns `error.NotInteractive` unless **both** stdin and
+stdout are terminals: stdin so keystrokes can be read in raw mode, stdout so the
+rendered frame lands on the screen rather than in a redirected file. That is the
+same check the prompts themselves make, so the guard's answer is exactly what
+the next prompt would have done. `p.isInteractive()` asks it without erroring,
+for a command that wants to branch (see `zcli add command`, which scaffolds a
+plain skeleton when piped) instead of failing.
+
+Setting `interactive` on the instance overrides the detection for that instance
+— every prompt made through it and the guard alike. Note what `false` does and
+doesn't do: it **forces line mode**, so the prompts still print their question
+and still read stdin, which at a terminal means waiting for a typed line and on
+a closed stream means `error.EndOfStream`. It is not a `--no-input` switch. A
+flag that means "ask me nothing" has to skip the prompt sequence itself — take
+the defaults, or require the values as options — and the guard is what tells
+you the sequence can't run.
+
 ## Theming
 
 The list prompts (`select`, `multiSelect`) and `editor` style their
@@ -119,7 +157,7 @@ See [examples/tasks](../../examples/tasks/) for every prompt in a working CLI.
 
 ## Behavior notes
 
-- Interactive mode needs a TTY on stdin; prompts check and fall back automatically — never gate your command on TTY yourself.
+- Interactive mode needs a TTY on both stdin and stdout; prompts check and fall back automatically — don't hand-roll a TTY check, use `requireInteractive()` (fail) or `isInteractive()` (branch).
 - `text` supports a live `Preview` callback: it returns one line of text for the current input (allocated from the prompt's frame arena), rendered above the input line in the theme's hint style and repainted per keystroke.
 - Prompts flush the writer before each blocking read, so buffered writers are safe to pass.
 
