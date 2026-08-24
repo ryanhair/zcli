@@ -80,6 +80,8 @@ Any payload size is safe. The write runs alongside both drains, and stdin is clo
 
 `.secret` is never copied: the runner writes straight from your slice, so there is no staging duplicate to leak, and `scrub_source` zeroes your slice once every task that could still be reading it has been joined.
 
+**A child that closes its stdin early is not an error.** A tool that reads part of a payload, decides it wants no more, and exits with a message on stderr has told you exactly what happened — so the broken pipe is recorded as `Result.stdin_closed_early` and the child's exit status and both captures stand. Raising it instead would hand you a plumbing error in place of the child's own account of the run. Every *other* stdin write failure is still a failed run, reported with `phase = .stdin`.
+
 ## Capturing output
 
 ```zig

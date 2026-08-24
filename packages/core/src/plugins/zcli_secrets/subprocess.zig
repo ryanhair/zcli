@@ -83,12 +83,21 @@ const trusted_home_dirs = [_][]const u8{
 /// before still fails to read back.
 const stdout_limit = 1024 * 1024;
 
-/// Cap on captured helper stderr. Only ever substring-matched for known failure
-/// signatures, so a smaller cap costs nothing — and `.truncate` means a chatty
-/// helper can never turn a working operation into an error. Still marked
-/// sensitive: it is not *supposed* to carry secret material, and wiping it is
-/// cheap enough that the guarantee should not depend on that staying true.
-const stderr_limit = 64 * 1024;
+/// Cap on captured helper stderr — the same 1 MiB, and the same fail-on-overflow
+/// policy, the hand-rolled drain used.
+///
+/// The framework default for stderr is `.truncate`, on the reasoning that
+/// diagnostics are for humans and losing the tail should never fail a working
+/// run. That reasoning does not hold here: this stderr is not diagnostics, it is
+/// *input to a decision*. `noServiceSignal`, `isBenignRace` and `isNotFound`
+/// substring-match the whole buffer to choose between falling through to another
+/// backend, retrying, treating the result as "absent", and failing — so a marker
+/// sitting in a silently discarded tail does not lose a log line, it changes
+/// which branch runs. Better to fail loudly on a helper that produced a megabyte
+/// of stderr, which no working invocation does, than to decide on a prefix.
+/// Marked sensitive for the same reason as stdout: it is not *supposed* to carry
+/// secret material, and the guarantee should not depend on that staying true.
+const stderr_limit = 1024 * 1024;
 
 pub const Error = error{
     /// The helper binary could not be executed at all — typically it is not
@@ -206,6 +215,18 @@ pub const Output = struct {
 /// caller still owns that buffer, wipes it itself, and — for `set` — re-sends it
 /// on a retry, so zeroing it here would silently store zeros on the second
 /// attempt.
+///
+/// A helper that closes its stdin before the payload is finished is **not** an
+/// error here. The hand-rolled runner this replaced ignored the stdin write
+/// failure outright, on the grounds that the exit status is the authoritative
+/// signal, and that is load-bearing rather than incidental: every backend
+/// classifies a failure from the exit status *and* the stderr text
+/// (`noServiceSignal` → `ServiceUnavailable` → fall through to `pass`,
+/// `isBenignRace` → retry, `isNotFound` → absent). Raising the broken pipe would
+/// collapse all of that into `SpawnFailed`, which the backends read as "this
+/// helper is unusable". `zcli.process` preserves the behaviour: a normal-path
+/// `error.BrokenPipe` on the stdin write is recorded as
+/// `Result.stdin_closed_early` and the child's exit status and captures stand.
 pub fn run(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -231,7 +252,7 @@ pub fn run(
         } },
         .stderr = .{ .capture = .{
             .limit = stderr_limit,
-            .overflow = .truncate,
+            .overflow = .fail,
             .sensitive = true,
         } },
         // ADR-0010: the ambient environment is forwarded whole. See the module
@@ -468,6 +489,46 @@ test "run round-trips an empty stdin payload" {
 
     try std.testing.expect(out.ok());
     try std.testing.expectEqualStrings("", out.stdout);
+}
+
+// The regression this pins: a helper that rejects a large payload closes its
+// stdin while the parent is still writing, and the write comes back
+// `BrokenPipe`. If that displaces the run's outcome, the caller gets
+// `SpawnFailed` — which every backend reads as "this helper is unusable" —
+// instead of the exit status and the stderr text they classify by
+// (`noServiceSignal` → `ServiceUnavailable` → fall through to `pass`). The old
+// hand-rolled runner ignored the write failure for exactly this reason.
+test "a helper that closes stdin early still reports its exit status and stderr" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    // Availability is checked up front rather than by catching `SpawnFailed`,
+    // because `SpawnFailed` is exactly what the regression produces — swallowing
+    // it as "no shell here" would turn the failure this test exists for into a
+    // silent skip.
+    if (!helperAvailable(std.testing.io, &env, "sh")) return error.SkipZigTest;
+
+    // 256 KiB — past the ~64 KiB pipe buffer, so the write cannot complete into
+    // the pipe and must observe the child's early close.
+    const payload = try a.alloc(u8, 256 * 1024);
+    defer a.free(payload);
+    @memset(payload, 'A');
+
+    // Never reads stdin; says something recognizable on stderr and exits nonzero.
+    var out = try run(a, std.testing.io, &env, "sh", &.{
+        "-c", "printf 'org.freedesktop.secrets not provided\\n' >&2; exit 1",
+    }, payload);
+    defer out.deinit();
+
+    // The child's account of the run survives, not the runner's.
+    try std.testing.expect(!out.ok());
+    try std.testing.expectEqual(@as(u8, 1), out.result.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, out.stderr, "org.freedesktop.secrets") != null);
+    // And the runner still says the pipe broke, for anyone who wants to know.
+    try std.testing.expect(out.result.stdin_closed_early);
 }
 
 test "the caller's secret payload is left intact for a retry" {

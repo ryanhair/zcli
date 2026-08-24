@@ -98,7 +98,9 @@
 //! Guaranteed, for buffers this module owns, when the `Scrub` policy applies:
 //! the caller's `.secret` payload when `scrub_source` is set, and capture
 //! buffers for streams marked `sensitive` — the whole allocation, not just the
-//! retained prefix — on every exit path.
+//! retained prefix — on every exit path. That includes the scratch a sensitive
+//! `.truncate` stream reads its discarded tail into, which is module-owned and
+//! never handed back.
 //!
 //! **Not** guaranteed, and no amount of care here can change it:
 //!
@@ -377,7 +379,10 @@ pub const Phase = enum {
     resolve,
     /// `std.process.spawn` itself.
     spawn,
-    /// Writing the stdin payload.
+    /// Writing the stdin payload. Not reached for a broken pipe: a child that
+    /// closes its stdin early is recorded on `Result.stdin_closed_early` so that
+    /// its exit status and captures survive, rather than being displaced by the
+    /// write that lost the race.
     stdin,
     /// Draining stdout/stderr, including a cap trip under `.fail`.
     capture,
@@ -562,6 +567,19 @@ fn wipesStaging(scrub: Scrub) bool {
     return scrub != .never;
 }
 
+/// Does the module-owned *overflow scratch* get zeroed? Bytes past a sensitive
+/// stream's cap are read into `Stream.discard` rather than into the capture
+/// buffer — so `releaseCapture`, which only ever sees the allocation, cannot
+/// reach them, and a sensitive truncating capture would otherwise leave the
+/// discarded tail sitting in the runner's own frame.
+///
+/// It follows the staging column, not the capture column: nothing is ever handed
+/// back from the scratch, so there is no success case in which its contents are
+/// still wanted, and `.on_failure` has nothing to opt out of. Only `.never` does.
+fn wipesDiscard(scrub: Scrub, sensitive: bool) bool {
+    return sensitive and wipesStaging(scrub);
+}
+
 /// Release one capture buffer: wipe-then-free, in that order, decided in one
 /// place. Both exit paths call this so the ordering cannot drift between them —
 /// freeing before wiping would hand the allocator a live secret, and the two
@@ -588,6 +606,19 @@ pub const Result = struct {
     /// linger elapsed: a grandchild is still holding the write end, so the
     /// capture is complete only up to that moment.
     orphaned: bool,
+    /// The child closed its stdin before the whole payload was written, so the
+    /// write ended in `error.BrokenPipe`.
+    ///
+    /// Recorded rather than raised, and that is the contract: a child that reads
+    /// part of a payload, decides it wants no more, and exits with a message on
+    /// stderr has told the caller exactly what happened. Letting the broken pipe
+    /// become the run's error would throw away the exit status *and* both
+    /// captures in favour of the least informative half of that story — and a
+    /// caller who classifies failures by exit code and stderr text (the
+    /// `zcli_secrets` helpers do) would see a generic plumbing error instead.
+    /// Every other stdin write failure is still a failed run, reported with
+    /// `Phase.stdin`.
+    stdin_closed_early: bool,
 
     pub fn ok(self: Result) bool {
         return self.term.ok();
@@ -863,20 +894,45 @@ fn blockingWait(id: *Identity) Probe {
     }
 }
 
+/// What a stop attempt actually achieved. Three cases, not two, because the
+/// middle one is neither a failure nor something the runner did: the child was
+/// already on its way out under its own power. Collapsing it into "delivered"
+/// makes the runner claim a termination it did not cause — and on Windows that
+/// claim costs a real exit status, since `forced_stop` suppresses the `Term`
+/// (`NtTerminateProcess` would have overwritten it with the code we passed).
+/// Collapsing it into "failed" would be worse still: `error.StopFailed` says the
+/// child may still be running, which is exactly what this case rules out.
+const SignalOutcome = enum {
+    /// The signal reached a live child. This runner, not the child, decided how
+    /// the process ends.
+    delivered,
+    /// There was nothing to signal — the child had already terminated, or was
+    /// mid-termination. Whatever status it leaves behind is its own.
+    already_terminating,
+    /// The OS refused. The child may still be running, and this runner will not
+    /// reap it.
+    failed,
+};
+
 /// Send `sig` to the child. Only ever called between a `.running` probe and the
 /// next probe, on the one task that owns the run — which is what closes the
 /// PID-reuse window, given the exclusive-reaping precondition. On Linux the
 /// signal goes through the `pidfd` when one was acquired, so it can never land
 /// on a recycled pid even if that precondition is broken after acquisition.
-/// Returns false when the signal could not be delivered. The caller must treat
-/// that as a failure to stop rather than retrying through some other identity —
-/// see the pidfd branch for why that distinction is load-bearing.
-fn signalChild(id: *Identity, sig: posix.SIG) bool {
+/// A `.failed` outcome must be treated as a failure to stop rather than retried
+/// through some other identity — see the pidfd branch for why that distinction
+/// is load-bearing.
+fn signalChild(id: *Identity, sig: posix.SIG) SignalOutcome {
     if (is_windows) {
         const windows = std.os.windows;
         return switch (windows.ntdll.NtTerminateProcess(id.process, @enumFromInt(1))) {
-            .SUCCESS, .PROCESS_IS_TERMINATING => true,
-            else => false,
+            .SUCCESS => .delivered,
+            // The process was already terminating when the call arrived, so the
+            // exit status it ends up with is one it chose — a natural exit that
+            // merely raced this stop. Reporting delivery here would set
+            // `forced_stop` and suppress that status as if we had invented it.
+            .PROCESS_IS_TERMINATING => .already_terminating,
+            else => .failed,
         };
     }
     if (is_linux) {
@@ -888,16 +944,17 @@ fn signalChild(id: *Identity, sig: posix.SIG) bool {
             // stranger, and `kill` would find it perfectly signalable. So a
             // failure here is reported, never retried against the pid.
             return switch (posix.errno(std.os.linux.pidfd_send_signal(fd, sig, null, 0))) {
-                .SUCCESS => true,
+                .SUCCESS => .delivered,
                 // The child is already gone: nothing to signal, and nothing wrong.
-                .SRCH => true,
-                else => false,
+                .SRCH => .already_terminating,
+                else => .failed,
             };
         }
     }
     return switch (posix.errno(posix.system.kill(id.pid, sig))) {
-        .SUCCESS, .SRCH => true,
-        else => false,
+        .SUCCESS => .delivered,
+        .SRCH => .already_terminating,
+        else => .failed,
     };
 }
 
@@ -1278,6 +1335,13 @@ const Stream = struct {
         self.overflowing = true;
         return self.discard[0..];
     }
+
+    /// Zero the overflow scratch. Called on both exit paths for a sensitive
+    /// stream, per `wipesDiscard`: this buffer is the one place a sensitive
+    /// capture's bytes land that `releaseCapture` cannot reach.
+    fn wipeDiscard(self: *Stream) void {
+        std.crypto.secureZero(u8, &self.discard);
+    }
 };
 
 /// Windows only: the stdin write runs on its own task because the parent's
@@ -1340,10 +1404,14 @@ const Run = struct {
     /// The runner successfully signalled the child rather than letting it
     /// finish. On Windows that makes the status a subsequent probe reads back
     /// one *we* invented, so there is no honest `Term` to report for it. Set
-    /// only on a delivered signal: a *failed* terminate leaves whatever status
-    /// the child chose for itself, and suppressing that would throw away a real
-    /// natural-exit `Term`.
+    /// only on `SignalOutcome.delivered`: neither a refused terminate nor one
+    /// that found the child already terminating produced the status it ends up
+    /// with, and suppressing that would throw away a real natural-exit `Term`.
     forced_stop: bool = false,
+    /// The child closed its stdin before the payload was finished, on a run that
+    /// is otherwise succeeding. Carried to `Result.stdin_closed_early` instead of
+    /// becoming the run's failure — see that field for why.
+    stdin_closed_early: bool = false,
     /// Set when a stop signal could not be delivered. Distinguishes "we could
     /// not stop it" (phase `.stop`) from "something else reaped it" (`.wait`).
     stop_err: ?anyerror = null,
@@ -1483,7 +1551,29 @@ fn execute(
     child.stderr = null;
     child.id = null;
 
+    identityAcquired();
+
     return drive(&run_state, payload, diag_program);
+}
+
+/// Test-only seam: invoked on the run's own task the instant the child's
+/// identity has been taken — on Linux, the instant its `pidfd` is held. Outside
+/// a test build the variable does not exist at all.
+///
+/// It is here because the guarantee a `pidfd` actually buys — that no signal
+/// sent after acquisition can land on a recycled pid — can only be exercised by
+/// an external reaper acting strictly *after* acquisition, and a sleep chosen to
+/// "probably" outlast the spawn is a guess rather than a handshake: too short and
+/// the test asserts a guarantee the design deliberately does not make, too long
+/// and it quietly stops reaching the path at all. Neither failure is visible in
+/// the result.
+pub var identity_acquired_hook: if (builtin.is_test) ?*const fn () void else void =
+    if (builtin.is_test) null else {};
+
+fn identityAcquired() void {
+    if (builtin.is_test) {
+        if (identity_acquired_hook) |hook| hook();
+    }
 }
 
 fn takeIdentity(child: *std.process.Child) Identity {
@@ -1793,15 +1883,19 @@ fn drainStop(r: *Run) void {
 fn stopChild(r: *Run) Probe {
     const io = r.io;
     // Windows has no polite signal — `signalChild` is `NtTerminateProcess`
-    // there, so a *successful* call is already the forcible stop and the grace
+    // there, so a *delivered* call is already the forcible stop and the grace
     // loop below is only waiting for the corpse. The flag records that the stop
-    // actually happened, not that it was attempted: a failed terminate leaves
-    // whatever status the child chose for itself, and that status is real.
-    if (!signalChild(&r.identity, .TERM)) {
-        r.stop_err = error.StopFailed;
-        return .{ .failed = error.StopFailed };
+    // actually happened, not that it was attempted: neither a refused terminate
+    // nor one that arrived at an already-terminating process invented the status
+    // the child ends up with, and that status is real.
+    switch (signalChild(&r.identity, .TERM)) {
+        .delivered => r.forced_stop = true,
+        .already_terminating => {},
+        .failed => {
+            r.stop_err = error.StopFailed;
+            return .{ .failed = error.StopFailed };
+        },
     }
-    r.forced_stop = true;
 
     const deadline: Io.Clock.Timestamp = Io.Clock.Timestamp.now(io, .boot).addDuration(.{
         .raw = r.opts.stop_grace,
@@ -1831,9 +1925,14 @@ fn stopChild(r: *Run) Probe {
         .may_signal => {},
         .reaped, .never_signal => return before_kill,
     }
-    if (!signalChild(&r.identity, .KILL)) {
-        r.stop_err = error.StopFailed;
-        return .{ .failed = error.StopFailed };
+    switch (signalChild(&r.identity, .KILL)) {
+        .delivered => r.forced_stop = true,
+        // The child beat the escalation to it. Its own status stands.
+        .already_terminating => {},
+        .failed => {
+            r.stop_err = error.StopFailed;
+            return .{ .failed = error.StopFailed };
+        },
     }
     // SIGKILL is not ignorable, so blocking for the corpse terminates.
     return blockingWait(&r.identity);
@@ -1934,10 +2033,21 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
     // the primary failure (`Timeout`, `OutputTooLarge`, the capture error) in
     // front of the caller instead of replacing it with `.stdin`/`Canceled` — and
     // keeps an orphan-linger expiry, which is a *successful* return, from being
-    // turned into a failure by the cancellation it performs.
-    if (reason != null or writer_torn_down) {
+    // turned into a failure by the cancellation it performs. A broken pipe is
+    // only *ours* on the abort path, where the stop is what broke it; on a normal
+    // finish it is the child's own early close, and the `Result` says so.
+    const aborting = reason != null;
+    if (aborting or writer_torn_down) {
         if (r.stdin_err) |e| switch (e) {
-            error.Canceled, error.BrokenPipe => r.stdin_err = null,
+            error.Canceled => r.stdin_err = null,
+            error.BrokenPipe => {
+                // On a normal finish this is the child having closed its stdin
+                // early, which the `Result` records rather than raises; on an
+                // abort it is the pipe the runner broke itself while stopping
+                // the child, and claiming the child closed it would be a lie.
+                if (!aborting) r.stdin_closed_early = true;
+                r.stdin_err = null;
+            },
             else => {},
         };
     }
@@ -1970,9 +2080,21 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
         r.identity_open = false;
     }
 
-    // A normal-path writer error is the story; an abort's is not.
+    // A normal-path writer error is the story; an abort's is not. The one
+    // exception is a broken pipe, which says the *child* closed its stdin first
+    // — a decision the child then explains through its exit status and its
+    // stderr, both of which are in hand here. Raising the write error instead
+    // would discard the child's account of the run in favour of the runner's,
+    // so it is recorded on the `Result` and the child's outcome stands.
     if (reason == null) {
-        if (r.stdin_err) |e| reason = .{ .phase = .stdin, .err = e };
+        if (r.stdin_err) |e| {
+            if (e == error.BrokenPipe) {
+                r.stdin_closed_early = true;
+                r.stdin_err = null;
+            } else {
+                reason = .{ .phase = .stdin, .err = e };
+            }
+        }
     }
 
     // 6. Scrub per policy, free, write the diagnostic, return.
@@ -1989,6 +2111,13 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
 
     const out_sensitive = if (r.out.cfg) |c| c.sensitive else false;
     const err_sensitive = if (r.err_stream.cfg) |c| c.sensitive else false;
+
+    // The overflow scratch is module-owned and never handed back, so both exit
+    // paths wipe it here. `releaseCapture` only ever sees the allocation, and a
+    // sensitive *truncating* capture — `zcli_secrets`' stderr is exactly that —
+    // reads everything past the cap into this scratch instead.
+    if (wipesDiscard(r.opts.scrub, out_sensitive)) r.out.wipeDiscard();
+    if (wipesDiscard(r.opts.scrub, err_sensitive)) r.err_stream.wipeDiscard();
 
     if (failed) {
         // No partial `Result` escapes: whatever both streams captured is
@@ -2008,6 +2137,7 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
         .allocator = r.allocator,
         .scrub = r.opts.scrub,
         .orphaned = r.orphaned,
+        .stdin_closed_early = r.stdin_closed_early,
     };
 }
 
@@ -2105,6 +2235,7 @@ test "Result.deinit releases both buffers and is idempotent" {
         .allocator = a,
         .scrub = .always,
         .orphaned = false,
+        .stdin_closed_early = false,
     };
     result.deinit();
     result.deinit(); // idempotent: the second call must not double-free
@@ -2486,6 +2617,46 @@ test "Stream.readTarget switches to the discard buffer at the cap" {
     const at_cap = try s.readTarget(a);
     try testing.expect(s.overflowing);
     try testing.expectEqual(@as(usize, discard_buffer_len), at_cap.len);
+}
+
+test "the overflow scratch follows the staging column, not the capture column" {
+    // Nothing is ever handed back from the scratch, so there is no success case
+    // in which its contents are still wanted: `.on_failure` has nothing to opt
+    // out of, and only `.never` does.
+    try testing.expect(wipesDiscard(.always, true));
+    try testing.expect(wipesDiscard(.on_failure, true));
+    try testing.expect(!wipesDiscard(.never, true));
+
+    // A non-sensitive stream is never wiped, whatever the policy.
+    try testing.expect(!wipesDiscard(.always, false));
+    try testing.expect(!wipesDiscard(.on_failure, false));
+    try testing.expect(!wipesDiscard(.never, false));
+}
+
+test "wipeDiscard zeroes the tail a sensitive truncating capture threw away" {
+    // The reachable shape: `zcli_secrets` captures stderr `sensitive` with
+    // `.truncate`, so every byte past its cap is read into this scratch — the one
+    // place a sensitive stream's bytes land that `releaseCapture` never sees,
+    // because it is not part of any allocation.
+    const a = testing.allocator;
+    var s: Stream = .{
+        .cfg = .{ .limit = 4, .overflow = .truncate, .sensitive = true },
+        .eof = false,
+    };
+    s.buf = try a.alloc(u8, 4);
+    defer a.free(s.buf);
+
+    s.len = 4;
+    const scratch = try s.readTarget(a);
+    try testing.expect(s.overflowing);
+    // Filled whole, not just the six interesting bytes: the scratch starts
+    // `undefined`, and a release build's `undefined` may be zero already.
+    @memset(scratch, 0x5a);
+    @memcpy(scratch[0..6], "secret");
+    try testing.expect(!std.mem.allEqual(u8, &s.discard, 0));
+
+    s.wipeDiscard();
+    try testing.expect(std.mem.allEqual(u8, &s.discard, 0));
 }
 
 test "a sensitive stream is allocated at its cap and never grows" {

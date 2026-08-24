@@ -182,10 +182,12 @@ why this is a precondition rather than a runtime check.
 The closest call here. A framework default of "hangs forever" is exactly the
 footgun this component exists to remove — but subprocesses legitimately run for
 minutes (`git clone`, `docker build`, `kubectl wait`), and aborting one mid-flight
-can leave remote state worse than waiting. Two things tip it: the orphan linger
+can leave remote state worse than waiting. What tips it is that the orphan linger
 removes the most common *silent* hang (a grandchild holding an output pipe after
-the child exits), and a timeout costs a hard concurrency requirement. The option
-is prominent in the guide and set in the worked example.
+the child exits), leaving the deadline as a policy choice about *this* child
+rather than a guard against the runner's own plumbing — and one that costs the
+caller nothing extra to make, per the amendment above. The option is prominent in
+the guide and set in the worked example.
 
 ## The sensitivity model covers stdin and captured output only
 

@@ -7,6 +7,12 @@ All notable changes to zcli are documented here.
 ## Unreleased
 
 ### Added
+- **Searchable `select` and `multiSelect`.** Set `.search = true` on either
+  canonical list prompt for case-insensitive filtering. Printable characters
+  other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
+  Space key selects or toggles while Enter selects or commits. Plain `select`
+  also accepts Space like Enter; filtered-out multi-select choices remain
+  selected.
 - **`zcli.process` — running an external program, safely** (ADR-0034). Every real
   CLI shells out, and hand-rolling it reproduces the same four bugs: a deadlock
   once the payload outgrows a pipe buffer, unbounded capture, an ambient
@@ -39,12 +45,6 @@ All notable changes to zcli are documented here.
   stdin. Internal to the plugin: `subprocess.resolveHelper` is gone, replaced by
   `subprocess.helperAvailable`, and the `pass` argv builders no longer carry an
   `argv[0]` — the runner supplies the path it resolved.
-- **Searchable `select` and `multiSelect`.** Set `.search = true` on either
-  canonical list prompt for case-insensitive filtering. Printable characters
-  other than ASCII Space filter, Backspace edits, Up/Down navigate, and the
-  Space key selects or toggles while Enter selects or commits. Plain `select`
-  also accepts Space like Enter; filtered-out multi-select choices remain
-  selected.
 
 ### Changed (breaking)
 - **The standalone `search` prompt has been removed.** Replace

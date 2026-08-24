@@ -315,6 +315,37 @@ test "stdin closes the moment the payload is written, so a cat-shaped child exit
     try testing.expectEqual(payload.len, result.stdout.len);
 }
 
+test "a child that closes stdin early keeps its exit status and its captures" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var env = emptyEnv(a);
+    defer env.deinit();
+    var runner = process.Runner.init(a, io, &env);
+
+    // Bigger than any platform's pipe buffer, so the write cannot possibly
+    // complete before the child — which never reads stdin — exits. The parent's
+    // write therefore breaks against a closed read end on both platforms
+    // (`EPIPE` / `STATUS_PIPE_BROKEN`), which is the case under test.
+    const payload = try filler(a, 4 * 1024 * 1024);
+    defer a.free(payload);
+
+    // A broken stdin write is NOT the run's failure: the child said what it
+    // thought on stderr and chose an exit code, and a caller who classifies by
+    // those two (`zcli_secrets`' backends do) must still be able to. Raising the
+    // write error would replace the child's account of the run with the runner's.
+    var result = try runner.run(fixture(), .{
+        .args = &.{ "reject", "3" },
+        .stdin = .{ .bytes = payload },
+    });
+    defer result.deinit();
+
+    try testing.expect(!result.ok());
+    try testing.expectEqual(@as(u8, 3), result.exitCode());
+    try testing.expectEqualStrings("rejected", result.stderr.bytes());
+    // Recorded rather than raised — the caller can still see what happened.
+    try testing.expect(result.stdin_closed_early);
+}
+
 // ---------------------------------------------------------------------------
 // 12-13, 15, 18. Timeouts
 // ---------------------------------------------------------------------------
@@ -871,16 +902,42 @@ test "a Windows crash reports the full NTSTATUS, not a truncated exit code" {
 /// Installs `SIGCHLD = SIG_IGN` partway through a run, so the kernel auto-reaps
 /// the child — but only *after* the runner has spawned it and acquired its
 /// pidfd. Reaping before that point would be testing a guarantee the design
-/// explicitly does not make (acquisition is itself pid-keyed), so the delay is
+/// explicitly does not make (acquisition is itself pid-keyed), so the ordering is
 /// the whole point of the fixture.
+///
+/// The ordering is a handshake in both directions, not a delay. A sleep long
+/// enough to "probably" outlast the spawn fails silently in both directions: too
+/// short and the disposition lands before acquisition, asserting a guarantee the
+/// design does not make; too long and the child can be reaped normally first, so
+/// the test passes without ever reaching the path. Here the reaper waits to be
+/// told acquisition happened, and the run waits to be told the disposition is
+/// installed — so by the time the child exits, the kernel is certain to be the
+/// one that reaps it, and `ECHILD` is the required outcome rather than one of
+/// two acceptable ones.
 const LateReaper = struct {
     io: Io,
-    delay_ms: i64,
     previous: std.posix.Sigaction = undefined,
+    acquired: std.atomic.Value(bool) = .init(false),
     installed: std.atomic.Value(bool) = .init(false),
 
+    /// Neither side of the handshake waits forever: a run that never reaches
+    /// acquisition (a spawn failure) would otherwise hang the join in the test's
+    /// `defer`, and a reaper task that died would hang the run. Both give up and
+    /// let the test fail on its assertions instead.
+    const handshake_limit_ms: i64 = 30_000;
+
+    fn waitFor(self: *LateReaper, flag: *const std.atomic.Value(bool)) void {
+        var waited_ms: i64 = 0;
+        while (!flag.load(.acquire)) : (waited_ms += 1) {
+            if (waited_ms >= handshake_limit_ms) return;
+            self.io.sleep(.fromMilliseconds(1), .boot) catch return;
+        }
+    }
+
+    /// The reaper's own task: wait for acquisition, then take over reaping.
     fn run(self: *LateReaper) void {
-        self.io.sleep(.fromMilliseconds(self.delay_ms), .boot) catch return;
+        self.waitFor(&self.acquired);
+        if (!self.acquired.load(.acquire)) return;
         var ignore: std.posix.Sigaction = .{
             .handler = .{ .handler = std.posix.SIG.IGN },
             .mask = std.posix.sigemptyset(),
@@ -890,10 +947,28 @@ const LateReaper = struct {
         self.installed.store(true, .release);
     }
 
+    /// Called by the runner, on the run's own task, the instant the pidfd is
+    /// held. Publishes that and blocks until the disposition is actually in
+    /// place, so the run cannot reach its first probe before the external reaper
+    /// exists.
+    fn onAcquired(self: *LateReaper) void {
+        self.acquired.store(true, .release);
+        self.waitFor(&self.installed);
+    }
+
     fn restore(self: *LateReaper) void {
         if (self.installed.load(.acquire)) std.posix.sigaction(.CHLD, &self.previous, null);
     }
 };
+
+/// The hook is a bare function pointer, so the reaper under test is reached
+/// through here. One test uses it at a time — Zig runs tests sequentially — and
+/// it is cleared before the test returns.
+var late_reaper: ?*LateReaper = null;
+
+fn lateReaperHook() void {
+    if (late_reaper) |r| r.onAcquired();
+}
 
 test "an external reap after pidfd acquisition is reported, never signalled through" {
     // Linux-gated: it needs both the `pidfd` hardening and the `SIG_IGN`
@@ -910,9 +985,13 @@ test "an external reap after pidfd acquisition is reported, never signalled thro
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
-    var reaper: LateReaper = .{ .io = io, .delay_ms = 200 };
+    var reaper: LateReaper = .{ .io = io };
+    late_reaper = &reaper;
+    process.identity_acquired_hook = &lateReaperHook;
     var reaper_future = try io.concurrent(LateReaper.run, .{&reaper});
     defer {
+        process.identity_acquired_hook = null;
+        late_reaper = null;
         _ = reaper_future.await(io);
         reaper.restore();
     }
@@ -922,12 +1001,15 @@ test "an external reap after pidfd acquisition is reported, never signalled thro
     defer dog.disarm();
 
     var diag: process.Diagnostic = .{};
-    // The child outlives the disposition change, so the kernel — not us — reaps it.
-    if (runner.run(fixture(), .{ .args = &.{ "sleep", "700" }, .diagnostic = &diag })) |res| {
-        // Our poll can still win the race against the kernel; that outcome is
-        // correct too, and the point is that neither hangs or signals a stranger.
+    // `SIGCHLD = SIG_IGN` is in place before the run's first probe and the child
+    // sleeps well past it, so the child is auto-reaped on exit and can never
+    // become a zombie this runner could collect: the reap must come back
+    // `ECHILD`. Accepting an ordinary success here would let the test pass
+    // without exercising the path it exists for.
+    if (runner.run(fixture(), .{ .args = &.{ "sleep", "300" }, .diagnostic = &diag })) |res| {
         var r = res;
         r.deinit();
+        return error.TestExpectedExternalReapToBeReported;
     } else |err| {
         try testing.expectEqual(error.ChildReapedElsewhere, err);
         try testing.expectEqual(process.Phase.wait, diag.phase);

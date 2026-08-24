@@ -164,6 +164,15 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // Never read stdin: say something on stderr and exit `args[2]`. The shape a
+    // helper takes when it rejects a payload — the parent's write breaks against
+    // a closed read end, while the exit status and the stderr message are the
+    // account of the run that actually matters.
+    if (std.mem.eql(u8, mode, "reject")) {
+        try writeAll(io, stderr, "rejected");
+        std.process.exit(@intCast(parse(args[2]) & 0xff));
+    }
+
     // Never read stdin; just sit there. Fills the stdin pipe and blocks the
     // parent's writer, which is the Windows abort-handoff case.
     if (std.mem.eql(u8, mode, "no-read")) {
