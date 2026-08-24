@@ -1,6 +1,11 @@
 const std = @import("std");
 
 const paths = @import("paths.zig");
+/// The runtime path-segment predicate (`zcli.Paths`). Imported so the registry
+/// enforces at compile time the identical rule `Paths` enforces at runtime —
+/// see `validateAppName`. Distinct from `paths.zig` above, which splits
+/// *command* paths.
+const Paths = @import("../Paths.zig");
 const compiled = @import("compiled.zig");
 const quota = @import("quota.zig");
 const splitPath = paths.splitPath;
@@ -65,13 +70,28 @@ pub const CommandEntry = struct {
     module: type,
 };
 
-/// Validate `app_name` against a strict identifier charset at compile time.
+/// Validate `app_name` at compile time, on two independent axes.
 ///
-/// The app name is interpolated unescaped into generated shell completion
-/// scripts as function names and `complete` targets (see zcli_completions/
-/// {bash,zsh,fish}.zig). Rather than escaping it per-shell, we reject any name
-/// that isn't a safe identifier — a developer-controlled comptime value should
-/// never contain shell metacharacters, whitespace, quotes, or path separators.
+/// **Shell safety (the charset).** The app name is interpolated unescaped into
+/// generated shell completion scripts as function names and `complete` targets
+/// (see zcli_completions/{bash,zsh,fish}.zig). Rather than escaping it
+/// per-shell, we reject any name that isn't a safe identifier — a
+/// developer-controlled comptime value should never contain shell
+/// metacharacters, whitespace, quotes, or path separators.
+///
+/// **Path safety (`Paths.isValidSegment`).** `app_name` is also the directory
+/// segment scoping every `zcli.Paths` location, so it must be usable as a
+/// single path segment. The charset alone is not enough: it admits `"."`,
+/// `".."`, `"..."` and `"foo."`, and `Win32` strips a trailing dot before the
+/// path reaches the filesystem, so such a name would resolve *outside* the app
+/// subtree.
+///
+/// The two checks are deliberately not merged, because they are stricter in
+/// different directions. Calling the same predicate `Paths` uses at runtime is
+/// what makes the containment property hold **by construction** — every
+/// `app_name` the registry accepts is accepted by the runtime predicate —
+/// rather than by inspection, which is exactly the reasoning that previously
+/// let `"foo."` compile cleanly and then fail every `Paths` call at runtime.
 fn validateAppName(comptime app_name: []const u8) void {
     if (app_name.len == 0) {
         @compileError("app_name must not be empty");
@@ -86,6 +106,11 @@ fn validateAppName(comptime app_name: []const u8) void {
                 "\" contains an invalid character; only [A-Za-z0-9._-] are allowed " ++
                 "(it is interpolated unescaped into generated shell completion scripts)");
         }
+    }
+    if (!Paths.isValidSegment(app_name)) {
+        @compileError("app_name \"" ++ app_name ++
+            "\" is not usable as a directory name (no trailing dot or space; " ++
+            "not all dots) — it scopes this app's config/cache/data directories");
     }
 }
 

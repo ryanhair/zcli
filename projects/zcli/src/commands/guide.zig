@@ -267,6 +267,81 @@ const topics = [_]Topic{
         ++ "\n" ++ examples.notes_log,
     },
     .{
+        .name = "paths",
+        .summary = "platform config/cache/data directories",
+        .body =
+        \\paths — where this app's files belong on this platform
+        \\
+        \\`context.paths()` answers "where does my config / cache / data go?" from
+        \\the threaded environment. Never read HOME yourself and never hard-code a
+        \\location — it errors rather than guessing, which is what keeps credentials
+        \\out of someone else's home directory in a container or CI runner.
+        \\
+        \\  const p = context.paths();
+        \\  // Creates the parent dir (0700 if new); does NOT create the file.
+        \\  const path = try p.ensureFile(context.io, .config, &.{"credentials.json"});
+        \\  try std.Io.Dir.cwd().writeFile(context.io, .{ .sub_path = path, .data = json });
+        \\
+        \\No free — paths come from the arena (see `zcli guide arena`).
+        \\
+        \\Three kinds, and where they land for app "myapp":
+        \\
+        \\  .config  small settings the user edits
+        \\           ~/.config/myapp                      Linux + macOS
+        \\           %APPDATA%\myapp                      Windows
+        \\  .data    bulk state you own (indexes, downloads)
+        \\           ~/.local/share/myapp                 Linux + macOS
+        \\           %LOCALAPPDATA%\myapp\data            Windows
+        \\  .cache   anything regenerable; safe to delete
+        \\           ~/.cache/myapp                       Linux
+        \\           ~/Library/Caches/myapp               macOS (excluded from backups)
+        \\           %LOCALAPPDATA%\myapp\cache           Windows
+        \\
+        \\XDG_CONFIG_HOME / XDG_DATA_HOME / XDG_CACHE_HOME override the POSIX rows
+        \\when set to an absolute path; an empty or relative value is IGNORED, not
+        \\an error. macOS uses ~/.config and ~/.local/share like every other CLI you
+        \\already run, not ~/Library/Application Support.
+        \\
+        \\Pure vs. filesystem — resolution touches no disk and needs no io:
+        \\
+        \\  p.dir(.cache)                      ~/.cache/myapp
+        \\  p.file(.cache, &.{"a","b.json"})   ~/.cache/myapp/a/b.json
+        \\  p.base(.config)                    ~/.config          (not app-scoped)
+        \\  p.home()                           the validated home dir
+        \\
+        \\Only the ensure* family does I/O, and it creates DIRECTORIES only:
+        \\
+        \\  p.ensureDir(io, .data)                    the dir, with parents
+        \\  p.ensureFile(io, .cache, &.{"x"})         the file's PARENT, with parents
+        \\  p.ensureParent(io, some_absolute_path)    any fully-qualified path
+        \\
+        \\New directories are 0700 on POSIX; existing ones are left exactly as they
+        \\are (no retroactive chmod). ensure* is idempotent and NOT atomic — if you
+        \\need atomicity for the file, use createFileAtomic + rename.
+        \\
+        \\Errors are typed, so you choose the degradation per call site:
+        \\
+        \\  // Best-effort cache: no home just means no rate-limit file.
+        \\  const c = p.ensureFile(io, .cache, &.{"last-check"}) catch return null;
+        \\  // A credential store should fail loudly instead.
+        \\  const creds = try p.ensureFile(io, .config, &.{"credentials.json"});
+        \\
+        \\  HomeNotFound      nothing in the environment names a home
+        \\  HomeNotAbsolute   set, but empty/relative/unsafe to append to
+        \\  HomeMalformed     set, but contains control bytes or bad encoding
+        \\  InvalidSubPath    a component is not usable as a path segment
+        \\
+        \\Components are validated on every platform: no separators, none of
+        \\< > : " | ? *, no control bytes, no leading/trailing space, no trailing
+        \\dot, not all dots, valid WTF-8. So &.{"12:00.log"} errors on Linux too —
+        \\one rule, portable output. This guarantees LEXICAL containment (a
+        \\component can never escape the base), not filesystem containment: a
+        \\symlink in the chain still redirects, and Windows reserved device names
+        \\(CON, NUL, aux.json) are documented but not rejected.
+        \\
+        ,
+    },
+    .{
         .name = "arena",
         .summary = "the per-command allocator (never free)",
         .body =

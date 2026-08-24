@@ -240,6 +240,24 @@ pub fn ContextFor(comptime plugins: []const type) type {
             };
         }
 
+        /// A `Paths` instance pre-wired to this command's environment: the
+        /// arena-per-command allocator, the threaded `environ`, and the app
+        /// name. Answers "where does this app put its config / cache / data on
+        /// this platform?" without ambient `getenv`.
+        ///
+        ///   const path = try context.paths().ensureFile(context.io, .config, &.{"credentials.json"});
+        ///
+        /// Resolution is a pure string function — `base`/`resolve`/`dir`/
+        /// `file`/`home` need no `io`; only the `ensure*` family touches the
+        /// filesystem. Returned paths come from the arena, so never free them.
+        pub fn paths(self: *Self) zcli.Paths {
+            return .{
+                .allocator = self.allocator,
+                .environ = self.environ,
+                .app_name = self.app_name,
+            };
+        }
+
         /// A `process.Runner` pre-wired to this command's environment: the
         /// arena-per-command allocator, the framework `io`, and — the part that
         /// matters — the threaded `environ`. `Runner` has no constructor that
