@@ -4,7 +4,8 @@ const std = @import("std");
 const terminal = @import("terminal");
 const Prompts = @import("Prompts.zig");
 const selection = @import("selection.zig");
-const ui = @import("list_render.zig").ui;
+const lr = @import("list_render.zig");
+const ui = lr.ui;
 
 pub const MultiSelectConfig = struct {
     message: []const u8,
@@ -27,18 +28,21 @@ pub fn multiSelect(p: Prompts, config: MultiSelectConfig) ![]usize {
 }
 
 /// Build the initial header and viewport-limited choice list as one frame.
-/// Search-enabled configs include the empty-query search row.
+/// Search-enabled configs include the empty-query search row. Pass the same
+/// `view` across the frames of one prompt so the window scrolls only when the
+/// cursor leaves it.
 pub fn frameNode(
     a: std.mem.Allocator,
     ctx: Prompts.ThemeContext,
     config: MultiSelectConfig,
     selected: []const bool,
     cursor: usize,
+    view: *lr.Viewport,
     ws: terminal.Winsize,
 ) !ui.Node {
     const filtered = try a.alloc(usize, config.choices.len);
     for (filtered, 0..) |*original, i| original.* = i;
-    return frameNodeFiltered(a, ctx, config, "", filtered, selected, cursor, ws);
+    return frameNodeFiltered(a, ctx, config, "", filtered, selected, cursor, view, ws);
 }
 
 /// Build a multi-selection frame for an explicit query and filtered
@@ -52,9 +56,10 @@ pub fn frameNodeFiltered(
     filtered: []const usize,
     selected: []const bool,
     cursor: usize,
+    view: *lr.Viewport,
     ws: terminal.Winsize,
 ) !ui.Node {
-    return selection.frameNode(a, ctx, selectionConfig(config), .many, query, filtered, selected, cursor, ws);
+    return selection.frameNode(a, ctx, selectionConfig(config), .many, query, filtered, selected, cursor, view, ws);
 }
 
 fn selectionConfig(config: MultiSelectConfig) selection.Config {
@@ -141,6 +146,7 @@ test "non-TTY: EOF errors instead of returning defaults" {
 
 const FrameHarness = struct {
     arena: std.heap.ArenaAllocator,
+    view: lr.Viewport = .{},
 
     fn init() FrameHarness {
         return .{ .arena = std.heap.ArenaAllocator.init(std.testing.allocator) };
@@ -159,7 +165,7 @@ const FrameHarness = struct {
 test "frameNode: short options are one row each" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b", "c" } }, &.{ false, false, false }, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 4), size.h);
@@ -168,7 +174,7 @@ test "frameNode: short options are one row each" {
 test "frameNode: searchable config adds the focusless query row" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, &.{ false, false }, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "a", "b" }, .search = true }, &.{ false, false }, 0, &h.view, .{ .row = 24, .col = 80 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expectEqual(@as(u16, 4), size.h);
@@ -178,7 +184,7 @@ test "frameNode: a wrapping option measures its true physical rows" {
     var h = FrameHarness.init();
     defer h.deinit();
     const long = "this is a long option label that will certainly wrap at a narrow width";
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, .{ .row = 24, .col = 24 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{ "short", long } }, &.{ false, false }, 0, &h.view, .{ .row = 24, .col = 24 });
     const rc = h.rctx();
     const size = ui.measure(&rc, &node, .{ .max_w = 100, .max_h = 50 });
     try std.testing.expect(size.h > 3);
@@ -201,7 +207,7 @@ test "frameNode: cursor and marker use their theme tokens" {
         .theme = &custom,
         .caps = .{ .capability = .true_color, .is_tty = true, .color_enabled = true },
     };
-    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, .{ .row = 24, .col = 80 });
+    const node = try frameNode(h.a(), ctx, .{ .message = "Pick", .choices = &.{ "a", "b" } }, &.{ true, false }, 0, &h.view, .{ .row = 24, .col = 80 });
 
     var surface = try ui.Surface.init(std.testing.allocator, 79, 3);
     defer surface.deinit();
@@ -216,7 +222,7 @@ test "frameNode: cursor and marker use their theme tokens" {
 test "frameNode: continuation lines hang-indent under the option text" {
     var h = FrameHarness.init();
     defer h.deinit();
-    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, .{ .row = 24, .col = 20 });
+    const node = try frameNode(h.a(), Prompts.default_style, .{ .message = "Pick", .choices = &.{"alpha bravo charlie delta"}, .unicode = false }, &.{false}, 0, &h.view, .{ .row = 24, .col = 20 });
 
     var surface = try ui.Surface.init(std.testing.allocator, 19, 8);
     defer surface.deinit();
