@@ -40,7 +40,7 @@ pub fn text(p: Prompts, config: TextConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
-    const is_tty = terminal.isInteractiveTty();
+    const is_tty = p.isInteractive();
 
     if (!is_tty) {
         // Non-TTY: prompt inline, read a line byte by byte
@@ -218,6 +218,29 @@ test "text: non-TTY reads user input" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("hello world", result);
+}
+
+test "text: interactive = false takes the line path whatever the streams are" {
+    // The prompts and `requireInteractive` read one decision, so a caller that
+    // forces the instance non-interactive gets the line path here and
+    // `error.NotInteractive` from the guard — even at a terminal.
+    const allocator = std.testing.allocator;
+    var input = "piped\n".*;
+    var input_reader: std.Io.Reader = .fixed(&input);
+    var output: [256]u8 = undefined;
+    var output_writer: std.Io.Writer = .fixed(&output);
+
+    const p: Prompts = .{
+        .writer = &output_writer,
+        .reader = &input_reader,
+        .allocator = allocator,
+        .interactive = false,
+    };
+    try std.testing.expectError(error.NotInteractive, p.requireInteractive());
+
+    const result = try p.text(.{ .message = "Name:" });
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("piped", result);
 }
 
 test "text: non-TTY uses default on empty input" {

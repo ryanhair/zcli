@@ -23,7 +23,7 @@ pub fn password(p: Prompts, config: PasswordConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;
     const allocator = p.allocator;
-    const is_tty = terminal.isInteractiveTty();
+    const is_tty = p.isInteractive();
 
     if (!is_tty) {
         // Non-TTY: read line (no masking possible)

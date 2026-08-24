@@ -1070,6 +1070,9 @@ test "guide lists topics and embeds the canonical example source" {
         try expectOk(r);
         try expectContains(r.stdout, "std.json.parseFromSlice");
         try expectContains(r.stdout, "std.json.fmt(notes");
+        // ...and examples/notes/src/log.zig, the locked append-log recipe.
+        try expectContains(r.stdout, "file.lock(io, .exclusive)");
+        try expectContains(r.stdout, "fn repairTail");
     }
 
     // And `plugins`, embedding examples/notes/src/plugins/verbose.zig — the full
@@ -2374,6 +2377,146 @@ test "interactive: add command drives the wizard and echoes typed input" {
     try testing.expect(result.exit_code == 0);
     try expectContains(result.output, "Created src/commands/deploy.zig");
     try testing.expect(fileExists(tmp.dir, "src/commands/deploy.zig"));
+}
+
+test "interactive: requireInteractive passes on a PTY and fails when either stream is redirected" {
+    // The guard (`Prompts.requireInteractive`) is the opt-out from the non-TTY
+    // line fallback, so its verdict has to come from real file descriptors, not
+    // from a flag a test set. This drives a scaffolded command that does
+    // nothing but guard, in all four stream shapes:
+    //
+    //   stdin  stdout   how                      verdict
+    //   tty    tty      run under the PTY        interactive
+    //   tty    file     `demo guard >out.txt`    NotInteractive
+    //   null   tty      `demo guard </dev/null`  NotInteractive
+    //   pipe   pipe     plain subprocess         NotInteractive
+    //
+    // POSIX-only: the one-stream-redirected shapes are produced by a shell
+    // running *inside* the PTY, which has no ConPTY equivalent.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var r = try run(tmp.dir, &.{ zcli_exe, "init", "demo", "--no-build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    var proj = try tmp.dir.openDir(io, "demo", .{});
+    defer proj.close(io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const proj_abs = try tmpSubdirAbs(arena.allocator(), tmp, "demo");
+    try pointDependencyAtLocalTree(proj, proj_abs);
+
+    // An interactive-only command: one guard, then it would have asked. It
+    // reports its verdict *tagged with the shape it was run in*, because the
+    // PTY runs below share one transcript: an untagged "refused" somewhere in
+    // the stream would satisfy an assertion about a different invocation, so
+    // two swapped verdicts could cancel out and pass.
+    try proj.writeFile(io, .{
+        .sub_path = "src/commands/guard.zig",
+        .data =
+        \\const Context = @import("command_registry").Context;
+        \\pub const meta = .{ .description = "Interactive-only command" };
+        \\pub const Args = struct { shape: []const u8 };
+        \\pub const Options = struct {};
+        \\pub fn execute(args: Args, _: Options, context: *Context) !void {
+        \\    const p = context.prompts();
+        \\    p.requireInteractive() catch |err| switch (err) {
+        \\        error.NotInteractive => return context.fail("GUARD:refused:{s}", .{args.shape}),
+        \\    };
+        \\    try context.stdout().print("GUARD:allowed:{s}\n", .{args.shape});
+        \\}
+        \\
+        ,
+    });
+
+    {
+        var r = try run(proj, &.{ "zig", "build" });
+        defer r.deinit();
+        try expectOk(r);
+    }
+
+    // Neither end is a terminal (a pipeline, CI, a coding agent): refused, and
+    // the command exits non-zero without having asked anything.
+    {
+        var r = try run(proj, &.{ demo_bin, "guard", "pipes" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
+        try expectContains(r.stderr, "GUARD:refused:pipes");
+        try testing.expect(std.mem.indexOf(u8, r.stdout, "GUARD:allowed") == null);
+    }
+
+    // Inside a PTY: bare (both ends the terminal), then each end redirected in
+    // turn. The middle run's output goes to a file, so only the first and third
+    // reach the terminal — and each verdict carries its shape, so these are
+    // three independent assertions rather than a grep of a shared transcript.
+    var script = harness.InteractiveScript.init(testing.allocator);
+    defer script.deinit();
+    _ = script
+        .expect("GUARD:allowed:tty-tty")
+        .expect("EXIT:tty-tty:0")
+        .expect("GUARD:refused:devnull-stdin");
+    const script_steps = script.steps.items.len;
+
+    // Each invocation reports its own exit status too, so a guarded command's
+    // refusal is observed as a failure *of that run*. The trailing `exit 0` is
+    // the shell's own status (the last child exits non-zero by design), which
+    // keeps `result.success` a statement about the script rather than about the
+    // verdict under test.
+    var result = harness.runInteractive(
+        testing.allocator,
+        io,
+        &.{
+            "sh", "-c",
+            demo_bin ++ " guard tty-tty; echo EXIT:tty-tty:$?; " ++
+                demo_bin ++ " guard file-stdout >stdout_redirected.txt 2>&1; echo EXIT:file-stdout:$?; " ++
+                demo_bin ++ " guard devnull-stdin </dev/null; echo EXIT:devnull-stdin:$?; exit 0",
+        },
+        script,
+        .{ .cwd = proj_abs, .allocate_pty = true, .total_timeout_ms = 20000 },
+    ) catch |err| switch (err) {
+        // Same policy as the wizard test: a sandbox that can't allocate a PTY
+        // skips, unless CI's ZCLI_REQUIRE_INTERACTIVE=1 demands the tier run.
+        error.PtyAllocationFailed => {
+            if (harness.interactiveRequired()) {
+                std.debug.print("ZCLI_REQUIRE_INTERACTIVE=1 but a PTY could not be allocated: {any}\n", .{err});
+                return err;
+            }
+            std.debug.print("runInteractive unavailable: {any}\n", .{err});
+            return;
+        },
+        else => return err,
+    };
+    defer result.deinit();
+
+    // Every scripted expectation matched, in order — a timed-out step must fail
+    // the test rather than leave the assertions below to a lucky substring.
+    try testing.expect(result.success);
+    try testing.expectEqual(script_steps, result.steps_executed);
+
+    // Both ends on the terminal: the guard passed, and passed *there* — the
+    // shape tag is what stops a refusal from another invocation standing in.
+    try expectContains(result.output, "GUARD:allowed:tty-tty");
+    try testing.expect(std.mem.indexOf(u8, result.output, "GUARD:refused:tty-tty") == null);
+    try expectContains(result.output, "EXIT:tty-tty:0");
+
+    // stdin from /dev/null with the terminal still on stdout: refused, and that
+    // run — not some other one — exited non-zero.
+    try expectContains(result.output, "GUARD:refused:devnull-stdin");
+    try testing.expect(std.mem.indexOf(u8, result.output, "GUARD:allowed:devnull-stdin") == null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "EXIT:devnull-stdin:0") == null);
+
+    // And the run whose stdout was a file was refused there — a terminal on
+    // stdin alone is not enough, because the frame would land in the file.
+    try testing.expect(std.mem.indexOf(u8, result.output, "EXIT:file-stdout:0") == null);
+    const redirected = try readFile(proj, arena.allocator(), "stdout_redirected.txt");
+    try expectContains(redirected, "GUARD:refused:file-stdout");
+    try testing.expect(std.mem.indexOf(u8, redirected, "GUARD:allowed") == null);
 }
 
 test "interactive: a SIGTERM mid-prompt restores the terminal from raw mode" {

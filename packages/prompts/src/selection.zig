@@ -37,6 +37,9 @@ pub const State = struct {
     query: std.ArrayList(u8),
     filtered: []usize,
     cursor: usize = 0,
+    /// Scroll anchor of the choice list, carried across frames so the window
+    /// only moves when the cursor crosses one of its edges.
+    view: lr.Viewport = .{},
     selected: ?[]bool,
     query_dirty: bool = false,
 
@@ -100,6 +103,7 @@ pub const State = struct {
         self.allocator.free(self.filtered);
         self.filtered = next;
         self.cursor = 0;
+        self.view = .{};
         self.query_dirty = false;
     }
 
@@ -140,7 +144,7 @@ fn isPrintable(c: u21) bool {
 
 pub fn run(comptime cardinality: Cardinality, p: Prompts, config: Config) !Result(cardinality) {
     if (config.choices.len == 0) return error.NoChoices;
-    if (!terminal.isInteractiveTty()) return nonTty(cardinality, p, config);
+    if (!p.isInteractive()) return nonTty(cardinality, p, config);
 
     Prompts.flushWriter(p.writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch |err| {
@@ -368,10 +372,40 @@ pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: Config, cardinality: Cardinality, state: *const State) !void {
-    try app.frame(try frameNode(app.arena(), ctx, config, cardinality, state.query.items, state.filtered, state.selected, state.cursor, lr.windowSize()));
+fn renderFrame(app: *ui.App, ctx: Prompts.ThemeContext, config: Config, cardinality: Cardinality, state: *State) !void {
+    try app.frame(try frameNode(app.arena(), ctx, config, cardinality, state.query.items, state.filtered, state.selected, state.cursor, &state.view, lr.windowSize()));
 }
 
+/// A header or query row, and the rows a cramped frame can spare it. Chrome is
+/// charged in priority order and appended in display order — which differ,
+/// because a frame too short for both keeps the query the user is still typing
+/// rather than the header restating the question.
+const Chrome = struct {
+    prefix: []const u8,
+    prefix_w: u16,
+    label: []const u8,
+    label_w: u16,
+    style: ui.Style = .{},
+    /// Rows granted by `charge`; 0 means the frame could not afford the row.
+    rows: usize = 0,
+
+    /// Take what the row wants from `left`, or as much of it as remains.
+    fn charge(self: *Chrome, left: *usize) void {
+        self.rows = @min(terminal.wrapCount(self.label, self.label_w), left.*);
+        left.* -= self.rows;
+    }
+
+    fn append(self: Chrome, a: std.mem.Allocator, rows: *std.ArrayList(ui.Node)) !void {
+        if (self.rows == 0) return;
+        var row = try lr.itemRow(a, lr.prefixCell(.{}, self.prefix), self.prefix_w, self.label, self.label_w, self.style);
+        row.max_height = @intCast(self.rows);
+        try rows.append(a, row);
+    }
+};
+
+/// Build one frame. `view` carries the scroll anchor between frames and is
+/// re-anchored here, where the row budget (the live region minus the header and
+/// query rows) and each choice's wrapped height are known.
 pub fn frameNode(
     a: std.mem.Allocator,
     ctx: Prompts.ThemeContext,
@@ -381,11 +415,14 @@ pub fn frameNode(
     filtered: []const usize,
     selected: ?[]const bool,
     cursor: usize,
+    view: *lr.Viewport,
     ws: terminal.Winsize,
 ) !ui.Node {
     const width = @max(@as(usize, ws.col), 1);
     const usable: u16 = @intCast(@min(@max(width -| 1, 1), std.math.maxInt(u16)));
-    const height = @max(@as(usize, ws.row), 2);
+    // Rows the live region actually gets: the App holds one back so the region
+    // and the static line above it fit without scrolling (ADR-0013).
+    const region = @max(@as(usize, ws.row), 2) - 1;
     const glyphs = ctx.glyphTokens();
     const cursor_sym = glyphs.select_cursor.pick(config.unicode);
     const sel_sym = glyphs.selected.pick(config.unicode);
@@ -407,26 +444,6 @@ pub fn frameNode(
         try std.fmt.allocPrint(a, "{s} (space/enter to select)", .{config.message})
     else
         config.message;
-    try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, config.prefix), hprefix_w, header, havail, .{}));
-    var used: usize = terminal.wrapCount(header, havail);
-
-    if (config.search) {
-        const search_prefix = "  Search: ";
-        const search_prefix_w: u16 = @intCast(terminal.displayWidth(search_prefix));
-        const search_avail: u16 = @intCast(@max(@as(usize, usable) -| search_prefix_w, 1));
-        if (query.len > 0) {
-            try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, search_prefix), search_prefix_w, query, search_avail, .{}));
-            used += terminal.wrapCount(query, search_avail);
-        } else {
-            try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, search_prefix), search_prefix_w, "type to filter", search_avail, hint_style));
-            used += 1;
-        }
-    }
-
-    if (filtered.len == 0) {
-        try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, "  "), 2, "no matches", avail, hint_style));
-        return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
-    }
 
     const Counter = struct {
         choices: []const []const u8,
@@ -437,8 +454,47 @@ pub fn frameNode(
         }
     };
     const counter = Counter{ .choices = config.choices, .filtered = filtered, .avail = avail };
-    const list_budget = @max((height -| 1) -| used, 1);
-    const win = lr.viewport(filtered.len, cursor, list_budget, &counter, Counter.at);
+
+    // Reserve the highlighted choice's rows (the "no matches" line when nothing
+    // matches) before spending anything on chrome. A short or narrow terminal
+    // then clips the header and query rather than scrolling the highlight off
+    // the bottom of the live region.
+    const highlight = @min(cursor, filtered.len -| 1);
+    const focus_rows = if (filtered.len == 0) 1 else counter.at(highlight);
+    const chrome_allowance = region -| focus_rows;
+    var chrome_left = chrome_allowance;
+
+    var header_row = Chrome{ .prefix = config.prefix, .prefix_w = hprefix_w, .label = header, .label_w = havail };
+    const search_prefix = "  Search: ";
+    const search_prefix_w: u16 = @intCast(terminal.displayWidth(search_prefix));
+    const search_avail: u16 = @intCast(@max(@as(usize, usable) -| search_prefix_w, 1));
+    const typing = config.search and query.len > 0;
+    var query_row: ?Chrome = if (!config.search) null else if (typing)
+        .{ .prefix = search_prefix, .prefix_w = search_prefix_w, .label = query, .label_w = search_avail }
+    else
+        .{ .prefix = search_prefix, .prefix_w = search_prefix_w, .label = "type to filter", .label_w = search_avail, .style = hint_style };
+
+    // Charge in priority order — an active query outranks the header, since
+    // dropping it would leave the user editing state they cannot see. The empty
+    // hint has nothing to lose and goes last.
+    if (typing) query_row.?.charge(&chrome_left);
+    header_row.charge(&chrome_left);
+    if (!typing) if (query_row) |*row| row.charge(&chrome_left);
+
+    // Append in display order.
+    try header_row.append(a, &rows);
+    if (query_row) |row| try row.append(a, &rows);
+
+    // Whatever the chrome did not take belongs to the list, which is therefore
+    // always offered at least the highlighted choice's rows.
+    const list_budget = region - (chrome_allowance - chrome_left);
+
+    if (filtered.len == 0) {
+        try rows.append(a, try lr.itemRow(a, lr.prefixCell(.{}, "  "), 2, "no matches", avail, hint_style));
+        return ui.column(a, .{ .width = .{ .len = usable } }, rows.items);
+    }
+
+    const win = view.window(filtered.len, cursor, list_budget, &counter, Counter.at);
     const selected_style = ctx.resolveRef(tokens.selected);
     const cursor_style = ctx.resolveRef(tokens.cursor);
     const marker_style = ctx.resolveRef(tokens.marker);
@@ -588,6 +644,7 @@ test "filtered multi render reads selection state by original index" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    var view = lr.Viewport{};
     const node = try frameNode(
         a,
         Prompts.default_style,
@@ -597,6 +654,7 @@ test "filtered multi render reads selection state by original index" {
         &.{2},
         &.{ false, false, true },
         0,
+        &view,
         .{ .row = 24, .col = 80 },
     );
 
@@ -609,6 +667,286 @@ test "filtered multi render reads selection state by original index" {
     // whose selected bit lives at original index 2 rather than visible index 0.
     try std.testing.expectEqualStrings("x", surface.cellText(surface.cell(5, 2)));
     try std.testing.expectEqualStrings("g", surface.cellText(surface.cell(8, 2)));
+}
+
+// ---------------------------------------------------------------------------
+// Viewport stability: reversing direction moves the highlight inside the window
+// the user is already looking at, and only crossing an edge scrolls it.
+// ---------------------------------------------------------------------------
+
+const letters = [_][]const u8{ "a", "b", "c", "d", "e", "f", "g", "h" };
+const all_letters = [_]usize{ 0, 1, 2, 3, 4, 5, 6, 7 };
+
+/// Paint one frame the way `ui.App` does: measured against the rows the live
+/// region actually gets (the terminal minus the row the App holds back) and
+/// clipped to them, so anything the frame overspends is *gone* here too.
+/// Caller owns the returned surface.
+fn paintFrame(
+    a: std.mem.Allocator,
+    config: Config,
+    cardinality: Cardinality,
+    query: []const u8,
+    filtered: []const usize,
+    selected: ?[]const bool,
+    view: *lr.Viewport,
+    cursor: usize,
+    ws: terminal.Winsize,
+) !ui.Surface {
+    const node = try frameNode(a, Prompts.default_style, config, cardinality, query, filtered, selected, cursor, view, ws);
+    const rc = ui.RenderCtx{ .allocator = a };
+    const size = ui.measure(&rc, &node, .{ .max_w = ws.col, .max_h = @max(ws.row, 2) - 1 });
+    var surface = try ui.Surface.init(std.testing.allocator, @max(size.w, 1), @max(size.h, 1));
+    errdefer surface.deinit();
+    try ui.render(&rc, &node, surface.root());
+    return surface;
+}
+
+/// The painted frame as text, one line per screen row.
+fn frameText(a: std.mem.Allocator, surface: *const ui.Surface) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    for (0..surface.height) |y| {
+        if (y > 0) try out.append(a, '\n');
+        for (0..surface.width) |x| {
+            const cell = surface.cell(@intCast(x), @intCast(y));
+            try out.appendSlice(a, if (cell.isBlank()) " " else surface.cellText(cell));
+        }
+    }
+    return out.toOwnedSlice(a);
+}
+
+/// Read back the visible choices of a single-select frame, one letter per row.
+/// Single-letter labels never wrap, so the screen spells out the window.
+fn visibleChoices(
+    a: std.mem.Allocator,
+    config: Config,
+    filtered: []const usize,
+    view: *lr.Viewport,
+    cursor: usize,
+    ws: terminal.Winsize,
+) ![]const u8 {
+    var surface = try paintFrame(a, config, .one, "", filtered, null, view, cursor, ws);
+    defer surface.deinit();
+
+    var shown = std.ArrayList(u8).empty;
+    var y: u16 = 1; // row 0 is the header
+    while (y < surface.height) : (y += 1) {
+        const cell = surface.cell(4, y); // labels hang at the prefix width
+        if (cell.isBlank()) break;
+        try shown.appendSlice(a, surface.cellText(cell));
+    }
+    return shown.toOwnedSlice(a);
+}
+
+test "select viewport holds still until the highlight crosses an edge" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = Config{ .message = "Pick", .choices = &letters };
+    const ws = terminal.Winsize{ .row = 6, .col = 40 }; // header + four choice rows
+    var view = lr.Viewport{};
+
+    // Walking down scrolls one row at a time, and only past the bottom edge.
+    for ([_][]const u8{ "abcd", "abcd", "abcd", "abcd", "bcde", "cdef" }, 0..) |expected, cursor| {
+        try std.testing.expectEqualStrings(expected, try visibleChoices(a, config, &all_letters, &view, cursor, ws));
+    }
+
+    // Reversing moves the highlight inside that same window ...
+    try std.testing.expectEqualStrings("cdef", try visibleChoices(a, config, &all_letters, &view, 4, ws));
+    try std.testing.expectEqualStrings("cdef", try visibleChoices(a, config, &all_letters, &view, 3, ws));
+    try std.testing.expectEqualStrings("cdef", try visibleChoices(a, config, &all_letters, &view, 2, ws));
+    // ... and only scrolls once it crosses the top edge.
+    try std.testing.expectEqualStrings("bcde", try visibleChoices(a, config, &all_letters, &view, 1, ws));
+    try std.testing.expectEqualStrings("abcd", try visibleChoices(a, config, &all_letters, &view, 0, ws));
+}
+
+test "select viewport reverses inside the window at the bottom edge too" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = Config{ .message = "Pick", .choices = &letters };
+    const ws = terminal.Winsize{ .row = 6, .col = 40 }; // header + four choice rows
+    var view = lr.Viewport{};
+
+    // Land on the last choice, then walk up until the window has to move.
+    try std.testing.expectEqualStrings("efgh", try visibleChoices(a, config, &all_letters, &view, 7, ws));
+    try std.testing.expectEqualStrings("efgh", try visibleChoices(a, config, &all_letters, &view, 6, ws));
+    try std.testing.expectEqualStrings("efgh", try visibleChoices(a, config, &all_letters, &view, 5, ws));
+    try std.testing.expectEqualStrings("efgh", try visibleChoices(a, config, &all_letters, &view, 4, ws));
+    try std.testing.expectEqualStrings("defg", try visibleChoices(a, config, &all_letters, &view, 3, ws));
+
+    // Reversing back down holds that window ...
+    try std.testing.expectEqualStrings("defg", try visibleChoices(a, config, &all_letters, &view, 4, ws));
+    try std.testing.expectEqualStrings("defg", try visibleChoices(a, config, &all_letters, &view, 5, ws));
+    try std.testing.expectEqualStrings("defg", try visibleChoices(a, config, &all_letters, &view, 6, ws));
+    // ... until the highlight crosses the bottom edge, and stops at the end.
+    try std.testing.expectEqualStrings("efgh", try visibleChoices(a, config, &all_letters, &view, 7, ws));
+    try std.testing.expectEqualStrings("efgh", try visibleChoices(a, config, &all_letters, &view, 7, ws));
+}
+
+test "a terminal too short for the chrome still shows the highlighted choice" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = Config{
+        .message = "Pick one of these",
+        .choices = &.{ "alpha", "bravo" },
+        .search = true,
+        .unicode = false,
+    };
+    var view = lr.Viewport{};
+
+    // Two usable rows, and something typed: the highlighted choice keeps one and
+    // the query the other. The header is what goes — a query the user is still
+    // editing must not become invisible state.
+    {
+        var surface = try paintFrame(a, config, .one, "brav", &.{1}, null, &view, 0, .{ .row = 3, .col = 40 });
+        defer surface.deinit();
+        const screen = try frameText(a, &surface);
+        try std.testing.expectEqual(@as(u16, 2), surface.height);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "bravo") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Search: brav") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Pick one of these") == null);
+    }
+
+    // With nothing typed the hint has nothing to lose, so the header stays.
+    {
+        var empty_view = lr.Viewport{};
+        var surface = try paintFrame(a, config, .one, "", &.{ 0, 1 }, null, &empty_view, 0, .{ .row = 3, .col = 40 });
+        defer surface.deinit();
+        const screen = try frameText(a, &surface);
+        try std.testing.expectEqual(@as(u16, 2), surface.height);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "alpha") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Pick one of these") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "type to filter") == null);
+    }
+
+    // One usable row leaves room for the choice alone.
+    {
+        var surface = try paintFrame(a, config, .one, "brav", &.{1}, null, &view, 0, .{ .row = 2, .col = 40 });
+        defer surface.deinit();
+        const screen = try frameText(a, &surface);
+        try std.testing.expectEqual(@as(u16, 1), surface.height);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "bravo") != null);
+    }
+
+    // A header that wraps past the region is clipped, not paid for in full.
+    {
+        var surface = try paintFrame(a, config, .many, "", &.{ 0, 1 }, &.{ false, false }, &view, 1, .{ .row = 4, .col = 20 });
+        defer surface.deinit();
+        const screen = try frameText(a, &surface);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "bravo") != null);
+    }
+
+    // Nothing matching still reports it rather than showing bare chrome.
+    {
+        var empty_view = lr.Viewport{};
+        var surface = try paintFrame(a, config, .one, "zz", &.{}, null, &empty_view, 0, .{ .row = 3, .col = 40 });
+        defer surface.deinit();
+        const screen = try frameText(a, &surface);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "no matches") != null);
+        try std.testing.expect(std.mem.indexOf(u8, screen, "Search: zz") != null);
+    }
+}
+
+test "select viewport keeps the highlight visible across a resize" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = Config{ .message = "Pick", .choices = &letters };
+    var view = lr.Viewport{};
+
+    _ = try visibleChoices(a, config, &all_letters, &view, 7, .{ .row = 6, .col = 40 });
+    try std.testing.expectEqual(@as(usize, 4), view.start);
+
+    // Growing the terminal spends the new rows on the items above the anchor.
+    try std.testing.expectEqualStrings("abcdefgh", try visibleChoices(a, config, &all_letters, &view, 7, .{ .row = 24, .col = 40 }));
+    // Shrinking it keeps the highlight on screen rather than stranding it.
+    try std.testing.expectEqualStrings("gh", try visibleChoices(a, config, &all_letters, &view, 7, .{ .row = 4, .col = 40 }));
+}
+
+/// Paints searchable multi-select frames against one carried anchor and reports
+/// where each frame leaves it.
+const MultiFrames = struct {
+    a: std.mem.Allocator,
+    config: Config,
+    selected: []const bool,
+    filtered: []const usize,
+    ws: terminal.Winsize,
+    view: lr.Viewport = .{},
+
+    fn anchorAt(self: *MultiFrames, cursor: usize) !usize {
+        _ = try frameNode(self.a, Prompts.default_style, self.config, .many, "e", self.filtered, self.selected, cursor, &self.view, self.ws);
+        return self.view.start;
+    }
+};
+
+test "searchable multi-select viewport reverses inside its window" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const selected = [_]bool{false} ** letters.len;
+    var frames = MultiFrames{
+        .a = arena.allocator(),
+        .config = .{ .message = "Pick", .choices = &letters, .search = true, .unicode = false },
+        .selected = &selected,
+        .filtered = &.{ 1, 3, 5, 7 }, // as the "e" query would leave them
+        // Header and query row leave three rows for results.
+        .ws = .{ .row = 6, .col = 60 },
+    };
+
+    for ([_]usize{ 0, 1, 2 }) |cursor| {
+        try std.testing.expectEqual(@as(usize, 0), try frames.anchorAt(cursor));
+    }
+    try std.testing.expectEqual(@as(usize, 1), try frames.anchorAt(3));
+    // Back up: the window holds while the highlight is inside it ...
+    try std.testing.expectEqual(@as(usize, 1), try frames.anchorAt(2));
+    try std.testing.expectEqual(@as(usize, 1), try frames.anchorAt(1));
+    // ... and follows the highlight past the top edge.
+    try std.testing.expectEqual(@as(usize, 0), try frames.anchorAt(0));
+
+    // A shorter terminal pushes the anchor down to keep the last result visible.
+    frames.ws = .{ .row = 4, .col = 60 };
+    try std.testing.expectEqual(@as(usize, 3), try frames.anchorAt(3));
+
+    // Typing on narrows the results; the stale anchor is repaired, not stranded.
+    frames.filtered = &.{2};
+    try std.testing.expectEqual(@as(usize, 0), try frames.anchorAt(0));
+}
+
+test "wrapped choices keep the window inside the physical row budget" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = Config{ .message = "Pick", .choices = &.{
+        "first entry with a label long enough to wrap",
+        "second entry with a label long enough to wrap",
+        "third entry with a label long enough to wrap",
+        "fourth entry with a label long enough to wrap",
+    } };
+    const filtered = [_]usize{ 0, 1, 2, 3 };
+    const ws = terminal.Winsize{ .row = 8, .col = 30 };
+    var view = lr.Viewport{};
+
+    const rc = ui.RenderCtx{ .allocator = a };
+    for ([_]usize{ 0, 1, 2, 3, 2, 1, 0 }) |cursor| {
+        const node = try frameNode(a, Prompts.default_style, config, .one, "", &filtered, null, cursor, &view, ws);
+        const size = ui.measure(&rc, &node, .{ .max_w = ws.col, .max_h = 100 });
+        try std.testing.expect(size.h <= ws.row);
+        try std.testing.expect(view.start <= cursor);
+    }
+}
+
+test "settle drops the scroll anchor with the cursor" {
+    var state = try State.init(std.testing.allocator, &letters, true, null, .one);
+    defer state.deinit();
+    state.cursor = 6;
+    state.view.start = 4;
+
+    try state.typeCodepoint('h');
+    try state.settle();
+
+    try std.testing.expectEqual(@as(usize, 0), state.cursor);
+    try std.testing.expectEqual(@as(usize, 0), state.view.start);
+    try std.testing.expectEqualSlices(usize, &.{7}, state.filtered);
 }
 
 test "backspace edits one trailing grapheme and restores matches" {
