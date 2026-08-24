@@ -354,12 +354,19 @@ test "a request that outlives its timeout fails with error.Timeout" {
     try testing.expectError(Error.Timeout, client.get(url));
 }
 
-/// Answer every connection with `body` until canceled, closing each one after a
-/// single exchange. A connection whose client was canceled mid-request just
-/// moves on to the next.
+/// Answer every connection with `body` until this task is canceled, closing each
+/// one after a single exchange. A client that was canceled mid-request tears its
+/// connection down, which the accept loop must survive rather than treat as the
+/// end of the run — otherwise the timeout sweep below would silently be talking
+/// to a dead server. Only cancelation, or a genuinely broken listener, stops it.
 fn serveUntilCanceled(io: std.Io, server: *std.Io.net.Server, body: []const u8) void {
     while (true) {
-        var stream = server.accept(io) catch return;
+        var stream = server.accept(io) catch |err| switch (err) {
+            // The peer went away between the SYN and the accept — exactly what a
+            // canceled client request looks like from here.
+            error.ConnectionAborted => continue,
+            else => return,
+        };
         defer stream.close(io);
 
         var read_buf: [4096]u8 = undefined;
@@ -401,21 +408,50 @@ test "a response that completes as the timeout fires is not leaked" {
     const round_trip = std.Io.Timestamp.durationTo(start, std.Io.Timestamp.now(io, .awake));
     const round_trip_ns: i96 = @max(1, round_trip.nanoseconds);
 
-    // Sweep timeouts from a fraction of that round trip to well past it. The
-    // interesting orderings are in the middle: the timer wins the select, yet
-    // the request completes anyway before cancelation reaches it, handing back a
-    // `Response` that only the request path can free. Any iteration that hits it
-    // and drops the response leaks under `testing.allocator`, failing the test.
+    // Sweep timeouts from 1ns (the timer cannot lose) up to several times the
+    // measured round trip (the request cannot lose), so the run necessarily
+    // crosses the boundary in between. That boundary is the bug's window: the
+    // timer wins the select, yet the request completes anyway before cancelation
+    // reaches it — cancelation is only delivered at the next I/O cancelation
+    // point — handing back a fully-allocated `Response` that nothing else can
+    // free. Dropping it leaks under `testing.allocator`, failing this test.
+    //
+    // Which iterations land in that window is scheduling-dependent, so the
+    // outcome tallies below are the guard that the sweep actually swept: seeing
+    // both a `Timeout` and a completed response proves the boundary was crossed
+    // and the server stayed alive throughout. A sweep that produced only one
+    // regime proves nothing, so it is retried rather than passed.
     const iterations = 64;
-    for (0..iterations) |i| {
-        const ns = @divTrunc(round_trip_ns * @as(i96, @intCast(i + 1)) * 2, iterations);
-        var client = Client.init(testing.allocator, io, .{ .timeout = .fromNanoseconds(@max(1, ns)) });
-        defer client.deinit();
+    const max_rounds = 4;
+    var timed_out: usize = 0;
+    var completed: usize = 0;
 
-        // Either outcome is acceptable — a timed-out request reports `Timeout`,
-        // and one canceled mid-flight can surface as a connection error. The
-        // assertion here is the leak check, not the return value.
-        var response = client.get(url) catch continue;
-        response.deinit();
+    var round: usize = 0;
+    while (round < max_rounds and (timed_out == 0 or completed == 0)) : (round += 1) {
+        for (0..iterations) |i| {
+            const span = round_trip_ns * 4 * @as(i96, @intCast(i));
+            const ns = 1 + @divTrunc(span, iterations);
+            var client = Client.init(testing.allocator, io, .{ .timeout = .fromNanoseconds(ns) });
+            defer client.deinit();
+
+            if (client.get(url)) |result| {
+                var response = result;
+                defer response.deinit();
+                try testing.expectEqual(Status.ok, response.status);
+                try testing.expectEqualStrings(body, response.body);
+                completed += 1;
+            } else |err| switch (err) {
+                Error.Timeout => timed_out += 1,
+                // A request canceled mid-flight surfaces as its connection being
+                // torn down under it. That is a legitimate sweep outcome, but it
+                // is not evidence either regime was reached, so it is not counted.
+                error.Canceled, error.ConnectionResetByPeer, error.EndOfStream => {},
+                else => return err,
+            }
+        }
     }
+
+    // Not assertions about the fix — assertions that the sweep was meaningful.
+    try testing.expect(timed_out > 0);
+    try testing.expect(completed > 0);
 }
