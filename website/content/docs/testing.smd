@@ -16,6 +16,8 @@ zcli provides three tiers of testing, each suited to different verification need
 | **Integration** | Full CLI binary via subprocess | Medium | Tests arg parsing, routing, output |
 | **E2E** | Interactive terminal behavior | Slow | Tests prompts, signals, TTY output |
 
+Alongside the tiers there is one test double: [`HttpFixture`](#testing-http-adapters), a scripted loopback HTTP server for the code that talks to an API.
+
 ## Unit testing
 
 Test a single command's `execute()` function without compiling or spawning a binary. This is the fastest feedback loop — use it for command logic, output formatting, and error handling.
@@ -461,6 +463,159 @@ test "output works in both modes" {
 - Platform-dependent (PTY support varies across OS)
 - Flaky if timeouts are too tight
 - Requires the binary to be built first
+
+## [Testing HTTP adapters]($heading.id('testing-http-adapters'))
+
+Commands that talk to an API have a layer none of the three tiers reaches directly: the *adapter* that builds the request and turns the response into your domain types. `HttpFixture` is that layer's test double — a real HTTP server on an ephemeral `127.0.0.1` port that serves the responses you queue and records the requests it received.
+
+Because it is a real socket, the whole client path runs for real — URL building, headers, bodies, status handling — with no network access and nothing to stub out.
+
+### Setup
+
+It lives in the same framework-free `zcli_testing` module as the integration tier:
+
+```zig
+// build.zig
+test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing"));
+```
+
+### Writing an adapter test
+
+The code below is copied from `packages/testing/examples/http_fixture_example.zig` (minus its third test), byte-identical as of this writing. That file is compiled and run by `zig build test`, so the API used here is real and current; the copy on this page is kept in sync by hand.
+
+```zig
+const std = @import("std");
+const zcli = @import("zcli");
+const HttpFixture = @import("zcli-testing").HttpFixture;
+
+// ---------------------------------------------------------------------------
+// The code under test: a small adapter over an HTTP API.
+// ---------------------------------------------------------------------------
+
+/// The domain type the rest of the CLI works with. It owns its strings, so it
+/// outlives the HTTP response they were parsed out of.
+const Widget = struct {
+    id: u32,
+    name: []u8,
+
+    fn deinit(self: *Widget, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        self.* = undefined;
+    }
+};
+
+/// Fetch one widget. Exactly the shape of adapter a CLI command would call:
+/// it owns the URL layout and the auth header, and it hands back a domain type.
+fn fetchWidget(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_url: []const u8,
+    token: []const u8,
+    id: u32,
+) !Widget {
+    var client: zcli.http.Client = .init(allocator, io, .{});
+    defer client.deinit();
+
+    const url = try std.fmt.allocPrint(allocator, "{s}/widgets/{d}", .{ base_url, id });
+    defer allocator.free(url);
+
+    const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+    defer allocator.free(authorization);
+
+    var response = try client.request(.GET, url, .{
+        .headers = &.{.{ .name = "authorization", .value = authorization }},
+    });
+    defer response.deinit();
+
+    if (response.status != .ok) return error.WidgetFetchFailed;
+
+    // Parsed strings can point straight into `response.body`, so copy anything
+    // the caller keeps before the response (and its body) goes away.
+    var parsed = try response.json(struct { id: u32, name: []const u8 }, allocator);
+    defer parsed.deinit();
+    return .{ .id = parsed.value.id, .name = try allocator.dupe(u8, parsed.value.name) };
+}
+
+// ---------------------------------------------------------------------------
+// 1. The happy path: script a response, assert on the request that produced it.
+// ---------------------------------------------------------------------------
+
+test "fetchWidget sends the token and parses the payload" {
+    const allocator = std.testing.allocator;
+
+    // `init` binds an ephemeral loopback port and starts serving immediately.
+    // `deinit` stops the serving tasks, closes the socket, and frees every byte
+    // the fixture handed out — including the URLs from `url()`.
+    var fixture = try HttpFixture.init(allocator, std.testing.io, .{});
+    defer fixture.deinit();
+
+    try fixture.respondWith(.{
+        .status = .ok,
+        .headers = &.{.{ .name = "content-type", .value = "application/json" }},
+        .body = "{\"id\":7,\"name\":\"sprocket\"}",
+    });
+
+    var widget = try fetchWidget(allocator, std.testing.io, fixture.baseUrl(), "secret-token", 7);
+    defer widget.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u32, 7), widget.id);
+    try std.testing.expectEqualStrings("sprocket", widget.name);
+
+    // Now assert on what the adapter actually put on the wire.
+    const sent = try fixture.requests();
+    try std.testing.expectEqual(@as(usize, 1), sent.len);
+    try std.testing.expectEqual(std.http.Method.GET, sent[0].method);
+    try std.testing.expectEqualStrings("/widgets/7", sent[0].target);
+    try std.testing.expectEqualStrings("Bearer secret-token", sent[0].header("authorization").?);
+}
+
+// ---------------------------------------------------------------------------
+// 2. The failure path: script an error status and check the adapter's mapping.
+// ---------------------------------------------------------------------------
+
+test "fetchWidget turns a non-200 into a domain error" {
+    const allocator = std.testing.allocator;
+
+    var fixture = try HttpFixture.init(allocator, std.testing.io, .{});
+    defer fixture.deinit();
+
+    try fixture.respondWith(.{ .status = .not_found, .body = "{\"error\":\"no such widget\"}" });
+
+    try std.testing.expectError(
+        error.WidgetFetchFailed,
+        fetchWidget(allocator, std.testing.io, fixture.baseUrl(), "secret-token", 404),
+    );
+}
+```
+
+### API reference
+
+| Call | Purpose |
+|------|---------|
+| `HttpFixture.init(allocator, io, options)` | Bind an ephemeral loopback port and start serving. Returns a `*HttpFixture`. |
+| `fixture.deinit()` | Stop serving, close the socket, free everything the fixture allocated — including itself. |
+| `fixture.respondWith(.{ .status, .headers, .body })` | Queue one response. All bytes are copied. |
+| `fixture.baseUrl()` | `http://127.0.0.1:<port>`, no trailing slash. Requesting it directly targets `/`. |
+| `fixture.url("/path")` | `baseUrl()` joined with `path`. Fixture-owned; freed by `deinit`. |
+| `try fixture.requests()` | A snapshot of every request served so far, oldest first. Fixture-owned; the *previous* call's slice is invalidated by the next one. |
+
+Each recorded request carries `method`, `target` (the request line's path and query), `headers`, `body`, `body_truncated`, and a `header(name)` lookup that is case-insensitive.
+
+`Options` has two knobs:
+
+- `concurrency` (default `4`) — how many connections the fixture serves at once, so overlapping requests don't serialize behind one another.
+- `max_request_body_bytes` (default `64 KiB`) — how much of a request body is recorded. Anything past the bound is read and discarded, and `body_truncated` is set, so the code under test can't turn the fixture into an unbounded buffer.
+
+### Ordering and exhaustion
+
+Queued responses are served in the order they were queued, one per request, so a client issuing requests sequentially sees exactly the scripted sequence. Once the queue runs dry, every further request gets `HttpFixture.unscripted_status` (500) with `HttpFixture.unscripted_body` — a loud, assertable signal that the test scripted too few responses, rather than a hang.
+
+### Limitations
+
+- Plain HTTP only. TLS is out of scope; point the adapter at the fixture's `http://` URL.
+- The fixture answers every request from the same queue — it does not route on method or path. Assert on `requests()` instead.
+- `requests()` returns a snapshot taken at the moment of the call: requests served afterwards don't appear in it, and calling it again invalidates the slice the previous call returned. Holding a snapshot across further requests is safe — the fixture's own recording growing behind it can't move it.
+- The allocator must be usable from more than one thread (`std.testing.allocator` is), because the serving tasks run concurrently with your test.
 
 ## Recommended testing strategy
 
