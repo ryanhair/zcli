@@ -58,6 +58,16 @@ const parsed = try response.json(Repo, context.allocator);
 try context.stdout().print("{s}: {d} stars\n", .{ parsed.value.full_name, parsed.value.stargazers_count });
 ```
 
+The `Parsed(T)` owns everything reachable from `.value`, strings included — nothing points back into `response.body`. So the parsed value keeps working after the response is released, and you never need to copy strings out of it:
+
+```zig
+const parsed = try response.json(Repo, context.allocator);
+response.deinit();                  // the body is gone…
+try context.stdout().print("{s}\n", .{parsed.value.full_name});  // …the value is not
+```
+
+Release the parse itself with `parsed.deinit()`. Under the per-command arena you can skip both: the arena reclaims them when the command returns.
+
 The `examples/repostat` example is this exact shape end to end — a GitHub stats command in one file.
 
 ## Tuning the bounds

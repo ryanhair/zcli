@@ -62,6 +62,13 @@
 //! `Client.init`. In a command that allocator is the arena-per-command, so they
 //! are reclaimed when the command returns; `Response.deinit` is still provided
 //! for callers (like tests) using a tracking allocator.
+//!
+//! `Response.json` is the one place those two lifetimes could have become
+//! entangled, and deliberately does not: the `Parsed(T)` it returns owns its own
+//! arena *and every string in it*, so nothing reachable from `.value` points
+//! into `Response.body`. Parse, `Response.deinit`, then keep using the value —
+//! the parsed result outlives the response it came from, and is released by its
+//! own `.deinit()`.
 
 const std = @import("std");
 
@@ -250,9 +257,16 @@ pub const Response = struct {
         return null;
     }
 
-    /// Parse the response body as JSON into `T`. The returned `Parsed(T)` owns
-    /// its own arena — call `.deinit()` on it when done. Unknown fields are
-    /// ignored so a struct can model just the parts of a payload it cares about.
+    /// Parse the response body as JSON into `T`. Unknown fields are ignored so a
+    /// struct can model just the parts of a payload it cares about.
+    ///
+    /// The returned `Parsed(T)` owns everything reachable from `.value`,
+    /// including every string — call `.deinit()` on it when done. Nothing in
+    /// `.value` points into `Response.body`, so the parsed value stays valid
+    /// after the response is deinitialized; the two lifetimes are independent.
+    /// (std's slice-input default is `.alloc_if_needed`, which leaves
+    /// escape-free strings pointing into the input; this passes `.alloc_always`
+    /// so the "borrowed-looking" `[]const u8` fields are genuinely owned.)
     pub fn json(
         self: Response,
         comptime T: type,
@@ -260,6 +274,7 @@ pub const Response = struct {
     ) std.json.ParseError(std.json.Scanner)!std.json.Parsed(T) {
         return std.json.parseFromSlice(T, allocator, self.body, .{
             .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
         });
     }
 };
@@ -606,6 +621,41 @@ test "Response.json parses body into a struct, ignoring unknown fields" {
     defer parsed.deinit();
 
     try testing.expectEqualStrings("zcli", parsed.value.name);
+    try testing.expectEqual(@as(u32, 42), parsed.value.stars);
+}
+
+test "a value parsed by Response.json outlives the response body it came from" {
+    // The regression this pins (#814): std's slice-input default is
+    // `.alloc_if_needed`, so an escape-free string was handed back as a slice
+    // *into* `Response.body` — `parsed.value.name` dangled the moment the
+    // response was deinitialized, even though the type says `[]const u8` and the
+    // API says the arena owns it.
+    const Repo = struct { name: []const u8, description: []const u8, stars: u32 };
+
+    const parsed = blk: {
+        var response: Response = .{
+            .allocator = testing.allocator,
+            .status = .ok,
+            // `name` needs no unescaping (the case that used to borrow);
+            // `description` does (the case that always allocated).
+            .body = try testing.allocator.dupe(u8,
+                \\{"name":"zcli","description":"a \"CLI\" framework","stars":42}
+            ),
+            .headers = &.{},
+        };
+        const parsed = try response.json(Repo, testing.allocator);
+        // Scribble over the body before releasing it: an owned copy is
+        // unaffected, a borrowed slice reads back zeroes. This proves
+        // independence regardless of whether the allocator poisons freed memory.
+        @memset(response.body, 0);
+        response.deinit();
+        break :blk parsed;
+    };
+    defer parsed.deinit();
+
+    // The response is gone; the parsed value is still whole.
+    try testing.expectEqualStrings("zcli", parsed.value.name);
+    try testing.expectEqualStrings("a \"CLI\" framework", parsed.value.description);
     try testing.expectEqual(@as(u32, 42), parsed.value.stars);
 }
 
