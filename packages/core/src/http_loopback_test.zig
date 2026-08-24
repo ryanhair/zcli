@@ -353,3 +353,69 @@ test "a request that outlives its timeout fails with error.Timeout" {
 
     try testing.expectError(Error.Timeout, client.get(url));
 }
+
+/// Answer every connection with `body` until canceled, closing each one after a
+/// single exchange. A connection whose client was canceled mid-request just
+/// moves on to the next.
+fn serveUntilCanceled(io: std.Io, server: *std.Io.net.Server, body: []const u8) void {
+    while (true) {
+        var stream = server.accept(io) catch return;
+        defer stream.close(io);
+
+        var read_buf: [4096]u8 = undefined;
+        var write_buf: [4096]u8 = undefined;
+        var stream_reader = stream.reader(io, &read_buf);
+        var stream_writer = stream.writer(io, &write_buf);
+
+        var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+        var request = http_server.receiveHead() catch continue;
+        request.respond(body, .{ .keep_alive = false }) catch continue;
+    }
+}
+
+test "a response that completes as the timeout fires is not leaked" {
+    const io = testing.io;
+
+    var addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    const body = "raced response body";
+    var server_future = try io.concurrent(serveUntilCanceled, .{ io, &server, @as([]const u8, body) });
+    defer _ = server_future.cancel(io);
+
+    const url = try loopbackUrl(port);
+    defer testing.allocator.free(url);
+
+    // Calibrate on this machine: time one untimed round trip, so the sweep below
+    // straddles the real request duration instead of a guessed constant.
+    const start = std.Io.Timestamp.now(io, .awake);
+    {
+        var client = Client.init(testing.allocator, io, .{ .timeout = null });
+        defer client.deinit();
+        var response = try client.get(url);
+        defer response.deinit();
+        try testing.expectEqualStrings(body, response.body);
+    }
+    const round_trip = std.Io.Timestamp.durationTo(start, std.Io.Timestamp.now(io, .awake));
+    const round_trip_ns: i96 = @max(1, round_trip.nanoseconds);
+
+    // Sweep timeouts from a fraction of that round trip to well past it. The
+    // interesting orderings are in the middle: the timer wins the select, yet
+    // the request completes anyway before cancelation reaches it, handing back a
+    // `Response` that only the request path can free. Any iteration that hits it
+    // and drops the response leaks under `testing.allocator`, failing the test.
+    const iterations = 64;
+    for (0..iterations) |i| {
+        const ns = @divTrunc(round_trip_ns * @as(i96, @intCast(i + 1)) * 2, iterations);
+        var client = Client.init(testing.allocator, io, .{ .timeout = .fromNanoseconds(@max(1, ns)) });
+        defer client.deinit();
+
+        // Either outcome is acceptable — a timed-out request reports `Timeout`,
+        // and one canceled mid-flight can surface as a connection error. The
+        // assertion here is the leak check, not the return value.
+        var response = client.get(url) catch continue;
+        response.deinit();
+    }
+}

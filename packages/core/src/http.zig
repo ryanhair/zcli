@@ -347,27 +347,50 @@ pub const Client = struct {
         const duration = timeout orelse return self.requestInner(method, url, options);
 
         const io = self.inner.io;
-        // Preserve requestInner's precise error set in the race's result union.
-        const ReqResult = @typeInfo(@TypeOf(requestInner)).@"fn".return_type.?;
-        const Outcome = union(enum) {
-            done: ReqResult,
-            expired: std.Io.Cancelable!void,
-        };
-
         var buffer: [2]Outcome = undefined;
         var race = std.Io.Select(Outcome).init(io, &buffer);
         try race.concurrent(.done, requestInner, .{ self, method, url, options });
-        try race.concurrent(.expired, sleepFor, .{ io, duration });
 
-        const first = try race.await();
-        // Cancel and unwind whichever task lost the race (freeing any partial
-        // allocations the losing request made).
-        race.cancelDiscard();
+        const first = first: {
+            // The select owns a live request task from here on, so every way out
+            // of this block — a failed second spawn, a canceled await — has to
+            // drain it rather than abandon it.
+            errdefer drainRace(&race);
+            try race.concurrent(.expired, sleepFor, .{ io, duration });
+            break :first try race.await();
+        };
+        // Cancel and unwind the task that lost the race. Draining (rather than
+        // `cancelDiscard`) is load-bearing: cancelation is delivered at the next
+        // I/O cancelation point, so a request that finished just as the timer
+        // fired still hands back a fully-allocated `Response`. Discarding that
+        // would leak its body and headers.
+        drainRace(&race);
 
         switch (first) {
             .done => |result| return result,
             .expired => return Error.Timeout,
         }
+    }
+
+    /// The timeout race's result union: the request's outcome (with
+    /// `requestInner`'s precise error set preserved) or the timer firing.
+    const Outcome = union(enum) {
+        done: @typeInfo(@TypeOf(requestInner)).@"fn".return_type.?,
+        expired: std.Io.Cancelable!void,
+    };
+
+    /// Cancel every task still owned by `race` and consume their results.
+    /// `Select.cancel` must be looped until it returns null — a canceled task
+    /// may have completed anyway, and a completed `requestInner` yields a
+    /// `Response` nobody else will ever see, so free it here.
+    fn drainRace(race: *std.Io.Select(Outcome)) void {
+        while (race.cancel()) |outcome| switch (outcome) {
+            .done => |result| if (result) |response| {
+                var discarded = response;
+                discarded.deinit();
+            } else |_| {},
+            .expired => {},
+        };
     }
 
     fn sleepFor(io: std.Io, duration: std.Io.Duration) std.Io.Cancelable!void {
