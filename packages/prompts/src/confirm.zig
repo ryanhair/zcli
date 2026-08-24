@@ -25,7 +25,7 @@ pub const ConfirmConfig = struct {
 pub fn confirm(p: Prompts, config: ConfirmConfig) !bool {
     const writer = p.writer;
     const reader = p.reader;
-    const is_tty = terminal.isInteractiveTty();
+    const is_tty = p.isInteractive();
 
     const hint = if (config.default) "(Y/n)" else "(y/N)";
 

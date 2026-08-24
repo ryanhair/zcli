@@ -88,7 +88,13 @@ pub fn isStderrTty() bool {
 /// rendered frame escapes land on the terminal rather than a redirected file.
 /// If either end is redirected, callers must fall back to the plain line path.
 pub fn isInteractiveTty() bool {
-    return isStdinTty() and isStdoutTty();
+    return interactiveFrom(isStdinTty(), isStdoutTty());
+}
+
+/// The rule `isInteractiveTty` applies, separated from the process streams so
+/// every combination is testable: redirecting *either* end selects line mode.
+fn interactiveFrom(stdin_tty: bool, stdout_tty: bool) bool {
+    return stdin_tty and stdout_tty;
 }
 
 // ============================================================================
@@ -161,6 +167,32 @@ test "ANSI helpers" {}
 test "TTY detection runs" {
     _ = isStdinTty();
     _ = isStdoutTty();
+}
+
+test "interactive needs both ends: redirecting either one selects line mode" {
+    try std.testing.expect(interactiveFrom(true, true));
+    try std.testing.expect(!interactiveFrom(false, true)); // `cmd < input.txt`
+    try std.testing.expect(!interactiveFrom(true, false)); // `cmd > out.txt`
+    try std.testing.expect(!interactiveFrom(false, false)); // a pipeline, CI
+}
+
+test "isTty tells a real terminal from a redirected stream" {
+    const io = std.testing.io;
+
+    // A redirected stream — the file behind `cmd > out.txt` — is never a TTY.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var redirected = try tmp.dir.createFile(io, "out.txt", .{});
+    defer redirected.close(io);
+    try std.testing.expect(!isTty(redirected.handle));
+
+    // And the controlling terminal always is. A test runner without one (CI,
+    // a sandbox) can't open it — that's the redirected case, already covered.
+    if (@import("builtin").os.tag != .windows) {
+        var tty = std.Io.Dir.cwd().openFile(io, "/dev/tty", .{}) catch return;
+        defer tty.close(io);
+        try std.testing.expect(isTty(tty.handle));
+    }
 }
 
 test "unicode detection runs" {
