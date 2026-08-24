@@ -111,6 +111,31 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    // Subprocess-runner integration tests. They need a real child, so a small
+    // helper executable is compiled once here and its path handed to the test
+    // binary through a build-options module — faster and more portable than
+    // shelling out to the compiler from inside each test, and it works
+    // identically on Windows.
+    {
+        const fixture = b.addExecutable(.{
+            .name = "process-fixture",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/process_fixture.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+
+        const fixture_options = b.addOptions();
+        fixture_options.addOptionPath("exe_path", fixture.getEmittedBin());
+
+        const process_imports = [_]TestDep{
+            .{ .name = "fixture", .module = fixture_options.createModule() },
+        } ++ dep_imports;
+        const run_tests = addTestRun(b, "test-", "src/process_integration_test.zig", target, optimize, &process_imports);
+        test_step.dependOn(&run_tests.step);
+    }
+
     // NOTE: A previous `plugin_test_files` list referenced five src/plugin_*_test.zig
     // files that were dropped in the monorepo refactor (commit 0aa79f7) and never
     // re-added. They targeted a since-replaced plugin/context API, so they were
@@ -209,6 +234,13 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        // The Linux backends shell out through `zcli.process` (ADR-0034), so the
+        // secrets modules need the framework module by name. A consuming app's
+        // plugin module already gets it (`module_creation.zig`); these are the
+        // repo-local ones, whose roots sit below `src/` and so cannot reach
+        // `src/process.zig` by relative path. No cycle: `zcli.zig` does not
+        // import the secrets plugin.
+        plugin_mod.addImport("zcli", zcli_module);
         const plugin_tests = b.addTest(.{ .root_module = plugin_mod });
         const run_plugin_tests = b.addRunArtifact(plugin_tests);
         for ([_]*std.Build.Step{ test_plugins_step, test_secrets_step, test_step }) |s| {
@@ -236,6 +268,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
             });
+            backend_mod.addImport("zcli", zcli_module);
             main.linkSecretsBackend(backend_mod, target.result);
             const backend_tests = b.addTest(.{ .root_module = backend_mod });
             const run_backend_tests = b.addRunArtifact(backend_tests);
@@ -248,6 +281,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
             });
+            live_mod.addImport("zcli", zcli_module);
             main.linkSecretsBackend(live_mod, target.result);
             // The live test reads the real process environment via libc's
             // `std.c.environ` to build a context for the shell-out backend (0.16

@@ -1129,10 +1129,33 @@ exit the shell's screen and scrollback return exactly as they were — the final
 frame does not persist. `emit` is a compile-time error here; everything is the
 frame.
 
+**Reaching outside the process.** Two core modules cover what a command does
+beyond its own terminal, both with safe behaviour as the only behaviour:
+
+- **`zcli.http`** — an HTTPS-only client over `std.http.Client` with TLS
+  verification that cannot be turned off, per-request timeouts, bounded response
+  bodies, bounded redirects, and credential headers stripped when a redirect
+  leaves the origin.
+- **`zcli.process`** (ADR-0034) — a subprocess runner reached through
+  `context.process()`. The stdin write and both output drains make independent
+  progress, so a payload larger than a pipe buffer cannot deadlock the parent;
+  capture is per-stream bounded with an explicit overflow policy; the program is
+  resolved to an absolute path *in the parent* so PATH never chooses the binary;
+  and the environment is the map threaded through the context, since `Runner` has
+  no constructor that omits it. Termination keeps all four cases the OS can
+  report. It is not a sandbox, not a PTY (that is `packages/testing`'s harness),
+  not a supervisor (`zcli dev` keeps its own loop), and never a shell.
+
 **Construction idiom (ADR-0014).** `context.X()` is the single front door for
-every output capability: `context.theme`, `context.prompts()`,
-`context.progress()`, `context.markdown()`, `context.ui(.{})` each hand back an
-instance already wired to the command's streams, allocator, io, and theme. The
+every capability a command reaches for, not only the ones that write to the
+terminal. `context.theme`, `context.prompts()`, `context.progress()`,
+`context.markdown()` and `context.ui(.{})` are the *output* capabilities;
+`context.process()` is a capability of a different kind — it reaches outside the
+process rather than painting inside it — and uses the same front door for the
+same reason: what it hands back is already wired to the command's allocator, io,
+and environment, so the wiring cannot be forgotten or faked. That is load-bearing
+for `process` specifically, since the environment map is what keeps an ambient
+`getenv` out of a subprocess call. The
 stateless packages (`prompts`, `progress`, `markdown`) are value bundles — the
 import *is* the type — so standalone use fills the same fields by hand;
 stateful ones (`ui.App`) keep `init`/`deinit`. Each package also works without

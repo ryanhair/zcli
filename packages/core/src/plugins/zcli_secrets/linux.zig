@@ -28,10 +28,12 @@
 //! surfaced, never masked by silently trying a different store.
 //!
 //! "Present", throughout, means *resolvable to an absolute path in one of the
-//! trusted directories* `subprocess.resolveHelper` searches — not "found on the
-//! inherited PATH". The probe and the operation therefore agree on exactly which
-//! binary is at stake, which is the point: the environment does not get to pick
-//! the process that receives a decrypted credential on stdin.
+//! trusted directories* `subprocess.helperAvailable` searches — not "found on the
+//! inherited PATH". The probe and the operation therefore search the same
+//! directories, which is the point: the environment does not get to pick the
+//! process that receives a decrypted credential on stdin. The operation resolves
+//! authoritatively at spawn, through `zcli.process`'s `Program.in_dirs` over that
+//! same list; the probe is the cheap advisory answer used to choose a backend.
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
@@ -73,8 +75,8 @@ const real_probes = Probes{
     .helperPresent = toolPresent,
 };
 
-/// The helper binary a backend shells out to, spelled as
-/// `subprocess.resolveHelper` expects it.
+/// The helper binary a backend shells out to, spelled as `Program.in_dirs`
+/// expects it: a bare basename, never a path.
 fn helperName(backend: Backend) []const u8 {
     return switch (backend) {
         .secret_service => "secret-tool",
@@ -278,18 +280,20 @@ fn passAvailable(_: std.mem.Allocator, io: std.Io, environ: *const std.process.E
 }
 
 /// True when the helper binary exists, and is executable, in one of the trusted
-/// directories `subprocess.resolveHelper` searches.
+/// directories the backends resolve against.
 ///
 /// This used to *spawn* the tool (`secret-tool --version`, `pass version`) purely
 /// to prove it could be launched. That is no longer the right question: the
-/// backends do not launch whatever the inherited PATH resolves, they launch the
-/// binary this resolution pins, so "is it present" and "which one would we run"
-/// have to be the same lookup. It is also strictly cheaper — two `faccessat`
-/// calls in the common case instead of a fork+exec.
+/// backends do not launch whatever the inherited PATH resolves, they launch what
+/// `Program.in_dirs` pins out of that same trusted list, so "is it present" and
+/// "which one would we run" search the same directories. It is also strictly
+/// cheaper — two `faccessat` calls in the common case instead of a fork+exec.
+///
+/// Advisory by construction: the authoritative resolution happens at spawn, so a
+/// helper that vanishes between this check and the operation surfaces as a
+/// backend failure there rather than being mispredicted here.
 fn toolPresent(io: std.Io, environ: *const std.process.Environ.Map, helper: []const u8) bool {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    _ = subprocess.resolveHelper(io, environ, helper, &buf) catch return false;
-    return true;
+    return subprocess.helperAvailable(io, environ, helper);
 }
 
 /// True when `pass` has an initialized store: a `.gpg-id` under
