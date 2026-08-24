@@ -2073,7 +2073,7 @@ test "scaffolded commands are unit-testable via zig build test" {
     }
 }
 
-test "a shared module reaches both commands and their tests" {
+test "a shared module reaches both commands and their tests, and its own tests run" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -2092,10 +2092,21 @@ test "a shared module reaches both commands and their tests" {
     const proj_abs = try tmpSubdirAbs(a, tmp, "app");
     try pointDependencyAtLocalTree(proj, proj_abs);
 
-    // A helper module imported by a command AND its co-located test.
+    // A helper module imported by a command AND its co-located test, carrying a
+    // `test` block of its own — `addCommandTests` compiles every configured
+    // shared module as a test root, so this runs with no extra build wiring.
     try proj.writeFile(io, .{
         .sub_path = "src/store.zig",
-        .data = "pub fn tag() []const u8 {\n    return \"from-store\";\n}\n",
+        .data =
+        \\const std = @import("std");
+        \\pub fn tag() []const u8 {
+        \\    return "from-store";
+        \\}
+        \\test "store tags its output" {
+        \\    try std.testing.expectEqualStrings("from-store", tag());
+        \\}
+        \\
+        ,
     });
 
     // Populate the `shared_modules` list init leaves empty (with a commented
@@ -2148,6 +2159,29 @@ test "a shared module reaches both commands and their tests" {
         var r = try run(proj, &.{ "zig", "build", "test" });
         defer r.deinit();
         try expectOk(r);
+    }
+
+    // Prove the shared module's tests EXECUTE rather than merely compile — a
+    // green step over a test root nothing runs would be a false pass. Same
+    // canary as the command-test tier above: a deliberately failing test in
+    // the shared module must turn `zig build test` red.
+    try proj.writeFile(io, .{
+        .sub_path = "src/store.zig",
+        .data =
+        \\const std = @import("std");
+        \\pub fn tag() []const u8 {
+        \\    return "from-store";
+        \\}
+        \\test "store canary fails on purpose" {
+        \\    try std.testing.expect(false);
+        \\}
+        \\
+        ,
+    });
+    {
+        var r = try run(proj, &.{ "zig", "build", "test" });
+        defer r.deinit();
+        try testing.expect(r.exit_code != 0);
     }
 }
 
