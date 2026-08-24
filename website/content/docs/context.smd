@@ -45,6 +45,8 @@ This is a deliberate design choice (ADR-0001), and it's a large part of why [AI-
 const home = context.environ.get("HOME") orelse ".";
 ```
 
+For the specific question of *where this app's files belong on this platform*, don't read `HOME` yourself — `context.paths()` resolves config, cache, and data directories from that same `environ`, and errors rather than guessing when the environment names no home. See [Application paths]($link.page('docs/paths')).
+
 ## App and command metadata
 
 - `context.app_name`, `context.app_version` — version read from `build.zig.zon` at build time
@@ -62,6 +64,7 @@ The context hands you each terminal package already wired to the command's strea
 | `context.ui(.{})` | a hybrid CLI/TUI `App` (static + live region) | [The CLI/TUI hybrid]($link.page('docs/ui')) |
 | `context.uiFullScreen(.{})` | a full-screen `App` (alt-screen, event loop) | [Full-screen mode]($link.page('docs/ui')) |
 | `context.markdown()` | a markdown-to-ANSI formatter on your palette | — |
+| `context.paths()` | platform-standard config, cache, and data directories | [Application paths]($link.page('docs/paths')) |
 
 `context.theme` carries the app's [theme]($link.page('docs/theming')) plus the terminal capabilities detected once per run — every builder above consumes it, so `NO_COLOR`, piped output, and 16-color terminals are handled uniformly.
 

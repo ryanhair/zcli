@@ -644,8 +644,7 @@ test "integration: no notice for an explicit --config path" {
     config.deinitContextData(&ctx.plugins.zcli_config, alloc);
 }
 
-test "integration: no notice for a user-level (XDG) config" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // XDG_CONFIG_HOME is POSIX-only
+test "integration: no notice for a user-level (platform config dir) config" {
     var a = arena();
     defer a.deinit();
     const alloc = a.allocator();
@@ -659,13 +658,13 @@ test "integration: no notice for a user-level (XDG) config" {
     defer app_dir.close(io);
     try app_dir.writeFile(io, .{ .sub_path = "config.json", .data = "{\"count\": 10}" });
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const xdg_base_len = try tmp.dir.realPath(io, &path_buf);
-    const xdg_base = try alloc.dupe(u8, path_buf[0..xdg_base_len]);
+    const config_base_len = try tmp.dir.realPath(io, &path_buf);
+    const config_base = try alloc.dupe(u8, path_buf[0..config_base_len]);
 
     var orig_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
     defer orig_dir.close(io);
     // Run from a directory with no `.myapp.config.*` of its own, so discovery
-    // must fall through to the user-level (XDG) branch.
+    // must fall through to the user-level branch.
     var empty_tmp = testing.tmpDir(.{});
     defer empty_tmp.cleanup();
     try std.process.setCurrentDir(io, empty_tmp.dir);
@@ -673,7 +672,15 @@ test "integration: no notice for a user-level (XDG) config" {
 
     var aw = std.Io.Writer.Allocating.init(alloc);
     var environ = std.process.Environ.Map.init(alloc);
-    try environ.put("XDG_CONFIG_HOME", xdg_base);
+    // The user-level base comes from the platform convention: %APPDATA% on
+    // Windows, $XDG_CONFIG_HOME on POSIX. Setting whichever one this host
+    // consults lets the test assert the same behaviour everywhere instead of
+    // skipping on Windows.
+    if (@import("builtin").os.tag == .windows) {
+        try environ.put("APPDATA", config_base);
+    } else {
+        try environ.put("XDG_CONFIG_HOME", config_base);
+    }
     const cmd_path = [_][]const u8{};
     var ctx = makeCtx(alloc, &environ, &cmd_path, &aw.writer);
 

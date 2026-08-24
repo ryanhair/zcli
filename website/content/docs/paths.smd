@@ -1,0 +1,167 @@
+---
+.title = "zcli — Application paths",
+.description = "Platform-standard per-user config, cache, and data directories resolved from the threaded environment: the location matrix, precedence rules, error behavior, and directory creation.",
+.date = @date("2026-08-24"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Application paths
+
+Every CLI eventually needs to answer one question: *where does this app put its config, its cache, and its data on this platform?* `context.paths()` answers it from the threaded environment — no ambient `getenv`, no guessing.
+
+```zig
+pub fn execute(args: Args, options: Options, context: *Context) !void {
+    const p = context.paths();
+
+    // Creates ~/.config/myapp/ if absent (0700), returns the file path.
+    // The file itself is NOT created.
+    const path = try p.ensureFile(context.io, .config, &.{"credentials.json"});
+
+    try std.Io.Dir.cwd().writeFile(context.io, .{ .sub_path = path, .data = token_json });
+    try context.stdout().print("Saved credentials to {s}\n", .{path});
+}
+```
+
+There's no `defer free`: paths come from the [per-command arena]($link.page('docs/context')).
+
+## The three kinds
+
+| Kind | What belongs there |
+|---|---|
+| `.config` | small hand-authored settings the user edits |
+| `.data` | bulk state the app owns — indexes, downloaded toolchains, databases |
+| `.cache` | anything the app can regenerate; safe for the OS or the user to delete |
+
+## Where they land
+
+Each cell is the **base** directory; `dir(kind)` appends the app segment in the last row.
+
+| | Linux / BSD | macOS | Windows |
+|---|---|---|---|
+| **config** | `$XDG_CONFIG_HOME`, else `~/.config` | `$XDG_CONFIG_HOME`, else `~/.config` | `%APPDATA%` |
+| **data** | `$XDG_DATA_HOME`, else `~/.local/share` | `$XDG_DATA_HOME`, else `~/.local/share` | `%LOCALAPPDATA%` |
+| **cache** | `$XDG_CACHE_HOME`, else `~/.cache` | `$XDG_CACHE_HOME`, else `~/Library/Caches` | `%LOCALAPPDATA%` |
+| **app segment** | `{app}` | `{app}` | config → `{app}`, data → `{app}\data`, cache → `{app}\cache` |
+
+For `app_name = "myapp"`:
+
+```
+config   /home/u/.config/myapp          /Users/u/.config/myapp          C:\Users\u\AppData\Roaming\myapp
+data     /home/u/.local/share/myapp     /Users/u/.local/share/myapp     C:\Users\u\AppData\Local\myapp\data
+cache    /home/u/.cache/myapp           /Users/u/Library/Caches/myapp   C:\Users\u\AppData\Local\myapp\cache
+```
+
+### Why macOS is mostly XDG
+
+Apple documents `~/Library/Application Support/<app>` for per-user application files. zcli deliberately does not use it for `config` and `data`: that's the convention for *bundled applications*, and it's hostile in a terminal — a space in the path, deep to type, awkward to tab-complete. Nearly every CLI a developer already uses (`gh`, `git`, `aws`, `kubectl`, `docker`, `cargo`, `rustup`) puts config under `~/.config`. This is a CLI-ecosystem-compatibility policy, stated plainly, not the Apple platform convention.
+
+`cache` is different in kind, and there zcli *does* follow Apple: macOS excludes `~/Library/Caches` from Time Machine backups and points its storage-management tooling at it for reclamation. Putting a purgeable cache there is a functional property, not a stylistic one. Homebrew and Go both do the same.
+
+### Why Windows splits roaming from local
+
+`%APPDATA%` roams with the user profile; `%LOCALAPPDATA%` does not. Small hand-authored config should roam; bulk CLI data should not, because roaming profiles are size-constrained and administrators police them. The `\data` and `\cache` leaf segments exist only because `data` and `cache` would otherwise collide in `%LOCALAPPDATA%`.
+
+## Precedence, and what counts as invalid
+
+The rules are uniform across all three kinds:
+
+1. If the kind's variable is set, non-empty, control-byte-free and **fully qualified**, it is used.
+2. **XDG variables only:** otherwise the variable is **ignored** and resolution falls through to the `$HOME`-relative default. Empty, relative, control-bearing — the XDG spec calls all of these invalid, and its prescribed disposition is to use the default. None of them is an error.
+3. Falling back needs `HOME`: unset gives `error.HomeNotFound`; empty or relative gives `error.HomeNotAbsolute`; control bytes give `error.HomeMalformed`.
+4. **Windows has no fallback and no ignore-and-continue.** A missing `%APPDATA%` / `%LOCALAPPDATA%` is `error.HomeNotFound`; a relative one is `error.HomeNotAbsolute`.
+
+The asymmetry between 2 and 4 is deliberate: *invalid → ignore* applies to an optional override, *invalid → error* applies to a terminal source that has no second choice.
+
+### Never a guess
+
+`base()` errors rather than inventing a location. With `HOME` unset — a systemd unit, a scratch container, a CI runner, a `su` without `-` — a `"/home/user"`-style literal either lands in someone else's tree or scatters files into the working directory. For `config` or `data`, which can hold credentials, that's a security bug. Windows likewise never derives `%USERPROFILE%\AppData\Roaming`: those folders can be redirected by group policy, and writing to the un-redirected literal is exactly the failure that scatters data outside a managed profile.
+
+The degradation policy belongs to you, and it genuinely differs per caller:
+
+```zig
+// Best-effort cache: no home just means "no rate-limit cache".
+const path = p.ensureFile(io, .cache, &.{"last-check"}) catch return null;
+
+// A credential store, on the other hand, should fail loudly.
+const creds = try p.ensureFile(io, .config, &.{"credentials.json"});
+```
+
+## The API
+
+Resolution is a **pure string function** — `base`, `resolve`, `dir`, `file` and `home` touch no filesystem and take no `io`. Only the `ensure*` family does I/O.
+
+| Method | Returns |
+|---|---|
+| `base(kind)` | the platform base, **not** app-scoped |
+| `dir(kind)` | this app's directory for `kind` |
+| `file(kind, sub_path)` | a file inside `dir(kind)`; `sub_path` must be non-empty |
+| `resolve(kind, segments)` | `base(kind)` plus caller segments, **not** app-scoped |
+| `home()` | the validated home directory |
+| `ensureDir(io, kind)` | `dir(kind)`, created with parents |
+| `ensureFile(io, kind, sub_path)` | `file(...)` with its **parent** created; the file is not created |
+| `ensureParent(io, path)` | create the parent chain of any fully-qualified path |
+
+```zig
+const tarball = try p.file(.cache, &.{ "downloads", version, "toolchain.tar.gz" });
+// -> ~/.cache/myapp/downloads/1.2.3/toolchain.tar.gz              (Linux)
+// -> ~/Library/Caches/myapp/downloads/1.2.3/toolchain.tar.gz      (macOS)
+// -> %LOCALAPPDATA%\myapp\cache\downloads\1.2.3\toolchain.tar.gz  (Windows)
+```
+
+### Locations another tool owns
+
+`resolve` is the primitive for a destination whose tail is not `{app}/…` — a shell's completion directory, for instance. A tool's own contract may pin the *policy* even where the *syntax* stays the host's, so the two are separate knobs:
+
+```zig
+var shell_paths = p;
+shell_paths.convention = .xdg;   // policy only — NOT syntax
+const dest = try shell_paths.resolve(.data, &.{
+    "bash-completion", "completions", context.app_name,
+});
+try shell_paths.ensureParent(context.io, dest);
+```
+
+`convention` selects which variables and fallback tails describe the location. `syntax` selects separators and absoluteness rules, and is a property of the filesystem being addressed — so every `ensure*` call requires `syntax` to be the host's, or returns `error.ForeignSyntax`.
+
+## Directory creation and permissions
+
+- Directories the `ensure*` family creates are `0700` on POSIX — these may hold tokens, and `createDirPath`'s default of `0o777` masked by umask is typically world-readable `0755`.
+- **Existing directories are never touched.** A `~/.cache/myapp` that already exists at `0755` keeps `0755`; zcli does not retroactively `chmod` a directory it did not create.
+- `ensure*` is idempotent and creates directories only — never the file itself.
+- It is **not** atomic. If you need atomicity for the file, keep using `createFileAtomic` + rename.
+
+## Names, and what is guaranteed
+
+`app_name` and every path component must be usable as a single path segment. A component is rejected if it is empty; composed solely of `.` characters; contains any of `< > : " / \ | ? *`; contains a control byte; has a leading or trailing space; ends in a `.`; or is not valid WTF-8.
+
+The trailing-dot and trailing-space rules exist because Win32 strips both from a component before the path reaches the filesystem — so `".. "` and `"..."` would pass a naive `!= ".."` check and then *become* `".."` during I/O. The rules are applied uniformly on every platform, which means `p.file(.data, &.{"12:00.log"})` is an error on Linux too, where that name is legal. One rule, portable output by construction.
+
+The same predicate runs at compile time on `app_name`, so a name the registry accepts is always a name `Paths` accepts.
+
+### What this does and does not buy you
+
+**Lexical containment.** No `app_name` or `sub_path` can make the resolved string denote a location outside `base(kind)`, including after Win32 normalization. It does **not** buy filesystem containment: a symlink or junction anywhere in the base chain redirects creation and any subsequent write. The trust assumption is that the home directory belongs to the user.
+
+**Character and encoding portability, not filesystem acceptance.** `ensure*` can still fail on a segment the predicate accepted, and that is expected. Deliberately unchecked:
+
+- **Windows reserved device names** — `CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, *including with an extension* (`aux.json` is reserved). Rejecting them would falsely reject a legitimate POSIX `aux.json`, and the Windows failure mode is a clear open/create error rather than a silent traversal.
+- Length limits (`MAX_PATH`, per-component `NAME_MAX`), case-insensitivity collisions, and macOS Unicode normalization.
+
+## MSYS2 and Git Bash
+
+A native Windows build resolves Windows paths. MSYS2 and Cygwin convert path-like environment values to Win32 form when launching a native child, so a native zcli binary ordinarily sees `HOME=C:\Users\u` — **the common Git Bash setup works**, and the resulting file is the same one bash reaches at `/c/Users/u/…`.
+
+When conversion is suppressed for a variable (`MSYS2_ENV_CONV_EXCL`), or a mount has no drive-letter equivalent, `HOME=/c/Users/u` yields `error.HomeNotAbsolute` rather than being translated. Translating would mean guessing at a mount table zcli cannot read, and a wrong guess writes where the shell will never look — a silent failure instead of a loud one. Re-enable conversion for that variable, set an absolute Win32 `HOME`, or install manually.
+
+## Errors
+
+| Error | Meaning |
+|---|---|
+| `HomeNotFound` | no environment variable identifies the home / app-data root |
+| `HomeNotAbsolute` | set, but empty, relative, or a root form that cannot be safely appended to |
+| `HomeMalformed` | set, but contains control bytes or invalid encoding |
+| `InvalidAppName` | `app_name` is not usable as a path segment |
+| `InvalidSubPath` | a `sub_path` / `resolve` component is not usable as a segment |
+| `ForeignSyntax` | an `ensure*` call on a `Paths` whose `syntax` is not the host's |
+| `PathNotFullyQualified` | `ensureParent` was handed a path that is not fully qualified |

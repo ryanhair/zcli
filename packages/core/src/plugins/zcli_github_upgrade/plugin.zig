@@ -22,7 +22,7 @@ const api_timeout: std.Io.Duration = .fromSeconds(30);
 /// so it gets seconds, not minutes.
 const startup_check_timeout: std.Io.Duration = .fromSeconds(3);
 /// Minimum interval between passive startup checks. The time of the last
-/// attempt is recorded in the platform cache dir (see lastCheckFilePath), so
+/// attempt is recorded in the platform cache dir (see last_check_file_name), so
 /// enabling inform_out_of_date probes the network at most once per day —
 /// not on every invocation.
 const startup_check_interval_s: i64 = 24 * 60 * 60;
@@ -62,36 +62,13 @@ fn isValidVersionArg(v: []const u8) bool {
     return true;
 }
 
-/// Platform-standard per-user cache file recording the last passive update
-/// check (unix seconds, decimal). Resolved from the threaded environ — no
-/// ambient getenv:
+/// Name of the per-user cache file recording the last passive update check
+/// (unix seconds, decimal). Its directory is `zcli.Paths.dir(.cache)`:
 ///
-///   Linux/BSD: $XDG_CACHE_HOME/<app>/last-update-check, else ~/.cache/<app>/…
-///   macOS:     ~/Library/Caches/<app>/last-update-check
-///   Windows:   %LOCALAPPDATA%\<app>\last-update-check
-///
-/// Returns null when the environment variable it needs is absent — rate
-/// limiting then degrades to checking every run, never to failing.
-fn lastCheckFilePath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map, app_name: []const u8) !?[]u8 {
-    const file_name = "last-update-check";
-    switch (builtin.os.tag) {
-        .windows => {
-            const base = environ.get("LOCALAPPDATA") orelse return null;
-            return try std.fs.path.join(allocator, &.{ base, app_name, file_name });
-        },
-        .macos => {
-            const home = environ.get("HOME") orelse return null;
-            return try std.fs.path.join(allocator, &.{ home, "Library", "Caches", app_name, file_name });
-        },
-        else => {
-            if (environ.get("XDG_CACHE_HOME")) |xdg| {
-                return try std.fs.path.join(allocator, &.{ xdg, app_name, file_name });
-            }
-            const home = environ.get("HOME") orelse return null;
-            return try std.fs.path.join(allocator, &.{ home, ".cache", app_name, file_name });
-        },
-    }
-}
+///   Linux/BSD: $XDG_CACHE_HOME/<app>/…, else ~/.cache/<app>/…
+///   macOS:     $XDG_CACHE_HOME/<app>/…, else ~/Library/Caches/<app>/…
+///   Windows:   %LOCALAPPDATA%\<app>\cache\…
+const last_check_file_name = "last-update-check";
 
 /// Read the last-check timestamp from `path` (within `dir`). Any failure —
 /// missing file, unreadable, garbage contents — reads as "never checked".
@@ -102,13 +79,10 @@ fn readLastCheck(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path
     return std.fmt.parseInt(i64, trimmed, 10) catch null;
 }
 
-/// Record a check attempt at `now_s`. Creates missing parent directories.
-/// Callers treat failure as best-effort (a read-only home dir must never
-/// break startup).
+/// Record a check attempt at `now_s`. The parent directory is created by
+/// `Paths.ensureFile` before this is called, so this only writes. Callers treat
+/// failure as best-effort (a read-only home dir must never break startup).
 fn writeLastCheck(io: std.Io, dir: std.Io.Dir, path: []const u8, now_s: i64) !void {
-    if (std.fs.path.dirname(path)) |parent| {
-        try dir.createDirPath(io, parent);
-    }
     var buf: [32]u8 = undefined;
     const text = try std.fmt.bufPrint(&buf, "{d}\n", .{now_s});
     try dir.writeFile(io, .{ .sub_path = path, .data = text });
@@ -491,7 +465,12 @@ pub fn init(config: Config) type {
             // on every invocation, and every cache failure degrades toward
             // checking — never toward breaking startup.
             const now_s: i64 = @intCast(@divTrunc(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s));
-            const cache_path: ?[]u8 = lastCheckFilePath(allocator, context.environ, context.app_name) catch null;
+            // `ensureFile` creates the cache directory but not the file. A
+            // resolution failure — no HOME, a container with a stripped
+            // environment — means "no rate-limit cache", so the probe simply
+            // runs every invocation. That is the intended degradation, which is
+            // why this catches rather than propagates.
+            const cache_path: ?[]u8 = context.paths().ensureFile(io, .cache, &.{last_check_file_name}) catch null;
             defer if (cache_path) |p| allocator.free(p);
             if (cache_path) |p| {
                 const cwd = std.Io.Dir.cwd();
@@ -1812,59 +1791,74 @@ test "checkedRecently - skip window semantics" {
     try std.testing.expect(!checkedRecently(2000, 1000, 100));
 }
 
-test "lastCheckFilePath - platform-standard location from the threaded environ" {
+// The cache file's location is now `zcli.Paths.file(.cache, …)`. With
+// `convention`/`syntax` as runtime fields, all three platform layouts are
+// asserted on every runner rather than one per host.
+
+test "last-check cache path - platform-standard location from the threaded environ" {
     const a = std.testing.allocator;
 
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
+    try env.put("HOME", "/home/u");
+    try env.put("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local");
 
-    switch (builtin.os.tag) {
-        .windows => {
-            try env.put("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local");
-            const path = (try lastCheckFilePath(a, &env, "myapp")).?;
-            defer a.free(path);
-            try std.testing.expectEqualStrings("C:\\Users\\u\\AppData\\Local\\myapp\\last-update-check", path);
-        },
-        .macos => {
-            try env.put("HOME", "/Users/u");
-            const path = (try lastCheckFilePath(a, &env, "myapp")).?;
-            defer a.free(path);
-            try std.testing.expectEqualStrings("/Users/u/Library/Caches/myapp/last-update-check", path);
-        },
-        else => {
-            try env.put("HOME", "/home/u");
-            const fallback = (try lastCheckFilePath(a, &env, "myapp")).?;
-            defer a.free(fallback);
-            try std.testing.expectEqualStrings("/home/u/.cache/myapp/last-update-check", fallback);
+    const base: zcli.Paths = .{ .allocator = a, .environ = &env, .app_name = "myapp" };
 
-            // XDG_CACHE_HOME wins over the ~/.cache fallback when set.
-            try env.put("XDG_CACHE_HOME", "/home/u/.xdg-cache");
-            const xdg = (try lastCheckFilePath(a, &env, "myapp")).?;
-            defer a.free(xdg);
-            try std.testing.expectEqualStrings("/home/u/.xdg-cache/myapp/last-update-check", xdg);
-        },
+    const cases = [_]struct { zcli.Paths.Convention, zcli.Paths.Syntax, []const u8 }{
+        .{ .xdg, .posix, "/home/u/.cache/myapp/last-update-check" },
+        .{ .macos, .posix, "/home/u/Library/Caches/myapp/last-update-check" },
+        // Windows gets a `cache` leaf because data and cache share %LOCALAPPDATA%.
+        .{ .windows, .windows, "C:\\Users\\u\\AppData\\Local\\myapp\\cache\\last-update-check" },
+    };
+    for (cases) |c| {
+        var p = base;
+        p.convention = c[0];
+        p.syntax = c[1];
+        const path = try p.file(.cache, &.{last_check_file_name});
+        defer a.free(path);
+        try std.testing.expectEqualStrings(c[2], path);
+    }
+
+    // XDG_CACHE_HOME now wins on macOS too — it used to be ignored entirely.
+    try env.put("XDG_CACHE_HOME", "/home/u/.xdg-cache");
+    for ([_]zcli.Paths.Convention{ .xdg, .macos }) |conv| {
+        var p = base;
+        p.convention = conv;
+        p.syntax = .posix;
+        const path = try p.file(.cache, &.{last_check_file_name});
+        defer a.free(path);
+        try std.testing.expectEqualStrings("/home/u/.xdg-cache/myapp/last-update-check", path);
     }
 }
 
-test "lastCheckFilePath - missing environment reads as no cache (null)" {
+test "last-check cache path - missing environment reads as no cache" {
     const a = std.testing.allocator;
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
-    try std.testing.expectEqual(@as(?[]u8, null), try lastCheckFilePath(a, &env, "myapp"));
+
+    // The call site turns any resolution error into "no cache", so the probe
+    // runs every invocation instead of failing startup.
+    const p: zcli.Paths = .{ .allocator = a, .environ = &env, .app_name = "myapp" };
+    try std.testing.expectEqual(
+        @as(?[]u8, null),
+        p.file(.cache, &.{last_check_file_name}) catch null,
+    );
 }
 
-test "last-check cache round-trips, tolerates garbage, and creates parents" {
+test "last-check cache round-trips and tolerates garbage" {
     const a = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     const path = "myapp/last-update-check";
+    // The parent directory is `Paths.ensureFile`'s job now, not writeLastCheck's.
+    try tmp.dir.createDirPath(io, "myapp");
 
     // Never checked: no file yet.
     try std.testing.expectEqual(@as(?i64, null), readLastCheck(a, io, tmp.dir, path));
 
-    // Round-trip, with the parent directory created on demand.
     try writeLastCheck(io, tmp.dir, path, 1_700_000_000);
     try std.testing.expectEqual(@as(?i64, 1_700_000_000), readLastCheck(a, io, tmp.dir, path));
 

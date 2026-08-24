@@ -25,7 +25,7 @@ The first match wins:
 
 1. `--config <path>` — an explicit file passed on the command line (a global option the plugin contributes)
 2. `./.{app}.config.json|toml|yaml|yml` — a project-local dotfile in the working directory
-3. `{user config dir}/{app}/config.json|toml|yaml|yml` — the user-level config (`$XDG_CONFIG_HOME` or `~/.config` on POSIX; `%APPDATA%`, else `%USERPROFILE%`, on Windows)
+3. `{user config dir}/{app}/config.json|toml|yaml|yml` — the user-level config, in the platform-standard location: `$XDG_CONFIG_HOME` else `~/.config` on POSIX and macOS, `%APPDATA%` on Windows. See [Application paths]($link.page('docs/paths')) for the full rules, including which values are ignored as invalid. When the environment names no user config location at all, this tier is simply skipped.
 
 The first match wins outright. When the winner is the project-local dotfile, the plugin always prints a `note: applied config from ./…` naming it (the explicit `--config` file and the user-level config load silently). Separately, if one tier contains files in several formats — say both `.myapp.config.json` and `.myapp.config.toml` — the plugin warns that multiple config files were found and names the one it used.
 

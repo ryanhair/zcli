@@ -31,9 +31,12 @@ const escape = @import("plugins/zcli_completions/escape.zig");
 const resolve = @import("plugins/zcli_completions/resolve.zig");
 const wire = @import("plugins/zcli_completions/wire.zig");
 
-// Pull the wire module's own tests (NUL framing / scrubbing) into this binary.
+// Pull the wire module's own tests (NUL framing / scrubbing) and the plugin's
+// own tests (install-path resolution across conventions, shell quoting) into
+// this binary.
 test {
     _ = wire;
+    _ = @import("plugins/zcli_completions/plugin.zig");
 }
 
 const app_name = "tasks";
@@ -1881,6 +1884,15 @@ const PluginCtx = struct {
     pub fn getGlobalOptions(self: *@This()) []const zcli.OptionInfo {
         return self.globals;
     }
+    /// Mirrors `Context.paths()` — the plugin creates its install directory
+    /// through the guarded `ensureParent`.
+    pub fn paths(self: *@This()) zcli.Paths {
+        return .{
+            .allocator = self.allocator,
+            .environ = self.environ,
+            .app_name = self.app_name,
+        };
+    }
 };
 
 /// An environment map holding exactly `pairs`, arena-owned.
@@ -2265,7 +2277,18 @@ const FakeHome = struct {
         // path from $HOME, so a relative temp dir would not do.
         const anchor = try writeTemp(a, tmp.dir, "anchor", "");
         const home = std.fs.path.dirname(anchor).?;
-        return .{ .tmp = tmp, .path = home, .environ = try envWith(a, &.{.{ "HOME", home }}) };
+        // %APPDATA%/%LOCALAPPDATA% too, so the Windows host convention (which
+        // PowerShell follows) resolves inside the temp dir rather than the real
+        // user profile.
+        return .{
+            .tmp = tmp,
+            .path = home,
+            .environ = try envWith(a, &.{
+                .{ "HOME", home },
+                .{ "APPDATA", home },
+                .{ "LOCALAPPDATA", home },
+            }),
+        };
     }
 
     fn deinit(self: *FakeHome) void {
@@ -2308,16 +2331,21 @@ fn runUninstall(a: std.mem.Allocator, home: *FakeHome, shell: ?[]const u8) !Emit
 }
 
 /// Where each shell's script is expected to land under `home`.
+/// The destination each shell's script is expected at, given a home with no
+/// XDG_* or BASH_COMPLETION_USER_DIR set. Joined with the host separator,
+/// because the plugin emits native paths (host `syntax`).
 fn installedPath(a: std.mem.Allocator, home: []const u8, shell: []const u8) ![]const u8 {
-    const tail = if (std.mem.eql(u8, shell, "bash"))
-        ".local/share/bash-completion/completions/" ++ app_name
-    else if (std.mem.eql(u8, shell, "zsh"))
-        ".zsh/completions/_" ++ app_name
-    else if (std.mem.eql(u8, shell, "fish"))
-        ".config/fish/completions/" ++ app_name ++ ".fish"
-    else
-        ".config/powershell/completions/" ++ app_name ++ ".ps1";
-    return std.fmt.allocPrint(a, "{s}/{s}", .{ home, tail });
+    if (std.mem.eql(u8, shell, "bash"))
+        return std.fs.path.join(a, &.{ home, ".local", "share", "bash-completion", "completions", app_name });
+    if (std.mem.eql(u8, shell, "zsh"))
+        return std.fs.path.join(a, &.{ home, ".zsh", "completions", "_" ++ app_name });
+    if (std.mem.eql(u8, shell, "fish"))
+        return std.fs.path.join(a, &.{ home, ".config", "fish", "completions", app_name ++ ".fish" });
+    // PowerShell follows the HOST convention: %APPDATA%\powershell\… on
+    // Windows (where there is no XDG story), ~/.config/powershell/… on POSIX.
+    if (builtin.os.tag == .windows)
+        return std.fs.path.join(a, &.{ home, "powershell", "completions", app_name ++ ".ps1" });
+    return std.fs.path.join(a, &.{ home, ".config", "powershell", "completions", app_name ++ ".ps1" });
 }
 
 // NOTE: this is #782 wiring coverage ONLY — it passes just as well against the
@@ -2478,8 +2506,10 @@ test "uninstall - removes the installed script and prints the disable steps" {
     const emitted = try runUninstall(a, &home, "zsh");
     try std.testing.expect(contains(emitted.out, "✓ Uninstalled"));
     try std.testing.expect(contains(emitted.out, dest));
-    // The zsh disable instructions name the fpath line the enable step added.
-    try std.testing.expect(contains(emitted.out, "fpath=(~/.zsh/completions $fpath)"));
+    // The zsh disable instructions name the fpath line the enable step added —
+    // built from the RESOLVED directory and shell-quoted, not a hard-coded ~.
+    const fpath_line = try std.fmt.allocPrint(a, "fpath=('{s}' $fpath)", .{std.fs.path.dirname(dest).?});
+    try std.testing.expect(contains(emitted.out, fpath_line));
 
     // Gone after.
     try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, dest, .{}));

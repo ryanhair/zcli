@@ -19,6 +19,13 @@ pub const Progress = @import("progress");
 /// command, prefer `context.prompts()`, which returns a pre-wired instance.
 pub const Prompts = @import("prompts");
 
+/// Platform-standard per-user config / cache / data directories, resolved from
+/// the threaded environ (never ambient getenv). The import IS the type: build
+/// one instance carrying allocator/environ/app_name and `dir`/`file`/`ensureFile`
+/// are methods on it. In a command, prefer `context.paths()`, which returns a
+/// pre-wired instance.
+pub const Paths = @import("Paths.zig");
+
 /// The terminal-native layout engine (ADR-0013): a static stream that flows
 /// into scrollback plus a diffed live region at the bottom edge — the
 /// CLI/TUI hybrid. In a command, prefer `context.ui()`, which returns a
