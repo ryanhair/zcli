@@ -240,6 +240,20 @@ pub fn ContextFor(comptime plugins: []const type) type {
             };
         }
 
+        /// A `process.Runner` pre-wired to this command's environment: the
+        /// arena-per-command allocator, the framework `io`, and — the part that
+        /// matters — the threaded `environ`. `Runner` has no constructor that
+        /// omits the environment map, so going through the context is what makes
+        /// an ambient `getenv` in a subprocess call impossible to write by
+        /// accident rather than merely discouraged.
+        pub fn process(self: *Self) zcli.process.Runner {
+            return .{
+                .allocator = self.allocator,
+                .io = self.io,
+                .environ = self.environ,
+            };
+        }
+
         /// A markdown `Formatter` pre-wired to stdout, the detected terminal
         /// capability, and the app's palette (baked at comptime). Call
         /// `.write(fmt, args)` / `.print(alloc, fmt, args)` on the result.

@@ -1,41 +1,49 @@
-//! Shared subprocess runner for the Linux `zcli_secrets` backends.
+//! Helper-binary invocation for the Linux `zcli_secrets` backends.
 //!
 //! Both Linux stores are reached by *executing a helper binary* (`secret-tool`
 //! or `pass`) rather than linking a library — that is what keeps a zcli binary
 //! static and musl-clean (see `docs/adr/0010-linux-secrets-shell-out-and-pass.md`).
-//! This wraps the shape both backends need: spawn a command, optionally feed it
-//! the secret on stdin, capture stdout/stderr, and wait.
 //!
-//! The child inherits `environ` — threaded from the context, never read via C
-//! `getenv` — so `secret-tool` / `pass` / `gpg` see `HOME`,
-//! `DBUS_SESSION_BUS_ADDRESS`, `GNUPGHOME`, `PASSWORD_STORE_DIR`, `GPG_TTY`, and
-//! the rest of the ambient environment they rely on.
+//! The plumbing itself is `zcli.process` (ADR-0034); this file is now just the
+//! secrets-specific *policy* on top of it: which directories a helper may come
+//! from, that the payload is a secret, and that the captured output is too. That
+//! is deliberate — this module was where the framework's third and strongest
+//! hand-rolled subprocess runner lived, and the general one exists precisely so
+//! there is only one implementation of "feed a child on stdin without
+//! deadlocking, cap what it says back, and don't let PATH pick the binary".
+//!
+//! What the shared runner now provides that this file used to spell out itself:
+//! the stdin write overlaps both output drains (a base64'd secret larger than a
+//! pipe buffer used to deadlock here), captured output is bounded, the child is
+//! reaped exactly once, and the environment is the threaded `environ` rather
+//! than anything ambient.
 //!
 //! ## Which binary gets executed
 //!
 //! `std.process.spawn` documents that an `argv[0]` which is not already a file
 //! path "is resolved into a file path based on PATH from the **parent**
-//! environment". Spawning the bare names `pass` / `secret-tool` therefore let any
-//! PATH entry that sorts ahead of the real install decide who receives the secret
-//! on stdin. `resolveHelper` closes that: it picks the binary itself, from a
-//! fixed list of absolute directories, and every argv this module is handed for a
-//! helper starts with that absolute path — which `spawn` then executes directly,
-//! consulting no PATH at all.
+//! environment". Spawning the bare names `pass` / `secret-tool` would therefore
+//! let any PATH entry that sorts ahead of the real install decide who receives
+//! the secret on stdin. `Program.in_dirs` closes that: the runner picks the
+//! binary itself, from the fixed absolute list below, and spawns the absolute
+//! path it resolved.
 //!
-//! Note what that does *not* cover, so the guarantee is not overstated: `pass` is
-//! a shell script. Once it is running it resolves its own `gpg`, `tree`,
-//! `base64`, `getopt` — and its `#!/usr/bin/env bash` interpreter — through PATH,
-//! and nothing here can change that. It is inherent to shelling out to a script,
-//! and it is the reason the ambient environment is still forwarded whole rather
-//! than trimmed to an allowlist: a trimmed environment would have to carry PATH
-//! anyway for `pass` to function, so trimming buys little while risking a broken
-//! pinentry, session bus, GnuPG home or locale. Passing a curated PATH was
+//! Note what that does *not* cover, so the guarantee is not overstated: `pass`
+//! is a shell script. Once running it resolves its own `gpg`, `tree`, `base64`,
+//! `getopt` — and its `#!/usr/bin/env bash` interpreter — through PATH, and
+//! nothing here can change that. It is inherent to shelling out to a script, and
+//! it is why the ambient environment is still forwarded whole (`.env = .inherit`)
+//! rather than trimmed to an allowlist: a trimmed environment would have to carry
+//! PATH anyway for `pass` to function, so trimming buys little while risking a
+//! broken pinentry, session bus, GnuPG home or locale. Passing a curated PATH was
 //! considered and rejected for the same reason in reverse — it breaks Nix,
-//! Homebrew and other non-standard toolchain layouts far more often than it
-//! helps. (Trimming would not have addressed this issue in any case: `spawn`
-//! resolves `argv[0]` against the *parent* environment, never `environ_map`.)
+//! Homebrew and other non-standard toolchain layouts far more often than it helps.
 
 const std = @import("std");
+// Through the framework module, not a relative path: this file is compiled both
+// as part of a consuming app's plugin module and as the repo's own standalone
+// secrets test modules, and only the named import resolves in all of them.
+const process = @import("zcli").process;
 
 /// The absolute directories searched, in order, for a helper binary.
 ///
@@ -68,28 +76,28 @@ const trusted_home_dirs = [_][]const u8{
     ".local/bin",
 };
 
-pub const Output = struct {
-    term: std.process.Child.Term,
-    stdout: []u8,
-    stderr: []u8,
-    allocator: std.mem.Allocator,
+/// Cap on captured helper stdout. This is where a decrypted secret comes back
+/// (`pass show`, `secret-tool lookup`), so the capture is marked sensitive and
+/// the buffer is therefore allocated at this size up front and wiped on release.
+/// 1 MiB matches the cap the hand-rolled drain used, so no value that stored
+/// before still fails to read back.
+const stdout_limit = 1024 * 1024;
 
-    pub fn deinit(self: *Output) void {
-        // stdout can hold decrypted secret material (a `pass show` / `secret-tool
-        // lookup` reads the stored value back on stdout), so wipe it before the
-        // allocator reclaims the pages. stderr is diagnostic text, but wiping it
-        // too is cheap and avoids depending on that always being true.
-        std.crypto.secureZero(u8, self.stdout);
-        std.crypto.secureZero(u8, self.stderr);
-        self.allocator.free(self.stdout);
-        self.allocator.free(self.stderr);
-    }
-
-    /// The child ran to completion with a zero exit code.
-    pub fn ok(self: Output) bool {
-        return self.term == .exited and self.term.exited == 0;
-    }
-};
+/// Cap on captured helper stderr — the same 1 MiB, and the same fail-on-overflow
+/// policy, the hand-rolled drain used.
+///
+/// The framework default for stderr is `.truncate`, on the reasoning that
+/// diagnostics are for humans and losing the tail should never fail a working
+/// run. That reasoning does not hold here: this stderr is not diagnostics, it is
+/// *input to a decision*. `noServiceSignal`, `isBenignRace` and `isNotFound`
+/// substring-match the whole buffer to choose between falling through to another
+/// backend, retrying, treating the result as "absent", and failing — so a marker
+/// sitting in a silently discarded tail does not lose a log line, it changes
+/// which branch runs. Better to fail loudly on a helper that produced a megabyte
+/// of stderr, which no working invocation does, than to decide on a prefix.
+/// Marked sensitive for the same reason as stdout: it is not *supposed* to carry
+/// secret material, and the guarantee should not depend on that staying true.
+const stderr_limit = 1024 * 1024;
 
 pub const Error = error{
     /// The helper binary could not be executed at all — typically it is not
@@ -102,172 +110,164 @@ pub const Error = error{
     HelperNotFound,
 };
 
-/// Resolve a helper binary name to an absolute path, searching only
-/// `trusted_dirs` then `trusted_home_dirs` — never the inherited PATH. The
-/// result is written into `buf` and the returned slice borrows it, so it stays
-/// valid for as long as `buf` is in scope (no allocation, matching how
-/// `passStoreInitialized` handles paths).
+/// The absolute directories a helper may be executed from, in search order:
+/// `trusted_dirs` then `$HOME`-relative entries. Caller owns the returned slice
+/// and the joined `$HOME` paths within it; `deinitDirs` releases both.
 ///
-/// A candidate qualifies when it exists and is executable for this process; the
-/// check follows symlinks, so the usual `/usr/bin/pass -> /nix/store/…` shape
-/// resolves normally.
-///
-/// This is a check-then-exec, so it is a TOCTOU in the strict sense: a candidate
-/// could be replaced between the `access` and the `spawn`. That race needs write
-/// access to a trusted directory, which is already game over — and the property
-/// being bought is not "this exact inode", it is "not whatever an inherited PATH
-/// pointed at".
-pub fn resolveHelper(
-    io: std.Io,
+/// A relative (or absent) `HOME` contributes nothing — joining onto it would
+/// produce a relative candidate, which `Program.in_dirs` rejects outright as
+/// `error.UnsafeSearchPath`, and which is meaningless here anyway.
+fn trustedDirList(
+    allocator: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
-    helper: []const u8,
-    buf: *[std.fs.max_path_bytes]u8,
-) Error![]const u8 {
-    for (trusted_dirs) |dir| {
-        const path = std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, helper }) catch continue;
-        std.Io.Dir.accessAbsolute(io, path, .{ .execute = true }) catch continue;
-        return path;
+) std.mem.Allocator.Error![]const []const u8 {
+    var dirs: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (dirs.items[trusted_dirs.len..]) |d| allocator.free(d);
+        dirs.deinit(allocator);
     }
+
+    try dirs.appendSlice(allocator, &trusted_dirs);
+
     if (environ.get("HOME")) |home| {
-        // A relative (or empty) HOME would break `accessAbsolute`'s precondition
-        // and is meaningless here anyway.
         if (std.fs.path.isAbsolute(home)) {
             for (trusted_home_dirs) |sub| {
-                const path = std.fmt.bufPrint(buf, "{s}/{s}/{s}", .{ home, sub, helper }) catch continue;
-                std.Io.Dir.accessAbsolute(io, path, .{ .execute = true }) catch continue;
-                return path;
+                const joined = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, sub });
+                errdefer allocator.free(joined);
+                try dirs.append(allocator, joined);
             }
         }
     }
-    return Error.HelperNotFound;
+    return dirs.toOwnedSlice(allocator);
 }
 
-/// A single output stream to drain, plus where the drained bytes land. Passed to
-/// `drain` (run concurrently) so stdout and stderr are read *while* stdin is
-/// written — otherwise a large secret whose stdin write exceeds the OS pipe
-/// buffer would deadlock: parent blocked in `writeAll`, child blocked writing an
-/// undrained stdout.
-const Drainer = struct {
-    allocator: std.mem.Allocator,
+fn deinitDirs(allocator: std.mem.Allocator, dirs: []const []const u8) void {
+    // The first `trusted_dirs.len` entries are static string literals; only the
+    // `$HOME`-joined tail was allocated.
+    for (dirs[trusted_dirs.len..]) |d| allocator.free(d);
+    allocator.free(dirs);
+}
+
+/// Is `helper` present and executable in one of the trusted directories?
+///
+/// Advisory, and deliberately so: the authoritative resolution happens inside
+/// `run`, at spawn, over this same directory list. This exists because the
+/// backend-selection path needs a cheap "could we use this store at all" answer
+/// without spawning anything. It used to *launch* the tool (`secret-tool
+/// --version`, `pass version`) to prove it could be launched; two `faccessat`
+/// calls answer the question that actually matters — is there a candidate in a
+/// directory we trust — at a fraction of the cost.
+/// Allocation-free on purpose: the backend-selection seam that calls this has no
+/// allocator in its signature, and the search is a handful of `bufPrint`s.
+pub fn helperAvailable(
     io: std.Io,
-    file: std.Io.File,
-    /// Result slot. Set to the captured bytes on success, left `null` on error.
-    out: *?[]u8,
-    err: *?anyerror,
+    environ: *const std.process.Environ.Map,
+    helper: []const u8,
+) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    for (trusted_dirs) |dir| {
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, helper }) catch continue;
+        std.Io.Dir.accessAbsolute(io, path, .{ .execute = true }) catch continue;
+        return true;
+    }
+    if (environ.get("HOME")) |home| {
+        // A relative HOME would make the joined candidate relative to the working
+        // directory — precisely the class of path this refuses to touch, and one
+        // `Program.in_dirs` would reject at spawn anyway.
+        if (std.fs.path.isAbsolute(home)) {
+            for (trusted_home_dirs) |sub| {
+                const path = std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ home, sub, helper }) catch continue;
+                std.Io.Dir.accessAbsolute(io, path, .{ .execute = true }) catch continue;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// What a helper invocation produced. `stdout`/`stderr` borrow the captured
+/// buffers inside `result`, so they are valid until `deinit`.
+pub const Output = struct {
+    stdout: []u8,
+    stderr: []u8,
+    result: process.Result,
+
+    /// Frees the captured allocations, wiping them first (both captures are
+    /// marked sensitive and the run's scrub policy is the default `.always`).
+    pub fn deinit(self: *Output) void {
+        self.result.deinit();
+        self.stdout = &.{};
+        self.stderr = &.{};
+    }
+
+    /// The helper ran to completion with a zero exit code.
+    pub fn ok(self: Output) bool {
+        return self.result.ok();
+    }
 };
 
-/// Read `d.file` to EOF into an allocation, storing the result (or the failure)
-/// through the drainer's slots. Runs as a concurrent task so the read overlaps
-/// the stdin write.
-fn drain(d: Drainer) void {
-    var buf: [4096]u8 = undefined;
-    defer std.crypto.secureZero(u8, &buf);
-    var reader = d.file.reader(d.io, &buf);
-    if (reader.interface.allocRemaining(d.allocator, .limited(1 << 20))) |bytes| {
-        d.out.* = bytes;
-    } else |e| {
-        d.err.* = e;
-    }
-}
-
-/// Run `argv`, optionally writing `stdin_bytes` (then EOF) to the child's
-/// stdin, and capture stdout+stderr. The caller owns the returned `Output`
+/// Run `helper` with `args` (which must NOT include `argv[0]` — the runner
+/// supplies the absolute path it resolved), optionally writing `stdin_bytes`
+/// then EOF, and capture stdout+stderr. The caller owns the returned `Output`
 /// (call `deinit`).
 ///
-/// For any helper that will be handed a credential, `argv[0]` must be an
-/// absolute path from `resolveHelper` — a bare name would be resolved by `spawn`
-/// against the inherited PATH. This function does not enforce that (its unit
-/// tests below drive a plain POSIX filter); the backends do, at their entry
-/// points, which is where the helper is chosen.
+/// `stdin_bytes` is passed as `.secret` but with `scrub_source` left off: the
+/// caller still owns that buffer, wipes it itself, and — for `set` — re-sends it
+/// on a retry, so zeroing it here would silently store zeros on the second
+/// attempt.
 ///
-/// stdout and stderr are drained *concurrently* with the stdin write, so a
-/// payload larger than the OS pipe buffer (~64 KiB) cannot deadlock the parent
-/// against the child.
+/// A helper that closes its stdin before the payload is finished is **not** an
+/// error here. The hand-rolled runner this replaced ignored the stdin write
+/// failure outright, on the grounds that the exit status is the authoritative
+/// signal, and that is load-bearing rather than incidental: every backend
+/// classifies a failure from the exit status *and* the stderr text
+/// (`noServiceSignal` → `ServiceUnavailable` → fall through to `pass`,
+/// `isBenignRace` → retry, `isNotFound` → absent). Raising the broken pipe would
+/// collapse all of that into `SpawnFailed`, which the backends read as "this
+/// helper is unusable". `zcli.process` preserves the behaviour: a normal-path
+/// `error.BrokenPipe` on the stdin write is recorded as
+/// `Result.stdin_closed_early` and the child's exit status and captures stand.
 pub fn run(
     allocator: std.mem.Allocator,
     io: std.Io,
     environ: *const std.process.Environ.Map,
-    argv: []const []const u8,
-    stdin_bytes: ?[]const u8,
+    helper: []const u8,
+    args: []const []const u8,
+    stdin_bytes: ?[]u8,
 ) !Output {
-    var child = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = if (stdin_bytes != null) .pipe else .ignore,
-        .stdout = .pipe,
-        .stderr = .pipe,
-        .environ_map = environ,
-    }) catch return Error.SpawnFailed;
+    const dirs = try trustedDirList(allocator, environ);
+    defer deinitDirs(allocator, dirs);
 
-    // Kick off the two readers before touching stdin, so the child can never
-    // block on a full stdout/stderr pipe while we are still feeding stdin.
-    var out_bytes: ?[]u8 = null;
-    var out_err: ?anyerror = null;
-    var out_future = try io.concurrent(drain, .{Drainer{
-        .allocator = allocator,
-        .io = io,
-        .file = child.stdout.?,
-        .out = &out_bytes,
-        .err = &out_err,
-    }});
+    var runner = process.Runner.init(allocator, io, environ);
+    const result = runner.run(.{ .in_dirs = .{ .name = helper, .dirs = dirs } }, .{
+        .args = args,
+        .stdin = if (stdin_bytes) |b|
+            .{ .secret = .{ .bytes = b, .scrub_source = false } }
+        else
+            .ignore,
+        .stdout = .{ .capture = .{
+            .limit = stdout_limit,
+            .overflow = .fail,
+            .sensitive = true,
+        } },
+        .stderr = .{ .capture = .{
+            .limit = stderr_limit,
+            .overflow = .fail,
+            .sensitive = true,
+        } },
+        // ADR-0010: the ambient environment is forwarded whole. See the module
+        // header for why trimming it would cost more than it buys here.
+        .env = .{ .policy = .inherit },
+    }) catch |e| return switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.ProgramNotFound => Error.HelperNotFound,
+        else => Error.SpawnFailed,
+    };
 
-    var err_bytes: ?[]u8 = null;
-    var err_err: ?anyerror = null;
-    var err_future = try io.concurrent(drain, .{Drainer{
-        .allocator = allocator,
-        .io = io,
-        .file = child.stderr.?,
-        .out = &err_bytes,
-        .err = &err_err,
-    }});
-
-    if (stdin_bytes) |bytes| {
-        var in_buf: [4096]u8 = undefined;
-        defer std.crypto.secureZero(u8, &in_buf);
-        // Streaming (plain write(2)), never `.writer()`. This particular fd is a
-        // pipe, so positional mode would only ever fail with `Unseekable` rather
-        // than corrupt anything — but the framework has exactly one correct
-        // idiom for writing an inherited/OS-owned fd (see `zcli.Stdio.init`), and
-        // the wrong one must not sit here waiting to be copied somewhere it does
-        // corrupt (#763).
-        var in = child.stdin.?.writerStreaming(io, &in_buf);
-        // A write failure here just means the child closed stdin early; the exit
-        // status read below is the authoritative signal, so it is ignored.
-        in.interface.writeAll(bytes) catch {};
-        in.interface.flush() catch {};
-        child.stdin.?.close(io);
-        child.stdin = null;
-    }
-
-    // Join both readers before reaping the child (they hold the pipe read ends).
-    out_future.await(io);
-    err_future.await(io);
-
-    // If either drainer failed, wait for the child (avoid a zombie) and surface
-    // the error after freeing whatever the other one captured.
-    const drain_err: ?anyerror = out_err orelse err_err;
-    if (drain_err) |e| {
-        child.kill(io);
-        // stdout may hold a decrypted secret (a `pass show` / `secret-tool
-        // lookup` reads the stored value back on stdout) even when the
-        // *other* stream is what failed to drain, so wipe both before
-        // freeing — mirrors `Output.deinit`.
-        if (out_bytes) |b| {
-            std.crypto.secureZero(u8, b);
-            allocator.free(b);
-        }
-        if (err_bytes) |b| {
-            std.crypto.secureZero(u8, b);
-            allocator.free(b);
-        }
-        return e;
-    }
-
-    const term = try child.wait(io);
     return .{
-        .term = term,
-        .stdout = out_bytes.?,
-        .stderr = err_bytes.?,
-        .allocator = allocator,
+        .stdout = result.stdout.bytes(),
+        .stderr = result.stderr.bytes(),
+        .result = result,
     };
 }
 
@@ -285,7 +285,9 @@ fn trustedDirIndex(needle: []const u8) ?usize {
 
 test "the trusted directory list is absolute and orders system paths first" {
     // Every searched directory is absolute — no relative entry, no `.`, nothing
-    // whose meaning depends on the working directory.
+    // whose meaning depends on the working directory. `Program.in_dirs` enforces
+    // this too (`error.UnsafeSearchPath`), but the list is the thing that must be
+    // right; the runner's check is the backstop.
     for (trusted_dirs) |d| try std.testing.expect(std.fs.path.isAbsolute(d));
     // The HOME-relative entries are, by construction, not absolute; they are only
     // ever joined onto an absolute HOME.
@@ -302,62 +304,61 @@ test "the trusted directory list is absolute and orders system paths first" {
     }
 }
 
-test "resolveHelper pins an absolute path inside a trusted directory" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-
+test "the search list is every trusted dir, system first, with HOME entries last" {
     const a = std.testing.allocator;
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
+    try env.put("HOME", "/home/someone");
 
-    // `sh` is required at `/bin/sh` by POSIX, and `/bin` is on the list.
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = resolveHelper(std.testing.io, &env, "sh", &buf) catch return error.SkipZigTest;
+    const dirs = try trustedDirList(a, &env);
+    defer deinitDirs(a, dirs);
 
-    try std.testing.expect(std.fs.path.isAbsolute(path));
-    try std.testing.expect(std.mem.endsWith(u8, path, "/sh"));
-    // Whatever matched, it came from the list — not from wherever a PATH said.
-    try std.testing.expect(trustedDirIndex(std.fs.path.dirname(path).?) != null);
+    try std.testing.expectEqual(trusted_dirs.len + trusted_home_dirs.len, dirs.len);
+    for (dirs) |d| try std.testing.expect(std.fs.path.isAbsolute(d));
+    try std.testing.expectEqualStrings("/usr/bin", dirs[0]);
+    try std.testing.expectEqualStrings("/home/someone/.nix-profile/bin", dirs[trusted_dirs.len]);
+    try std.testing.expectEqualStrings("/home/someone/.local/bin", dirs[trusted_dirs.len + 1]);
 }
 
-test "resolveHelper does not consult PATH, and reports a missing helper" {
+test "a relative or absent HOME contributes no search directory" {
+    const a = std.testing.allocator;
+
+    {
+        var env = std.process.Environ.Map.init(a);
+        defer env.deinit();
+        // A relative HOME would make the joined candidate relative to the working
+        // directory — precisely the class of path this resolution refuses to touch.
+        try env.put("HOME", "relative/home");
+        const dirs = try trustedDirList(a, &env);
+        defer deinitDirs(a, dirs);
+        try std.testing.expectEqual(trusted_dirs.len, dirs.len);
+    }
+    {
+        var env = std.process.Environ.Map.init(a);
+        defer env.deinit();
+        const dirs = try trustedDirList(a, &env);
+        defer deinitDirs(a, dirs);
+        try std.testing.expectEqual(trusted_dirs.len, dirs.len);
+    }
+}
+
+test "helperAvailable does not consult PATH" {
     const a = std.testing.allocator;
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
 
     // A PATH (and a HOME) that a bare-name spawn would happily search are simply
-    // not part of the search. `/bin` holds `sh` on every POSIX host, so were PATH
-    // consulted at all this name is exactly what it would resolve.
+    // not part of the search.
     try env.put("PATH", "/bin:/usr/bin");
     try env.put("HOME", "/nonexistent-home-for-zcli-secrets-test");
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    try std.testing.expectError(
-        Error.HelperNotFound,
-        resolveHelper(std.testing.io, &env, "zcli-secrets-no-such-helper", &buf),
-    );
-}
-
-test "resolveHelper ignores a non-absolute HOME rather than joining onto it" {
-    const a = std.testing.allocator;
-    var env = std.process.Environ.Map.init(a);
-    defer env.deinit();
-    // A relative HOME would make the joined candidate relative to the working
-    // directory — precisely the class of path this resolution refuses to touch.
-    try env.put("HOME", "relative/home");
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    try std.testing.expectError(
-        Error.HelperNotFound,
-        resolveHelper(std.testing.io, &env, "zcli-secrets-no-such-helper", &buf),
-    );
+    try std.testing.expect(!helperAvailable(std.testing.io, &env, "zcli-secrets-no-such-helper"));
 }
 
 // The end-to-end claim of the pinning: a decoy that a bare-name spawn *would*
-// have run is not the process that runs. The two halves are asserted separately
-// above (resolution ignores PATH; the argv builders put the resolved path in
-// `argv[0]`), but only actually spawning closes the loop — `std.process.spawn`
-// is what decides whether `argv[0]` is a path or a PATH lookup, and this is the
-// assertion that the composition never hands it a bare name.
+// have run is not the process that runs. `Program.in_dirs` is what decides, and
+// this is the assertion that the composition never hands the runner a bare name
+// for `std.process.spawn` to resolve against the inherited PATH.
 test "the pinned binary is the one spawned, not a decoy earlier on PATH" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
@@ -390,16 +391,9 @@ test "the pinned binary is the one spawned, not a decoy earlier on PATH" {
     try env.put("PATH", decoy_dir);
     try env.put("HOME", decoy_dir);
 
-    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const bin = resolveHelper(io, &env, "sh", &bin_buf) catch return error.SkipZigTest;
-    try std.testing.expect(!std.mem.eql(u8, bin, decoy));
-    try std.testing.expect(trustedDirIndex(std.fs.path.dirname(bin).?) != null);
-
-    // Spawn through the resolved path and let the child identify itself: the
-    // decoy prints DECOY, the real shell runs the script. Anything but "real"
-    // means PATH decided who ran.
-    var out = run(a, io, &env, &.{ bin, "-c", "printf real" }, null) catch |e| switch (e) {
-        Error.SpawnFailed => return error.SkipZigTest,
+    // `sh` is required at `/bin/sh` by POSIX, and `/bin` is on the trusted list.
+    var out = run(a, io, &env, "sh", &.{ "-c", "printf real" }, null) catch |e| switch (e) {
+        Error.SpawnFailed, Error.HelperNotFound => return error.SkipZigTest,
         else => return e,
     };
     defer out.deinit();
@@ -453,8 +447,8 @@ test "value survives base64 round-trip including NUL and high bytes" {
 }
 
 // The large-payload round-trip proves the stdin write and stdout drain overlap
-// (defect: a pre-fix `run` deadlocked once the base64 stdin exceeded the pipe
-// buffer). It shells out to a POSIX filter; skipped where unavailable.
+// (defect: a pre-`zcli.process` `run` deadlocked once the base64 stdin exceeded
+// the pipe buffer). It shells out to a POSIX filter; skipped where unavailable.
 test "run round-trips a payload larger than the pipe buffer without deadlock" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
@@ -468,9 +462,9 @@ test "run round-trips a payload larger than the pipe buffer without deadlock" {
     defer a.free(payload);
     for (payload, 0..) |*b, i| b.* = @intCast('A' + (i % 26));
 
-    var out = run(a, std.testing.io, &env, &.{"cat"}, payload) catch |e| switch (e) {
-        // `cat` not on PATH in this environment — nothing to prove here.
-        Error.SpawnFailed => return error.SkipZigTest,
+    var out = run(a, std.testing.io, &env, "cat", &.{}, payload) catch |e| switch (e) {
+        // `cat` not in a trusted directory here — nothing to prove.
+        Error.SpawnFailed, Error.HelperNotFound => return error.SkipZigTest,
         else => return e,
     };
     defer out.deinit();
@@ -486,12 +480,75 @@ test "run round-trips an empty stdin payload" {
     var env = std.process.Environ.Map.init(a);
     defer env.deinit();
 
-    var out = run(a, std.testing.io, &env, &.{"cat"}, "") catch |e| switch (e) {
-        Error.SpawnFailed => return error.SkipZigTest,
+    var empty: [0]u8 = .{};
+    var out = run(a, std.testing.io, &env, "cat", &.{}, &empty) catch |e| switch (e) {
+        Error.SpawnFailed, Error.HelperNotFound => return error.SkipZigTest,
         else => return e,
     };
     defer out.deinit();
 
     try std.testing.expect(out.ok());
     try std.testing.expectEqualStrings("", out.stdout);
+}
+
+// The regression this pins: a helper that rejects a large payload closes its
+// stdin while the parent is still writing, and the write comes back
+// `BrokenPipe`. If that displaces the run's outcome, the caller gets
+// `SpawnFailed` — which every backend reads as "this helper is unusable" —
+// instead of the exit status and the stderr text they classify by
+// (`noServiceSignal` → `ServiceUnavailable` → fall through to `pass`). The old
+// hand-rolled runner ignored the write failure for exactly this reason.
+test "a helper that closes stdin early still reports its exit status and stderr" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    // Availability is checked up front rather than by catching `SpawnFailed`,
+    // because `SpawnFailed` is exactly what the regression produces — swallowing
+    // it as "no shell here" would turn the failure this test exists for into a
+    // silent skip.
+    if (!helperAvailable(std.testing.io, &env, "sh")) return error.SkipZigTest;
+
+    // 256 KiB — past the ~64 KiB pipe buffer, so the write cannot complete into
+    // the pipe and must observe the child's early close.
+    const payload = try a.alloc(u8, 256 * 1024);
+    defer a.free(payload);
+    @memset(payload, 'A');
+
+    // Never reads stdin; says something recognizable on stderr and exits nonzero.
+    var out = try run(a, std.testing.io, &env, "sh", &.{
+        "-c", "printf 'org.freedesktop.secrets not provided\\n' >&2; exit 1",
+    }, payload);
+    defer out.deinit();
+
+    // The child's account of the run survives, not the runner's.
+    try std.testing.expect(!out.ok());
+    try std.testing.expectEqual(@as(u8, 1), out.result.exitCode());
+    try std.testing.expect(std.mem.indexOf(u8, out.stderr, "org.freedesktop.secrets") != null);
+    // And the runner still says the pipe broke, for anyone who wants to know.
+    try std.testing.expect(out.result.stdin_closed_early);
+}
+
+test "the caller's secret payload is left intact for a retry" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const a = std.testing.allocator;
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    // `set` re-sends the same encoded buffer on a retry, so the runner must not
+    // scrub it out from under the caller — `scrub_source` is deliberately off.
+    const payload = try a.dupe(u8, "c2VjcmV0");
+    defer a.free(payload);
+
+    var out = run(a, std.testing.io, &env, "cat", &.{}, payload) catch |e| switch (e) {
+        Error.SpawnFailed, Error.HelperNotFound => return error.SkipZigTest,
+        else => return e,
+    };
+    defer out.deinit();
+
+    try std.testing.expect(out.ok());
+    try std.testing.expectEqualStrings("c2VjcmV0", payload);
 }

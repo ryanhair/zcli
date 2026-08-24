@@ -166,6 +166,8 @@ Hello, world!
 
 **Production polish for free.** Config files (JSON/TOML/YAML) with per-command scoping, secrets in the OS keychain, self-upgrade from GitHub releases, man/HTML/markdown doc generation on every build, and a virtual-terminal test harness that can assert "this output is green and bold."
 
+**Safe defaults where it counts.** `zcli.http` gives you an HTTPS-only client with enforced TLS verification, timeouts, and bounded responses; `zcli.process` gives you a subprocess runner that can't deadlock on a large payload, caps what it captures, resolves the program itself rather than letting PATH decide, and takes its environment from the command context instead of the ambient process. ([HTTP](https://zcli.sh/docs/http/), [subprocesses](https://zcli.sh/docs/subprocess/).)
+
 ## Why zcli?
 
 Zig already has good CLI libraries — the difference is the level they operate at.

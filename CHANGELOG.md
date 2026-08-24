@@ -51,6 +51,38 @@ All notable changes to zcli are documented here.
   Space key selects or toggles while Enter selects or commits. Plain `select`
   also accepts Space like Enter; filtered-out multi-select choices remain
   selected.
+- **`zcli.process` — running an external program, safely** (ADR-0034). Every real
+  CLI shells out, and hand-rolling it reproduces the same four bugs: a deadlock
+  once the payload outgrows a pipe buffer, unbounded capture, an ambient
+  environment, and a termination value that cannot tell `exit 1` from a SIGSEGV.
+  `context.process()` hands back a `Runner` wired to the command's allocator,
+  `io`, and — the part that matters — the threaded `environ`; there is no
+  constructor that omits it and no `getenv` inside. The stdin write and both
+  output drains make independent progress, so any payload size is safe and stdin
+  closes the instant the last byte is handed over; capture is per-stream bounded
+  with an explicit overflow policy (`.fail` stdout, `.truncate` stderr); and
+  `Program` has no implicit-PATH variant — all four variants resolve to an
+  absolute path *in the parent*, so PATH never chooses the binary. On Windows the
+  runner emits an explicit supported extension, refuses `.bat`/`.cmd` without an
+  opt-in, and refuses a target with a supported-extension sibling, closing the
+  `CreateProcessW` PATHEXT fallback. It reaps its own children by polling and
+  never calls `Child.wait`/`Child.kill`, which makes stopping race-free and lets
+  Windows report a full `NTSTATUS` instead of std's truncation to `u8`.
+  `std.process.run` could not serve: it hard-codes `.stdin = .ignore`, so it
+  cannot feed a child at all. Guide: [Running external
+  programs](https://zcli.sh/docs/subprocess/).
+
+### Changed
+- **`zcli_secrets`' Linux backends now shell out through `zcli.process`.** The
+  plugin carried the strongest of the framework's three hand-rolled subprocess
+  runners; it is now policy on top of the shared one — which trusted directories
+  a helper may come from, that the payload is a secret, and that the captured
+  output is too. Behaviour is unchanged for callers, and the helper is still
+  pinned to an absolute path in a trusted directory (now via `Program.in_dirs`)
+  so the inherited PATH cannot choose who receives a decrypted credential on
+  stdin. Internal to the plugin: `subprocess.resolveHelper` is gone, replaced by
+  `subprocess.helperAvailable`, and the `pass` argv builders no longer carry an
+  `argv[0]` — the runner supplies the path it resolved.
 
 - **An interactive-only prompt guard.** `try p.requireInteractive()` before a
   prompt sequence fails with `error.NotInteractive` — before anything is asked —
@@ -75,6 +107,7 @@ All notable changes to zcli are documented here.
   header.
 
 ### Fixed
+- **A request that completed as its timeout fired no longer leaks the response.** `http.Client.request` raced the request against a timer and then called `Select.cancelDiscard`, but cancelation is delivered at the next I/O cancelation point — so a request that finished just as the timer dequeued still handed back a fully-allocated `Response`, which was then dropped without `deinit`. Every such race leaked the body and headers under a tracking allocator or any GPA-backed consumer. The race is now drained with `Select.cancel` until it returns null, deiniting any successful `Response` nobody will see, and the drain is installed as an `errdefer` immediately after the first spawn so a failed timer spawn or a canceled `await` cannot strand the in-flight request either.
 - **Long `select` and `multiSelect` lists no longer re-scroll when you reverse direction.** The visible window was recomputed from the cursor on every frame, growing upward first, so pressing Up after scrolling down moved the *list* instead of the highlight: the highlighted row stayed pinned near the bottom of the window and the choices slid under it, one row per keypress, in both directions. The window is now anchored between frames and only moves when the highlight crosses its top or bottom edge, which is how every other list navigates. Wrapped choices still measure in physical rows, so a window holds whole choices that fit the terminal, and the anchor is re-clamped whenever filtering shortens the list or the terminal resizes — the highlight stays on screen either way. A terminal too short for the whole frame now gives up *chrome* instead of the answer: the highlighted choice's rows are reserved first, then the header and query rows are clipped to what is left (dropped entirely when nothing is left). Previously a three-row terminal, or a narrow one whose header wrapped, spent the whole live region on the header and query and the live region clipped the highlighted choice away — you could not see what you were about to pick. The render seams the emulator tests drive (`select_prompt.frameNode`/`frameNodeFiltered`, `multi_select_prompt.frameNode`/`frameNodeFiltered`) take the anchor as a new `*list_render.Viewport` argument; pass one per prompt, not one per frame. `list_render.viewport` is replaced by `list_render.Viewport.window`.
 - **A value parsed by `zcli.http.Response.json` no longer dangles when the response is released** (#814). `std.json`'s slice-input default is `.alloc_if_needed`, so any string that needed no unescaping — which is most of them — came back as a slice *into* `Response.body` rather than into the parse's own arena. The `Parsed(T)` looked self-contained and the API said the arena owned it, but `response.deinit()` (or, under the per-command arena, the command returning) freed the bytes out from under `parsed.value`, and the payloads that happened to contain an escape hid it in testing. `json` now parses with `.allocate = .alloc_always`, so everything reachable from `.value` is genuinely owned by the parse and outlives the response it came from; the two lifetimes are independent, and the ownership contract in the module doc and the HTTP guide now says so. Unknown-field handling is unchanged. Callers that defensively copied strings out of a parse before the body went away (the `oauth-device` example did) can drop the copies.
 - **Release version policy is now one checked-in, executable contract instead of duplicated workflow snippets.** `scripts/validate-version.sh` compares the root, CLI, and core umbrella manifests; README and ROADMAP release URLs/metadata; the newest dated CHANGELOG release; an expected version or either tag shape when supplied; and an actual built `zcli --version` when supplied. CI tests that public seam against deterministic drift fixtures and runs it on a locally built CLI; the release workflow runs the same file after the staged bump and against each executable release build. The post-release phase now closes the remaining publication joins too: both tags must resolve to one commit, both source archives must download and contain the same version-consistent tree, the exact eight assets and all six signed checksums must verify, a downloaded host binary must report the release version, both site installers must match the tag, and the live shell installer must resolve the just-published CLI release.
