@@ -783,6 +783,35 @@ test "preExecute: auto-discovery with no config files stays silent" {
 // `convention` and `syntax` are runtime fields, these assertions run in full on
 // every host instead of skipping two thirds of the matrix on the wrong runner.
 
+test "user config file: the discovered path across all three conventions" {
+    // `findConfigFile` resolves through `Paths` at the HOST convention, so the
+    // integration test can only ever exercise one row of the matrix. This pins
+    // the other two at the level where convention is still a parameter — the
+    // `{config dir}/config.{ext}` shape `firstExisting` builds.
+    var environ = std.process.Environ.Map.init(testing.allocator);
+    defer environ.deinit();
+    try environ.put("HOME", "/home/u");
+    try environ.put("APPDATA", "C:\\Users\\u\\AppData\\Roaming");
+
+    const cases = [_]struct { zcli.Paths.Convention, zcli.Paths.Syntax, []const u8 }{
+        .{ .xdg, .posix, "/home/u/.config/myapp/config.json" },
+        .{ .macos, .posix, "/home/u/.config/myapp/config.json" },
+        .{ .windows, .windows, "C:\\Users\\u\\AppData\\Roaming\\myapp\\config.json" },
+    };
+    for (cases) |c| {
+        const p: zcli.Paths = .{
+            .allocator = testing.allocator,
+            .environ = &environ,
+            .app_name = "myapp",
+            .convention = c[0],
+            .syntax = c[1],
+        };
+        const path = try p.file(.config, &.{"config.json"});
+        defer testing.allocator.free(path);
+        try testing.expectEqualStrings(c[2], path);
+    }
+}
+
 test "user config dir: XDG_CONFIG_HOME wins over the HOME fallback" {
     var environ = std.process.Environ.Map.init(testing.allocator);
     defer environ.deinit();

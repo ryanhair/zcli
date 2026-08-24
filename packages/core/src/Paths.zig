@@ -89,27 +89,46 @@ pub const Syntax = enum {
     /// `\\server\share…` with two non-empty components. `.posix` accepts a
     /// path beginning with `/`.
     pub fn isFullyQualified(self: Syntax, p: []const u8) bool {
-        switch (self) {
-            .posix => return p.len > 0 and p[0] == '/',
-            .windows => {
-                if (p.len >= 3 and isDriveLetter(p[0]) and p[1] == ':' and self.isSep(p[2])) return true;
-                if (p.len >= 2 and self.isSep(p[0]) and self.isSep(p[1])) {
-                    // Server component: non-empty, and not the `?` / `.` that
-                    // introduce the device namespaces.
-                    var i: usize = 2;
-                    while (i < p.len and !self.isSep(p[i])) i += 1;
-                    const server = p[2..i];
-                    if (server.len == 0) return false;
-                    if (std.mem.eql(u8, server, "?") or std.mem.eql(u8, server, ".")) return false;
-                    if (i >= p.len) return false; // no separator after the server → no share
-                    i += 1;
-                    const share_start = i;
-                    while (i < p.len and !self.isSep(p[i])) i += 1;
-                    return i > share_start;
-                }
-                return false;
-            },
+        return switch (self) {
+            .posix => p.len > 0 and p[0] == '/',
+            .windows => windowsRootLen(p) != null,
+        };
+    }
+
+    /// Length of the root prefix of a fully-qualified `.windows` path — 3 for
+    /// `X:\`, or the index just past the share component for `\\server\share`
+    /// (never including a trailing separator) — or null when `p` is not
+    /// fully qualified.
+    ///
+    /// ONE parser, answering both "may I append to this?" (`isFullyQualified`)
+    /// and "how much of this is root that trailing-separator trimming must not
+    /// eat?" (`rootLen`). Those two questions are the same parse, and keeping
+    /// them as one implementation is what stops them drifting apart — a drift
+    /// whose failure mode is trimming through a share root.
+    fn windowsRootLen(p: []const u8) ?usize {
+        const w: Syntax = .windows;
+
+        // Drive path `X:\…` / `X:/…`. Drive-*relative* `C:foo` is rejected: it
+        // is resolved against the process's per-drive working directory.
+        if (p.len >= 3 and isDriveLetter(p[0]) and p[1] == ':' and w.isSep(p[2])) return 3;
+
+        if (p.len >= 2 and w.isSep(p[0]) and w.isSep(p[1])) {
+            // Server component: non-empty, and not the `?` / `.` that introduce
+            // the device namespaces (`\\?\…`, `\\.\…`), which bypass
+            // normalization entirely.
+            var i: usize = 2;
+            while (i < p.len and !w.isSep(p[i])) i += 1;
+            const server = p[2..i];
+            if (server.len == 0) return null;
+            if (std.mem.eql(u8, server, "?") or std.mem.eql(u8, server, ".")) return null;
+            if (i >= p.len) return null; // no separator after the server → no share
+            i += 1;
+            const share_start = i;
+            while (i < p.len and !w.isSep(p[i])) i += 1;
+            if (i == share_start) return null;
+            return i;
         }
+        return null;
     }
 
     pub fn dirname(self: Syntax, p: []const u8) ?[]const u8 {
@@ -320,21 +339,14 @@ fn appSegments(self: Paths, kind: Kind, buf: *[2][]const u8) []const []const u8 
 /// separators are never trimmed below this, so `"/"`, `"C:\"` and
 /// `"\\server\share"` survive intact.
 fn rootLen(self: Paths, p: []const u8) usize {
-    switch (self.syntax) {
-        .posix => return if (p.len > 0 and p[0] == '/') 1 else 0,
-        .windows => {
-            if (p.len >= 3 and isDriveLetter(p[0]) and p[1] == ':' and self.syntax.isSep(p[2])) return 3;
-            if (p.len >= 2 and self.syntax.isSep(p[0]) and self.syntax.isSep(p[1])) {
-                var i: usize = 2;
-                while (i < p.len and !self.syntax.isSep(p[i])) i += 1; // server
-                if (i >= p.len) return p.len;
-                i += 1;
-                while (i < p.len and !self.syntax.isSep(p[i])) i += 1; // share
-                return i;
-            }
-            return 0;
-        },
-    }
+    return switch (self.syntax) {
+        .posix => if (p.len > 0 and p[0] == '/') 1 else 0,
+        // Shares `Syntax.windowsRootLen` with `isFullyQualified`, so the root
+        // this refuses to trim is by construction the same root that made the
+        // path acceptable. A base that reaches here has already been validated,
+        // so the null branch is unreachable in practice; 0 is the safe answer.
+        .windows => Syntax.windowsRootLen(p) orelse 0,
+    };
 }
 
 /// Append the base: normalize separators to the syntax, then trim trailing
@@ -509,57 +521,100 @@ const Fixture = struct {
 
 // --- A. Resolution matrix ---
 
-test "matrix: xdg convention, posix syntax, HOME fallbacks" {
-    var f = try Fixture.init(&.{.{ "HOME", "/home/u" }});
-    defer f.deinit();
-    const p = f.paths(.xdg, .posix);
+test "matrix: the full {3 kinds} x {3 conventions} x {2 syntaxes} grid" {
+    // Every cell, with its exact expected string, run IN FULL on every host —
+    // which is the point of `convention` and `syntax` being runtime fields
+    // rather than comptime ones. No cross-compilation and no CI matrix is
+    // needed to know what a Windows box would produce.
+    //
+    // Only the HOME-relative defaults are exercised here (no XDG_* set); the
+    // override, ignore, and error behaviours have their own tests below.
+    const Row = struct { Convention, Kind, []const u8 };
 
-    const cases = [_]struct { Kind, []const u8 }{
-        .{ .config, "/home/u/.config/myapp" },
-        .{ .data, "/home/u/.local/share/myapp" },
-        .{ .cache, "/home/u/.cache/myapp" },
-    };
-    for (cases) |c| {
-        const got = try p.dir(c[0]);
-        defer testing.allocator.free(got);
-        try testing.expectEqualStrings(c[1], got);
+    // Each syntax needs a home that is fully qualified *in that syntax*, so the
+    // two halves carry their own fixtures. Note `.windows` convention under
+    // `.posix` syntax is a legal cell: the policy says "read %APPDATA%", the
+    // syntax says "this is a POSIX filesystem".
+    {
+        var f = try Fixture.init(&.{
+            .{ "HOME", "/home/u" },
+            .{ "APPDATA", "/roaming" },
+            .{ "LOCALAPPDATA", "/local" },
+        });
+        defer f.deinit();
+
+        const rows = [_]Row{
+            .{ .xdg, .config, "/home/u/.config/myapp" },
+            .{ .xdg, .data, "/home/u/.local/share/myapp" },
+            .{ .xdg, .cache, "/home/u/.cache/myapp" },
+            .{ .macos, .config, "/home/u/.config/myapp" },
+            .{ .macos, .data, "/home/u/.local/share/myapp" },
+            .{ .macos, .cache, "/home/u/Library/Caches/myapp" },
+            .{ .windows, .config, "/roaming/myapp" },
+            .{ .windows, .data, "/local/myapp/data" },
+            .{ .windows, .cache, "/local/myapp/cache" },
+        };
+        for (rows) |r| {
+            const got = try f.paths(r[0], .posix).dir(r[1]);
+            defer testing.allocator.free(got);
+            try testing.expectEqualStrings(r[2], got);
+        }
+    }
+    {
+        var f = try Fixture.init(&.{
+            .{ "HOME", "C:\\Users\\u" },
+            .{ "APPDATA", "C:\\Users\\u\\AppData\\Roaming" },
+            .{ "LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local" },
+        });
+        defer f.deinit();
+
+        const rows = [_]Row{
+            .{ .xdg, .config, "C:\\Users\\u\\.config\\myapp" },
+            .{ .xdg, .data, "C:\\Users\\u\\.local\\share\\myapp" },
+            .{ .xdg, .cache, "C:\\Users\\u\\.cache\\myapp" },
+            .{ .macos, .config, "C:\\Users\\u\\.config\\myapp" },
+            .{ .macos, .data, "C:\\Users\\u\\.local\\share\\myapp" },
+            .{ .macos, .cache, "C:\\Users\\u\\Library\\Caches\\myapp" },
+            .{ .windows, .config, "C:\\Users\\u\\AppData\\Roaming\\myapp" },
+            .{ .windows, .data, "C:\\Users\\u\\AppData\\Local\\myapp\\data" },
+            .{ .windows, .cache, "C:\\Users\\u\\AppData\\Local\\myapp\\cache" },
+        };
+        for (rows) |r| {
+            const got = try f.paths(r[0], .windows).dir(r[1]);
+            defer testing.allocator.free(got);
+            try testing.expectEqualStrings(r[2], got);
+        }
     }
 }
 
-test "matrix: macos convention keeps XDG config/data but Library/Caches for cache" {
-    var f = try Fixture.init(&.{.{ "HOME", "/Users/u" }});
-    defer f.deinit();
-    const p = f.paths(.macos, .posix);
-
-    const cases = [_]struct { Kind, []const u8 }{
-        .{ .config, "/Users/u/.config/myapp" },
-        .{ .data, "/Users/u/.local/share/myapp" },
-        .{ .cache, "/Users/u/Library/Caches/myapp" },
-    };
-    for (cases) |c| {
-        const got = try p.dir(c[0]);
-        defer testing.allocator.free(got);
-        try testing.expectEqualStrings(c[1], got);
-    }
-}
-
-test "matrix: windows convention splits roaming config from local data/cache" {
+test "matrix: every cell's base is the dir minus the app segments" {
+    // Pins `base` against `dir` across the whole grid, so the app-segment rule
+    // (bare `{app}`, except `{app}\data` / `{app}\cache` under `.windows`)
+    // cannot drift from the base resolution it is appended to.
     var f = try Fixture.init(&.{
-        .{ "APPDATA", "C:\\Users\\u\\AppData\\Roaming" },
-        .{ "LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local" },
+        .{ "HOME", "/home/u" },
+        .{ "APPDATA", "/roaming" },
+        .{ "LOCALAPPDATA", "/local" },
     });
     defer f.deinit();
-    const p = f.paths(.windows, .windows);
 
-    const cases = [_]struct { Kind, []const u8 }{
-        .{ .config, "C:\\Users\\u\\AppData\\Roaming\\myapp" },
-        .{ .data, "C:\\Users\\u\\AppData\\Local\\myapp\\data" },
-        .{ .cache, "C:\\Users\\u\\AppData\\Local\\myapp\\cache" },
-    };
-    for (cases) |c| {
-        const got = try p.dir(c[0]);
-        defer testing.allocator.free(got);
-        try testing.expectEqualStrings(c[1], got);
+    for ([_]Convention{ .xdg, .macos, .windows }) |conv| {
+        for ([_]Kind{ .config, .data, .cache }) |kind| {
+            const p = f.paths(conv, .posix);
+            const b = try p.base(kind);
+            defer testing.allocator.free(b);
+            const d = try p.dir(kind);
+            defer testing.allocator.free(d);
+
+            try testing.expect(std.mem.startsWith(u8, d, b));
+            const tail = d[b.len..];
+            const expected_tail = if (conv == .windows) switch (kind) {
+                .config => "/myapp",
+                .data => "/myapp/data",
+                .cache => "/myapp/cache",
+            } else "/myapp";
+            try testing.expectEqualStrings(expected_tail, tail);
+        }
     }
 }
 
@@ -718,8 +773,8 @@ test "isFullyQualified: windows accepts only drive paths and complete UNC roots"
     for (good) |v| try testing.expect(s.isFullyQualified(v));
 
     const bad = [_][]const u8{
-        "\\foo", "/foo",         "C:foo",       "C:",
-        "",      "\\\\server",   "\\\\server\\", "\\\\",
+        "\\foo", "/foo",         "C:foo",                 "C:",
+        "",      "\\\\server",   "\\\\server\\",          "\\\\",
         "foo",   "\\\\?\\C:\\x", "\\\\.\\PhysicalDrive0",
     };
     for (bad) |v| try testing.expect(!s.isFullyQualified(v));
@@ -807,21 +862,24 @@ test "join: Syntax.dirname agrees with the join for each syntax" {
 
 test "isValidSegment: rejects every unsafe spelling" {
     const bad = [_][]const u8{
-        "",     ".",      "..",           "...",  "....",
-        ".. ",  " ..",    ".. . ",        "foo.", "foo ",
-        " foo", "a/b",    "a\\b",         "C:",   "file.txt:stream",
-        "a<b",  "a>b",    "a\"b",         "a|b",  "a?b",
-        "a*b",  "/x",     "../escape",    "..\\escape",
+        "",       ".",      "..",        "...",        "....",
+        ".. ",    " ..",    ".. . ",     "foo.",       "foo ",
+        " foo",   "a/b",    "a\\b",      "C:",         "file.txt:stream",
+        "a<b",    "a>b",    "a\"b",      "a|b",        "a?b",
+        "a*b",    "/x",     "../escape", "..\\escape",
         // control bytes
-        "a\x00b", "a\x0Ab", "a\x1Fb", "a\x7Fb",
+        "a\x00b",
+        "a\x0Ab", "a\x1Fb", "a\x7Fb",
         // invalid WTF-8: lone continuation byte, truncated sequence
-        "a\x80b", "a\xE2",
+           "a\x80b",     "a\xE2",
     };
     for (bad) |v| try testing.expect(!isValidSegment(v));
 
     const good = [_][]const u8{
-        "myapp",   "my-app", ".myapp", "my.app", "a b",
-        "1.2.3",   "_x",     "ЖЖ",     "☺",
+        "myapp",          "my-app", ".myapp", "my.app", "a b",
+        "1.2.3",          "_x",
+        "ЖЖ",
+        "☺",
         // WTF-8 permits an unpaired surrogate where UTF-8 does not.
         "a\xed\xa0\x80b",
     };

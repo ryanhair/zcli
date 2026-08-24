@@ -451,55 +451,102 @@ fn getInstallPath(allocator: std.mem.Allocator, environ: *const std.process.Envi
 /// so `BASH_COMPLETION_USER_DIR` takes **precedence over** the XDG default.
 /// Newer versions treat it as a separator-delimited *search list*; we write to
 /// the first entry, which is where bash looks first.
-fn bashInstallPath(p: zcli.Paths) ![]const u8 {
-    if (p.environ.get("BASH_COMPLETION_USER_DIR")) |raw| {
-        // The list separator follows the SYNTAX, not the convention. Under
-        // POSIX the list is colon-delimited as everywhere else in the XDG
-        // world; but MSYS2 and Cygwin rewrite POSIX path lists into Windows
-        // form when launching a native child, converting both the entries and
-        // the `:` delimiters to `;`. A native binary can therefore receive
-        // `C:\one;C:\two`, which a colon split would leave as one absurd path.
-        //
-        // Residual ambiguity, stated rather than hidden: `;` is legal in a
-        // Windows filename, so a genuine single path `C:\my;dir` is split and
-        // we use its first fragment — installing under `C:\my` when that
-        // fragment is itself fully qualified, or falling back to the XDG
-        // default when it is not. Either way the outcome is silent rather than
-        // dangerous, and Windows has no way to express such a path in a
-        // `;`-delimited list either. Not worth a quoting mini-language for a
-        // directory nobody names that way.
-        const list_sep: u8 = switch (p.syntax) {
-            .posix => ':',
-            .windows => ';',
-        };
-        const first = if (std.mem.indexOfScalar(u8, raw, list_sep)) |i| raw[0..i] else raw;
+/// The directory `BASH_COMPLETION_USER_DIR` designates, or null when the
+/// variable is unset **or** its first entry is unusable — in which case the XDG
+/// default applies instead.
+///
+/// This is the single source of truth for that decision: `bashInstallPath` uses
+/// it to pick the destination and `printEnableInstructions` uses it to decide
+/// whether to mention the variable at all, so the installed location and the
+/// note describing it cannot disagree. (They previously could: the note fired
+/// whenever the variable merely *existed*, and so claimed the first entry had
+/// been used even when it was invalid and the XDG default had been taken.)
+fn bashUserDir(p: zcli.Paths) ?[]const u8 {
+    const raw = p.environ.get("BASH_COMPLETION_USER_DIR") orelse return null;
 
-        // An invalid value is ignored and we fall through to the XDG default —
-        // the same disposition `Paths` gives any other invalid override.
-        if (p.validOverride(first)) |dir| {
-            // Joined with the SYNTAX's separator, not `std.fs.path.join`, which
-            // dispatches on the host. Trailing separators are trimmed so a root
-            // (`/`, `C:\`) does not produce a doubled one.
-            var root = dir;
-            while (root.len > 0 and p.syntax.isSep(root[root.len - 1])) root = root[0 .. root.len - 1];
-            const sep = p.syntax.sep();
-            return try std.fmt.allocPrint(
-                p.allocator,
-                "{s}{c}completions{c}{s}",
-                .{ root, sep, sep, p.app_name },
-            );
+    // The list separator follows the SYNTAX, not the convention. Under POSIX
+    // the list is colon-delimited as everywhere else in the XDG world; but
+    // MSYS2 and Cygwin rewrite POSIX path lists into Windows form when
+    // launching a native child, converting both the entries and the `:`
+    // delimiters to `;`. A native binary can therefore receive `C:\one;C:\two`,
+    // which a colon split would leave as one absurd path.
+    //
+    // Residual ambiguity, stated rather than hidden: `;` is legal in a Windows
+    // filename, so a genuine single path `C:\my;dir` is split and we use its
+    // first fragment — installing under `C:\my` when that fragment is itself
+    // fully qualified, or falling back to the XDG default when it is not.
+    // Either way the outcome is silent rather than dangerous, and Windows has
+    // no way to express such a path in a `;`-delimited list either. Not worth a
+    // quoting mini-language for a directory nobody names that way.
+    const list_sep: u8 = switch (p.syntax) {
+        .posix => ':',
+        .windows => ';',
+    };
+    const first = if (std.mem.indexOfScalar(u8, raw, list_sep)) |i| raw[0..i] else raw;
+
+    // An invalid value is ignored and we fall through to the XDG default — the
+    // same disposition `Paths` gives any other invalid override.
+    return p.validOverride(first);
+}
+
+fn bashInstallPath(p: zcli.Paths) ![]const u8 {
+    if (bashUserDir(p)) |dir| {
+        // Joined the way `Paths` joins, not with `std.fs.path.join`, which
+        // dispatches on the host rather than on `syntax`.
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(p.allocator);
+        try out.appendSlice(p.allocator, dir);
+
+        // Rule 1: normalize the base to the syntax separator, so
+        // `BASH_COMPLETION_USER_DIR=C:/one` yields `C:\one\completions\…` and
+        // never the mixed `C:/one\completions\…`.
+        if (p.syntax == .windows) {
+            for (out.items) |*c| {
+                if (c.* == '/') c.* = '\\';
+            }
         }
+        // Rules 2 and 3: trim trailing separators, then insert exactly one
+        // before each segment — so a root (`/`, `C:\`) contributes its own
+        // separator instead of a doubled one.
+        while (out.items.len > 0 and p.syntax.isSep(out.items[out.items.len - 1])) {
+            _ = out.pop();
+        }
+        const sep = p.syntax.sep();
+        try out.append(p.allocator, sep);
+        try out.appendSlice(p.allocator, "completions");
+        try out.append(p.allocator, sep);
+        try out.appendSlice(p.allocator, p.app_name);
+        return try out.toOwnedSlice(p.allocator);
     }
     return try p.resolve(.data, &.{ "bash-completion", "completions", p.app_name });
 }
 
-/// The pre-consolidation HOME-relative destination, always `/`-joined. Kept so
-/// `install` can warn about a stale script that would shadow the new one, and
-/// `uninstall` can remove it. Null when HOME is unset or the legacy path is
+/// The pre-consolidation HOME-relative destination, always `/`-joined (which is
+/// exactly how the old code built it, on every platform). Kept so `install` can
+/// warn about a stale script that would shadow the new one, and `uninstall` can
+/// remove it. Null when there is no usable legacy location, or when it is
 /// identical to the resolved one.
+///
+/// **The root is validated before use.** `uninstall` hands this path straight to
+/// `deleteFile`, so building it from the raw environment value would make a
+/// malformed `HOME` a delete primitive: `HOME=".."` yields
+/// `../.config/fish/completions/{app}.fish`, a deletion *outside* the home
+/// directory resolved against the process CWD — and a stripped or hand-edited
+/// environment is precisely where such a value shows up. The same base rules
+/// `Paths` applies (non-empty, control-byte-free, valid encoding, fully
+/// qualified) are applied here under **host** syntax, because this is a real
+/// path on the real filesystem.
+///
+/// An invalid `HOME` means "there is no legacy location to consider", never a
+/// failure: sweeping the old path is a courtesy, not the operation the user
+/// asked for.
 fn legacyInstallPath(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map, shell_type: ShellType, app_name: []const u8, resolved: []const u8) ?[]const u8 {
-    const home = environ.get("HOME") orelse return null;
-    if (home.len == 0) return null;
+    const guard: zcli.Paths = .{ .allocator = allocator, .environ = environ, .app_name = app_name };
+    const home = guard.validOverride(environ.get("HOME") orelse return null) orelse return null;
+    // Defence in depth: the app segment is interpolated into a path we delete.
+    // The registry validates it at compile time, but this function does not get
+    // to assume its caller went through the registry.
+    if (!zcli.Paths.isValidSegment(app_name)) return null;
 
     const path = switch (shell_type) {
         .bash => std.fmt.allocPrint(allocator, "{s}/.local/share/bash-completion/completions/{s}", .{ home, app_name }),
@@ -594,7 +641,15 @@ fn printEnableInstructions(shell_type: ShellType, context: anytype, install_path
             try stdout.writeAll("To enable completions, add the following to your ~/.bashrc:\n\n");
             try stdout.print("  if [ -f {s} ]; then\n", .{q});
             try stdout.print("    . {s}\n  fi\n\n", .{q});
-            if (context.environ.get("BASH_COMPLETION_USER_DIR") != null) {
+            // Only when the variable actually chose the destination. A
+            // set-but-invalid value is ignored in favour of the XDG default, and
+            // saying otherwise would send the user looking in the wrong place.
+            const guard: zcli.Paths = .{
+                .allocator = allocator,
+                .environ = context.environ,
+                .app_name = context.app_name,
+            };
+            if (bashUserDir(guard) != null) {
                 try stdout.writeAll("NOTE: BASH_COMPLETION_USER_DIR is set. bash-completion treats it as a\n");
                 try stdout.writeAll("      search list; the script was installed under its FIRST entry, which\n");
                 try stdout.writeAll("      is where bash looks first.\n\n");
@@ -862,4 +917,171 @@ test "shellQuote: a path with a space, quote, dollar and backtick per shell" {
     const fish_win = try shellQuote(testing.allocator, .fish, win);
     defer testing.allocator.free(fish_win);
     try testing.expectEqualStrings("'C:\\\\Users\\\\u'", fish_win);
+}
+
+/// The slice of `Context` the instruction printers actually use, so the exact
+/// emitted snippet can be asserted without a full command pipeline.
+const TestCtx = struct {
+    allocator: std.mem.Allocator,
+    environ: *const std.process.Environ.Map,
+    app_name: []const u8,
+    out: *std.Io.Writer,
+
+    pub fn stdout(self: *@This()) *std.Io.Writer {
+        return self.out;
+    }
+};
+
+test "enable/disable instructions quote an adversarial resolved path exactly" {
+    // A HOME carrying every character that breaks — or worse, executes in — an
+    // unquoted snippet: a space, a single quote, a `$`, and a backtick. The
+    // printed lines are copy-pasted into a shell, so `$(` or a backtick landing
+    // unquoted would be a command-execution bug, not a cosmetic one.
+    const nasty_home = "/h a'b$c`d";
+    var env = try envMap(&.{.{ "HOME", nasty_home }});
+    defer env.deinit();
+
+    // --- bash: the enable snippet names the resolved script path twice ---
+    {
+        const path = try getInstallPath(testing.allocator, &env, .bash, "myapp");
+        defer testing.allocator.free(path);
+        try testing.expectEqualStrings(
+            "/h a'b$c`d/.local/share/bash-completion/completions/myapp",
+            path,
+        );
+
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
+        try printEnableInstructions(.bash, &ctx, path);
+        const s = out.written();
+
+        try testing.expect(std.mem.indexOf(u8, s, "  if [ -f '/h a'\\''b$c`d/.local/share/bash-completion/completions/myapp' ]; then\n") != null);
+        try testing.expect(std.mem.indexOf(u8, s, "    . '/h a'\\''b$c`d/.local/share/bash-completion/completions/myapp'\n  fi\n") != null);
+        // The raw, unquoted path must never appear in a runnable line.
+        try testing.expect(std.mem.indexOf(u8, s, "if [ -f " ++ "/h a'b$c`d") == null);
+    }
+
+    // --- zsh: the disable snippet names the resolved DIRECTORY ---
+    {
+        const path = try getInstallPath(testing.allocator, &env, .zsh, "myapp");
+        defer testing.allocator.free(path);
+
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
+        try printDisableInstructions(.zsh, &ctx, path);
+
+        try testing.expect(std.mem.indexOf(u8, out.written(), "  fpath=('/h a'\\''b$c`d/.zsh/completions' $fpath)\n") != null);
+    }
+
+    // --- PowerShell: single quotes double, and $ / backtick stay inert ---
+    {
+        const path = try getInstallPath(testing.allocator, &env, .powershell, "myapp");
+        defer testing.allocator.free(path);
+
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
+        try printDisableInstructions(.powershell, &ctx, path);
+
+        try testing.expect(std.mem.indexOf(u8, out.written(), "  . '/h a''b$c`d/.config/powershell/completions/myapp.ps1'\n") != null);
+    }
+
+    // --- fish: prose names the directory unquoted; that line is not runnable ---
+    {
+        const path = try getInstallPath(testing.allocator, &env, .fish, "myapp");
+        defer testing.allocator.free(path);
+
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
+        try printEnableInstructions(.fish, &ctx, path);
+
+        try testing.expect(std.mem.indexOf(u8, out.written(), "automatically loaded from /h a'b$c`d/.config/fish/completions\n") != null);
+    }
+}
+
+test "the BASH_COMPLETION_USER_DIR note fires only when that variable was actually used" {
+    // The note claims the script went under the variable's first entry. When
+    // that entry is invalid the XDG default is used instead, so the note would
+    // be a lie — and would send the user looking in the wrong directory.
+    const cases = [_]struct { []const u8, bool }{
+        .{ "/opt/bc", true }, // honoured
+        .{ "relative/dir", false }, // ignored -> XDG default
+        .{ "", false }, // ignored -> XDG default
+    };
+    for (cases) |c| {
+        var env = try envMap(&.{ .{ "HOME", "/home/u" }, .{ "BASH_COMPLETION_USER_DIR", c[0] } });
+        defer env.deinit();
+
+        const path = try getInstallPath(testing.allocator, &env, .bash, "myapp");
+        defer testing.allocator.free(path);
+
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
+        try printEnableInstructions(.bash, &ctx, path);
+
+        const mentioned = std.mem.indexOf(u8, out.written(), "BASH_COMPLETION_USER_DIR is set") != null;
+        try testing.expectEqual(c[1], mentioned);
+        // And the note's claim matches where the script actually went.
+        if (c[1]) {
+            try testing.expectEqualStrings("/opt/bc/completions/myapp", path);
+        } else {
+            try testing.expectEqualStrings("/home/u/.local/share/bash-completion/completions/myapp", path);
+        }
+    }
+}
+
+test "an override base is separator-normalized under windows syntax" {
+    // C:/one must not yield the mixed `C:/one\completions\myapp`.
+    var env = try envMap(&.{ .{ "HOME", "C:\\Users\\u" }, .{ "BASH_COMPLETION_USER_DIR", "C:/one" } });
+    defer env.deinit();
+    const got = try bashInstallPath(testPaths(&env, .windows));
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("C:\\one\\completions\\myapp", got);
+
+    // A root keeps its own separator rather than doubling it.
+    var env2 = try envMap(&.{ .{ "HOME", "C:\\Users\\u" }, .{ "BASH_COMPLETION_USER_DIR", "C:\\" } });
+    defer env2.deinit();
+    const got2 = try bashInstallPath(testPaths(&env2, .windows));
+    defer testing.allocator.free(got2);
+    try testing.expectEqualStrings("C:\\completions\\myapp", got2);
+
+    var env3 = try envMap(&.{ .{ "HOME", "/home/u" }, .{ "BASH_COMPLETION_USER_DIR", "/" } });
+    defer env3.deinit();
+    const got3 = try bashInstallPath(testPaths(&env3, .posix));
+    defer testing.allocator.free(got3);
+    try testing.expectEqualStrings("/completions/myapp", got3);
+}
+
+test "the legacy sweep target is validated, so a malformed HOME cannot delete outside it" {
+    // `uninstall` hands this straight to deleteFile. HOME=".." would otherwise
+    // make the target `../.config/fish/completions/myapp.fish` — a deletion
+    // outside the home directory, resolved against the process CWD.
+    const unsafe = [_][]const u8{ "..", ".", "relative/dir", "", "~" };
+    for (unsafe) |home| {
+        var env = try envMap(&.{.{ "HOME", home }});
+        defer env.deinit();
+        try testing.expectEqual(
+            @as(?[]const u8, null),
+            legacyInstallPath(testing.allocator, &env, .fish, "myapp", "/somewhere/else"),
+        );
+    }
+
+    // A well-formed HOME still yields the legacy path, so the sweep keeps working.
+    if (builtin.os.tag != .windows) {
+        var env = try envMap(&.{.{ "HOME", "/home/u" }});
+        defer env.deinit();
+        const legacy = legacyInstallPath(testing.allocator, &env, .fish, "myapp", "/somewhere/else").?;
+        defer testing.allocator.free(legacy);
+        try testing.expectEqualStrings("/home/u/.config/fish/completions/myapp.fish", legacy);
+
+        // Null when it is the same file the resolved path already names.
+        try testing.expectEqual(
+            @as(?[]const u8, null),
+            legacyInstallPath(testing.allocator, &env, .fish, "myapp", legacy),
+        );
+    }
 }
