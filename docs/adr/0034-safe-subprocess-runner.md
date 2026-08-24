@@ -138,6 +138,45 @@ risk. The real runtime `Io` always has concurrency, so this costs nothing in
 practice and keeps the deadlock-freedom claim unconditional rather than
 qualified.
 
+## Teardown stops the child before it stops the drains — an amendment
+
+The deadline mechanism above is correct as described, and the amendment on
+concurrency stands: enforcing a timeout still needs nothing but `io.sleep` and a
+`probe`. What the first Windows CI run of this branch found is that *enforcing*
+the deadline on time is not the same as *returning* on time. The run aborted at
+its deadline exactly as designed — `Diagnostic.phase` was `.stop`, proving the
+clock check fired — and then teardown sat for as long as the child was willing to
+live.
+
+The cause is a property of `std.Io.Batch.cancel` on Windows: it opens with an
+unconditional `waitForApcOrAlert()`, an infinite alertable delay, *before*
+issuing any `NtCancelIoFileEx`. A pending `NtReadFile` on a pipe nobody is
+writing to never queues an APC, so that leading wait does not return. Teardown's
+original order — stop draining, then stop the child — therefore asked the runner
+to wait on a pipe whose only possible writer was the child it had not yet
+stopped. Every timed run against a quiet child hung there, and so did every
+orphan-linger expiry, which is precisely the case whose purpose is not to wait
+for a stranded pipe.
+
+Two changes, deliberately independent so neither is the single point of failure:
+
+- **Teardown stops the child first.** Terminating it closes the write ends, the
+  pending reads complete, and the cancel has something to collect. This is the
+  half that relies on nothing but process termination, and it is the right order
+  on POSIX too — it simply had no consequence there, because `Batch.cancel` is a
+  pure bookkeeping call on the `poll` backend.
+- **`releaseBatchWaiter` alerts the runner's own thread before the cancel**, so
+  the leading alertable wait returns `STATUS_ALERTED` at once. This is the half
+  that covers the case the first cannot: an orphan holding an output pipe after
+  the child is already gone, where there is no child left to stop.
+
+The deadlock-freedom claim above therefore now reads: no *drain* can serialize
+(that is what `awaitConcurrent` buys), and no *teardown* can wait on an event
+only a process the runner no longer controls could produce. The tests that
+enforce this are the existing Windows-live shapes in
+`process_integration_test.zig`; they are bounded twice over so a regression
+surfaces as a named failure in seconds rather than a silent CI timeout.
+
 ## Exclusive child-reaping is a documented precondition
 
 The runner reaps its own children by polling and never calls `Child.wait` or

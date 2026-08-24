@@ -1861,10 +1861,40 @@ fn setNonblocking(file: *Io.File) Error!void {
     file.flags.nonblocking = true;
 }
 
+/// Windows only: arm this thread's alert flag, so the next alertable wait on it
+/// returns at once instead of waiting for something to happen.
+///
+/// `Io.Batch.cancel` opens with an unconditional `waitForApcOrAlert()` —
+/// `NtDelayExecution(alertable, infinite)` — *before* it issues a single
+/// `NtCancelIoFileEx`. That wait is fine when a completion is imminent and fatal
+/// when one is not: a pending `NtReadFile` on a pipe nobody is writing to queues
+/// no APC, so "stop draining" blocks until something unrelated closes the write
+/// end. It is the exact opposite of what the call is for, and it is what left a
+/// Windows CI job silent for 22 minutes (PR #835) — the deadline fired on time,
+/// the runner asked to stop draining, and teardown then waited on the very child
+/// it had not stopped yet. The two shapes that reach it are the ones the module
+/// exists to bound: a stopped-for-timeout child that never wrote anything, and
+/// an orphan-linger expiry, whose whole point is *not* waiting for a pipe a
+/// grandchild is holding open.
+///
+/// Alerting ourselves first arms the flag that wait consumes, so it returns
+/// `STATUS_ALERTED` immediately and the cancellations actually get issued; the
+/// trailing waits then collect their APCs, which do arrive because the
+/// cancellation itself completes each operation. An alert nothing consumes is
+/// harmless: the only other alertable wait the runner reaches is inside
+/// `Batch.awaitConcurrent`, which treats any status other than `SUCCESS`/
+/// `TIMEOUT` as "go round again".
+fn releaseBatchWaiter() void {
+    if (!is_windows) return;
+    const windows = std.os.windows;
+    _ = windows.ntdll.NtAlertThread(windows.GetCurrentThread());
+}
+
 /// Stop draining without tearing anything down: used when the orphan linger
 /// expires and the remaining EOF is never going to arrive.
 fn drainStop(r: *Run) void {
     if (r.active_ops == 0) return;
+    releaseBatchWaiter();
     r.batch.cancel(r.io);
     while (r.batch.next()) |completion| {
         // Completions that raced the cancel still carry real bytes; take them
@@ -1978,14 +2008,19 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
     const io = r.io;
     var reason = abort_reason;
 
-    // 1. Stop draining. `batch.cancel` leaves the batch well-defined and
-    //    iterable.
-    if (reason != null) drainStop(r);
-
-    // 2. (abort only) Stop the child — never entered unless a probe says
-    //    `.running`. It precedes the writer settlement because breaking the pipe
-    //    usually makes that step resolve instantly; it is an ordering
-    //    preference, not the thing that guarantees the writer is released.
+    // 1. (abort only) Stop the child — never entered unless a probe says
+    //    `.running`.
+    //
+    //    Stopping precedes *everything* else in teardown, and on Windows that
+    //    order is load-bearing rather than a preference. A pending `NtReadFile`
+    //    on a pipe completes when the child writes or when the last write end
+    //    closes, and stopping the child is what closes it — so cancelling the
+    //    drains first (as an earlier revision did) asked teardown to wait on the
+    //    child it had not stopped yet. See `releaseBatchWaiter` for the second
+    //    half of that fix; this ordering is the half that does not depend on
+    //    ntdll's alert semantics. It also settles the writer sooner, because
+    //    breaking the pipe usually resolves a blocked write instantly — though
+    //    that remains a convenience, not the thing that guarantees release.
     //
     //    A `.failed` outcome here **displaces** the primary failure rather than
     //    hiding behind it. That is the opposite of how a cancelled writer is
@@ -2004,6 +2039,11 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
             r.term = null;
         }
     }
+
+    // 2. Stop draining. `batch.cancel` leaves the batch well-defined and
+    //    iterable, and whatever the child managed to emit before step 1 is still
+    //    harvested here rather than dropped.
+    if (reason != null) drainStop(r);
 
     // 3. Settle the stdin writer — mandatory on every path. If it published
     //    `done` it was already joined inside the loop and this is a no-op.
