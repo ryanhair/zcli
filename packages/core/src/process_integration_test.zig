@@ -37,6 +37,51 @@ fn elapsedMs(io: Io, start: Io.Clock.Timestamp) i64 {
     return start.durationTo(Io.Clock.Timestamp.now(io, .boot)).raw.toMilliseconds();
 }
 
+/// Fails the process from *outside* the call under test if that call does not
+/// return in time.
+///
+/// This is not a stylistic preference. Every "and then it terminated" assertion
+/// in this file is written after the call it is about — and if the call hangs,
+/// that assertion never executes. An elapsed-time check therefore cannot catch
+/// the one failure it exists to catch; the test just stops, and the suite
+/// reports a timeout somewhere with no idea which shape wedged. The watchdog
+/// runs on its own task and names the shape when it fires.
+const Watchdog = struct {
+    io: Io,
+    label: []const u8,
+    limit_ms: i64,
+    done: std.atomic.Value(bool) = .init(false),
+    future: ?Io.Future(void) = null,
+
+    fn arm(self: *Watchdog) !void {
+        self.future = try self.io.concurrent(watch, .{self});
+    }
+
+    fn watch(self: *Watchdog) void {
+        // Sliced rather than one long sleep so disarming returns promptly
+        // instead of holding a pool thread for the whole budget.
+        const slice_ms: i64 = 50;
+        var waited: i64 = 0;
+        while (waited < self.limit_ms) : (waited += slice_ms) {
+            if (self.done.load(.acquire)) return;
+            self.io.sleep(.fromMilliseconds(slice_ms), .boot) catch return;
+        }
+        if (self.done.load(.acquire)) return;
+        std.debug.panic(
+            "watchdog: '{s}' did not return within {d}ms — the run hung",
+            .{ self.label, self.limit_ms },
+        );
+    }
+
+    fn disarm(self: *Watchdog) void {
+        self.done.store(true, .release);
+        if (self.future) |*f| {
+            _ = f.await(self.io);
+            self.future = null;
+        }
+    }
+};
+
 // ---------------------------------------------------------------------------
 // 1. The deadlock test
 // ---------------------------------------------------------------------------
@@ -654,6 +699,10 @@ test "an abort while the writer is blocked still terminates" {
     const payload = try filler(a, 4 * 1024 * 1024);
     defer a.free(payload);
 
+    var dog: Watchdog = .{ .io = io, .label = "abort with a blocked writer", .limit_ms = 20_000 };
+    try dog.arm();
+    defer dog.disarm();
+
     const start: Io.Clock.Timestamp = .now(io, .boot);
     var diag: process.Diagnostic = .{};
     try testing.expectError(error.Timeout, runner.run(fixture(), .{
@@ -667,6 +716,82 @@ test "an abort while the writer is blocked still terminates" {
     // Teardown-induced errors must not displace the primary failure: the caller
     // needs `Timeout`, not `.stdin`/`Canceled`.
     try testing.expectEqual(process.Phase.stop, diag.phase);
+    try expectNoZombies();
+}
+
+test "an abort terminates even when a descendant holds stdin and the child is gone" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var env = emptyEnv(a);
+    defer env.deinit();
+    var runner = process.Runner.init(a, io, &env);
+
+    // The variant that matters. The direct child hands stdin's read end to a
+    // grandchild and exits immediately, so stopping the child does *not* break
+    // the pipe — the parent's writer is still blocked against a process the
+    // runner never spawned and cannot see. On Windows that is precisely the case
+    // where awaiting the writer (because the direct child exited) hangs forever,
+    // and only `future.cancel` reaching the blocked `NtWriteFile` releases it.
+    const payload = try filler(a, 4 * 1024 * 1024);
+    defer a.free(payload);
+
+    var dog: Watchdog = .{ .io = io, .label = "descendant holds stdin", .limit_ms = 30_000 };
+    try dog.arm();
+    defer dog.disarm();
+
+    // The run ends one way or the other — the child is gone, so the only
+    // question is whether teardown releases the writer. What it must not do is
+    // hang, which is what the watchdog is here to catch.
+    if (runner.run(fixture(), .{
+        .args = &.{ "spawn-stdin-holder", fixture_exe, "5000" },
+        .stdin = .{ .bytes = payload },
+        .timeout = timeout(1000),
+    })) |res| {
+        var r = res;
+        r.deinit();
+    } else |err| {
+        try testing.expect(err == error.Timeout or err == error.BrokenPipe);
+    }
+    try expectNoZombies();
+}
+
+test "orphan-linger expiry releases an unfinished writer instead of awaiting it" {
+    const a = testing.allocator;
+    const io = testing.io;
+    var env = emptyEnv(a);
+    defer env.deinit();
+    var runner = process.Runner.init(a, io, &env);
+
+    // Both halves at once: a silent grandchild holds stdout open (so the streams
+    // never reach EOF and the orphan linger is what ends the run) while the
+    // parent still has megabytes of stdin outstanding to a child that never read
+    // any of it. On expiry the writer has not published `done`, so teardown must
+    // *cancel* it. Awaiting it there — on the strength of the direct child having
+    // exited — is the hang this asserts against, and it is a successful return,
+    // so the cancellation must not be reported as a `.stdin` failure either.
+    const payload = try filler(a, 4 * 1024 * 1024);
+    defer a.free(payload);
+
+    var dog: Watchdog = .{ .io = io, .label = "orphan linger with a live writer", .limit_ms = 30_000 };
+    try dog.arm();
+    defer dog.disarm();
+
+    var diag: process.Diagnostic = .{};
+    if (runner.run(fixture(), .{
+        .args = &.{ "spawn-orphan", fixture_exe, "5000" },
+        .stdin = .{ .bytes = payload },
+        .orphan_linger = .fromMilliseconds(300),
+        .diagnostic = &diag,
+    })) |res| {
+        var r = res;
+        defer r.deinit();
+        try testing.expect(r.orphaned);
+    } else |err| {
+        // A broken pipe is a legitimate outcome (the child never read stdin);
+        // a cancellation we caused ourselves is not.
+        try testing.expect(err != error.Canceled);
+        try testing.expectEqual(error.BrokenPipe, err);
+    }
     try expectNoZombies();
 }
 
@@ -696,6 +821,117 @@ test "a writer still running when the child exits is joined before the run retur
         // legitimate outcome for this shape; either way the run terminated
         // rather than waiting forever on a write that can never complete.
         try testing.expectEqual(error.BrokenPipe, err);
+    }
+}
+
+test "a forced Windows stop reports no synthetic Term" {
+    // Windows-only: `NtTerminateProcess` sets the exit status to the code the
+    // runner passed, so a status read back afterwards is one *we* invented. POSIX
+    // has no equivalent problem — after `SIGKILL` the status genuinely says
+    // `.signaled = .KILL`, which is real information and is reported.
+    if (!is_windows) return error.SkipZigTest;
+
+    const a = testing.allocator;
+    const io = testing.io;
+    var env = emptyEnv(a);
+    defer env.deinit();
+    var runner = process.Runner.init(a, io, &env);
+
+    var diag: process.Diagnostic = .{};
+    try testing.expectError(error.Timeout, runner.run(fixture(), .{
+        .args = &.{ "sleep", "60000" },
+        .timeout = timeout(300),
+        .diagnostic = &diag,
+    }));
+    try testing.expectEqual(process.Phase.stop, diag.phase);
+    try testing.expect(diag.term == null);
+}
+
+test "a Windows crash reports the full NTSTATUS, not a truncated exit code" {
+    // The positive counterpart: on the *normal* path the runner reads the raw
+    // `ExitStatus` itself, so an access violation comes back whole. `std`'s
+    // `Child.wait` truncates `0xC0000005` to `u8`, which is exit code 5 —
+    // indistinguishable from a deliberate `exit(5)`.
+    if (!is_windows) return error.SkipZigTest;
+
+    const a = testing.allocator;
+    const io = testing.io;
+    var env = emptyEnv(a);
+    defer env.deinit();
+    var runner = process.Runner.init(a, io, &env);
+
+    var result = try runner.run(fixture(), .{ .args = &.{"access-violation"} });
+    defer result.deinit();
+
+    try testing.expect(!result.ok());
+    try testing.expect(result.term == .unknown);
+    try testing.expectEqual(@as(u32, 0xC0000005), result.term.unknown);
+}
+
+/// Installs `SIGCHLD = SIG_IGN` partway through a run, so the kernel auto-reaps
+/// the child — but only *after* the runner has spawned it and acquired its
+/// pidfd. Reaping before that point would be testing a guarantee the design
+/// explicitly does not make (acquisition is itself pid-keyed), so the delay is
+/// the whole point of the fixture.
+const LateReaper = struct {
+    io: Io,
+    delay_ms: i64,
+    previous: std.posix.Sigaction = undefined,
+    installed: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *LateReaper) void {
+        self.io.sleep(.fromMilliseconds(self.delay_ms), .boot) catch return;
+        var ignore: std.posix.Sigaction = .{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(.CHLD, &ignore, &self.previous);
+        self.installed.store(true, .release);
+    }
+
+    fn restore(self: *LateReaper) void {
+        if (self.installed.load(.acquire)) std.posix.sigaction(.CHLD, &self.previous, null);
+    }
+};
+
+test "an external reap after pidfd acquisition is reported, never signalled through" {
+    // Linux-gated: it needs both the `pidfd` hardening and the `SIG_IGN`
+    // auto-reap semantics. What a pidfd actually buys is that *after* it is held,
+    // no later signal can land on a recycled pid — so the reap has to be
+    // coordinated to happen after acquisition, which is what `LateReaper` does.
+    // A test that reaped before acquisition would be asserting a guarantee the
+    // design deliberately does not claim.
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const a = testing.allocator;
+    const io = testing.io;
+    var env = emptyEnv(a);
+    defer env.deinit();
+    var runner = process.Runner.init(a, io, &env);
+
+    var reaper: LateReaper = .{ .io = io, .delay_ms = 200 };
+    var reaper_future = try io.concurrent(LateReaper.run, .{&reaper});
+    defer {
+        _ = reaper_future.await(io);
+        reaper.restore();
+    }
+
+    var dog: Watchdog = .{ .io = io, .label = "external reap after acquisition", .limit_ms = 30_000 };
+    try dog.arm();
+    defer dog.disarm();
+
+    var diag: process.Diagnostic = .{};
+    // The child outlives the disposition change, so the kernel — not us — reaps it.
+    if (runner.run(fixture(), .{ .args = &.{ "sleep", "700" }, .diagnostic = &diag })) |res| {
+        // Our poll can still win the race against the kernel; that outcome is
+        // correct too, and the point is that neither hangs or signals a stranger.
+        var r = res;
+        r.deinit();
+    } else |err| {
+        try testing.expectEqual(error.ChildReapedElsewhere, err);
+        try testing.expectEqual(process.Phase.wait, diag.phase);
+        try testing.expect(diag.term == null);
     }
 }
 
@@ -960,7 +1196,40 @@ test "the child's cwd is Options.cwd, not wherever the program path pointed" {
 // 31. Concurrency
 // ---------------------------------------------------------------------------
 
-test "a run still works on an Io whose concurrent task pool is exhausted" {
+test "a timeout with no captured streams does not require concurrency" {
+    const a = testing.allocator;
+    var threaded: Io.Threaded = .init(a, .{ .concurrent_limit = .nothing });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = emptyEnv(a);
+    defer env.deinit();
+    var runner = process.Runner.init(a, io, &env);
+
+    // The contract, asserted rather than assumed. A run with no captured streams
+    // and no stdin payload enforces its deadline on a single task — clock check,
+    // `probe`, `io.sleep` — so refusing it for want of a task pool would fail
+    // something the mechanism can service. (An earlier revision of the design
+    // raced a concurrent `Child.wait`, which genuinely did need one; ADR-0034
+    // records why that sentence no longer applies.)
+    // The watchdog runs on the *test's* Io, not the starved one under test —
+    // arming it there would need the very capability the test withholds.
+    var dog: Watchdog = .{ .io = testing.io, .label = "timeout without concurrency", .limit_ms = 20_000 };
+    try dog.arm();
+    defer dog.disarm();
+
+    const start: Io.Clock.Timestamp = .now(io, .boot);
+    try testing.expectError(error.Timeout, runner.run(fixture(), .{
+        .args = &.{ "sleep", "60000" },
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .timeout = timeout(300),
+    }));
+    try testing.expect(elapsedMs(io, start) >= 250);
+    try expectNoZombies();
+}
+
+test "draining is what needs concurrency, and says so rather than deadlocking" {
     if (is_windows) return error.SkipZigTest;
 
     const a = testing.allocator;
@@ -974,11 +1243,16 @@ test "a run still works on an Io whose concurrent task pool is exhausted" {
 
     // On POSIX `awaitConcurrent` is `poll`-driven, so it satisfies its
     // concurrency requirement without a task pool at all — the drains and the
-    // nonblocking stdin write still make independent progress. An `Io` that
-    // genuinely cannot would surface `error.ConcurrencyUnavailable` here rather
-    // than deadlocking, which is the refusal the module promises.
+    // nonblocking stdin write still make independent progress, and the run
+    // succeeds. An `Io` that genuinely cannot would surface
+    // `error.ConcurrencyUnavailable` here rather than deadlocking, which is the
+    // refusal the module promises. Either answer is correct; hanging is not.
     const payload = try filler(a, 256 * 1024);
     defer a.free(payload);
+
+    var dog: Watchdog = .{ .io = testing.io, .label = "drain without a task pool", .limit_ms = 30_000 };
+    try dog.arm();
+    defer dog.disarm();
 
     var result = runner.run(fixture(), .{
         .args = &.{"echo"},

@@ -1146,10 +1146,15 @@ beyond its own terminal, both with safe behaviour as the only behaviour:
   not a supervisor (`zcli dev` keeps its own loop), and never a shell.
 
 **Construction idiom (ADR-0014).** `context.X()` is the single front door for
-every output capability: `context.theme`, `context.prompts()`,
-`context.progress()`, `context.markdown()`, `context.ui(.{})`, and
-`context.process()` each hand back an instance already wired to the command's
-streams, allocator, io, environment, and theme. The
+every capability a command reaches for, not only the ones that write to the
+terminal. `context.theme`, `context.prompts()`, `context.progress()`,
+`context.markdown()` and `context.ui(.{})` are the *output* capabilities;
+`context.process()` is a capability of a different kind — it reaches outside the
+process rather than painting inside it — and uses the same front door for the
+same reason: what it hands back is already wired to the command's allocator, io,
+and environment, so the wiring cannot be forgotten or faked. That is load-bearing
+for `process` specifically, since the environment map is what keeps an ambient
+`getenv` out of a subprocess call. The
 stateless packages (`prompts`, `progress`, `markdown`) are value bundles — the
 import *is* the type — so standalone use fills the same fields by hand;
 stateful ones (`ui.App`) keep `init`/`deinit`. Each package also works without

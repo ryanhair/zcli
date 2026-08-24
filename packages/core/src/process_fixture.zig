@@ -213,6 +213,21 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // Hand our *stdin* to a grandchild that never reads it, then exit. This is
+    // the shape that makes "terminate the direct child" insufficient: the pipe's
+    // read end outlives the child we can see, so a parent still writing into it
+    // stays blocked. Only cancelling the writer releases it.
+    if (std.mem.eql(u8, mode, "spawn-stdin-holder")) {
+        var grandchild = try std.process.spawn(io, .{
+            .argv = &.{ args[2], "hold", args[3] },
+            .stdin = .inherit,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        _ = &grandchild;
+        return;
+    }
+
     if (std.mem.eql(u8, mode, "hold")) {
         io.sleep(.fromMilliseconds(@intCast(parse(args[2]))), .boot) catch {};
         return;
@@ -235,6 +250,18 @@ pub fn main(init: std.process.Init) !void {
         const n = try std.process.currentPath(io, &buf);
         try writeAll(io, stdout, buf[0..n]);
         return;
+    }
+
+    if (is_windows) {
+        // Die of an access violation, so the runner has an NTSTATUS that does not
+        // fit `u8` to report. `std`'s `Child.wait` truncates this to exit code 5;
+        // reading the status directly is what keeps a crash from masquerading as
+        // a deliberate `exit(5)`.
+        if (std.mem.eql(u8, mode, "access-violation")) {
+            const p: *volatile u8 = @ptrFromInt(0x8);
+            p.* = 1;
+            return;
+        }
     }
 
     if (!is_windows) {

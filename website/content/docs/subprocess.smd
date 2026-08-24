@@ -148,6 +148,10 @@ Set `Capture.sensitive` on a stream and its buffer is allocated once at its cap 
 
 Past the deadline the child is stopped politely, then forcibly after `stop_grace` (5 s by default), reaped, and `error.Timeout` comes back. Whatever the timeout, the run still terminates as long as the child does.
 
+If the stop itself cannot be delivered, you get `error.StopFailed` with `phase = .stop` instead — the child may still be running, so reporting `Timeout` (which promises "stopped and reaped") would be reporting something untrue. On Linux the runner deliberately does not retry a failed signal through the raw pid: once it holds a `pidfd`, that is the only identity it can be sure has not been recycled underneath it.
+
+**What needs concurrency, precisely.** Draining captured streams does, and on Windows so does a stdin payload — an `Io` that cannot provide it fails with `error.ConcurrencyUnavailable` rather than deadlocking. A **timeout does not**: the deadline is checked against the clock in the runner's own loop, so a run with no captured streams and no stdin honours it on a single task.
+
 **Grandchildren are a known limitation.** A child that spawns a daemon which inherits stdout keeps that pipe open after the child itself exits. The runner handles the normal path with an **orphan linger**: once the child is known dead, it keeps draining for `orphan_linger` (500 ms by default), then returns with `Result.orphaned == true` — the capture is complete only up to that moment. The honest bound is *the child's exit* + *up to a quarter second of detection latency* + *the linger*. On the **abort** path grandchildren are not chased at all: signalling the whole process group would change terminal signal delivery for `.inherit` children, so it is deferred behind a future explicit option.
 
 ## Diagnostics
@@ -177,7 +181,9 @@ Windows has no signals, so `.signaled` is never produced there and a crash canno
 
 The runner reaps its own children by polling and never calls `Child.wait` or `Child.kill`, so it is the only reaper of what it spawns. That is what makes stopping race-free: a signal is only ever sent between a probe that said "still running" and the next probe. It holds as long as your process reaps its own children exclusively — so an application using `Runner` must not set `SIGCHLD` to `SIG_IGN`, install it with `SA_NOCLDWAIT`, or run a wildcard `waitpid(-1)` reaper.
 
-zcli installs none of these, so a command in a zcli CLI satisfies this by construction; it is documented because `Runner` is public API and an embedding application may be less tidy. Where the OS offers a stable identity the runner takes it anyway — Windows signals through the process handle, and Linux through a `pidfd` acquired right after spawn. If the precondition *is* violated, a run reports `error.ChildReapedElsewhere` with `phase = .wait`, sends no further signal, and returns rather than hanging — a deliberately weakened promise, because the alternative is signalling into a pid we no longer own.
+zcli installs none of these, so a command in a zcli CLI satisfies this by construction; it is documented because `Runner` is public API and an embedding application may be less tidy. Where the OS offers a stable identity the runner takes it anyway — Windows signals through the process handle, and Linux through a `pidfd` acquired right after spawn. If the precondition is violated **and a probe notices** — the reap comes back `ECHILD` — a run reports `error.ChildReapedElsewhere` with `phase = .wait`, sends no further signal, and returns rather than hanging. That is a deliberately weakened promise, because the alternative is signalling into a pid we no longer own.
+
+Note what it does not say. Violating the precondition does not reliably produce that error: if the child is reaped and its pid recycled before the runner's first probe (or, on Linux, before it acquires the `pidfd`), nothing looks wrong and every later signal goes to a stranger. Detection is the good case. The guarantee is narrower and unconditional — **no signal is ever sent after a probe has reported the identity gone** — and the window before that first probe is the residual risk this precondition exists to keep out of your process.
 
 ## A worked example: shelling out to `gh`
 

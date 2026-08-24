@@ -234,6 +234,13 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
+        // The Linux backends shell out through `zcli.process` (ADR-0034), so the
+        // secrets modules need the framework module by name. A consuming app's
+        // plugin module already gets it (`module_creation.zig`); these are the
+        // repo-local ones, whose roots sit below `src/` and so cannot reach
+        // `src/process.zig` by relative path. No cycle: `zcli.zig` does not
+        // import the secrets plugin.
+        plugin_mod.addImport("zcli", zcli_module);
         const plugin_tests = b.addTest(.{ .root_module = plugin_mod });
         const run_plugin_tests = b.addRunArtifact(plugin_tests);
         for ([_]*std.Build.Step{ test_plugins_step, test_secrets_step, test_step }) |s| {
@@ -261,6 +268,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
             });
+            backend_mod.addImport("zcli", zcli_module);
             main.linkSecretsBackend(backend_mod, target.result);
             const backend_tests = b.addTest(.{ .root_module = backend_mod });
             const run_backend_tests = b.addRunArtifact(backend_tests);
@@ -273,6 +281,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
             });
+            live_mod.addImport("zcli", zcli_module);
             main.linkSecretsBackend(live_mod, target.result);
             // The live test reads the real process environment via libc's
             // `std.c.environ` to build a context for the shell-out backend (0.16

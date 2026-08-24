@@ -44,10 +44,21 @@
 //! than a mutation. Whatever it is set to, the runner still terminates as long
 //! as the child does.
 //!
-//! Draining requires an `Io` that can actually run operations concurrently. One
-//! that cannot fails with `error.ConcurrencyUnavailable` rather than
-//! deadlocking; the real runtime `Io` (`std.Io.Threaded` with a pool) always
+//! **What actually requires concurrency**, stated precisely because it is
+//! narrower than it looks: *draining captured streams* does, and on Windows so
+//! does a stdin payload (the write runs on its own task there). An `Io` that
+//! cannot provide it fails with `error.ConcurrencyUnavailable` rather than
+//! deadlocking. The real runtime `Io` (`std.Io.Threaded` with a pool) always
 //! can, so this costs nothing in practice.
+//!
+//! A **timeout does not**, and the runner does not pretend otherwise. Earlier
+//! revisions of this design enforced the timeout by racing a concurrent
+//! `Child.wait` task, which genuinely needed concurrency; this one enforces it
+//! by comparing the clock at the top of its own loop and probing the child
+//! itself. A run with no captured streams and no stdin payload therefore honours
+//! its deadline on a single task, with nothing but `io.sleep`. Refusing such a
+//! run for lacking a capability it never uses would fail something the mechanism
+//! can service. See ADR-0034.
 //!
 //! ## Reaping precondition
 //!
@@ -69,9 +80,18 @@
 //! and Linux acquires a `pidfd` right after spawn and signals through it, which
 //! removes the long window between acquisition and signal. Acquisition itself
 //! is still pid-keyed, so the pidfd is defense in depth rather than an escape
-//! from the precondition. On macOS/BSD there is only the pid. If the
-//! precondition is violated, an abort can signal a recycled pid; nothing at this
-//! layer can detect that, which is why it is stated rather than checked.
+//! from the precondition. On macOS/BSD there is only the pid.
+//!
+//! What is guaranteed, unconditionally: **no signal is sent after a probe has
+//! reported the identity gone.** When a probe does observe that (an `ECHILD`
+//! reap), the run fails with `error.ChildReapedElsewhere`, `Phase.wait`, and no
+//! `Term` — and says plainly that its stop and no-zombie guarantees do not hold
+//! for that run. What is *not* guaranteed is that a violated precondition
+//! produces that error at all: a child reaped and its pid recycled before the
+//! first probe — or on Linux before `pidfd_open` runs — leaves nothing to
+//! notice, and every later signal reaches a stranger that looks perfectly
+//! healthy. Detection is the good case, not the contract. That residual window
+//! is why this is a documented precondition rather than a runtime check.
 //!
 //! ## Scrubbing: what is and is not guaranteed
 //!
@@ -363,7 +383,10 @@ pub const Phase = enum {
     capture,
     /// Stopping a child that overran its timeout or its cap. `error.Timeout`
     /// itself is reported here: the run's outcome is that the runner had to stop
-    /// the child, whichever phase it was in when the deadline passed.
+    /// the child, whichever phase it was in when the deadline passed. So is
+    /// `error.StopFailed`, when the signal could not be delivered at all — and
+    /// that one *displaces* the timeout, since "stopped and reaped" is exactly
+    /// the promise `Timeout` makes and it did not hold.
     stop,
     /// Reaping the child, or learning that something else already did. The
     /// runner reaps by polling and never calls `Child.wait`.
@@ -539,6 +562,22 @@ fn wipesStaging(scrub: Scrub) bool {
     return scrub != .never;
 }
 
+/// Release one capture buffer: wipe-then-free, in that order, decided in one
+/// place. Both exit paths call this so the ordering cannot drift between them —
+/// freeing before wiping would hand the allocator a live secret, and the two
+/// call sites used to spell the sequence out separately.
+fn releaseCapture(
+    allocator: Allocator,
+    buf: []u8,
+    scrub: Scrub,
+    sensitive: bool,
+    failed: bool,
+) void {
+    if (buf.len == 0) return;
+    if (wipesCapture(scrub, sensitive, failed)) std.crypto.secureZero(u8, buf);
+    allocator.free(buf);
+}
+
 pub const Result = struct {
     term: Termination,
     stdout: Captured,
@@ -567,12 +606,10 @@ pub const Result = struct {
     /// where the policy says so. Idempotent.
     pub fn deinit(self: *Result) void {
         for ([_]*Captured{ &self.stdout, &self.stderr }) |c| {
-            if (c.buf.len == 0) continue;
             // `failed = false`: this is the successful-return column of the
             // sensitivity table. Under `.on_failure` the caller has been handed
             // live bytes on purpose and owns the wipe.
-            if (wipesCapture(self.scrub, c.sensitive, false)) std.crypto.secureZero(u8, c.buf);
-            self.allocator.free(c.buf);
+            releaseCapture(self.allocator, c.buf, self.scrub, c.sensitive, false);
             c.buf = &.{};
             c.len = 0;
         }
@@ -623,6 +660,16 @@ pub const Error = ResolveError ||
         /// stop and no-zombie guarantees do not hold for that run. Unreachable
         /// in a process that leaves child reaping to the framework.
         ChildReapedElsewhere,
+        /// A stop signal could not be delivered, so the child may still be
+        /// running and will not be reaped by this runner. Reported with
+        /// `Phase.stop`, and it displaces whatever prompted the stop —
+        /// `error.Timeout` promises "child stopped and reaped", which would be
+        /// untrue here. Distinct from `ChildReapedElsewhere`: there the identity
+        /// is gone, here the runner still owns it but the OS refused. On Linux
+        /// the runner deliberately does *not* retry through the raw pid, since
+        /// an acquired `pidfd` is the only identity that cannot have been
+        /// recycled underneath it.
+        StopFailed,
     } ||
     Allocator.Error ||
     Io.Cancelable;
@@ -821,26 +868,37 @@ fn blockingWait(id: *Identity) Probe {
 /// PID-reuse window, given the exclusive-reaping precondition. On Linux the
 /// signal goes through the `pidfd` when one was acquired, so it can never land
 /// on a recycled pid even if that precondition is broken after acquisition.
-fn signalChild(id: *Identity, sig: posix.SIG) void {
+/// Returns false when the signal could not be delivered. The caller must treat
+/// that as a failure to stop rather than retrying through some other identity —
+/// see the pidfd branch for why that distinction is load-bearing.
+fn signalChild(id: *Identity, sig: posix.SIG) bool {
     if (is_windows) {
         const windows = std.os.windows;
-        _ = windows.ntdll.NtTerminateProcess(id.process, @enumFromInt(1));
-        return;
+        return switch (windows.ntdll.NtTerminateProcess(id.process, @enumFromInt(1))) {
+            .SUCCESS, .PROCESS_IS_TERMINATING => true,
+            else => false,
+        };
     }
     if (is_linux) {
         if (id.pidfd) |fd| {
-            const rc = std.os.linux.pidfd_send_signal(fd, sig, null, 0);
-            switch (posix.errno(rc)) {
-                .SUCCESS => return,
-                // Fall through to the raw pid only when the pidfd itself is
-                // unusable; ESRCH means the child is already gone, which is a
-                // successful no-op for our purposes.
-                .SRCH => return,
-                else => {},
-            }
+            // Once a pidfd is held it names *that* process forever, so it is the
+            // only identity worth signalling through. Falling back to the raw pid
+            // when it fails would reopen exactly the post-acquisition recycling
+            // window the pidfd exists to close — the pid may by then belong to a
+            // stranger, and `kill` would find it perfectly signalable. So a
+            // failure here is reported, never retried against the pid.
+            return switch (posix.errno(std.os.linux.pidfd_send_signal(fd, sig, null, 0))) {
+                .SUCCESS => true,
+                // The child is already gone: nothing to signal, and nothing wrong.
+                .SRCH => true,
+                else => false,
+            };
         }
     }
-    _ = posix.system.kill(id.pid, sig);
+    return switch (posix.errno(posix.system.kill(id.pid, sig))) {
+        .SUCCESS, .SRCH => true,
+        else => false,
+    };
 }
 
 fn closeIdentity(id: *Identity) void {
@@ -1279,10 +1337,16 @@ const Run = struct {
 
     term: ?Termination = null,
     orphaned: bool = false,
-    /// The runner signalled the child rather than letting it finish. On Windows
-    /// that makes the status a subsequent probe reads back one *we* invented, so
-    /// there is no honest `Term` to report for it.
+    /// The runner successfully signalled the child rather than letting it
+    /// finish. On Windows that makes the status a subsequent probe reads back
+    /// one *we* invented, so there is no honest `Term` to report for it. Set
+    /// only on a delivered signal: a *failed* terminate leaves whatever status
+    /// the child chose for itself, and suppressing that would throw away a real
+    /// natural-exit `Term`.
     forced_stop: bool = false,
+    /// Set when a stop signal could not be delivered. Distinguishes "we could
+    /// not stop it" (phase `.stop`) from "something else reaped it" (`.wait`).
+    stop_err: ?anyerror = null,
 
     const stdout_index: u32 = 0;
     const stderr_index: u32 = 1;
@@ -1729,9 +1793,15 @@ fn drainStop(r: *Run) void {
 fn stopChild(r: *Run) Probe {
     const io = r.io;
     // Windows has no polite signal — `signalChild` is `NtTerminateProcess`
-    // there, and the grace loop below simply waits for the corpse.
+    // there, so a *successful* call is already the forcible stop and the grace
+    // loop below is only waiting for the corpse. The flag records that the stop
+    // actually happened, not that it was attempted: a failed terminate leaves
+    // whatever status the child chose for itself, and that status is real.
+    if (!signalChild(&r.identity, .TERM)) {
+        r.stop_err = error.StopFailed;
+        return .{ .failed = error.StopFailed };
+    }
     r.forced_stop = true;
-    signalChild(&r.identity, .TERM);
 
     const deadline: Io.Clock.Timestamp = Io.Clock.Timestamp.now(io, .boot).addDuration(.{
         .raw = r.opts.stop_grace,
@@ -1761,9 +1831,37 @@ fn stopChild(r: *Run) Probe {
         .may_signal => {},
         .reaped, .never_signal => return before_kill,
     }
-    signalChild(&r.identity, .KILL);
+    if (!signalChild(&r.identity, .KILL)) {
+        r.stop_err = error.StopFailed;
+        return .{ .failed = error.StopFailed };
+    }
     // SIGKILL is not ignorable, so blocking for the corpse terminates.
     return blockingWait(&r.identity);
+}
+
+/// Which failure a teardown should report, given how the stop attempt ended and
+/// whether a signal could be delivered. `null` means "keep the failure that
+/// prompted the abort".
+///
+/// The asymmetry with a cancelled stdin writer is the whole point. A writer that
+/// comes back `Canceled`/`BrokenPipe` is reporting noise the runner made while
+/// cleaning up, so it is suppressed. A `.failed` stop is the opposite: it means
+/// the runner's own guarantees have broken — the child may still be running and
+/// will not be reaped by us — and `error.Timeout` explicitly promises "child
+/// stopped and reaped". Reporting the timeout there would be reporting something
+/// untrue, so the broken guarantee displaces it.
+fn displacingReason(outcome: Probe, stop_err: ?anyerror) ?Abort {
+    return switch (decide(outcome)) {
+        // Either the child is still ours (nothing broke) or the stop worked.
+        .may_signal, .reaped => null,
+        // We still own the identity and simply could not signal through it —
+        // a different broken promise from "something else reaped it", and a
+        // different phase.
+        .never_signal => if (stop_err) |e|
+            .{ .phase = .stop, .err = e }
+        else
+            .{ .phase = .wait, .err = outcome.failed },
+    };
 }
 
 /// Teardown for a failure that happened before the loop could start.
@@ -1789,18 +1887,22 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
     //    `.running`. It precedes the writer settlement because breaking the pipe
     //    usually makes that step resolve instantly; it is an ordering
     //    preference, not the thing that guarantees the writer is released.
+    //
+    //    A `.failed` outcome here **displaces** the primary failure rather than
+    //    hiding behind it. That is the opposite of how a cancelled writer is
+    //    treated (step 3), and deliberately so: a cancelled writer is noise the
+    //    runner made while cleaning up, whereas `.failed` means the runner's own
+    //    guarantees have broken — the child may still be running, and it will not
+    //    be reaped by us. `error.Timeout` promises "child stopped and reaped",
+    //    so reporting it here would be reporting something untrue.
     if (reason != null and r.term == null) {
-        const p = probe(&r.identity);
-        switch (decide(p)) {
-            .may_signal => {
-                const stopped = stopChild(r);
-                // A stop that discovers an external reaper leaves no `Term` to
-                // report, but it does not displace the primary failure — the
-                // caller needs to know about the timeout, not about our cleanup.
-                if (decide(stopped) == .reaped) r.term = stopped.exited;
-            },
-            .reaped => r.term = p.exited,
-            .never_signal => {},
+        var outcome = probe(&r.identity);
+        if (decide(outcome) == .may_signal) outcome = stopChild(r);
+        if (decide(outcome) == .reaped) {
+            r.term = outcome.exited;
+        } else if (displacingReason(outcome, r.stop_err)) |displaced| {
+            reason = displaced;
+            r.term = null;
         }
     }
 
@@ -1890,15 +1992,10 @@ fn finish(r: *Run, abort_reason: ?Abort, diag_program: ?[]const u8) Error!Result
 
     if (failed) {
         // No partial `Result` escapes: whatever both streams captured is
-        // scrubbed (when the policy applies) and freed here.
-        if (wipesCapture(r.opts.scrub, out_sensitive, true) and r.out.buf.len > 0) {
-            std.crypto.secureZero(u8, r.out.buf);
-        }
-        if (wipesCapture(r.opts.scrub, err_sensitive, true) and r.err_stream.buf.len > 0) {
-            std.crypto.secureZero(u8, r.err_stream.buf);
-        }
-        if (r.out.buf.len > 0) r.allocator.free(r.out.buf);
-        if (r.err_stream.buf.len > 0) r.allocator.free(r.err_stream.buf);
+        // scrubbed (when the policy applies) and freed here, through the same
+        // wipe-then-free helper `Result.deinit` uses.
+        releaseCapture(r.allocator, r.out.buf, r.opts.scrub, out_sensitive, true);
+        releaseCapture(r.allocator, r.err_stream.buf, r.opts.scrub, err_sensitive, true);
 
         const reported_term: ?Termination = if (forced_windows_kill) null else r.term;
         return fail(r.opts, reason.?.phase, reason.?.err, diag_program, reported_term);
@@ -1986,15 +2083,21 @@ test "Captured.trimmed drops trailing CR/LF only" {
     try testing.expectEqualStrings("hello\r\n", c.bytes());
 }
 
-test "Result.deinit is idempotent and scrubs only sensitive buffers" {
+// What this asserts is the *idempotence* and the release of both buffers —
+// calling `deinit` twice must not double-free, and both allocations must go back
+// (the testing allocator's leak check is the assertion for that half). Whether a
+// buffer was wiped before release is deliberately NOT checked here: it cannot be
+// observed from outside the module, because `std.mem.Allocator.free` paints every
+// block with `undefined` before the allocator sees it. The wipe decision is
+// asserted directly against `wipesCapture`/`wipesStaging` in "the sensitivity
+// table, every cell".
+test "Result.deinit releases both buffers and is idempotent" {
     const a = testing.allocator;
     const secret = try a.alloc(u8, 8);
     @memset(secret, 0xAB);
     const plain = try a.alloc(u8, 8);
     @memset(plain, 0xCD);
 
-    // Snapshot the addresses so the assertion reads the freed pages back; the
-    // testing allocator keeps them mapped.
     var result: Result = .{
         .term = .{ .exited = 0 },
         .stdout = .{ .buf = secret, .len = 8, .captured = true, .sensitive = true },
@@ -2004,8 +2107,9 @@ test "Result.deinit is idempotent and scrubs only sensitive buffers" {
         .orphaned = false,
     };
     result.deinit();
-    result.deinit(); // idempotent
+    result.deinit(); // idempotent: the second call must not double-free
     try testing.expectEqual(@as(usize, 0), result.stdout.buf.len);
+    try testing.expectEqual(@as(usize, 0), result.stderr.buf.len);
 }
 
 test "validBasename rejects every path-shaped name" {
@@ -2329,6 +2433,29 @@ test "the sensitivity table, every cell" {
     try testing.expect(wipesStaging(.always));
     try testing.expect(wipesStaging(.on_failure));
     try testing.expect(!wipesStaging(.never));
+}
+
+test "a broken stop displaces the failure that prompted it" {
+    // The abort path's rule, asserted directly because the race that produces it
+    // cannot be staged on demand. A timeout is only reported when the promise
+    // attached to it — "child stopped and reaped" — actually held.
+    try testing.expect(displacingReason(.running, null) == null);
+    try testing.expect(displacingReason(.{ .exited = .{ .exited = 0 } }, null) == null);
+
+    // Something else reaped it: the identity is gone, so the runner never signals
+    // again and says which promise broke.
+    const reaped_elsewhere = displacingReason(.{ .failed = error.ChildReapedElsewhere }, null).?;
+    try testing.expectEqual(Phase.wait, reaped_elsewhere.phase);
+    try testing.expectEqual(@as(anyerror, error.ChildReapedElsewhere), reaped_elsewhere.err);
+
+    // We still own the identity but could not signal through it — a different
+    // broken promise, and a different phase.
+    const unsignalable = displacingReason(.{ .failed = error.StopFailed }, error.StopFailed).?;
+    try testing.expectEqual(Phase.stop, unsignalable.phase);
+    try testing.expectEqual(@as(anyerror, error.StopFailed), unsignalable.err);
+
+    // A delivered signal never displaces, whatever else went wrong first.
+    try testing.expect(displacingReason(.{ .exited = .{ .signaled = @enumFromInt(9) } }, null) == null);
 }
 
 test "the three probe outcomes stay three" {

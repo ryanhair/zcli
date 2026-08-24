@@ -27,6 +27,18 @@ All notable changes to zcli are documented here.
   `std.process.run` could not serve: it hard-codes `.stdin = .ignore`, so it
   cannot feed a child at all. Guide: [Running external
   programs](https://zcli.sh/docs/subprocess/).
+
+### Changed
+- **`zcli_secrets`' Linux backends now shell out through `zcli.process`.** The
+  plugin carried the strongest of the framework's three hand-rolled subprocess
+  runners; it is now policy on top of the shared one — which trusted directories
+  a helper may come from, that the payload is a secret, and that the captured
+  output is too. Behaviour is unchanged for callers, and the helper is still
+  pinned to an absolute path in a trusted directory (now via `Program.in_dirs`)
+  so the inherited PATH cannot choose who receives a decrypted credential on
+  stdin. Internal to the plugin: `subprocess.resolveHelper` is gone, replaced by
+  `subprocess.helperAvailable`, and the `pass` argv builders no longer carry an
+  `argv[0]` — the runner supplies the path it resolved.
 - **Searchable `select` and `multiSelect`.** Set `.search = true` on either
   canonical list prompt for case-insensitive filtering. Printable characters
   other than ASCII Space filter, Backspace edits, Up/Down navigate, and the

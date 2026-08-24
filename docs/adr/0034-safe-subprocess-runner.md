@@ -99,6 +99,33 @@ backend carries a dedicated `error.InvalidBatchScriptArg` for its pitfalls.
 Refusal is the default, `Options.allow_windows_script` is the opt-in. The cost is
 one explicit flag for a Windows-only tool shipped as a `.cmd` shim.
 
+## What actually requires concurrency — an amendment
+
+The approved design says "`Options.timeout != .none` **requires concurrency** and
+returns `error.ConcurrencyUnavailable` where it is absent." As implemented, that
+sentence is **not true, and should not be made true.** It is a survival from the
+revisions where the timeout was enforced by racing a concurrent `Child.wait`
+task, which genuinely needed a task to race. The mechanism that shipped does not:
+the deadline is compared against the clock at the top of the runner's own loop,
+and the child is reaped by a `probe` on that same task. A run with no captured
+streams and no stdin payload therefore honours its deadline with nothing but
+`io.sleep`.
+
+So the contract is stated by what the mechanism uses, not by what an earlier one
+did:
+
+- **Draining captured streams requires concurrency**, and on Windows so does a
+  stdin payload (the write runs on its own task there, because the parent's
+  handle is `SYNCHRONOUS_NONALERT`). Absent it, `Batch.awaitConcurrent` /
+  `io.concurrent` surface `error.ConcurrencyUnavailable`.
+- **A timeout does not.**
+
+The alternative — probing the capability up front and refusing any timed run
+without it — was rejected: it would fail a run the loop can service perfectly
+well, and the only way to test the capability is to spend a task proving you can
+spend a task. Enforcing a requirement the code does not have is not a safety
+property, it is a lie with an error code attached.
+
 ## Refuse rather than degrade when the `Io` cannot provide concurrency
 
 The drains use `Batch.awaitConcurrent`, which *requires* the implementation to
@@ -134,10 +161,21 @@ close the remaining gap. `std.process.spawn` exposes no way to ask for that. On
 macOS/BSD there is only the pid, and the residual risk is stated rather than
 hidden.
 
-When the precondition *is* violated, the runner reports
+**When a probe observes the loss**, the runner reports
 `error.ChildReapedElsewhere` with `phase = .wait`, sends no further signal, and
 returns rather than hanging — a deliberately weakened promise, because the
 alternative is signalling into a pid we no longer own.
+
+That qualifier is load-bearing, and an earlier draft of this document dropped it.
+Violating the precondition does **not** reliably produce that error. The runner
+only learns anything when a probe comes back `ECHILD`, and there are windows
+where it never does: the child can be reaped and its pid recycled *before* the
+first probe, or on Linux before `pidfd_open` runs, in which case every subsequent
+probe and signal is aimed at whatever now holds that pid and looks perfectly
+healthy. Detection is the good case, not the guarantee. The guarantee is the one
+stated above: no signal is ever sent after a probe has told us the identity is
+gone. Everything earlier than that first probe is the residual risk, and it is
+why this is a precondition rather than a runtime check.
 
 ## The default timeout is `.none`
 
