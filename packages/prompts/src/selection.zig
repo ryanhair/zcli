@@ -140,7 +140,7 @@ fn isPrintable(c: u21) bool {
 
 pub fn run(comptime cardinality: Cardinality, p: Prompts, config: Config) !Result(cardinality) {
     if (config.choices.len == 0) return error.NoChoices;
-    if (!terminal.isInteractiveTty()) return nonTty(cardinality, p, config);
+    if (!p.isInteractive()) return nonTty(cardinality, p, config);
 
     Prompts.flushWriter(p.writer);
     const raw = terminal.enableRawMode(std.Io.File.stdin().handle) catch |err| {
