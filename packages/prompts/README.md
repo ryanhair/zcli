@@ -2,13 +2,13 @@
 
 Interactive terminal prompts for Zig CLIs: seven primary prompt types with
 arrow-key navigation, optional live filtering, and grapheme-aware line editing
-— each degrading gracefully to plain line-based input when stdin is not a TTY
-(so scripts and pipes keep working).
+— each degrading gracefully to plain line-based input when stdin or stdout is
+not a terminal (so scripts and pipes keep working).
 
 ## Features
 
 - **Seven primary prompt types**: `text`, `password`, `number`, `confirm`, `select`, `multiSelect`, `editor`
-- **Non-TTY fallback**: every prompt detects a non-TTY stdin and falls back to line input (select prompts print a numbered list)
+- **Non-TTY fallback**: redirect either stdin or stdout and every prompt falls back to line input (select prompts print a numbered list)
 - **Interactive-only guard**: `requireInteractive()` fails with `error.NotInteractive` before the first question, for commands where the fallback makes no sense
 - **Unicode-correct**: UTF-8 input assembly, wide characters, and grapheme-aware backspace via the `terminal` package
 - **Wrap- and resize-safe**: list prompts wrap long options with hang indents and re-render cleanly on terminal resize (SIGWINCH)
@@ -118,9 +118,13 @@ for a command that wants to branch (see `zcli add command`, which scaffolds a
 plain skeleton when piped) instead of failing.
 
 Setting `interactive` on the instance overrides the detection for that instance
-— every prompt made through it and the guard alike. `false` is the useful one:
-wire a `--no-input` flag to it and the command becomes non-interactive as a
-whole.
+— every prompt made through it and the guard alike. Note what `false` does and
+doesn't do: it **forces line mode**, so the prompts still print their question
+and still read stdin, which at a terminal means waiting for a typed line and on
+a closed stream means `error.EndOfStream`. It is not a `--no-input` switch. A
+flag that means "ask me nothing" has to skip the prompt sequence itself — take
+the defaults, or require the values as options — and the guard is what tells
+you the sequence can't run.
 
 ## Theming
 

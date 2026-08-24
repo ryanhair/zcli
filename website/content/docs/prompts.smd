@@ -1,6 +1,6 @@
 ---
 .title = "zcli — Interactive prompts",
-.description = "Seven primary prompt types — text, confirm, select, multiSelect, password, number, editor — themed, resize-aware, interrupt-friendly, automatically degrading to line input when stdin isn't a TTY, with a one-call guard for commands that need a terminal.",
+.description = "Seven primary prompt types — text, confirm, select, multiSelect, password, number, editor — themed, resize-aware, interrupt-friendly, automatically degrading to line input when stdin or stdout isn't a terminal, with a one-call guard for commands that need one.",
 .date = @date("2026-07-12"),
 .author = "Ryan Hair",
 .layout = "guide.shtml",
@@ -8,7 +8,7 @@
 
 # Interactive prompts
 
-The `prompts` package is a complete question toolkit: seven primary prompt types that render as live, repainting lines at a terminal — and **fall back to plain line input automatically** when stdin isn't a TTY, so the same command works in a pipe, a script, or CI without a non-interactive flag.
+The `prompts` package is a complete question toolkit: seven primary prompt types that render as live, repainting lines at a terminal — and **fall back to plain line input automatically** whenever stdin or stdout isn't a terminal, so the same command works in a pipe, a script, or CI without a non-interactive flag.
 
 In a command, `context.prompts()` returns an instance pre-wired to the command's streams, arena allocator, and [theme]($link.page('docs/theming')):
 
@@ -59,7 +59,7 @@ hidden multi-select choices remain selected.
 
 ## Off a TTY
 
-Every prompt degrades to a line-based equivalent with the **same return type and value** — there is no second code path to write:
+Redirect **either** stream — `myapp setup < answers.txt`, `myapp setup > log.txt`, a pipeline, CI — and every prompt degrades to a line-based equivalent with the **same return type and value**. There is no second code path to write:
 
 | | at a terminal | piped / CI |
 |---|---|---|
@@ -87,11 +87,13 @@ const ok = try p.confirm(.{ .message = "Create it?" });
 
 `requireInteractive` returns `error.NotInteractive` unless **both** stdin and stdout are terminals: stdin so keystrokes can be read in raw mode, stdout so the rendered frame lands on the screen instead of a redirected file. It is the same check each prompt makes, so the guard's verdict is exactly what the next prompt would have done — no second detection to keep in sync.
 
-To branch rather than fail, ask `p.isInteractive()` — that is how `zcli add command` scaffolds a plain skeleton when its stdin is piped and runs the wizard when it isn't. And setting `.interactive` on the instance overrides the detection for that instance, guard and prompts alike; wire a `--no-input` flag to `false` to make a whole command non-interactive.
+To branch rather than fail, ask `p.isInteractive()` — that is how `zcli add command` scaffolds a plain skeleton off a terminal and runs the wizard at one.
 
-Pick one per command: no guard means "this works piped", the guard means "this needs a terminal, and says so before asking".
+Setting `.interactive` on the instance overrides the detection for that instance, guard and prompts alike. Be precise about what `false` means: it forces **line mode**, so the prompts still print and still read stdin — at a terminal that waits for a typed line, on a closed stream it is `error.EndOfStream`. It is not a `--no-input` switch; a flag that means "ask me nothing" has to skip the prompt sequence itself and take defaults or required options instead.
 
 One case sets `.interactive` for you: an instance from `context.prompts()` reports non-interactive whenever the Context's stdout is captured or its stdin injected — which is what a [`runCommand` unit test]($link.page('docs/testing').unsafeRef('feeding-stdin')) does. The streams the prompt was handed decide, not the process's descriptors, so a test can't enter raw mode and read the real keyboard just because the test binary was started from a terminal. A command that guards therefore reports `error.NotInteractive` under `runCommand`, and belongs in the PTY-backed E2E tier.
+
+Pick one per command: no guard means "this works piped", the guard means "this needs a terminal, and says so before asking".
 
 ## Prompts or widgets?
 

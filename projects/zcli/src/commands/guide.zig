@@ -256,20 +256,21 @@ const topics = [_]Topic{
         \\  const idx  = try p.select(.{ .message = "Pick:", .choices = &.{ "a", "b" } });
         \\  const pw   = try p.password(.{ .message = "Token:" }); // hidden
         \\
-        \\Off a terminal every prompt falls back to plain line input with the same
-        \\return value, so a piped or CI run keeps working. Decide once per command
-        \\which of the two you want:
+        \\Redirect stdin OR stdout and every prompt falls back to plain line input
+        \\with the same return value, so a piped or CI run keeps working. Decide
+        \\once per command which of the two you want:
         \\
         \\  // supports piped input: no guard, the fallback answers
         \\  // needs a terminal: guard once, before asking anything
-        \\  try p.requireInteractive();   // error.NotInteractive when piped
+        \\  try p.requireInteractive();   // error.NotInteractive when redirected
         \\  // want to branch instead of fail:
         \\  if (!p.isInteractive()) return nonInteractivePath(...);
         \\
         \\`requireInteractive` fails unless stdin AND stdout are terminals — the
-        \\same check the prompts make. Don't hand-roll a TTY test. Setting
-        \\`.interactive = false` on the instance forces the line path for a
-        \\`--no-input` flag.
+        \\same check the prompts make, so don't hand-roll a TTY test. Setting
+        \\`.interactive = false` on the instance forces line mode, which still
+        \\prints and still reads stdin; a `--no-input` flag has to skip the prompt
+        \\sequence itself and use defaults or required options.
         \\
         \\Progress bars/spinners: `context.progress()` (or `zcli.Progress`).
         \\
