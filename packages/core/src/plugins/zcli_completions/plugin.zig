@@ -854,11 +854,24 @@ test "bash destination: an invalid BASH_COMPLETION_USER_DIR falls back to the XD
 }
 
 test "fish destination follows XDG_CONFIG_HOME" {
-    var env = try envMap(&.{ .{ "HOME", "/home/u" }, .{ "XDG_CONFIG_HOME", "/custom/cfg" } });
+    // `getInstallPath` overrides `convention` only — `syntax` stays the host's
+    // (§8.3) — so the fixture's roots are spelled in the HOST syntax. A POSIX
+    // `/custom/cfg` on Windows is not a fully-qualified path there: it would be
+    // discarded as an invalid override and the test would be asserting the
+    // fixture's shape rather than the XDG pinning it is named for.
+    const win = builtin.os.tag == .windows;
+    const home = if (win) "C:\\Users\\u" else "/home/u";
+    const cfg = if (win) "C:\\custom\\cfg" else "/custom/cfg";
+    const expected = if (win)
+        "C:\\custom\\cfg\\fish\\completions\\myapp.fish"
+    else
+        "/custom/cfg/fish/completions/myapp.fish";
+
+    var env = try envMap(&.{ .{ "HOME", home }, .{ "XDG_CONFIG_HOME", cfg } });
     defer env.deinit();
     const got = try getInstallPath(testing.allocator, &env, .fish, "myapp");
     defer testing.allocator.free(got);
-    try testing.expectEqualStrings("/custom/cfg/fish/completions/myapp.fish", got);
+    try testing.expectEqualStrings(expected, got);
 }
 
 test "zsh destination is HOME-relative and ignores XDG (fpath is user-configured)" {
@@ -939,33 +952,47 @@ const TestCtx = struct {
 };
 
 test "enable/disable instructions quote an adversarial resolved path exactly" {
-    // A HOME carrying every character that breaks — or worse, executes in — an
-    // unquoted snippet: a space, a single quote, a `$`, and a backtick. The
-    // printed lines are copy-pasted into a shell, so `$(` or a backtick landing
-    // unquoted would be a command-execution bug, not a cosmetic one.
-    const nasty_home = "/h a'b$c`d";
-    var env = try envMap(&.{.{ "HOME", nasty_home }});
+    // A home directory carrying every character that breaks — or worse,
+    // executes in — an unquoted snippet: a space, a single quote, a `$`, and a
+    // backtick. The printed lines are copy-pasted into a shell, so `$(` or a
+    // backtick landing unquoted would be a command-execution bug, not a
+    // cosmetic one. All four characters are legal in a path component on both
+    // platforms; only the ROOT's spelling differs, and `getInstallPath` emits
+    // host syntax (§8.3: it overrides `convention`, never `syntax`), so the
+    // fixture and the expected snippets are assembled from a host-shaped root.
+    const win = builtin.os.tag == .windows;
+    const s = if (win) "\\" else "/";
+    // The raw value, its POSIX single-quoted body (`'` → `'\''`), and its
+    // PowerShell single-quoted body (`'` → `''`).
+    const nasty_home = if (win) "C:\\h a'b$c`d" else "/h a'b$c`d";
+    const sq = if (win) "C:\\h a'\\''b$c`d" else "/h a'\\''b$c`d";
+    const ps = if (win) "C:\\h a''b$c`d" else "/h a''b$c`d";
+
+    var env = try envMap(&.{
+        .{ "HOME", nasty_home },
+        // PowerShell follows the HOST convention, so on Windows its destination
+        // is rooted at %APPDATA% rather than $HOME. Ignored on POSIX.
+        .{ "APPDATA", nasty_home },
+    });
     defer env.deinit();
 
     // --- bash: the enable snippet names the resolved script path twice ---
+    const bash_tail = s ++ ".local" ++ s ++ "share" ++ s ++ "bash-completion" ++ s ++ "completions" ++ s ++ "myapp";
     {
         const path = try getInstallPath(testing.allocator, &env, .bash, "myapp");
         defer testing.allocator.free(path);
-        try testing.expectEqualStrings(
-            "/h a'b$c`d/.local/share/bash-completion/completions/myapp",
-            path,
-        );
+        try testing.expectEqualStrings(nasty_home ++ bash_tail, path);
 
         var out: std.Io.Writer.Allocating = .init(testing.allocator);
         defer out.deinit();
         var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
         try printEnableInstructions(.bash, &ctx, path);
-        const s = out.written();
+        const written = out.written();
 
-        try testing.expect(std.mem.indexOf(u8, s, "  if [ -f '/h a'\\''b$c`d/.local/share/bash-completion/completions/myapp' ]; then\n") != null);
-        try testing.expect(std.mem.indexOf(u8, s, "    . '/h a'\\''b$c`d/.local/share/bash-completion/completions/myapp'\n  fi\n") != null);
+        try testing.expect(std.mem.indexOf(u8, written, "  if [ -f '" ++ sq ++ bash_tail ++ "' ]; then\n") != null);
+        try testing.expect(std.mem.indexOf(u8, written, "    . '" ++ sq ++ bash_tail ++ "'\n  fi\n") != null);
         // The raw, unquoted path must never appear in a runnable line.
-        try testing.expect(std.mem.indexOf(u8, s, "if [ -f " ++ "/h a'b$c`d") == null);
+        try testing.expect(std.mem.indexOf(u8, written, "if [ -f " ++ nasty_home) == null);
     }
 
     // --- zsh: the disable snippet names the resolved DIRECTORY ---
@@ -978,7 +1005,7 @@ test "enable/disable instructions quote an adversarial resolved path exactly" {
         var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
         try printDisableInstructions(.zsh, &ctx, path);
 
-        try testing.expect(std.mem.indexOf(u8, out.written(), "  fpath=('/h a'\\''b$c`d/.zsh/completions' $fpath)\n") != null);
+        try testing.expect(std.mem.indexOf(u8, out.written(), "  fpath=('" ++ sq ++ s ++ ".zsh" ++ s ++ "completions' $fpath)\n") != null);
     }
 
     // --- PowerShell: single quotes double, and $ / backtick stay inert ---
@@ -991,7 +1018,9 @@ test "enable/disable instructions quote an adversarial resolved path exactly" {
         var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
         try printDisableInstructions(.powershell, &ctx, path);
 
-        try testing.expect(std.mem.indexOf(u8, out.written(), "  . '/h a''b$c`d/.config/powershell/completions/myapp.ps1'\n") != null);
+        // Host convention: %APPDATA%\powershell\… on Windows, ~/.config/… on POSIX.
+        const ps_root = if (win) ps else ps ++ "/.config";
+        try testing.expect(std.mem.indexOf(u8, out.written(), "  . '" ++ ps_root ++ s ++ "powershell" ++ s ++ "completions" ++ s ++ "myapp.ps1'\n") != null);
     }
 
     // --- fish: prose names the directory unquoted; that line is not runnable ---
@@ -1004,7 +1033,7 @@ test "enable/disable instructions quote an adversarial resolved path exactly" {
         var ctx: TestCtx = .{ .allocator = testing.allocator, .environ = &env, .app_name = "myapp", .out = &out.writer };
         try printEnableInstructions(.fish, &ctx, path);
 
-        try testing.expect(std.mem.indexOf(u8, out.written(), "automatically loaded from /h a'b$c`d/.config/fish/completions\n") != null);
+        try testing.expect(std.mem.indexOf(u8, out.written(), "automatically loaded from " ++ nasty_home ++ s ++ ".config" ++ s ++ "fish" ++ s ++ "completions\n") != null);
     }
 }
 
@@ -1012,13 +1041,27 @@ test "the BASH_COMPLETION_USER_DIR note fires only when that variable was actual
     // The note claims the script went under the variable's first entry. When
     // that entry is invalid the XDG default is used instead, so the note would
     // be a lie — and would send the user looking in the wrong directory.
+    //
+    // Host-shaped roots: `getInstallPath` resolves at host `syntax`, so a POSIX
+    // `/opt/bc` on Windows would be discarded as an invalid override — the note
+    // would then correctly stay silent for the wrong reason, and the case would
+    // no longer distinguish "honoured" from "ignored".
+    const win = builtin.os.tag == .windows;
+    const home = if (win) "C:\\Users\\u" else "/home/u";
+    const user_dir = if (win) "C:\\opt\\bc" else "/opt/bc";
+    const honoured = if (win) "C:\\opt\\bc\\completions\\myapp" else "/opt/bc/completions/myapp";
+    const default = if (win)
+        "C:\\Users\\u\\.local\\share\\bash-completion\\completions\\myapp"
+    else
+        "/home/u/.local/share/bash-completion/completions/myapp";
+
     const cases = [_]struct { []const u8, bool }{
-        .{ "/opt/bc", true }, // honoured
+        .{ user_dir, true }, // honoured
         .{ "relative/dir", false }, // ignored -> XDG default
         .{ "", false }, // ignored -> XDG default
     };
     for (cases) |c| {
-        var env = try envMap(&.{ .{ "HOME", "/home/u" }, .{ "BASH_COMPLETION_USER_DIR", c[0] } });
+        var env = try envMap(&.{ .{ "HOME", home }, .{ "BASH_COMPLETION_USER_DIR", c[0] } });
         defer env.deinit();
 
         const path = try getInstallPath(testing.allocator, &env, .bash, "myapp");
@@ -1033,9 +1076,9 @@ test "the BASH_COMPLETION_USER_DIR note fires only when that variable was actual
         try testing.expectEqual(c[1], mentioned);
         // And the note's claim matches where the script actually went.
         if (c[1]) {
-            try testing.expectEqualStrings("/opt/bc/completions/myapp", path);
+            try testing.expectEqualStrings(honoured, path);
         } else {
-            try testing.expectEqualStrings("/home/u/.local/share/bash-completion/completions/myapp", path);
+            try testing.expectEqualStrings(default, path);
         }
     }
 }

@@ -1010,11 +1010,18 @@ const TmpFixture = struct {
 
         var map = std.process.Environ.Map.init(testing.allocator);
         errdefer map.deinit();
+        // Every terminal source names the same real directory, spelled in the
+        // HOST syntax (`root` is a realpath), because these tests do I/O and
+        // therefore run at `Syntax.host`. `HOME` is set on Windows too: it is
+        // not the Windows *convention*, but a test that overrides `convention`
+        // to `.xdg` while leaving `syntax` at the host's — the §8.3 contract
+        // `zcli_completions` is built on — reads `HOME` on every platform, and
+        // a fixture that omits it would fail for want of a fixture rather than
+        // for want of the behaviour under test.
+        try map.put("HOME", root);
         if (builtin.os.tag == .windows) {
             try map.put("APPDATA", root);
             try map.put("LOCALAPPDATA", root);
-        } else {
-            try map.put("HOME", root);
         }
         return .{ .tmp = tmp, .root = root, .map = map };
     }
