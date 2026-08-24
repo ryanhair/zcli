@@ -557,6 +557,15 @@ const ScriptedAccepts = struct {
     }
 };
 
+/// A handle the scripted accept loop below never dereferences, closes, or hands
+/// to the OS — it only needs to type-check. `Socket.Handle` is `posix.fd_t`,
+/// which is an `i32` file descriptor on POSIX but a pointer-sized `HANDLE` on
+/// Windows, so the "no socket here" sentinel has to be spelled per platform.
+const unused_socket_handle: std.Io.net.Socket.Handle = switch (@import("builtin").os.tag) {
+    .windows => std.os.windows.INVALID_HANDLE_VALUE,
+    else => -1,
+};
+
 test "an accept that would block backs off before retrying" {
     // Removing the sleep from `serve`'s `.retry_after_backoff` arm turns a
     // spurious `WouldBlock` into a loop that spins a core, which no socket test
@@ -573,7 +582,7 @@ test "an accept that would block backs off before retrying" {
         .options = .{},
         .server = .{
             .socket = .{
-                .handle = 0,
+                .handle = unused_socket_handle,
                 .address = std.Io.net.IpAddress.parseIp4("127.0.0.1", 0) catch unreachable,
             },
             .options = if (std.Io.net.Server.AcceptOptions != void) .{ .mode = .stream, .protocol = .tcp },
