@@ -9,7 +9,10 @@
 //!
 //! Every mode is deliberately dumb: no allocation beyond the argument slice, no
 //! buffering layer, one `io.operate` per read and write. A fixture with its own
-//! cleverness would make a failing test ambiguous about which side broke.
+//! cleverness would make a failing test ambiguous about which side broke. The
+//! one exception is `max_lifetime_ms`, which is not behaviour the tests observe
+//! but a cap on how long a *runner* bug can wedge CI — see it for why the child
+//! is the right place to enforce that.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -67,8 +70,44 @@ fn parse(s: []const u8) u64 {
     return std.fmt.parseInt(u64, s, 10) catch 0;
 }
 
+/// Hard upper bound on how long any fixture process may live, enforced from a
+/// thread of its own.
+///
+/// Several modes end only when a *pipe* does rather than on a clock of their
+/// own: `echo`, `echo-both` and `read-limited` run until stdin reaches EOF,
+/// `slow-read` likewise, and `flood-forever` runs until its write fails. Every
+/// one of those is bounded only by the parent closing its end — so a runner bug
+/// that never closes it leaves the child running with nothing to stop it. On
+/// Windows that was the difference between a named test failure and a CI job
+/// that burned its whole 30-minute budget in silence (PR #835), because a child
+/// that never exits also never releases the parent's blocked `NtWriteFile` or
+/// `NtReadFile`.
+///
+/// The cap therefore backstops the *runner*, not the fixture: with it in place
+/// every handle this process holds is closed within `max_lifetime_ms` whatever
+/// the parent does, so no parent-side wait can be unbounded either. It sits far
+/// above every lifetime the tests actually need — the longest is the 5s `hold`
+/// grandchild — so it can only fire when something is already wrong, and it
+/// exits with a status no mode chooses so a test that trips it says so instead
+/// of looking like an ordinary failure.
+const max_lifetime_ms: i64 = 15_000;
+const lifetime_exceeded_status: u8 = 70;
+
+fn lifetimeGuard(io: Io) void {
+    io.sleep(.fromMilliseconds(max_lifetime_ms), .boot) catch return;
+    std.process.exit(lifetime_exceeded_status);
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
+
+    // Armed before any mode runs and never disarmed: the process is expected to
+    // exit long before it fires, and a detached thread dies with the process. A
+    // spawn failure is ignored rather than fatal — the cap is a safety net, and
+    // refusing to run the fixture without one would turn a thread-limit hiccup
+    // into a test failure.
+    if (std.Thread.spawn(.{}, lifetimeGuard, .{io})) |guard| guard.detach() else |_| {}
+
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len < 2) std.process.exit(64);
 

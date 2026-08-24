@@ -5,6 +5,32 @@
 //! requirement here — which is why the fixture exists at all instead of
 //! `/bin/sh` — so tests that can only hold on one platform say so explicitly and
 //! skip elsewhere rather than being quietly absent.
+//!
+//! ## Everything here is bounded twice
+//!
+//! Most tests deliberately drive shapes that *would* hang a broken runner — a
+//! child that never reads its stdin, a grandchild holding an output pipe open
+//! past its parent's death, an unbounded flood — and `Options.timeout` defaults
+//! to `.none`, so a test only gets a deadline if it asks for one, and several
+//! must not ask (a deadline changes which branch of the run loop is exercised;
+//! "the child reached EOF and exited by itself" is the assertion in some of
+//! them). A Windows CI job burned its entire 30-minute budget in silence on
+//! exactly that combination, with nothing in the log to say which shape wedged
+//! (PR #835). So boundedness here is structural rather than per-test:
+//!
+//!  1. **The fixture caps its own life** (`max_lifetime_ms` in
+//!     `process_fixture.zig`). Every child and grandchild exits within that cap
+//!     whatever the parent does, which closes every pipe end the child tree
+//!     holds — so no parent-side read, write, or cancellation can wait forever
+//!     on one, however Windows chooses to behave.
+//!
+//!  2. **Every spawning test arms a `Watchdog`**, which ends the process from a
+//!     raw OS thread and names the shape if the call under test has not returned
+//!     inside `watchdog_ms`. That covers what the fixture cap cannot: a runner
+//!     that wedges on something other than the child.
+//!
+//! Both are backstops, not assertions — in a passing run neither is reached.
+//! Keep them on any test added here that spawns.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -37,6 +63,15 @@ fn elapsedMs(io: Io, start: Io.Clock.Timestamp) i64 {
     return start.durationTo(Io.Clock.Timestamp.now(io, .boot)).raw.toMilliseconds();
 }
 
+/// Wall-clock budget a whole test gets before the watchdog ends the process.
+///
+/// Only ever reached when something is wedged, so it is generous rather than
+/// tuned: the slowest legitimate shape here is a handful of megabyte round trips
+/// on a loaded CI box, which is seconds. A firing watchdog ends the process, so
+/// the suite's worst case is *one* budget rather than one per test — which is
+/// what makes it affordable to set this well above any real runtime.
+const watchdog_ms: i64 = 30_000;
+
 /// Fails the process from *outside* the call under test if that call does not
 /// return in time.
 ///
@@ -44,40 +79,60 @@ fn elapsedMs(io: Io, start: Io.Clock.Timestamp) i64 {
 /// in this file is written after the call it is about — and if the call hangs,
 /// that assertion never executes. An elapsed-time check therefore cannot catch
 /// the one failure it exists to catch; the test just stops, and the suite
-/// reports a timeout somewhere with no idea which shape wedged. The watchdog
-/// runs on its own task and names the shape when it fires.
+/// reports a timeout somewhere with no idea which shape wedged.
+///
+/// Two things about *how* it waits are load-bearing, both learned from a
+/// Windows CI job that burned its full 30-minute budget in silence (PR #835):
+///
+///  1. It runs on a raw OS thread, not on an `Io` task. A watchdog scheduled
+///     onto the same pool as the run it is watching can be starved by that run
+///     — on Windows the stdin writer, both drains and every cancellation
+///     handshake are all pool work — and a starved watchdog is worse than none,
+///     because the suite then hangs anyway with nothing to name. `Io.sleep` is
+///     still what it sleeps on, but on this thread that path parks the caller
+///     directly and touches no pool state.
+///
+///  2. On expiry it exits the process rather than panicking. A panic wants the
+///     stderr lock and the debug-info machinery, neither of which is guaranteed
+///     reachable from a process that is already wedged, and on Windows an abort
+///     hands the corpse to error reporting instead of ending the job.
 const Watchdog = struct {
     io: Io,
     label: []const u8,
     limit_ms: i64,
     done: std.atomic.Value(bool) = .init(false),
-    future: ?Io.Future(void) = null,
+    thread: ?std.Thread = null,
+
+    /// Distinct from anything a test failure produces, so a CI log says which
+    /// of the two happened without needing the message.
+    const fired_status: u8 = 101;
+
+    /// Sliced rather than one long sleep so disarming returns promptly.
+    const slice_ms: i64 = 25;
 
     fn arm(self: *Watchdog) !void {
-        self.future = try self.io.concurrent(watch, .{self});
+        self.thread = try std.Thread.spawn(.{}, watch, .{self});
     }
 
     fn watch(self: *Watchdog) void {
-        // Sliced rather than one long sleep so disarming returns promptly
-        // instead of holding a pool thread for the whole budget.
-        const slice_ms: i64 = 50;
         var waited: i64 = 0;
         while (waited < self.limit_ms) : (waited += slice_ms) {
             if (self.done.load(.acquire)) return;
             self.io.sleep(.fromMilliseconds(slice_ms), .boot) catch return;
         }
         if (self.done.load(.acquire)) return;
-        std.debug.panic(
-            "watchdog: '{s}' did not return within {d}ms — the run hung",
+        std.debug.print(
+            "\nwatchdog: '{s}' did not return within {d}ms — the run hung\n",
             .{ self.label, self.limit_ms },
         );
+        std.process.exit(fired_status);
     }
 
     fn disarm(self: *Watchdog) void {
         self.done.store(true, .release);
-        if (self.future) |*f| {
-            _ = f.await(self.io);
-            self.future = null;
+        if (self.thread) |t| {
+            t.join();
+            self.thread = null;
         }
     }
 };
@@ -92,6 +147,14 @@ test "4 MiB in, echoed out, with 4 MiB of stderr alongside" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "4 MiB in, echoed out, with 4 MiB of stderr alongside",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     const size = 4 * 1024 * 1024;
     const payload = try filler(a, size);
@@ -125,6 +188,14 @@ test "stdin payloads straddling both platforms' pipe quotas round-trip exactly" 
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "stdin payloads straddling both platforms' pipe quotas round-trip exactly",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     // 4096 is the Windows backend's `CreatePipeOptions.quota` exactly; 65536 is
     // the common POSIX pipe buffer. Both ±1, because "equal to the buffer" and
     // "one past it" are different code paths in every implementation that got
@@ -155,6 +226,14 @@ test "truncate keeps the first limit bytes and still observes the exit status" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "truncate keeps the first limit bytes and still observes the exit status",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var result = try runner.run(fixture(), .{
         .args = &.{ "flood", "100000" },
         .stdout = .{ .capture = .{ .limit = 1000, .overflow = .truncate } },
@@ -175,6 +254,14 @@ test "exactly limit bytes is not an overflow, under either policy" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "exactly limit bytes is not an overflow, under either policy",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // Overflow is observing byte `limit + 1`, not reaching `limit`.
     for ([_]process.Overflow{ .truncate, .fail }) |policy| {
@@ -198,6 +285,14 @@ test "fail overflow returns OutputTooLarge in the capture phase, with the child 
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "fail overflow returns OutputTooLarge in the capture phase, with the child reaped",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var diag: process.Diagnostic = .{};
     try testing.expectError(error.OutputTooLarge, runner.run(fixture(), .{
         .args = &.{ "flood", "100000" },
@@ -214,6 +309,14 @@ test "caps are per stream: one trips, the other does not" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "caps are per stream: one trips, the other does not",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     var result = try runner.run(fixture(), .{
         .args = &.{ "flood-both", "50000", "100" },
@@ -238,6 +341,14 @@ test "a nonzero exit is a Result, not an error" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a nonzero exit is a Result, not an error",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var result = try runner.run(fixture(), .{ .args = &.{ "exit", "3" } });
     defer result.deinit();
 
@@ -258,6 +369,14 @@ test "signal death keeps its kind" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "signal death keeps its kind",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     var result = try runner.run(fixture(), .{
         .args = &.{"signal-self"},
@@ -281,6 +400,14 @@ test "stdin .ignore gives the child an immediate EOF" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "stdin .ignore gives the child an immediate EOF",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var result = try runner.run(fixture(), .{ .args = &.{"echo"}, .stdin = .ignore });
     defer result.deinit();
 
@@ -295,6 +422,14 @@ test "stdin closes the moment the payload is written, so a cat-shaped child exit
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "stdin closes the moment the payload is written, so a cat-shaped child exits on its own",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // Large enough to keep the writer busy for a while: the bug this guards
     // against deferred the close to teardown, which a few bytes would hide
@@ -321,6 +456,14 @@ test "a child that closes stdin early keeps its exit status and its captures" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a child that closes stdin early keeps its exit status and its captures",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // Bigger than any platform's pipe buffer, so the write cannot possibly
     // complete before the child — which never reads stdin — exits. The parent's
@@ -361,6 +504,14 @@ test "a sleeping child with captured output times out" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a sleeping child with captured output times out",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     const start: Io.Clock.Timestamp = .now(io, .boot);
     var diag: process.Diagnostic = .{};
     try testing.expectError(error.Timeout, runner.run(fixture(), .{
@@ -383,6 +534,14 @@ test "a run with no captured streams still times out" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a run with no captured streams still times out",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     // Nothing to poll: the batch is empty from the outset, so the deadline can
     // only be honoured by the loop's own clock check. An earlier design assigned
     // this case to a primitive that could not carry it, and it hung forever.
@@ -403,6 +562,14 @@ test "the timeout is strict even while the child floods stdout" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "the timeout is strict even while the child floods stdout",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // Past its deadline the backend keeps returning ready completions rather
     // than reporting a timeout, so a runner that infers the deadline from that
@@ -426,6 +593,14 @@ test "captured streams closing early does not end the run while the child lives"
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "captured streams closing early does not end the run while the child lives",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // The loop exits on the reap, never on the pipes. A runner that returned
     // when the pipes hit EOF would report a bogus success here, with the child
@@ -466,6 +641,14 @@ test "an orphaned output handle bounds the run instead of hanging it" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "an orphaned output handle bounds the run instead of hanging it",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     // The grandchild holds stdout and writes *nothing*. A chatty one would keep
     // waking the drain by accident and pass even with no linger implemented at
     // all, which is why silence is the point.
@@ -497,6 +680,14 @@ test "feeding a slow reader does not peg a core" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "feeding a slow reader does not peg a core",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // The child closes both outputs and reads stdin slowly, so the stdin write
     // is the only operation in the batch. With a nonblocking descriptor and no
@@ -582,6 +773,14 @@ test "aborted runs leak no handle, no zombie, and no double close" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "aborted runs leak no handle, no zombie, and no double close",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     const before = openHandleCount(io);
 
     // Both abort shapes, repeatedly. The count is bounded so the suite stays
@@ -614,6 +813,14 @@ test "a child that exits just as the timeout fires is handled cleanly, whichever
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a child that exits just as the timeout fires is handled cleanly, whichever wins",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // A race, so no run count can guarantee both orderings — the deterministic
     // assertion is the branch-logic unit test in process.zig. This asserts only
@@ -652,6 +859,14 @@ test "a child ignoring SIGTERM is gone after the grace" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a child ignoring SIGTERM is gone after the grace",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     const start: Io.Clock.Timestamp = .now(io, .boot);
     try testing.expectError(error.Timeout, runner.run(fixture(), .{
         .args = &.{ "ignore-sigterm", "60000" },
@@ -677,6 +892,14 @@ test "a child reaped by something else reports the wait phase instead of hanging
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a child reaped by something else reports the wait phase instead of hanging",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // Violate the documented exclusive-reaping precondition on purpose, and
     // assert the weakened guarantee the module promises for that case: report
@@ -730,7 +953,7 @@ test "an abort while the writer is blocked still terminates" {
     const payload = try filler(a, 4 * 1024 * 1024);
     defer a.free(payload);
 
-    var dog: Watchdog = .{ .io = io, .label = "abort with a blocked writer", .limit_ms = 20_000 };
+    var dog: Watchdog = .{ .io = io, .label = "abort with a blocked writer", .limit_ms = watchdog_ms };
     try dog.arm();
     defer dog.disarm();
 
@@ -766,7 +989,7 @@ test "an abort terminates even when a descendant holds stdin and the child is go
     const payload = try filler(a, 4 * 1024 * 1024);
     defer a.free(payload);
 
-    var dog: Watchdog = .{ .io = io, .label = "descendant holds stdin", .limit_ms = 30_000 };
+    var dog: Watchdog = .{ .io = io, .label = "descendant holds stdin", .limit_ms = watchdog_ms };
     try dog.arm();
     defer dog.disarm();
 
@@ -803,7 +1026,7 @@ test "orphan-linger expiry releases an unfinished writer instead of awaiting it"
     const payload = try filler(a, 4 * 1024 * 1024);
     defer a.free(payload);
 
-    var dog: Watchdog = .{ .io = io, .label = "orphan linger with a live writer", .limit_ms = 30_000 };
+    var dog: Watchdog = .{ .io = io, .label = "orphan linger with a live writer", .limit_ms = watchdog_ms };
     try dog.arm();
     defer dog.disarm();
 
@@ -832,6 +1055,14 @@ test "a writer still running when the child exits is joined before the run retur
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a writer still running when the child exits is joined before the run returns",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // The child reads a little and exits; the parent still has megabytes to
     // write. The write cannot complete, so the run must observe that, close
@@ -868,6 +1099,14 @@ test "a forced Windows stop reports no synthetic Term" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a forced Windows stop reports no synthetic Term",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var diag: process.Diagnostic = .{};
     try testing.expectError(error.Timeout, runner.run(fixture(), .{
         .args = &.{ "sleep", "60000" },
@@ -890,6 +1129,14 @@ test "a Windows crash reports the full NTSTATUS, not a truncated exit code" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a Windows crash reports the full NTSTATUS, not a truncated exit code",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     var result = try runner.run(fixture(), .{ .args = &.{"access-violation"} });
     defer result.deinit();
@@ -924,7 +1171,7 @@ const LateReaper = struct {
     /// acquisition (a spawn failure) would otherwise hang the join in the test's
     /// `defer`, and a reaper task that died would hang the run. Both give up and
     /// let the test fail on its assertions instead.
-    const handshake_limit_ms: i64 = 30_000;
+    const handshake_limit_ms: i64 = 10_000;
 
     fn waitFor(self: *LateReaper, flag: *const std.atomic.Value(bool)) void {
         var waited_ms: i64 = 0;
@@ -996,7 +1243,7 @@ test "an external reap after pidfd acquisition is reported, never signalled thro
         reaper.restore();
     }
 
-    var dog: Watchdog = .{ .io = io, .label = "external reap after acquisition", .limit_ms = 30_000 };
+    var dog: Watchdog = .{ .io = io, .label = "external reap after acquisition", .limit_ms = watchdog_ms };
     try dog.arm();
     defer dog.disarm();
 
@@ -1036,6 +1283,14 @@ test "a sensitive capture is allocated at its cap, so no realloc can strand a co
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a sensitive capture is allocated at its cap, so no realloc can strand a copy",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var result = try runner.run(fixture(), .{
         .args = &.{ "flood", "64" },
         .stdout = .{ .capture = .{ .limit = 4096, .overflow = .truncate, .sensitive = true } },
@@ -1062,6 +1317,14 @@ test "Scrub.on_failure hands back live bytes on success" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "Scrub.on_failure hands back live bytes on success",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     // The captured stdout *is* the value the caller wanted (`pass show`,
     // `op read`): scrubbing it on the way out would return zeros, which is
     // obviously not the intent.
@@ -1082,6 +1345,14 @@ test "scrub_source zeroes the caller's secret once the last byte is handed over"
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "scrub_source zeroes the caller's secret once the last byte is handed over",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     const secret = try filler(a, 4096);
     defer a.free(secret);
@@ -1106,6 +1377,14 @@ test "scrub_source follows the staging column, not the capture column" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "scrub_source follows the staging column, not the capture column",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     // Staging is wiped under `.on_failure` even on a *successful* run: nothing is
     // ever handed back from it, so there is no success case in which the payload
@@ -1164,6 +1443,14 @@ test "the reported program path survives the runner's teardown" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "the reported program path survives the runner's teardown",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var program_buf: [std.fs.max_path_bytes]u8 = undefined;
     var diag: process.Diagnostic = .{ .program_buf = &program_buf };
 
@@ -1188,6 +1475,14 @@ test "env policies reach the child, and .replace inherits nothing" {
     try env.put("ZCLI_KEEP", "keep");
     try env.put("ZCLI_DROP", "drop");
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "env policies reach the child, and .replace inherits nothing",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     {
         var r = try runner.run(fixture(), .{
@@ -1245,6 +1540,14 @@ test "hermeticity: the test process's own environment does not reach the child" 
     try env.put("PATH", "/definitely/not/real");
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "hermeticity: the test process's own environment does not reach the child",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     var r = try runner.run(fixture(), .{
         .args = &.{ "env", "PATH" },
         .env = .{ .policy = .{ .replace = &.{.{ .name = "OTHER", .value = "x" }} } },
@@ -1259,6 +1562,14 @@ test "the child's cwd is Options.cwd, not wherever the program path pointed" {
     var env = emptyEnv(a);
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "the child's cwd is Options.cwd, not wherever the program path pointed",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1296,7 +1607,7 @@ test "a timeout with no captured streams does not require concurrency" {
     // records why that sentence no longer applies.)
     // The watchdog runs on the *test's* Io, not the starved one under test —
     // arming it there would need the very capability the test withholds.
-    var dog: Watchdog = .{ .io = testing.io, .label = "timeout without concurrency", .limit_ms = 20_000 };
+    var dog: Watchdog = .{ .io = testing.io, .label = "timeout without concurrency", .limit_ms = watchdog_ms };
     try dog.arm();
     defer dog.disarm();
 
@@ -1332,7 +1643,7 @@ test "draining is what needs concurrency, and says so rather than deadlocking" {
     const payload = try filler(a, 256 * 1024);
     defer a.free(payload);
 
-    var dog: Watchdog = .{ .io = testing.io, .label = "drain without a task pool", .limit_ms = 30_000 };
+    var dog: Watchdog = .{ .io = testing.io, .label = "drain without a task pool", .limit_ms = watchdog_ms };
     try dog.arm();
     defer dog.disarm();
 
@@ -1359,6 +1670,14 @@ test "a cap overflow reports OutputTooLarge, not the broken pipe it caused" {
     defer env.deinit();
     var runner = process.Runner.init(a, io, &env);
 
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "a cap overflow reports OutputTooLarge, not the broken pipe it caused",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
+
     // The child floods stdout past the cap while the parent is still feeding it
     // megabytes of stdin. Stopping the child breaks that pipe, so the writer
     // reports `BrokenPipe` — which the runner caused while cleaning up and must
@@ -1384,6 +1703,14 @@ test "the convenience wrappers behave like run with defaults" {
     defer env.deinit();
 
     var runner = process.Runner.init(a, io, &env);
+
+    var dog: Watchdog = .{
+        .io = io,
+        .label = "the convenience wrappers behave like run with defaults",
+        .limit_ms = watchdog_ms,
+    };
+    try dog.arm();
+    defer dog.disarm();
     var via_capture = try runner.capture(fixture(), &.{ "flood", "16" });
     defer via_capture.deinit();
     try testing.expectEqual(@as(usize, 16), via_capture.stdout.len);
