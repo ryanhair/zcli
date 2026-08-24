@@ -12,7 +12,7 @@ zcli provides three tiers of testing, each suited to different verification need
 
 | Tier | What it tests | Speed | Fidelity |
 |------|--------------|-------|----------|
-| **Unit** | Command logic in isolation | Fast (in-process) | Tests `execute()` only |
+| **Unit** | Command and shared-module logic in isolation | Fast (in-process) | Tests `execute()` and the helpers it calls, no binary |
 | **Integration** | Full CLI binary via subprocess | Medium | Tests arg parsing, routing, output |
 | **E2E** | Interactive terminal behavior | Slow | Tests prompts, signals, TTY output |
 
@@ -20,11 +20,11 @@ Alongside the tiers there is one test double: [`HttpFixture`](#testing-http-adap
 
 ## Unit testing
 
-Test a single command's `execute()` function without compiling or spawning a binary. This is the fastest feedback loop — use it for command logic, output formatting, and error handling.
+Test a single command's `execute()` function — or a shared module it delegates to — without compiling or spawning a binary. This is the fastest feedback loop: use it for command logic, output formatting, error handling, and the plain helper functions underneath.
 
 ### Setup
 
-The unit-testing tier ships with the `zcli` dependency itself — no separate dependency entry. Projects scaffolded by `zcli init` are already wired: `zcli.addCommandTests(...)` in build.zig compiles each command file as its own test root with `zcli-testing` importable. For hand-rolled wiring, import the module from your existing zcli dependency:
+The unit-testing tier ships with the `zcli` dependency itself — no separate dependency entry. Projects scaffolded by `zcli init` are already wired: `zcli.addCommandTests(...)` in build.zig compiles each command file as its own test root with `zcli-testing` importable, and does the same for every module in its `shared_modules` list — so `zig build test` runs your command tests and your shared helpers' own tests together. For hand-rolled wiring, import the module from your existing zcli dependency:
 
 ```zig
 // build.zig

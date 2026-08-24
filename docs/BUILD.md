@@ -266,7 +266,8 @@ const store = @import("store");
 
 Pass the **same** `shared_modules` list to `addCommandTests` as well. The
 command-test stub only wires the shared modules you hand it, so a command that
-imports one won't compile under `zig build test` otherwise:
+imports one won't compile under `zig build test` otherwise — and each module in
+that list is compiled as a test root too, so its own `test` blocks run:
 
 ```zig
 _ = zcli.addCommandTests(b, exe, zcli_dep, .{
@@ -290,6 +291,26 @@ project ships with. It discovers every command file under `commands_dir` and
 compiles each as its own in-process test binary, so a command's `test` blocks
 (typically using `zcli-testing`'s `runCommand`) actually run — without pulling
 in the whole generated app.
+
+Every distinct module in `shared_modules` is compiled as a test root as well,
+so the helper logic a command delegates to is covered by the same step. Two
+entries naming the same module produce one test root, not two.
+
+Your module itself is never modified: the test compile is rooted on a *mirror*
+of it, carrying its imports and build configuration, so its tests see what the
+commands see. Only what a test root cannot inherit is completed on the mirror —
+a `.target`/`.optimize` you left unset (legal, and often deliberate: an
+imported-only module inherits both from whatever compilation pulls it in) is
+taken from the pair you passed to `addCommandTests`. Anything you set
+explicitly is carried over untouched, and the module you handed in still
+inherits for every other consumer.
+
+**The mirror is a snapshot taken at the call.** Its imports, C macros, include
+and library paths, rpaths, frameworks, and link objects are copied into storage
+of their own, so configuring either module afterwards never disturbs the other.
+The flip side: configuration you add to a shared module *after* calling
+`addCommandTests` reaches your commands but not that module's own tests.
+Configure shared modules first, then wire the tests.
 
 `exe` is the project's real executable (the same one passed to `generate()`);
 the returned `test` step depends on it so `zig build test` also proves the

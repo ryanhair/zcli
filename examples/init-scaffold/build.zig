@@ -34,9 +34,11 @@ pub fn build(b: *std.Build) !void {
     // Shared modules: helper code (e.g. a `store.zig`) imported by more
     // than one command. Create it with `b.createModule(...)`, then add an
     // entry here — this one list is wired into your commands AND their
-    // tests below, so you never register it twice. Editing this build
-    // config by hand is expected; `zcli add`/`rm`/`mv` manage command
-    // *structure*, not build wiring.
+    // tests below, so you never register it twice. `zig build test` also
+    // runs the `test` blocks inside the module itself, so shared logic is
+    // covered without its own test target. Editing this build config by
+    // hand is expected; `zcli add`/`rm`/`mv` manage command *structure*,
+    // not build wiring.
     const shared_modules = [_]zcli.SharedModule{
         // .{ .name = "store", .module = store_module },
     };
@@ -70,10 +72,12 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    // `zig build test` — unit-test each command in-process. Command test
-    // blocks use `zcli-testing`'s runCommand (bundled with the zcli
-    // dependency, so no extra dependency is needed). `zcli add command`
-    // scaffolds a starting test alongside each new command.
+    // `zig build test` — unit-test each command, and each shared module,
+    // in-process. Command test blocks use `zcli-testing`'s runCommand
+    // (bundled with the zcli dependency, so no extra dependency is needed);
+    // a shared module's tests are ordinary `std.testing` blocks and run
+    // from the same `shared_modules` list. `zcli add command` scaffolds a
+    // starting test alongside each new command.
     _ = zcli.addCommandTests(b, exe, zcli_dep, .{
         .commands_dir = "src/commands",
         .target = target,

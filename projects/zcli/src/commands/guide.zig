@@ -157,6 +157,10 @@ const topics = [_]Topic{
         \\
         \\  const store = @import("store");
         \\
+        \\`addCommandTests` also compiles each shared module as a test root, so
+        \\`test` blocks you write inside `src/store.zig` run under `zig build
+        \\test` alongside the command tests — no extra build wiring.
+        \\
         \\A shared module can itself import zcli packages — e.g.
         \\`store_module.addImport("theme", zcli_dep.module("theme"));`. For a
         \\complete shared module that persists data, see `zcli guide storage`.

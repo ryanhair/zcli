@@ -7,6 +7,10 @@ the scaffolding:
 - `src/commands/greet.zig` has `test` blocks that call the **unit tier**
   (`testing.runCommand`) explicitly — the same idiom `zcli init` scaffolds,
   written out so it's visible.
+- `src/greeting.zig` is a **shared module** (listed in `shared_modules`) whose
+  own plain `std.testing` blocks are run by the very same
+  `zcli.addCommandTests` call — shared modules are test roots, so the logic a
+  command delegates to needs no second test target.
 - `src/integration_test.zig` is a dedicated integration test file (this
   project's counterpart to `packages/core/src/build_integration_test.zig`)
   using the **subprocess/snapshot tier** (`testing.runSubprocess` +
@@ -17,7 +21,7 @@ the scaffolding:
 zig build test
 ```
 
-runs both tiers (`build.zig` wires the integration test's `Run` step to depend
+runs all of them (`build.zig` wires the integration test's `Run` step to depend
 on the install step, so the binary exists before it's driven).
 
 See [`packages/testing/README.md`](../../packages/testing/README.md) and its

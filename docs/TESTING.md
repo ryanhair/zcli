@@ -7,7 +7,7 @@ zcli provides three tiers of testing — use them together for coverage without 
 
 | Tier | What it tests | Speed |
 |------|--------------|-------|
-| **Unit** | Command logic in isolation — `execute()` only, in-process | Fast |
+| **Unit** | Command and shared-module logic in isolation — in-process, no binary | Fast |
 | **Integration** | The full CLI binary via subprocess — arg parsing, routing, output | Medium |
 | **E2E** | Interactive terminal behavior — prompts, signals, TTY output | Slow |
 
@@ -30,9 +30,15 @@ test "deploy command" {
 
 Unit tests only run under `zig build test` if `build.zig` wires
 `zcli.addCommandTests(b, exe, zcli_dep, .{ .commands_dir = "src/commands", ... })` —
-a scaffolded project (`zcli init`) already does this. See
+a scaffolded project (`zcli init`) already does this. That one step compiles
+**two kinds of test root** within the unit tier: every discovered command file,
+and every module in the `shared_modules` list you pass it. So the `test` blocks
+in a shared helper (`src/store.zig`, `src/greeting.zig`, …) run alongside the
+command tests without a second test target — the same list that makes a shared
+module importable from a command makes its own tests run. See
 [BUILD.md](BUILD.md#command-unit-tests-addcommandtests) for the full config
-and how commands are compiled for testing.
+and how commands are compiled for testing, and `examples/testing-demo` for a
+project with both kinds of test.
 
 Commands that talk to an HTTP API get a fourth tool alongside the tiers: `HttpFixture`, a scripted loopback server for testing the adapter layer. Queue the responses, point the adapter at an ephemeral `127.0.0.1` URL, assert on what it sent:
 
