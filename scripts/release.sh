@@ -485,7 +485,14 @@ if [ "$RELEASE_STATE" = none ] && [ "$SIGN_ONLY" = false ] && [ "$VERIFY_ONLY" =
         git log --oneline "$last_tag..HEAD" | sed 's/^/    /'
         echo
         echo "## Unreleased currently says:"
-        awk '/^## Unreleased$/{f=1;next} /^## /{f=0} f' CHANGELOG.md | sed 's/^/    /' | head -40
+        # NR<=40 truncates without a downstream `head`: under `pipefail`, head
+        # exiting early kills the producers with SIGPIPE (exit 141) and `set -e`
+        # then aborts the whole script before the confirmation prompt — which is
+        # exactly what happened the first time an Unreleased section exceeded 40
+        # lines. awk reads its whole input, so nothing upstream ever sees EPIPE.
+        awk '/^## Unreleased$/{f=1;next} /^## /{f=0} f' CHANGELOG.md \
+            | sed 's/^/    /' \
+            | awk -v limit=40 'NR<=limit {print} END {if (NR>limit) printf "    … (%d more lines — read CHANGELOG.md for the rest)\n", NR-limit}'
         echo
         printf "Does the CHANGELOG cover everything above? [y/N] "
         read -r reply
