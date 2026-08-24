@@ -194,7 +194,73 @@ const topics = [_]Topic{
         \\Worked example — examples/notes/src/store.zig, a persistence helper shared
         \\by every command (see `zcli guide sharing`):
         \\
-        ++ "\n" ++ examples.notes_store,
+        ++ "\n" ++ examples.notes_store ++
+            \\
+            \\
+            \\Appending, when other processes are running too
+            \\
+            \\Read-modify-rewrite (above) assumes one process owns the file. A log —
+            \\audit trail, event stream, run history — is the other shape: every run
+            \\adds a record while other runs may be reading or appending. Two rules
+            \\make that safe, and they are the whole recipe:
+            \\
+            \\  1. Lock every open — `.exclusive` to append, `.shared` to read.
+            \\     Readers run together; a writer excludes everyone:
+            \\
+            \\       const file = try dir.createFile(io, "app.log", .{
+            \\           .read = true, .truncate = false,   // append, don't recreate
+            \\       });
+            \\       defer file.close(io);   // closing RELEASES the lock — flush first
+            \\       try file.lock(io, .exclusive);   // readers: .shared
+            \\
+            \\     Open it read+write even though appending only writes. Finding
+            \\     where to append means asking the handle for the file's length,
+            \\     and that is a read of its attributes: on Windows a write-only
+            \\     handle isn't allowed to, and `file.length` fails with
+            \\     `error.AccessDenied` (POSIX won't tell you — it passes). One
+            \\     read+write handle also keeps measuring, repairing and appending
+            \\     inside the one lock; a second handle opened just to stat the file
+            \\     would sit outside it.
+            \\
+            \\     `createFile`/`openFile` also take a `.lock` option, but leave it
+            \\     alone here: on macOS concurrent creating opens can report
+            \\     `error.FileNotFound` for a file another one just made, and asking
+            \\     the same call to lock widens that window. Lock as its own step, and
+            \\     retry the open a bounded number of times.
+            \\
+            \\  2. One record = one line, written and FLUSHED while the lock is held.
+            \\     A buffered writer that flushes after the close would hand the next
+            \\     appender a file whose end is not where your record ended, and the
+            \\     two would overlap. Order is: seek to end -> write -> flush -> close.
+            \\     Know what that flush is worth: it drains your buffer into the file,
+            \\     it does NOT `fsync`. It orders your record against the next
+            \\     appender's and survives a writer that dies mid-record — it does not
+            \\     survive an OS crash or a power cut. `file.sync(io)` inside the lock
+            \\     buys that, at a real cost per append.
+            \\
+            \\Bound everything you read: a cap per record and a cap on the whole file
+            \\(`.limited(...)`), so a corrupt file can't make the reader allocate or
+            \\scan without limit. And decide, in writing, what "corrupt" means — then
+            \\make the reader and the writer agree on it, or you get a log that reads
+            \\clean and refuses every append. The example's policy: an unterminated
+            \\fragment after the last newline SHORTER than one record's cap is a TORN
+            \\TAIL — a writer killed part-way — so readers skip it and the next
+            \\appender truncates it, keeping every earlier record. A fragment that
+            \\reaches the cap can't be a record in progress, so both sides report it
+            \\and neither guesses where to cut. A newline-terminated record that
+            \\doesn't parse is real damage, reported, never silently dropped.
+            \\
+            \\This is a log, not a database. It buys atomic appends and concurrent
+            \\readers — not multi-record transactions, in-place edits, indexes,
+            \\durability without fsync, or isolation between a reader and an
+            \\in-flight writer. When you need those, use a real database.
+            \\
+            \\Worked example — examples/notes/src/log.zig. Its tests race appending
+            \\threads and replay a half-written final record; a companion test
+            \\(src/log_multiprocess_test.zig) does the same with real child
+            \\processes, which is where locks and lifetimes actually bite:
+            \\
+        ++ "\n" ++ examples.notes_log,
     },
     .{
         .name = "arena",

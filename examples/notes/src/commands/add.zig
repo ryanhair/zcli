@@ -1,6 +1,7 @@
 const std = @import("std");
 const zcli = @import("zcli");
 const store = @import("store");
+const log = @import("log");
 const Context = @import("command_registry").Context;
 
 pub const meta = .{
@@ -29,5 +30,11 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
     notes.notes = grown;
 
     try store.save(context.io, notes);
+
+    // Record the change in the shared activity log. Unlike notes.json — which
+    // this command rewrites whole — the log is appended to under a lock, so
+    // two `notes add` runs at the same time both land (`notes log`).
+    try log.append(std.Io.Dir.cwd(), context.io, .{ .action = "add", .title = args.title });
+
     try context.stdout().print("Saved note '{s}'\n", .{args.title});
 }
