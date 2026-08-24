@@ -7,6 +7,15 @@ All notable changes to zcli are documented here.
 ## Unreleased
 
 ### Added
+- **`zcli guide storage` now covers safe concurrent appending.** The topic gained
+  an append-log recipe — shared locks for readers, an exclusive lock for writers,
+  one record flushed inside the lock, bounded reads, and a torn trailing record
+  repaired rather than propagated — with its corruption policy spelled out, the
+  difference between flushing and `fsync` stated, and the line where a log stops
+  being a substitute for a database. The worked example is the new
+  `examples/notes/src/log.zig`; `zig build test` races appending threads, replays
+  a half-written final record, and repeats both against real child processes.
+
 - **`zcli_testing.HttpFixture` — a scripted loopback HTTP server for adapter
   tests.** Commands that talk to an API have a layer none of the three testing
   tiers reaches directly: the adapter that builds the request and parses the
