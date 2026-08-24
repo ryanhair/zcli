@@ -1,0 +1,263 @@
+---
+.title = "zcli — Running external programs",
+.description = "zcli.process.Runner — a subprocess runner with safe defaults: concurrent drains so a large payload cannot deadlock, bounded capture, an explicit environment, explicit program resolution, and full termination detail.",
+.date = @date("2026-08-24"),
+.author = "Ryan Hair",
+.layout = "guide.shtml",
+---
+
+# Running external programs
+
+Every real CLI eventually shells out — `gh`, `ssh`, `kubectl`, `git`, `docker`, `op`. Written by hand in a command's `execute()`, that reproduces the same four bugs each time. `zcli.process.Runner` does it once, with **safe defaults you can't accidentally lose**:
+
+- **It cannot deadlock on a large payload.** The stdin write and both output drains make progress independently. Write stdin to completion and *then* read stdout and you get the classic wedge: the child fills its ~64 KiB stdout pipe and blocks, while you block feeding its stdin. zcli has been bitten by that twice.
+- **Capture is bounded.** Each stream has its own byte cap — 10 MiB stdout, 1 MiB stderr — with an explicit policy for what happens past it. A chatty child cannot balloon your process.
+- **The environment is the one you were given.** `Runner` requires the `environ` map threaded down from the command context. Nothing in the module calls `getenv`, and there is no constructor that omits the map — so a subprocess call can't quietly make your tests non-hermetic.
+- **The program is resolved by you, not by the environment.** There is no "hand `argv[0]` to the OS and hope" variant.
+- **Termination keeps its detail.** A clean `exit 1` and a SIGSEGV stay distinct.
+
+It is **not a sandbox**. The child is trusted code the user installed; there is no seccomp, no job object, no rlimit. It is not a PTY, not a process supervisor, and never a shell — argv is a vector, never a string.
+
+## The 90% call
+
+```zig
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    var runner = context.process();
+
+    var result = try runner.capture(.{ .search_path = "git" }, &.{ "rev-parse", "HEAD" });
+    defer result.deinit();
+
+    try result.expectOk();
+    try context.stdout().print("{s}\n", .{result.stdout.trimmed()});
+}
+```
+
+`context.process()` hands you a `Runner` pre-wired to the command's arena allocator, the framework `io`, and the threaded environment. `Runner.init` stays public for code that holds no context.
+
+A nonzero exit is **not an error** — it's a `Result` with `ok() == false`, because "the tool ran and said no" is information, not a failure to run it.
+
+## Finding the program
+
+`Program` has four variants, and every one of them is resolved *in the parent, to an absolute path*, before anything is spawned:
+
+```zig
+.{ .path = "/usr/local/bin/gh" }                            // this exact file
+.{ .at = .{ .dir = tools_dir, .path = "gh" } }              // relative to an open dir
+.{ .in_dirs = .{ .name = "gh", .dirs = &.{"/usr/bin"} } }   // a fixed list you control
+.{ .search_path = "gh" }                                    // the user's PATH, explicitly
+```
+
+Why no implicit variant: `std.process.spawn` resolves a bare `argv[0]` against the PATH of the **parent** environment — not the map you passed — so an implicit lookup is an ambient lookup your environment policy cannot reach. `.search_path` is the ordinary way to find `gh` or `kubectl`, and it is explicit: you opted into "the user's PATH decides", and it uses the PATH the *child* will see.
+
+Two rules keep the searching variants honest:
+
+- **Relative PATH entries are skipped, never searched** — including the empty entry, which means `.`. That is exactly how a hostile working directory gets to pick the binary.
+- **`name` must be a bare basename.** `.in_dirs{ .name = "../../bin/sh", .dirs = &.{"/opt/trusted/bin"} }` would otherwise resolve *outside* every directory you listed. A path-shaped name is `error.UnsafeProgramName`; use `.path` for real paths.
+
+### On Windows
+
+`CreateProcessW`'s PATHEXT fallback means a resolved `C:\d\foo` whose spawn fails can end up running `C:\d\foo.cmd` instead. So on Windows the runner always hands the OS a path with an explicit, supported extension (`.com`/`.exe`/`.bat`/`.cmd`), classified case-insensitively:
+
+- `.path`/`.at` targets must already carry one, or resolution fails with `error.UnsupportedProgramExtension`. `.{ .path = "C:\\tools\\gh" }` must be written `"C:\\tools\\gh.exe"`.
+- `.search_path`/`.in_dirs` append one, trying the child environment's `PATHEXT` entries in order (directory outer, extension inner, matching `cmd.exe`) and skipping any extension the backend cannot execute.
+- A resolved target with a supported-extension sibling — a `foo.exe` sitting next to a `foo.exe.cmd` — is refused with `error.AmbiguousProgram`. That layout has no legitimate use and is exactly the shape that exploits the fallback.
+- A `.bat`/`.cmd` target is refused with `error.BatchScriptRefused` unless you set `allow_windows_script`. `cmd.exe` re-parses its own command line, so argument quoting for batch targets is a known injection class.
+
+The sibling check is a check-then-spawn, so it is a TOCTOU in the strict sense: a sibling created between the check and the spawn is not seen. What it buys is that a *pre-existing* hostile sibling cannot be reached. Winning that race needs write access to the program's directory, which is already a compromise of the machine.
+
+## Feeding stdin
+
+```zig
+.stdin = .ignore                        // /dev/null — the default
+.stdin = .inherit                       // a deliberately interactive child
+.stdin = .{ .bytes = payload }          // write, then EOF
+.stdin = .{ .secret = .{ .bytes = key, .scrub_source = true } }
+```
+
+`.ignore` is the default on purpose: a tool that unexpectedly wants to prompt fails fast instead of hanging, and it can never swallow your own piped input.
+
+Any payload size is safe. The write runs alongside both drains, and stdin is closed the instant the last byte is handed over — so a `cat`-shaped child gets its EOF and exits on its own, with no kill and no timeout.
+
+`.secret` is never copied: the runner writes straight from your slice, so there is no staging duplicate to leak, and `scrub_source` zeroes your slice once every task that could still be reading it has been joined.
+
+## Capturing output
+
+```zig
+.stdout = .{ .capture = .{ .limit = 4 << 20, .overflow = .fail } }
+.stderr = .{ .capture = .{ .limit = 64 << 10, .overflow = .truncate } }
+.stderr = .inherit   // straight to the parent's stream — no pipe, no cap
+.stderr = .ignore    // /dev/null
+```
+
+The defaults are asymmetric on purpose: **`.fail` for stdout, `.truncate` for stderr.** stdout is usually a payload you are about to parse, and half a JSON document is worse than an error — while stderr is diagnostics, where the first megabyte is what a human needs and losing the tail should never turn a successful run into a failure.
+
+- **Overflow means observing byte `limit + 1`, not reaching `limit`.** A stream producing exactly `limit` bytes is not truncated, does not set `dropped`, and does not fail.
+- The retained bytes are always the **first** `limit`.
+- Under `.truncate` the runner keeps reading and discarding past the cap, so the child never blocks and its exit status is still observed. `truncated` is set and `dropped` counts what went.
+- Under `.fail` the child is stopped and reaped and you get `error.OutputTooLarge`. No partial `Result` escapes.
+- A stream set to `.inherit`/`.ignore` reports `captured == false`, so "empty" is never confused with "not collected".
+
+## The environment
+
+Every policy starts from the map the `Runner` was built with:
+
+```zig
+.env = .{ .policy = .inherit }                                  // the default
+.env = .{ .policy = .{ .allow = &.{ "PATH", "HOME" } } }
+.env = .{ .policy = .{ .deny = &.{"GH_TOKEN"} } }
+.env = .{ .policy = .{ .replace = &.{ .{ .name = "TZ", .value = "UTC" } } } }
+```
+
+plus `.add`, applied last, over whatever the policy produced. Name matching follows the platform rule `std.process.Environ.Map` itself uses: exact on POSIX, case-insensitive on Windows.
+
+**The default is `.inherit`, and that is a compatibility choice — not a security control.** Threading `environ` buys you *provenance* (you can see and test what the child gets) and *hermeticity* (a test supplies a map instead of leaking the developer's shell). It does not buy least privilege: with `.inherit` the child receives every credential in the parent's environment.
+
+Inheriting is still the right default, because any allowlist we shipped would be wrong. `gh` wants `GH_*`, `GITHUB_*`, `HOME`, `XDG_CONFIG_HOME`, `PATH`, `HTTPS_PROXY`, `TERM`; `ssh` wants `SSH_AUTH_SOCK`, `SSH_ASKPASS`, `DISPLAY`; `kubectl` wants `KUBECONFIG` and cloud credentials — and the failure mode of getting it wrong is "works in my shell, not in your CLI". A list that has to include PATH and HOME anyway has already conceded the interesting parts.
+
+If you do want least privilege, it's one line:
+
+```zig
+.env = .{
+    .policy = .{ .deny = &.{ "AWS_SECRET_ACCESS_KEY", "GH_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN" } },
+    .add = &.{ .{ .name = "GIT_TERMINAL_PROMPT", .value = "0" } },
+},
+```
+
+## Secrets: what is and is not guaranteed
+
+Set `Capture.sensitive` on a stream and its buffer is allocated once at its cap — never grown by a realloc that would strand an unscrubbable copy — and `secureZero`d according to the run's `Scrub` policy. `.always` (the default) wipes on both the success and error paths; `.on_failure` hands you live bytes on success, for the `pass show` / `op read` shape where the captured stdout *is* the value you wanted; `.never` exists so the choice is visible in source, not because it is convenient.
+
+**What cannot be promised, and why:**
+
+- **Environment values cannot be scrubbed at all.** `std.process.spawn` re-serializes the whole environment into its own arena and frees it without zeroing. There is no hook. This is why `EnvEntry` has no `sensitive` flag. **Pass secrets on stdin.**
+- Environment values are readable by other processes for the child's lifetime regardless — `/proc/<pid>/environ` on Linux, `ps -E` as root on macOS.
+- The child's memory, and anything the child writes to disk, is out of scope.
+- Kernel pipe buffers are not scrubbed; neither is the page cache, swap, a hibernation image, or a core dump.
+- Arena allocators do not return pages. With `context.allocator` a scrubbed buffer *is* zeroed in place, but the allocation is not reusable until the arena resets — many sensitive runs in one command want a non-arena allocator.
+- Caller copies are yours. `Result.deinit` scrubs what it owns.
+
+## Timeouts, stopping, and grandchildren
+
+`Options.timeout` defaults to `.none`. Subprocesses legitimately run for minutes — `git clone`, `docker build`, `kubectl wait` — and aborting one mid-flight can leave remote state worse than waiting. Set it when the child is a query rather than a mutation:
+
+```zig
+.timeout = .{ .duration = .{ .raw = .fromSeconds(30), .clock = .boot } },
+```
+
+`.boot` counts time the machine spent suspended: a laptop that slept for an hour did not give the child an extra hour of grace.
+
+Past the deadline the child is stopped politely, then forcibly after `stop_grace` (5 s by default), reaped, and `error.Timeout` comes back. Whatever the timeout, the run still terminates as long as the child does.
+
+**Grandchildren are a known limitation.** A child that spawns a daemon which inherits stdout keeps that pipe open after the child itself exits. The runner handles the normal path with an **orphan linger**: once the child is known dead, it keeps draining for `orphan_linger` (500 ms by default), then returns with `Result.orphaned == true` — the capture is complete only up to that moment. The honest bound is *the child's exit* + *up to a quarter second of detection latency* + *the linger*. On the **abort** path grandchildren are not chased at all: signalling the whole process group would change terminal signal delivery for `.inherit` children, so it is deferred behind a future explicit option.
+
+## Diagnostics
+
+`error.AccessDenied` is reachable from both spawn and wait; `error.Canceled` and `error.Unexpected` from every phase. So the error value cannot tell you where a run died, and the runner records it explicitly instead of pretending otherwise:
+
+```zig
+var program_buf: [512]u8 = undefined;
+var diag: zcli.process.Diagnostic = .{ .program_buf = &program_buf };
+
+var result = runner.run(.{ .search_path = "gh" }, .{
+    .args = &.{ "api", "repos/ziglang/zig" },
+    .diagnostic = &diag,
+}) catch |err| switch (diag.phase) {
+    .resolve, .spawn => return context.fail("gh is not installed or not on PATH", .{}),
+    else => return err,
+};
+```
+
+The phases are `.resolve`, `.spawn`, `.stdin`, `.capture`, `.stop`, and `.wait`. `program_buf` is caller storage on purpose: the runner's own copy of the resolved path lives in memory that teardown frees, so a borrowed slice would dangle exactly when you read it.
+
+## Platform fidelity is not equal
+
+Windows has no signals, so `.signaled` is never produced there and a crash cannot be told from an exit *by kind*. What the runner does avoid is `std`'s further loss of information: `Child.wait` truncates the `NTSTATUS` to `u8`, turning an access violation (`0xC0000005`) into exit code `5` — indistinguishable from a deliberate `exit(5)`. Because the runner reads the status itself, a status that does not fit `u8` is reported as `.unknown = <full NTSTATUS>`. A *forced* Windows termination reports no `Term` at all rather than passing off the runner's own exit code as the child's.
+
+## One more requirement: exclusive child-reaping
+
+The runner reaps its own children by polling and never calls `Child.wait` or `Child.kill`, so it is the only reaper of what it spawns. That is what makes stopping race-free: a signal is only ever sent between a probe that said "still running" and the next probe. It holds as long as your process reaps its own children exclusively — so an application using `Runner` must not set `SIGCHLD` to `SIG_IGN`, install it with `SA_NOCLDWAIT`, or run a wildcard `waitpid(-1)` reaper.
+
+zcli installs none of these, so a command in a zcli CLI satisfies this by construction; it is documented because `Runner` is public API and an embedding application may be less tidy. Where the OS offers a stable identity the runner takes it anyway — Windows signals through the process handle, and Linux through a `pidfd` acquired right after spawn. If the precondition *is* violated, a run reports `error.ChildReapedElsewhere` with `phase = .wait`, sends no further signal, and returns rather than hanging — a deliberately weakened promise, because the alternative is signalling into a pid we no longer own.
+
+## A worked example: shelling out to `gh`
+
+```zig
+const std = @import("std");
+const zcli = @import("zcli");
+
+pub const Args = struct { repo: []const u8 };
+pub const Options = struct { json: bool = false };
+
+const Repo = struct { full_name: []const u8, stargazers_count: u32 };
+
+pub fn execute(args: Args, options: Options, context: *zcli.Context) !void {
+    _ = options;
+    var runner = context.process();
+
+    // Caller-owned scratch for the resolved path — the runner copies into it.
+    var program_buf: [512]u8 = undefined;
+    var diag: zcli.process.Diagnostic = .{ .program_buf = &program_buf };
+
+    const path = try std.fmt.allocPrint(context.allocator, "repos/{s}", .{args.repo});
+
+    var result = runner.run(.{ .search_path = "gh" }, .{
+        .args = &.{ "api", "-X", "GET", path },
+        // gh must never stop to ask a question inside a CLI:
+        .stdin = .ignore,
+        .env = .{ .add = &.{
+            .{ .name = "GH_PROMPT_DISABLED", .value = "1" },
+            .{ .name = "GIT_TERMINAL_PROMPT", .value = "0" },
+        } },
+        // A JSON payload we intend to parse: fail rather than hand back half.
+        .stdout = .{ .capture = .{ .limit = 4 * 1024 * 1024, .overflow = .fail } },
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(30), .clock = .boot } },
+        .diagnostic = &diag,
+    }) catch |err| switch (diag.phase) {
+        .resolve, .spawn => {
+            try context.stderr().print("gh is not installed or not on PATH\n", .{});
+            return error.CommandFailed;
+        },
+        else => return err,
+    };
+    defer result.deinit();
+
+    if (!result.ok()) {
+        // gh's own diagnostics, verbatim — the reason stderr is captured.
+        try context.stderr().print("gh failed ({d}): {s}\n", .{
+            result.exitCode(), result.stderr.trimmed(),
+        });
+        return error.CommandFailed;
+    }
+
+    const parsed = try std.json.parseFromSlice(
+        Repo,
+        context.allocator,
+        result.stdout.bytes(),
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try context.stdout().print("{s}: {d} stars\n", .{
+        parsed.value.full_name, parsed.value.stargazers_count,
+    });
+}
+```
+
+Feeding a secret, and letting an interactive child own the terminal:
+
+```zig
+// Push a deploy key to a remote host: the key goes in on stdin — never in argv,
+// where `ps` shows it; never in the environment, which cannot be scrubbed.
+var res = try runner.run(.{ .search_path = "ssh" }, .{
+    .args = &.{ "-o", "BatchMode=yes", host, "cat >> ~/.ssh/authorized_keys" },
+    .stdin = .{ .secret = .{ .bytes = key, .scrub_source = true } },
+    .stderr = .{ .capture = .{ .limit = 64 * 1024, .overflow = .truncate } },
+});
+defer res.deinit();
+try res.expectOk();
+
+// An interactive session: no capture, no caps, the child owns the terminal.
+_ = try runner.run(.{ .search_path = "ssh" }, .{
+    .args = &.{host},
+    .stdin = .inherit, .stdout = .inherit, .stderr = .inherit,
+});
+```

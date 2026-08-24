@@ -1128,10 +1128,28 @@ exit the shell's screen and scrollback return exactly as they were — the final
 frame does not persist. `emit` is a compile-time error here; everything is the
 frame.
 
+**Reaching outside the process.** Two core modules cover what a command does
+beyond its own terminal, both with safe behaviour as the only behaviour:
+
+- **`zcli.http`** — an HTTPS-only client over `std.http.Client` with TLS
+  verification that cannot be turned off, per-request timeouts, bounded response
+  bodies, bounded redirects, and credential headers stripped when a redirect
+  leaves the origin.
+- **`zcli.process`** (ADR-0034) — a subprocess runner reached through
+  `context.process()`. The stdin write and both output drains make independent
+  progress, so a payload larger than a pipe buffer cannot deadlock the parent;
+  capture is per-stream bounded with an explicit overflow policy; the program is
+  resolved to an absolute path *in the parent* so PATH never chooses the binary;
+  and the environment is the map threaded through the context, since `Runner` has
+  no constructor that omits it. Termination keeps all four cases the OS can
+  report. It is not a sandbox, not a PTY (that is `packages/testing`'s harness),
+  not a supervisor (`zcli dev` keeps its own loop), and never a shell.
+
 **Construction idiom (ADR-0014).** `context.X()` is the single front door for
 every output capability: `context.theme`, `context.prompts()`,
-`context.progress()`, `context.markdown()`, `context.ui(.{})` each hand back an
-instance already wired to the command's streams, allocator, io, and theme. The
+`context.progress()`, `context.markdown()`, `context.ui(.{})`, and
+`context.process()` each hand back an instance already wired to the command's
+streams, allocator, io, environment, and theme. The
 stateless packages (`prompts`, `progress`, `markdown`) are value bundles — the
 import *is* the type — so standalone use fills the same fields by hand;
 stateful ones (`ui.App`) keep `init`/`deinit`. Each package also works without

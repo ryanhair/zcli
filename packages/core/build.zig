@@ -111,6 +111,31 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    // Subprocess-runner integration tests. They need a real child, so a small
+    // helper executable is compiled once here and its path handed to the test
+    // binary through a build-options module — faster and more portable than
+    // shelling out to the compiler from inside each test, and it works
+    // identically on Windows.
+    {
+        const fixture = b.addExecutable(.{
+            .name = "process-fixture",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/process_fixture.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+
+        const fixture_options = b.addOptions();
+        fixture_options.addOptionPath("exe_path", fixture.getEmittedBin());
+
+        const process_imports = [_]TestDep{
+            .{ .name = "fixture", .module = fixture_options.createModule() },
+        } ++ dep_imports;
+        const run_tests = addTestRun(b, "test-", "src/process_integration_test.zig", target, optimize, &process_imports);
+        test_step.dependOn(&run_tests.step);
+    }
+
     // NOTE: A previous `plugin_test_files` list referenced five src/plugin_*_test.zig
     // files that were dropped in the monorepo refactor (commit 0aa79f7) and never
     // re-added. They targeted a since-replaced plugin/context API, so they were
