@@ -91,6 +91,8 @@ To branch rather than fail, ask `p.isInteractive()` — that is how `zcli add co
 
 Setting `.interactive` on the instance overrides the detection for that instance, guard and prompts alike. Be precise about what `false` means: it forces **line mode**, so the prompts still print and still read stdin — at a terminal that waits for a typed line, on a closed stream it is `error.EndOfStream`. It is not a `--no-input` switch; a flag that means "ask me nothing" has to skip the prompt sequence itself and take defaults or required options instead.
 
+One case sets `.interactive` for you: an instance from `context.prompts()` reports non-interactive whenever the Context's stdout is captured or its stdin injected — which is what a [`runCommand` unit test]($link.page('docs/testing').unsafeRef('feeding-stdin')) does. The streams the prompt was handed decide, not the process's descriptors, so a test can't enter raw mode and read the real keyboard just because the test binary was started from a terminal. A command that guards therefore reports `error.NotInteractive` under `runCommand`, and belongs in the PTY-backed E2E tier.
+
 Pick one per command: no guard means "this works piped", the guard means "this needs a terminal, and says so before asking".
 
 ## Prompts or widgets?

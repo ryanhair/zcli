@@ -349,6 +349,16 @@ pub const Stdio = struct {
     // Optional overrides for testing
     stdout_override: ?*std.Io.Writer = null,
     stderr_override: ?*std.Io.Writer = null,
+    /// In-memory stand-in for the process's stdin, so an in-process test can
+    /// feed a command deterministic bytes (`runCommand`'s `.stdin`): a plain
+    /// byte stream that ends at EOF instead of blocking on a terminal.
+    ///
+    /// Setting this also takes `context.prompts()` off the interactive path
+    /// (see `Context.promptInteractivity`) — an in-memory reader can deliver
+    /// bytes but never keystrokes, whatever the process's own descriptors say.
+    /// Keystroke-level behavior (raw mode, arrow keys) therefore still needs
+    /// the PTY E2E tier, which drives a real terminal rather than this reader.
+    stdin_override: ?*std.Io.Reader = null,
 
     /// Initialize in place; `self` must already be at its final address.
     /// Replaces the old two-phase init()+finalize(), whose window between
@@ -381,11 +391,7 @@ pub const Stdio = struct {
     }
 
     pub fn stdin(self: *@This()) *std.Io.Reader {
-        return &self.stdin_reader.interface;
-    }
-
-    pub fn stdinReader(self: *@This()) *std.Io.File.Reader {
-        return &self.stdin_reader;
+        return self.stdin_override orelse &self.stdin_reader.interface;
     }
 
     /// Flush stdout and stderr writers. Must be called before exit
@@ -1348,6 +1354,26 @@ test "Stdio.init wires streams to the struct's own buffers, in place" {
     defer aw.deinit();
     stdio.stdout_override = &aw.writer;
     try testing.expectEqual(&aw.writer, stdio.stdout());
+}
+
+test "Stdio.stdin_override feeds injected bytes and then reaches EOF" {
+    var stdio: Stdio = undefined;
+    stdio.init(std.testing.io);
+
+    // Without an override, stdin is the process's own stream (untouched here —
+    // reading it in a test would block on the real terminal).
+    try testing.expectEqual(&stdio.stdin_reader.interface, stdio.stdin());
+
+    // With one, `context.stdin()` sees exactly the injected bytes: this is what
+    // makes a line-based prompt drivable in-process (`runCommand`'s `.stdin`).
+    var injected: std.Io.Reader = .fixed("alice\nbob\n");
+    stdio.stdin_override = &injected;
+    const r = stdio.stdin();
+    try testing.expectEqual(&injected, r);
+    try testing.expectEqualStrings("alice", (try r.takeDelimiter('\n')).?);
+    try testing.expectEqualStrings("bob", (try r.takeDelimiter('\n')).?);
+    // The stream ends after the supplied bytes rather than blocking for more.
+    try testing.expect((try r.takeDelimiter('\n')) == null);
 }
 
 test "TestContext.deinit runs plugin deinitContextData hooks" {

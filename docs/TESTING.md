@@ -28,6 +28,35 @@ test "deploy command" {
 }
 ```
 
+Beyond `.args`/`.options`, the config carries `.plugins` (plugin `ContextData`),
+`.environ`, `.stdin`, `.app_name`/`.app_version`/`.app_description`, and
+`.allocator`:
+
+```zig
+var result = try testing.runCommand(SetupCommand, .{
+    // One line per answer; an empty line takes the prompt's default.
+    .stdin = "Ada\n\n",
+    // What a real run would get from the registry's Config, rather than
+    // the context defaults ("app" / "unknown" / ""). In place before
+    // plugin initContextData hooks run.
+    .app_name = "myapp",
+    .app_version = "1.2.3",
+});
+```
+
+`.stdin` is an in-memory stream that ends at EOF, and `context.prompts()`
+reports non-interactive whenever stdout is captured or stdin injected — so
+prompts take their **line-based** branch no matter what the process's own
+descriptors are. That rules out raw mode: a `runCommand` test can never take
+over the terminal it was launched from or read its keystrokes. It does *not*
+make a prompting command safe to run without `.stdin` — the line path still
+reads whatever `context.stdin()` is, and with no injection that is the
+process's own stdin, which at a terminal blocks until someone types a line.
+Give any command that prompts an explicit `.stdin`.
+
+Raw-mode keystrokes (arrows through a `select`, hidden input, Ctrl-C) are not
+modeled by a byte stream and belong in the PTY-backed E2E tier.
+
 Unit tests only run under `zig build test` if `build.zig` wires
 `zcli.addCommandTests(b, exe, zcli_dep, .{ .commands_dir = "src/commands", ... })` —
 a scaffolded project (`zcli init`) already does this. That one step compiles

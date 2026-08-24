@@ -7,6 +7,26 @@ All notable changes to zcli are documented here.
 ## Unreleased
 
 ### Added
+- **`runCommand` can inject stdin.** Pass `.stdin = "Ada\n\n"` and the command
+  reads exactly those bytes through `context.stdin()` and `context.prompts()`,
+  reaching EOF afterwards instead of blocking on the real terminal — so a
+  command that asks questions is drivable in a plain in-process test, one line
+  per answer. Prompts take their line-based path because the streams the command
+  was *handed* decide, not the process's descriptors: `context.prompts()` now
+  reports non-interactive whenever an in-memory override has replaced stdout or
+  stdin (see below), so a test binary started from a terminal can no longer
+  enter raw mode and read the developer's real keyboard. Raw-mode keystrokes —
+  arrows through a `select`, hidden `password` input, Ctrl-C — are not modeled
+  by a byte stream and remain the PTY-backed E2E tier's job. Omitting `.stdin`
+  leaves the process's own stdin in place, as before.
+- **`runCommand` can set app metadata.** `.app_name`, `.app_version` and
+  `.app_description` fill the context fields a real run gets from the registry's
+  `Config`, so version-bearing output can be asserted against a real string
+  rather than the `"unknown"` placeholder. They are applied *before* plugin
+  `initContextData` hooks run, so a plugin that captures app metadata into its
+  `ContextData` sees the configured values too — the bundled secrets plugin
+  captures `app_name` there, and it is what namespaces stored secrets. Each
+  field left unset keeps the context default.
 - **`zcli.Paths` — platform-standard application directories** (ADR-0035, #820). `context.paths()` answers "where does this app put its config / cache / data on this platform?" from the **threaded `environ`**, never ambient `getenv` (which `std.fs.getAppDataDir` used before it was removed in Zig 0.16, and which pulls libc into a stack kept deliberately libc-free for static musl). `dir(kind)`, `file(kind, sub_path)`, `base(kind)`, `resolve(kind, segments)` and `home()` are **pure string functions** — no filesystem, no `io`; only `ensureDir`/`ensureFile`/`ensureParent` touch disk, and they create directories only, never the file. Locations: `$XDG_CONFIG_HOME` else `~/.config`, `$XDG_DATA_HOME` else `~/.local/share`, and `$XDG_CACHE_HOME` else `~/.cache` on Linux/BSD; the same on macOS except `cache`, which falls back to `~/Library/Caches` (macOS excludes it from Time Machine and targets it for reclamation, so a purgeable cache belongs there); `%APPDATA%\{app}` for config and `%LOCALAPPDATA%\{app}\{data,cache}` on Windows. macOS uses XDG for config and data rather than `~/Library/Application Support` — a stated CLI-ecosystem-compatibility policy, matching `gh`, `git`, `aws`, `cargo` and every other CLI a terminal user already runs, not the Apple platform convention. Two orthogonal knobs, `convention` (which variables and fallback tails — a *policy*) and `syntax` (separators and absoluteness — a property of the *filesystem*), let a caller pin a tool's own contract while still doing native host I/O; both are runtime fields, so the whole resolution matrix is testable on any host without cross-compilation. Newly created directories are `0700` on POSIX; existing directories are never re-`chmod`ed. See the new [Application paths](https://zcli.sh/docs/paths/) guide and `zcli guide paths`.
 - **`addCommandTests` runs your shared modules' tests too.** Every module in
   the `shared_modules` list is now compiled as a test root of its own, so the
@@ -100,6 +120,14 @@ All notable changes to zcli are documented here.
   stdin or stdout is redirected — stays the default.
 
 ### Changed (breaking)
+- **`Stdio.stdinReader()` has been removed.** It handed out the raw
+  `std.Io.File.Reader` behind stdin, which bypasses the new `stdin_override`
+  and so would silently defeat injected input. Nothing in the framework or the
+  bundled plugins called it, but it was public API: **migrate any external
+  caller to `context.stdin()`** (or `Stdio.stdin()` directly), which returns the
+  same `*std.Io.Reader` interface and honours the override. Code that reached
+  past the interface for `std.Io.File.Reader`-specific state has no replacement
+  by design — that state is exactly what an injected stream does not have.
 - **The standalone `search` prompt has been removed.** Replace
   `p.search(.{ ... })` with `p.select(.{ .search = true, ... })` and
   `SearchConfig` with `SelectConfig`. Searchable single and multi-selection now
@@ -121,6 +149,17 @@ All notable changes to zcli are documented here.
 - **Directories created by the `ensure*` family are `0700` on POSIX** (#820), including non-app-scoped ancestors such as `~/.local/share/bash-completion`, `~/.config/fish`, and `~/.zsh` — those usually already exist, and an existing directory's mode is never changed. There is no retroactive `chmod`: only directories newly created from now on are private.
 
 ### Fixed
+- **`context.prompts()` no longer trusts the process descriptors over its own
+  streams.** Prompts decided interactivity by probing the real stdin/stdout
+  descriptors, which say nothing about where a given Context's bytes actually
+  go. With stdout captured into a buffer (or stdin injected) the probe still saw
+  the terminal a test binary was launched from, so a prompt would enter raw
+  mode, read the developer's real keyboard, and paint frames into a buffer
+  nobody sees. `context.prompts()` now sets `.interactive = false` whenever an
+  in-memory override has replaced stdout or stdin, so the streams the prompt was
+  handed are the ones that decide. Captured stderr does not disqualify anything
+  — a full-frame prompt paints on stdout and reads stdin. Normal runs, which
+  have no overrides, still probe exactly as before.
 - **A request that completed as its timeout fired no longer leaks the response.** `http.Client.request` raced the request against a timer and then called `Select.cancelDiscard`, but cancelation is delivered at the next I/O cancelation point — so a request that finished just as the timer dequeued still handed back a fully-allocated `Response`, which was then dropped without `deinit`. Every such race leaked the body and headers under a tracking allocator or any GPA-backed consumer. The race is now drained with `Select.cancel` until it returns null, deiniting any successful `Response` nobody will see, and the drain is installed as an `errdefer` immediately after the first spawn so a failed timer spawn or a canceled `await` cannot strand the in-flight request either.
 - **Long `select` and `multiSelect` lists no longer re-scroll when you reverse direction.** The visible window was recomputed from the cursor on every frame, growing upward first, so pressing Up after scrolling down moved the *list* instead of the highlight: the highlighted row stayed pinned near the bottom of the window and the choices slid under it, one row per keypress, in both directions. The window is now anchored between frames and only moves when the highlight crosses its top or bottom edge, which is how every other list navigates. Wrapped choices still measure in physical rows, so a window holds whole choices that fit the terminal, and the anchor is re-clamped whenever filtering shortens the list or the terminal resizes — the highlight stays on screen either way. A terminal too short for the whole frame now gives up *chrome* instead of the answer: the highlighted choice's rows are reserved first, then the header and query rows are clipped to what is left (dropped entirely when nothing is left). Previously a three-row terminal, or a narrow one whose header wrapped, spent the whole live region on the header and query and the live region clipped the highlighted choice away — you could not see what you were about to pick. The render seams the emulator tests drive (`select_prompt.frameNode`/`frameNodeFiltered`, `multi_select_prompt.frameNode`/`frameNodeFiltered`) take the anchor as a new `*list_render.Viewport` argument; pass one per prompt, not one per frame. `list_render.viewport` is replaced by `list_render.Viewport.window`.
 - **A value parsed by `zcli.http.Response.json` no longer dangles when the response is released** (#814). `std.json`'s slice-input default is `.alloc_if_needed`, so any string that needed no unescaping — which is most of them — came back as a slice *into* `Response.body` rather than into the parse's own arena. The `Parsed(T)` looked self-contained and the API said the arena owned it, but `response.deinit()` (or, under the per-command arena, the command returning) freed the bytes out from under `parsed.value`, and the payloads that happened to contain an escape hid it in testing. `json` now parses with `.allocate = .alloc_always`, so everything reachable from `.value` is genuinely owned by the parse and outlives the response it came from; the two lifetimes are independent, and the ownership contract in the module doc and the HTTP guide now says so. Unknown-field handling is unchanged. Callers that defensively copied strings out of a parse before the body went away (the `oauth-device` example did) can drop the copies.

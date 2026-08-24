@@ -218,7 +218,30 @@ pub fn ContextFor(comptime plugins: []const type) type {
                 .reader = self.stdin(),
                 .allocator = self.allocator,
                 .theme = self.theme,
+                .interactive = self.promptInteractivity(),
             };
+        }
+
+        /// The interactivity answer `prompts()` hands its instance: `null` — probe
+        /// the process's real streams — in a normal run, and `false` once an
+        /// in-memory override has replaced either stream a full-frame prompt
+        /// needs.
+        ///
+        /// Prompts otherwise decide from the *process descriptors*, which say
+        /// nothing about where this Context's bytes actually go. A test harness
+        /// (`runCommand`) captures stdout into a buffer and can inject stdin, yet
+        /// a test binary started from a terminal still has TTY descriptors — so
+        /// the prompt would enter raw mode, read the developer's real keyboard,
+        /// and paint frames into a buffer nobody sees. The streams the prompt was
+        /// handed are the ones that decide, and an in-memory stream is not a
+        /// terminal.
+        ///
+        /// stderr is deliberately not consulted: a full-frame prompt needs stdout
+        /// to paint and stdin for keystrokes, and capturing stderr alone leaves
+        /// both intact.
+        fn promptInteractivity(self: *Self) ?bool {
+            if (self.stdio.stdout_override != null or self.stdio.stdin_override != null) return false;
+            return null;
         }
 
         /// A `Progress` instance pre-wired to this command's environment:
@@ -483,6 +506,49 @@ test "context accessors type-check" {
     // signature (e.g. a stale bundle field) at build time rather than only when
     // an example happens to use it.
     std.testing.refAllDecls(ContextFor(&.{}));
+}
+
+test "prompts() forces the line path once a stream is in memory" {
+    // The process's descriptors are irrelevant to where *this* Context's bytes
+    // go: a test binary launched from a terminal has TTY descriptors even while
+    // its stdout is captured into a buffer and its stdin is an injected string.
+    // Left to probe, a prompt would enter raw mode, read the real keyboard and
+    // paint into the buffer — so the handed-in streams decide instead.
+    const Ctx = ContextFor(&.{});
+    var stdio: zcli.Stdio = undefined;
+    stdio.init(std.testing.io);
+    const env = std.process.Environ.Map.init(std.testing.allocator);
+    var ctx = Ctx{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .stdio = &stdio,
+        .environ = &env,
+    };
+    defer ctx.deinit();
+
+    // Real streams: no override, so the instance probes them itself.
+    try std.testing.expectEqual(@as(?bool, null), ctx.prompts().interactive);
+
+    // Captured stdout: a rendered frame would land in a buffer nobody sees.
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    stdio.stdout_override = &aw.writer;
+    try std.testing.expectEqual(@as(?bool, false), ctx.prompts().interactive);
+    try std.testing.expect(!ctx.prompts().isInteractive());
+
+    // Injected stdin alone is equally disqualifying: an in-memory reader can
+    // deliver bytes but never keystrokes.
+    stdio.stdout_override = null;
+    var injected: std.Io.Reader = .fixed("answer\n");
+    stdio.stdin_override = &injected;
+    try std.testing.expectEqual(@as(?bool, false), ctx.prompts().interactive);
+    try std.testing.expect(!ctx.prompts().isInteractive());
+
+    // Captured stderr does not disqualify anything: a prompt paints on stdout
+    // and reads stdin, and both are still the process's own here.
+    stdio.stdin_override = null;
+    stdio.stderr_override = &aw.writer;
+    try std.testing.expectEqual(@as(?bool, null), ctx.prompts().interactive);
 }
 
 test "Context carries the console State so exit() can restore code pages" {

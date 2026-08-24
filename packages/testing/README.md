@@ -15,7 +15,7 @@ The complete guide with worked examples per tier is [zcli.sh/testing](https://zc
 `examples/` has a heavily-commented sample test file per tier, each importing the
 tier under the same alias a real project uses:
 
-- [`examples/unit_example.zig`](examples/unit_example.zig) — `runCommand`: args/options, failure and `context.fail`, vterm rendered-output assertions, plugin state.
+- [`examples/unit_example.zig`](examples/unit_example.zig) — `runCommand`: args/options, failure and `context.fail`, vterm rendered-output assertions, plugin state, injected stdin, app metadata.
 - [`examples/snapshot_example.zig`](examples/snapshot_example.zig) — `runSubprocess` + assertions, and `expectSnapshot` compare/update with masking and `ansi=false`.
 - [`examples/e2e_example.zig`](examples/e2e_example.zig) — `InteractiveScript` + `runInteractive` over pipes and a real PTY (the PTY case skips gracefully where no TTY exists).
 - [`examples/http_fixture_example.zig`](examples/http_fixture_example.zig) — `HttpFixture` driving a real `zcli.http` adapter: scripted success and failure responses, and request assertions.
@@ -49,7 +49,7 @@ rendered-frame assertions) need vterm — the unit tier also needs zcli; the
 
 ## API surface
 
-- **Unit**: `runCommand(Command, .{ .args = ..., .options = ... })` → `CommandResult` (`.stdout`, `.stderr`, `.success`, `.err`, `.term`)
+- **Unit**: `runCommand(Command, .{ .args = ..., .options = ... })` → `CommandResult` (`.stdout`, `.stderr`, `.success`, `.err`, `.term`). Also configurable: `.plugins` (plugin `ContextData`), `.environ`, `.stdin` (input bytes for `context.stdin()`/`context.prompts()`; injecting it also puts prompts on their line-based branch, so they read these bytes instead of the real stdin and never enter raw mode — keystroke behavior stays with the PTY tier), `.app_name`/`.app_version`/`.app_description` (context app metadata, in place before plugin `initContextData` runs), `.allocator`
 - **Integration**: `runSubprocess(allocator, io, exe_path, args)` → `Result` (`.stdout`, `.stderr`, `.exit_code`)
 - **Assertions**: `expectExitCode`, `expectExitCodeNot`, `expectContains`, `expectNotContains`, `expectEqualStrings`, `expectValidJson`, `expectStdoutEmpty`, `expectStderrEmpty`
 - **Snapshots**: `expectSnapshot(...)` against golden files, with `maskDynamicContent` (UUIDs, timestamps, addresses) and `stripAnsi`; update by threading `.update = true` from a build option (`zig build test -Dupdate-snapshots`)
