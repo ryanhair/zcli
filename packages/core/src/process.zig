@@ -977,309 +977,17 @@ fn closeIdentity(id: *Identity) void {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Program resolution
-// ---------------------------------------------------------------------------
+// Program and environment setup are private deep modules. The public policy
+// types remain above; the lifecycle below consumes only their completed values.
+const environment = @import("process/environment.zig");
+const resolution = @import("process/resolution.zig");
 
-/// The four extensions `std`'s Windows backend can execute. Ordered as
-/// `std.process.WindowsExtension` spells them.
-const windows_exts = [_][]const u8{ ".bat", ".cmd", ".com", ".exe" };
-
-fn eqlIgnoreCaseAscii(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
+comptime {
+    const private_setup_errors = environment.Error || resolution.Error;
+    const public_setup_errors = ResolveError || Allocator.Error;
+    if (private_setup_errors != public_setup_errors) {
+        @compileError("private process setup errors must match ResolveError plus allocator errors");
     }
-    return true;
-}
-
-/// The supported extension `path` carries, if any. ASCII-case-insensitive: a
-/// case-sensitive comparison would have made `.BAT` a trivial bypass of the
-/// script gate.
-fn supportedExtension(path: []const u8) ?std.process.WindowsExtension {
-    for (windows_exts, 0..) |ext, i| {
-        if (path.len > ext.len and eqlIgnoreCaseAscii(path[path.len - ext.len ..], ext)) {
-            return @enumFromInt(i);
-        }
-    }
-    return null;
-}
-
-fn isScriptExtension(e: std.process.WindowsExtension) bool {
-    return e == .bat or e == .cmd;
-}
-
-/// A `.in_dirs`/`.search_path` name must be a bare basename. Without this,
-/// `.in_dirs{ .name = "../../bin/sh", .dirs = &.{"/opt/trusted/bin"} }` resolves
-/// *outside* every directory the caller listed — which defeats the entire point
-/// of the variant. `.path` is the way to say "this exact file".
-fn validBasename(name: []const u8) bool {
-    if (name.len == 0) return false;
-    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
-    if (std.mem.indexOfScalar(u8, name, '/') != null) return false;
-    if (is_windows) {
-        if (std.mem.indexOfScalar(u8, name, '\\') != null) return false;
-        // A drive-relative prefix (`C:foo`) or an alternate data stream (`f:s`).
-        if (std.mem.indexOfScalar(u8, name, ':') != null) return false;
-    }
-    return true;
-}
-
-/// PATH separator: `;` on Windows, `:` everywhere else.
-const path_sep = if (is_windows) ';' else ':';
-
-const Resolved = struct {
-    /// Owned by the run's allocator.
-    path: []u8,
-};
-
-/// Windows only, and applied to *every* variant. `windowsCreateProcessPathExt`
-/// enumerates `app_name*` in the target directory and deliberately does not stop
-/// at an exact match, so handing it `C:\d\foo.exe` still lets `C:\d\foo.exe.cmd`
-/// run if the first spawn fails. Refusing the whole layout is the only way to
-/// keep the runner — not the backend's fallback — in charge of which image runs.
-///
-/// This is a check-then-spawn, so it is TOCTOU by construction: a sibling
-/// created between the check and `CreateProcessW` would not be seen. What it
-/// buys is that a *pre-existing* hostile sibling cannot be reached. Winning the
-/// race requires write access to the program's directory, which is already a
-/// compromise of the machine.
-fn checkWindowsTarget(
-    io: Io,
-    allocator: Allocator,
-    path: []const u8,
-    allow_script: bool,
-) Error!void {
-    if (!is_windows) return;
-
-    var sibling_exists = false;
-    for (windows_exts) |sibling_ext| {
-        const candidate = try std.fmt.allocPrint(allocator, "{s}{s}", .{ path, sibling_ext });
-        defer allocator.free(candidate);
-        Io.Dir.accessAbsolute(io, candidate, .{}) catch continue;
-        sibling_exists = true;
-        break;
-    }
-    return classifyWindowsTarget(path, allow_script, sibling_exists);
-}
-
-/// The decision `checkWindowsTarget` makes, separated from the four `access`
-/// calls that answer `sibling_exists` — so the rules themselves are testable on
-/// every platform rather than only where they fire.
-///
-/// The sibling refusal is unconditional, `allow_windows_script` included: a
-/// `foo.exe` sitting next to a `foo.exe.cmd` has no legitimate use and is
-/// exactly the shape an attacker would create to exploit the backend's PATHEXT
-/// fallback. "Two candidates, refusing to guess" is more useful than silently
-/// running either.
-fn classifyWindowsTarget(path: []const u8, allow_script: bool, sibling_exists: bool) ResolveError!void {
-    const ext = supportedExtension(path) orelse return error.UnsupportedProgramExtension;
-    if (isScriptExtension(ext) and !allow_script) return error.BatchScriptRefused;
-    if (sibling_exists) return error.AmbiguousProgram;
-}
-
-/// PATHEXT entries from the *child's* environment, intersected with the four
-/// extensions the backend can execute, in PATHEXT order. Entries outside that
-/// set are skipped rather than silently attempted.
-fn windowsPathExt(env: *const std.process.Environ.Map, out: *[windows_exts.len][]const u8) []const []const u8 {
-    var n: usize = 0;
-    const raw = env.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD";
-    var it = std.mem.splitScalar(u8, raw, ';');
-    while (it.next()) |entry| {
-        if (entry.len == 0) continue;
-        for (windows_exts) |ext| {
-            if (!eqlIgnoreCaseAscii(entry, ext)) continue;
-            // De-duplicate: a PATHEXT listing the same extension twice must not
-            // double the probes.
-            var seen = false;
-            for (out[0..n]) |already| {
-                if (std.mem.eql(u8, already, ext)) seen = true;
-            }
-            if (!seen) {
-                out[n] = ext;
-                n += 1;
-            }
-        }
-    }
-    if (n == 0) {
-        // A PATHEXT with nothing executable in it still has to find `gh.exe`.
-        out[0] = ".exe";
-        n = 1;
-    }
-    return out[0..n];
-}
-
-/// Search `dirs` for `name`, directory-outer / extension-inner (matching
-/// `cmd.exe`). On POSIX the extension list is a single empty string, so the
-/// loop degenerates to the `zcli_secrets` algorithm.
-fn searchDirs(
-    io: Io,
-    allocator: Allocator,
-    name: []const u8,
-    dirs: []const []const u8,
-    child_env: *const std.process.Environ.Map,
-) Error![]u8 {
-    if (!validBasename(name)) return error.UnsafeProgramName;
-
-    var ext_storage: [windows_exts.len][]const u8 = undefined;
-    const exts: []const []const u8 = if (is_windows)
-        (if (supportedExtension(name) != null) &.{""} else windowsPathExt(child_env, &ext_storage))
-    else
-        &.{""};
-
-    for (dirs) |dir| {
-        if (!std.fs.path.isAbsolute(dir)) return error.UnsafeSearchPath;
-        for (exts) |ext| {
-            const candidate = try std.fmt.allocPrint(allocator, "{s}{c}{s}{s}", .{
-                std.mem.trimEnd(u8, dir, if (is_windows) "\\/" else "/"),
-                std.fs.path.sep,
-                name,
-                ext,
-            });
-            errdefer allocator.free(candidate);
-            Io.Dir.accessAbsolute(io, candidate, .{ .execute = true }) catch {
-                allocator.free(candidate);
-                continue;
-            };
-            return candidate;
-        }
-    }
-    return error.ProgramNotFound;
-}
-
-/// PATH entries that are relative — including the empty entry, which means `.` —
-/// are skipped rather than searched. A relative entry is exactly how a hostile
-/// cwd gets to choose the binary.
-fn searchPath(
-    io: Io,
-    allocator: Allocator,
-    name: []const u8,
-    child_env: *const std.process.Environ.Map,
-) Error![]u8 {
-    if (!validBasename(name)) return error.UnsafeProgramName;
-    const raw = child_env.get("PATH") orelse return error.ProgramNotFound;
-
-    var dirs: std.ArrayList([]const u8) = .empty;
-    defer dirs.deinit(allocator);
-    var it = std.mem.splitScalar(u8, raw, path_sep);
-    while (it.next()) |entry| {
-        if (entry.len == 0) continue;
-        if (!std.fs.path.isAbsolute(entry)) continue;
-        try dirs.append(allocator, entry);
-    }
-    return searchDirs(io, allocator, name, dirs.items, child_env);
-}
-
-fn resolveProgram(
-    io: Io,
-    allocator: Allocator,
-    program: Program,
-    child_env: *const std.process.Environ.Map,
-    allow_script: bool,
-) Error!Resolved {
-    const path: []u8 = switch (program) {
-        .path => |p| blk: {
-            const abs = Io.Dir.cwd().realPathFileAlloc(io, p, allocator) catch |err| switch (err) {
-                error.FileNotFound, error.NotDir, error.BadPathName => return error.ProgramNotFound,
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return error.ProgramNotFound,
-            };
-            break :blk try dupeAndFreeSentinel(allocator, abs);
-        },
-        .at => |a| blk: {
-            const abs = a.dir.realPathFileAlloc(io, a.path, allocator) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return error.ProgramNotFound,
-            };
-            break :blk try dupeAndFreeSentinel(allocator, abs);
-        },
-        .in_dirs => |d| try searchDirs(io, allocator, d.name, d.dirs, child_env),
-        .search_path => |name| try searchPath(io, allocator, name, child_env),
-    };
-    errdefer allocator.free(path);
-
-    try checkWindowsTarget(io, allocator, path, allow_script);
-    return .{ .path = path };
-}
-
-/// `realPathFileAlloc` hands back a sentinel-terminated slice; the runner keeps
-/// a plain `[]u8` so every resolution path frees the same shape.
-fn dupeAndFreeSentinel(allocator: Allocator, s: [:0]u8) Allocator.Error![]u8 {
-    defer allocator.free(s);
-    return allocator.dupe(u8, s);
-}
-
-// ---------------------------------------------------------------------------
-// Environment composition
-// ---------------------------------------------------------------------------
-
-fn nameInList(name: []const u8, list: []const []const u8) bool {
-    for (list) |entry| {
-        if (is_windows) {
-            if (std.os.windows.eqlIgnoreCaseWtf8(entry, name)) return true;
-        } else if (std.mem.eql(u8, entry, name)) return true;
-    }
-    return false;
-}
-
-/// Validate a *caller-supplied* name. `validateKeyForPut` deliberately skips
-/// index 0 on Windows so the shell's `=C:`-style drive variables survive, so a
-/// leading `=` is rejected here on every platform — a caller never means to
-/// define one — while inherited entries are left untouched.
-fn validEnvName(name: []const u8) bool {
-    if (!std.process.Environ.Map.validateKeyForPut(name)) return false;
-    if (name.len > 0 and name[0] == '=') return false;
-    return true;
-}
-
-/// Nothing in `std` validates values. A NUL anywhere in a value is rejected
-/// (POSIX serializes `key=value` as a C string, so a NUL silently truncates the
-/// value in the child), and on Windows values are WTF-8-validated up front
-/// rather than surfacing as `error.InvalidWtf8` from block creation halfway
-/// through a spawn.
-fn validEnvValue(value: []const u8) bool {
-    if (std.mem.indexOfScalar(u8, value, 0) != null) return false;
-    if (is_windows and !std.unicode.wtf8ValidateSlice(value)) return false;
-    return true;
-}
-
-fn buildEnv(
-    allocator: Allocator,
-    base: *const std.process.Environ.Map,
-    spec: EnvSpec,
-) Error!std.process.Environ.Map {
-    var map: std.process.Environ.Map = .init(allocator);
-    errdefer map.deinit();
-
-    switch (spec.policy) {
-        .inherit => {
-            for (base.keys(), base.values()) |k, v| try map.put(k, v);
-        },
-        .allow => |list| {
-            for (base.keys(), base.values()) |k, v| {
-                if (nameInList(k, list)) try map.put(k, v);
-            }
-        },
-        .deny => |list| {
-            for (base.keys(), base.values()) |k, v| {
-                if (!nameInList(k, list)) try map.put(k, v);
-            }
-        },
-        .replace => |entries| {
-            for (entries) |e| {
-                if (!validEnvName(e.name)) return error.InvalidEnvName;
-                if (!validEnvValue(e.value)) return error.InvalidEnvValue;
-                try map.put(e.name, e.value);
-            }
-        },
-    }
-
-    for (spec.add) |e| {
-        if (!validEnvName(e.name)) return error.InvalidEnvName;
-        if (!validEnvValue(e.value)) return error.InvalidEnvValue;
-        try map.put(e.name, e.value);
-    }
-    return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,13 +1189,13 @@ fn execute(
     var diag_program: ?[]const u8 = null;
 
     // --- resolve phase -----------------------------------------------------
-    var child_env = buildEnv(allocator, environ, options.env) catch |err| {
+    var child_env = environment.build(allocator, environ, options.env) catch |err| {
         return fail(options, .resolve, err, null, null);
     };
     var env_alive = true;
     defer if (env_alive) child_env.deinit();
 
-    const resolved = resolveProgram(io, allocator, program, &child_env, options.allow_windows_script) catch |err| {
+    const resolved = resolution.resolve(io, allocator, program, &child_env, options.allow_windows_script) catch |err| {
         return fail(options, .resolve, err, null, null);
     };
     defer allocator.free(resolved.path);
@@ -2283,252 +1991,32 @@ test "Result.deinit releases both buffers and is idempotent" {
     try testing.expectEqual(@as(usize, 0), result.stderr.buf.len);
 }
 
-test "validBasename rejects every path-shaped name" {
-    try testing.expect(validBasename("gh"));
-    try testing.expect(validBasename("secret-tool"));
-    try testing.expect(!validBasename(""));
-    try testing.expect(!validBasename("."));
-    try testing.expect(!validBasename(".."));
-    try testing.expect(!validBasename("sub/tool"));
-    try testing.expect(!validBasename("../../bin/sh"));
-    if (is_windows) {
-        try testing.expect(!validBasename("..\\x"));
-        try testing.expect(!validBasename("C:tool"));
-        try testing.expect(!validBasename("tool:stream"));
-    }
+test "environment composition applies policy before additions" {
+    try environment.testComposition(EnvSpec);
 }
 
-test "supportedExtension classifies case-insensitively" {
-    try testing.expectEqual(std.process.WindowsExtension.exe, supportedExtension("C:\\d\\gh.exe").?);
-    try testing.expectEqual(std.process.WindowsExtension.bat, supportedExtension("C:\\d\\gh.BAT").?);
-    try testing.expectEqual(std.process.WindowsExtension.cmd, supportedExtension("C:\\d\\gh.Cmd").?);
-    try testing.expectEqual(std.process.WindowsExtension.com, supportedExtension("x.COM").?);
-    try testing.expect(supportedExtension("C:\\d\\gh") == null);
-    try testing.expect(supportedExtension("C:\\d\\gh.ps1") == null);
-    // A bare extension with no stem is not a program named by extension.
-    try testing.expect(supportedExtension(".exe") == null);
-    try testing.expect(isScriptExtension(.bat));
-    try testing.expect(isScriptExtension(.cmd));
-    try testing.expect(!isScriptExtension(.exe));
-    try testing.expect(!isScriptExtension(.com));
+test "environment name matching follows the platform rule" {
+    try environment.testNameMatching(EnvSpec);
 }
 
-test "Windows target rules apply uniformly, whatever named the file" {
-    // These run on every platform: the rules are what is under test, not the
-    // four `access` calls that answer `sibling_exists`. Test 33's point is that
-    // `.path` is not a bypass — std's PATHEXT fallback keys off what is in the
-    // directory, not off how the runner arrived at the name.
-    try classifyWindowsTarget("C:\\d\\gh.exe", false, false);
-    try classifyWindowsTarget("C:\\d\\gh.COM", false, false);
-
-    // No extension, or one the backend cannot execute: the runner refuses rather
-    // than letting `CreateProcessW` pick the image.
-    try testing.expectError(error.UnsupportedProgramExtension, classifyWindowsTarget("C:\\d\\gh", false, false));
-    try testing.expectError(error.UnsupportedProgramExtension, classifyWindowsTarget("C:\\d\\gh.ps1", false, false));
-
-    // Scripts are refused by default and permitted by opt-in — case-insensitively.
-    try testing.expectError(error.BatchScriptRefused, classifyWindowsTarget("C:\\d\\gh.cmd", false, false));
-    try testing.expectError(error.BatchScriptRefused, classifyWindowsTarget("C:\\d\\gh.BAT", false, false));
-    try classifyWindowsTarget("C:\\d\\gh.cmd", true, false);
-
-    // A sibling refuses regardless of `allow_windows_script`.
-    try testing.expectError(error.AmbiguousProgram, classifyWindowsTarget("C:\\d\\gh.exe", false, true));
-    try testing.expectError(error.AmbiguousProgram, classifyWindowsTarget("C:\\d\\gh.exe", true, true));
-
-    // The script gate is checked before the sibling check, so a refused script
-    // reports why it was refused rather than that it was ambiguous.
-    try testing.expectError(error.BatchScriptRefused, classifyWindowsTarget("C:\\d\\gh.cmd", false, true));
+test "environment rejects malformed caller entries" {
+    try environment.testValidation(EnvSpec);
 }
 
-test "windowsPathExt keeps PATHEXT order, drops what cannot be executed" {
-    const a = testing.allocator;
-    var env: std.process.Environ.Map = .init(a);
-    defer env.deinit();
-    try env.put("PATHEXT", ".PS1;.EXE;.CMD;.EXE");
-
-    var storage: [windows_exts.len][]const u8 = undefined;
-    const got = windowsPathExt(&env, &storage);
-    try testing.expectEqual(@as(usize, 2), got.len);
-    try testing.expectEqualStrings(".exe", got[0]);
-    try testing.expectEqualStrings(".cmd", got[1]);
+test "program basename and Windows image-selection rules" {
+    try resolution.testTargetRules();
 }
 
-test "windowsPathExt defaults when PATHEXT is absent or useless" {
-    const a = testing.allocator;
-    var env: std.process.Environ.Map = .init(a);
-    defer env.deinit();
-
-    var storage: [windows_exts.len][]const u8 = undefined;
-    const defaulted = windowsPathExt(&env, &storage);
-    try testing.expectEqual(@as(usize, 4), defaulted.len);
-
-    try env.put("PATHEXT", ".PS1;.VBS");
-    const fallback = windowsPathExt(&env, &storage);
-    try testing.expectEqual(@as(usize, 1), fallback.len);
-    try testing.expectEqualStrings(".exe", fallback[0]);
+test "program PATHEXT keeps supported order and safe fallbacks" {
+    try resolution.testPathExt();
 }
 
-test "env composition: inherit, allow, deny, replace, and add layering" {
-    const a = testing.allocator;
-    var base: std.process.Environ.Map = .init(a);
-    defer base.deinit();
-    try base.put("PATH", "/bin");
-    try base.put("HOME", "/home/x");
-    try base.put("SECRET", "s3cr3t");
-
-    {
-        var m = try buildEnv(a, &base, .{ .policy = .inherit });
-        defer m.deinit();
-        try testing.expectEqual(@as(usize, 3), m.count());
-        try testing.expectEqualStrings("/bin", m.get("PATH").?);
-    }
-    {
-        var m = try buildEnv(a, &base, .{ .policy = .{ .allow = &.{"PATH"} } });
-        defer m.deinit();
-        try testing.expectEqual(@as(usize, 1), m.count());
-        try testing.expect(m.get("SECRET") == null);
-    }
-    {
-        var m = try buildEnv(a, &base, .{ .policy = .{ .deny = &.{"SECRET"} } });
-        defer m.deinit();
-        try testing.expectEqual(@as(usize, 2), m.count());
-        try testing.expect(m.get("SECRET") == null);
-        try testing.expectEqualStrings("/home/x", m.get("HOME").?);
-    }
-    {
-        // `.replace` inherits nothing — not even PATH.
-        var m = try buildEnv(a, &base, .{ .policy = .{ .replace = &.{
-            .{ .name = "ONLY", .value = "1" },
-        } } });
-        defer m.deinit();
-        try testing.expectEqual(@as(usize, 1), m.count());
-        try testing.expect(m.get("PATH") == null);
-    }
-    {
-        // `add` is applied last, over whatever the policy produced.
-        var m = try buildEnv(a, &base, .{
-            .policy = .inherit,
-            .add = &.{.{ .name = "PATH", .value = "/override" }},
-        });
-        defer m.deinit();
-        try testing.expectEqualStrings("/override", m.get("PATH").?);
-    }
+test "program search rejects unsafe input and skips unsafe PATH entries" {
+    try resolution.testSearchPolicy();
 }
 
-test "env name matching follows the platform rule" {
-    const a = testing.allocator;
-    var base: std.process.Environ.Map = .init(a);
-    defer base.deinit();
-    try base.put("Path", "/bin");
-
-    var m = try buildEnv(a, &base, .{ .policy = .{ .allow = &.{"PATH"} } });
-    defer m.deinit();
-    if (is_windows) {
-        try testing.expectEqual(@as(usize, 1), m.count());
-    } else {
-        try testing.expectEqual(@as(usize, 0), m.count());
-    }
-}
-
-test "env validation rejects bad names and values" {
-    const a = testing.allocator;
-    var base: std.process.Environ.Map = .init(a);
-    defer base.deinit();
-
-    try testing.expectError(error.InvalidEnvName, buildEnv(a, &base, .{
-        .add = &.{.{ .name = "", .value = "x" }},
-    }));
-    try testing.expectError(error.InvalidEnvName, buildEnv(a, &base, .{
-        .add = &.{.{ .name = "A=B", .value = "x" }},
-    }));
-    try testing.expectError(error.InvalidEnvName, buildEnv(a, &base, .{
-        .add = &.{.{ .name = "A\x00B", .value = "x" }},
-    }));
-    // `validateKeyForPut` deliberately skips index 0 on Windows so `=C:` drive
-    // variables survive; a caller-supplied one is rejected on every platform.
-    try testing.expectError(error.InvalidEnvName, buildEnv(a, &base, .{
-        .add = &.{.{ .name = "=C:", .value = "x" }},
-    }));
-    try testing.expectError(error.InvalidEnvValue, buildEnv(a, &base, .{
-        .add = &.{.{ .name = "A", .value = "x\x00y" }},
-    }));
-    try testing.expectError(error.InvalidEnvName, buildEnv(a, &base, .{
-        .policy = .{ .replace = &.{.{ .name = "=X", .value = "1" }} },
-    }));
-}
-
-test "in_dirs rejects a relative directory and a path-shaped name" {
-    const a = testing.allocator;
-    const io = testing.io;
-    var env: std.process.Environ.Map = .init(a);
-    defer env.deinit();
-
-    try testing.expectError(error.UnsafeSearchPath, searchDirs(io, a, "sh", &.{"relative/dir"}, &env));
-    try testing.expectError(error.UnsafeProgramName, searchDirs(io, a, "../../bin/sh", &.{"/usr/bin"}, &env));
-    try testing.expectError(error.UnsafeProgramName, searchPath(io, a, "sub/tool", &env));
-}
-
-test "search_path skips relative and empty PATH entries" {
-    const a = testing.allocator;
-    const io = testing.io;
-    if (is_windows) return error.SkipZigTest;
-
-    var env: std.process.Environ.Map = .init(a);
-    defer env.deinit();
-    // An empty entry means `.`, and a relative one is how a hostile cwd gets to
-    // pick the binary. Neither is searched, so with only those two the lookup
-    // fails rather than finding something in the working directory.
-    try env.put("PATH", ":relative/bin:");
-    try testing.expectError(error.ProgramNotFound, searchPath(io, a, "sh", &env));
-
-    try env.put("PATH", ":relative/bin:/bin");
-    const found = searchPath(io, a, "sh", &env) catch return error.SkipZigTest;
-    defer a.free(found);
-    try testing.expect(std.fs.path.isAbsolute(found));
-    try testing.expectEqualStrings("/bin/sh", found);
-}
-
-test "resolution yields an absolute path for every variant" {
-    if (is_windows) return error.SkipZigTest;
-    const a = testing.allocator;
-    const io = testing.io;
-
-    var env: std.process.Environ.Map = .init(a);
-    defer env.deinit();
-    try env.put("PATH", "/bin:/usr/bin");
-
-    for ([_]Program{
-        .{ .path = "/bin/sh" },
-        .{ .in_dirs = .{ .name = "sh", .dirs = &.{"/bin"} } },
-        .{ .search_path = "sh" },
-    }) |program| {
-        const r = resolveProgram(io, a, program, &env, false) catch continue;
-        defer a.free(r.path);
-        try testing.expect(std.fs.path.isAbsolute(r.path));
-    }
-}
-
-test "a missing program is ProgramNotFound, not a spawn failure" {
-    const a = testing.allocator;
-    const io = testing.io;
-    var env: std.process.Environ.Map = .init(a);
-    defer env.deinit();
-    try env.put("PATH", if (is_windows) "C:\\Windows\\System32" else "/bin:/usr/bin");
-
-    try testing.expectError(error.ProgramNotFound, resolveProgram(
-        io,
-        a,
-        .{ .search_path = "zcli-no-such-program-anywhere" },
-        &env,
-        false,
-    ));
-    try testing.expectError(error.ProgramNotFound, resolveProgram(
-        io,
-        a,
-        .{ .path = "/nonexistent/zcli-no-such-program" },
-        &env,
-        false,
-    ));
+test "every Program variant resolves absolutely or reports not found" {
+    try resolution.testResolution(Program);
 }
 
 test "Diagnostic reports the resolved path only when given a buffer" {
