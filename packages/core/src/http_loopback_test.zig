@@ -408,29 +408,31 @@ test "a response that completes as the timeout fires is not leaked" {
     const round_trip = std.Io.Timestamp.durationTo(start, std.Io.Timestamp.now(io, .awake));
     const round_trip_ns: i96 = @max(1, round_trip.nanoseconds);
 
-    // Sweep timeouts from 1ns (the timer cannot lose) up to several times the
-    // measured round trip (the request cannot lose), so the run necessarily
-    // crosses the boundary in between. That boundary is the bug's window: the
-    // timer wins the select, yet the request completes anyway before cancelation
-    // reaches it — cancelation is only delivered at the next I/O cancelation
-    // point — handing back a fully-allocated `Response` that nothing else can
-    // free. Dropping it leaks under `testing.allocator`, failing this test.
+    // Sweep timeouts from 1ns up through multiples of the measured round trip.
+    // Near the boundary, the timer can win the select while the request completes
+    // before cancelation reaches its next I/O cancelation point, handing back a
+    // fully-allocated `Response` that must still be freed. Dropping it leaks under
+    // `testing.allocator`, failing this test.
     //
     // Which iterations land in that window is scheduling-dependent, so the
     // outcome tallies below are the guard that the sweep actually swept: seeing
-    // both a `Timeout` and a completed response proves the boundary was crossed
-    // and the server stayed alive throughout. A sweep that produced only one
-    // regime proves nothing, so it is retried rather than passed.
+    // both a `Timeout` and a completed response confirms that the sweep exercised
+    // both sides of the timing boundary and the server remained able to complete
+    // requests. Each retry widens the timeout range to accommodate scheduling
+    // variance.
     const iterations = 64;
     const max_rounds = 4;
     var timed_out: usize = 0;
     var completed: usize = 0;
+    var last_timeout_ns: i96 = 1;
 
     var round: usize = 0;
     while (round < max_rounds and (timed_out == 0 or completed == 0)) : (round += 1) {
+        const range_multiplier = @as(i96, 4) << @intCast(round);
         for (0..iterations) |i| {
-            const span = round_trip_ns * 4 * @as(i96, @intCast(i));
+            const span = round_trip_ns * range_multiplier * @as(i96, @intCast(i));
             const ns = 1 + @divTrunc(span, iterations);
+            last_timeout_ns = ns;
             var client = Client.init(testing.allocator, io, .{ .timeout = .fromNanoseconds(ns) });
             defer client.deinit();
 
@@ -446,12 +448,22 @@ test "a response that completes as the timeout fires is not leaked" {
                 // torn down under it. That is a legitimate sweep outcome, but it
                 // is not evidence either regime was reached, so it is not counted.
                 error.Canceled, error.ConnectionResetByPeer, error.EndOfStream => {},
-                else => return err,
+                else => {
+                    std.debug.print("timeout sweep failed: round={d}/{d} round_trip_ns={d} timeout_ns={d} timed_out={d} completed={d} error={s}\n", .{
+                        round + 1, max_rounds, round_trip_ns, ns, timed_out, completed, @errorName(err),
+                    });
+                    return err;
+                },
             }
         }
     }
 
     // Not assertions about the fix — assertions that the sweep was meaningful.
+    if (timed_out == 0 or completed == 0) {
+        std.debug.print("timeout sweep failed: round={d}/{d} round_trip_ns={d} timeout_ns={d} timed_out={d} completed={d} error=missing outcome\n", .{
+            round, max_rounds, round_trip_ns, last_timeout_ns, timed_out, completed,
+        });
+    }
     try testing.expect(timed_out > 0);
     try testing.expect(completed > 0);
 }
