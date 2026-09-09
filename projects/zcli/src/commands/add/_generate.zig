@@ -255,6 +255,20 @@ test "generateSource: empty command is the minimal skeleton" {
     try expectContains(src, "runCommand(@This(), .{});"); // the 2-arg example pattern in the comment
 }
 
+test "generated command self-references round-trip through rename rewriting" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const generated = try generateSource(a, &.{ "users", "create" }, "Create a user", &.{}, &.{});
+    const renamed = try scaffold.fs.rewriteCommandPathReferences(a, generated, "users create", "admin register");
+
+    try expectContains(renamed, "\"admin register\"");
+    try expectContains(renamed, "TODO: Implement admin register\\n");
+    try expectContains(renamed, "test \"admin register\"");
+    try std.testing.expect(std.mem.indexOf(u8, renamed, "users create") == null);
+}
+
 test "generateSource: multiple is independent of element type" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

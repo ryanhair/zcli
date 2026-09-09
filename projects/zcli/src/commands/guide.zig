@@ -317,7 +317,8 @@ const topics = [_]Topic{
         \\
         \\New directories are 0700 on POSIX; existing ones are left exactly as they
         \\are (no retroactive chmod). ensure* is idempotent and NOT atomic — if you
-        \\need atomicity for the file, use createFileAtomic + rename.
+        \\need atomicity for the file, use createFileAtomic then Atomic.replace
+        \\or Atomic.link, depending on whether replacement is allowed.
         \\
         \\Errors are typed, so you choose the degradation per call site:
         \\
