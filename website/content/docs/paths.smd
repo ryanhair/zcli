@@ -129,7 +129,7 @@ try shell_paths.ensureParent(context.io, dest);
 - Directories the `ensure*` family creates are `0700` on POSIX — these may hold tokens, and `createDirPath`'s default of `0o777` masked by umask is typically world-readable `0755`.
 - **Existing directories are never touched.** A `~/.cache/myapp` that already exists at `0755` keeps `0755`; zcli does not retroactively `chmod` a directory it did not create.
 - `ensure*` is idempotent and creates directories only — never the file itself.
-- It is **not** atomic. If you need atomicity for the file, keep using `createFileAtomic` + rename.
+- It is **not** atomic. If you need atomicity for the file, use `createFileAtomic` and finish with `Atomic.replace` or `Atomic.link`, depending on whether replacement is allowed.
 
 ## Names, and what is guaranteed
 

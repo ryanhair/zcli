@@ -1283,7 +1283,7 @@ test "escapeStringLiteral escapes quotes, backslashes, and newlines" {
 fn scaffoldAgentsMd(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !AgentsResult {
     const existing = dir.readFileAlloc(io, "AGENTS.md", allocator, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => {
-            try dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = agents_section });
+            try scaffold.fs.writeFileAtomicNew(dir, io, allocator, "AGENTS.md", agents_section, null);
             return .created;
         },
         else => return err,
@@ -1297,7 +1297,7 @@ fn scaffoldAgentsMd(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !
         const trailing = if (after < existing.len and existing[after] == '\n') after + 1 else after;
         const updated = try std.mem.concat(allocator, u8, &.{ existing[0..begin], agents_section, existing[trailing..] });
         defer allocator.free(updated);
-        try dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = updated });
+        try scaffold.fs.writeFileAtomic(dir, io, allocator, "AGENTS.md", updated);
         return .refreshed;
     }
 
@@ -1305,7 +1305,7 @@ fn scaffoldAgentsMd(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !
     const sep = if (std.mem.endsWith(u8, existing, "\n")) "\n" else "\n\n";
     const updated = try std.mem.concat(allocator, u8, &.{ existing, sep, agents_section });
     defer allocator.free(updated);
-    try dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = updated });
+    try scaffold.fs.writeFileAtomic(dir, io, allocator, "AGENTS.md", updated);
     return .appended;
 }
 
@@ -1330,6 +1330,22 @@ test "scaffoldAgentsMd creates AGENTS.md when absent" {
     defer testing.allocator.free(content);
     try testing.expectEqualStrings(agents_section, content);
     try testing.expect(std.mem.indexOf(u8, content, "zcli guide") != null);
+}
+
+test "scaffoldAgentsMd creation honors the process umask" {
+    if (!std.Io.File.Permissions.has_executable_bit) return error.SkipZigTest;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A normally-created control file captures this process's current umask
+    // without mutating process-global state in a parallel test suite.
+    try tmp.dir.writeFile(io, .{ .sub_path = "control", .data = "" });
+    try testing.expectEqual(AgentsResult.created, try scaffoldAgentsMd(testing.allocator, io, tmp.dir));
+
+    const control = try tmp.dir.statFile(io, "control", .{});
+    const agents = try tmp.dir.statFile(io, "AGENTS.md", .{});
+    try testing.expectEqual(control.permissions, agents.permissions);
 }
 
 test "scaffoldAgentsMd appends without clobbering the user's AGENTS.md" {
@@ -1368,4 +1384,22 @@ test "scaffoldAgentsMd refreshes an existing zcli block idempotently" {
     const again = try readAgents(testing.allocator, io, tmp.dir);
     defer testing.allocator.free(again);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, again, agents_begin));
+}
+
+test "scaffoldAgentsMd preserves existing AGENTS.md permissions" {
+    if (!std.Io.File.Permissions.has_executable_bit) return error.SkipZigTest;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const restricted: std.Io.File.Permissions = @enumFromInt(0o600);
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "AGENTS.md", .data = "# Mine\n" });
+    try tmp.dir.setFilePermissions(io, "AGENTS.md", restricted, .{});
+    try testing.expectEqual(AgentsResult.appended, try scaffoldAgentsMd(testing.allocator, io, tmp.dir));
+    var stat = try tmp.dir.statFile(io, "AGENTS.md", .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
+
+    try testing.expectEqual(AgentsResult.refreshed, try scaffoldAgentsMd(testing.allocator, io, tmp.dir));
+    stat = try tmp.dir.statFile(io, "AGENTS.md", .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
 }

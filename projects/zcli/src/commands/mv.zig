@@ -43,6 +43,7 @@ pub fn execute(args: Args, _: Options, context: *Context) !void {
         .from_not_found => |file_path| return context.fail("Error: Command not found: {s}", .{file_path}),
         .to_exists => |file_path| return context.fail("Error: Destination already exists: {s}", .{file_path}),
         .to_is_group => return context.fail("Error: Destination is a command group: {s}", .{args.to}),
+        .source_invalid => return context.fail("Error: Command source is not valid Zig; fix parse errors before moving it", .{}),
     }
 }
 
@@ -58,15 +59,14 @@ const MoveOutcome = union(enum) {
     from_not_found: []const u8,
     to_exists: []const u8,
     to_is_group,
+    source_invalid,
 };
 
 /// The actual move: validates both paths, checks for destination conflicts,
-/// creates any parent group directories the destination needs, rewrites the
-/// file's self-referential path mentions and writes the result atomically at
-/// the destination before deleting the source, then tidies up any group the
-/// source left empty. Takes `dir` explicitly (rather than hardcoding
-/// `std.Io.Dir.cwd()`) so it can be exercised against a scratch directory in
-/// tests.
+/// reads and rewrites the source, then creates any destination parent groups
+/// and writes the result atomically before deleting the source. Invalid source
+/// therefore leaves no destination directories behind. Takes `dir` explicitly
+/// (rather than hardcoding `std.Io.Dir.cwd()`) for scratch-directory tests.
 fn performMove(dir: std.Io.Dir, io: std.Io, arena: std.mem.Allocator, from: []const u8, to: []const u8) !MoveOutcome {
     dir.access(io, "src/commands", .{}) catch return .not_a_project;
 
@@ -89,20 +89,6 @@ fn performMove(dir: std.Io.Dir, io: std.Io, arena: std.mem.Allocator, from: []co
         return .to_is_group;
     }
 
-    // Create any parent group directories the destination needs.
-    if (to_parts.len > 1) {
-        var dirbuf = std.ArrayList(u8).empty;
-        try dirbuf.appendSlice(arena, "src/commands");
-        for (to_parts[0 .. to_parts.len - 1]) |segment| {
-            try dirbuf.append(arena, '/');
-            try dirbuf.appendSlice(arena, segment);
-            dir.createDir(io, dirbuf.items, .default_dir) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
-            };
-        }
-    }
-
     // Order the move so a mid-flight failure can never leave a partially
     // applied result (#672): read the source, rewrite its self-references in
     // memory, write the finished file atomically at the destination, and only
@@ -117,9 +103,31 @@ fn performMove(dir: std.Io.Dir, io: std.Io, arena: std.mem.Allocator, from: []co
     // pointing at its old address (#591).
     const old_path = try std.mem.join(arena, " ", from_parts);
     const new_path = try std.mem.join(arena, " ", to_parts);
+    const source_permissions = (try dir.statFile(io, from_file, .{})).permissions;
     const content = try dir.readFileAlloc(io, from_file, arena, .limited(1024 * 1024));
-    const rewritten = try fs.rewriteCommandPathReferences(arena, content, old_path, new_path);
-    try fs.writeFileAtomic(dir, io, arena, to_file, rewritten);
+    const rewritten = fs.rewriteCommandPathReferences(arena, content, old_path, new_path) catch |err| switch (err) {
+        error.SourceDoesNotParse => return .source_invalid,
+        else => return err,
+    };
+
+    // Validate and rewrite before creating destination groups, so malformed
+    // source leaves no filesystem changes behind.
+    if (to_parts.len > 1) {
+        var dirbuf = std.ArrayList(u8).empty;
+        try dirbuf.appendSlice(arena, "src/commands");
+        for (to_parts[0 .. to_parts.len - 1]) |segment| {
+            try dirbuf.append(arena, '/');
+            try dirbuf.appendSlice(arena, segment);
+            dir.createDir(io, dirbuf.items, .default_dir) catch |err| switch (err) {
+                error.PathAlreadyExists => {},
+                else => return err,
+            };
+        }
+    }
+    fs.writeFileAtomicNew(dir, io, arena, to_file, rewritten, source_permissions) catch |err| switch (err) {
+        error.PathAlreadyExists => return .{ .to_exists = to_file },
+        else => return err,
+    };
     try dir.deleteFile(io, from_file);
 
     // Tidy up any group the source left empty (its co-located `execute` and
@@ -252,7 +260,77 @@ test "performMove renames the file, creates parent groups, and rewrites self-ref
     try testing.expect(std.mem.indexOf(u8, moved, "\"release deploy: works\"") != null);
 }
 
-test "performMove leaves the source intact and creates no destination when the write fails" {
+test "performMove preserves command business logic while updating scaffold references" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProject(tmp.dir, io);
+    const source =
+        \\pub const meta = .{
+        \\    .description = "deploy a release",
+        \\    .examples = &.{"deploy --env prod"},
+        \\};
+        \\pub fn execute(_: Args, _: Options, context: *Context) !void {
+        \\    const deploy = "deploy";
+        \\    try context.stdout().print("deploy {s}\\n", .{deploy});
+        \\}
+        \\test "deploy works" {}
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/commands/deploy.zig", .data = source });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    _ = try performMove(tmp.dir, io, arena.allocator(), "deploy", "release");
+    const moved = try tmp.dir.readFileAlloc(io, "src/commands/release.zig", testing.allocator, .limited(4096));
+    defer testing.allocator.free(moved);
+    try testing.expect(std.mem.indexOf(u8, moved, ".description = \"deploy a release\"") != null);
+    try testing.expect(std.mem.indexOf(u8, moved, ".examples = &.{\"release --env prod\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, moved, "const deploy = \"deploy\";") != null);
+    try testing.expect(std.mem.indexOf(u8, moved, "test \"release works\"") != null);
+}
+
+test "performMove rejects invalid Zig without touching the source" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProject(tmp.dir, io);
+    const source = "pub const meta = .{ this is not Zig\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/commands/deploy.zig", .data = source });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectEqual(MoveOutcome.source_invalid, try performMove(tmp.dir, io, arena.allocator(), "deploy", "newgroup/release"));
+    const still = try tmp.dir.readFileAlloc(io, "src/commands/deploy.zig", testing.allocator, .limited(4096));
+    defer testing.allocator.free(still);
+    try testing.expectEqualStrings(source, still);
+    try testing.expect(!exists(tmp.dir, io, "src/commands/newgroup"));
+}
+
+test "performMove leaves source exact when destination write fails" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeProject(tmp.dir, io);
+    const source =
+        \\pub const meta = .{ .examples = &.{"deploy"} };
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/commands/deploy.zig", .data = source });
+    // Parent creation treats an existing path as potentially a directory; the
+    // atomic destination write then deterministically reports NotDir.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/commands/blocked", .data = "regular file" });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.NotDir, performMove(tmp.dir, io, arena.allocator(), "deploy", "blocked/release"));
+    const still = try tmp.dir.readFileAlloc(io, "src/commands/deploy.zig", testing.allocator, .limited(4096));
+    defer testing.allocator.free(still);
+    try testing.expectEqualStrings(source, still);
+    try testing.expect(!exists(tmp.dir, io, "src/commands/blocked/release.zig"));
+}
+
+test "performMove ignores a pre-existing predictable temp path" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -265,24 +343,17 @@ test "performMove leaves the source intact and creates no destination when the w
     ;
     try tmp.dir.writeFile(io, .{ .sub_path = "src/commands/deploy.zig", .data = source });
 
-    // Force the atomic write to fail by occupying its temp path with a
-    // directory, so `createFile("src/commands/release.zig.tmp")` errors out
-    // mid-move. The rewrite-then-rename ordering must leave the source in place
-    // and never materialise the destination.
+    // The former fixed temporary basename is unrelated user-owned state.
+    // Atomic creation uses an owned random sibling and leaves this untouched.
     try tmp.dir.createDir(io, "src/commands/release.zig.tmp", .default_dir);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    try testing.expectError(error.IsDir, performMove(tmp.dir, io, arena.allocator(), "deploy", "release"));
-
-    // Source is untouched (still present, still holding its original content)
-    // and the destination was never created.
-    try testing.expect(exists(tmp.dir, io, "src/commands/deploy.zig"));
-    try testing.expect(!exists(tmp.dir, io, "src/commands/release.zig"));
-    const still = try tmp.dir.readFileAlloc(io, "src/commands/deploy.zig", testing.allocator, .limited(4096));
-    defer testing.allocator.free(still);
-    try testing.expectEqualStrings(source, still);
+    _ = try performMove(tmp.dir, io, arena.allocator(), "deploy", "release");
+    try testing.expect(!exists(tmp.dir, io, "src/commands/deploy.zig"));
+    try testing.expect(exists(tmp.dir, io, "src/commands/release.zig"));
+    try testing.expect(exists(tmp.dir, io, "src/commands/release.zig.tmp"));
 }
 
 test "performMove cascades removeEmptyParents when the source group is left empty" {
