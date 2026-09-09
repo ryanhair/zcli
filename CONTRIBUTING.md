@@ -96,7 +96,7 @@ zig build test
 | `main ruleset shape` | Anonymous, fail-closed assertion that the public `Main Protection` ruleset still targets the default branch and remains active with deletion, non-fast-forward, and non-strict `CI OK` requirements. It cannot observe bypass actors; those require authenticated administrative audit. |
 | `version consistency` | The three umbrella `build.zig.zon` versions, README/ROADMAP archive tags, ROADMAP current release, newest dated CHANGELOG release, and built CLI agree; validator regressions run first. The website transcript injects its version instead of hardcoding one, and install URLs use the branded host. |
 | `unit tests` | `zig build test` — the whole battery, on **ubuntu, macos and windows**. |
-| `parser fuzz + coverage report` | Deterministic parser fuzz corpus plus a bounded Zig 0.16 coverage-guided run on Linux; publishes covered/total instrumented PCs without a percentage gate. |
+| `parser fuzz + coverage report` | Deterministic parser fuzz corpus plus a bounded Zig 0.16 coverage-guided run on macOS/ARM; publishes covered/total instrumented PCs without a percentage gate. |
 | `zcli end-to-end tests` | `zig build e2e` on **ubuntu, macos and windows**. |
 | `windows release build` | The CLI built natively on Windows in ReleaseSafe — the only ReleaseSafe Windows coverage on PRs. |
 | `linux musl release build` | Both static-musl targets, byte-for-byte the release's build command; x86_64 is smoke-run. |

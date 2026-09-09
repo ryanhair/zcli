@@ -77,48 +77,50 @@ mechanism there, verified against the hash recorded in your `build.zig.zon`.
 
 ## Branch protection policy
 
-As verified with authenticated GitHub access on 2026-07-29, the active `main`
-ruleset is `Main Protection` (id `18284157`). It enforces exactly deletion
-protection, non-fast-forward pushes, and one required status check: `CI OK`.
-Its strict-required-status-check policy is disabled, so an up-to-date branch
-is not required when that check has already passed. It has no `pull_request`
-rule: review and PR-only merging are not required.
+Verified with authenticated administrative access on **2026-09-09**.
 
-The authenticated ruleset response lists two `bypass_mode: always` actors:
-the release `DeployKey` and `RepositoryRole` id `5`. The latter is an
-always-on role bypass, not a release-only exception. Either actor can bypass
-the ruleset, including its required check; possession or use of the release
-deploy key is therefore a direct-write capability for `main`, not merely
-checkout access.
+The active `main` ruleset is `Main Protection` (id `18284157`). Its public
+rules are deletion protection, non-fast-forward protection, and the required
+`CI OK` status check. The
+strict-required-status-check policy remains disabled, and there is no
+`pull_request` rule requiring PR-only merging or a second reviewer.
 
-The release exception and its remaining risk are:
+There is no `RepositoryRole` administrator bypass. Ordinary maintainer pushes
+must satisfy the ruleset, including `CI OK`. Administrative permission to edit
+repository settings is separate from permission to bypass branch rules.
 
-- The release deploy key exists for one operation: the
-  [`finalize` job](.github/workflows/release.yml)'s fast-forward promotion of
-  the approved, staged release commit to protected `main`. The workflow uses
-  that key only for the branch push; it pushes release tags through an HTTPS
-  remote authenticated by `GITHUB_TOKEN`. The key is the deploy-key bypass
-  actor that makes the protected-branch promotion possible.
-- The release workflow validates the staged release commit before `finalize`
-  promotes it (see the `setup`/`build` staging-branch sequence in
-  `release.yml`). That workflow validation does not remove the risk of an
-  always-bypass actor: the ruleset itself cannot require `CI OK` or review
-  from either bypass actor.
-- zcli is a solo-maintainer project, so direct pushes by the maintainer remain
-  accepted. The repository-role bypass is broader than that workflow use and
-  has no release-only scope.
+The sole bypass actor is `DeployKey` with `actor_id: null` and
+`bypass_mode: always`. This actor covers **all repository deploy keys**, not
+just a named release key. A read-only key still lacks permission to push;
+any write-capable deploy key can bypass the branch rules. The
+[`finalize` job](.github/workflows/release.yml) uses it to fast-forward the
+validated, staged release commit to `main`, after the `release` environment's
+required-reviewer gate. Release tags use `GITHUB_TOKEN` over HTTPS instead.
+The workflow also checks that the environment still has a required-reviewers
+rule before using the key.
 
-**Future hardening path** (not implemented, tracked as a follow-up): add a
-`pull_request` rule requiring review, and replace the always-on role bypass
-with the narrowest release-only mechanism GitHub supports. That would reduce
-the gap where a bypass-capable principal can land unreviewed or unchecked
-code.
+This exception still grants a direct-write capability: GitHub's ruleset does
+not limit the deploy-key bypass to that job or require `CI OK` from it. Protect
+all deploy keys and the release environment accordingly. Adding a new
+write-capable deploy key expands this exception. Replacing it requires a
+release flow that promotes the staged commit through required checks without
+a direct branch push; simply removing the key bypass would break releases.
 
 CI checks the publicly observable rule shape on every PR and `main` push:
 the ruleset name/id, its default-branch target, its three rule types, `CI OK`,
 and the non-strict policy. It fails if GitHub's public API cannot be read or
-the shape drifts; it does not skip for an unavailable API. GitHub's anonymous
-ruleset endpoint exposes the rules but returns `bypass_actors: null`, so that
-check deliberately does **not** claim to validate bypass actors. Re-check
-bypass actors with authenticated administrative access when auditing this
-policy.
+the shape drifts. The anonymous endpoint does not expose bypass actors, so
+this check cannot verify the absence of administrator bypasses. Audit them
+with authenticated administrative access:
+
+```sh
+gh api repos/ryanhair/zcli/rulesets/18284157 \
+  --jq '{enforcement, conditions, rules, bypass_actors}'
+gh api repos/ryanhair/zcli/keys --jq '.[] | {id, title, read_only}'
+```
+
+Expect one bypass actor: `DeployKey`, `bypass_mode: always`; no
+`RepositoryRole` actor. Audit the key inventory as well: the expected sole key
+is `zcli-release-key` (id `157632853`, write-capable). Also verify that
+`repos/ryanhair/zcli/environments/release` still has a `required_reviewers`
+protection rule whenever changing release permissions.
