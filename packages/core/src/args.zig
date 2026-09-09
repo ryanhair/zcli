@@ -7,44 +7,23 @@ const option_utils = @import("options/utils.zig");
 pub const ZcliError = diagnostic_errors.ZcliError;
 pub const ZcliDiagnostic = diagnostic_errors.ZcliDiagnostic;
 
-/// Parse positional arguments based on the provided Args struct type
-///
-/// The args parameter should come from command-line arguments (e.g., from std.process.argsAlloc).
-/// For varargs fields ([]const []const u8 or [][]const u8), the returned slice references the original args without copying.
-/// Prefer using []const []const u8 to avoid @constCast.
-/// This means the lifetime of varargs fields is tied to the lifetime of the input args parameter.
-///
-/// Example:
-/// ```zig
-/// const Args = struct {
-///     command: []const u8,
-///     files: []const []const u8,  // varargs - captures all remaining arguments (recommended)
-///     // or: files: [][]const u8,  // also supported but requires @constCast internally
-/// };
-///
-/// const args = try std.process.argsAlloc(allocator);
-/// defer std.process.argsFree(allocator, args);
-///
-/// const parsed = try parseArgs(Args, args[1..]);
-/// // parsed.files references args - don't free args while using parsed
-/// ```
 /// Parse positional arguments from command-line arguments into a struct.
-///
-/// This function takes a struct type and a slice of command-line arguments,
-/// and returns an instance of that struct with fields populated from the arguments.
 ///
 /// ## Parameters
 /// - `ArgsType`: A struct type defining the expected arguments
 /// - `args`: Slice of command-line argument strings
-///
-/// ## Returns
-/// Returns a parsed struct instance or ParseError on failure.
+/// - `diag`: Optional output pointer for structured failure details. Pass
+///   `null` when details are not needed, or initialize a `?ZcliDiagnostic` to
+///   `null` and pass its address. On supported parse failures it is populated
+///   with field, position, provided-value, and expected-type context.
 ///
 /// ## Supported Field Types
 /// - Basic types: `[]const u8`, `i32`, `u32`, `f64`, `bool`
 /// - Optional types: `?[]const u8`, `?i32`, etc.
 /// - Enums: Custom enum types for validated choices
-/// - Varargs: `[][]const u8` for capturing remaining arguments (must be last field)
+/// - Varargs: `[]const []const u8` or `[][]const u8` for capturing remaining
+///   arguments (must be the last field). The returned slice borrows from
+///   `args`; prefer the const form to avoid an internal `@constCast`.
 ///
 /// ## Examples
 /// ```zig

@@ -74,98 +74,53 @@ const TestOptions = struct {
 // Security Tests - Corrected Implementation
 // ============================================================================
 
-test "security: malicious input handling - command injections" {
+test "security: argument and option strings preserve shell metacharacters literally" {
     const allocator = testing.allocator;
 
     for (MaliciousInputs.command_injections) |malicious_input| {
-        // Test args parsing - should treat as literal string
         const args = [_][]const u8{malicious_input};
+        const parsed = try args_parser.parseArgs(TestArgs, &args, null);
+        try testing.expectEqualStrings(malicious_input, parsed.name);
 
-        if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // Success - verify it's treated as literal string
-            try testing.expectEqualStrings(malicious_input, parsed.name);
-        } else |_| {
-            // Error is also acceptable - just shouldn't crash
-        }
-
-        // Test options parsing
         const option_args = [_][]const u8{ "--output", malicious_input };
-
-        if (options_parser.parseOptions(TestOptions, allocator, &option_args, null)) |parsed_opts| {
-            defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
-            try testing.expectEqualStrings(malicious_input, parsed_opts.options.output);
-        } else |_| {
-            // Error is acceptable
-        }
+        const parsed_opts = try options_parser.parseOptions(TestOptions, allocator, &option_args, null);
+        defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
+        try testing.expectEqualStrings(malicious_input, parsed_opts.options.output);
     }
 }
 
-test "security: malicious input handling - path traversals" {
+test "security: argument and option strings preserve paths literally" {
     const allocator = testing.allocator;
 
     for (MaliciousInputs.path_traversals) |malicious_path| {
-        // Test file path arguments - should not resolve paths
         const args = [_][]const u8{ "test", malicious_path };
+        const parsed = try args_parser.parseArgs(TestArgs, &args, null);
+        try testing.expectEqualStrings(malicious_path, parsed.file.?);
 
-        if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // Should store as literal string, not resolve path
-            if (parsed.file) |file_value| {
-                try testing.expectEqualStrings(malicious_path, file_value);
-            }
-        } else |_| {
-            // Rejection is also acceptable
-        }
-
-        // Test file option
         const option_args = [_][]const u8{ "--files", malicious_path };
-
-        if (options_parser.parseOptions(TestOptions, allocator, &option_args, null)) |parsed_opts| {
-            defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
-            if (parsed_opts.options.files.len > 0) {
-                try testing.expectEqualStrings(malicious_path, parsed_opts.options.files[0]);
-            }
-        } else |_| {
-            // Rejection is acceptable
-        }
+        const parsed_opts = try options_parser.parseOptions(TestOptions, allocator, &option_args, null);
+        defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
+        try testing.expectEqual(@as(usize, 1), parsed_opts.options.files.len);
+        try testing.expectEqualStrings(malicious_path, parsed_opts.options.files[0]);
     }
 }
 
-test "security: malicious input handling - buffer overflows" {
+test "security: long argument and option strings are preserved exactly" {
     const allocator = testing.allocator;
 
     for (MaliciousInputs.buffer_overflows) |long_input| {
-        // Test that very long inputs don't cause crashes
         const args = [_][]const u8{long_input};
+        const parsed = try args_parser.parseArgs(TestArgs, &args, null);
+        try testing.expectEqualStrings(long_input, parsed.name);
 
-        if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // Should handle gracefully and preserve string integrity
-            try testing.expectEqualStrings(long_input, parsed.name);
-            try testing.expectEqual(long_input.len, parsed.name.len);
-        } else |err| {
-            // Various errors are acceptable for malicious input
-            switch (err) {
-                zcli.ZcliError.ResourceLimitExceeded, zcli.ZcliError.SystemOutOfMemory, zcli.ZcliError.ArgumentMissingRequired, zcli.ZcliError.ArgumentInvalidValue => {}, // All expected
-                else => return err, // Truly unexpected error
-            }
-        }
-
-        // Test options with long values
         const option_args = [_][]const u8{ "--output", long_input };
-
-        if (options_parser.parseOptions(TestOptions, allocator, &option_args, null)) |parsed_opts| {
-            defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
-            try testing.expectEqualStrings(long_input, parsed_opts.options.output);
-        } else |err| {
-            // Resource limit errors are acceptable
-            switch (err) {
-                zcli.ZcliError.ResourceLimitExceeded, zcli.ZcliError.SystemOutOfMemory, zcli.ZcliError.OptionInvalidValue => {}, // Expected
-                else => return err,
-            }
-        }
+        const parsed_opts = try options_parser.parseOptions(TestOptions, allocator, &option_args, null);
+        defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
+        try testing.expectEqualStrings(long_input, parsed_opts.options.output);
     }
 }
 
-test "security: malicious input handling - integer overflows" {
+test "security: overflowing integer arguments fall through without changing defaults" {
     for (MaliciousInputs.integer_overflows) |overflow_input| {
         // Test integer parsing with overflow values. `count` (u32 = 0) is a
         // non-trailing defaulted field, so an unparseable token falls through
@@ -174,55 +129,34 @@ test "security: malicious input handling - integer overflows" {
         // out-of-range value: on fall-through it keeps its default (0).
         const args = [_][]const u8{ "test", overflow_input };
 
-        if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // The overflow token must not have been accepted into the u32 field.
-            // It either parsed as a valid in-range u32 or fell through to `file`.
-            if (parsed.count != 0) {
-                // A non-default value means the token genuinely parsed in range.
-                try testing.expect(std.fmt.parseInt(u32, overflow_input, 10) catch 0 == parsed.count);
-            }
-        } else |err| {
-            // Should gracefully handle overflows
-            try testing.expect(err == zcli.ZcliError.ArgumentInvalidValue);
-        }
-
-        // Test integer options
-        const option_args = [_][]const u8{ "--count", overflow_input };
-
-        if (options_parser.parseOptions(TestOptions, std.testing.allocator, &option_args, null)) |parsed_opts| {
-            defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, std.testing.allocator);
-            // If parsed, verify reasonable bounds
-            try testing.expect(parsed_opts.options.count <= std.math.maxInt(u32));
-        } else |err| {
-            // Should reject overflow values
-            try testing.expect(err == zcli.ZcliError.OptionInvalidValue);
-        }
+        const parsed = try args_parser.parseArgs(TestArgs, &args, null);
+        try testing.expectEqual(@as(u32, 0), parsed.count);
+        try testing.expectEqualStrings(overflow_input, parsed.file.?);
     }
 }
 
-test "security: malicious input handling - format strings" {
+test "security: overflowing integer options return OptionInvalidValue" {
+    for (MaliciousInputs.integer_overflows) |overflow_input| {
+        const option_args = [_][]const u8{ "--count", overflow_input };
+        try testing.expectError(
+            zcli.ZcliError.OptionInvalidValue,
+            options_parser.parseOptions(TestOptions, testing.allocator, &option_args, null),
+        );
+    }
+}
+
+test "security: argument and option strings preserve format markers literally" {
     const allocator = testing.allocator;
 
     for (MaliciousInputs.format_strings) |format_string| {
-        // Test that format strings are treated as literal strings
         const args = [_][]const u8{format_string};
+        const parsed = try args_parser.parseArgs(TestArgs, &args, null);
+        try testing.expectEqualStrings(format_string, parsed.name);
 
-        if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // Should be treated as literal string, not interpreted as format
-            try testing.expectEqualStrings(format_string, parsed.name);
-        } else |_| {
-            // Rejection is also acceptable
-        }
-
-        // Test format strings in options
         const option_args = [_][]const u8{ "--output", format_string };
-
-        if (options_parser.parseOptions(TestOptions, allocator, &option_args, null)) |parsed_opts| {
-            defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
-            try testing.expectEqualStrings(format_string, parsed_opts.options.output);
-        } else |_| {
-            // Rejection is acceptable
-        }
+        const parsed_opts = try options_parser.parseOptions(TestOptions, allocator, &option_args, null);
+        defer options_parser.cleanupOptions(TestOptions, parsed_opts.options, allocator);
+        try testing.expectEqualStrings(format_string, parsed_opts.options.output);
     }
 }
 
@@ -360,31 +294,7 @@ test "security: resource exhaustion - processing bounded regardless of input" {
     );
 }
 
-// ============================================================================
-// Information Disclosure Tests
-// ============================================================================
-
-fn containsSensitiveInformation(message: []const u8) bool {
-    const sensitive_patterns = [_][]const u8{
-        "/Users/", "/home/", "C:\\Users\\", // User directories
-        "/etc/", "/var/", "/proc/", "/sys/", // System directories
-        "/root/", "/tmp/", // Sensitive directories
-        "0x", "@", // Memory addresses and references
-        "src/", "lib/", // Source code paths
-        ".ssh", ".env", ".config", // Sensitive files
-        "password", "secret", "key", "token", // Sensitive keywords
-    };
-
-    for (sensitive_patterns) |pattern| {
-        if (std.mem.indexOf(u8, message, pattern)) |_| {
-            return true;
-        }
-    }
-    return false;
-}
-
-test "security: information disclosure - error message safety" {
-    // Test that error messages don't leak sensitive information
+test "security: sensitive-looking argument strings are preserved literally" {
     const sensitive_inputs = [_][]const u8{
         "/etc/passwd",
         "/home/user/.ssh/id_rsa",
@@ -393,28 +303,9 @@ test "security: information disclosure - error message safety" {
     };
 
     for (sensitive_inputs) |sensitive_input| {
-        // Test args parsing with sensitive paths
         const args = [_][]const u8{ "test", sensitive_input };
-
-        if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // Parsing succeeded - this is fine, the path is stored as a string
-            try testing.expectEqualStrings(sensitive_input, parsed.file.?);
-        } else |_| {
-            // Error is also fine - we can't easily test error message content
-            // without more infrastructure, but the fact that it doesn't crash is good
-        }
-    }
-}
-
-test "security: information disclosure - no debug info leakage" {
-    // Test that normal operation doesn't expose internal paths or addresses
-    const args = [_][]const u8{"normal_input"};
-
-    if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-        // Verify that parsed result doesn't contain internal info
-        try testing.expect(!containsSensitiveInformation(parsed.name));
-    } else |_| {
-        // Error case is fine too
+        const parsed = try args_parser.parseArgs(TestArgs, &args, null);
+        try testing.expectEqualStrings(sensitive_input, parsed.file.?);
     }
 }
 
@@ -428,23 +319,17 @@ test "security: boundary conditions - empty inputs" {
     // Test empty argument list
     const empty_args: [0][]const u8 = .{};
 
-    if (args_parser.parseArgs(TestArgs, &empty_args, null)) |_| {
-        try testing.expect(false); // Should not succeed with empty args for required field
-    } else |err| {
-        try testing.expect(err == zcli.ZcliError.ArgumentMissingRequired);
-    }
+    try testing.expectError(
+        zcli.ZcliError.ArgumentMissingRequired,
+        args_parser.parseArgs(TestArgs, &empty_args, null),
+    );
 
-    // Test empty option list
-    if (options_parser.parseOptions(TestOptions, allocator, &empty_args, null)) |parsed| {
-        defer options_parser.cleanupOptions(TestOptions, parsed.options, allocator);
-        // Should succeed with default values - just verify we can access the struct safely
-        _ = parsed.options.output; // Access without comparison to avoid segfault
-        _ = parsed.options.count;
-        _ = parsed.options.enabled;
-        // Success - the struct was parsed and accessible without crashing
-    } else |_| {
-        // Error is also acceptable for empty input
-    }
+    const parsed = try options_parser.parseOptions(TestOptions, allocator, &empty_args, null);
+    defer options_parser.cleanupOptions(TestOptions, parsed.options, allocator);
+    try testing.expectEqualStrings("stdout", parsed.options.output);
+    try testing.expectEqual(@as(usize, 0), parsed.options.files.len);
+    try testing.expectEqual(@as(u32, 0), parsed.options.count);
+    try testing.expect(!parsed.options.enabled);
 }
 
 test "security: boundary conditions - null bytes" {
@@ -458,13 +343,9 @@ test "security: boundary conditions - null bytes" {
     for (null_byte_inputs) |null_input| {
         const args = [_][]const u8{null_input};
 
-        if (args_parser.parseArgs(TestArgs, &args, null)) |parsed| {
-            // If accepted, verify full string is preserved (no null termination)
-            try testing.expectEqual(null_input.len, parsed.name.len);
-            try testing.expectEqualStrings(null_input, parsed.name);
-        } else |_| {
-            // Rejection for security is also acceptable
-        }
+        const parsed = try args_parser.parseArgs(TestArgs, &args, null);
+        try testing.expectEqual(null_input.len, parsed.name.len);
+        try testing.expectEqualStrings(null_input, parsed.name);
     }
 }
 
