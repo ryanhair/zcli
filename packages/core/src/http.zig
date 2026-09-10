@@ -628,6 +628,72 @@ fn freeHeaders(allocator: std.mem.Allocator, headers: []Header) void {
 
 const testing = std.testing;
 
+test "draining a timeout race frees a response returned during cancellation" {
+    const io = testing.io;
+    const Helpers = struct {
+        fn makeResponse() !Response {
+            const allocator = testing.allocator;
+            const body = try allocator.dupe(u8, "raced response body");
+            errdefer allocator.free(body);
+            const headers = try allocator.alloc(Header, 1);
+            errdefer allocator.free(headers);
+            const name = try allocator.dupe(u8, "content-type");
+            errdefer allocator.free(name);
+            const value = try allocator.dupe(u8, "text/plain");
+            errdefer allocator.free(value);
+            headers[0] = .{ .name = name, .value = value };
+            return .{
+                .allocator = allocator,
+                .status = .ok,
+                .body = body,
+                .headers = headers,
+            };
+        }
+
+        fn requestCompletingOnCancel(
+            task_io: std.Io,
+            ready: *std.Io.Event,
+            release: *std.Io.Event,
+            response: Response,
+        ) @FieldType(Client.Outcome, "done") {
+            ready.set(task_io);
+            // Model a request that reaches a cancellation point after it has
+            // already assembled the owned response it will return.
+            release.wait(task_io) catch |err| switch (err) {
+                error.Canceled => return response,
+            };
+            unreachable;
+        }
+
+        fn expireAfterRequestStarts(
+            task_io: std.Io,
+            ready: *std.Io.Event,
+        ) std.Io.Cancelable!void {
+            // A synthetic expiry makes this ordering independent of timer
+            // resolution and scheduler timing on every target.
+            try ready.wait(task_io);
+        }
+    };
+
+    var ready: std.Io.Event = .unset;
+    var release: std.Io.Event = .unset;
+    var response = try Helpers.makeResponse();
+    var response_owned = true;
+    errdefer if (response_owned) response.deinit();
+
+    var buffer: [2]Client.Outcome = undefined;
+    var race = std.Io.Select(Client.Outcome).init(io, &buffer);
+    try race.concurrent(.done, Helpers.requestCompletingOnCancel, .{ io, &ready, &release, response });
+    // The select owns the response once the request task has been spawned.
+    response_owned = false;
+    errdefer Client.drainRace(&race);
+    try race.concurrent(.expired, Helpers.expireAfterRequestStarts, .{ io, &ready });
+
+    const first = try race.await();
+    Client.drainRace(&race);
+    try testing.expect(first == .expired);
+}
+
 test "Response.json parses body into a struct, ignoring unknown fields" {
     var response: Response = .{
         .allocator = testing.allocator,
