@@ -1,7 +1,9 @@
-//! Editor prompt — launches the user's editor for multiline text input.
+//! Editor operation and invitation prompt for multiline text input.
 //!
 //! The editor command is resolved from the threaded `environ` (`$VISUAL`, then
-//! `$EDITOR`, falling back to `vi`) unless `editor_cmd` overrides it. We read
+//! `$EDITOR`, falling back to `vi` on POSIX or `notepad` on Windows) unless
+//! `argv` or `editor_cmd` overrides it. Command strings use shell-word quoting
+//! without expansion; explicit argv preserves each argument exactly. We read
 //! the environment through the passed-in map rather than a global getenv.
 //!
 //! The hint line renders on the ui engine; before spawning the editor the
@@ -39,7 +41,11 @@ pub const EditorConfig = struct {
 
 /// Launch the user's editor for multiline input. Returns owned string,
 /// `error.UserAborted` if the user presses Ctrl-C, or `error.EndOfStream` if
-/// stdin closes with no input to submit.
+/// stdin closes with no input to submit. Interactive editor failures return
+/// `error.EditorLaunchFailed`, `error.EditorReadFailed`, or `error.EditorFailed`,
+/// never the initial document; any recovery path is printed before returning.
+/// Successful edits preserve bytes, including empty content and final newlines.
+/// Use `edit` for structured failure data and stdout-independent attachment.
 pub fn editor(p: Prompts, config: EditorConfig) ![]u8 {
     const writer = p.writer;
     const reader = p.reader;

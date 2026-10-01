@@ -16,7 +16,7 @@ All notable changes to zcli are documented here.
   distinct lifecycle stages. Application failures are described and rendered
   through the same path as framework diagnostics; `context.fail()` records its
   explanation instead of printing immediately. `preExecute`, `postExecute`, and
-  `onError` have explicit replacements; see [the migration guide](docs/CLI_MIGRATION.md).
+  `onError` have explicit replacements; see [the migration guide](https://zcli.sh/docs/migration/).
 - Editor operations report unsuccessful editor termination instead of returning
   the original document, and preserve successful content without stripping trailing
   newlines.

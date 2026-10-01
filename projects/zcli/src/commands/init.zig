@@ -793,7 +793,7 @@ const agents_section = agents_begin ++
     \\3. Print through `context.stdout()` / `context.stderr()` — never `std.debug.print` or
     \\   a raw stdout handle.
     \\4. Don't hand-roll terminal I/O — use `prompts` (interactive input), `progress`
-    \\   (bars/spinners), `theme` (color).
+    \\   (bars/spinners), `theme` (color), and `context.table()` (static tables).
     \\5. Verify with `zig build` and `zig build test`. Run `zcli guide <topic>` for
     \\   version-matched API detail and worked examples.
     \\6. File path = command path: `src/commands/foo/bar.zig` → `app foo bar`; a directory's

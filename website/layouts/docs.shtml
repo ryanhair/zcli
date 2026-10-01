@@ -159,6 +159,7 @@ exe.root_module.<span class="fn">addImport</span>(<span class="str">"command_reg
           <h2>Core</h2>
           <p>Defining a CLI: how files become commands, how types become parsers, and what a command has to work with.</p>
           <div class="guides">
+            <a href="$site.page('docs/migration').link()"><span class="k">migration</span><span class="t">CLI experience migration</span><span class="d">Upgrade plugin hooks, exit policy, repeatable inputs, editors, and command output.</span></a>
             <a href="$site.page('docs/commands').link()"><span class="k">commands</span><span class="t">Commands &amp; structure</span><span class="d">File-based discovery, nested groups, index.zig landings, single-command CLIs, aliases.</span></a>
             <a href="$site.page('docs/args-options').link()"><span class="k">args &amp; options</span><span class="t">Args &amp; options</span><span class="d">Typed parsing, required options, multi-value arrays, boolean negation, env vars.</span></a>
             <a href="$site.page('docs/validation').link()"><span class="k">validation</span><span class="t">Validation &amp; constraints</span><span class="d">Per-field validate hooks, custom parse types, exclusive sets, requires.</span></a>

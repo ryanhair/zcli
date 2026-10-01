@@ -8,7 +8,7 @@ zcli provides three tiers of testing — use them together for coverage without 
 | Tier | What it tests | Speed |
 |------|--------------|-------|
 | **Unit** | Command and shared-module logic in isolation — in-process, no binary | Fast |
-| **Integration** | The full CLI binary via subprocess — arg parsing, routing, output | Medium |
+| **Integration** | Full lifecycle via `runInvocation`, plus subprocess tests of the process boundary | Fast–medium |
 | **E2E** | Interactive terminal behavior — prompts, signals, TTY output | Slow |
 
 Unit tests run against a real virtual terminal (`vterm`) that parses ANSI output, so you assert on colors and formatting, not raw escape codes:
@@ -114,7 +114,7 @@ For the full VTerm assertion API, the integration/E2E tiers, snapshot testing, t
 
 The generated-registry process fixture runs with `zig build test-invocation-policy`
 (requires Python 3). It checks configured statuses, mapped failures, original
-unexpected-error traces, and real output failures at the process boundary.
+unreported unexpected-error traces, and real output failures at the process boundary.
 
 `Prompts.edit` explicitly acquires a controlling terminal; captured stdout in
 `runCommand` or `runInvocation` does not replace that terminal. Test direct editor

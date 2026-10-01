@@ -99,10 +99,13 @@ const users_list = @import("users_list");
 const zcli_help = @import("zcli_help");
 const zcli_not_found = @import("zcli_not_found");
 
-pub const registry = zcli.Registry.init(.{
+const RegistryType = zcli.Registry.init(.{
     .app_name = "myapp",
     .app_version = "1.0.0",  // This comes from build system
     .app_description = "My CLI application",
+    .stdin_max_bytes = 16 * 1024 * 1024,
+    .exit_codes = .{ .usage = 2, .command_not_found = 3, .command_failed = 1 },
+    .failure_policy = struct {}, // or the imported application policy module
 })
     .register("init", cmd_init)
     .register("version", cmd_version)
@@ -111,6 +114,12 @@ pub const registry = zcli.Registry.init(.{
     .registerPlugin(zcli_help)
     .registerPlugin(zcli_not_found)
     .build();
+
+pub const Context = RegistryType.Context;
+pub fn init() RegistryType {
+    return RegistryType.init();
+}
+// Command/global metadata and app constants are exported too.
 ```
 
 The framework uses comptime introspection on this registry to:
@@ -146,7 +155,7 @@ pub const meta = .{
     .options = .{
         .limit = .{ .description = "Maximum number of results" },
         .format = .{ .description = "Output format" },
-        .api_key = .{ .description = "API key", .env = "MYAPP_API_KEY" },
+        .region = .{ .description = "Deployment region", .env = "MYAPP_REGION" },
     }
 };
 
@@ -408,6 +417,7 @@ pub const Context = struct {
     // Plugin introspection + type-safe per-plugin state
     global_options: []const zcli.OptionInfo,
     plugins: PluginData,                 // context.plugins.<plugin_id>
+    command_config: CommandConfigData,    // context.command_config.<plugin_id>
 
     // Convenience accessors (buffered — flush before exiting early)
     pub fn stdout(self: *Self) *std.Io.Writer { ... }
@@ -587,8 +597,8 @@ There is exactly one, and it is a sanity bound rather than memory protection:
   or "did you mean" scoring runs.
 
 Nothing else about a command line is capped — not how many options it carries,
-not how many times a flag repeats, not how many comma-separated values one flag
-holds. A `docker run --env` or `cc -I`/`-D` shaped CLI can repeat a flag as many
+not how many times a flag repeats, not how many explicitly delimited values one
+flag holds. A `docker run --env` or `cc -I`/`-D` shaped CLI can repeat a flag as many
 times as the shell allows. What makes that safe is that parsing work and
 allocation are **linear** in the input, and values are borrowed slices rather
 than copies; the only superlinear step is the suggestion scoring
@@ -666,7 +676,7 @@ so a token can never be classified as a number and then fail to parse as one.
 **Error Handling:**
 
 - Compile-time errors for malformed commands
-- Runtime errors only for user input issues
+- Structured runtime failures distinguish invalid input, application errors, I/O, and unexpected implementation errors
 - Clear error messages with suggestions
 
 **Context System:**
@@ -885,9 +895,14 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-`run` renders expected failures and exits with their resolved status. Unexpected
-errors retain their original trace and propagate to `main`. Embedders and tests
-use `invoke` or `invokeWithStdio` to inspect an owned result without exiting.
+`run` accepts argv including the executable name and exits on a nonzero resolved
+status. An unexpected failure propagates to `main` with its retained trace only
+when no renderer reported it and it has no message or stable identity. A successful
+custom renderer therefore suppresses the default Zig trace while preserving the
+failure status. Embedders and tests use `invoke` or `invokeWithStdio` with argv
+excluding the executable name to inspect an owned result without exiting; call
+`deinit()` on that result. See [ERROR_HANDLING.md](ERROR_HANDLING.md) for renderer
+selection and status policy.
 
 ## 11. Plugin System
 
@@ -962,7 +977,7 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 **Plugin Execution Order:**
 
 1. Plugins are sorted by priority at compile time — a plugin may declare `pub const priority: i32` (default 50); higher values run first, and ties keep registration order
-2. All `preParse` hooks called, threading each plugin's rewritten argv into the next
+2. Plugin data initializes, then `onStartup` runs; optional response files expand before `preParse` hooks thread rewritten argv into the next hook
 3. Global options are extracted from argv and dispatched to each declaring plugin's `handleGlobalOption`
 4. All `transformArgs` hooks called (each may rewrite argv or stop processing)
 5. Command resolution routes to the matched command, then all `postParse` hooks called, threading each plugin's replacement `ParsedArgs`
@@ -970,7 +985,7 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 7. Argv is parsed into the command's `Args`/`Options`; `loadConfig` loads configuration
 8. `applyConfigDefaults` fills fields not set by CLI/env and respects `.no_config`; opted-in stdin text is materialized, then required/dependency/exclusive/per-field validation runs on resolved options
 9. `prepare` performs operational setup
-10. The command executes; `onFinish` runs completion cleanup, preserving a primary failure
+10. The command executes; initialized plugins' `onFinish(context, success)` hooks run even after an earlier failure or informational completion. A completion error becomes primary only when no previous failure exists
 11. Failures from any stage pass through description, status policy, and rendering; rendering never changes failure into success
 
 **Built-in Plugins:**
@@ -1184,3 +1199,37 @@ the framework and is published independently.
 - Integration test helpers
 
 This design leverages Zig's unique comptime capabilities to create a framework that's both developer-friendly (automatic discovery, type safety) and extremely efficient (zero-cost static dispatch, no reflection).
+
+## Invocation input and output contracts
+
+Framework statuses are configurable through `GenerateConfig.exit_codes`, with
+defaults `.usage = 2`, `.command_not_found = 3`, and `.command_failed = 1`.
+An application-owned `failure_policy_module` supplies domain error mappings,
+optional descriptions, and rendering. Plugins describe errors without owning
+process-wide numeric policy. See [BUILD.md](BUILD.md#invocation-policy-configuration),
+[ERROR_HANDLING.md](ERROR_HANDLING.md), and [ADR-0036](adr/0036-invocation-outcomes.md).
+
+Text options opt into stdin materialization with `.stdin = true`; a final
+explicit CLI `-` requests a bounded read, after config defaults and before
+validation. The parser itself remains pure. See
+[COMMANDS.md](COMMANDS.md#repeatable-options-and-stdin-text).
+
+`context.prompts().edit(...)` opens an editor immediately and returns an owned
+`EditResult`, preserving recoverable edits on failure. The invitation-style
+`editor(...)` prompt remains separate and retains its noninteractive stdin
+fallback. Editor commands support shell-word quoting without shell expansion;
+programmatic callers can supply argv. See [ADR-0038](adr/0038-editor-operation.md).
+
+`context.table().print(columns, rows)` produces a static table using stdout's
+actual destination: bounded terminal layout or untruncated, uncolored redirected
+output. It handles Unicode display width, line breaks, and per-column wrapping
+or truncation. Cell ANSI/control sequences are sanitized. The interactive
+`ui.Table` remains separate. See [ADR-0039](adr/0039-static-tables.md).
+
+Project-local plugins receive `shared_modules` imports. A plugin may declare a
+`CommandConfig` struct with defaults; commands override it through
+`meta.plugins.<plugin_id>`. Hooks read the routed settings from
+`context.command_config.<plugin_id>`. Aliases share settings and parent commands
+do not pass overrides to children. Lazy `ContextData` resource accessors remain
+the preferred way to avoid setup for commands that never use a resource. See
+[PLUGINS.md](PLUGINS.md) and [ADR-0040](adr/0040-typed-plugin-command-config.md).

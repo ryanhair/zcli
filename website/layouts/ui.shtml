@@ -52,6 +52,7 @@
         <p class="toc-label">The hybrid</p>
         <a href="#app">The App</a>
         <a href="#widgets">Progress widgets</a>
+        <a href="#static-tables">Static tables</a>
         <a href="#resize">Resize &amp; piping</a>
         <p class="toc-label">Full-screen</p>
         <a href="#fullscreen">Full-screen mode</a>
@@ -127,6 +128,19 @@
 <span class="kw">try</span> app.<span class="fn">frame</span>(<span class="kw">try</span> <span class="fn">statusLine</span>(app.<span class="fn">arena</span>(), &state)); <span class="cm">// live  -> diffed repaint</span></pre>
           </div>
           <p>Builders copy their child slices into the arena, so component functions compose freely — no dangling-temporary hazards from returning a node built over a stack array. Styles on the nodes are <code>theme.Style</code> values, and the diff renderer emits them capability-aware, from <code>NO_COLOR</code> through true color.</p>
+        </section>
+
+        <section id="static-tables">
+          <h2>Static tables for command output</h2>
+          <p>For a command that prints rows and exits, use <code>context.table()</code>. It writes a plain, one-shot table without creating an <code>App</code> or starting an interactive session:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/list.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">try</span> context.<span class="fn">table</span>().<span class="fn">print</span>(&amp;.{
+    .{ .header = <span class="str">"ID"</span>, .alignment = .right },
+    .{ .header = <span class="str">"Title"</span>, .shrink_priority = <span class="num">1</span>, .overflow = .wrap },
+}, rows);</pre>
+          </div>
+          <p>Columns can set <code>min_width</code>, <code>max_width</code>, left or right alignment, shrink priority, and wrap or truncate behavior. At a terminal, widths fit the available columns; redirected or captured output preserves full multiline cell text without color. Cell input is stripped of ANSI control sequences and measured by visible graphemes. <code>NO_COLOR</code> also disables terminal styling. Outside a command, construct <code>zcli.ui.StaticTable</code> with a writer, allocator, theme, and optional terminal width.</p>
         </section>
 
         <section id="widgets">
@@ -282,6 +296,7 @@
             <tbody>
               <tr><td class="name">prompts</td><td class="desc">raw-mode, one repainting line per question — arrows, live caret, highlight</td><td class="desc">line input: <code>text</code> reads a line, <code>confirm</code> a <code>y/n</code>, <code>select</code> prints a numbered list and reads a number. Same return type, same value.</td></tr>
               <tr><td class="name">App <span style="color:var(--faint)">(hybrid)</span></td><td class="desc">static <code>emit</code> lines flow into scrollback while the live region repaints above them</td><td class="desc"><code>frame</code> becomes a no-op and the live region vanishes; <code>emit</code> prints its line plain — no escapes, no cursor moves, no retention. Your log is exactly the emitted lines, in order.</td></tr>
+              <tr><td class="name">StaticTable</td><td class="desc">prints a finite set of rows within terminal width, wrapping or truncating selected columns</td><td class="desc">prints every cell in full, including line breaks, without styling or an interactive session</td></tr>
               <tr><td class="name">App <span style="color:var(--faint)">(full-screen)</span></td><td class="desc">takes the alternate screen, raw input, an event loop</td><td class="desc">refuses — <code>initFullScreen</code> returns <code>error.NotATerminal</code> rather than spraying escapes at a file. A TUI into a pipe is meaningless; use the hybrid App or prompts for anything that must also run headless.</td></tr>
             </tbody>
           </table>

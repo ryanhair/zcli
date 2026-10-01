@@ -25,7 +25,8 @@ one cell each. A terminal too narrow for those cells and separators returns
 For pipes and files, width is unbounded: maximums and overflow rules do not
 remove content. Explicit line breaks in cells remain separate physical lines
 in both modes. Terminal wrap may add further lines. Input ANSI escapes are
-stripped, so cell content cannot control the terminal or color redirected
+stripped; remaining ASCII control bytes (other than line breaks) are replaced
+with spaces, so cell content cannot control the terminal or color redirected
 output. The printer applies the theme's muted role to terminal headers only;
 `NO_COLOR` and captured stdout suppress it. Width calculations use the
 terminal package's grapheme-aware primitives.

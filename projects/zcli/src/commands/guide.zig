@@ -108,9 +108,11 @@ const topics = [_]Topic{
         \\A command file declares `meta`, `Args`, `Options`, and `execute`. `execute`
         \\returns `!void`, so returning an error fails the command with a non-zero
         \\exit. For a failure the user should read, `return context.fail("no note:
-        \\{s}", .{name})` — it prints your message and exits cleanly (no `error:
-        \\Name`, no stack trace). A plain `return error.X` is for unexpected bugs:
-        \\its name and Debug-only trace aid debugging. Change structure with the
+        \\{s}", .{name})` records an explanation and returns error.CommandFailed;
+        \\the invocation renders it during finalization and selects a failure status.
+        \\`context.failWith(error.NotFound, "no note: {s}", .{name})` preserves a
+        \\domain error for application policy. Unmapped, undescribed errors use
+        \\the unexpected-error fallback. See `zcli guide failures`. Change structure with the
         \\scaffolder — it does the multi-site edits (struct field + meta entry + arg
         \\ordering) correctly — not by hand:
         \\
@@ -120,6 +122,59 @@ const topics = [_]Topic{
         \\  zcli add group <path>          zcli add plugin <name>
         \\
         \\Read the current shape any time with `zcli tree --show-options`.
+        \\
+        ,
+    },
+    .{
+        .name = "input",
+        .summary = "repeatable options and explicit stdin",
+        .body =
+        \\input — literal values and explicit stdin
+        \\
+        \\Array options collect one element per occurrence, including commas and
+        \\whitespace. --ac "a, b" --ac c gives ["a, b", "c"]. Opt into shorthand
+        \\with meta.options.ac.delimiter = ','; empty delimited segments are errors.
+        \\There is no CSV quoting, trimming, or greedy consumption of positionals.
+        \\
+        \\Set meta.options.body.stdin = true for []const u8 or ?[]const u8 options.
+        \\An explicit CLI --body - reads stdin once, preserving all bytes; defaults,
+        \\config, and environment "-" values stay literal. Last scalar occurrence
+        \\wins, so a later literal cancels an earlier request. Multiple final stdin
+        \\requests fail before reading. Validators see the resolved text; the parser
+        \\alone never reads streams. The default 16 MiB cap is configurable with
+        \\GenerateConfig.stdin_max_bytes. Empty stdin is a present empty string.
+        \\
+        ,
+    },
+    .{
+        .name = "failures",
+        .summary = "invocation outcomes and application exit policy",
+        .body =
+        \\failures — one owned outcome per invocation
+        \\
+        \\GenerateConfig.exit_codes defaults to usage=2, command_not_found=3,
+        \\command_failed=1. Override these categories to match your application.
+        \\Failure classification uses provenance, not just Zig error names.
+        \\
+        \\Use failure_policy_module in GenerateConfig for application policy. The
+        \\module receives zcli and may declare error_codes: [_]zcli.failure.ErrorRule.
+        \\A rule supplies .cause, .code, optional .command (canonical space-separated
+        \\path) or .plugin (plugin_id), and optional .id/.message. Omitting scope
+        \\applies across application/plugin origins; framework usage is separate.
+        \\Aliases match canonical command rules. Zero statuses and overlapping rules
+        \\are compile errors. Plugins supply explanations, not numeric statuses.
+        \\
+        \\context.fail records a message and returns CommandFailed; failWith keeps
+        \\a domain error. Return the error so completion, cleanup, and rendering run.
+        \\context.exit exits immediately and bypasses cleanup. Plugin describeFailure
+        \\returns an optional description; renderFailure returns whether it rendered.
+        \\An application policy may provide renderFailure(context, failure, status)
+        \\!void and owns rendering whenever selected. It must render every failure it
+        \\receives. Early failures before globals are handled use the human renderer.
+        \\
+        \\invoke and invokeWithStdio return owned InvocationResult values without
+        \\exiting; release them with deinit(). run applies the final process status.
+        \\See docs/ERROR_HANDLING.md and docs/CLI_MIGRATION.md for complete examples.
         \\
         ,
     },
@@ -153,9 +208,12 @@ const topics = [_]Topic{
         \\   build` is green while `zig build test` fails with "no module named
         \\   'store'". One list, two call sites.
         \\
-        \\4. Import it from any command (or its test) by the registered name:
+        \\4. Import it from any command, its test, or a project-local plugin by name:
         \\
         \\  const store = @import("store");
+        \\
+        \\Dependency-provided plugins keep their own imports; shared_modules only
+        \\affects project-local plugins.
         \\
         \\`addCommandTests` also compiles each shared module as a test root, so
         \\`test` blocks you write inside `src/store.zig` run under `zig build
@@ -402,8 +460,8 @@ const topics = [_]Topic{
         \\  const idx  = try p.select(.{ .message = "Pick:", .choices = &.{ "a", "b" } });
         \\  const pw   = try p.password(.{ .message = "Token:" }); // hidden
         \\
-        \\Redirect stdin OR stdout and every prompt falls back to plain line input
-        \\with the same return value, so a piped or CI run keeps working. Decide
+        \\Redirect stdin OR stdout and every prompt falls back to plain stream input
+        \\(editor reads to EOF), so a piped or CI run keeps working. Decide
         \\once per command which of the two you want:
         \\
         \\  // supports piped input: no guard, the fallback answers
@@ -418,6 +476,16 @@ const topics = [_]Topic{
         \\prints and still reads stdin; a `--no-input` flag has to skip the prompt
         \\sequence itself and use defaults or required options.
         \\
+        \\For explicit editing, `p.edit(.{ .io = context.io,
+        \\.environ = context.environ, .default = document })` launches immediately
+        \\on the controlling terminal, independent of stdout redirection. Deinit
+        \\the owned result with context.allocator; switch on .edited or .failed.
+        \\Failures include a phase and optional recovery_path; the saved file
+        \\survives result deinit. Empty and unchanged documents are valid.
+        \\Prefer .argv for editor arguments; editor_cmd/VISUAL/EDITOR use shell-word
+        \\quoting without expansion. The editor prompt still waits for Enter
+        \\unless .immediate = true, and retains its stdin-to-EOF fallback.
+        \\
         \\Progress bars/spinners: `context.progress()` (or `zcli.Progress`).
         \\
         ,
@@ -427,6 +495,13 @@ const topics = [_]Topic{
         .summary = "hybrid CLI/TUI output",
         .body =
         \\ui — the CLI/TUI hybrid (live frames over scrolling output)
+        \\
+        \\For lists that print once, use `context.table().print(columns, rows)`.
+        \\Columns declare .header, .alignment, .min_width, .max_width,
+        \\.shrink_priority, and .overflow (.truncate or .wrap). Terminal output
+        \\fits its width and respects NO_COLOR; redirected output keeps full
+        \\multiline cells without color. Input control sequences are sanitized.
+        \\No interactive session is created. Standalone: zcli.ui.StaticTable.
         \\
         \\`context.ui()` returns a `zcli.ui.App` pre-wired to the command's
         \\stdout, allocator, theme capability, and TTY detection. Two verbs:
@@ -572,6 +647,7 @@ const topics = [_]Topic{
         \\  prepare          run operational setup after validation
         \\  onFinish         run at completion (gets success: bool)
         \\  describeFailure  explain a failure without suppressing its status
+        \\  renderFailure    return true when rendered, false to defer
         \\  global_options + handleGlobalOption    add a --flag and react to it
         \\
         \\Scaffold one with `zcli add plugin <name>` — the generated stub wires one
@@ -583,6 +659,18 @@ const topics = [_]Topic{
         \\`if (context.plugins.verbose.enabled) ...`. Add a global flag with
         \\`global_options` + `handleGlobalOption`; the handler fires during parsing,
         \\before prepare and the command, so the flag is set by the time they run.
+        \\
+        \\Errors from lifecycle hooks follow the same failure policy as execute.
+        \\Globals are available to prepare and failure renderers after successful
+        \\global handling. onFinish must tolerate failed setup; deinitContextData
+        \\releases resources even on early completion. Prefer lazy methods on
+        \\ContextData for resources only some commands use.
+        \\
+        \\For declarative per-command policy, declare plugin_id and a CommandConfig
+        \\struct with defaults. Commands override meta.plugins.<plugin_id>; hooks
+        \\read context.command_config.<plugin_id>. Unknown fields/plugins are
+        \\compile errors. Aliases share the routed command configuration; parent
+        \\group overrides do not cascade to children.
         \\
         \\Worked example — examples/notes/src/plugins/verbose.zig:
         \\
@@ -622,6 +710,15 @@ const topics = [_]Topic{
         \\A command that fails with `context.fail(...)` is assertable too —
         \\`!r.success`, `r.err.? == error.CommandFailed`, and the message in
         \\`r.stderr` — because it returns an error instead of exiting.
+        \\
+        \\To exercise parsing, stdin resolution, hooks, and failure policy, use
+        \\runInvocation(Registry, .{ .argv = &.{ "cmd", "--body", "-" },
+        \\.stdin = "text" }) from the same zcli_testing_unit module. Wire the real
+        \\generated command_registry into a separate test root; the isolated
+        \\command-test stub is insufficient. argv excludes the executable; omitted
+        \\stdin is EOF and the environment is empty. Check .invocation.status and
+        \\.invocation.outcome, captured .stdout/.stderr, and deinit the result. Keep subprocess
+        \\tests for the final process exit and PTY tests for interactive behavior.
         \\
         \\runCommand runs execute() in-process against the real filesystem and the
         \\real cwd — it captures I/O, not the disk. A command that reads or writes

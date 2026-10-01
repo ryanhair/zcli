@@ -112,7 +112,8 @@ at-least-one primitive are deliberately deferred until a real command needs them
   - `OptionMissingDependency` — names the supplied option and the missing one it
     requires.
   Both retain structured diagnostics in the invocation failure pipeline (ADR-0036).
-  Application status policy and failure renderers apply equally to these errors.
+  The configured `exit_codes.usage` and eligible failure renderers apply to these
+  errors; application error-name mappings do not override framework misuse.
   Opted-in stdin text is resolved before validation (ADR-0037); operational
   preparation happens only after all resolved-input validation succeeds.
 
@@ -128,5 +129,5 @@ at-least-one primitive are deliberately deferred until a real command needs them
   `exclusive`, an at-least-one primitive, and directional-vs-symmetric sugar. The
   chosen primitives don't preclude any of them.
 
-To be documented in `docs/COMMANDS.md` and `docs/DESIGN.md` alongside the
-required-options behavior when implemented.
+The implemented contract is documented in `docs/COMMANDS.md` and
+`docs/DESIGN.md` alongside required-option behavior.

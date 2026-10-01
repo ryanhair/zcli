@@ -3,7 +3,8 @@
 //! Pressing Enter opens the user's editor on a temp file seeded with `default`;
 //! whatever is saved, including trailing newlines, is returned. Options:
 //!   * `environ`    — the editor is resolved from it (`$VISUAL`, then `$EDITOR`,
-//!                    else `vi`), and it also honours `$TMPDIR`.
+//!                    else `vi` on POSIX or `notepad` on Windows); scratch files
+//!                    use `$TMPDIR` or the platform fallback.
 //!   * `editor_cmd` — optional override to force a specific program regardless
 //!                    of the environment.
 //!   * `immediate`  — true skips the Enter gate at an interactive prompt.
@@ -29,7 +30,8 @@ pub fn main(init: std.process.Init) !void {
 
     const p: Prompts = .{ .writer = t.w(), .reader = t.r(), .allocator = init.gpa };
 
-    // The editor is resolved from the environment ($VISUAL/$EDITOR, else vi) —
+    // The editor is resolved from the environment ($VISUAL/$EDITOR, then the
+    // platform fallback) —
     // just pass the environ through.
     const message = p.editor(.{
         .message = "Write a commit message",

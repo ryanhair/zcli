@@ -26,12 +26,18 @@ Plugins store typed data in `context.plugins.<plugin_id>` on your app's generate
 if (context.plugins.zcli_help.help_requested) { ... }
 ```
 
-A plugin is a Zig module with a `plugin_id` and any of the lifecycle exports (`global_options`, `handleGlobalOption`, `handleInformation`, `loadConfig`, `prepare`, `onFinish`, `describeFailure`); it can also ship its own commands. Hook parameters are typed `anytype` — a plugin is compiled independently of the app that hosts it.
+A plugin is a Zig module with optional lifecycle exports (`onStartup`, `preParse`, `handleGlobalOption`, `transformArgs`, `postParse`, `handleInformation`, `loadConfig`, `applyConfigDefaults`, `prepare`, `onFinish`, `describeFailure`, `renderFailure`); it can also ship its own commands. Declare a stable `plugin_id` when exposing `ContextData` or `CommandConfig`. The context parameter is `anytype` — a plugin is compiled independently of the app that hosts it.
 
 Informational handling runs before application configuration and operational setup.
 `loadConfig` supplies input data before validation; `prepare` runs afterward.
 Failures in any stage retain their failure status when described or rendered.
-`onFinish` runs at completion, and resource teardown must be safe on default state.
+`onFinish(context, success)` runs for initialized plugins on success,
+informational completion, or failure, including failures before `prepare`.
+Its boolean reflects whether a primary error exists when that hook starts;
+a completion error makes later hooks receive `false`. Resource teardown must
+be safe on default or partially initialized state. Keep startup/initialization
+lightweight: those stages run even for help. Operational I/O belongs in
+`prepare` or a lazy resource accessor.
 See [the invocation lifecycle decision](adr/0036-invocation-outcomes.md).
 
 For the full built-in list, `plugins_dir` auto-discovery, and the complete plugin-authoring guide, see **[zcli.sh/plugins](https://zcli.sh/plugins/)**; config-file discovery and the value cascade have their own guide at **[zcli.sh/docs/config](https://zcli.sh/docs/config/)**. For how plugins are discovered and merged into the generated registry, see [BUILD.md](BUILD.md).
@@ -118,3 +124,21 @@ the command actually needs it.
 Project plugins under `plugins_dir` can import the same `shared_modules` as
 commands. `examples/notes/src/plugins/verbose.zig` imports the shared `log`
 module without extra build wiring.
+
+## Failure hooks
+
+`describeFailure(context, failure) !?zcli.failure.Description` adds an optional
+identity, message, or explicit silence. Numeric exit mappings belong to the
+application's failure policy module, not to plugins. A description never turns a
+failed invocation into success.
+
+A plugin renderer has signature
+`renderFailure(context, failure: zcli.Failure) !bool`: return `true` after
+rendering, or `false` to let another renderer handle it. The application policy
+renderer has a different signature and precedence; it owns output with
+`renderFailure(context, failure, status) !void`. Both run only after global
+handling succeeds. See [ERROR_HANDLING.md](ERROR_HANDLING.md#rendering-and-unexpected-errors).
+
+Legacy `preExecute`, `postExecute`, and `onError` exports are rejected at compile
+time. Use `prepare`, `onFinish`, and the description/rendering interfaces instead;
+see [CLI_MIGRATION.md](CLI_MIGRATION.md) for the complete migration.

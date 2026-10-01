@@ -4,8 +4,9 @@ Status: accepted
 
 Bundled plugins — `zcli_help`, `zcli_config`, `zcli_completions`, `zcli_docs`
 and the rest under `packages/core/src/plugins/` — compile against exactly one
-import, `"zcli"`, the same as a third-party plugin package or a
-`plugins_dir` local. They are **not** given a private door into framework
+framework import, `"zcli"`, just as third-party and project-local plugins do.
+Project-local plugins additionally receive the consumer's `shared_modules`
+(see the amendment below). They are **not** given a private door into framework
 internals. `zcli.plugin_abi` stays the single, named place where an internal
 becomes reachable from a plugin, and it now carries a written admission test
 (below) that says which internals qualify.
@@ -117,3 +118,12 @@ like the five above is the signal that this ADR is being violated.
   change — that is the point of exporting them under a documented name in the
   first place. What would reopen this ADR is the opposite: sustained pressure to
   add entries that pass neither arm of the admission test.
+
+## Amendment: application-owned shared modules
+
+Project-local plugins discovered under `plugins_dir` now receive the consumer's
+`shared_modules`, matching command imports. This supersedes the original claim
+that a local plugin has only the `zcli` import. Built-ins still receive only
+`zcli`; dependency-provided plugins keep their package-defined imports. This
+adds access to application code, not private framework internals, so the
+`plugin_abi` admission test and single framework-import boundary remain intact.

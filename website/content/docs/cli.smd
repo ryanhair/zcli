@@ -104,6 +104,8 @@ Native file watching (FSEvents/kqueue/inotify) with an ~80 ms debounce to coales
 ```sh
 zcli guide            # list topics
 zcli guide structure  # a worked example for one topic
+zcli guide input      # literal repeatable values and explicit stdin
+zcli guide failures   # invocation outcomes and application exit policy
 ```
 
 A version-matched reference: the content ships inside the binary and matches the zcli you're compiling against, so it can't drift the way training data or old blog posts do. Topics: `structure`, `sharing`, `storage`, `arena`, `output`, `prompts`, `ui`, `http`, `secrets`, `plugins`, `testing`.

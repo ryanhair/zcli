@@ -23,7 +23,7 @@ pub fn execute(args: Args, options: Options, context: *Context) !void {
 
 ## Memory: the arena
 
-`context.allocator` is an **arena scoped to the command**: everything allocated from it is reclaimed wholesale when `execute` returns. The idiom is *never call free* — no ownership tracking, no leaks, no double-frees in command code. (Non-memory resources — files, processes — still want their `defer close`.)
+`context.allocator` is an **arena scoped to the command**: its allocations stay valid through invocation completion, failure rendering, and plugin teardown, then are reclaimed together. An owned invocation result retains its copied failure details until `deinit()`. The idiom is *never call free* — no ownership tracking, no leaks, no double-frees in command code. (Non-memory resources — files, processes — still want their `defer close`.)
 
 This is a deliberate design choice (ADR-0001), and it's a large part of why [AI-written commands]($link.page('ai')) are safe by construction: an agent can't leak what the arena reclaims.
 
@@ -35,7 +35,19 @@ This is a deliberate design choice (ADR-0001), and it's a large part of why [AI-
 
 ## Failing well
 
-`return context.fail("no note: {s}", .{name})` prints your formatted message to stderr and zcli reports a clean non-zero exit — just the message, no `error:` line, no stack trace, in every build mode. Use it for expected failures a user should read. A plain `return error.X` is for unexpected bugs and gets the error name plus a Debug-only trace. `context.exit(code)` is the low-level escape hatch; it flushes buffered output first (a bare `std.process.exit` would silently drop it).
+`return context.fail("no note: {s}", .{name})` records an explanation and returns
+`error.CommandFailed`. During finalization, the invocation selects the status
+(default `1`) and renderer. The default renderer prints the explanation without
+a Zig trace; an application renderer can use JSON or another format.
+
+Use `return context.failWith(error.NotFound, "no note: {s}", .{name})` to keep a
+domain error available for application status rules. An ordinary Zig error may
+also be mapped or described by policy. Unexpected errors propagate to `main`
+with their available trace only when unreported and without a message or identity.
+See [Error handling]($link.page('docs/errors')) for the full contract.
+
+`context.exit(code)` flushes buffered output and exits immediately, bypassing
+normal cleanup. Prefer returning a failure and configuring application policy.
 
 ## The environment
 
@@ -50,6 +62,7 @@ For the specific question of *where this app's files belong on this platform*, d
 ## App and command metadata
 
 - `context.app_name`, `context.app_version` — version read from `build.zig.zon` at build time
+- `context.command_config.<plugin_id>` — typed settings for the routed command, resolved from plugin `CommandConfig` defaults and `meta.plugins` overrides
 - `context.command_path` — the resolved path of the running command (e.g. `{"users", "create"}`)
 - `context.getAvailableCommandInfo()`, `context.getGlobalOptions()` — the registry's command and global-option metadata, useful for meta-commands and error hooks
 
@@ -59,7 +72,8 @@ The context hands you each terminal package already wired to the command's strea
 
 | Builder | Returns | Guide |
 |---|---|---|
-| `context.prompts()` | seven primary prompt types, with optional searchable select/multiSelect | [Prompts]($link.page('docs/prompts')) |
+| `context.prompts()` | seven primary prompt types, searchable choices, and the immediate `edit` operation | [Prompts]($link.page('docs/prompts')) |
+| `context.table()` | a static table printer with terminal width handling and complete redirected output | [Static tables]($link.page('docs/ui').unsafeRef('static-tables')) |
 | `context.progress()` | spinners, progress bars, multi-bars | [Progress]($link.page('docs/progress')) |
 | `context.ui(.{})` | a hybrid CLI/TUI `App` (static + live region) | [The CLI/TUI hybrid]($link.page('docs/ui')) |
 | `context.uiFullScreen(.{})` | a full-screen `App` (alt-screen, event loop) | [Full-screen mode]($link.page('docs/ui')) |

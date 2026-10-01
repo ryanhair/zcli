@@ -42,7 +42,12 @@ These are separate operations:
 
 1. Describe a failure with an optional stable identity, explanation, and details.
 2. Apply the application's numeric exit policy.
-3. Render once using the selected renderer, falling back to human diagnostics.
+3. Render using application policy, then willing plugins, then human diagnostics.
+   An application `renderFailure(context, failure, status) !void` owns every
+   format it selects and marks the error reported on success. A plugin
+   `renderFailure(context, failure) !bool` may decline with `false`. Renderer
+   bytes written through context streams are staged; failed or declined
+   renderers do not commit them to the destination.
 
 Framework defaults remain usage 2, unknown command 3, and reported application
 failure 1. Applications can change those categories without duplicating an internal
@@ -53,7 +58,11 @@ rules, and ambiguous mappings must not depend on declaration order.
 
 `context.fail()` records an explanation and returns an error. It does not print
 immediately. Rendering or deliberately suppressing output never changes a failure
-into success. Successful short-circuiting, including help and version, has an
+into success. The process wrapper propagates a traced unexpected error to `main`
+only if no renderer reported it and it has neither a message nor an identity.
+Reporting an unexpected error through a custom renderer suppresses that default
+trace, while the result still retains the original cause and available trace.
+Successful short-circuiting, including help and version, has an
 explicit informational outcome. Arbitrary recovery and resumption of a failed
 lifecycle stage is not part of this decision.
 
@@ -92,9 +101,9 @@ by changing context routing fields.
 
 ### Global output selection has a defined availability point
 
-Global option conversion precedes global handler dispatch. Application rendering
+Global option conversion precedes global handler dispatch. Failure rendering
 based on global state is available after global handling succeeds. Earlier failures
-use the default renderer. This avoids output changing merely because `--json`
+use human fallback; describers still run and must tolerate incomplete global state. This avoids output changing merely because `--json`
 appeared before or after another malformed global option.
 
 Guaranteeing JSON for failures before global parsing would require a separate

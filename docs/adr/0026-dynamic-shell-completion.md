@@ -269,11 +269,17 @@ Increment 1 must include **functional per-shell tests** (the Tier-1 `expect` /
 `$`, a glob char, **and a leading `-`** completes as exactly one candidate and
 renders literally. The escaping is the risky core, not an implementation detail.
 
-`__complete` runs a deliberately thin path: build the arena + `Request`, resolve,
-call the one hook, print, exit. It never dispatches `execute`, runs no
-`transformArgs`/`onError` plugin hooks, and produces no other stdout — both so a
-`<TAB>` is fast (it spawns the whole binary on every completion) and so no command
-side effect can fire during completion.
+`__complete` resolves the target field, builds its `Request`, calls that field's
+completion callback, and emits the wire response. It never executes the target
+command whose arguments are being completed.
+
+Implementation clarification (ADR-0036): `__complete` is itself a registered
+command and uses the ordinary invocation lifecycle, including plugin hooks.
+It is not a bypass around `transformArgs`, configuration, or `prepare`. Plugins
+must keep the completion command's stdout free of unrelated output and should
+acquire operational resources lazily, or use typed command policy where applicable
+(ADR-0040). The completion callback should be cheap because each completion
+request starts the binary.
 
 ## Coexistence with static completion
 

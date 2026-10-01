@@ -1,7 +1,7 @@
 # tasks — the kitchen-sink example
 
-A fully functional task tracker CLI (`tasks`) that exercises every zcli
-feature in one app. Where [notes](../notes/), [repostat](../repostat/),
+A fully functional task tracker CLI (`tasks`) that exercises many zcli
+capabilities in one app. Where [notes](../notes/), [repostat](../repostat/),
 [ghauth](../ghauth/), and [oauth-device](../oauth-device/) each teach one
 idiom, this is the tour.
 
@@ -21,6 +21,8 @@ What it demonstrates:
 - **Five primary prompt types plus searchable select** — text, confirm,
   select, number, and editor, with `tasks search` using `select` with
   `.search = true`; each falls back to line input when piped.
+- **Static table output** — `list` uses `context.table()` for terminal-width
+  layout and complete, uncolored output when redirected.
 - **progress** — spinners and progress bars in `sync` and `import`.
 - **theme** — semantic colors and status badges via `context.theme`.
 - **A shared module** — `src/store.zig` (JSON persistence to `tasks.json`)

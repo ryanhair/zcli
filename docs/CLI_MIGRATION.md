@@ -1,6 +1,7 @@
 # CLI experience migration
 
-These changes ship together in the next minor release. The command contract stays
+These changes ship together in the next minor release after v0.25.0. They are
+unreleased; v0.25.0 keeps the previous contracts. The command contract stays
 `Args`, `Options`, `meta`, and `execute`; the changes concern input syntax, plugin
 lifecycle, failure reporting, and reusable input/output operations.
 
@@ -118,7 +119,12 @@ pub fn renderFailure(context: anytype, failure: zcli.Failure, status: u8) !void 
 This example always renders JSON; an application may choose its renderer using
 successfully handled global state. Before global handling succeeds, failures use
 the default renderer. Do not add a second ad hoc argv scan to guess whether a
-malformed early invocation requested JSON.
+malformed early invocation requested JSON. The application hook returns `!void`:
+it must render every failure it receives, including any human-output branch.
+Unlike a plugin renderer, it cannot decline by returning `false`. A rendered
+unexpected failure retains its trace in the owned result, but `run()` exits
+with its status without propagating a second raw Zig trace. Unreported,
+unexplained unexpected errors still propagate to `main`.
 
 `context.exit()` still exits immediately and bypasses normal cleanup. Normal
 reported failures should use the application policy instead.

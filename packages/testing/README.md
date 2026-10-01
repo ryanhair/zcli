@@ -2,7 +2,7 @@
 
 Three tiers of testing for zcli-built CLIs, from fast in-process command tests to full pseudo-terminal sessions:
 
-1. **Unit** — `runCommand` executes a command's `execute()` in-process and captures stdout/stderr (plus a `vterm` screen for rendered-output assertions). No binary, fastest loop.
+1. **In-process** — `runInvocation` exercises the production registry (argv parsing, plugins, input resolution, and failure policy) without exiting. For isolated command logic, `runCommand` executes a command's `execute()` in-process and captures stdout/stderr (plus a `vterm` screen for rendered-output assertions). No binary, fastest loop.
 2. **Integration** — `runSubprocess` runs the compiled binary and asserts on the full stack: parsing, routing, plugin hooks, exit codes. Includes snapshot testing.
 3. **E2E (PTY)** — `e2e.runInteractive` drives the binary through a real pseudo-terminal for prompts, hidden input, signals, and TTY-dependent formatting. Assert on the raw byte stream (`.expect`) *or* on the rendered screen (`.expectFrameContains` / `.expectRow` / `.expectFrame`): the harness feeds the PTY/ConPTY output through a `vterm` sized to the session, so a frame assertion only passes if the text is actually visible where it was drawn — closing the gap where a cursor-movement regression leaves the expected bytes *somewhere* in the stream and a raw substring still matches.
 
@@ -35,7 +35,7 @@ rendered-frame assertions) need vterm — the unit tier also needs zcli; the
 - **Manual wiring** — pick the tier your test module uses (the import name is just a local alias):
 
   ```zig
-  // In-process unit tests (runCommand): pulls in zcli + vterm.
+  // In-process tests (runCommand, runInvocation): pulls in zcli + vterm.
   test_module.addImport("zcli-testing", zcli_dep.module("zcli_testing_unit"));
 
   // Subprocess + snapshot tests (runSubprocess, expectSnapshot): std-only.
@@ -50,6 +50,7 @@ rendered-frame assertions) need vterm — the unit tier also needs zcli; the
 ## API surface
 
 - **Unit**: `runCommand(Command, .{ .args = ..., .options = ... })` → `CommandResult` (`.stdout`, `.stderr`, `.success`, `.err`, `.term`). Also configurable: `.plugins` (plugin `ContextData`), `.environ`, `.stdin` (input bytes for `context.stdin()`/`context.prompts()`; injecting it also puts prompts on their line-based branch, so they read these bytes instead of the real stdin and never enter raw mode — keystroke behavior stays with the PTY tier), `.app_name`/`.app_version`/`.app_description` (context app metadata, in place before plugin `initContextData` runs), `.allocator`
+- **Invocation**: `runInvocation(Registry, .{ .argv = ..., .stdin = ... })` → a result with `.stdout`, `.stderr`, and `.invocation` (owned status and outcome). `Registry` is the real generated `command_registry` module or a compiled registry type; the isolated command-test stub is insufficient. `argv` excludes the executable; omitted stdin is EOF and omitted environment is empty. Call `deinit()` to release captured streams and retained failure details.
 - **Integration**: `runSubprocess(allocator, io, exe_path, args)` → `Result` (`.stdout`, `.stderr`, `.exit_code`)
 - **Assertions**: `expectExitCode`, `expectExitCodeNot`, `expectContains`, `expectNotContains`, `expectEqualStrings`, `expectValidJson`, `expectStdoutEmpty`, `expectStderrEmpty`
 - **Snapshots**: `expectSnapshot(...)` against golden files, with `maskDynamicContent` (UUIDs, timestamps, addresses) and `stripAnsi`; update by threading `.update = true` from a build option (`zig build test -Dupdate-snapshots`)
@@ -71,7 +72,7 @@ test "add command prints confirmation" {
     try std.testing.expectEqualStrings("Added widget\n", result.stdout);
 }
 
-// E2E tier — module `testing_e2e` (std-only), a separate import.
+// E2E tier — module `testing_e2e` (with vterm), a separate import.
 const e2e = @import("testing_e2e");
 
 test "login prompts for credentials" {
@@ -93,6 +94,25 @@ test "login prompts for credentials" {
     try std.testing.expect(result.success);
 }
 ```
+
+## Complete invocation example
+
+Wire `zcli_testing_unit` and the real generated registry into a separate test
+module. Co-located `runCommand` tests remain useful for typed command logic, but
+they do not parse argv, resolve `.stdin = true` options, or run lifecycle hooks.
+
+```zig
+var result = try testing.runInvocation(@import("command_registry"), .{
+    .argv = &.{ "card", "new", "--goal", "-" },
+    .stdin = "Preserve this newline\n",
+});
+defer result.deinit();
+try std.testing.expectEqual(@as(u8, 0), result.invocation.status);
+```
+
+Use this harness for configured failure statuses and hook failures; retain
+subprocess tests for the final process exit and PTY tests for editor attachment.
+See [CLI migration](../../docs/CLI_MIGRATION.md) for failure ownership and policy.
 
 ## Behavior notes
 

@@ -18,20 +18,13 @@ const Config = builder.Config;
 const CommandEntry = builder.CommandEntry;
 const discoverPluginCommands = builder.discoverPluginCommands;
 
-/// Default rendering for a parse error no plugin handled: the diagnostic's
-/// precise, human-readable message on stderr (flushed — the process is about
-/// to exit with an error). Falls back silently when no diagnostic was filled
-/// (the error name still reaches the caller).
+/// Default human-readable rendering for a retained parser diagnostic. Invocation
+/// finalization selects the status separately; rendering does not exit the process.
+/// If no diagnostic was filled, this function produces no output.
 ///
-/// Every write here is best-effort (`catch {}`), never `try` (#740). Rendering
-/// the diagnostic is cosmetic; classifying the error is not. A `try` on any of
-/// these — the trailing `flush` above all, since a sub-4KB diagnostic only
-/// touches the fd there — replaces the caller's classified parse error with
-/// `error.WriteFailed`, so `myapp --bogus 2>&-` exits 1 (general failure)
-/// instead of 2 (misuse) and scripts that key on 2 break. A stderr that
-/// genuinely failed is still not lost: the writer records it, and `run()`
-/// consults that record (see `exitOnWriteFailure`) — but only for a failure
-/// nothing else classified, so the parse error keeps its status either way.
+/// Diagnostic writes are best-effort so a closed stderr cannot replace the
+/// primary usage failure with WriteFailed. Finalization records stream failures
+/// and applies I/O status precedence only when no primary failure already exists.
 fn reportParseError(context: anytype, diag: ?zcli.ZcliDiagnostic) !void {
     const d = diag orelse return;
     const message = zcli.formatDiagnostic(d, context.allocator) catch return;

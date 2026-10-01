@@ -126,8 +126,13 @@ Plugins can implement any of these lifecycle hooks:
 7. **`loadConfig`** — Loads configuration after typed CLI/env parsing
 8. **`applyConfigDefaults`** — Fills options from lower-precedence sources before stdin materialization and resolved-input validation
 9. **`prepare`** — Performs operational setup after validation
-10. **`onFinish`** — Runs completion cleanup with the invocation outcome, including failures before preparation
+10. **`onFinish(context, success)`** — Runs for initialized plugins, including informational completion and failures before preparation; `success` is false when a primary error already exists
 11. **`describeFailure` / `renderFailure`** — Describe or render failures without suppressing failure status
+
+`initContextData` precedes `onStartup`; response-file expansion (when enabled)
+precedes `preParse`. Initialization and startup must stay safe for help/version.
+All fallible hooks use the same failure path. Renderer hooks run only once global
+option handling is complete, so earlier failures use human fallback.
 
 See [the migration guide](CLI_MIGRATION.md) and [ADR-0036](adr/0036-invocation-outcomes.md)
 for failure precedence, cleanup, and application status policy.
@@ -250,6 +255,10 @@ const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
 const store = @import("store");
 ```
 
+Dependency-provided plugins keep the imports declared by their own package;
+consumer `shared_modules` are injected only into commands and project-local
+plugins discovered under `plugins_dir`.
+
 Pass the **same** `shared_modules` list to `addCommandTests` as well. The
 command-test stub only wires the shared modules you hand it, so a command that
 imports one won't compile under `zig build test` otherwise — and each module in
@@ -349,7 +358,7 @@ _ = zcli.addCommandTests(b, exe, zcli_dep, .{
 Returns the created `test` step (registered as `zig build test`) so the caller
 can attach more tests to it. `zcli init` wires this automatically in every
 scaffolded project; see `projects/zcli/src/commands/init.zig` for the generated
-`build.zig` template. For the testing API itself (`runCommand`, VTerm
+`build.zig` template. For the testing API itself (`runCommand`, `runInvocation`, VTerm
 assertions, integration/E2E tiers), see [TESTING.md](TESTING.md).
 
 ## Plugin Build Tools (`PluginConfig.tool`)
@@ -412,62 +421,31 @@ date is ever baked into a compiled artifact.
 
 ### 1. Plugin Registry Integration
 
-The generated registry includes plugin support:
+The generated registry exports `Context`, `init()`, and compiled registry
+metadata. It forwards `GenerateConfig`'s framework exit codes, stdin limit, and
+optional failure-policy module into the same invocation engine used by tests.
 
-```zig
-// Generated registry structure with plugins
-pub const registry = CompiledRegistry(config, commands, plugins).init();
+`run(allocator, io, environ, argv)` is the process boundary; it accepts the
+executable name as argv's first element. `invoke(...)` and
+`invokeWithStdio(...)` accept command argv without that name, run the full
+lifecycle, and return an owned result. Release the result with `deinit()`.
 
-// Plugin hooks are wired into execution flow
-pub fn execute(self: *Self, args: []const []const u8) !void {
-    // Context is the per-app computed type; each plugin's ContextData is
-    // default-initialized under `context.plugins.<plugin_id>`.
-    var context = Context.init(allocator, io, environ);
-    defer context.deinit();
-    
-    // 1. Run preParse hooks
-    var current_args = args;
-    inline for (sorted_plugins) |Plugin| {
-        if (@hasDecl(Plugin, "preParse")) {
-            current_args = try Plugin.preParse(&context, current_args);
-        }
-    }
-    
-    // 2. Extract and handle global options
-    const global_result = try self.parseGlobalOptions(&context, current_args);
-    
-    // 3. Route to command with lifecycle hooks
-    try self.executeCommand(&context, global_result.remaining);
-}
-```
+The engine initializes plugin state, processes global inputs, resolves a command,
+handles information, parses and resolves typed inputs, validates, prepares, and
+executes. Initialized plugins' completion hooks run even after failure, then
+failure description/status/rendering finish, plugin state is torn down, and
+output flushes. Retained diagnostics and trace data belong to the returned
+result. See [ERROR_HANDLING.md](ERROR_HANDLING.md).
 
 ### 2. Plugin Command Integration
 
-Plugin commands are discovered and integrated using comptime introspection:
-
-```zig
-// Plugin command discovery at compile time
-inline for (plugins) |Plugin| {
-    if (@hasDecl(Plugin, "commands")) {
-        const cmd_info = @typeInfo(Plugin.commands);
-        if (cmd_info == .@"struct") {
-            inline for (cmd_info.@"struct".decls) |decl| {
-                if (std.mem.eql(u8, decl.name, command_name)) {
-                    const CommandModule = @field(Plugin.commands, decl.name);
-                    
-                    // Parse args/options like regular commands
-                    const cmd_args = if (@hasDecl(CommandModule, "Args"))
-                        try self.parseArgs(CommandModule.Args, parsed_args.positional)
-                    else struct{}{};
-                    
-                    // Execute with full lifecycle support
-                    try CommandModule.execute(cmd_args, cmd_options, context);
-                }
-            }
-        }
-    }
-}
-```
+Plugin `commands` declarations are walked at compile time into the routing
+entries. Their `Args`, `Options`, and `meta` use the same validation and input
+resolution as project commands. Both paths dispatch through
+`executeResolvedCommand`, including typed plugin command settings, informational
+handling, configuration, stdin materialization, validation, and preparation.
+A plugin command's error origin is the plugin, so a failure-policy plugin scope
+can cover that command as well as its hooks.
 
 ### 3. Type-Safe Context Data
 
@@ -556,10 +534,15 @@ The plugin system maintains full type safety:
    ```zig
    // Lifecycle hooks (optional). `context` is `anytype` — plugins are compiled
    // independently of the host app, so they can't name its Context type.
+   pub fn onStartup(context: anytype) !void
    pub fn preParse(context: anytype, args: []const []const u8) ![]const []const u8
+   pub fn transformArgs(context: anytype, args: []const []const u8) !zcli.TransformResult
    pub fn postParse(context: anytype, parsed_args: zcli.ParsedArgs) !?zcli.ParsedArgs
+   pub fn handleInformation(context: anytype) !zcli.InvocationAction
+   pub fn loadConfig(context: anytype) !void
    pub fn prepare(context: anytype) !void
    pub fn onFinish(context: anytype, success: bool) !void
+   pub fn describeFailure(context: anytype, failure: zcli.Failure) !?zcli.failure.Description
    pub fn renderFailure(context: anytype, failure: zcli.Failure) !bool
 
    // Global options (optional)
@@ -606,8 +589,8 @@ in `build.zig`:
   and PowerShell, including dynamic per-field completion.
 - **zcli_config** — loads JSON/TOML/YAML config files and fills option defaults
   below CLI/env precedence.
-- **zcli_secrets** — reads secrets from the OS keychain (or a platform-appropriate
-  fallback) into the environment.
+- **zcli_secrets** — exposes typed access to the OS credential store; Linux uses
+  `secret-tool` or `pass`. There is no plaintext-file fallback.
 - **zcli_github_upgrade** — self-upgrades the CLI from GitHub releases, with
   signature verification.
 
@@ -672,3 +655,50 @@ const enabled = context.plugins.my_plugin.enabled;
    - Verify type compatibility
 
 This plugin-aware build system ensures zcli applications can be extended with powerful, type-safe plugins while maintaining zero-cost dispatch.
+
+## Invocation policy configuration
+
+These `GenerateConfig` fields configure the generated engine:
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `exit_codes` | usage `2`, command not found `3`, command failed `1` | Framework category statuses |
+| `stdin_max_bytes` | `16 * 1024 * 1024` | Bound for explicit `.stdin = true` text inputs |
+| `failure_policy_module` | `null` | Application error mappings, descriptions, and rendering |
+
+```zig
+const policy = b.createModule(.{
+    .root_source_file = b.path("src/failure_policy.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+const cmd_registry = try zcli.generate(b, exe, zcli_dep, .{
+    .commands_dir = "src/commands",
+    .app_name = "myapp",
+    .app_description = "My application",
+    .exit_codes = .{ .usage = 64, .command_not_found = 64 },
+    .stdin_max_bytes = 4 * 1024 * 1024,
+    .failure_policy_module = policy,
+});
+```
+
+```zig
+// src/failure_policy.zig
+const zcli = @import("zcli");
+pub const error_codes = [_]zcli.failure.ErrorRule{
+    .{ .cause = error.NotFound, .command = "card show", .code = 2,
+       .message = "Card not found" },
+    .{ .cause = error.Unauthorized, .plugin = "auth", .code = 10,
+       .message = "Authentication required" },
+};
+```
+
+The policy module receives the `zcli` import from `generate()`. The command/plugin
+scopes in this example assume those registered names in your app. Commands use canonical paths, so aliases share the same rule. Rules cannot
+replace framework misuse statuses. A mapped failure remains a failure even if
+its output is suppressed. See [ERROR_HANDLING.md](ERROR_HANDLING.md) for renderer
+signatures, scope validation, and the current array-diagnostic limitation.
+
+Typed command-specific plugin settings require no new build option: register
+the plugin normally, declare its `CommandConfig`, and use command
+`meta.plugins.<plugin_id>` overrides. See [PLUGINS.md](PLUGINS.md#command-specific-plugin-settings).

@@ -68,6 +68,7 @@
         <a href="#write">Anatomy</a>
         <a href="#hooks">Lifecycle hooks</a>
         <a href="#data">Context data</a>
+        <a href="#command-config">Command config</a>
         <a href="#commands">Plugin commands</a>
       </nav>
 
@@ -200,6 +201,7 @@
 };</pre>
           </div>
           <p>For a multi-file plugin, put that entry point at <code>src/plugins/timing/plugin.zig</code> and split helpers into sibling files.</p>
+          <p>A project-local plugin discovered through <code>.plugins_dir</code> can import any <code>shared_modules</code> declared in <code>zcli.generate</code>, exactly as a command can. Dependency-provided plugins declare their own imports. See <a href="$site.page('docs/build').link()">Build integration</a>.</p>
         </section>
 
         <section id="hooks">
@@ -265,6 +267,32 @@
     }
 }</pre>
           </div>
+        </section>
+
+        <section id="command-config">
+          <h2>Typed configuration per command</h2>
+          <p>When plugin behavior really differs by command, declare a defaulted <code>CommandConfig</code>. A plugin reads the routed command's settings from <code>context.command_config.{plugin_id}</code>. Commands override fields inside their plugin namespace:</p>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/plugins/client.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> plugin_id = <span class="str">"client"</span>;
+<span class="kw">pub const</span> CommandConfig = <span class="kw">struct</span> {
+    needs_daemon: <span class="fn">bool</span> = <span class="num">true</span>,
+};
+
+<span class="kw">pub fn</span> <span class="fn">prepare</span>(context: <span class="kw">anytype</span>) !<span class="kw">void</span> {
+    <span class="kw">if</span> (context.command_config.client.needs_daemon) {
+        <span class="cm">// Start or connect to the daemon for this command.</span>
+    }
+}</pre>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="fname">src/commands/version.zig</span><span class="lang">zig</span></div>
+<pre><span class="kw">pub const</span> meta = .{
+    .description = <span class="str">"Print the version"</span>,
+    .plugins = .{ .client = .{ .needs_daemon = <span class="num">false</span> } },
+};</pre>
+          </div>
+          <p>Commands without an override receive the schema defaults. Unknown plugin names or fields fail at compile time. Group settings do not cascade to children, and aliases use the target command's configuration. For resources used by only a few commands, lazy acquisition through <code>ContextData</code> is often simpler than command metadata.</p>
         </section>
 
         <section id="commands">

@@ -62,7 +62,9 @@ pub const Config = struct {
     /// arbitrary-file-read primitive. Set from `GenerateConfig.response_files`;
     /// the generated registry emits it as a literal.
     response_files: bool = false,
+    /// Maximum bytes read for an opted-in text option explicitly passed "-".
     stdin_max_bytes: usize = 16 * 1024 * 1024,
+    /// Nonzero default statuses for framework categories and explained failures.
     exit_codes: @import("../failure.zig").ExitCodes = .{},
     /// Application module with optional error_codes, describeFailure, renderFailure.
     failure_policy: type = struct {},
